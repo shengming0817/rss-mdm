@@ -56,7 +56,7 @@ async fn console_pending_directory_and_permission_changes() -> Result<()> {
     set_device_grants(
         &mut browser,
         &router,
-        &device,
+        device,
         &["enrollment", "inventory_read"],
     )
     .await?;
@@ -93,8 +93,8 @@ async fn console_pending_directory_and_permission_changes() -> Result<()> {
             == "0",
         "directory inserted pending device authority"
     );
-    set_device_grants(&mut browser, &router, &device, &["enrollment"]).await?;
-    for id in [&device, &case::name("hidden-console")] {
+    set_device_grants(&mut browser, &router, device, &["enrollment"]).await?;
+    for id in [device, case::name("hidden-console")] {
         ensure!(
             browser
                 .call(&router, Method::GET, &format!("/api/v3/devices/{id}"), None)
@@ -143,9 +143,9 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
     )
     .credential(crate::test_support::secret("console-agent"));
     let (_, receipt) =
-        crate::device::test_support::bind(&service, &principal, &credential, &revoked, 0).await?;
+        crate::device::test_support::bind(&service, &principal, &credential, revoked, 0).await?;
     service
-        .revoke(&principal, &revoked, receipt.registration, Uuid::new_v4())
+        .revoke(&principal, revoked, receipt.registration, Uuid::new_v4())
         .await?;
     pg(&format!(
         "INSERT INTO mdm_access.devices VALUES('{}','{registered}')",
@@ -194,7 +194,7 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
             path = format!("/api/v3/devices?limit=1&descending={descending}&after={after}");
             ensure!(ids.len() <= 3, "directory repeated page");
         }
-        let mut expected = vec![pending.clone(), revoked.clone(), registered.clone()];
+        let mut expected = vec![pending, revoked, registered];
         if descending {
             expected.reverse();
         }
@@ -210,12 +210,12 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
         .await?;
     ensure!(detail["status"] == "revoked" && detail["channels"][0]["status"] == "revoked");
     ensure!(detail["capabilities"][0]["devicePrerequisite"]["reason"] == "not_registered");
-    set_device_grants(&mut browser, &router, &pending, &["inventory_read"]).await?;
+    set_device_grants(&mut browser, &router, pending, &["inventory_read"]).await?;
     let (_, page) = browser
         .call(&router, Method::GET, "/api/v3/devices?limit=1", None)
         .await?;
     ensure!(page["statistics"]["total"] == 1 && page["items"][0]["id"] == pending);
-    for id in [&revoked, &case::name("absent")] {
+    for id in [revoked, case::name("absent")] {
         ensure!(
             browser
                 .call(&router, Method::GET, &format!("/api/v3/devices/{id}"), None)
@@ -247,7 +247,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
         ]),
     )
     .await?;
-    let mut groups = vec![Uuid::new_v4(), Uuid::new_v4()];
+    let mut groups = [Uuid::new_v4(), Uuid::new_v4()];
     groups.sort();
     for (i, id) in groups.iter().enumerate() {
         call(&mut browser,&router,&format!("/api/v2/groups/{id}"),0,json!({"action":"create","name":format!("console-{i}"),"description":"","criteria":null})).await?;
@@ -364,6 +364,70 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
             .0
             == StatusCode::FORBIDDEN
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=planning.http"]
+async fn console_scope_ready_tracks_current_admission() -> Result<()> {
+    let fixture = authority::Authority::open().await?;
+    let router = app(&fixture.base, authority::reader(&fixture.base).await?).await?;
+    let mut browser = fixture.browser("other")?;
+    let subject = browser_subject(&browser, &router).await?;
+    set_management_grants(&subject, json!(["scope_read", "scope_write"])).await?;
+    let scope = Uuid::new_v4();
+    let path = format!("/api/v2/scopes/{scope}");
+    let owner = start_automation(&fixture.base).await?;
+    call(
+        &mut browser,
+        &router,
+        &path,
+        0,
+        json!({"action":"put","definition":{"targets":[],"limitations":null,"exclusions":[]}}),
+    )
+    .await?;
+    await_ingress().await?;
+    let fresh = browser
+        .call(&router, Method::GET, "/api/v2/scopes?ready=true", None)
+        .await?;
+    ensure!(
+        fresh.0 == StatusCode::OK && fresh.1["items"][0]["id"] == scope.to_string(),
+        "fresh scope: {fresh:?}"
+    );
+    stop_worker(owner).await?;
+    let changed = browser.call(&router, Method::POST, &path, Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"put","definition":{"targets":[],"limitations":[],"exclusions":[]}}}))).await?;
+    ensure!(changed.0 == StatusCode::OK, "scope update: {changed:?}");
+    ensure!(pg(&format!("SELECT resolution IS NOT NULL FROM mdm_planning.scopes WHERE tenant_id='{}' AND id='{scope}'", case_tenant()))?.trim() == "t", "fixture lost historical resolution");
+    let fresh = browser
+        .call(&router, Method::GET, "/api/v2/scopes?ready=true", None)
+        .await?;
+    let stale = browser
+        .call(&router, Method::GET, "/api/v2/scopes?ready=false", None)
+        .await?;
+    ensure!(
+        fresh.0 == StatusCode::OK && fresh.1["items"] == json!([]),
+        "stale scope listed ready: {fresh:?}"
+    );
+    ensure!(
+        stale.0 == StatusCode::OK && stale.1["items"][0]["id"] == scope.to_string(),
+        "stale scope missing: {stale:?}"
+    );
+    let owner = start_automation(&fixture.base).await?;
+    await_task(
+        &mut browser,
+        &router,
+        &format!("{path}/tasks/{}", changed.1["task"].as_str().unwrap()),
+    )
+    .await?;
+    await_ingress().await?;
+    let fresh = browser
+        .call(&router, Method::GET, "/api/v2/scopes?ready=true", None)
+        .await?;
+    ensure!(
+        fresh.0 == StatusCode::OK && fresh.1["items"][0]["id"] == scope.to_string(),
+        "recalculated scope: {fresh:?}"
+    );
+    stop_worker(owner).await?;
     Ok(())
 }
 

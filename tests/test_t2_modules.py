@@ -8,6 +8,12 @@ from t2_registry import MODULES, select_paths
 
 
 class ModuleImpactTests(unittest.TestCase):
+    def test_console_projection_inputs_select_their_http_consumers(self):
+        for path in ('crates/resource-postgres/src/codec.rs',
+                     'crates/inventory-postgres/src/lib.rs',
+                     'crates/flow-service/src/execution/directory.rs'):
+            self.assertIn('planning.http', self.selected(path), path)
+        self.assertIn('execution.agent.history', self.selected('crates/flow-service/src/execution/directory.rs'))
     def selected(self, path):
         return set(select_paths([path]).modules)
 

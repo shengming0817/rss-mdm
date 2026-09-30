@@ -333,6 +333,15 @@ pub(crate) fn directory_header(
         Kind::Script => "script",
         Kind::Configuration => "configuration",
     };
+    if !a[4].is_null() {
+        STORAGE.invalid(
+            "codec::directory_header",
+            Timepoint::try_from(
+                a[4].as_i64()
+                    .ok_or_else(|| STORAGE.fault("codec::directory_header"))?,
+            ),
+        )?;
+    }
     let states = a[5]
         .as_array()
         .filter(|v| v.len() <= 10000)
@@ -357,4 +366,37 @@ pub(crate) fn directory_header(
         };
     }
     Ok(json!({"id":resource,"revision":revision,"kind":kind,"activeVersion":active}))
+}
+
+#[cfg(test)]
+mod directory_tests {
+    use super::*;
+    #[test]
+    fn selector_uses_validated_header_without_version_material() {
+        let tenant = TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
+        let header = serde_json::to_vec(&json!([
+            1,
+            tenant.to_string(),
+            "script",
+            1,
+            null,
+            [["old", 2], ["current", 1], ["next", 0]]
+        ]))
+        .unwrap();
+        assert_eq!(
+            directory_header(&header, tenant, "script", 3).unwrap(),
+            json!({"id":"script","revision":3,"kind":"script","activeVersion":"current"})
+        );
+        assert!(directory_header(&header, tenant, "other", 3).is_err());
+        let conflicting = serde_json::to_vec(&json!([
+            1,
+            tenant.to_string(),
+            "script",
+            1,
+            null,
+            [["one", 1], ["two", 1]]
+        ]))
+        .unwrap();
+        assert!(directory_header(&conflicting, tenant, "script", 3).is_err());
+    }
 }

@@ -628,6 +628,7 @@ def case_fixtures(module, selector, marker):
 
 
 case_fixtures('assets.http', 'assets::t2::http::manual::manual_types_replay_cas_and_rollback', 'shared_worker')
+case_fixtures('planning.http', 'planning::t2::http::console_scope_ready_tracks_current_admission', 'local_worker')
 case_fixtures('planning.remote', 'planning::t2::remote::bulk_pages_restart_and_cancellation_are_durable', 'local_worker')
 case_fixtures('compliance.recovery', 'compliance::t2::recovery::mutation_unknown_commit_recovers_original_response', None)
 case_fixtures('compliance.recovery', 'compliance::t2::recovery::rule_and_fact_revisions_fence_stale_publication', 'local_worker')
@@ -923,6 +924,9 @@ for name, module in list(MODULES.items()):
 
 # Console reads use the existing real HTTP integration owners.
 MODULES['planning.http'] = replace(MODULES['planning.http'], production_inputs=(*MODULES['planning.http'].production_inputs,
+    'crates/resource-postgres/src/codec.rs',
+    'crates/inventory-postgres/src/lib.rs',
+    'crates/flow-service/src/execution/directory.rs',
     'crates/registration-service/src/device/directory.rs',
     'crates/inventory-service/src/assets/directory.rs',
     'crates/inventory-service/src/groups/directory.rs',
@@ -1062,3 +1066,5 @@ def select_paths(paths):
         modules.update(MODULES)
         tools.update(all_tools())
     return Impact(full, tuple(sorted(modules)), tuple(sorted(tools)), tuple(sorted(reasons)))
+
+MODULES['execution.commands.windows'] = replace(MODULES['execution.commands.windows'], production_inputs=(*MODULES['execution.commands.windows'].production_inputs, 'crates/flow-service/src/execution/directory.rs', 'crates/management-http/src/execution/http.rs'), support_inputs=(*MODULES['execution.commands.windows'].support_inputs, 'crates/app/tests/support/agent_execution.rs'))
