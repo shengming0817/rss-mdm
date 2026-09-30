@@ -27,6 +27,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio_util::sync::CancellationToken;
+pub mod diagnostics;
 const BUDGET: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -88,10 +89,12 @@ pub struct Readiness {
     task: OnceLock<TaskStatus>,
 }
 impl Readiness {
-    pub fn ready(&self) -> bool {
-        self.initialized.load(Ordering::Acquire)
-            && !self.stopping.load(Ordering::Acquire)
-            && self.task.get().is_some_and(TaskStatus::is_running)
+    pub fn health(&self) -> diagnostics::Health {
+        diagnostics::Health {
+            initialized: self.initialized.load(Ordering::Acquire),
+            stopping: self.stopping.load(Ordering::Acquire),
+            task: self.task.get().map(TaskStatus::current),
+        }
     }
     pub fn stop(&self) {
         self.stopping.store(true, Ordering::Release);
@@ -280,6 +283,7 @@ pub struct InventoryRuntime {
     tenant: TenantId,
     clock: Clock,
     pub readiness: Arc<Readiness>,
+    latest_projection: std::sync::Mutex<Option<diagnostics::ProjectionObservation>>,
 }
 impl InventoryRuntime {
     pub fn new(
@@ -298,6 +302,7 @@ impl InventoryRuntime {
             tenant,
             clock,
             readiness,
+            latest_projection: std::sync::Mutex::new(None),
         }
     }
     pub fn registration(
@@ -477,16 +482,37 @@ impl InventoryRuntime {
                 return Ok(());
             }
             let control = Control::new(&self.clock, self.clock.cutoff(), token);
-            let report = rss_projection::run(
+            let run = rss_projection::run(
                 source.as_ref(),
                 &execution,
                 &control,
                 RunLimit::new(BatchLimit::new(64).expect("bounded batch"), 64)
                     .expect("bounded pass"),
-            )
-            .await
-            .into_result()
-            .map_err(|_| WorkerFailure::ProjectionRun)?;
+            );
+            {
+                let mut latest = self
+                    .latest_projection
+                    .lock()
+                    .expect("projection observation");
+                let last_completed_at = latest.as_ref().and_then(|p| p.last_completed_at);
+                *latest = Some(diagnostics::ProjectionObservation {
+                    run: run.observation(),
+                    started_at: self.clock.now.now(),
+                    last_completed_at,
+                });
+            }
+            let report = run.await;
+            if let Some(observation) = self
+                .latest_projection
+                .lock()
+                .expect("projection observation")
+                .as_mut()
+            {
+                observation.last_completed_at = Some(self.clock.now.now());
+            }
+            let report = report
+                .into_result()
+                .map_err(|_| WorkerFailure::ProjectionRun)?;
             self.readiness.initialized.store(true, Ordering::Release);
             if expired == 0 && pending_count == 0 && report.applied == 0 {
                 let nearest = self
@@ -669,5 +695,9 @@ impl InventoryRuntime {
             .expect("fixture worker")
             .wait_stopped()
             .await
+    }
+    #[cfg(feature = "integration")]
+    pub fn fixture_projection_fault(&self, fault: rss_projection_postgres::PgFault) {
+        self.projection.inject_next_fault(fault);
     }
 }

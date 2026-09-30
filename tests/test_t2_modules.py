@@ -25,6 +25,14 @@ class ModuleImpactTests(unittest.TestCase):
             'windows.enrollment', 'windows.issuance', 'windows.management',
             'windows.commands', 'windows.retention', 'windows.limits'})
 
+    def test_runtime_diagnostics_has_exact_tests_and_live_owner_inputs(self):
+        self.assertEqual(self.selected('crates/app/tests/api/runtime_diagnostics.rs'), {'diagnostics.http'})
+        for path in ('crates/app/src/runtime_diagnostics.rs', 'crates/management-http/src/runtime_diagnostics.rs',
+                     'crates/inventory-service/src/inventory_runtime.rs', 'crates/inventory-service/src/inventory_runtime/diagnostics.rs',
+                     'crates/flow-service/src/automation/runtime.rs', 'crates/app/src/identity_audit.rs'):
+            self.assertIn('diagnostics.http', self.selected(path), path)
+        self.assertTrue(self.selected('crates/app/tests/api/runtime_diagnostics.rs').isdisjoint({'installation.migration','apple.apns'}))
+
     def test_device_audit_boundaries_select_fault_projection_tests(self):
         for path in ('crates/audit-integration/src/completion.rs',
                      'crates/agent-channel/src/boundary.rs',
@@ -49,7 +57,7 @@ class ModuleImpactTests(unittest.TestCase):
     def test_test_module_carriers_select_exact_children(self):
         expected = {
             'crates/app/tests/agent/mod.rs': {'agent.registration','agent.reports'},
-            'crates/app/tests/api/mod.rs': {'api.identity_context'},
+            'crates/app/tests/api/mod.rs': {'api.identity_context','diagnostics.http'},
             'crates/app/tests/execution/mod.rs': {name for name in MODULES if name.startswith('execution.')},
         }
         for path, modules in expected.items():
@@ -75,7 +83,7 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertTrue(required <= device,required-device)
         self.assertTrue(device.isdisjoint({'identity.sso','content.http','apple.cms','apple.apns','publication.artifact'}))
         audit = self.selected('crates/app/tests/support/audit.rs')
-        required = {'api.diagnostics','device.recovery','device.revocation','execution.commands.admission','execution.commands.onboarding',
+        required = {'diagnostics.http','api.diagnostics','device.recovery','device.revocation','execution.commands.admission','execution.commands.onboarding',
                     'execution.commands.dispatch','windows.enrollment','windows.issuance','windows.limits',
                     'apple.policy','apple.identity','planning.scope','planning.group_scope','planning.assets',
                     'planning.recovery','planning.resource_archive','planning.agent_policy','assets.http',

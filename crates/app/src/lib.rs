@@ -73,6 +73,7 @@ use database::Database;
 
 mod diagnostic;
 mod error_projection;
+mod runtime_diagnostics;
 pub use diagnostic::{ConfigIssue, Failure, Monotonic, ProcessError, install_diagnostics};
 #[cfg(not(test))]
 use rss_mdm_agent_channel as agent;

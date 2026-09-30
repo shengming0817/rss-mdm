@@ -48,6 +48,20 @@ pub struct Apple {
     pub(crate) notify_key: ring::hmac::Key,
     configuration: [u8; 32],
 }
+pub struct Health {
+    pub push_available: bool,
+    pub certificates: [CertificateHealth; 3],
+}
+impl Health {
+    pub fn certificates_expired(&self) -> bool {
+        self.certificates
+            .iter()
+            .any(|item| item.level == CertificateLevel::Expired)
+    }
+    pub fn is_ready(&self) -> bool {
+        self.push_available && !self.certificates_expired()
+    }
+}
 impl Apple {
     pub fn new(
         config: Config,
@@ -174,13 +188,11 @@ impl Apple {
             CertificateHealth::new("apns", self.push.expires, now),
         ]
     }
-    pub fn ready(&self, now: i64) -> bool {
-        if !self.push_ready.load(std::sync::atomic::Ordering::Relaxed) {
-            return false;
+    pub fn health(&self, now: i64) -> Health {
+        Health {
+            push_available: self.push_ready.load(std::sync::atomic::Ordering::Relaxed),
+            certificates: self.certificate_health(now),
         }
-        self.certificate_health(now)
-            .iter()
-            .all(|item| item.level != CertificateLevel::Expired)
     }
     pub fn report_certificate_health(
         &self,

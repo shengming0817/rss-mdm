@@ -131,4 +131,8 @@ impl Planning {
     }
 }
 
-mod health;
+pub(super) mod health;
+pub use health::{
+    AttemptFailure, AutomationFailure, AutomationHealth, HealthFailure, IngressHealth,
+    RunObservation,
+};

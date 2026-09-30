@@ -211,7 +211,7 @@ impl Host {
                 store.inventory(),
                 runtime.clone(),
             )),
-            readiness: runtime.readiness.clone(),
+            inventory: runtime.clone(),
             devices,
             access: store.clone(),
             requests: Arc::new(tokio::sync::Semaphore::new(4)),

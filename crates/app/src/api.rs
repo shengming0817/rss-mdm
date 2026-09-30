@@ -28,7 +28,7 @@ pub(crate) struct Assembly {
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) identity_management: Arc<IdentityManagementPolicy>,
     pub(crate) collection: Arc<CollectionService>,
-    pub(crate) readiness: Arc<crate::inventory_runtime::Readiness>,
+    pub(crate) inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
     pub(crate) devices: Arc<crate::device::DeviceService>,
     pub(crate) apple: Option<Arc<crate::apple::Apple>>,
     pub(crate) windows: Option<Arc<crate::windows::Windows>>,
@@ -214,7 +214,7 @@ pub(crate) fn from_compiled(
             access.inventory(),
             runtime.clone(),
         )),
-        readiness: runtime.readiness.clone(),
+        inventory: runtime.clone(),
         devices,
         requests: Arc::new(tokio::sync::Semaphore::new(4)),
     });
@@ -283,12 +283,14 @@ pub(crate) fn from_state(
         requests: state.requests.clone(),
         windows: state.windows.as_ref().map(|w| w.channel.clone()),
     });
-    let readiness = Arc::new(ReadinessState {
-        readiness: state.readiness.clone(),
+    let diagnostics = Arc::new(crate::runtime_diagnostics::RuntimeDiagnostics {
+        inventory: state.inventory.clone(),
         identity_audit: state.identity.audit_readiness.clone(),
         apple: state.apple.clone(),
         clock: state.clock.clone(),
-        flow: state.flow.clone(),
+        planning: state.flow.planning.clone(),
+        tenant: state.identity.tenant,
+        instance: state.identity.instance.to_string(),
     });
     let authentication = state.identity.routes();
     let admission = Arc::new(tokio::sync::Semaphore::new(32));
@@ -321,6 +323,7 @@ pub(crate) fn from_state(
     let management = rss_mdm_management_http::router(
         rss_mdm_management_http::Services {
             timeline: state.timeline.clone(),
+            diagnostics: diagnostics.clone(),
             identity: state.identity.browser(),
             authorization: state.access.authorization_store(),
             identity_management: state.identity_management.clone(),
@@ -407,7 +410,10 @@ pub(crate) fn from_state(
     let apple = state.apple.clone();
     let host_routes = Router::new()
         .route("/livez", get(|| async { Json(json!({"alive":true})) }))
-        .route("/readyz", get(ready).with_state(readiness))
+        .route(
+            "/readyz",
+            get(ready).with_state((diagnostics, monotonic.clone())),
+        )
         .fallback(|| async { axum::http::StatusCode::NOT_FOUND })
         .layer(middleware::from_fn_with_state(
             host,
@@ -446,37 +452,21 @@ pub(crate) fn from_state(
     }
 }
 
-async fn ready(State(app): State<Arc<ReadinessState>>) -> Response {
-    if app.readiness.ready()
-        && app.identity_audit.ready()
-        && app.apple.as_ref().is_none_or(|apple| {
-            app.clock
-                .unix_seconds()
-                .is_ok_and(|now| apple.channel.ready(now))
-        })
-        && app
-            .flow
-            .planning
-            .automation_task
-            .get()
-            .is_some_and(rss_runtime::TaskStatus::is_running)
-        && app.flow.planning.ingress_ready().await
-    {
-        Json(json!({"ready":true})).into_response()
+async fn ready(
+    State((diagnostics, clock)): State<(
+        Arc<crate::runtime_diagnostics::RuntimeDiagnostics>,
+        Arc<dyn rss_observation::Clock>,
+    )>,
+) -> Response {
+    let result = diagnostics
+        .collect(clock.now() + std::time::Duration::from_secs(8), false)
+        .await;
+    let status = if result.ready {
+        axum::http::StatusCode::OK
     } else {
-        (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"ready":false})),
-        )
-            .into_response()
-    }
-}
-struct ReadinessState {
-    identity_audit: Arc<crate::identity_audit::Readiness>,
-    readiness: Arc<crate::inventory_runtime::Readiness>,
-    apple: Option<Arc<crate::apple::Apple>>,
-    clock: Arc<dyn crate::clock::Clock>,
-    flow: Arc<crate::flow::Flow>,
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    };
+    (status, Json(json!({"ready":result.ready}))).into_response()
 }
 
 #[cfg(test)]

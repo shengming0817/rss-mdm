@@ -68,6 +68,7 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
         }
     };
     request.extensions_mut().insert(audit.clone());
+    request.extensions_mut().insert(envelope.clock.clone());
     let mut response = if request.headers().get_all(header::HOST).iter().count() != 1
         || request.uri().to_string().len() > 8192
         || request
@@ -120,6 +121,7 @@ pub async fn authentication(
     let audit = RequestAudit::new(envelope.tenant.clone(), "authentication");
     let id = audit.request_id();
     request.extensions_mut().insert(audit.clone());
+    request.extensions_mut().insert(envelope.clock.clone());
     let response = if request.headers().get_all(header::HOST).iter().count() != 1
         || request.uri().to_string().len() > 8192
         || request
@@ -205,6 +207,7 @@ fn route_action(route: &str) -> &'static str {
     match route {
         "/api/v3/devices/{device}/timeline" => "timeline_read",
         "/api/v3/audit-events" => "audit_search",
+        "/api/v2/runtime/diagnostics" => "runtime_diagnostics_read",
         "/api/v1/authorization" => "authorization_effective_read",
         "/api/v1/authorization/rules" => "authorization_rules_read",
         "/api/v1/authorization/user-groups" => "authorization_groups_read",
