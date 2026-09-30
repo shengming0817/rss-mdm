@@ -132,3 +132,4 @@ impl Planning {
 }
 
 mod health;
+pub use health::{BridgeObservation, BridgeOutcome, HealthFailure, IngressHealth};

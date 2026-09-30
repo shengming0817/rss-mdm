@@ -136,7 +136,7 @@ impl Fixture {
                 access.inventory(),
                 runtime.clone(),
             )),
-            readiness: runtime.readiness.clone(),
+            inventory: runtime.clone(),
             devices,
             windows: None,
             apple: Some(Arc::new(Apple::load(
@@ -370,14 +370,15 @@ fn startup_diagnostics(root: &std::path::Path) -> Result<()> {
     ensure!(
         apple
             .channel
-            .ready(crate::clock::SystemClock.unix_seconds()?)
+            .health(crate::clock::SystemClock.unix_seconds()?)
+            .is_ready()
     );
     for expires in [
         apple.channel.trust_fixture().expires(),
         apple.channel.signer_expiration_fixture(),
         apple.channel.push_fixture().expires,
     ] {
-        ensure!(!apple.channel.ready(expires as i64));
+        ensure!(!apple.channel.health(expires as i64).is_ready());
     }
     Ok(())
 }

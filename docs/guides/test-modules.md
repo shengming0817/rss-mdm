@@ -26,7 +26,7 @@ make ci-full
 | `enrollment.{http,recovery}`、`device.{binding,revocation,recovery,admission}` | 注册请求生命周期与回执；设备世代、凭据、来源、绑定竞争和撤销分别归属。 |
 | `agent.{registration,reports}` | V4 注册和报告的真实 HTTP/PG 接线；wire 排列仍归 agent-wire T1 和现有 V4 artifact gate。 |
 | `inventory.{manual,reader,projection,recovery,process,runtime}`、`examples.cli` | manual/reader 在 Inventory PG；投影、恢复、进程与 CLI 在 examples 的 cfg(test) 模块；App 只验证 intake/runtime 协作。 |
-| `api.{diagnostics,identity_context}`、`host.lifecycle` | API envelope、身份上下文和安全诊断；真实宿主启动、readiness、依赖故障与有界关闭。 |
+| `api.{diagnostics,identity_context}`、`diagnostics.http`、`host.lifecycle` | API envelope、身份上下文；授权运行诊断的真实任务、依赖、投影和积压；真实宿主启动、readiness、依赖故障与有界关闭。 |
 | `assets.{http,queries,sources,group_input}` | 资产授权/事务、查询分页、来源质量、资产成为设备 Group 输入；不重复 Group 完整生命周期。 |
 | `group.{persistence,generations}`、`policy.{persistence,recovery}` | 原能力 PG targets 保留，验证各自持久化合同；模型真值表仍是 T1。 |
 | `planning.{assets,scope,group_scope,policy,recovery,http}` | 资产时钟与 Group/Scope 发布、引用竞争、assignment、worker 和真实 HTTP 接缝。 |

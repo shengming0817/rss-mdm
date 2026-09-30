@@ -509,9 +509,25 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
         )),
         "automation_suspended"
     );
-    assert!(!service.ingress_ready().await);
     assert!(
-        !peer_service.ingress_ready().await,
+        service
+            .ingress_health(
+                rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
+                    + Duration::from_secs(5)
+            )
+            .await
+            .unwrap()
+            .suspended
+    );
+    assert!(
+        peer_service
+            .ingress_health(
+                rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
+                    + Duration::from_secs(5)
+            )
+            .await
+            .unwrap()
+            .suspended,
         "another instance reported healthy"
     );
     // Even an instance started after the failure must retain the diagnosis.
@@ -524,7 +540,14 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
     .await
     .unwrap();
     assert!(
-        !late_service.ingress_ready().await,
+        late_service
+            .ingress_health(
+                rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
+                    + Duration::from_secs(5)
+            )
+            .await
+            .unwrap()
+            .suspended,
         "startup cleared failure before successful recovery"
     );
     rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker))
@@ -575,9 +598,25 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
     rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker))
         .await
         .unwrap();
-    assert!(restarted.ingress_ready().await);
     assert!(
-        peer_service.ingress_ready().await,
+        !restarted
+            .ingress_health(
+                rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
+                    + Duration::from_secs(5)
+            )
+            .await
+            .unwrap()
+            .suspended
+    );
+    assert!(
+        !peer_service
+            .ingress_health(
+                rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
+                    + Duration::from_secs(5)
+            )
+            .await
+            .unwrap()
+            .suspended,
         "recovered checkpoint not visible to peer"
     );
     rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(peer))

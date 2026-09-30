@@ -226,7 +226,15 @@ async fn authenticate_and_run(
                 return Error::from(error).into_response();
             }
             // Authentication has settled. Authorization I/O and the handler share the host budget.
-            tokio::time::timeout(Duration::from_secs(8), async {
+            let Some(clock) = parts.extensions.get::<Arc<dyn rss_observation::Clock>>() else {
+                return Error(rss_mdm_flow_service::Error::Unavailable(Failure::Runtime))
+                    .into_response();
+            };
+            let deadline = clock.now() + Duration::from_secs(8);
+            parts
+                .extensions
+                .insert(crate::runtime_diagnostics::RequestDeadline(deadline));
+            tokio::time::timeout_at(deadline.into(), async {
                 let proof = if authorization {
                     match proof.load_authorization(&app.access).await {
                         Ok(proof) => proof,

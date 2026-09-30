@@ -330,7 +330,7 @@ async fn run_worker(
     let readiness = Arc::new(Readiness::default());
     let mut resources = Vec::new();
     let worker = Worker::open(config, readiness.clone(), |r| resources.push(r)).await?;
-    ensure!(!readiness.ready());
+    ensure!(!readiness.health().is_ready());
     let mut scope = LifecycleScope::<(), std::io::Error, std::io::Error>::try_new(
         TotalDrainBudget::new(Duration::from_secs(40))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
@@ -345,7 +345,7 @@ async fn run_worker(
                 )
                 .execute(&mut *holder)
                 .await?;
-                while readiness.ready() {
+                while readiness.health().is_ready() {
                     tokio::time::sleep(Duration::from_millis(20)).await;
                 }
                 holder.rollback().await?;
@@ -379,7 +379,7 @@ async fn run_worker(
     }
     ensure!(matches!(outcome.exit(), ScopeExit::StopRequested(Ok(()))));
     ensure!(outcome.shutdown().is_ok());
-    ensure!(!readiness.ready());
+    ensure!(!readiness.health().is_ready());
     Ok(())
 }
 async fn wait_delivered(pool: &PgPool, readiness: &Readiness, expected: i64) -> Result<()> {
@@ -392,7 +392,7 @@ async fn wait_delivered(pool: &PgPool, readiness: &Readiness, expected: i64) -> 
         )
         .fetch_one(pool)
         .await?;
-        if count == expected && pending == 0 && readiness.ready() {
+        if count == expected && pending == 0 && readiness.health().is_ready() {
             return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -418,7 +418,7 @@ async fn fatal_worker(config: &Config, observer: &PgPool, fence: bool) -> Result
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let revoke = async {
-        while !readiness.ready() {
+        while !readiness.health().is_ready() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         let change = if fence {
@@ -453,7 +453,7 @@ async fn fatal_worker(config: &Config, observer: &PgPool, fence: bool) -> Result
     ensure!(
         matches!(outcome.exit(), ScopeExit::CriticalTaskExited(exit) if exit.name() == "identity-audit")
     );
-    ensure!(!readiness.ready());
+    ensure!(!readiness.health().is_ready());
     if fence {
         sqlx::query("UPDATE rss_transactional_messaging.tenant_epoch SET epoch=1")
             .execute(observer)
@@ -476,15 +476,15 @@ fn fenced_progress_is_terminal_even_when_other_events_succeeded() {
 fn retry_backoff_empty_polls_do_not_restore_health() {
     let readiness = Readiness::default();
     readiness.progress(0, 0);
-    assert!(readiness.healthy.load(Ordering::Acquire));
+    assert!(matches!(readiness.health().phase, AuditPhase::Healthy));
     readiness.progress(1, 1);
     readiness.transient_failure();
     for _ in 0..3 {
         readiness.progress(0, 0);
-        assert!(!readiness.healthy.load(Ordering::Acquire));
+        assert!(!matches!(readiness.health().phase, AuditPhase::Healthy));
     }
     readiness.progress(1, 0);
-    assert!(readiness.healthy.load(Ordering::Acquire));
+    assert!(matches!(readiness.health().phase, AuditPhase::Healthy));
 }
 
 #[test]
@@ -492,7 +492,7 @@ fn empty_success_recovers_claim_failure_without_a_pending_retry() {
     let readiness = Readiness::default();
     readiness.progress(0, 0);
     readiness.transient_failure();
-    assert!(!readiness.healthy.load(Ordering::Acquire));
+    assert!(!matches!(readiness.health().phase, AuditPhase::Healthy));
     readiness.progress(0, 0);
-    assert!(readiness.healthy.load(Ordering::Acquire));
+    assert!(matches!(readiness.health().phase, AuditPhase::Healthy));
 }

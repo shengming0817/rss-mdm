@@ -228,7 +228,7 @@ pub(crate) async fn start(
 pub(crate) async fn wait_ready_projection(runtime: &InventoryRuntime, run: &Run) -> Result<()> {
     tokio::time::timeout(Duration::from_secs(8), async {
         loop {
-            if (!crate::test_support::case::owns_worker() || runtime.readiness.ready())
+            if (!crate::test_support::case::owns_worker() || runtime.readiness.health().is_ready())
                 && runtime.inspect(run).await?.projection
                     == crate::inventory_runtime::ProjectionStatus::Projected
             {

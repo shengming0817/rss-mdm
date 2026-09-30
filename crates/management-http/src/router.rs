@@ -11,6 +11,7 @@ use rss_mdm_registration_service::device::coordinates::Coordinates;
 use serde::Deserialize;
 use std::sync::Arc;
 pub struct Services {
+    pub diagnostics: Arc<dyn crate::runtime_diagnostics::Source>,
     pub identity: Arc<crate::identity::Identity>,
     pub authorization: Arc<rss_mdm_authorization_service::Store>,
     pub identity_management:
@@ -93,6 +94,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
             crate::authorization::http::protect,
         ));
     let protected_v2 = Router::new()
+        .merge(crate::runtime_diagnostics::routes().with_state(state.diagnostics))
         .merge(crate::execution::routes().with_state(execution.clone()))
         .merge(crate::planning::routes_v2().with_state(planning.clone()))
         .merge(crate::planning::policies::http::routes().with_state(policies.clone()))

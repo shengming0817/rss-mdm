@@ -46,6 +46,7 @@ pub(crate) fn failure(error: AuthorityError) -> Error {
     }
 }
 pub(crate) struct Identity {
+    pub(crate) instance: InstanceId,
     pub(crate) authority: Authority,
     pub(crate) tenant: TenantId,
     pub(crate) audit_readiness: Arc<crate::identity_audit::Readiness>,
@@ -126,6 +127,7 @@ impl Identity {
             );
         }
         Ok(Self {
+            instance,
             authority,
             tenant,
             audit_readiness: Arc::default(),

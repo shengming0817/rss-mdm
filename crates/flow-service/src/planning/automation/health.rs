@@ -1,12 +1,47 @@
 use super::*;
 impl Planning {
-    pub async fn ingress_ready(&self) -> bool {
-        self.runtime.local_tx(self.tenant,deadline(),|tx|Box::pin(async move {
-            let tenant=tx.tenant_id().to_string();
-            tx.with_connection(move |c|Box::pin(async move {
-                sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM mdm_planning.asset_dispatch WHERE tenant_id=$1::uuid AND failure IS NOT NULL)").bind(tenant).fetch_one(c).await
+    /// Read the actual product ingress checkpoint; storage failure is not a paused ingress.
+    pub async fn ingress_health(
+        &self,
+        cutoff: std::time::Instant,
+    ) -> std::result::Result<IngressHealth, HealthFailure> {
+        self.runtime.local_tx(self.tenant, health_deadline(cutoff), |tx| Box::pin(async move {
+            let tenant = tx.tenant_id().to_string();
+            tx.with_connection(move |c| Box::pin(async move {
+                use sqlx::Row;
+                let row = sqlx::query("SELECT consumed,watermark,failure FROM mdm_planning.asset_dispatch WHERE tenant_id=$1::uuid")
+                    .bind(tenant).fetch_optional(c).await?;
+                row.map_or(Ok(IngressHealth { consumed: 0, watermark: 0, suspended: false }), |r| {
+                    Ok(IngressHealth { consumed: r.try_get::<i64,_>("consumed")? as u64,
+                        watermark: r.try_get::<i64,_>("watermark")? as u64,
+                        suspended: r.try_get::<Option<String>,_>("failure")?.is_some() })
+                })
             })).await
-        })).await.fold(|ready|ready, |_|false, |_|false, |_|false, |_|false, |_|false)
+        })).await.fold(Ok, |_| Err(HealthFailure::Storage), |_| Err(HealthFailure::Storage),
+            |_| Err(HealthFailure::SettlementUnknown), |_| Err(HealthFailure::SettlementUnknown),
+            |_| Err(HealthFailure::Deadline))
+    }
+    /// Counts describe retained product job states, not managed task health or device effects.
+    pub async fn queue_health(
+        &self,
+        cutoff: std::time::Instant,
+    ) -> std::result::Result<[u64; 6], HealthFailure> {
+        self.runtime.local_tx(self.tenant, health_deadline(cutoff), |tx| Box::pin(async move {
+            let tenant = tx.tenant_id().to_string();
+            tx.with_connection(move |c| Box::pin(async move {
+                let row: (i64,i64,i64,i64,i64,i64) = sqlx::query_as(
+                    "SELECT (SELECT count(*) FROM (SELECT 1 FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND failure IS NULL AND NOT completed AND NOT forwarded LIMIT 1001) q),
+                     (SELECT count(*) FROM (SELECT 1 FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND failure IS NULL AND NOT completed AND forwarded LIMIT 1001) q),
+                     (SELECT count(*) FROM (SELECT 1 FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND failure IS NULL AND completed LIMIT 1001) q),
+                     (SELECT count(*) FROM (SELECT 1 FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND failure IS NOT NULL AND failure<>'superseded' LIMIT 1001) q),
+                     (SELECT count(*) FROM (SELECT 1 FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND failure='superseded' LIMIT 1001) q),
+                     (SELECT count(*) FROM (SELECT 1 FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT forwarded LIMIT 1001) q)")
+                    .bind(tenant).fetch_one(c).await?;
+                Ok([row.0 as u64,row.1 as u64,row.2 as u64,row.3 as u64,row.4 as u64,row.5 as u64])
+            })).await
+        })).await.fold(Ok, |_| Err(HealthFailure::Storage), |_| Err(HealthFailure::Storage),
+            |_| Err(HealthFailure::SettlementUnknown), |_| Err(HealthFailure::SettlementUnknown),
+            |_| Err(HealthFailure::Deadline))
     }
     pub async fn clear_ingress_failure_in(&self, tx: &mut PgTransaction<'_>) -> Result<()> {
         let tenant = self.tenant.to_string();
@@ -50,4 +85,42 @@ impl Planning {
         }
         Ok(())
     }
+}
+
+/// Current durable input checkpoint; an absent row means no ingress has been dispatched yet.
+#[derive(Clone, Copy, Debug)]
+pub struct IngressHealth {
+    pub consumed: u64,
+    pub watermark: u64,
+    pub suspended: bool,
+}
+#[derive(Clone, Copy, Debug, thiserror::Error)]
+pub enum HealthFailure {
+    #[error("storage unavailable")]
+    Storage,
+    #[error("deadline")]
+    Deadline,
+    #[error("settlement unknown")]
+    SettlementUnknown,
+}
+#[derive(Clone, Copy, Debug)]
+pub enum BridgeOutcome {
+    Succeeded,
+    StorageUnavailable,
+    Deadline,
+    SettlementUnknown,
+    Rejected,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct BridgeObservation {
+    pub outcome: BridgeOutcome,
+    pub observed_at: Option<i64>,
+}
+#[allow(clippy::disallowed_methods, reason = "monotonic read budget boundary")]
+fn health_deadline(
+    cutoff: std::time::Instant,
+) -> rss_transactional_messaging::policy::OperationDeadline {
+    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+        cutoff.saturating_duration_since(std::time::Instant::now()),
+    )
 }

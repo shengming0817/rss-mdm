@@ -66,6 +66,13 @@ impl Automation {
                 loop {
                     if cancel.is_cancelled() {return Ok(());}
                     let result=async {let assets=self.service.forward_asset_changes().await?;let jobs=jobs::forward_jobs(&self.service.runtime,self.service.tenant,&self.service.audit_store).await?;Ok::<_,Error>(assets+jobs as u64)}.await;
+                    *self.service.bridge_observation.lock().expect("bridge observation") = Some(crate::planning::automation::BridgeObservation { outcome: match &result {
+                        Ok(_) => crate::planning::automation::BridgeOutcome::Succeeded,
+                        Err(Error::CommitUnknown | Error::RollbackFailed) => crate::planning::automation::BridgeOutcome::SettlementUnknown,
+                        Err(Error::Unavailable(Failure::RequestDeadline)) => crate::planning::automation::BridgeOutcome::Deadline,
+                        Err(Error::Unavailable(_)) => crate::planning::automation::BridgeOutcome::StorageUnavailable,
+                        Err(_) => crate::planning::automation::BridgeOutcome::Rejected,
+                    }, observed_at: self.service.clock.unix_seconds().ok() });
                     match result {
                         Ok(count) if count > 0 => continue,
                         Ok(_) => crate::worker_wake::wait(signals.automation_input(), &cancel, None).await,
