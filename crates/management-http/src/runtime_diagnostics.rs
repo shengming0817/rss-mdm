@@ -31,6 +31,8 @@ pub struct Snapshot {
 pub struct Component {
     pub name: ComponentName,
     pub readiness: Readiness,
+    /// Current diagnostic observation, independent of the public readiness predicate.
+    pub health: Health,
     pub reasons: Vec<Reason>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task: Option<Task>,
@@ -59,6 +61,14 @@ pub enum ComponentName {
 pub enum Readiness {
     Ready,
     NotReady,
+    NotApplicable,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Health {
+    Healthy,
+    Degraded,
+    Unknown,
     NotApplicable,
 }
 #[derive(Clone, Copy, Serialize)]

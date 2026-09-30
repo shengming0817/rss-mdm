@@ -41,7 +41,7 @@ tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }
 
 [features]
 test-support = []
-integration = ["test-support", "rss-observation-postgres/integration"]
+integration = ["test-support", "rss-observation-postgres/integration", "rss-projection-postgres/integration"]
 
 [lints]
 workspace = true

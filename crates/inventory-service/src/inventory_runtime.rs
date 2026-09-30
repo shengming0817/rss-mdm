@@ -489,14 +489,18 @@ impl InventoryRuntime {
                 RunLimit::new(BatchLimit::new(64).expect("bounded batch"), 64)
                     .expect("bounded pass"),
             );
-            *self
-                .latest_projection
-                .lock()
-                .expect("projection observation") = Some(diagnostics::ProjectionObservation {
-                run: run.observation(),
-                started_at: self.clock.now.now(),
-                finished_at: None,
-            });
+            {
+                let mut latest = self
+                    .latest_projection
+                    .lock()
+                    .expect("projection observation");
+                let last_completed_at = latest.as_ref().and_then(|p| p.last_completed_at);
+                *latest = Some(diagnostics::ProjectionObservation {
+                    run: run.observation(),
+                    started_at: self.clock.now.now(),
+                    last_completed_at,
+                });
+            }
             let report = run.await;
             if let Some(observation) = self
                 .latest_projection
@@ -504,7 +508,7 @@ impl InventoryRuntime {
                 .expect("projection observation")
                 .as_mut()
             {
-                observation.finished_at = Some(self.clock.now.now());
+                observation.last_completed_at = Some(self.clock.now.now());
             }
             let report = report
                 .into_result()
@@ -691,5 +695,9 @@ impl InventoryRuntime {
             .expect("fixture worker")
             .wait_stopped()
             .await
+    }
+    #[cfg(feature = "integration")]
+    pub fn fixture_projection_fault(&self, fault: rss_projection_postgres::PgFault) {
+        self.projection.inject_next_fault(fault);
     }
 }

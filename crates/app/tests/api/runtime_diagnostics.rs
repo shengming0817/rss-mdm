@@ -16,7 +16,7 @@ async fn runtime_diagnostics_requires_explicit_permission() -> Result<()> {
     );
     let mut member = fixture.browser("other")?;
     let subject = browser_subject(&member, &router).await?;
-    set_management_grants(&subject, json!([])).await?;
+    set_management_grants(&subject, json!(["authorization_read"])).await?;
     ensure!(member.call(&router, Method::GET, PATH, None).await?.0 == StatusCode::FORBIDDEN);
     set_management_grants(&subject, json!(["runtime_diagnostics_read"])).await?;
     let (status, value) = member.call(&router, Method::GET, PATH, None).await?;
@@ -122,6 +122,7 @@ async fn dependency_failure_preserves_partial_results_and_authority() -> Result<
     ensure!(status == StatusCode::OK);
     let automation = component(&value, "automation");
     ensure!(automation["dependencies"][0]["state"] == "unavailable");
+    ensure!(automation["health"] == "degraded");
     ensure!(
         automation["queues"]
             .as_array()
@@ -207,6 +208,7 @@ async fn durable_backlog_is_distinct_from_storage_failure_and_is_bounded() -> Re
 }
 
 #[tokio::test]
+#[cfg(feature = "integration")]
 #[ignore = "make t2 MODULE=diagnostics.http: actual workers, durable report, projection and stop"]
 async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Result<()> {
     use crate::device::{
@@ -303,6 +305,23 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
                 && inventory["progress"]["confirmedPosition"].is_number()
         );
         ensure!(inventory["queues"][0]["count"] == 0 && inventory["progress"]["lagging"] == false);
+        ensure!(component(&projected,"automation")["lastRun"]["successful"] == true);
+        pg(&format!("INSERT INTO mdm_planning.asset_dispatch(tenant_id,failure) VALUES('{}','automation_suspended') ON CONFLICT(tenant_id) DO UPDATE SET failure=excluded.failure",case_tenant()))?;
+        let suspended = component(&fixture.query().await?,"automation");
+        ensure!(suspended["task"] == "running" && suspended["lastRun"]["successful"] == true);
+        ensure!(suspended["readiness"] == "not_ready" && suspended["health"] == "degraded");
+        ensure!(suspended["reasons"].as_array().unwrap().contains(&json!("automation_suspended")));
+        pg(&format!("UPDATE mdm_planning.asset_dispatch SET failure=NULL WHERE tenant_id='{}'",case_tenant()))?;
+        let expired = serde_json::to_value(
+            fixture
+                .source
+                .collect(monotonic().now() - Duration::from_secs(1), true)
+                .await,
+        )?;
+        let expired_inventory = component(&expired, "inventory");
+        ensure!(
+            expired_inventory["readiness"] == "ready" && expired_inventory["health"] == "degraded"
+        );
         let response = Router::new()
             .route(
                 "/readyz",
@@ -314,19 +333,39 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
         ensure!(response.status() == StatusCode::OK);
         let body = axum::body::to_bytes(response.into_body(), 1024).await?;
         ensure!(serde_json::from_slice::<Value>(&body)?["ready"] == projected["ready"]);
+        fixture
+            .source
+            .inventory
+            .fixture_projection_fault(rss_projection_postgres::PgFault::CommitPending);
+        wake.notify_one();
+        let pending = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let inventory = component(&fixture.query().await?, "inventory");
+                if inventory["progress"]["state"] == "pending" {
+                    break Ok::<_, anyhow::Error>(inventory);
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await??;
+        ensure!(
+            pending["progress"]["completedPassAgeMs"].is_number(),
+            "new invocation discarded last completed pass"
+        );
+        ensure!(pending["health"] == "unknown" && pending["readiness"] == "ready");
         fixture.source.inventory.readiness.stop();
         ensure!(fixture.query().await?["ready"] == false);
-        fixture.source.inventory.close_fixture().await?;
-        wake.notify_one();
         let exit = tokio::time::timeout(
             Duration::from_secs(10),
             fixture.source.inventory.fixture_wait_stopped(),
         )
         .await?;
         ensure!(matches!(exit, rss_runtime::TaskExit::Failed(_)));
+        fixture.source.inventory.close_fixture().await?;
         let failed = component(&fixture.query().await?, "inventory");
         ensure!(failed["task"] == "failed" && failed["readiness"] == "not_ready");
         ensure!(failed["dependencies"][1]["state"] == "unavailable");
+        ensure!(failed["health"] == "degraded");
         Ok::<_, anyhow::Error>(())
     }
     .await;

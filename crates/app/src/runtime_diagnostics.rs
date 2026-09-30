@@ -45,6 +45,9 @@ impl RuntimeDiagnostics {
             status == Some(rss_runtime::TaskState::Running),
         );
         automation.task = Some(task(status));
+        if matches!(status, None | Some(rss_runtime::TaskState::Pending)) {
+            automation.health = Health::Unknown;
+        }
         if status != Some(rss_runtime::TaskState::Running) {
             automation.reasons.push(Reason::WorkerNotRunning);
         }
@@ -53,6 +56,7 @@ impl RuntimeDiagnostics {
             Ok(state) => {
                 if state.suspended {
                     automation.readiness = Readiness::NotReady;
+                    automation.health = Health::Degraded;
                     automation.reasons.push(Reason::AutomationSuspended);
                 }
                 automation.dispatch = Some(Dispatch {
@@ -65,6 +69,7 @@ impl RuntimeDiagnostics {
             }
             Err(failure) => {
                 automation.readiness = Readiness::NotReady;
+                automation.health = Health::Degraded;
                 automation.reasons.push(flow_failure(failure));
                 automation.dependencies.push(dependency(
                     DependencyName::FlowStorage,
@@ -77,6 +82,7 @@ impl RuntimeDiagnostics {
         }
         let mut execution = component(ComponentName::ExecutionRecovery, false);
         execution.readiness = Readiness::NotApplicable;
+        execution.health = Health::Unknown;
         execution.task = Some(Task::Unknown);
         execution.reasons.push(Reason::Unobserved);
         let components = vec![inventory, audit, apple, automation, execution];
@@ -113,11 +119,29 @@ impl RuntimeDiagnostics {
             QueueName::DeliveryPending,
             observations.delivery.ok(),
         ));
+        if inventory
+            .dependencies
+            .iter()
+            .any(|d| matches!(d.state, DependencyState::Unavailable))
+        {
+            inventory.health = Health::Degraded;
+        }
         inventory.progress = Some(projection(observations));
         if let Some(progress) = &inventory.progress {
             match progress.state {
-                ProgressState::Failed => inventory.reasons.push(Reason::ProjectionFailed),
-                ProgressState::Unavailable => inventory.reasons.push(Reason::Unobserved),
+                ProgressState::Failed => {
+                    inventory.health = Health::Degraded;
+                    inventory.reasons.push(Reason::ProjectionFailed);
+                }
+                ProgressState::Unavailable => {
+                    inventory.health = Health::Degraded;
+                    inventory.reasons.push(Reason::Unobserved);
+                }
+                ProgressState::Unobserved | ProgressState::Pending
+                    if inventory.health == Health::Healthy =>
+                {
+                    inventory.health = Health::Unknown
+                }
                 _ => (),
             }
         }
@@ -135,6 +159,7 @@ impl RuntimeDiagnostics {
         .map(|(i, name)| queue(name, values.map(|v| v[i])))
         .collect();
         if let Err(failure) = queues {
+            automation.health = Health::Degraded;
             automation.dependencies.clear();
             automation.dependencies.push(dependency(
                 DependencyName::FlowStorage,
@@ -154,11 +179,25 @@ impl RuntimeDiagnostics {
                 reason: bridge_failure(o.outcome),
                 observed_at: o.observed_at,
             });
+        if automation.last_run.as_ref().is_some_and(|r| !r.successful) {
+            automation.health = Health::Degraded;
+        }
     }
     fn inventory_health(&self) -> Component {
         let inventory_health = self.inventory.readiness.health();
         let mut inventory = component(ComponentName::Inventory, inventory_health.is_ready());
         inventory.task = Some(task(inventory_health.task));
+        if !inventory_health.initialized
+            && inventory_health.task == Some(rss_runtime::TaskState::Running)
+        {
+            inventory.health = Health::Unknown;
+        }
+        if matches!(
+            inventory_health.task,
+            None | Some(rss_runtime::TaskState::Pending)
+        ) {
+            inventory.health = Health::Unknown;
+        }
         if !inventory_health.initialized
             && !matches!(
                 inventory_health.task,
@@ -185,7 +224,10 @@ impl RuntimeDiagnostics {
         use crate::identity_audit::AuditPhase;
         match audit_health.phase {
             AuditPhase::Healthy => (),
-            AuditPhase::Initializing => audit.reasons.push(Reason::Initializing),
+            AuditPhase::Initializing => {
+                audit.health = Health::Unknown;
+                audit.reasons.push(Reason::Initializing);
+            }
             AuditPhase::Retrying => audit.reasons.push(Reason::DeliveryRetrying),
             AuditPhase::DependencyUnavailable => audit.reasons.push(Reason::DependencyUnavailable),
             AuditPhase::Stopped => {
@@ -205,6 +247,7 @@ impl RuntimeDiagnostics {
         let Some(apple) = &self.apple else {
             let mut result = component(ComponentName::Apple, false);
             result.readiness = Readiness::NotApplicable;
+            result.health = Health::NotApplicable;
             return result;
         };
         match self.clock.unix_seconds() {
@@ -236,6 +279,11 @@ fn component(name: ComponentName, ready: bool) -> Component {
             Readiness::NotReady
         },
         reasons: Vec::new(),
+        health: if ready {
+            Health::Healthy
+        } else {
+            Health::Degraded
+        },
         task: None,
         dependencies: Vec::new(),
         queues: Vec::new(),

@@ -17,7 +17,7 @@ impl Health {
 pub(super) struct ProjectionObservation {
     pub run: RunObservation,
     pub started_at: Instant,
-    pub finished_at: Option<Instant>,
+    pub last_completed_at: Option<Instant>,
 }
 #[derive(Clone, Copy, Debug)]
 pub enum ProbeFailure {
@@ -55,7 +55,9 @@ impl InventoryRuntime {
             head_age_ms: head.ok().map(|(_, at)| age_ms(now, at)),
             projection: local.as_ref().map(|p| p.run.read()),
             invocation_age_ms: local.as_ref().map(|p| age_ms(now, p.started_at)),
-            completed_age_ms: local.and_then(|p| p.finished_at).map(|at| age_ms(now, at)),
+            completed_age_ms: local
+                .and_then(|p| p.last_completed_at)
+                .map(|at| age_ms(now, at)),
         }
     }
     async fn source_head(&self, cutoff: Instant) -> Result<(Option<u64>, Instant), ProbeFailure> {

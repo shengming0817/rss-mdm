@@ -53,6 +53,7 @@ OWNERS = {'agent_content':'crates/flow-service/src/execution/agent_install.rs','
  'management_read': 'crates/content-service/src/service.rs',
  'management_write': 'crates/content-service/src/service.rs',
  'protected_request': 'crates/app/src/native/mod.rs',
+ 'runtime_diagnostics_read': 'crates/management-http/src/runtime_diagnostics.rs',
  'registration_bind': 'crates/registration-service/src/device.rs',
  'registration_read': 'crates/management-http/src/boundary.rs',
  'software_approve': 'crates/software-service/src/publication/service.rs',
@@ -69,6 +70,8 @@ OWNERS = {'agent_content':'crates/flow-service/src/execution/agent_install.rs','
  'windows_policy': 'crates/windows-channel/src/boundary.rs'}
 
 DECLARATIONS = {
+ ('runtime_diagnostics_read','crates/management-http/src/runtime_diagnostics.rs'),
+ ('runtime_diagnostics_read','crates/management-http/src/boundary.rs'),
  ('agent_registration','crates/windows-channel/src/boundary.rs'),
  ('agent_registration','crates/apple-channel/src/boundary.rs'),
  ('agent_registration','crates/flow-service/src/execution/managed_registration.rs'),
