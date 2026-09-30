@@ -8,6 +8,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use serde_json::Value;
 type BodyInput<T> = std::result::Result<Json<T>, axum::extract::rejection::JsonRejection>;
 fn body<T>(value: BodyInput<T>) -> std::result::Result<T, Error> {
     value
@@ -16,6 +17,8 @@ fn body<T>(value: BodyInput<T>) -> std::result::Result<T, Error> {
 }
 pub fn routes_v2() -> Router<Arc<HttpState>> {
     Router::new()
+        .route("/groups", get(group_directory))
+        .route("/scopes", get(scope_directory))
         .route("/groups/{id}", get(group_read).post(group_write))
         .route("/groups/{id}/previews", post(group_preview))
         .route("/groups/{group}/results/{result}/{kind}", get(group_page))
@@ -107,6 +110,37 @@ macro_rules! read {
             .await
         }
     };
+}
+
+async fn group_directory(
+    State(s): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    query: Result<
+        Query<rss_mdm_inventory_service::groups::directory::DirectoryQuery>,
+        axum::extract::rejection::QueryRejection,
+    >,
+) -> Result<Json<Value>, Error> {
+    audit.set_action("management_read");
+    let Query(q) = query.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
+    Ok(Json(
+        s.planning.group_directory(&auth.proof, &q, &audit).await?,
+    ))
+}
+async fn scope_directory(
+    State(s): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    query: Result<
+        Query<rss_mdm_flow_service::planning::directory::ScopeQuery>,
+        axum::extract::rejection::QueryRejection,
+    >,
+) -> Result<Json<Value>, Error> {
+    audit.set_action("management_read");
+    let Query(q) = query.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
+    Ok(Json(
+        s.planning.scope_directory(&auth.proof, &q, &audit).await?,
+    ))
 }
 read!(group_read, Uuid, GroupRead, GroupRead);
 read!(scope_read, Uuid, ScopeRead, ScopeRead);

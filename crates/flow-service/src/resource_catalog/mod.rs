@@ -8,6 +8,7 @@ use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use serde_json::Value;
 use std::sync::Arc;
+pub mod directory;
 pub mod wire;
 
 use rss_mdm_resource as r;

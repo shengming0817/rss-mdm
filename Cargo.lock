@@ -3141,6 +3141,7 @@ dependencies = [
 name = "rss-mdm-resource-postgres"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "rss-contract",
  "rss-mdm-backend-postgres-support",
  "rss-mdm-resource",

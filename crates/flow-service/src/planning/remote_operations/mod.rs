@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use sqlx::Row;
 use uuid::Uuid;
 
+pub mod directory;
 pub mod storage;
 /// Explicit one-shot targets, distinct from a persistent Policy's Scope reference.
 #[derive(Clone, Deserialize, Serialize)]

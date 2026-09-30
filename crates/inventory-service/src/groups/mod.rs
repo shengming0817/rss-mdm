@@ -81,6 +81,7 @@ async fn require_device(tx: &mut PgTransaction<'_>, id: &str) -> Result<()> {
     Ok(())
 }
 
+pub mod directory;
 mod receipts;
 mod service;
 pub use service::Command;

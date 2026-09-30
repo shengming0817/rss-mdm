@@ -309,14 +309,16 @@ class Environment:
         nginx=(ROOT/'deployment/nginx.conf').read_text().replace('listen 443 ssl;',f'listen {8445 if mode=="container" else https_port} ssl;')
         nginx=nginx.replace('server 127.0.0.1:8081;',f'server 127.0.0.1:{backend_port};').replace('server_name mdm.example.test;','server_name localhost;').replace('proxy_set_header Host mdm.example.test;','proxy_set_header Host $http_host;')
         prefix='/certs' if mode=='container' else str(gateway)
-        nginx=nginx.replace('/private/mdm-tls.crt',prefix+'/server.crt').replace('/private/mdm-tls.key',prefix+'/server.key').replace('/run/config/ui.json',prefix+'/ui.json')
+        nginx=nginx.replace('/private/mdm-tls.crt',prefix+'/server.crt').replace('/private/mdm-tls.key',prefix+'/server.key').replace('/run/config/ui.json',prefix+'/ui.json').replace('/run/config/mdm.json',prefix+'/mdm.json')
         if mode=='host':
             nginx=nginx.replace('/tmp/mdm-',str(gateway)+'/mdm-')
             mime=os.environ.get('MDM_NGINX_MIME_TYPES','/opt/homebrew/etc/nginx/mime.types' if sys.platform=='darwin' else '/etc/nginx/mime.types')
             nginx=nginx.replace('/etc/nginx/mime.types',mime)
             nginx=nginx.replace('/usr/share/nginx/html',os.environ.get('MDM_WEB_ROOT',str(gateway/'html')))
         private(gateway/'nginx.conf',nginx)
-        private(gateway/'ui.json',{'canonicalOrigin':origin,'oidcEnabled':False})
+        from candidate_runtime import public_host_inputs
+        for name, value in public_host_inputs(config).items():
+            private(gateway/name, value)
         if mode=='container':self.compose('--profile','product','run','--rm','inputs')
         else:
             result=run(['cargo','build','--locked','-p','rss-mdm-app','--bin','rss-mdm','--message-format=json'],cwd=ROOT,capture_output=True)

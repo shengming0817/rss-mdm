@@ -110,6 +110,15 @@ impl Snapshot {
         &self,
         proof: &AuthorizedPrincipal,
     ) -> Result<Option<std::collections::BTreeSet<String>>, AuthorizationError> {
+        self.devices_for(proof, Permission::InventoryRead)
+    }
+    /// Project the current device grants for an existing device-scoped operation.
+    /// `None` means all devices; an absent grant remains a denial, never an empty authority.
+    pub fn devices_for(
+        &self,
+        proof: &AuthorizedPrincipal,
+        permission: Permission,
+    ) -> Result<Option<std::collections::BTreeSet<String>>, AuthorizationError> {
         proof
             .check_live()
             .map_err(|_| AuthorizationError::Unauthorized)?;
@@ -121,7 +130,7 @@ impl Snapshot {
                 continue;
             }
             for grant in &rule.grants {
-                if grant.operation != Permission::InventoryRead {
+                if grant.operation != permission {
                     continue;
                 }
                 match &grant.scope {

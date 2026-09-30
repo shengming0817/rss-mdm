@@ -4,6 +4,7 @@ pub mod automation;
 
 pub mod configuration;
 
+pub mod directory;
 pub mod model;
 pub mod pages;
 pub mod policies;

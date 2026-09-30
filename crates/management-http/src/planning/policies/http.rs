@@ -6,11 +6,7 @@ use axum::{
     routing::{get, post},
 };
 use std::sync::Arc;
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Page {
-    after: Option<Uuid>,
-}
+type Page = rss_mdm_flow_service::planning::policies::read::DirectoryQuery;
 pub fn routes() -> Router<Arc<Policies>> {
     Router::new()
         .route("/policies/previews", post(super::http_preview::preview))
@@ -53,9 +49,10 @@ async fn list(
     State(service): State<Arc<Policies>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Query(page): Query<Page>,
+    page: Result<Query<Page>, axum::extract::rejection::QueryRejection>,
 ) -> std::result::Result<Json<Value>, Error> {
-    super::read::list(&service, &auth.proof, &audit, page.after)
+    let Query(page) = page.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
+    super::read::list(&service, &auth.proof, &audit, &page)
         .await
         .map(Json)
         .map_err(Error::from)

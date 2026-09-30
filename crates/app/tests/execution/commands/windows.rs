@@ -88,6 +88,127 @@ async fn native_status_results_reobservation_and_generation_fences() -> anyhow::
     host.close().await?;
     Ok(())
 }
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.commands.windows"]
+async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()> {
+    use crate::test_support::{agent_execution as agent, identity};
+    let mut fixture = agent::Fixture::new().await?;
+    fixture.register().await?;
+    let (resource, _, _) = fixture.resource().await?;
+    fixture
+        .scope(
+            agent::case_task_scope(),
+            json!([{"kind":"device","id":agent::case_device_id()}]),
+        )
+        .await?;
+    let worker = agent::worker(&fixture.base).await?;
+    agent::publish(&mut fixture.author, &fixture.router, resource).await?;
+    let task = agent::claim(&fixture.router).await?;
+    agent::complete(&fixture.router, &task).await?;
+    let id = Uuid::parse_str(task["payload"]["taskId"].as_str().unwrap())?;
+    crate::test_support::stop_worker(worker).await?;
+    let mut host = crate::windows::test_support::Host::open().await?;
+    host.listen().await?;
+    let _peer = host.peer().await?;
+    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    // IDs belong to their original owners; equal IDs must not lose either kind.
+    client.operation = id;
+    client.accept_approved().await?;
+    client.publish_operation(id).await?;
+    let mut grants = fixture.grants.clone();
+    grants.extend(identity::device_grants(None, &["operation_read"])?);
+    identity::set_grants(case_tenant(), &fixture.author_id, grants).await?;
+    for descending in [false, true] {
+        let mut path = format!("/api/v2/operations?limit=1&descending={descending}");
+        let mut kinds = Vec::new();
+        loop {
+            let (status, page) = fixture
+                .author
+                .call(&fixture.router, Method::GET, &path, None)
+                .await?;
+            ensure!(status == StatusCode::OK, "mixed directory: {status} {page}");
+            ensure!(
+                page["statistics"]["total"] == 2
+                    && page["statistics"]["commands"] == 1
+                    && page["statistics"]["actionRuns"] == 1,
+                "mixed statistics: {page}"
+            );
+            let item = &page["items"][0];
+            ensure!(item["id"] == id.to_string(), "mixed ID: {item}");
+            let kind = item["kind"].as_str().unwrap();
+            kinds.push(kind.to_owned());
+            if kind == "command" {
+                ensure!(
+                    item["evidence"]["commandStatus"] == "published"
+                        && item["evidence"]["observation"]["result"] == "unknown",
+                    "receipt became effect: {item}"
+                );
+                ensure!(item["evidence"]["observation"].get("value").is_none());
+                ensure!(
+                    item["detailUrl"]
+                        == format!("/api/v2/devices/{}/operations/{id}", case_device())
+                );
+            } else {
+                ensure!(item["evidence"]["result"].get("output").is_none());
+                ensure!(
+                    item["evidence"]["result"]["diagnostics"]
+                        .get("stdout")
+                        .is_none()
+                );
+            }
+            let Some(cursor) = page["nextCursor"].as_object() else {
+                break;
+            };
+            path = format!(
+                "/api/v2/operations?limit=1&descending={descending}&after={}&afterKind={}",
+                cursor["id"].as_str().unwrap(),
+                cursor["kind"].as_str().unwrap()
+            );
+            ensure!(kinds.len() <= 2, "cursor repeated: {kinds:?}");
+        }
+        let expected = if descending {
+            vec!["command", "action_run"]
+        } else {
+            vec!["action_run", "command"]
+        };
+        ensure!(kinds == expected, "mixed cursor lost an owner: {kinds:?}");
+    }
+    identity::set_grants(case_tenant(), &fixture.author_id, fixture.grants.clone()).await?;
+    let (status, page) = fixture
+        .author
+        .call(
+            &fixture.router,
+            Method::GET,
+            "/api/v2/operations?limit=1",
+            None,
+        )
+        .await?;
+    ensure!(
+        status == StatusCode::OK
+            && page["statistics"]["total"] == 1
+            && page["statistics"]["commands"] == 0
+            && page["items"][0]["kind"] == "action_run"
+            && page["nextCursor"].is_null(),
+        "hidden command affected count or cursor: {page}"
+    );
+    let hidden = fixture
+        .author
+        .call(
+            &fixture.router,
+            Method::GET,
+            &format!("/api/v2/operations?device={}", case_device()),
+            None,
+        )
+        .await?;
+    ensure!(
+        hidden.0 == StatusCode::OK
+            && hidden.1["statistics"]["total"] == 0
+            && hidden.1["items"] == json!([])
+    );
+    host.close().await?;
+    Ok(())
+}
+
 impl Client {
     pub(crate) async fn received(&mut self) -> anyhow::Result<()> {
         let read = self
@@ -110,6 +231,28 @@ impl Client {
                 && read.1["observation"]["result"] == "mismatched",
             "mismatch lost {:?}",
             read
+        );
+        let directory = self
+            .browser
+            .call(
+                &self.router,
+                Method::GET,
+                &format!(
+                    "/api/v2/operations?kind=command&device={}&status=received",
+                    case_device()
+                ),
+                None,
+            )
+            .await?;
+        ensure!(
+            directory.0 == StatusCode::OK && directory.1["statistics"]["total"] == 1,
+            "command directory: {directory:?}"
+        );
+        let item = &directory.1["items"][0];
+        ensure!(
+            item["evidence"]["observation"]["result"] == "mismatched"
+                && item["evidence"]["observation"].get("value").is_none(),
+            "command directory lost outcome or exposed raw value: {item}"
         );
         self.set_authorized(false).await?;
         Ok(())
