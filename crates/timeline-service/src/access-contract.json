@@ -22,7 +22,6 @@
   "functions": [],
   "external_relations": [
     "mdm_commands.action_runs",
-    "mdm_planning.remote_operation_targets",
     "mdm_assets.operations",
     "mdm_commands.requests"
   ],

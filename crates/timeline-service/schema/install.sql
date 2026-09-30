@@ -27,5 +27,5 @@ GRANT USAGE ON SCHEMA mdm_timeline,mdm_planning,mdm_assets TO mdm_access;
 GRANT SELECT,INSERT ON mdm_timeline.checkpoints,mdm_timeline.facts TO mdm_access;
 GRANT UPDATE(position,source_through,healthy) ON mdm_timeline.checkpoints TO mdm_access;
 -- Read-only correlation belongs to Flow and remains tenant-filtered by RLS.
-GRANT SELECT ON mdm_commands.action_runs,mdm_planning.remote_operation_targets,mdm_assets.operations,mdm_commands.requests TO mdm_access;
+GRANT SELECT ON mdm_commands.action_runs,mdm_assets.operations,mdm_commands.requests TO mdm_access;
 COMMIT;

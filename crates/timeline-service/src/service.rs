@@ -124,13 +124,21 @@ impl Timeline {
                 let decoded=rss_audit_core::decode_untrusted(record.prepared().canonical_bytes()).map_err(|_|Error::Integrity)?;
                 let mut view=project(decoded.event())?;
                 view.position=record.position();view.recorded_at=decoded.recorded_at().unix_seconds();
+                let identity=crate::projection::execution_identity(decoded.event(),&view)?;
                 let tenant=service.tenant.to_string();
-                let mut context=(tenant,view);
-                let devices=tx.with_connection_context(&mut context,|(tenant,view),c|Box::pin(async move{
-                    if view.supported&&let Some(op)=view.operation_id&&matches!(view.action.as_str(),"command_cancel"|"command_approve"|"command_dispatch"|"command_reconcile"){
-                        view.related_operation_ids=rss_mdm_flow_service::execution::timeline::related_operations_in(c,tenant,&view.actor,op).await?;
+                let mut context=(tenant,view,identity);
+                let devices=tx.with_connection_context(&mut context,|(tenant,view,identity),c|Box::pin(async move{
+                    let association=match identity {
+                        Some(identity)=>rss_mdm_flow_service::execution::timeline::association_in(c,tenant,&view.actor,*identity).await?,
+                        None=>None,
+                    };
+                    if let Some((_,Some(operation)))=&association {view.related_operation_ids.push(*operation);}
+                    let mut devices=correlate(c,tenant,view).await?;
+                    if let Some((device,_))=association {
+                        if !crate::model::identifier(&device) {return Err(Error::Integrity)}
+                        if !devices.contains(&device) {devices.push(device);}
                     }
-                    correlate(c,tenant,view).await
+                    Ok(devices)
                 })).await?;
                 batch.push(Projected{view:context.1,devices});
             }
@@ -364,40 +372,21 @@ async fn correlate(
     {
         devices.insert(device);
     }
-    if let Some(op) = view.operation_id {
-        if matches!(
-            view.action.as_str(),
-            "command_accept"
-                | "command_dispatch"
-                | "command_cancel"
-                | "command_reconcile"
-                | "command_read"
-                | "device_action"
-        ) {
-            devices.extend(
-                rss_mdm_flow_service::execution::timeline::devices_in(c, tenant, op).await?,
-            );
-        }
-        if view.action == "management_write"
-            && view.source == "mdm.business"
-            && let Some(device) = rss_mdm_inventory_service::assets::timeline_device_in(
-                c,
-                tenant,
-                &view.actor,
-                op,
-                &view.event_id,
-            )
-            .await?
-        {
-            devices.insert(device);
-        }
+    if let Some(op) = view.operation_id
+        && view.action == "management_write"
+        && view.source == "mdm.business"
+        && let Some(device) = rss_mdm_inventory_service::assets::timeline_device_in(
+            c,
+            tenant,
+            &view.actor,
+            op,
+            &view.event_id,
+        )
+        .await?
+    {
+        devices.insert(device);
     }
-    for operation in &view.related_operation_ids {
-        devices.extend(
-            rss_mdm_flow_service::execution::timeline::devices_in(c, tenant, *operation).await?,
-        );
-    }
-    if matches!(
+    let device_target = matches!(
         view.action.as_str(),
         "registration_bind"
             | "credential_revoke"
@@ -406,19 +395,20 @@ async fn correlate(
             | "enrollment_resume"
             | "enrollment_cancel"
             | "inventory_read"
-            | "command_accept"
-            | "command_approve"
-            | "command_cancel"
-            | "command_read"
-            | "command_reconcile"
             | "device_action"
-    ) && let Some(target) = &view.target
+    ) || (view.source == "mdm.request"
+        && matches!(
+            view.action.as_str(),
+            "command_accept" | "command_approve" | "command_cancel" | "command_read"
+        ));
+    if device_target
+        && let Some(target) = &view.target
         && rss_mdm_registration_service::device::read::exists(c, tenant.into(), target.clone())
             .await?
     {
         devices.insert(target.clone());
     }
-    if devices.len() > 10000 || devices.iter().any(|v| !crate::model::identifier(v)) {
+    if devices.iter().any(|v| !crate::model::identifier(v)) {
         return Err(Error::Integrity);
     }
     Ok(devices.into_iter().collect())
