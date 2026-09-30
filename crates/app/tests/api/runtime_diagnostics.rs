@@ -99,6 +99,131 @@ fn component(value: &Value, name: &str) -> Value {
 }
 
 #[tokio::test]
+#[ignore = "make t2 MODULE=diagnostics.http: independent runner connection failure and recovery"]
+async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<()> {
+    use rss_mdm_management_http::runtime_diagnostics::Source;
+    use rss_runtime::ManagedResource;
+    let fixture = Fixture::open().await?;
+    let config: Config = serde_json::from_value(fixture.authority.base.clone())?;
+    let role = format!("diag_runner_{}", Uuid::new_v4().simple());
+    pg(&format!(
+        "CREATE ROLE {role} LOGIN PASSWORD 'diagnostic-fixture' IN ROLE mdm_flow_runtime"
+    ))?;
+    let automation = crate::automation::Automation::connect(
+        fixture.flow.planning.clone(),
+        fixture.flow.assets.clone(),
+        config
+            .flow
+            .storage
+            .database
+            .options()?
+            .username(&role)
+            .password("diagnostic-fixture")
+            .application_name(&role),
+    )
+    .await?;
+    let signals = Arc::new(rss_mdm_flow_service::worker_wake::Signals::default());
+    let mut stack = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(20))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    let mut launch = stack.startup()?.commit();
+    launch.stage_deferred_task_with_token(
+        automation.clone().registration(signals.clone()).critical(),
+    );
+    launch.finish();
+    let router = fixture.authority.router(
+        fixture.authority.authorization().merge(
+            Router::new().nest(
+                "/api/v2",
+                rss_mdm_management_http::runtime_diagnostics::routes()
+                    .with_state(fixture.source.clone() as Arc<dyn Source>),
+            ),
+        ),
+    )?;
+    let mut browser = fixture.authority.browser("other")?;
+    let subject = browser_subject(&browser, &router).await?;
+    set_management_grants(&subject, json!(["runtime_diagnostics_read"])).await?;
+    let result = async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if component(&fixture.query().await?, "automation")["bridge"]["successful"] == true {break Ok::<_,anyhow::Error>(());}
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await??;
+        pg(&format!("ALTER ROLE {role} CONNECTION LIMIT 0; SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='{role}'"))?;
+        signals.automation().notify_one();
+        let failed = tokio::time::timeout(Duration::from_secs(12), async {
+            loop {
+                let component = component(&fixture.query().await?,"automation");
+                if component["health"] == "degraded" {break Ok::<_,anyhow::Error>(component);}
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await??;
+        ensure!(failed["task"] == "running" && failed["bridge"]["successful"] == true);
+        ensure!(failed["runner"]["scan"]["successful"] == false && failed["runner"]["scan"]["observedAt"].is_number());
+        let (status, value) = browser.call(&router, Method::GET, PATH, None).await?;
+        ensure!(status == StatusCode::OK && component(&value,"automation")["health"] == "degraded");
+        let encoded = value.to_string();
+        ensure!(!encoded.contains(&role) && !encoded.contains("diagnostic-fixture") && !encoded.contains("job:"));
+        ensure!(failed["dependencies"][0]["state"] == "available");
+        ensure!(failed["queues"].as_array().unwrap().iter().all(|q|q["count"].is_number()));
+        pg(&format!("ALTER ROLE {role} CONNECTION LIMIT -1"))?;
+        signals.automation().notify_one();
+        tokio::time::timeout(Duration::from_secs(12), async {
+            loop {
+                let recovered = component(&fixture.query().await?,"automation");
+                if recovered["health"] == "healthy" {
+                    ensure!(recovered["runner"]["scan"]["successful"] == true);
+                    break Ok::<_,anyhow::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await??;
+        pg("REVOKE INSERT ON mdm_assets.asset_query_results FROM mdm_flow_runtime")?;
+        let job = crate::planning::test_support::query_job(&fixture.flow.planning, 1).await;
+        signals.automation().notify_one();
+        signals.automation_input().notify_one();
+        let failed_attempt = tokio::time::timeout(Duration::from_secs(12), async {
+            loop {
+                let value = component(&fixture.query().await?, "automation");
+                if value["runner"]["unresolvedAttempts"] == 1 {
+                    break Ok::<_, anyhow::Error>(value);
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await??;
+        ensure!(failed_attempt["task"] == "running" && failed_attempt["health"] == "degraded");
+        ensure!(failed_attempt["runner"]["scan"]["successful"] == true);
+        ensure!(failed_attempt["runner"]["latestFailure"]["stage"] == "apply");
+        ensure!(failed_attempt["bridge"]["successful"] == true);
+        pg("GRANT INSERT ON mdm_assets.asset_query_results TO mdm_flow_runtime")?;
+        signals.automation().notify_one();
+        tokio::time::timeout(Duration::from_secs(12), async {
+            loop {
+                let value = component(&fixture.query().await?, "automation");
+                if value["health"] == "healthy" && value["runner"]["unresolvedAttempts"] == 0 {
+                    ensure!(pg(&format!("SELECT completed FROM mdm_automation.automation_jobs WHERE id='{job}'"))?.trim() == "t");
+                    ensure!(value["runner"]["latestFailure"].is_null());
+                    break Ok::<_, anyhow::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await??;
+        Ok::<_,anyhow::Error>(())
+    }.await;
+    pg("GRANT INSERT ON mdm_assets.asset_query_results TO mdm_flow_runtime")?;
+    pg(&format!("ALTER ROLE {role} CONNECTION LIMIT -1"))?;
+    let clean = stack.shutdown().join().await?.is_clean();
+    crate::automation::Resource(automation).shutdown().await?;
+    pg(&format!("DROP ROLE {role}"))?;
+    fixture.close().await?;
+    result?;
+    ensure!(clean);
+    Ok(())
+}
+
+#[tokio::test]
 #[ignore = "make t2 MODULE=diagnostics.http: real runtime pool failure, binding, authorization and deadline"]
 async fn dependency_failure_preserves_partial_results_and_authority() -> Result<()> {
     use rss_mdm_management_http::runtime_diagnostics::Source;
@@ -305,10 +430,10 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
                 && inventory["progress"]["confirmedPosition"].is_number()
         );
         ensure!(inventory["queues"][0]["count"] == 0 && inventory["progress"]["lagging"] == false);
-        ensure!(component(&projected,"automation")["lastRun"]["successful"] == true);
+        ensure!(component(&projected,"automation")["bridge"]["successful"] == true);
         pg(&format!("INSERT INTO mdm_planning.asset_dispatch(tenant_id,failure) VALUES('{}','automation_suspended') ON CONFLICT(tenant_id) DO UPDATE SET failure=excluded.failure",case_tenant()))?;
         let suspended = component(&fixture.query().await?,"automation");
-        ensure!(suspended["task"] == "running" && suspended["lastRun"]["successful"] == true);
+        ensure!(suspended["task"] == "running" && suspended["bridge"]["successful"] == true);
         ensure!(suspended["readiness"] == "not_ready" && suspended["health"] == "degraded");
         ensure!(suspended["reasons"].as_array().unwrap().contains(&json!("automation_suspended")));
         pg(&format!("UPDATE mdm_planning.asset_dispatch SET failure=NULL WHERE tenant_id='{}'",case_tenant()))?;

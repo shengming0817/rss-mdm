@@ -166,21 +166,39 @@ impl RuntimeDiagnostics {
                 Some(flow_failure(failure)),
             ));
         }
-        automation.last_run = self
-            .planning
-            .bridge_observation
-            .lock()
-            .expect("bridge observation")
-            .map(|o| LastRun {
-                successful: matches!(
-                    o.outcome,
-                    rss_mdm_flow_service::planning::automation::BridgeOutcome::Succeeded
-                ),
-                reason: bridge_failure(o.outcome),
-                observed_at: o.observed_at,
-            });
-        if automation.last_run.as_ref().is_some_and(|r| !r.successful) {
+        let health = self.planning.automation_health();
+        automation.bridge = health.bridge.map(run_result);
+        automation.runner = Some(Runner {
+            scan: health.scan.map(run_result),
+            unresolved_attempts: health.unresolved_attempts,
+            truncated: health.truncated,
+            latest_failure: health.latest_failure.map(|f| AttemptFailure {
+                stage: match f.stage {
+                    rss_reconcile::Stage::Observe => AttemptStage::Observe,
+                    rss_reconcile::Stage::Apply => AttemptStage::Apply,
+                    rss_reconcile::Stage::Renew => AttemptStage::Renew,
+                    rss_reconcile::Stage::Finish => AttemptStage::Finish,
+                },
+                reason: automation_failure(f.failure),
+                observed_at: f.observed_at,
+            }),
+        });
+        if health.bridge.is_some_and(|r| r.failure.is_some())
+            || health.scan.is_some_and(|r| r.failure.is_some())
+            || health.unresolved_attempts > 0
+        {
             automation.health = Health::Degraded;
+        } else if (health.scan.is_none() || health.bridge.is_none())
+            && automation.health == Health::Healthy
+        {
+            automation.health = Health::Unknown;
+            automation.reasons.push(Reason::Unobserved);
+        }
+        if health.truncated {
+            if automation.health != Health::Degraded {
+                automation.health = Health::Unknown;
+            }
+            automation.reasons.push(Reason::ObservationLimit);
         }
     }
     fn inventory_health(&self) -> Component {
@@ -288,7 +306,8 @@ fn component(name: ComponentName, ready: bool) -> Component {
         dependencies: Vec::new(),
         queues: Vec::new(),
         progress: None,
-        last_run: None,
+        bridge: None,
+        runner: None,
         dispatch: None,
     }
 }
@@ -380,15 +399,23 @@ fn projection(
     }
 }
 
-fn bridge_failure(
-    outcome: rss_mdm_flow_service::planning::automation::BridgeOutcome,
-) -> Option<Reason> {
-    use rss_mdm_flow_service::planning::automation::BridgeOutcome;
+fn automation_failure(
+    outcome: rss_mdm_flow_service::planning::automation::AutomationFailure,
+) -> Reason {
+    use rss_mdm_flow_service::planning::automation::AutomationFailure;
     match outcome {
-        BridgeOutcome::Succeeded => None,
-        BridgeOutcome::StorageUnavailable => Some(Reason::DependencyUnavailable),
-        BridgeOutcome::Deadline => Some(Reason::Deadline),
-        BridgeOutcome::SettlementUnknown => Some(Reason::SettlementUnknown),
-        BridgeOutcome::Rejected => Some(Reason::WorkRejected),
+        AutomationFailure::StorageUnavailable => Reason::DependencyUnavailable,
+        AutomationFailure::Deadline => Reason::Deadline,
+        AutomationFailure::SettlementUnknown => Reason::SettlementUnknown,
+        AutomationFailure::OwnershipLost => Reason::OwnershipLost,
+        AutomationFailure::Cancelled => Reason::Stopping,
+        AutomationFailure::Rejected => Reason::WorkRejected,
+    }
+}
+fn run_result(value: rss_mdm_flow_service::planning::automation::RunObservation) -> RunResult {
+    RunResult {
+        successful: value.failure.is_none(),
+        reason: value.failure.map(automation_failure),
+        observed_at: value.observed_at,
     }
 }

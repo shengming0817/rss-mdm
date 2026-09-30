@@ -22,6 +22,13 @@ readiness 仍表达公开探针的既定条件，两者不能互相推断。入�
 任务 running、已转发任务、服务就绪均不表示业务完成或设备实际效果。执行恢复的存活和首扫合同由 #2563 完善，
 当前未提供合同的状态显示 unknown，不纳入新的就绪承诺。未启用的 Apple 组件显示 not_applicable。
 
+Automation 的 `bridge` 记录输入转发结果，`runner.scan` 记录独立运行连接池的实际扫描结果；
+两者各自携带观测时间，转发成功不能证明 runner 健康。`runner.unresolvedAttempts` 保留本进程内
+尚未由同一目标成功执行并确认结算消除的故障，`latestFailure` 只返回受控阶段、原因与时间。
+扫描或其它目标成功不会清除这类故障，Retry/Suspended 结算也不算执行恢复。
+最多保留 1000 个故障目标，超出后 `runner.truncated` 持续为 true，health 不能恢复为 healthy，
+因为被丢弃的身份已无法核对；重启开始新的观测窗口。该窗口不替代持久任务队列状态。
+
 队列按真实租户持久事实有界统计，`truncated` 表示计数达到源码定义的观察上限；失败时计数为 null，不能当作无积压。
 Flow 的 pending/running/completed/failed/superseded 沿用既有任务状态，running 表示已转发且未终结，
 不是操作系统任务存活证明；asset_changes_pending 表示尚未转发的资产输入。Inventory delivery_pending 与投影进度分别展示。

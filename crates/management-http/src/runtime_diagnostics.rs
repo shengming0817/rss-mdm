@@ -43,7 +43,9 @@ pub struct Component {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progress: Option<Progress>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_run: Option<LastRun>,
+    pub bridge: Option<RunResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runner: Option<Runner>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dispatch: Option<Dispatch>,
 }
@@ -99,6 +101,7 @@ pub enum Reason {
     ProjectionFailed,
     OwnershipLost,
     WorkRejected,
+    ObservationLimit,
 }
 #[derive(Serialize)]
 pub struct Dependency {
@@ -164,11 +167,34 @@ pub enum ProgressState {
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LastRun {
+pub struct RunResult {
     pub successful: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<Reason>,
     pub observed_at: Option<i64>,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Runner {
+    pub scan: Option<RunResult>,
+    pub unresolved_attempts: u64,
+    pub truncated: bool,
+    pub latest_failure: Option<AttemptFailure>,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttemptFailure {
+    pub stage: AttemptStage,
+    pub reason: Reason,
+    pub observed_at: Option<i64>,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptStage {
+    Observe,
+    Apply,
+    Renew,
+    Finish,
 }
 
 pub fn routes() -> Router<Arc<dyn Source>> {

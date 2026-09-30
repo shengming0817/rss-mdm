@@ -317,7 +317,9 @@ add('diagnostics.http', selectors=('api::t2::runtime_diagnostics::',), fixtures=
              'crates/inventory-service/src/inventory_runtime/diagnostics.rs',
              'crates/flow-service/src/planning/automation/health.rs'),
     tests=('crates/app/tests/api/runtime_diagnostics.rs',))
-MODULES['diagnostics.http'] = replace(MODULES['diagnostics.http'], scope='tenant', support_inputs=('crates/app/tests/support/audit.rs','crates/app/tests/device/support.rs','crates/app/tests/inventory_runtime/support.rs'))
+MODULES['diagnostics.http'] = replace(MODULES['diagnostics.http'], scope='tenant', support_inputs=('crates/app/tests/support/audit.rs','crates/app/tests/device/support.rs','crates/app/tests/inventory_runtime/support.rs','crates/app/tests/planning/support.rs'), policies=(
+    CasePolicy('api::t2::runtime_diagnostics::runner_failure_is_visible_while_bridge_and_queries_succeed', 'instance', 'tenant'),
+))
 add('host.lifecycle', build=None, python='host', fixtures=('identity',),
     sources=('crates/app/src/lifecycle.rs', 'crates/app/src/main.rs'),
     support=('hack/t2_modules/host.py',))
@@ -708,7 +710,7 @@ consume(('crates/software-service/src/catalog/*',),
         'software.http planning.software execution.software.offer execution.software.content execution.software.recovery')
 AUTH_CONSUMERS = 'diagnostics.http authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission api.identity_context enrollment.http enrollment.recovery assets.http planning.http planning.policy planning.agent_policy planning.frequency planning.remote planning.software compliance.http software.http content.http content.mirror content.gc execution.commands.admission windows.issuance windows.management apple.scep apple.profile apple.policy apple.onboarding apple.renewal'
 consume(('crates/authorization-service/src/*.rs','crates/management-http/src/authorization/http.rs','crates/management-http/src/lib.rs'), AUTH_CONSUMERS)
-consume(('crates/flow-service/src/planning/automation.rs','crates/inventory-service/src/inventory_runtime.rs','crates/inventory-service/src/inventory_runtime/*','crates/flow-service/src/automation/runtime.rs','crates/flow-service/src/planning/mod.rs','crates/app/src/identity_audit.rs','crates/app/src/identity.rs','crates/apple-channel/src/lib.rs','crates/inventory-service/src/collection/*'), 'diagnostics.http')
+consume(('crates/flow-service/src/planning/automation.rs','crates/inventory-service/src/inventory_runtime.rs','crates/inventory-service/src/inventory_runtime/*','crates/flow-service/src/automation/runtime.rs','crates/flow-service/src/automation/completion.rs','crates/flow-service/src/planning/mod.rs','crates/app/src/identity_audit.rs','crates/app/src/identity.rs','crates/apple-channel/src/lib.rs','crates/inventory-service/src/collection/*'), 'diagnostics.http')
 consume(('crates/app/src/identity.rs',), 'identity.local identity.sso identity.audit api.identity_context')
 consume(('crates/registration-service/src/device/*', 'crates/registration-service/src/device.rs', 'crates/app/src/registration_lifecycle.rs'),
         'device.binding device.revocation device.recovery device.admission agent.registration agent.reports windows.issuance windows.management apple.identity inventory.runtime execution.agent.delivery')
