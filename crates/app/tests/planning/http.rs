@@ -229,6 +229,92 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
 
 #[tokio::test]
 #[ignore = "make t2 MODULE=planning.http"]
+async fn console_script_support_requires_signer_and_content() -> Result<()> {
+    use crate::test_support::agent_execution::{Fixture, case_device_id};
+    let mut fixture = Fixture::new().await?;
+    fixture.register().await?;
+    for (signed, content) in [(true, false), (false, true), (false, false), (true, true)] {
+        let mut config = fixture.base.clone();
+        if !signed {
+            config["task_signing"] = Value::Null;
+        }
+        if !content {
+            config["content"] = Value::Null;
+        }
+        let router = app(&config, authority::reader(&config).await?).await?;
+        let (status, detail) = fixture
+            .author
+            .call(
+                &router,
+                Method::GET,
+                &format!("/api/v3/devices/{}", case_device_id()),
+                None,
+            )
+            .await?;
+        ensure!(
+            status == StatusCode::OK,
+            "capability detail signed={signed} content={content}: {status} {detail}"
+        );
+        let capability = detail["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["action"] == "script")
+            .unwrap();
+        let supported = signed && content;
+        ensure!(
+            capability["productSupport"]["state"]
+                == if supported {
+                    "supported"
+                } else {
+                    "unsupported"
+                },
+            "script support signed={signed} content={content}: {capability}"
+        );
+        ensure!(
+            capability["productSupport"]["reason"]
+                == if supported {
+                    Value::Null
+                } else {
+                    json!("product_not_configured")
+                }
+        );
+        ensure!(
+            capability["devicePrerequisite"]["state"] == "ready"
+                && capability["permission"]["allowed"] == true,
+            "configuration merged device or permission facts: {capability}"
+        );
+    }
+    let grants = fixture
+        .grants
+        .iter()
+        .filter(|grant| grant.operation != crate::authorization::Permission::ScriptExecute)
+        .cloned()
+        .collect();
+    identity::set_grants(case_tenant(), &fixture.author_id, grants).await?;
+    let (status, detail) = fixture
+        .author
+        .call(
+            &fixture.router,
+            Method::GET,
+            &format!("/api/v3/devices/{}", case_device_id()),
+            None,
+        )
+        .await?;
+    ensure!(status == StatusCode::OK);
+    let capability = &detail["capabilities"][0];
+    ensure!(
+        capability["action"] == "script"
+            && capability["productSupport"]["state"] == "supported"
+            && capability["devicePrerequisite"]["state"] == "ready"
+            && capability["permission"]["allowed"] == false,
+        "revocation merged capability facts: {capability}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=planning.http"]
 async fn console_metadata_filters_and_selectors() -> Result<()> {
     let fixture = authority::Authority::open().await?;
     let router = app(&fixture.base, authority::reader(&fixture.base).await?).await?;

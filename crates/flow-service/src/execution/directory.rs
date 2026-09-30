@@ -135,7 +135,12 @@ impl ExecutionService {
                         capability(
                             proof,
                             device,
-                            ("script", Permission::ScriptExecute, "agent", signed),
+                            (
+                                "script",
+                                Permission::ScriptExecute,
+                                "agent",
+                                signed && s.content.is_some(),
+                            ),
                             agent_prerequisite(
                                 agent.is_some(),
                                 binding.as_ref().map(channels::AgentBinding::script),

@@ -14,6 +14,7 @@ class ModuleImpactTests(unittest.TestCase):
                      'crates/flow-service/src/execution/directory.rs'):
             self.assertIn('planning.http', self.selected(path), path)
         self.assertIn('execution.agent.history', self.selected('crates/flow-service/src/execution/directory.rs'))
+        self.assertIn('planning.http', self.selected('crates/app/tests/support/agent_execution.rs'))
     def selected(self, path):
         return set(select_paths([path]).modules)
 

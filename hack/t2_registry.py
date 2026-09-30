@@ -935,7 +935,7 @@ MODULES['planning.http'] = replace(MODULES['planning.http'], production_inputs=(
     'crates/flow-service/src/resource_catalog/directory.rs',
     'crates/flow-service/src/planning/directory.rs',
     'crates/management-http/src/enrollment/directory.rs',
-    'crates/management-http/src/resource_catalog/http.rs'))
+    'crates/management-http/src/resource_catalog/http.rs'), support_inputs=(*MODULES['planning.http'].support_inputs, 'crates/app/tests/support/agent_execution.rs'))
 MODULES['execution.agent.history'] = replace(MODULES['execution.agent.history'], production_inputs=(*MODULES['execution.agent.history'].production_inputs,
     'crates/flow-service/src/execution/directory.rs', 'crates/management-http/src/execution/http.rs'))
 
