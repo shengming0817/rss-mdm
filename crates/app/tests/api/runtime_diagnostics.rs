@@ -62,6 +62,7 @@ impl Fixture {
             authority.audit.clone(),
             None,
             Default::default(),
+            rss_device_command_postgres::CommandClock::Postgres,
         )
         .await?;
         let source = Arc::new(crate::runtime_diagnostics::RuntimeDiagnostics {

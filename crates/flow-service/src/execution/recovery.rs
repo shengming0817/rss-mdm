@@ -38,7 +38,6 @@ fn failure(error: Error) -> rss_reconcile::Error {
         Error::CommitUnknown => rss_reconcile::ErrorKind::CommitUnknown,
         Error::RollbackFailed => rss_reconcile::ErrorKind::RollbackFailed,
         Error::Unavailable(Failure::CommandInvariant) => rss_reconcile::ErrorKind::Permanent,
-        Error::CommitUnknown => rss_reconcile::ErrorKind::CommitUnknown,
         Error::Conflict => rss_reconcile::ErrorKind::Fenced,
         Error::Malformed | Error::Forbidden | Error::Unauthorized => {
             rss_reconcile::ErrorKind::Permanent

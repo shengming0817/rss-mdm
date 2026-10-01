@@ -111,6 +111,7 @@ impl Fixture {
                 .await?,
             crate::flow::execution::open_content(config)?,
             std::collections::BTreeMap::new(),
+            rss_device_command_postgres::CommandClock::Postgres,
         )
         .await?;
         let identity = crate::identity::Identity::connect(

@@ -94,6 +94,7 @@ pub(crate) async fn application_fixture(
         audit_store.clone(),
         content,
         planning.publications.services.clone(),
+        rss_device_command_postgres::CommandClock::Postgres,
     )
     .await?;
     let compiled = config.compile()?;

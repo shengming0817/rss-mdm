@@ -6,7 +6,7 @@ use sqlx::Connection;
 #[tokio::test]
 #[ignore = "make t2 MODULE=execution.commands.dispatch"]
 async fn outbox_gateway_ack_and_process_recovery() -> anyhow::Result<()> {
-    let (host, mut client) = ordinary().await?;
+    let (host, mut client) = ordinary(rss_device_command_postgres::CommandClock::Postgres).await?;
     client.accept_approved().await?;
     client.dispatch_receipts().await?;
     host.close().await?;
@@ -15,7 +15,7 @@ async fn outbox_gateway_ack_and_process_recovery() -> anyhow::Result<()> {
 #[tokio::test]
 #[ignore = "make t2 MODULE=execution.commands.dispatch"]
 async fn clean_shutdown_settles_a_claimed_relay_message() -> anyhow::Result<()> {
-    let (host, mut client) = ordinary().await?;
+    let (host, mut client) = ordinary(rss_device_command_postgres::CommandClock::Postgres).await?;
     client.accept_approved().await?;
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
