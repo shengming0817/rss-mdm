@@ -83,6 +83,22 @@ async fn resolve_in(
                 definition.primary().clone()
             }
         }
+        r::Declaration::NativeCollection {
+            artifact,
+            definition,
+        } => {
+            let bytes = definition.canonical();
+            if artifact.length() != bytes.len() as u64
+                || artifact.digest() != r::Digest::of(&bytes)
+                || input
+                    .artifact
+                    .as_ref()
+                    .is_some_and(|id| id != artifact.reference().as_str())
+            {
+                return Err(Error::Malformed.into());
+            }
+            artifact.clone()
+        }
         r::Declaration::Script {
             artifact,
             definition,

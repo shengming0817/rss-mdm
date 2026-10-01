@@ -44,6 +44,17 @@ impl AssetService {
         at: Timepoint,
     ) -> Result<Value> {
         let response = match command {
+            Command::CollectionItems {
+                device,
+                run,
+                field,
+                scope,
+                offset,
+                limit,
+            } => {
+                self.collection_items(tx, device, *run, *field, scope, *offset, *limit)
+                    .await?
+            }
             Command::ListItems {
                 device,
                 field,

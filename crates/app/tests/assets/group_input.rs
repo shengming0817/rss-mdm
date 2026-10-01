@@ -218,10 +218,13 @@ async fn script_health_projection_is_queryable_group_input() -> Result<()> {
         &crate::test_support::inventory::definition(field.as_str(), "agent.script", &[field])
             .coverage()?,
     )?;
+    crate::test_support::inventory::register_definition(
+        &crate::test_support::inventory::definition(field.as_str(), "agent.script", &[field]),
+    )?;
     let value = serde_json::to_string(&rss_mdm_inventory::Scalar::Boolean(true))?;
-    pg(&format!("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','{registration}','agent.script','{epoch}','enterprise-task-v1',true);
-        INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch)
-        VALUES('{TENANT}','mdm.observation.v1','inventory-v3','{scope}','{coverage}','custom.corporate_agent.healthy','{value}','script-fixture',1,2,'known','{value}','script-fixture',1,2,'{registration}','agent.script','{epoch}');", TENANT = case_tenant()))?;
+    pg(&format!("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES('{TENANT}','{registration}','agent.script','{epoch}',true);
+        INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence)
+        VALUES('{TENANT}','mdm.observation.v1','inventory-v4','{scope}','{coverage}','custom.corporate_agent.healthy','{value}','script-fixture',1,2,'known','{value}','script-fixture',1,2,'{registration}','agent.script','{epoch}',0);", TENANT = case_tenant()))?;
     let criteria = predicate("custom.corporate_agent.healthy", "boolean", json!(true));
     let query = ok(
         &mut browser,

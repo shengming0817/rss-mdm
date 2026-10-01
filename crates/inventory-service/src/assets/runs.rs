@@ -52,6 +52,12 @@ impl AssetService {
                         .is_ok_and(|f| f.sensitivity == rss_mdm_inventory::Sensitivity::Standard)
             })
             .map(|(key, attempt)| QualityField {
+                item_count: attempt.items().len(),
+                invalid_items: attempt
+                    .items()
+                    .iter()
+                    .filter(|q| **q == crate::collection::Quality::Invalid)
+                    .count(),
                 field: *key,
                 quality: attempt.quality,
                 status: attempt.status,
@@ -76,6 +82,64 @@ impl AssetService {
                 .transpose()?,
             delivery_pending: row.try_get("delivery_pending")?,
             fields,
+        })
+    }
+}
+
+impl AssetService {
+    pub(super) async fn collection_items(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        device: &str,
+        id: Uuid,
+        field: FieldKey,
+        scope: &ReadScope,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Response> {
+        if !(1..=1000).contains(&limit) || offset > 100000 {
+            return Err(Error::Malformed.into());
+        }
+        let run = self.collection_run(tx, device, id, scope).await?;
+        if run.finished_at.is_none() {
+            return Err(Error::Conflict.into());
+        }
+        if !run.fields.iter().any(|f| f.field == field) {
+            return Err(Error::Forbidden.into());
+        }
+        let tenant = self.tenant.to_string();
+        let body:String=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT attempts FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2 AND sealed_at IS NOT NULL").bind(tenant).bind(id).fetch_one(c).await})).await?;
+        let progress: rss_mdm_inventory::CollectionProgress = stored(serde_json::from_str(&body))?;
+        if !matches!(
+            checked_input(progress.definition().field(field))?.value_type,
+            rss_mdm_inventory::ValueType::Array { .. }
+        ) {
+            return Err(Error::Malformed.into());
+        }
+        let qualities = progress
+            .fields()
+            .get(&field)
+            .ok_or(Error::NotFound)?
+            .items();
+        if offset > qualities.len() {
+            return Err(Error::Malformed.into());
+        }
+        let items: Vec<_> = qualities
+            .iter()
+            .enumerate()
+            .skip(offset)
+            .take(limit)
+            .map(|(index, quality)| ItemQualityView {
+                index,
+                quality: *quality,
+            })
+            .collect();
+        let next = offset + items.len();
+        Ok(Response::CollectionItems {
+            run: id,
+            field,
+            items,
+            next_offset: (next < qualities.len()).then_some(next),
         })
     }
 }

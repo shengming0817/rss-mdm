@@ -18,20 +18,21 @@ pub(crate) fn seed_source(
         epoch,
     )?;
     let encoded = scope.encode()?.replace('\'', "''");
-    let coverage = serde_json::to_string(
-        &crate::test_support::inventory::definition(
-            "inventory",
-            "mdm.windows",
-            &[
-                rss_mdm_inventory::builtin::MODEL,
-                rss_mdm_inventory::builtin::OS_VERSION,
-            ],
-        )
-        .coverage()
-        .unwrap(),
-    )?;
+    let definition = definition(
+        "inventory",
+        source,
+        &[
+            rss_mdm_inventory::builtin::MODEL,
+            rss_mdm_inventory::builtin::OS_VERSION,
+        ],
+    );
+    let coverage = serde_json::to_string(&definition.coverage()?)?;
+    let document = serde_json::to_string(&definition)?.replace('\'', "''");
+    let fingerprint = definition.fingerprint()?;
+    let value = serde_json::to_string(&rss_mdm_inventory::Scalar::String(value.into()))?
+        .replace('\'', "''");
     pg(&format!(
-        "INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','{grant}','fixture','{INSTANCE}','{device}','enrollment','consumed',clock_timestamp()+interval '60 seconds'); INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source) VALUES('{TENANT}','{request}','{grant}','{source}'); INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','{device}','{channel}',1,'{request}','active'); INSERT INTO mdm_access.credentials VALUES('{TENANT}','{credential}','{registration}','{channel}',md5('{credential}')||md5('{registration}'),'active'); INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','{registration}','{source}','{epoch}','{coverage}',true); INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch) VALUES('{TENANT}','mdm.observation.v1','inventory-v3','{encoded}','{coverage}','device.model','{value}','fixture',1,2,'known','{value}','fixture',1,2,'{registration}','{source}','{epoch}');",
+        "INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','{grant}','fixture','{INSTANCE}','{device}','enrollment','consumed',clock_timestamp()+interval '60 seconds'); INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source) VALUES('{TENANT}','{request}','{grant}','{source}'); INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','{device}','{channel}',1,'{request}','active'); INSERT INTO mdm_access.credentials VALUES('{TENANT}','{credential}','{registration}','{channel}',md5('{credential}')||md5('{registration}'),'active'); INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES('{TENANT}','{registration}','{source}','{epoch}',true); INSERT INTO mdm.collection_definitions(tenant_id,dataset,version,source,fingerprint,coverage,definition) VALUES('{TENANT}','inventory','fixture','{source}','{fingerprint}','{coverage}','{document}') ON CONFLICT DO NOTHING; INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES('{TENANT}','mdm.observation.v1','inventory-v4','{encoded}','{coverage}','device.model','{value}','fixture',1,2,'known','{value}','fixture',1,2,'{registration}','{source}','{epoch}',0);",
         TENANT = case_tenant()
     ))?;
     Ok((registration, epoch))
@@ -84,4 +85,21 @@ pub(crate) fn definition(
             .collect(),
     )
     .unwrap()
+}
+
+/// Register a frozen definition for read-path fixtures using the current product schema.
+pub(crate) fn register_definition(
+    definition: &rss_mdm_inventory::CollectionDefinition,
+) -> Result<()> {
+    let tenant = case_tenant();
+    let dataset = definition.dataset();
+    let version = definition.version();
+    let source = definition.source().as_str();
+    let fingerprint = definition.fingerprint()?;
+    let coverage = serde_json::to_string(&definition.coverage()?)?.replace('\'', "''");
+    let document = serde_json::to_string(definition)?.replace('\'', "''");
+    pg(&format!(
+        "INSERT INTO mdm.collection_definitions(tenant_id,dataset,version,source,fingerprint,coverage,definition) VALUES('{tenant}','{dataset}','{version}','{source}','{fingerprint}','{coverage}','{document}') ON CONFLICT DO NOTHING"
+    ))?;
+    Ok(())
 }

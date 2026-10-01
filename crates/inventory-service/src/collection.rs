@@ -2,6 +2,7 @@
 pub mod agent;
 pub mod channel;
 pub mod enterprise;
+pub mod native;
 pub mod read;
 use crate::{Error, Failure};
 pub use rss_mdm_inventory::{CollectionProgress as Attempts, FieldAttempt, NativeValue, Quality};

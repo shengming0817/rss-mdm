@@ -938,6 +938,15 @@
     ],
     [
       "policy_recovery",
+      "target_after",
+      "text",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "policy_recovery",
       "tenant_id",
       "uuid",
       true,

@@ -93,3 +93,16 @@ severity 为 low/medium/high/critical，仅用于解释；platform 为 all/windo
 完成结论为 compliant/non_compliant/unknown/not_applicable；组资格不确定仍是 unknown。pending 只表示最新输入尚未完成，不能把 previous 当作当前合规。设备汇总优先明确失败、未知、待评估；至少一条适用规则且全部通过才是 compliant。无启用规则为 unknown/no_rules，全不适用为 not_applicable。
 
 历史保留规则版本、字典版本、资产水位、组成员集、评估时间、原因和无原始字段值的证据引用，以及 published/superseded/failed 标识。任务按固定输入分页，只有完整运行且输入仍有效才切换当前指针；旧运行不能覆盖新事实。任务阶段为 queued、evaluating、published、superseded 或 failed；processed 只统计已提交的设备评估。组输入未就绪时保留 group_input_pending 诊断。适用性证据分别保留平台判定、来源和各组资格，原因区分 platform_not_applicable、group_not_applicable、platform_unknown、group_unknown 与事实结论。规则列表使用 nextCursor，规则读取只返回 id/revision/definition。任务计数还要求 AllDevices 范围的 compliance_read，只有规则读取或部分设备权限不能读取全租户计数。未就绪的冻结输入以 superseded 结束并保留 group_input_pending 原因，组变更或发布唤醒既有 dispatcher 创建新运行，避免无进展热重试。失败诊断和恢复复用现有 automation；资产调度依次推进 Group、Scope、Compliance 后提交同一 checkpoint，重启继续持久任务；本接口不提供自动修复或标准合规认证声明。
+
+
+## 发布采集模板并复用策略
+
+原生读取使用 Resource 的 `native_collection` 类型，版本声明包含同名 declaration、canonical JSON artifact 及 definition。definition 指定 `adapter`、`mappings`、`timeoutSeconds`、`outputBytes`：`windows_csp` 只构造 CSP Get；`apple_device_information` 使用受限 Queries；`apple_installed_applications` 读取 InstalledApplicationList。Apple 当前落地的是 MDM adapter；不把尚未接入的 DDM status channel 计为已支持。
+
+每个 mapping 的键为字段身份，值为 `{query,pointer,columns}`。columns 为空时直接按字段类型解码；非空时把清单条目投影到声明的结构化属性。模板的 canonical JSON 是上传 artifact 的原文，发布时校验字段、来源、平台和结构。脚本与 SQL 使用已有 `script` Resource，SQL profile 为 `osquery`，执行只接受固定版本模板及声明参数。
+
+持续采集使用 Policy action `native_collection`，绑定精确 Resource、Schedule、Frequency 和 runLifetimeSeconds；脚本/SQL 使用现有 execution action。按需读取使用现有 remote-operation 的 `collect_native` action，脚本/SQL 使用 `execute`，目标为设备集合或 Scope 的冻结结果。有 inventory_collect、resource_write、policy_write 等对应权限的管理员直接启用，无新增审批状态。一次性操作不生成长期 Policy。
+
+`GET /api/v2/devices/{id}/collections/{run}` 返回统一进度、来源、模板版本和逐字段质量。列表字段另有 itemCount/invalidItems，终态 run 可通过 `GET /api/v2/devices/{id}/collections/{run}/fields/{field}/items?offset=0&limit=100` 分页读取逐条质量，最多1000条。无效列表保留旧可信值，质量页不回传不可信原文。
+
+资产详情中的 lists 只返回摘要，各来源摘要自带独立游标，冲突时仍可分页检查每份来源清单。使用 `GET /api/v2/devices/{id}/inventory-lists/{field}?limit=100&cursor=…` 读取选值后的列表。游标绑定字段、设备、租户、授权范围及资产水位；后续变更不混入旧分页。完整空列表与未执行、失败、部分输出分别表达。字段和清单没有 TTL。

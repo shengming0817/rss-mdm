@@ -291,6 +291,7 @@ END, false)),
 ALTER TABLE ONLY mdm_commands.operations FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_commands.policy_recovery (
+    target_after text,
     tenant_id uuid NOT NULL,
     policy uuid NOT NULL,
     recovery_after uuid

@@ -350,9 +350,9 @@ impl Delivery {
         tx.rollback().await.map_err(db)?;
         rows.into_iter().map(durable_report).collect()
     }
-    pub async fn expire_apple(&self, tenant: &str) -> Result<usize, Error> {
+    pub async fn expire_timed(&self, tenant: &str) -> Result<usize, Error> {
         let mut hint = self.database.begin_read(tenant).await?;
-        let due: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND source='mdm.apple' AND sealed_at IS NULL AND apple_deadline<=clock_timestamp())")
+        let due: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND sealed_at IS NULL AND deadline<=clock_timestamp())")
             .bind(tenant).fetch_one(&mut *hint).await.map_err(db)?;
         hint.rollback().await.map_err(db)?;
         if !due {
@@ -376,7 +376,7 @@ impl Delivery {
                             .with_connection_context(
                                 &mut (*tenant, &mut facts),
                                 |(tenant, facts), c| {
-                                    Box::pin(async move { expire_apple(c, facts, tenant).await })
+                                    Box::pin(async move { expire_timed(c, facts, tenant).await })
                                 },
                             )
                             .await?;
@@ -400,7 +400,7 @@ impl Delivery {
     }
     pub async fn next_expiry(&self, tenant: &str) -> Result<Option<std::time::Duration>, Error> {
         let mut tx = self.database.begin_read(tenant).await?;
-        let millis: Option<i64> = sqlx::query_scalar("SELECT ceil(extract(epoch FROM min(apple_deadline)-clock_timestamp())*1000)::bigint FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND source='mdm.apple' AND sealed_at IS NULL AND apple_deadline>clock_timestamp()")
+        let millis: Option<i64> = sqlx::query_scalar("SELECT ceil(extract(epoch FROM min(deadline)-clock_timestamp())*1000)::bigint FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND sealed_at IS NULL AND deadline>clock_timestamp()")
             .bind(tenant).fetch_one(&mut *tx).await.map_err(db)?;
         tx.rollback().await.map_err(db)?;
         Ok(millis.map(|ms| std::time::Duration::from_millis(ms.max(1) as u64)))
@@ -439,12 +439,12 @@ pub async fn allocate_commands_in(
         .map_err(|_| Error::Unavailable(crate::Failure::Protocol))
 }
 
-pub async fn expire_apple(
+pub async fn expire_timed(
     c: &mut sqlx::PgConnection,
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     tenant: &str,
 ) -> Result<usize, Error> {
-    let ids=sqlx::query_as::<_,(String,String)>("SELECT id::text,scope::jsonb->>'dataset' FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND source='mdm.apple' AND sealed_at IS NULL AND apple_deadline<=clock_timestamp() ORDER BY apple_deadline,id LIMIT 32 FOR UPDATE SKIP LOCKED")
+    let ids=sqlx::query_as::<_,(String,String)>("SELECT id::text,scope::jsonb->>'dataset' FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND sealed_at IS NULL AND deadline<=clock_timestamp() ORDER BY deadline,id LIMIT 32 FOR UPDATE SKIP LOCKED")
         .bind(tenant).fetch_all(&mut *c).await.map_err(db)?;
     let count = ids.len();
     for (id, dataset) in ids {

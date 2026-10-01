@@ -108,3 +108,34 @@ fn partial_coverage_never_becomes_complete_just_because_all_named_values_are_pre
     let p = CollectionProgress::reported(d, &Body::Partial(changes), 10).unwrap();
     assert!(matches!(p.body().unwrap(), Some(Body::Partial(_))));
 }
+
+#[test]
+fn invalid_list_items_are_recorded_without_replacing_previous_list_facts() {
+    use rss_mdm_inventory::{FieldKey, Invalid, NativeValue, ValueType};
+    let mut field = definition().fields()[0].clone();
+    field.key = FieldKey::parse("custom.test_items").unwrap();
+    field.value_type = ValueType::Array {
+        items: Box::new(ValueType::Integer),
+        max_items: 10,
+    };
+    let def =
+        CollectionDefinition::new("list", 1, Source::MdmWindows, vec![field.clone()]).unwrap();
+    let outcome = NativeValue::list(
+        &field,
+        vec![Ok(Scalar::Integer(1)), Err(Invalid::TypeMismatch)],
+    )
+    .unwrap();
+    let progress = CollectionProgress::native(def, [(field.key, outcome)].into(), 10).unwrap();
+    assert_eq!(
+        progress.fields()[&field.key].items(),
+        &[Quality::Success, Quality::Invalid]
+    );
+    assert_eq!(progress.fields()[&field.key].quality, Quality::Invalid);
+    assert!(matches!(
+        progress.body().unwrap(),
+        Some(Body::Failed { .. })
+    ));
+    let restored: CollectionProgress =
+        serde_json::from_slice(&serde_json::to_vec(&progress).unwrap()).unwrap();
+    assert_eq!(progress, restored);
+}

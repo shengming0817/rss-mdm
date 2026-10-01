@@ -268,7 +268,7 @@ impl Fixture {
                 r.action() == "collection_start" && r.result() == "denied" && r.actor().is_some()
             });
         ensure!(audited, "collection denial lost business action audit");
-        sqlx::query("UPDATE mdm_access.collection_runs SET apple_deadline=clock_timestamp()-interval '1 second' WHERE id=$1::uuid").bind(run).execute(&mut pg).await?;
+        sqlx::query("UPDATE mdm_access.collection_runs SET deadline=clock_timestamp()-interval '1 second' WHERE id=$1::uuid").bind(run).execute(&mut pg).await?;
         let mut terminal = false;
         for _ in 0..100 {
             let row:(String,Option<String>,bool)=sqlx::query_as("SELECT result,reason,batch IS NULL FROM mdm_access.collection_runs WHERE id=$1::uuid").bind(run).fetch_one(&mut pg).await?;

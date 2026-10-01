@@ -119,7 +119,7 @@ async fn manual_and_collected_facts_evaluate_with_provenance() -> Result<()> {
     for source in ["agent.script", "agent.osquery"] {
         let epoch = Uuid::new_v4();
         pg(&format!(
-            "INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','{agent}','{source}','{epoch}','enterprise-task-v1',true)",
+            "INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES('{TENANT}','{agent}','{source}','{epoch}',true)",
             TENANT = case_tenant()
         ))?;
     }

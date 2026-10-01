@@ -134,6 +134,12 @@ pub struct Summary {
     deny_unknown_fields
 )]
 pub enum Response {
+    CollectionItems {
+        run: Uuid,
+        field: FieldKey,
+        items: Vec<ItemQualityView>,
+        next_offset: Option<usize>,
+    },
     ListItems {
         device: String,
         field: FieldKey,
@@ -200,6 +206,14 @@ pub enum Response {
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Command {
+    CollectionItems {
+        device: String,
+        run: Uuid,
+        field: FieldKey,
+        scope: ReadScope,
+        offset: usize,
+        limit: usize,
+    },
     ListItems {
         device: String,
         field: FieldKey,
@@ -302,6 +316,8 @@ pub struct QualityRun {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct QualityField {
+    pub item_count: usize,
+    pub invalid_items: usize,
     pub field: FieldKey,
     pub quality: crate::collection::Quality,
     pub status: Option<u16>,
@@ -329,4 +345,11 @@ impl Facet {
 pub struct FacetCount {
     pub label: String,
     pub total: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ItemQualityView {
+    pub index: usize,
+    pub quality: crate::collection::Quality,
 }

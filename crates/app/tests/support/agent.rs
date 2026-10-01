@@ -135,13 +135,13 @@ INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,requ
 INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state)
  SELECT '{TENANT}',gen_random_uuid(),registration,'agent',
         md5(registration::text)||md5(registration::text),'active' FROM task_targets;
-INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled)
- SELECT '{TENANT}',t.registration,s.source,gen_random_uuid(),s.coverage,true
+INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled)
+ SELECT '{TENANT}',t.registration,s.source,gen_random_uuid(),true
  FROM task_targets t CROSS JOIN mdm_access.report_sources s
  JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(s.tenant_id,s.registration)
  WHERE r.tenant_id='{TENANT}' AND r.device='{canonical_sql}' AND r.channel='agent' AND r.state='active' AND s.enabled;
 INSERT INTO mdm_agent.bindings(tenant_id,registration,wire_version,capabilities,platform,architecture)
- SELECT '{TENANT}',registration,4,'["inventory.collect.v5","task.execute.v5"]','macos','aarch64' FROM task_targets;
+ SELECT '{TENANT}',registration,5,'["inventory.collect.v5","task.execute.v5"]','macos','aarch64' FROM task_targets;
 DO $$ BEGIN
  IF (SELECT count(*) FROM task_targets t JOIN mdm_access.registrations r ON r.id=t.registration
      JOIN mdm_agent.bindings b ON b.registration=r.id

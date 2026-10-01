@@ -7,6 +7,7 @@ publish.workspace = true
 autotests = false
 
 [dependencies]
+rss-mdm-resource.workspace = true
 rss-mdm-resource-postgres.workspace = true
 rss-mdm-compliance.workspace = true
 rss-mdm-compliance-postgres.workspace = true

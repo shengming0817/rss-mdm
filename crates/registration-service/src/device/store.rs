@@ -645,7 +645,9 @@ pub async fn allocate_collection_in(
     source: rss_mdm_inventory::ReportSource,
 ) -> Result<CollectionSource, Error> {
     lock_channel(c, tenant, device, source.channel()).await?;
-    let row=sqlx::query("SELECT r.id,r.generation,s.epoch FROM mdm_access.registrations r JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) JOIN mdm_access.report_sources s ON (s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.state='active' AND c.state='active' AND s.source=$3 AND s.enabled FOR SHARE OF r,c FOR UPDATE OF s").bind(tenant).bind(device).bind(source.as_str()).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Conflict)?;
+    // The channel advisory lock serializes registration, credential replacement and revocation.
+    // A collecting owner only mutates the report sequence and needs no UPDATE privilege on identity rows.
+    let row=sqlx::query("SELECT r.id,r.generation,s.epoch FROM mdm_access.registrations r JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) JOIN mdm_access.report_sources s ON (s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.state='active' AND c.state='active' AND s.source=$3 AND s.enabled FOR UPDATE OF s").bind(tenant).bind(device).bind(source.as_str()).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Conflict)?;
     let registration: Uuid = row.try_get("id").map_err(db)?;
     let sequence=sqlx::query_scalar("UPDATE mdm_access.report_sources SET next_sequence=next_sequence+1 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND next_sequence<9223372036854775807 RETURNING next_sequence-1").bind(tenant).bind(registration).bind(source.as_str()).fetch_one(c).await.map_err(db)?;
     Ok(CollectionSource {

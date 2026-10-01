@@ -59,6 +59,12 @@ pub struct Observation {
     pub received_at: Option<i64>,
 }
 pub trait AppleStore: Send + Sync {
+    fn prepare_native_collection<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        id: Uuid,
+    ) -> Pending<'a, Vec<Fact>>;
     fn push_due<'a>(
         &'a self,
         c: &'a mut PgConnection,

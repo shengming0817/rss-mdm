@@ -3,7 +3,7 @@ WITH tables AS (
 ), update_columns(relation, col) AS (VALUES
  ('mdm_windows.collections','channel_state'),
  ('mdm_planning.remote_operations','staged'),('mdm_planning.remote_operations','cursor'),('mdm_planning.remote_operations','run_after'),
- ('mdm_commands.policy_recovery','recovery_after'),('mdm_commands.action_polls','policy_after'),
+ ('mdm_commands.policy_recovery','target_after'),('mdm_commands.policy_recovery','recovery_after'),('mdm_commands.action_polls','policy_after'),
  ('mdm_planning.configuration_claims','version'),('mdm_planning.configuration_claims','operation'),
  ('mdm_planning.configuration_devices','input_revision'),('mdm_planning.configuration_devices','observed_revision'),('mdm_planning.configuration_devices','operation'),('mdm_planning.configuration_devices','digest'),('mdm_planning.configuration_devices','diagnosis'),
  ('mdm_commands.action_polls','cancellation_after'),('mdm_commands.action_runs','state'),('mdm_commands.action_runs','result'),('mdm_commands.action_runs','gateway_accepted'),('mdm_commands.action_attempts','permit'),

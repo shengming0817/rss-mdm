@@ -14,6 +14,12 @@ pub(super) fn decode(row: &sqlx::postgres::PgRow, generation: u64) -> Result<Qua
         .fields()
         .iter()
         .map(|(field, a)| QualityField {
+            item_count: a.items().len(),
+            invalid_items: a
+                .items()
+                .iter()
+                .filter(|q| **q == crate::collection::Quality::Invalid)
+                .count(),
             field: *field,
             quality: a.quality,
             status: a.status,

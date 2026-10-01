@@ -42,6 +42,8 @@ struct RunSummary {
 }
 #[derive(Serialize)]
 struct RunField {
+    item_count: usize,
+    invalid_items: usize,
     field: String,
     quality: crate::collection::Quality,
     status: Option<u16>,
@@ -93,6 +95,12 @@ impl CollectionService {
             .fields()
             .iter()
             .map(|(key, attempt)| RunField {
+                item_count: attempt.items().len(),
+                invalid_items: attempt
+                    .items()
+                    .iter()
+                    .filter(|q| **q == crate::collection::Quality::Invalid)
+                    .count(),
                 field: key.as_str().into(),
                 quality: attempt.quality,
                 status: attempt.status,

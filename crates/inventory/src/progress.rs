@@ -38,6 +38,13 @@ pub struct FieldAttempt {
     digest: Option<String>,
     confirmed: bool,
     terminal: Option<Quality>,
+    items: Vec<Quality>,
+}
+impl FieldAttempt {
+    /// Original row order and validation result, without untrusted values.
+    pub fn items(&self) -> &[Quality] {
+        &self.items
+    }
 }
 impl Default for FieldAttempt {
     fn default() -> Self {
@@ -49,6 +56,7 @@ impl Default for FieldAttempt {
             digest: None,
             confirmed: false,
             terminal: None,
+            items: Vec::new(),
         }
     }
 }
@@ -77,6 +85,36 @@ impl TryFrom<Document> for CollectionProgress {
         }
         for (key, f) in &v.fields {
             let definition = v.definition.field(*key)?;
+            if matches!(&f.value,Some(CollectedValue::Value(crate::Scalar::Array(values))) if values.len()!=f.items.len())
+            {
+                return Err(Invalid::Evidence);
+            }
+            if !f.items.is_empty() {
+                let crate::ValueType::Array { max_items, .. } = &definition.value_type else {
+                    return Err(Invalid::Evidence);
+                };
+                if f.items.len() > *max_items as usize
+                    || f.items
+                        .iter()
+                        .any(|q| !matches!(q, Quality::Success | Quality::Invalid))
+                {
+                    return Err(Invalid::Evidence);
+                }
+                match &f.value {
+                    Some(CollectedValue::Value(crate::Scalar::Array(values)))
+                        if values.len() == f.items.len()
+                            && f.items.iter().all(|q| *q == Quality::Success) =>
+                    {
+                        ()
+                    }
+                    None if f.terminal == Some(Quality::Invalid)
+                        && f.items.contains(&Quality::Invalid) =>
+                    {
+                        ()
+                    }
+                    _ => return Err(Invalid::Evidence),
+                }
+            }
             if let Some(value) = &f.value {
                 let bytes = value.encode(definition)?;
                 if f.digest.as_deref() != Some(format!("{:x}", Sha256::digest(bytes)).as_str()) {
@@ -176,7 +214,20 @@ impl CollectionProgress {
         }
         let definition = self.0.definition.field(key)?;
         let bytes = serde_json::to_vec(&value).map_err(|_| Invalid::Encoding)?;
-        if bytes.len() > 16 * 1024 * 1024 {
+        let previous = self
+            .0
+            .fields
+            .get(&key)
+            .and_then(|f| f.value.as_ref())
+            .map(|v| v.encode(definition))
+            .transpose()?
+            .map_or(0, |v| v.len());
+        if self
+            .value_bytes()?
+            .saturating_sub(previous)
+            .saturating_add(bytes.len())
+            > 16 * 1024 * 1024
+        {
             return Err(Invalid::Value);
         }
         let digest = format!("{:x}", Sha256::digest(&bytes));
@@ -188,6 +239,12 @@ impl CollectionProgress {
             return Err(Invalid::Evidence);
         }
         f.value = value.encode(definition).ok().map(|_| value);
+        f.items = match &f.value {
+            Some(CollectedValue::Value(crate::Scalar::Array(items))) => {
+                vec![Quality::Success; items.len()]
+            }
+            _ => Vec::new(),
+        };
         f.digest = Some(digest);
         f.received_at = Some(at);
         f.quality = quality(f, false);
@@ -206,6 +263,61 @@ impl CollectionProgress {
         for f in self.0.fields.values_mut() {
             f.quality = quality(f, true)
         }
+    }
+    /// Record native parsing failure without treating it as a missing value or protocol success.
+    pub fn observe_invalid(&mut self, key: FieldKey, at: i64) -> Result<()> {
+        rss_contract::Timepoint::try_from(at).map_err(|_| Invalid::Time)?;
+        let field = self.0.fields.get_mut(&key).ok_or(Invalid::UnknownField)?;
+        if self.0.finished || field.value.is_some() || field.terminal.is_some() {
+            return Err(Invalid::Evidence);
+        }
+        field.confirmed = false;
+        field.received_at = Some(at);
+        field.terminal = Some(Quality::Invalid);
+        field.quality = quality(field, false);
+        Ok(())
+    }
+    /// Retain row-level validation failures while preserving the prior trusted field as a whole.
+    pub fn observe_invalid_items(
+        &mut self,
+        key: FieldKey,
+        items: Vec<Quality>,
+        at: i64,
+    ) -> Result<()> {
+        let crate::ValueType::Array { max_items, .. } = &self.0.definition.field(key)?.value_type
+        else {
+            return Err(Invalid::TypeMismatch);
+        };
+        if items.len() > *max_items as usize
+            || !items.contains(&Quality::Invalid)
+            || items
+                .iter()
+                .any(|q| !matches!(q, Quality::Success | Quality::Invalid))
+        {
+            return Err(Invalid::Evidence);
+        }
+        self.observe_invalid(key, at)?;
+        self.0
+            .fields
+            .get_mut(&key)
+            .ok_or(Invalid::UnknownField)?
+            .items = items;
+        Ok(())
+    }
+    /// Encoded values currently retained, for the native adapter's aggregate budget.
+    pub fn value_bytes(&self) -> Result<usize> {
+        self.0
+            .fields
+            .iter()
+            .try_fold(0usize, |total, (key, field)| {
+                let bytes = field
+                    .value
+                    .as_ref()
+                    .map(|v| v.encode(self.0.definition.field(*key)?))
+                    .transpose()?
+                    .map_or(0, |v| v.len());
+                total.checked_add(bytes).ok_or(Invalid::Value)
+            })
     }
     /// Emit only confirmed outcomes. Failure or missing values cannot create a full snapshot.
     pub fn body(&self) -> Result<Option<Body>> {
@@ -256,6 +368,8 @@ impl CollectionProgress {
 pub enum NativeValue {
     /// Typed native value or explicit unsupported/null.
     Value(CollectedValue),
+    /// Per-row results from a malformed list; no partial list replaces trusted facts.
+    InvalidItems(Vec<Quality>),
     /// Response did not match the expected schema.
     Invalid,
     /// Expected field was absent.
@@ -278,11 +392,19 @@ impl CollectionProgress {
         for key in keys {
             match values.remove(&key).unwrap_or(NativeValue::Missing) {
                 NativeValue::Value(value) => {
-                    result.observe_value(key, value, at)?;
+                    match result.observe_value(key, value, at) {
+                        Ok(()) => (),
+                        Err(Invalid::Value) => {
+                            result.observe_invalid(key, at)?;
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    }
                     let f = result.0.fields.get_mut(&key).ok_or(Invalid::UnknownField)?;
                     f.confirmed = true;
                     f.quality = quality(f, false);
                 }
+                NativeValue::InvalidItems(items) => result.observe_invalid_items(key, items, at)?,
                 other => {
                     rss_contract::Timepoint::try_from(at).map_err(|_| Invalid::Time)?;
                     let f = result.0.fields.get_mut(&key).ok_or(Invalid::UnknownField)?;
@@ -343,5 +465,45 @@ impl CollectionProgress {
             }
         }
         Ok(result)
+    }
+}
+
+impl NativeValue {
+    /// Validate each mapped list row and duplicate identities without accepting a partial snapshot.
+    pub fn list(field: &crate::FieldDefinition, rows: Vec<Result<crate::Scalar>>) -> Result<Self> {
+        let crate::ValueType::Array { items, max_items } = &field.value_type else {
+            return Err(Invalid::TypeMismatch);
+        };
+        if rows.len() > *max_items as usize {
+            return Ok(Self::Invalid);
+        }
+        let mut quality = Vec::with_capacity(rows.len());
+        let mut values = Vec::with_capacity(rows.len());
+        let mut identities = BTreeMap::new();
+        for (index, row) in rows.into_iter().enumerate() {
+            let value = row.and_then(|v| items.validate_value(&v).map(|_| v));
+            quality.push(if value.is_ok() {
+                Quality::Success
+            } else {
+                Quality::Invalid
+            });
+            if let Ok(value) = value {
+                if let (Some(key), crate::Scalar::Object(properties)) = (&field.item_key, &value) {
+                    let identity = properties.get(key).ok_or(Invalid::Value)?;
+                    if let Some(previous) = identities.insert(identity.clone(), index) {
+                        quality[previous] = Quality::Invalid;
+                        quality[index] = Quality::Invalid;
+                    }
+                }
+                values.push(value);
+            }
+        }
+        if quality.contains(&Quality::Invalid) {
+            Ok(Self::InvalidItems(quality))
+        } else {
+            Ok(Self::Value(CollectedValue::Value(
+                field.canonical_value(crate::Scalar::Array(values))?,
+            )))
+        }
     }
 }

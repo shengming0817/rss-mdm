@@ -25,6 +25,10 @@ fn params<T>(v: ParamInput<T>) -> std::result::Result<T, Error> {
 pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route("/asset-fields", get(fields))
+        .route(
+            "/devices/{id}/collections/{run}/fields/{field}/items",
+            get(collection_items),
+        )
         .route("/asset-fields/{field}", put(field_write))
         .route("/asset-fields/{field}/references", get(field_references))
         .route("/device-queries", post(search))
@@ -60,6 +64,7 @@ fn authorize(
             .map_err(rss_mdm_inventory_service::Error::from),
         Command::Detail { device, .. }
         | Command::CollectionRun { device, .. }
+        | Command::CollectionItems { device, .. }
         | Command::ListItems { device, .. } => auth
             .proof
             .require(Permission::InventoryRead, Some(device))
@@ -93,6 +98,7 @@ async fn run(
         Command::Manual { device, .. } => audit.target_device(device),
         Command::Detail { device, .. }
         | Command::CollectionRun { device, .. }
+        | Command::CollectionItems { device, .. }
         | Command::ListItems { device, .. } => audit.target(device),
         Command::FieldWrite { field, .. } | Command::FieldReferences { field } => {
             audit.target(field.as_str())
@@ -403,6 +409,38 @@ async fn list_items(
             scope,
             limit: page.limit.unwrap_or(50),
             cursor: page.cursor,
+        },
+    )
+    .await
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct ItemPage {
+    offset: Option<usize>,
+    limit: Option<usize>,
+}
+async fn collection_items(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path((device, id, key)): Path<(String, Uuid, String)>,
+    parameters: ParamInput<ItemPage>,
+) -> std::result::Result<HttpResponse, Error> {
+    let page = params(parameters)?;
+    let field = FieldKey::parse(&key).map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
+    let scope = ReadScope::from_proof(&auth.proof)?;
+    run(
+        &app,
+        &auth,
+        &audit,
+        Command::CollectionItems {
+            device,
+            run: id,
+            field,
+            scope,
+            offset: page.offset.unwrap_or(0),
+            limit: page.limit.unwrap_or(100),
         },
     )
     .await

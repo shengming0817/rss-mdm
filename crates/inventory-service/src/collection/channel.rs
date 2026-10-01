@@ -55,7 +55,7 @@ pub async fn start_in(
     )
     .await?;
     let attempt = Attempts::new(definition);
-    sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,apple_deadline) VALUES($1::uuid,$2,$3,$4,$5::uuid,$6,$7,$8,$9,'pending',CASE WHEN $4='mdm.apple' THEN clock_timestamp()+interval '5 minutes' END)")
+    sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,deadline) VALUES($1::uuid,$2,$3,$4,$5::uuid,$6,$7,$8,$9,'pending',CASE WHEN $4='mdm.apple' THEN clock_timestamp()+interval '5 minutes' END)")
         .bind(p.tenant().to_string()).bind(id).bind(p.registration()).bind(source.as_str()).bind(scope.epoch().as_str()).bind(scope.encode().map_err(|_|Error::Malformed)?).bind(sequence).bind(at).bind(serde_json::to_string(&attempt).map_err(|_|Error::Malformed)?).execute(&mut *c).await.map_err(db)?;
     Ok((id, scope, sequence))
 }

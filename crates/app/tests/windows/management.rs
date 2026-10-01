@@ -379,3 +379,6 @@ async fn session_replay_nonce_collection_and_revoke() -> anyhow::Result<()> {
     host.close().await?;
     Ok(())
 }
+
+#[path = "collection.rs"]
+mod collection;

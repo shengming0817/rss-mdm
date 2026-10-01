@@ -94,7 +94,7 @@ impl ExecutionService {
                 let mut run=db::load_run(tx,stored(Uuid::parse_str(&id))?).await?;belongs(&run,p)?;let plan=db::load_source(&service.policy_reader,tx,run.source).await?;
                 let previous=run.state.clone();
                 run.state.expire(now,plan.timeout_seconds());
-                let capable=match &plan { db::ScheduledPolicy::Script(script) => script_capable && input.profiles().contains(&script.frozen.executor_profile()), db::ScheduledPolicy::Software(_) => software_capable, db::ScheduledPolicy::Enrollment(_) => enrollment_capable };
+                let capable=match &plan { db::ScheduledPolicy::Native(_) => false, db::ScheduledPolicy::Script(script) => script_capable && input.profiles().contains(&script.frozen.executor_profile()), db::ScheduledPolicy::Software(_) => software_capable, db::ScheduledPolicy::Enrollment(_) => enrollment_capable };
                 let allowed=capable && plan.authorized_in(service,tx,&run.target,now).await?;
                 if plan.withdrawn_in(service,tx,&run.target,now).await?{run.state.cancel();}
                 super::recovery::audit_recovery(service,tx,&run,&previous).await?;
@@ -282,6 +282,7 @@ impl ExecutionService {
             if now>=expiry { return Err(Error::Forbidden.into()); }
             match plan {
                 db::ScheduledPolicy::Enrollment(_) => Err(Error::NotFound.into()),
+                db::ScheduledPolicy::Native(_) => return Err(Error::Forbidden.into()),
                 db::ScheduledPolicy::Script(script) => {
                     if key.is_some() { return Err(Error::Malformed.into()); }
                     script.frozen.artifact().map_err(Into::into)

@@ -35,6 +35,7 @@ pub async fn preview(
             let selected=variant(&version,binding.ok_or(Error::Malformed)?)?;
             match (&input.definition.action,selected.declaration()) {
                 (Action::Execution {parameters,..},resource::Declaration::Script {definition,..})=>checked_input(definition.validate_parameters(parameters))?,
+                (Action::NativeCollection{..},resource::Declaration::NativeCollection{..})=>(),
                 (Action::Configuration {exit,..},resource::Declaration::Configuration {remove,..})=>{
                     if matches!(exit,Exit::Remove) && remove.is_none(){return Err(Error::Unsupported.into());}
                 },

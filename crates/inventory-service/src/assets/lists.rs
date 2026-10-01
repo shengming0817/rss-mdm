@@ -17,6 +17,7 @@ pub enum ListState {
 pub struct ListSource {
     pub state: ListState,
     pub evidence: Evidence,
+    pub cursor: String,
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -36,6 +37,7 @@ struct Cursor {
     scope: String,
     watermark: i64,
     offset: usize,
+    source: Option<(rss_mdm_inventory::Source, Option<String>)>,
 }
 fn state(value: &State) -> Result<ListState> {
     Ok(match value {
@@ -59,6 +61,7 @@ impl AssetService {
         scope: &ReadScope,
         watermark: i64,
         offset: usize,
+        source: Option<(rss_mdm_inventory::Source, Option<String>)>,
     ) -> Result<String> {
         let cursor = Cursor {
             kind: "inventory-list-v1".into(),
@@ -68,6 +71,7 @@ impl AssetService {
             scope: digest(scope)?,
             watermark,
             offset,
+            source,
         };
         let mut bytes = checked_input(serde_json::to_vec(&cursor))?;
         bytes.extend(ring::hmac::sign(&self.asset_cursor_key, &bytes).as_ref());
@@ -116,11 +120,19 @@ impl AssetService {
                             Ok(ListSource {
                                 state: state(&s.state)?,
                                 evidence: s.evidence.clone(),
+                                cursor: self.list_cursor(
+                                    &view.device,
+                                    key,
+                                    scope,
+                                    watermark,
+                                    0,
+                                    Some((s.evidence.source, s.evidence.dataset.clone())),
+                                )?,
                             })
                         })
                         .collect::<Result<_>>()?,
                     item_key: definition.item_key.clone(),
-                    cursor: self.list_cursor(&view.device, key, scope, watermark, 0)?,
+                    cursor: self.list_cursor(&view.device, key, scope, watermark, 0, None)?,
                 },
             );
         }
@@ -143,7 +155,7 @@ impl AssetService {
         {
             return Err(Error::Forbidden.into());
         }
-        let (watermark, offset) = if let Some(token) = token {
+        let (watermark, offset, source) = if let Some(token) = token {
             if token.len() > 4096 {
                 return Err(Error::Malformed.into());
             }
@@ -165,9 +177,9 @@ impl AssetService {
             {
                 return Err(Error::Conflict.into());
             }
-            (c.watermark, c.offset)
+            (c.watermark, c.offset, c.source)
         } else {
-            (self.list_watermark(tx).await?, 0)
+            (self.list_watermark(tx).await?, 0, None)
         };
         let restricted = ReadScope {
             subject: scope.subject.clone(),
@@ -185,7 +197,18 @@ impl AssetService {
             return Err(Error::Forbidden.into());
         }
         let resolved = view.fields.get(&field).ok_or(Error::NotFound)?;
-        let State::Known(Scalar::Array(values)) = &resolved.state else {
+        let selected = match &source {
+            None => &resolved.state,
+            Some((source, dataset)) => {
+                &resolved
+                    .sources
+                    .iter()
+                    .find(|s| s.evidence.source == *source && s.evidence.dataset == *dataset)
+                    .ok_or(Error::Conflict)?
+                    .state
+            }
+        };
+        let State::Known(Scalar::Array(values)) = selected else {
             return Err(Error::Conflict.into());
         };
         if offset > values.len() {
@@ -212,7 +235,7 @@ impl AssetService {
             total: values.len(),
             items,
             next_cursor: if next < values.len() {
-                Some(self.list_cursor(device, field, scope, watermark, next)?)
+                Some(self.list_cursor(device, field, scope, watermark, next, source)?)
             } else {
                 None
             },

@@ -51,8 +51,18 @@ pub(crate) async fn upload(
     id: Uuid,
     bytes: &[u8],
 ) -> Result<StatusCode> {
+    upload_for(browser, router, id, bytes, "macos", "aarch64").await
+}
+pub(crate) async fn upload_for(
+    browser: &Browser,
+    router: &Router,
+    id: Uuid,
+    bytes: &[u8],
+    platform: &str,
+    architecture: &str,
+) -> Result<StatusCode> {
     let _guard = super::software::content_setup_guard().await?;
-    let request=Request::builder().method(Method::POST).uri(format!("/api/v3/resources/{id}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
+    let request=Request::builder().method(Method::POST).uri(format!("/api/v3/resources/{id}/content?version=v1&variant=default&platform={platform}&architecture={architecture}&operation={}",Uuid::new_v4()))
         .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1").header("x-csrf-token",browser.csrf.as_ref().unwrap())
         .header("cookie",browser.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; ")).header("content-type","application/octet-stream").body(Body::from(bytes.to_vec()))?;
     Ok(router.clone().oneshot(request).await?.status())

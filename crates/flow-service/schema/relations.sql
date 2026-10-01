@@ -373,7 +373,7 @@ GRANT UPDATE(gateway_accepted) ON TABLE mdm_commands.operations TO mdm_command_r
 
 GRANT SELECT,INSERT ON TABLE mdm_commands.policy_recovery TO mdm_command_runtime;
 
-GRANT UPDATE(recovery_after) ON TABLE mdm_commands.policy_recovery TO mdm_command_runtime;
+GRANT UPDATE(recovery_after,target_after) ON TABLE mdm_commands.policy_recovery TO mdm_command_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_commands.requests TO mdm_command_runtime;
 

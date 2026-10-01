@@ -165,10 +165,10 @@ async fn create_on(
     )
     .await?;
     let attempts = Attempts::new(definition);
-    sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,apple_deadline) VALUES($1::uuid,$2::uuid,$3::uuid,'mdm.apple',$4::uuid,$5,$6,floor(extract(epoch FROM clock_timestamp()))::bigint,$7,'pending',clock_timestamp()+interval '10 minutes')")
+    sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,deadline) VALUES($1::uuid,$2::uuid,$3::uuid,'mdm.apple',$4::uuid,$5,$6,floor(extract(epoch FROM clock_timestamp()))::bigint,$7,'pending',clock_timestamp()+interval '10 minutes')")
         .bind(tenant).bind(id.to_string()).bind(registration.to_string()).bind(scope.epoch().as_str()).bind(scope.encode().map_err(|_|Error::Unavailable(crate::Failure::Database))?).bind(sequence)
         .bind(serde_json::to_string(&attempts).expect("closed attempts")).execute(&mut *tx).await.map_err(db)?;
-    let deadline:String=sqlx::query_scalar("SELECT apple_deadline::text FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id).fetch_one(&mut *tx).await.map_err(db)?;
+    let deadline:String=sqlx::query_scalar("SELECT deadline::text FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id).fetch_one(&mut *tx).await.map_err(db)?;
     participant
         .start(
             tx,
@@ -188,7 +188,7 @@ async fn create_on(
 }
 
 pub async fn current(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<bool, Error> {
-    let row=sqlx::query("SELECT registration,epoch,apple_deadline>clock_timestamp() AND sealed_at IS NULL AS live,floor(extract(epoch FROM clock_timestamp()))::bigint AS now FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2::uuid AND source='mdm.apple' FOR UPDATE").bind(tenant).bind(id).fetch_one(&mut *c).await.map_err(db)?;
+    let row=sqlx::query("SELECT registration,epoch,deadline>clock_timestamp() AND sealed_at IS NULL AS live,floor(extract(epoch FROM clock_timestamp()))::bigint AS now FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2::uuid AND source='mdm.apple' FOR UPDATE").bind(tenant).bind(id).fetch_one(&mut *c).await.map_err(db)?;
     let current = crate::device::store::source_current_in(
         c,
         tenant,

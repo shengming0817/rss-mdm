@@ -16,24 +16,12 @@ pub(crate) async fn revoke_http_matrix(session: &Browser) -> Result<()> {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
-    let coverage = serde_json::to_string(
-        &crate::test_support::inventory::definition(
-            "inventory",
-            "mdm.windows",
-            &[
-                rss_mdm_inventory::builtin::MODEL,
-                rss_mdm_inventory::builtin::OS_VERSION,
-            ],
-        )
-        .coverage()
-        .unwrap(),
-    )?;
     pg(&format!("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','{grant}','revoke-fixture','{INSTANCE}','{device}','enrollment','consumed',clock_timestamp()+interval '200 seconds');
         INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source) VALUES('{TENANT}','{request}','{grant}','mdm.windows');
         INSERT INTO mdm_access.devices VALUES('{TENANT}','{device}');
         INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','{device}','mdm',1,'{request}','active');
         INSERT INTO mdm_access.credentials VALUES('{TENANT}','{credential}','{registration}','mdm','{locator}','active');
-        INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','{registration}','mdm.windows','{epoch}','{coverage}',true);", TENANT = case_tenant()))?;
+        INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES('{TENANT}','{registration}','mdm.windows','{epoch}',true);", TENANT = case_tenant()))?;
     let path = format!("/api/v3/devices/{device}/registrations/{registration}/revoke");
     let listing = &format!("/api/v3/devices/{device}/registrations");
     let fixture = authority::Authority::open().await?;

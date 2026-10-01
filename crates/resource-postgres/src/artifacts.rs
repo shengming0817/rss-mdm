@@ -11,6 +11,9 @@ pub(crate) async fn insert(tx: &mut PgTransaction<'_>, version: &Version) -> Res
         {
             fields.extend(mappings.keys().cloned());
         }
+        if let Declaration::NativeCollection { definition, .. } = variant.declaration() {
+            fields.extend(definition.spec().mappings.keys().cloned());
+        }
         match variant.declaration() {
             Declaration::Software { definition } => {
                 for artifact in definition.spec().artifacts.values() {
