@@ -4,6 +4,7 @@
 )]
 pub mod ack;
 pub mod pg;
+pub const INSTANCE: &str = "33333333-3333-4333-8333-333333333333";
 use pg::*;
 use rss_mdm_resource as resource;
 use rss_mdm_resource_postgres as resource_pg;
@@ -851,7 +852,7 @@ async fn admit_private_source(source: &str) -> resource::SoftwareSource {
             tenant().to_string(),
             "software_source_write",
         );
-        request.set_principal("operator", "publication-fixture");
+        request.set_principal("operator", INSTANCE);
         let op = c::Operation {
             operation_id: uuid::Uuid::new_v4(),
             expected_revision,
@@ -903,7 +904,7 @@ async fn admit_version(version: &resource::Version) {
         tenant().to_string(),
         "software_version_write",
     );
-    request.set_principal("operator", "publication-fixture");
+    request.set_principal("operator", INSTANCE);
     runtime
         .local_tx_with_context(
             tenant(),
@@ -946,7 +947,7 @@ pub async fn withdraw_version_admission(input: &CandidateInput) {
     );
     let request =
         rss_mdm_audit_integration::RequestAudit::new(tenant().to_string(), "software_withdraw");
-    request.set_principal("publisher", "publication-fixture");
+    request.set_principal("publisher", INSTANCE);
     let op = c::Operation {
         operation_id: uuid::Uuid::new_v4(),
         expected_revision: 1,

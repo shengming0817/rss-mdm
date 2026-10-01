@@ -55,7 +55,7 @@ impl Fixture {
     }
     async fn source(&self, operation: &Operation<SourceChange>, rollback: bool) -> Result<Value> {
         let audit = RequestAudit::new(pg::tenant().to_string(), "software_source_write");
-        audit.set_principal("operator", "catalog-fixture");
+        audit.set_principal("operator", materials::INSTANCE);
         let result = transaction(
             &self.runtime,
             (&self.catalog, &audit, operation),
@@ -95,7 +95,7 @@ impl Fixture {
         digest: [u8; 32],
     ) -> Result<Value> {
         let audit = RequestAudit::new(pg::tenant().to_string(), "software_version_write");
-        audit.set_principal("operator", "catalog-fixture");
+        audit.set_principal("operator", materials::INSTANCE);
         let content = Content(digest);
         let result = transaction(
             &self.runtime,
@@ -420,7 +420,7 @@ async fn import_receipt_survives_unknown_commit_and_source_withdrawal() -> Resul
     let resources =
         resource::ResourceStore::new(fixture.runtime.clone(), pg::tenant(), pg::deadline()).await?;
     let audit = RequestAudit::new(pg::tenant().to_string(), "software_import");
-    audit.set_principal("operator", "catalog-fixture");
+    audit.set_principal("operator", materials::INSTANCE);
     let run = |prepared| {
         transaction(
             &fixture.runtime,
