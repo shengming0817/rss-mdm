@@ -351,3 +351,63 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
     crate::test_support::stop_worker(stack).await?;
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.software.recovery"]
+async fn withdrawn_software_does_not_poison_claims_for_other_policies_or_outside_scope()
+-> Result<()> {
+    let mut f = Fixture::approved(Platform::MacOs).await?;
+    let outside = prepared_scope(&f.base, &mut f.author, &f.router, &[]).await?;
+    let dependency = f
+        .author
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("/api/v3/software/resources/{}/versions/v1", f.dependency),
+            None,
+        )
+        .await?;
+    ensure!(dependency.0 == StatusCode::OK);
+    let approval = dependency.1["admission"]["operation"].clone();
+    let mut ids = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+    ids.sort();
+    for (policy, resource, scope, operation) in [
+        (ids[0], f.resource, f.scope, &f.first_operation),
+        (ids[1], f.resource, outside, &f.first_operation),
+        (ids[2], f.dependency, f.scope, &approval),
+    ] {
+        write(&mut f.author,&f.router,&format!("/api/v2/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":authored(resource,scope,"required_install",operation)})).await?;
+    }
+    write(
+        &mut f.author,
+        &f.router,
+        &format!("/api/v3/software/resources/{}/versions/v1", f.resource),
+        1,
+        json!({"action":"withdraw","evidence":["withdraw only the root"]}),
+    )
+    .await?;
+    let stack = worker(&f.base, f.execution.content.clone()).await?;
+    let task = claim(&f.router).await?;
+    ensure!(
+        task["payload"]["steps"].as_array().is_some_and(
+            |steps| steps.len() == 1 && steps[0]["action"]["package"] == "Private.Dependency"
+        ),
+        "withdrawal blocked unrelated valid policy: {task}"
+    );
+    let page = f
+        .author
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("/api/v2/policies/{}/devices", ids[0]),
+            None,
+        )
+        .await?;
+    ensure!(
+        page.0 == StatusCode::OK
+            && page.1["items"][0]["taskAdmission"]["state"] == "approval_withdrawn",
+        "withdrawal diagnosis: {page:?}"
+    );
+    crate::test_support::stop_worker(stack).await?;
+    Ok(())
+}

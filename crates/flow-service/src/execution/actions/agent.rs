@@ -285,7 +285,7 @@ impl ExecutionService {
                     let (index,local_key)=key.split_once('/').ok_or(Error::Malformed)?;
                     let index:usize=index.parse().map_err(|_|Error::Malformed)?;
                     let (platform, architecture) = db::agent_profile_in(service,tx, run.target.registration).await?.ok_or(Error::Forbidden)?;
-                    let steps=software.execution_steps_in(service,tx,platform,architecture).await?;
+                    let steps=software.execution_steps_in(service,tx,platform,architecture).await?.ok_or(Error::Forbidden)?;
                     let selected=steps.get(index).ok_or(Error::NotFound)?;
                     let variant = selected.version().resolve(selected.platform(),selected.architecture(),selected.variant()).map_err(|_| Error::Malformed)?;
                     let rss_mdm_resource::Declaration::Software { definition } = variant.declaration() else { return Err(Error::Malformed.into()); };

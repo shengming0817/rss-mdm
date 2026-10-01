@@ -83,3 +83,23 @@ fn exported_formula_has_no_source_install_fallback() {
     assert!(source.contains("RSS bottle-only: source installation is unsupported"));
     assert!(!source.contains("bin.install"));
 }
+
+#[test]
+fn cask_architecture_requirement_must_match_the_selected_tag() {
+    for (arch, tag) in [
+        ("arm64", BottleTag::Arm64Sonoma),
+        ("x86_64", BottleTag::Sonoma),
+    ] {
+        let source = cask().replace(
+            "  app \"App.app\"",
+            &format!("  depends_on arch: :{arch}\n  app \"App.app\""),
+        );
+        for selected in [BottleTag::Arm64Sonoma, BottleTag::Sonoma] {
+            assert_eq!(
+                TapImport::parse(&key(), "1.2", selected, source.as_bytes()).is_ok(),
+                selected == tag,
+                "{arch} / {selected:?}"
+            );
+        }
+    }
+}

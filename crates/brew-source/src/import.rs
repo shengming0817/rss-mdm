@@ -85,7 +85,7 @@ impl TapImport {
         } else {
             bottle(key, &declarations, tag, release)?
         };
-        let dependencies = dependencies(key, &body)?;
+        let dependencies = dependencies(key, &body, tag)?;
         Ok(Self {
             key: key.clone(),
             version: release.into(),
@@ -599,14 +599,25 @@ fn bottle_checksum(node: &Node, tag: BottleTag) -> Result<(String, [u8; 32]), Er
         selected.ok_or(Error::NotFound)?,
     ))
 }
-fn dependencies(key: &PackageKey, nodes: &[&Node]) -> Result<Vec<PackageKey>, Error> {
+fn dependencies(
+    key: &PackageKey,
+    nodes: &[&Node],
+    tag: BottleTag,
+) -> Result<Vec<PackageKey>, Error> {
     let mut result = Vec::new();
     let mut seen = BTreeSet::new();
     for node in nodes.iter().filter(|n| n.name == "depends_on") {
         if let [Argument::Named(name, value)] = node.args.as_slice() {
             if name == "arch"
-                && matches!(value.as_ref(),Argument::Symbol(v) if matches!(v.as_str(),"arm64"|"x86_64"))
+                && let Argument::Symbol(arch) = value.as_ref()
             {
+                let expected = match tag {
+                    BottleTag::Arm64Sonoma => "arm64",
+                    BottleTag::Sonoma => "x86_64",
+                };
+                if arch != expected {
+                    return Err(Error::Unsupported);
+                }
                 continue;
             }
             return Err(Error::Unsupported);

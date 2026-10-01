@@ -223,7 +223,8 @@ impl ScheduledPolicy {
                 };
                 let selected_steps = v
                     .execution_steps_in(service, tx, platform, architecture)
-                    .await?;
+                    .await?
+                    .ok_or(Error::Forbidden)?;
                 let mut steps = Vec::new();
                 for (index, selected) in selected_steps.iter().enumerate() {
                     let variant = selected

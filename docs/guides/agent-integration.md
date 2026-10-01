@@ -15,6 +15,15 @@
   "credential": "另一个 43 字符无填充 Base64URL",
   "platform": "macos",
   "architecture": "aarch64",
+  "executionContext": {
+    "revision": 1,
+    "osVersion": [14, 0, 0, 0],
+    "systemBroker": true,
+    "interactiveUser": null,
+    "sourceCredentials": [],
+    "msixSideload": false,
+    "msixUnsigned": false
+  },
   "capabilities": ["inventory.basic.v4"]
 }
 ```
@@ -66,6 +75,15 @@ V4 基础库存接受 snapshot、partial、failed；通道状态使用独立的 
   "credential": "Agent 自行生成的 43 字符无填充 Base64URL",
   "platform": "macos",
   "architecture": "aarch64",
+  "executionContext": {
+    "revision": 1,
+    "osVersion": [14, 0, 0, 0],
+    "systemBroker": true,
+    "interactiveUser": null,
+    "sourceCredentials": [],
+    "msixSideload": false,
+    "msixUnsigned": false
+  },
   "capabilities": ["inventory.basic.v4", "mdm.enrollment.v4"]
 }
 ```
@@ -84,6 +102,6 @@ V4 基础库存接受 snapshot、partial、failed；通道状态使用独立的 
 
 V4 共 13 个网络 shape，新增 ManagedRegistrationRequest，并扩展通道观察和标准注册入口任务。当前数据库安装准入只接受空库或完整当前账本，不提供旧 Agent 注册数据的在线转换。固定签名 MSI/公证 PKG 及真实系统证书使用分别由 #2535/#2536 和 #2480/#2481 验证；本次受控协议样本不证明生产安装包或真机已可用。
 
-软件请求必须包含完整 executionContext：递增 revision、OS 数字版本、systemBroker、明确 interactiveUser（没有会话时为 null）、来源范围只读凭据引用，以及 MSIX sideload/unsigned 能力。用户绑定包括精确 SID/UID 与 sessionId；上下文变化须使用更高 revision，旧 Offer 不能启动。每个依赖步骤分别检查 profile、执行上下文和材料；没有通用软件能力兜底。
+全部 Agent 注册（包括仅库存注册、托管安装注册）以及软件任务请求都必须包含完整 executionContext：递增 revision、OS 数字版本、systemBroker、明确 interactiveUser（没有会话时为 null）、来源范围只读凭据引用，以及 MSIX sideload/unsigned 能力。用户绑定包括精确 SID/UID 与 sessionId；上下文变化须使用更高 revision，旧 Offer 不能启动。每个依赖步骤分别检查 profile、执行上下文和材料；没有通用软件能力兜底。
 
 软件结果是绑定 definitionDigest 的逐步骤证据：index/stepDigest、target、package、native identity、独立 before/after 检测、process、重启及诊断。MSIX 注册与 provisioning 使用不同 identity 变体，错误步骤、用户会话、包身份或作用域拒绝投影。退出码不能代替独立检测；Unknown 保留原任务恢复身份。wire 保持 v4，只维护当前软件 shape 与指纹，消费方须更新精确依赖。

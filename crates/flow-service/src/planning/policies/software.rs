@@ -183,10 +183,22 @@ impl SoftwareExecutionPolicy {
             .execution_steps_in(service, tx, platform, architecture)
             .await
         {
-            Ok(v) => v,
+            Ok(Some(v)) => v,
+            Ok(None) => return Ok(false),
             Err(crate::transaction::Fault::Request(Error::Unsupported)) => return Ok(false),
             Err(e) => return Err(e),
         };
+        self.supported_steps_in(service, tx, binding, platform, steps)
+            .await
+    }
+    async fn supported_steps_in(
+        &self,
+        service: &crate::execution::ExecutionService,
+        tx: &mut PgTransaction<'_>,
+        binding: &crate::execution::channels::AgentBinding,
+        platform: Platform,
+        steps: Vec<FrozenSoftware>,
+    ) -> Result<bool> {
         let mut artifact_count = 0usize;
         for (index, selected) in steps.into_iter().enumerate() {
             let variant = selected
@@ -330,14 +342,15 @@ impl SoftwareExecutionPolicy {
             )),
         )
     }
-    /// Resolve exact fixed prerequisites on the server, in dependency-first order.
+    /// Resolve exact fixed prerequisites in dependency-first order.
+    /// Missing/withdrawn admission is None; storage and integrity failures remain errors.
     pub async fn execution_steps_in(
         &self,
         service: &crate::execution::ExecutionService,
         tx: &mut PgTransaction<'_>,
         platform: Platform,
         architecture: Architecture,
-    ) -> Result<Vec<FrozenSoftware>> {
+    ) -> Result<Option<Vec<FrozenSoftware>>> {
         let catalog = self.catalog(service);
         catalog.lock_in(tx).await?;
         let target_platform = match platform {
@@ -373,7 +386,11 @@ impl SoftwareExecutionPolicy {
             if !active.insert(key.clone()) || active.len() + done.len() > 256 {
                 return Err(Error::Malformed.into());
             }
-            let version = catalog.version_in(tx, &resource_id, &version_id).await?;
+            let version = match catalog.version_in(tx, &resource_id, &version_id).await {
+                Ok(version) => version,
+                Err(CatalogError::NotAdmitted | CatalogError::Missing) => return Ok(None),
+                Err(error) => return Err(error.into()),
+            };
             if version.digest().bytes() != digest {
                 return Err(Error::Conflict.into());
             }
@@ -400,9 +417,14 @@ impl SoftwareExecutionPolicy {
                     target_architecture,
                     &checked_input(resource::Id::new(&variant_key))?,
                 )
-                .await?;
+                .await;
+            let selected = match selected {
+                Ok(selected) => selected,
+                Err(CatalogError::NotAdmitted | CatalogError::Missing) => return Ok(None),
+                Err(error) => return Err(error.into()),
+            };
             if root && selected.admission().operation != self.frozen.admission_operation {
-                return Err(Error::Conflict.into());
+                return Ok(None);
             }
             let variant = selected
                 .version()
@@ -432,7 +454,7 @@ impl SoftwareExecutionPolicy {
         if ordered.is_empty() || ordered.len() > 32 {
             return Err(Error::Unsupported.into());
         }
-        Ok(ordered)
+        Ok(Some(ordered))
     }
     /// Recheck the original enterprise approval and immutable target bytes in the transaction.
     pub async fn admitted_in(
@@ -581,12 +603,6 @@ impl SoftwareExecutionPolicy {
             ));
         }
         let binding = &registrations[0].binding;
-        if !self.supported_in(service, tx, binding).await? {
-            return Ok(TaskAdmission::new(
-                TaskAdmissionState::UnsupportedCapability,
-                Some(index),
-            ));
-        }
         let (platform, architecture) = (&binding.platform, &binding.architecture);
         let platform = match platform.as_str() {
             "windows" => Platform::Windows,
@@ -611,6 +627,34 @@ impl SoftwareExecutionPolicy {
         {
             return Ok(TaskAdmission::new(
                 TaskAdmissionState::ApprovalWithdrawn,
+                Some(index),
+            ));
+        }
+        let steps = match self
+            .execution_steps_in(service, tx, platform, architecture)
+            .await
+        {
+            Ok(Some(steps)) => steps,
+            Ok(None) => {
+                return Ok(TaskAdmission::new(
+                    TaskAdmissionState::ApprovalWithdrawn,
+                    Some(index),
+                ));
+            }
+            Err(crate::transaction::Fault::Request(Error::Unsupported)) => {
+                return Ok(TaskAdmission::new(
+                    TaskAdmissionState::UnsupportedCapability,
+                    Some(index),
+                ));
+            }
+            Err(error) => return Err(error),
+        };
+        if !self
+            .supported_steps_in(service, tx, binding, platform, steps)
+            .await?
+        {
+            return Ok(TaskAdmission::new(
+                TaskAdmissionState::UnsupportedCapability,
                 Some(index),
             ));
         }

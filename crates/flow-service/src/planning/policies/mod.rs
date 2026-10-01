@@ -341,7 +341,8 @@ impl Policies {
                 let (platform, architecture) = target.parts();
                 let steps = draft
                     .execution_steps_in(&self.execution, tx, platform, architecture)
-                    .await?;
+                    .await?
+                    .ok_or(Error::Forbidden)?;
                 let mut artifact_count = 0usize;
                 let mut definition_bytes = 0usize;
                 for selected in &steps {

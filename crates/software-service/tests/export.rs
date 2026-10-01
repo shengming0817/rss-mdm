@@ -1,6 +1,6 @@
 use rss_mdm_software_service::{imports::prepare, publication::derive_document};
 use rss_request_context::TenantId;
-#[path = "imports.rs"]
+#[path = "support/imports.rs"]
 mod fixtures;
 #[test]
 fn native_document_is_derived_from_complete_frozen_behavior() {

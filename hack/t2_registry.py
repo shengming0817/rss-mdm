@@ -981,7 +981,7 @@ def matches(path, patterns):
     return any(fnmatchcase(path, pattern) for pattern in patterns)
 
 
-T1_INPUTS = ('crates/authorization-service/tests/unit.rs','crates/inventory-service/tests/runtime.rs') + tuple(f'crates/{name}/tests/*' for name in (
+T1_INPUTS = ('crates/authorization-service/tests/unit.rs','crates/inventory-service/tests/runtime.rs','crates/flow-service/tests/software_publication_worker.rs') + tuple(f'crates/{name}/tests/*' for name in (
     'inventory', 'group', 'scope', 'policy', 'resource', 'software-release',
     'compliance', 'agent-wire', 'windows-mdm', 'apple-mdm', 'content-service')) + (
     'crates/app/tests/agent/unit.rs',
@@ -1074,3 +1074,5 @@ def select_paths(paths):
     return Impact(full, tuple(sorted(modules)), tuple(sorted(tools)), tuple(sorted(reasons)))
 
 MODULES['execution.commands.windows'] = replace(MODULES['execution.commands.windows'], production_inputs=(*MODULES['execution.commands.windows'].production_inputs, 'crates/flow-service/src/execution/directory.rs', 'crates/management-http/src/execution/http.rs'), support_inputs=(*MODULES['execution.commands.windows'].support_inputs, 'crates/app/tests/support/agent_execution.rs'))
+
+consume(("crates/software-service/tests/support/imports.rs",), "software.catalog")

@@ -93,5 +93,5 @@ mod materials;
 #[path = "catalog/transactions.rs"]
 mod transactions;
 
-#[path = "imports.rs"]
+#[path = "support/imports.rs"]
 mod imported_fixture;

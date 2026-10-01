@@ -407,6 +407,13 @@ fn brew(
         "sonoma" => b::BottleTag::Sonoma,
         _ => return Err(Error::Unsupported),
     };
+    let architecture = match tag {
+        b::BottleTag::Arm64Sonoma => r::Architecture::Aarch64,
+        b::BottleTag::Sonoma => r::Architecture::X86_64,
+    };
+    if input.platform != r::Platform::MacOS || input.architecture != architecture {
+        return Err(Error::Input);
+    }
     let key = b::PackageKey::new(tenant, tap, &input.package).map_err(|_| Error::Input)?;
     let parsed = b::TapImport::parse(
         &key,

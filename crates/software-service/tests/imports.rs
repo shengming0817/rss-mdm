@@ -3,18 +3,11 @@ use rss_mdm_software_service::{
     imports::{ImportRequest, prepare},
 };
 use rss_request_context::TenantId;
-use serde_json::{Value, json};
+use serde_json::json;
 use std::collections::BTreeMap;
-pub(crate) fn source() -> SourceDefinition {
-    serde_json::from_value(json!({"id":"community","revision":"1","protocol":{"kind":"winget_community","repository":"https://github.com/microsoft/winget-pkgs.git","commit":"3119f00ff5be7f34f85e16158dae2f70d1a2ee04"}})).unwrap()
-}
-pub(crate) fn input() -> Value {
-    let invocation = json!({"runAs":"system","arguments":["/quiet"],"environment":{},"timeoutSeconds":60,"outputBytes":1024,"exitCodes":{"success":[0],"reboot":[]}});
-    json!({"asOfUnixSeconds":1700000000,"source":source().snapshot().unwrap(),"resource":"acme","resourceVersion":"1","package":"Acme.App","packageVersion":"1.2","platform":"windows","architecture":"x86_64","variant":"default","selection":{"kind":"winget","installerType":"exe","scope":"machine","installerId":null,"files":["Acme.App.yaml"]},"behavior":{"kind":"exe","installer":"installer","scope":"system","install":invocation,"upgradeInvocation":invocation,"upgrade":"in_place","uninstall":null,"layout":{"setup.exe":"installer"},"detect":{"kind":"registry","scope":"system","key":"Software\\Acme\\App","value":"Version","version":"1.2"}},"installerLength":3,"additionalArtifacts":{},"dependencies":[],"signatures":[],"reboot":"report","downgrade":"deny","ownership":"managed_only","nativeExport":true})
-}
-pub(crate) fn documents() -> BTreeMap<String, Vec<u8>> {
-    BTreeMap::from([("Acme.App.yaml".into(),b"PackageIdentifier: Acme.App\nPackageVersion: '1.2'\nPackageLocale: en-US\nPublisher: Acme\nPackageName: Acme App\nLicense: Proprietary\nShortDescription: Enterprise application\nInstallerType: exe\nScope: machine\nInstallerSwitches:\n  Silent: /quiet\nInstallers:\n  - Architecture: x64\n    InstallerUrl: https://cdn.example.test/app.exe\n    InstallerSha256: '1111111111111111111111111111111111111111111111111111111111111111'\nManifestType: singleton\nManifestVersion: 1.10.0\n".to_vec())])
-}
+#[path = "support/imports.rs"]
+mod fixtures;
+use fixtures::{documents, input, source};
 #[test]
 fn import_freezes_requested_source_and_original_bytes() {
     let tenant = TenantId::parse("10000000-0000-0000-0000-000000000001").unwrap();
@@ -49,5 +42,42 @@ fn import_freezes_requested_source_and_original_bytes() {
             prepare(tenant, &source(), &request, &documents()).is_err(),
             "{path}"
         );
+    }
+}
+
+#[test]
+fn brew_source_tag_is_bound_to_resource_architecture_even_without_export() {
+    let tenant = TenantId::parse("10000000-0000-0000-0000-000000000001").unwrap();
+    let source:SourceDefinition=serde_json::from_value(json!({"id":"brew","revision":"1","protocol":{"kind":"brew_tap","repository":"https://github.com/acme/homebrew-private.git","commit":"1111111111111111111111111111111111111111","tap":"acme/private"}})).unwrap();
+    let formula = format!(
+        "class App < Formula\n  version \"1.2\"\n  desc \"Controlled tool\"\n  homepage \"https://example.test/\"\n  url \"https://cdn.example.test/app-source.tar.gz\"\n  sha256 \"{}\"\n  bottle do\n    root_url \"https://cdn.example.test/bottles\"\n    sha256 cellar: :any_skip_relocation, arm64_sonoma: \"{}\", sonoma: \"{}\"\n  end\n  def install\n    bin.install \"app\"\n  end\nend\n",
+        "11".repeat(32),
+        "22".repeat(32),
+        "22".repeat(32)
+    );
+    let cask = format!(
+        "cask \"app\" do\n  version \"1.2\"\n  sha256 \"{}\"\n  url \"https://cdn.example.test/app.dmg\"\n  name \"App\"\n  desc \"Controlled application\"\n  homepage \"https://example.test/\"\n  app \"App.app\"\nend\n",
+        "22".repeat(32)
+    );
+    let user = json!({"runAs":"logged_in_user","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":1024,"exitCodes":{"success":[0],"reboot":[]}});
+    let behavior = json!({"kind":"brew","installer":"installer","scope":"user","install":user,"upgradeInvocation":user,"upgrade":"in_place","uninstall":null,"detect":{"kind":"file","scope":"user","path":"bin/app","version":"1.2","sha256":vec![2;32]}});
+    let dmg = json!({"kind":"dmg","image":"installer","volume":"App","scope":"system","invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":1024,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","payload":{"kind":"app_copy","application":{"path":"App.app","targetName":"App.app","bundleId":"com.acme.app","version":"1.2","materialSha256":vec![2;32]},"uninstall":true}});
+    for native_export in [true, false] {
+        for (path, document, behavior) in [
+            ("Formula/app.rb", formula.as_str(), behavior.clone()),
+            ("Casks/app.rb", cask.as_str(), dmg.clone()),
+        ] {
+            for arch in ["x86_64", "aarch64"] {
+                for tag in ["sonoma", "arm64_sonoma"] {
+                    let request=serde_json::from_value(json!({"asOfUnixSeconds":1700000000,"source":source.snapshot().unwrap(),"resource":"app","resourceVersion":"1","package":"app","packageVersion":"1.2","platform":"macos","architecture":arch,"variant":"default","selection":{"kind":"brew","path":path,"bottleTag":tag,"sourceLength":if path.starts_with("Formula"){json!(3)}else{json!(null)}},"behavior":behavior,"installerLength":3,"additionalArtifacts":if path.starts_with("Formula"){json!({"source":{"reference":"source","origin":"https://cdn.example.test/app-source.tar.gz","length":3,"sha256":vec![0x11;32]}})}else{json!({})},"dependencies":[],"signatures":[],"reboot":"report","downgrade":"deny","ownership":"managed_only","nativeExport":native_export})).unwrap();
+                    let docs = BTreeMap::from([(path.into(), document.as_bytes().to_vec())]);
+                    assert_eq!(
+                        prepare(tenant, &source, &request, &docs).is_ok(),
+                        (arch == "aarch64") == (tag == "arm64_sonoma"),
+                        "{path}/{arch}/{tag}/export={native_export}"
+                    );
+                }
+            }
+        }
     }
 }
