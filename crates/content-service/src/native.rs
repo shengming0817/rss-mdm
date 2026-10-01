@@ -264,6 +264,35 @@ fn match_identity(
     }
     Ok(())
 }
+pub(super) fn read_xml_bytes(
+    reader: &mut impl Read,
+    length: u64,
+    timer: &dyn Clock,
+    deadline: Deadline,
+    bytes: &mut Vec<u8>,
+) -> Result<(), Error> {
+    if length > 1_048_576 || !bytes.is_empty() {
+        return Err(invalid());
+    }
+    let mut buffer = [0; 8192];
+    loop {
+        check_time(timer, deadline)?;
+        let count = buffer.len().min(length as usize - bytes.len() + 1);
+        let n = reader.read(&mut buffer[..count]).map_err(|_| invalid())?;
+        if n == 0 {
+            break;
+        }
+        if bytes.len() + n > length as usize {
+            return Err(invalid());
+        }
+        bytes.extend_from_slice(&buffer[..n]);
+    }
+    check_time(timer, deadline)?;
+    if bytes.len() != length as usize {
+        return Err(invalid());
+    }
+    Ok(())
+}
 fn read_xml(
     archive: &mut zip::ZipArchive<&mut File>,
     path: &str,
@@ -275,9 +304,9 @@ fn read_xml(
     if entry.size() > 1_048_576 {
         return Err(invalid());
     }
-    let mut bytes = Vec::with_capacity(entry.size() as usize);
-    entry.read_to_end(&mut bytes).map_err(|_| invalid())?;
-    check_time(timer, deadline)?;
+    let length = entry.size();
+    let mut bytes = Vec::with_capacity(length as usize);
+    read_xml_bytes(&mut entry, length, timer, deadline, &mut bytes)?;
     facts(&bytes)
 }
 fn package(
@@ -337,6 +366,19 @@ pub(super) fn msix(
         deadline,
     )?;
     match_identity(&f.identities[0], &expected.identity, true)?;
+    let actual = f
+        .members
+        .iter()
+        .map(|m| field(m, "FileName").map(str::to_lowercase))
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+    let declared = members
+        .iter()
+        .map(|m| m.path.to_lowercase())
+        .collect::<std::collections::BTreeSet<_>>();
+    if actual != declared || f.members.len() != members.len() {
+        return Err(invalid());
+    }
+
     let total = members
         .iter()
         .try_fold(0u64, |sum, m| sum.checked_add(m.length))

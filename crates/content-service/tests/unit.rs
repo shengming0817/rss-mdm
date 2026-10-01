@@ -596,6 +596,37 @@ async fn msix_nested_material_shares_the_pending_upload_disk_budget() {
     ]);
     let identity = serde_json::json!({"name":"Acme.App","publisher":"CN=Acme","version":[1,0,0,0],"architecture":"x86_64","resourceId":""});
     let definition:r::SoftwareDefinition=serde_json::from_value(serde_json::json!({"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"Acme.App","version":"1.0.0.0","provenance":{"kind":"private"},"artifacts":{"installer":{"reference":"installer","length":bytes.len(),"sha256":r::Digest::of(&bytes).bytes()}},"behavior":{"kind":"msix","container":{"kind":"bundle","installer":"installer","members":[{"path":"Acme.msix","identity":identity,"length":package.len(),"sha256":r::Digest::of(&package).bytes()}]},"identity":identity,"dependencies":[],"deployment":{"kind":"device_provisioning"},"minimumOs":[10,0,19041,0],"requireSideload":true,"allowUnsigned":false,"uninstall":true,"invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place"},"signatures":[],"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"export":{"kind":"disabled"}})).unwrap();
+    let r::SoftwareBehavior::Msix(expected) = &definition.spec().behavior else {
+        panic!("msix");
+    };
+    for kind in ["application", "resource"] {
+        let xml = format!(
+            r#"<Bundle xmlns="http://schemas.microsoft.com/appx/2013/bundle"><Identity Name="Acme.App" Publisher="CN=Acme" Version="1.0.0.0"/><Packages><Package FileName="Acme.msix" Type="application" Architecture="x64" Version="1.0.0.0" Size="{}"/><Package FileName="Extra.msix" Type="{kind}" Architecture="x64" Version="1.0.0.0" Size="{}"/></Packages></Bundle>"#,
+            package.len(),
+            package.len()
+        );
+        let extra = archive(vec![
+            ("AppxMetadata/AppxBundleManifest.xml", xml.into_bytes()),
+            ("Acme.msix", package.clone()),
+            ("Extra.msix", package.clone()),
+        ]);
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(&extra).unwrap();
+        file.rewind().unwrap();
+        let deadline =
+            Deadline::from_timeout(&RuntimeTimer, std::time::Duration::from_secs(60)).unwrap();
+        assert!(
+            super::native::msix(
+                &mut file,
+                expected,
+                &config(PathBuf::new()),
+                &RuntimeTimer,
+                deadline
+            )
+            .is_err(),
+            "accepted undeclared {kind}"
+        );
+    }
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = config(dir.path().to_owned());
     cfg.max_artifact_bytes = 1024 * 1024;
@@ -631,4 +662,40 @@ async fn msix_nested_material_shares_the_pending_upload_disk_budget() {
         ContentPort::verify(store.as_ref(), &version).await.is_err(),
         "nested spool escaped the shared disk reservation"
     );
+}
+
+#[test]
+fn xml_reads_bound_actual_output_even_when_zip_length_is_forged() {
+    use std::io::{Cursor, Write};
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    writer
+        .start_file(
+            "AppxManifest.xml",
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated),
+        )
+        .unwrap();
+    writer.write_all(&vec![b' '; 2 * 1_048_576]).unwrap();
+    let mut bytes = writer.finish().unwrap().into_inner();
+    let central = bytes.windows(4).position(|w| w == b"PK\x01\x02").unwrap();
+    bytes[central + 24..central + 28].copy_from_slice(&1u32.to_le_bytes());
+    let mut file = tempfile::tempfile().unwrap();
+    file.write_all(&bytes).unwrap();
+    file.rewind().unwrap();
+    let mut archive = zip::ZipArchive::new(&mut file).unwrap();
+    let deadline =
+        Deadline::from_timeout(&RuntimeTimer, std::time::Duration::from_secs(60)).unwrap();
+    let mut entry = archive.by_name("AppxManifest.xml").unwrap();
+    let length = entry.size();
+    assert!(matches!(
+        super::native::read_xml_bytes(&mut entry, length, &RuntimeTimer, deadline, &mut Vec::new()),
+        Err(Error::Malformed)
+    ));
+    // The bounded reader is independently checked so post-read XML rejection cannot mask over-allocation.
+    let mut reader = Cursor::new(vec![b' '; 2 * 1_048_576]);
+    assert!(
+        super::native::read_xml_bytes(&mut reader, 1, &RuntimeTimer, deadline, &mut Vec::new())
+            .is_err()
+    );
+    assert!(reader.position() <= 8192);
 }

@@ -85,16 +85,6 @@ pub(super) struct PreparedContent {
     pub coordinate: String,
     pub document: ExportDocument,
 }
-/// Resource keys retain type, scope and optional installer identity without ambiguity.
-pub fn winget_variant(q: &winget::Query) -> String {
-    format!(
-        "{}.{}.{}",
-        q.installer_type().as_str(),
-        q.scope().as_str(),
-        q.installer_id()
-            .map_or_else(|| "no-id".into(), |id| format!("id-{id}"))
-    )
-}
 fn architecture(a: resource::Architecture) -> &'static str {
     match a {
         resource::Architecture::X86_64 => "x86_64",

@@ -156,6 +156,14 @@ impl SoftwareTaskAction {
         if matches!(invocation.run_as, ExecutionIdentity::System) && !context.system_broker {
             return Err(WireError::InvalidValue);
         }
+        if matches!(&self.behavior, B::Brew(_))
+            && context
+                .interactive_user
+                .as_ref()
+                .is_none_or(|u| u.identity.parse::<u32>().ok().is_none_or(|uid| uid == 0))
+        {
+            return Err(WireError::InvalidValue);
+        }
         let needs_user = invocation.run_as == ExecutionIdentity::LoggedInUser;
         let target = if needs_user {
             let user = context

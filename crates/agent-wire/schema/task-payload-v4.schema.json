@@ -608,7 +608,7 @@
             "type": "string",
             "minLength": 0,
             "maxLength": 4096,
-            "pattern": "^[^\\p{Cc}]*$"
+            "pattern": "^[^\\u0000]*$"
           }
         },
         "environment": {
@@ -616,10 +616,11 @@
           "maxProperties": 32,
           "additionalProperties": {
             "type": "string",
-            "maxLength": 4096
+            "maxLength": 4096,
+            "pattern": "^[^\\u0000]*$"
           },
           "propertyNames": {
-            "pattern": "^RSS_PARAM_[A-Za-z0-9_]+$",
+            "pattern": "^RSS_PARAM_[A-Za-z0-9_]*$",
             "maxLength": 128
           }
         },

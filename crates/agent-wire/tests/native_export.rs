@@ -76,3 +76,61 @@ fn frozen_source_binds_tenant_material_and_scoped_credentials_without_a_token_fi
     native["token"] = json!("secret");
     assert!(serde_json::from_value::<SoftwareTaskExport>(native).is_err());
 }
+
+#[test]
+fn invocation_schema_matches_literal_argument_and_environment_validation() {
+    let canonical: serde_json::Value =
+        serde_json::from_str(include_str!("../schema/task-payload-v4.schema.json")).unwrap();
+    let schema =
+        serde_json::json!({"$ref":"#/$defs/SoftwareTaskInvocation","$defs":canonical["$defs"]});
+    let validator = jsonschema::draft202012::new(&schema).unwrap();
+    for (argument, key, value, accepted) in [
+        ("line\nnext", "RSS_PARAM_", "tab\tvalue", true),
+        ("nul\0", "RSS_PARAM_X", "value", false),
+        ("ok", "RSS_PARAM_X", "nul\0", false),
+        ("ok", "PATH", "value", false),
+    ] {
+        let invocation = serde_json::json!({"runAs":"system","arguments":[argument],"environment":{key:value},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}});
+        assert_eq!(validator.is_valid(&invocation), accepted, "{invocation}");
+        let action:SoftwareTaskAction=serde_json::from_value(serde_json::json!({"package":"App","version":"1","reboot":"report","downgrade":"deny","ownership":"managed_only","signatures":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":invocation,"upgradeInvocation":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"}}})).unwrap();
+        let id = uuid::Uuid::new_v4();
+        let steps = vec![SoftwareTaskStep {
+            action,
+            artifacts: vec![SoftwareTaskArtifact {
+                key: "0/package".into(),
+                length: 3,
+                sha256: [1; 32],
+            }],
+            target: SoftwareExecutionTarget::Device,
+            export: SoftwareTaskExport::Direct,
+        }];
+        use sha2::{Digest, Sha256};
+        let spec = SoftwareTaskSpec {
+            wire_version: 4,
+            tenant_id: id,
+            device_id: "device".into(),
+            platform: TaskPlatform::Windows,
+            architecture: TaskArchitecture::X86_64,
+            registration_id: id,
+            generation: 1,
+            task_id: id,
+            attempt_id: id,
+            permit: TaskPermit::Offer,
+            expires_at: 100,
+            execution_context: SoftwareExecutionContext {
+                revision: 1,
+                os_version: [10, 0, 22621, 0],
+                system_broker: true,
+                interactive_user: None,
+                source_credentials: vec![],
+                msix_sideload: false,
+                msix_unsigned: false,
+            },
+            definition_digest: Sha256::digest(serde_json::to_vec(&steps).unwrap()).into(),
+            steps,
+            intent: SoftwareTaskIntent::Install,
+            start_mode: SoftwareStartMode::Automatic,
+        };
+        assert_eq!(spec.validate().is_ok(), accepted);
+    }
+}

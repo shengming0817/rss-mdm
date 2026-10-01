@@ -62,3 +62,5 @@ Native Policy 明确 `delivery: {kind: native, source, ring}`，直接材料则�
 ## 来源与证据边界
 
 WinGet fixture、schema 与许可见[fixture 来源](../../crates/winget-source/tests/fixtures/README.md)。参考 [WinGet REST contract](https://github.com/microsoft/winget-cli-restsource/blob/21cd5dda3dab39aa059f4d34914959736af7ee70/documentation/WinGet-1.0.0.yaml)、[Homebrew 固定源码](https://github.com/Homebrew/brew/tree/7cce6eac8d897b0b8440e16f33dbcb21770da7cf) 和 [Git namespace](https://github.com/git/git/blob/v2.51.0/Documentation/gitnamespaces.adoc)。安装和恢复见[运维](../deployment/operations.md)。真实 Windows WinGet 源接入、精确解析和产物获取须由 Windows 环境补证；后端验收不代替该证据。
+
+Brew 派生只接受能保留冻结行为的子集：PKG/DMG 的 system scope、无额外参数或环境、标准退出码和 in-place 升级；PKG/ContainedPkg 的显式卸载必须为 null，导出不合成 pkgutil 卸载。AppCopy 必须明确允许删除对应 managed target。Bottle 使用非 root 用户、相同安装/升级调用及明确的原生卸载；其它行为返回 Unsupported。MSIX Bundle 的实际 manifest 成员必须与完整冻结声明相等；未声明 application/resource 成员均拒绝。

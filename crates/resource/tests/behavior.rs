@@ -111,7 +111,11 @@ fn dmg_explicit_app_and_pkg_payloads_are_distinct_frozen_forms() {
                 .is_err()
         );
         let mut bad = input;
-        bad["behavior"]["payload"]["path"] = json!("../escape.pkg");
+        if bad["behavior"]["payload"]["kind"] == "app_copy" {
+            bad["behavior"]["payload"]["application"]["path"] = json!("../escape.app");
+        } else {
+            bad["behavior"]["payload"]["path"] = json!("../escape.pkg");
+        }
         assert!(serde_json::from_value::<SoftwareDefinition>(bad).is_err());
     }
 }

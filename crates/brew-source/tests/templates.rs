@@ -173,7 +173,7 @@ fn dependency_and_artifact_checks_are_explicit() {
 }
 
 #[test]
-fn pkg_requires_literal_anchored_receipt_uninstall_metadata() {
+fn pkg_receipt_metadata_does_not_authorize_implicit_removal() {
     let make = |receipts| {
         Cask::new(
             PackageKey::new(tenant(), "acme/private", "app").unwrap(),
@@ -192,7 +192,7 @@ fn pkg_requires_literal_anchored_receipt_uninstall_metadata() {
     assert!(make(vec!["com.acme.*".into()]).is_err());
     let doc = make(vec!["com.acme.app".into()]).unwrap().render().unwrap();
     let text = std::str::from_utf8(doc.bytes()).unwrap();
-    assert!(text.contains(r#"uninstall pkgutil: ["^com\\.acme\\.app$"]"#));
+    assert!(!text.contains("uninstall pkgutil"));
     assert!(text.contains("depends_on arch: :arm64"));
 }
 

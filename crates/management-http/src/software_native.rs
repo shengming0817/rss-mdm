@@ -407,7 +407,7 @@ async fn frozen_search(
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase", deny_unknown_fields)]
 struct VersionQuery {
-    version: String,
+    version: Option<String>,
 }
 async fn manifest(
     State(state): State<Arc<StateData>>,
@@ -426,21 +426,58 @@ async fn manifest(
         return Err(StatusCode::NOT_FOUND);
     }
     contract(&headers)?;
-    let coordinate = format!("{package}/{}", query.version);
-    if coordinate.len() > 512 || package.contains('/') || query.version.contains('/') {
+    if package.is_empty()
+        || package.len() > 256
+        || package.contains('/')
+        || query
+            .version
+            .as_ref()
+            .is_some_and(|v| v.is_empty() || v.len() > 256 || v.contains('/'))
+    {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let value = s
-        .published_coordinate(ring, &coordinate, cutoff()?)
-        .await
-        .map_err(failure)?;
-    if let ExportDocument::Winget { manifest } = value.document
-        && manifest["PackageIdentifier"] == package
-        && manifest["Versions"][0]["PackageVersion"] == query.version
-    {
-        return Ok(Json(json!({"Data":manifest})));
+    let deadline = cutoff()?;
+    let mut documents = Vec::new();
+    if let Some(version) = &query.version {
+        documents.push(
+            s.published_coordinate(ring, &format!("{package}/{version}"), deadline)
+                .await
+                .map_err(failure)?
+                .document,
+        );
+    } else {
+        let prefix = format!("{package}/");
+        let mut after = prefix.clone();
+        'pages: loop {
+            let rows = s
+                .published_page(ring, &after, 100, deadline)
+                .await
+                .map_err(failure)?;
+            let full = rows.len() == 100;
+            for (coordinate, id) in rows {
+                if !coordinate.starts_with(&prefix) {
+                    break 'pages;
+                }
+                after = coordinate;
+                let value = match s.published(ring, id, deadline).await {
+                    Ok(value) => value,
+                    Err(
+                        rss_mdm_software_service::publication::Error::CandidateNotFound
+                        | rss_mdm_software_service::publication::Error::Blocked,
+                    ) => continue,
+                    Err(error) => return Err(failure(error)),
+                };
+                if documents.len() == 128 {
+                    return Err(StatusCode::SERVICE_UNAVAILABLE);
+                }
+                documents.push(value.document);
+            }
+            if !full {
+                break;
+            }
+        }
     }
-    Err(StatusCode::NOT_FOUND)
+    manifest_response(documents, &package, query.version.as_deref())
 }
 async fn frozen_manifest(
     State(state): State<Arc<StateData>>,
@@ -458,16 +495,40 @@ async fn frozen_manifest(
         .published(ring, digest(&id)?, cutoff()?)
         .await
         .map_err(failure)?;
-    for document in std::iter::once(value.document).chain(value.dependencies) {
+    manifest_response(
+        std::iter::once(value.document).chain(value.dependencies),
+        &package,
+        query.version.as_deref(),
+    )
+}
+fn manifest_response(
+    documents: impl IntoIterator<Item = ExportDocument>,
+    package: &str,
+    version: Option<&str>,
+) -> Result<Json<Value>, StatusCode> {
+    let mut versions = Vec::new();
+    for document in documents {
         if let ExportDocument::Winget { manifest } = document
             && manifest["PackageIdentifier"] == package
-            && manifest["Versions"][0]["PackageVersion"] == query.version
         {
-            return Ok(Json(json!({"Data":manifest})));
+            for item in manifest["Versions"]
+                .as_array()
+                .ok_or(StatusCode::SERVICE_UNAVAILABLE)?
+            {
+                if version.is_none_or(|v| item["PackageVersion"] == v) && !versions.contains(item) {
+                    versions.push(item.clone());
+                }
+            }
         }
     }
-    Err(StatusCode::NOT_FOUND)
+    if versions.is_empty() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    Ok(Json(
+        json!({"Data":{"PackageIdentifier":package,"Versions":versions}}),
+    ))
 }
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GitQuery {

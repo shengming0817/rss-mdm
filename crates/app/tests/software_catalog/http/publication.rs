@@ -247,6 +247,28 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     ensure!(search.status() == StatusCode::OK);
     let search: Value = serde_json::from_slice(&search.into_body().collect().await?.to_bytes())?;
     ensure!(search["Data"][0]["PackageIdentifier"] == "Acme.App");
+    for prefix in [
+        native.clone(),
+        format!("/software/native/sources/{}/test", server.logical),
+    ] {
+        let response = f
+            .router
+            .clone()
+            .oneshot(public(
+                Method::GET,
+                format!("{prefix}/packageManifests/Acme.App"),
+                Body::empty(),
+            )?)
+            .await?;
+        ensure!(
+            response.status() == StatusCode::OK,
+            "native exact ID request without Version: {}",
+            response.status()
+        );
+        let body: Value =
+            serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
+        ensure!(body["Data"]["Versions"][0]["PackageVersion"] == "1.0");
+    }
     let manifest = f
         .router
         .clone()
@@ -276,6 +298,47 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     let policy = Uuid::new_v4();
     let policy_path = format!("/api/v2/policies/{policy}");
     write(&mut f.author,&f.router,&policy_path,0,json!({"action":"put","enabled":true,"definition":{"scope":f.scope,"action":{"kind":"software","resource":{"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"intent":"required_install","delivery":{"kind":"native","source":server.logical,"ring":"test"},"admissionOperation":admitted["admission"]["operation"],"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":f.scope,"opensAt":0}]}}}})).await?;
+    {
+        use sqlx::Connection;
+        let mut owner =
+            sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+                .await?;
+        sqlx::query("BEGIN").execute(&mut owner).await?;
+        let catalog_lock = format!("mdm-software:{}", case_tenant());
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+            .bind(&catalog_lock)
+            .execute(&mut owner)
+            .await?;
+        let probe_path = format!("/api/v2/policies/{policy}/devices");
+        let request = f.author.call(&f.router, Method::GET, &probe_path, None);
+        tokio::pin!(request);
+        tokio::select! {
+            response=&mut request=>anyhow::bail!("support query bypassed catalog gate: {response:?}"),
+            result=tokio::time::timeout(Duration::from_secs(10),async {
+                loop {
+                    let waiting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND NOT granted AND classid::bigint=((hashtextextended($1,0)>>32)&4294967295) AND objid::bigint=(hashtextextended($1,0)&4294967295))").bind(&catalog_lock).fetch_one(&mut owner).await?;
+                    if waiting {break anyhow::Ok(());}
+                    tokio::task::yield_now().await;
+                }
+            })=>result??,
+        }
+        let free: bool =
+            sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,2388))")
+                .bind(format!(
+                    "mdm_resource:{}:resource:{resource}",
+                    case_tenant()
+                ))
+                .fetch_one(&mut owner)
+                .await?;
+        sqlx::query("ROLLBACK").execute(&mut owner).await?;
+        let response = request.await?;
+        ensure!(
+            free,
+            "support query acquired Resource before software catalog lock"
+        );
+        ensure!(response.0 == StatusCode::OK, "support probe: {response:?}");
+        owner.close().await?;
+    }
     let task = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let r = agent_call(

@@ -35,18 +35,21 @@ enum WriteObservation {
 #[derive(Clone, Copy)]
 enum Observation {
     Applied,
+    NotApplied,
     Unknown,
 }
 impl Observation {
     fn tag(self) -> &'static str {
         match self {
             Self::Applied => "applied",
+            Self::NotApplied => "not-applied",
             Self::Unknown => "unknown",
         }
     }
     fn result(self, evidence: rel::Evidence) -> rel::PublicationResult {
         match self {
             Self::Applied => rel::PublicationResult::Applied(evidence),
+            Self::NotApplied => rel::PublicationResult::NotApplied(evidence),
             Self::Unknown => rel::PublicationResult::Unknown(evidence),
         }
     }
@@ -661,7 +664,9 @@ impl PublicationService {
                                     s.recover_record_in(tx, &c, t, result).await?;
                                     return Ok(Ok(current.outcome));
                                 }
-                                if matches!(observed, Observation::Applied) {
+                                if matches!(observed, Observation::Applied)
+                                    && c.snapshot().disposition == rel::Disposition::Active
+                                {
                                     let subject = db::subject(tx, &t.candidate)
                                         .await?
                                         .ok_or_else(db::fault)?;
@@ -676,8 +681,15 @@ impl PublicationService {
                                 "driver::record_result",
                                 s.releases.transition_in(tx, &id, &request).await?,
                             )?;
-                            if !replayed && matches!(observed, Observation::Applied) {
-                                db::project(tx, t, false).await?;
+                            if !replayed
+                                && matches!(
+                                    observed,
+                                    Observation::Applied | Observation::NotApplied
+                                )
+                            {
+                                if matches!(observed, Observation::Applied) {
+                                    db::project(tx, t, false).await?;
+                                }
                                 db::release_slot(tx, t, &t.key(), t.commit.clone()).await?;
                             }
                             let fact = db::fact(
@@ -966,6 +978,83 @@ impl PublicationService {
                 .await,
         )
     }
+    async fn observe_withdrawn_publication(
+        &self,
+        publish: &Target,
+        subject: &db::Subject,
+        cutoff: Deadline,
+    ) -> Result<Option<Observation>> {
+        tokio::time::timeout_at(cutoff.instant().into(), async {
+            Ok(match &self.sources.binding(publish.ring()?).driver {
+                Driver::Winget { .. } => Some(Observation::NotApplied),
+                Driver::Brew { repo, .. } => {
+                    if self.inspect_source(publish, subject, false).await? {
+                        Some(Observation::Applied)
+                    } else {
+                        let snapshot = brew::CommitId::parse(
+                            publish.snapshot.as_deref().ok_or(Error::Content)?,
+                        )
+                        .map_err(|_| Error::Content)?;
+                        let base = publish
+                            .base
+                            .as_deref()
+                            .map(brew::CommitId::parse)
+                            .transpose()
+                            .map_err(|_| Error::Content)?;
+                        let absent = !repo
+                            .snapshot_exists(&snapshot)
+                            .await
+                            .map_err(|_| Error::Source)?;
+                        let head = repo.head().await.map_err(|_| Error::Source)?;
+                        // An advanced CAS base fences any delayed original Git apply. Otherwise it remains Unknown.
+                        if absent && head != base {
+                            Some(Observation::NotApplied)
+                        } else {
+                            None
+                        }
+                    }
+                }
+            })
+        })
+        .await
+        .map_err(|cause| Error::Source.context("driver::withdrawal_observation", cause))?
+    }
+    async fn settle_withdrawing_publication(
+        &self,
+        call: &Call,
+        subject: &db::Subject,
+        current: rel::PublicationOutcome,
+        cutoff: Deadline,
+    ) -> Result<rel::PublicationOutcome> {
+        let mut outcome = current;
+        if matches!(
+            outcome,
+            rel::PublicationOutcome::Pending
+                | rel::PublicationOutcome::Reported(rel::PublicationResult::Unknown(_))
+        ) {
+            let publish = self
+                .load_call(Table::Publish, &call.target.key(), cutoff)
+                .await?;
+            let at = Timepoint::try_from(call.target.commit_at).map_err(|_| Error::Content)?;
+            if !publish.attempted {
+                self.cancel_unstarted(&publish.target, at, cutoff).await?;
+                let id = rel::CandidateId::new(self.tenant(), &call.target.candidate)
+                    .map_err(|_| Error::Identity)?;
+                let (candidate, _, _) = self.context(&id, cutoff).await?;
+                return Ok(db::core_publication(&candidate, &call.target)?.outcome);
+            }
+            // Read the original operation only. Quarantine must never replay a publication write.
+            let observed = self
+                .observe_withdrawn_publication(&publish.target, subject, cutoff)
+                .await?;
+            if let Some(observed) = observed {
+                outcome = self
+                    .record_result(&publish.target, observed, at, cutoff)
+                    .await?;
+            }
+        }
+        Ok(outcome)
+    }
     async fn drive_withdrawal(
         &self,
         id: rel::PublicationId,
@@ -980,19 +1069,21 @@ impl PublicationService {
         let candidate = rel::CandidateId::new(self.tenant(), &call.target.candidate)
             .map_err(|cause| Error::Identity.context("driver::drive_withdrawal", cause))?;
         let (c, subject, _) = self.context(&candidate, cutoff).await?;
-        let p = db::core_publication(&c, &call.target)?;
-        if matches!(
-            p.outcome,
-            rel::PublicationOutcome::Reported(rel::PublicationResult::NotApplied(_))
-        ) {
-            self.complete_unpublished(&key, cutoff).await?;
-            return Ok(Withdrawal::Complete);
-        }
-        if !matches!(
-            p.outcome,
-            rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_))
-        ) {
-            return Ok(Withdrawal::WaitingPublication);
+        let outcome = self
+            .settle_withdrawing_publication(
+                &call,
+                &subject,
+                db::core_publication(&c, &call.target)?.outcome,
+                cutoff,
+            )
+            .await?;
+        match outcome {
+            rel::PublicationOutcome::Reported(rel::PublicationResult::NotApplied(_)) => {
+                self.complete_unpublished(&key, cutoff).await?;
+                return Ok(Withdrawal::Complete);
+            }
+            rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_)) => {}
+            _ => return Ok(Withdrawal::WaitingPublication),
         }
         if !call.prepared {
             if !self

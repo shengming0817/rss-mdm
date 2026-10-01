@@ -336,6 +336,19 @@ fn winget(
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
+fn ordinary_invocation(v: &r::NativeInvocation, run_as: r::RunAs) -> bool {
+    v.run_as == run_as
+        && v.arguments.is_empty()
+        && v.environment.is_empty()
+        && v.exit_codes.success == BTreeSet::from([0])
+        && v.exit_codes.reboot.is_empty()
+}
+fn ordinary_native(n: &r::NativeSoftware, scope: r::SoftwareScope, run_as: r::RunAs) -> bool {
+    n.scope == scope
+        && n.upgrade == r::SoftwareUpgrade::InPlace
+        && ordinary_invocation(&n.install, run_as)
+        && n.install == n.upgrade_invocation
+}
 fn brew(
     definitions: &[(&r::Variant, &r::SoftwareDefinition)],
     dependencies: &[r::Version],
@@ -385,19 +398,24 @@ fn brew(
                     r::SoftwareBehavior::Dmg(dmg)
                         if dmg.scope == r::SoftwareScope::System
                             && dmg.upgrade == r::SoftwareUpgrade::InPlace
-                            && dmg.invocation.arguments.is_empty() =>
+                            && ordinary_invocation(&dmg.invocation, r::RunAs::System) =>
                     {
                         match &dmg.payload {
-                            r::DmgPayload::AppCopy { application, .. }
-                                if application.path == *path
-                                    && receipts.is_empty()
-                                    && application.target_name
-                                        == path.rsplit('/').next().ok_or(Error::Content)? =>
+                            r::DmgPayload::AppCopy {
+                                application,
+                                uninstall: true,
+                            } if application.path == *path
+                                && receipts.is_empty()
+                                && application.target_name
+                                    == path.rsplit('/').next().ok_or(Error::Content)? =>
                             {
                                 CaskInstall::App { path: path.clone() }
                             }
                             r::DmgPayload::ContainedPkg {
-                                path: p, receipt, ..
+                                path: p,
+                                receipt,
+                                uninstall: None,
+                                ..
                             } if p == path && receipts == std::slice::from_ref(receipt) => {
                                 CaskInstall::Pkg {
                                     path: path.clone(),
@@ -407,7 +425,10 @@ fn brew(
                             _ => return Err(unsupported()),
                         }
                     }
-                    r::SoftwareBehavior::Pkg(n) if n.upgrade == r::SoftwareUpgrade::InPlace => {
+                    r::SoftwareBehavior::Pkg(n)
+                        if ordinary_native(n, r::SoftwareScope::System, r::RunAs::System)
+                            && n.uninstall.is_none() =>
+                    {
                         if !matches!(&n.detect,r::SoftwareDetection::PkgReceipt{receipt,..} if receipts==std::slice::from_ref(receipt))
                         {
                             return Err(unsupported());
@@ -443,7 +464,14 @@ fn brew(
                 rebuild,
                 executable,
             } => {
-                if !matches!(d.spec().behavior, r::SoftwareBehavior::Brew(_))
+                let r::SoftwareBehavior::Brew(n) = &d.spec().behavior else {
+                    return Err(unsupported());
+                };
+                if !ordinary_native(n, r::SoftwareScope::User, r::RunAs::LoggedInUser)
+                    || n.installer != *key
+                    || n.uninstall
+                        .as_ref()
+                        .is_none_or(|u| u.installer != n.installer || u.invocation != n.install)
                     || !matches!(first_payload, r::BrewExport::Bottle { .. })
                     || !matches!(cellar.as_str(), "any" | "any_skip_relocation")
                 {

@@ -339,6 +339,7 @@ impl SoftwareExecutionPolicy {
         architecture: Architecture,
     ) -> Result<Vec<FrozenSoftware>> {
         let catalog = self.catalog(service);
+        catalog.lock_in(tx).await?;
         let target_platform = match platform {
             Platform::Windows => resource::Platform::Windows,
             Platform::Macos => resource::Platform::MacOS,

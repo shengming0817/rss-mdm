@@ -166,13 +166,13 @@ impl Bottle {
 pub enum CaskArtifact {
     /// A single `.app` filename under this type's filename constraints.
     App(String),
-    /// Exact pkgutil receipt IDs, never arbitrary shell or Ruby.
+    /// Exact receipt evidence for a PKG; receipt-forget is not file removal.
     Pkg {
         /// A single `.pkg` filename under this type's filename constraints.
         path: String,
         /// 1–32 distinct receipt IDs, each at most 255 bytes with at least two
         /// nonempty dot-separated components of ASCII letters, digits, `_` or `-`.
-        /// Rendered as escaped, anchored patterns; arbitrary uninstall commands are unsupported.
+        /// Retained as detection evidence; rendering does not authorize PKG removal.
         receipts: Vec<String>,
     },
 }
@@ -216,16 +216,7 @@ impl CaskArtifact {
     fn render(&self) -> String {
         match self {
             Self::App(s) => format!("app {}", quote(s)),
-            Self::Pkg { path, receipts } => {
-                let mut receipts = receipts.clone();
-                receipts.sort();
-                let patterns = receipts
-                    .iter()
-                    .map(|id| quote(&format!("^{}$", id.replace('.', "\\."))))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("pkg {}\n  uninstall pkgutil: [{}]", quote(path), patterns)
-            }
+            Self::Pkg { path, .. } => format!("pkg {}", quote(path)),
         }
     }
 }

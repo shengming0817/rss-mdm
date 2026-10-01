@@ -19,7 +19,7 @@ use rss_transactional_messaging_postgres::PgError;
 pub use service::{CandidateInput, PublicationService, ServiceRequest};
 pub use spec::{
     BottleInput, BrewArtifact, BrewDependency, BrewPayload, BrewRecipe, CaskInstall,
-    ExportDocument, PublicArtifact, winget_variant,
+    ExportDocument, PublicArtifact,
 };
 pub use worker::{PublicationWork, PublicationWorkPage};
 #[derive(Debug, thiserror::Error)]

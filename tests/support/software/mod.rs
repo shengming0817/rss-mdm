@@ -419,6 +419,14 @@ pub async fn seed(
                                     rebuild,
                                     ..
                                 } => {
+                                    if let resource::SoftwareBehavior::Brew(n) = &mut spec.behavior
+                                    {
+                                        n.uninstall = Some(resource::NativeRemoval {
+                                            installer: n.installer.clone(),
+                                            invocation: n.install.clone(),
+                                        });
+                                    }
+
                                     let b = bottles
                                         .iter()
                                         .find(|b| {

@@ -93,3 +93,19 @@ fn context_updates_cannot_reuse_a_revision_or_restore_a_previous_login() {
     assert!(reused.validate_update(&next).is_err());
     assert!(next.validate_update(&next).is_ok());
 }
+
+#[test]
+fn brew_requires_a_non_root_interactive_account() {
+    let invocation = json!({"runAs":"logged_in_user","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}});
+    let action:SoftwareTaskAction=serde_json::from_value(json!({"package":"tool","version":"1","reboot":"report","downgrade":"deny","ownership":"managed_only","signatures":[],"behavior":{"kind":"brew","installer":"package","scope":"user","install":invocation,"upgradeInvocation":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"pkg_receipt","receipt":"com.acme.tool","version":"1"}}})).unwrap();
+    let mut live = context();
+    live.msix_sideload = false;
+    live.msix_unsigned = false;
+    for uid in ["501", "0", "000"] {
+        live.interactive_user.as_mut().unwrap().identity = uid.into();
+        assert_eq!(
+            action.execution_target(TaskPlatform::Macos, &live).is_ok(),
+            uid == "501"
+        );
+    }
+}
