@@ -164,6 +164,49 @@ def write_metadata(root, index, worktree):
         path.unlink(missing_ok=True)
 
 
+def remove_slot(root, index, target_fd):
+    """Remove one allocator-owned slot while its target lease remains held.
+
+    ref: CPython Lib/os.py fwalk and Lib/shutil.py fd-safe rmtree;
+    Go cmd/go/internal/modfetch/fetch.go RemoveAll (0555 module directories).
+    """
+    target = root / f'slot-{index}'
+    held = os.fstat(target_fd)
+    expected = lock_path('target', target).stat(follow_symlinks=False)
+    if not stat.S_ISREG(held.st_mode) or (held.st_dev, held.st_ino) != (expected.st_dev, expected.st_ino):
+        raise ValueError('cleanup requires the slot target lease')
+    if not shutil.rmtree.avoids_symlink_attacks:
+        raise ValueError('slot cleanup requires fd-safe rmtree')
+    pool_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    slot_fd = None
+    try:
+        identity = os.open(POOL_MARKER, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=pool_fd)
+        with os.fdopen(identity) as stream:
+            if stream.read() != POOL_MARKER + '\n':
+                raise ValueError('invalid pool identity')
+        try:
+            slot_fd = os.open(target.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=pool_fd)
+        except FileNotFoundError:
+            return
+        slot = os.fstat(slot_fd)
+        def fail(error):
+            raise error
+        for _, _, _, current_fd in os.fwalk('.', dir_fd=slot_fd, follow_symlinks=False, onerror=fail):
+            current = os.fstat(current_fd)
+            if current.st_uid != os.getuid() or current.st_dev != slot.st_dev:
+                raise ValueError('refusing foreign directory in target slot')
+            if not current.st_mode & stat.S_IWUSR:
+                os.fchmod(current_fd, stat.S_IMODE(current.st_mode) | stat.S_IWUSR)
+        current = os.stat(target.name, dir_fd=pool_fd, follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != (slot.st_dev, slot.st_ino):
+            raise ValueError('slot identity changed during cleanup')
+        shutil.rmtree(target.name, dir_fd=pool_fd)
+    finally:
+        if slot_fd is not None:
+            os.close(slot_fd)
+        os.close(pool_fd)
+
+
 def acquire_slot(root, slots, worktree):
     root = owned_directory(root, POOL_MARKER)
     global_fd = lock_file(root / '.pool.lock')
@@ -204,11 +247,9 @@ def acquire_slot(root, slots, worktree):
         global_fd = None
         # Only target locks remain held during expensive filesystem work.
         for old in retired:
-            obsolete = root / f'slot-{old}'
-            if obsolete.exists():
-                shutil.rmtree(obsolete)
-        if rank != 0 and target.exists():
-            shutil.rmtree(target)
+            remove_slot(root, old, held[old])
+        if rank != 0:
+            remove_slot(root, index, held[index])
         directory(target)
         write_metadata(root, index, worktree)
         return target, held.pop(index)
