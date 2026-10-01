@@ -2,7 +2,7 @@
 
 按行为风险选择最小有效验证：T1 验证模型与边界，T2 使用真实依赖验证持久化、权限、协议与恢复，T3 在独立产品任务中验证真实设备与支持矩阵。文档检查内容、链接、来源和 diff。缺依赖或未运行不能宣布通过。
 
-编辑循环使用受影响 package/tests 与 T2；最终 `make ci CI_BASE=origin/develop` 按影响范围运行快速检查，任何模式均不启动 PostgreSQL、网关或 IdP，不隐式执行 T2。`make t2 MODULE=affected CI_BASE=origin/develop` 运行受影响测试模块（裸 `make t2` 默认 affected），`MODULE=planning.http` 等选择专项，`MODULE=all` 选择全部；旧 SUITE/--suite 明确拒绝。执行、发现、affected 共用 `hack/t2_registry.py`，Rust 测试函数通过 nextest 实际发现。`make ci-full` 在同一构建租约内组合全部快速检查和全部 T2，正式候选和浏览器 T3 独立。一次收集失败后集中修复，精确复验失败项及受影响行为，不反复跑完整 CI。不执行父仓 CI 代替产品验证，不新增远端 CI。
+每批次修改完成后、提交前运行受影响 package/tests 与必要 T2，通过后提交；代码任务全部修改完成且各批测试通过后，运行一次 `make ci CI_BASE=origin/develop`。该命令按影响范围运行快速检查，任何模式均不启动 PostgreSQL、网关或 IdP，不隐式执行 T2。`make t2 MODULE=affected CI_BASE=origin/develop` 运行受影响测试模块（裸 `make t2` 默认 affected），`MODULE=planning.http` 等选择专项，`MODULE=all` 选择全部；旧 SUITE/--suite 明确拒绝。执行、发现、affected 共用 `hack/t2_registry.py`，Rust 测试函数通过 nextest 实际发现。`make ci-full` 在同一构建租约内组合全部快速检查和全部 T2，正式候选和浏览器 T3 独立。每阶段一次收集全部失败，集中修复后精确复验失败项及受影响范围，不反复跑完整 CI。不执行父仓 CI 代替产品验证，不新增远端 CI。
 
 CI 直接验证当前工作区，不要求预先提交、clean HEAD 或冷构建。`make ci-plan` 仅预览；选择器比较基线 merge-base 与当前修改，计入未跟踪且非忽略的输入。docs/root Markdown 不贡献 Rust package seed，crate README 可参与 rustdoc。Cargo 与 T2 分别输出 `cargoFull/packages` 与 `t2Full/modules`。Cargo 使用反向依赖闭包；独立 T1 文件不选 T2，独立 T2 文件只选所属模块，helper 只选直接消费者。生产输入按模块声明的实际消费接缝选择，多个输入取并集。包级 manifest 按可确定的依赖范围选择；lock、工具链、未知路径、无法可靠识别的 rename/copy 或分析失败保守全量；存在脏文件本身不触发全量。CI 在选择前与执行后核对当前文件集合、内容及状态，运行期间输入变化则失败，避免将旧测试结果用于新源码。
 
