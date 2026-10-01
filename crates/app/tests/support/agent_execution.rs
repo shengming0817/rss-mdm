@@ -297,6 +297,7 @@ pub(crate) async fn worker(base: &Value) -> Result<Option<rss_runtime::ShutdownS
         crate::test_support::identity::audit_store(&config).await?,
         crate::flow::execution::open_content(&config)?,
         std::collections::BTreeMap::new(),
+        rss_device_command_postgres::CommandClock::Postgres,
     )
     .await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(

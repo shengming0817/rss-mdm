@@ -217,7 +217,7 @@ mod storage {
                     },
                 ),
                 owner: assets::Owner {
-                    instance: "mdm".into(),
+                    instance: crate::test_support::INSTANCE.into(),
                     principal: "operator".into(),
                 },
             };
@@ -242,6 +242,9 @@ mod storage {
             };
             let original = canonical();
             assert!(!original.is_empty());
+            for record in crate::audit_test_support::decode_hex(&original).unwrap() {
+                rss_mdm_timeline_service::project(record.decoded.event()).unwrap();
+            }
             let replay = audit();
             let receipt = service
                 .execute(&command, &replay, &|| Ok(()))
@@ -270,7 +273,7 @@ mod storage {
                     },
                 ),
                 owner: assets::Owner {
-                    instance: "mdm".into(),
+                    instance: crate::test_support::INSTANCE.into(),
                     principal: "operator".into(),
                 },
             };

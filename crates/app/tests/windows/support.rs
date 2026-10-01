@@ -112,9 +112,12 @@ pub(crate) struct Host {
 impl Host {
     /// Prepare in-process product routes; listeners and workers start only in listen().
     pub(crate) async fn open() -> anyhow::Result<Self> {
-        Self::with_agent(None).await
+        Self::with_agent(None, rss_device_command_postgres::CommandClock::Postgres).await
     }
-    pub(crate) async fn with_agent(agent: Option<serde_json::Value>) -> anyhow::Result<Self> {
+    pub(crate) async fn with_agent(
+        agent: Option<serde_json::Value>,
+        command_clock: rss_device_command_postgres::CommandClock,
+    ) -> anyhow::Result<Self> {
         let root = root()?;
         let enroll = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let manage = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -192,6 +195,7 @@ impl Host {
                 .await?,
             crate::flow::execution::open_content(&config)?,
             std::collections::BTreeMap::new(),
+            command_clock,
         )
         .await
         .map_err(|e| anyhow::anyhow!("command startup: {e:?}"))?;

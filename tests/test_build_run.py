@@ -104,7 +104,8 @@ class BuildRunTests(unittest.TestCase):
         ready = self.root / 'cleaning'
         code = ("import build_run,time; from pathlib import Path; "
                 "original=build_run.shutil.rmtree; "
-                f"build_run.shutil.rmtree=lambda path: (Path({str(ready)!r}).touch(), time.sleep(30), original(path)); "
+                f"build_run.shutil.rmtree=lambda *args, **kwargs: (Path({str(ready)!r}).touch(), time.sleep(30), original(*args, **kwargs)); "
+                "build_run.shutil.rmtree.avoids_symlink_attacks=True; "
                 "build_run.main(['--','true'])")
         process = subprocess.Popen([sys.executable, '-c', code], cwd=self.other,
                                    env=self.env | {'MDM_TARGET_POOL_N': '1'},
@@ -222,10 +223,14 @@ class BuildRunTests(unittest.TestCase):
         self.assertEqual(self.run_code(code).stdout.strip(), '4')
         first = self.hold()
         second = self.hold(work=self.other)
+        cache = self.readonly_cache(self.pool / 'slot-1')
+        metadata = (self.pool / 'slot-1.json').read_bytes()
         self.stop(first)
         result = self.run_code(env={'MDM_TARGET_POOL_N': '1'})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.pool / 'slot-1').exists())
+        self.assertEqual(cache.stat().st_mode & 0o777, 0o555)
+        self.assertEqual((self.pool / 'slot-1.json').read_bytes(), metadata)
         self.stop(second)
         self.assertEqual(self.run_code(env={'MDM_TARGET_POOL_N': '1'}).returncode, 0)
         self.assertFalse((self.pool / 'slot-1').exists())
@@ -332,6 +337,64 @@ print(json.dumps({'name':Path(sys.argv[0]).name,'target':os.environ.get('CARGO_T
         slot.symlink_to(external, target_is_directory=True)
         self.assertNotEqual(self.run_code().returncode, 0)
         self.assertTrue((external / 'keep').exists())
+
+    def readonly_cache(self, slot):
+        cache = slot / 'apple-tools' / 'pkg' / 'mod' / 'example@v1'
+        cache.mkdir(parents=True)
+        (cache / 'source.go').write_text('package example')
+        (cache / 'source.go').chmod(0o444)
+        cache.chmod(0o555)
+        self.addCleanup(lambda: cache.chmod(0o755) if cache.exists() else None)
+        return cache
+
+    def test_readonly_go_cache_is_removed_on_reassignment_and_retirement(self):
+        self.assertEqual(self.run_code().returncode, 0)
+        first = self.readonly_cache(self.pool / 'slot-0')
+        # Allocate the other slot, then make its owner the sticky selected slot.
+        self.assertEqual(self.run_code(work=self.other).returncode, 0)
+        retired = self.readonly_cache(self.pool / 'slot-1')
+        result = self.run_code(env={'MDM_TARGET_POOL_N': '1'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(retired.exists())
+        self.assertTrue(first.exists())
+        result = self.run_code(work=self.other, env={'MDM_TARGET_POOL_N': '1'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(first.exists())
+
+    def test_slot_cleanup_preserves_external_symlink_targets(self):
+        self.assertEqual(self.run_code(env={'MDM_TARGET_POOL_N': '1'}).returncode, 0)
+        slot = self.pool / 'slot-0'
+        external = self.root / 'external'; external.mkdir()
+        (external / 'keep').write_text('unique')
+        external.chmod(0o555)
+        self.addCleanup(external.chmod, 0o755)
+        (slot / 'directory-link').symlink_to(external, target_is_directory=True)
+        (slot / 'file-link').symlink_to(external / 'keep')
+        (slot / 'dangling').symlink_to(external / 'missing')
+        result = self.run_code(work=self.other, env={'MDM_TARGET_POOL_N': '1'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((external / 'keep').read_text(), 'unique')
+        self.assertEqual(external.stat().st_mode & 0o777, 0o555)
+
+    def test_cleanup_failure_never_launches_child_or_restores_owner(self):
+        self.assertEqual(self.run_code(env={'MDM_TARGET_POOL_N': '1'}).returncode, 0)
+        cache = self.readonly_cache(self.pool / 'slot-0')
+        for operation in ('fchmod', 'rmtree'):
+            with self.subTest(operation=operation):
+                child = self.root / 'child'
+                module = 'os' if operation == 'fchmod' else 'shutil'
+                code = ("import build_run; from unittest.mock import patch; "
+                        f"patch('build_run.{module}.{operation}', side_effect=PermissionError('denied')).start(); "
+                        f"build_run.main(['--',{sys.executable!r},'-c',"
+                        f"{('from pathlib import Path; Path(' + repr(str(child)) + ').touch()')!r}])")
+                result = subprocess.run([sys.executable, '-c', code], cwd=self.other,
+                                        env=self.env | {'MDM_TARGET_POOL_N': '1'},
+                                        capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(child.exists())
+                self.assertFalse((self.pool / 'slot-0.json').exists())
+                self.assertTrue(cache.exists())
+                cache.chmod(0o555)
 
     def test_signal_status_and_python_grandchild_survives_killed_parents(self):
         normal = self.hold()

@@ -94,6 +94,7 @@ pub(crate) async fn application_fixture(
         audit_store.clone(),
         content,
         planning.publications.services.clone(),
+        rss_device_command_postgres::CommandClock::Postgres,
     )
     .await?;
     let compiled = config.compile()?;
@@ -292,6 +293,7 @@ pub(crate) fn from_state(
         windows: state.windows.as_ref().map(|w| w.channel.clone()),
     });
     let diagnostics = Arc::new(crate::runtime_diagnostics::RuntimeDiagnostics {
+        execution: state.execution.clone(),
         inventory: state.inventory.clone(),
         identity_audit: state.identity.audit_readiness.clone(),
         apple: state.apple.clone(),

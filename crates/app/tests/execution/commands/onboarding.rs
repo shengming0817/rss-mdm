@@ -372,7 +372,11 @@ async fn start_fixture_until(
     Uuid,
     Uuid,
 )> {
-    let mut host = crate::windows::test_support::Host::with_agent(Some(setup::pin(true))).await?;
+    let mut host = crate::windows::test_support::Host::with_agent(
+        Some(setup::pin(true)),
+        rss_device_command_postgres::CommandClock::Postgres,
+    )
+    .await?;
     host.listen().await?;
     let peer = host.peer().await?;
     let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;

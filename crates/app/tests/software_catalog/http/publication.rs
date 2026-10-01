@@ -347,7 +347,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
                 "/api/agent/v5/tasks/claim",
                 Some(&f.credential),
                 Some(
-                    json!({"wireVersion":5,"executionContext":local,"operationId":Uuid::new_v4()}),
+                    json!({"wireVersion":5,"executionContext":local,"profiles":[],"operationId":Uuid::new_v4()}),
                 ),
             )
             .await?;

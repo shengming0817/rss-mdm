@@ -112,7 +112,7 @@ tower.workspace = true
 
 [features]
 default = []
-integration = ["rss-mdm-inventory-service/integration", "rss-transactional-messaging-postgres/integration", "rss-observation-postgres/integration", "rss-projection-postgres/integration", "rss-identity-oidc/test-support"]
+integration = ["rss-mdm-flow-service/integration", "rss-mdm-inventory-service/integration", "rss-transactional-messaging-postgres/integration", "rss-observation-postgres/integration", "rss-projection-postgres/integration", "rss-identity-oidc/test-support"]
 
 [lints]
 workspace = true

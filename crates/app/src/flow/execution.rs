@@ -36,6 +36,7 @@ pub(crate) async fn open(
         String,
         Arc<rss_mdm_software_service::publication::PublicationService>,
     >,
+    command_clock: rss_device_command_postgres::CommandClock,
 ) -> std::result::Result<Arc<ExecutionService>, Error> {
     let bad = || Error::Configuration(crate::ConfigIssue::Execution);
     let database = &config.execution.database;
@@ -86,7 +87,7 @@ pub(crate) async fn open(
                     storage::admit(tx).await.map_err(|_| {
                         PgError::from(sqlx::Error::Protocol("command admission".into()))
                     })?;
-                    rss_device_command_postgres::PgStore::new(tx, copy)
+                    rss_device_command_postgres::PgStore::new(tx, copy, command_clock)
                         .await
                         .inspect_err(|_| {
                             eprintln!("command startup: device-command admission failed")
@@ -131,6 +132,7 @@ pub(crate) async fn open(
         config.agent_installation.validate()?;
         config.enrollment_entries.validate()?;
         Ok(Arc::new(ExecutionService {
+            readiness: Default::default(),
             exports,
             agent_installation: config.agent_installation.clone(),
             enrollment_entries: config.enrollment_entries.clone(),

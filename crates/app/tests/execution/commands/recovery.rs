@@ -8,6 +8,7 @@ use anyhow::ensure;
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
 use sqlx::Connection;
+#[cfg(feature = "integration")]
 #[tokio::test]
 #[ignore = "make t2 MODULE=execution.commands.recovery"]
 async fn expiry_worker_and_fatal_storage_diagnostic() -> anyhow::Result<()> {
@@ -32,16 +33,26 @@ async fn expiry_worker_and_fatal_storage_diagnostic() -> anyhow::Result<()> {
         );
         return Ok(());
     }
-    let (host, mut client) = ordinary().await?;
-    client.expiry_recovery().await?;
+    let clock = Arc::new(rss_device_command_postgres::IntegrationClock::new(
+        1_000_000_000_000,
+    )?);
+    let (host, mut client) = ordinary(rss_device_command_postgres::CommandClock::Controlled(
+        clock.clone(),
+    ))
+    .await?;
+    client.expiry_recovery(clock).await?;
     host.close().await?;
     Ok(())
 }
+#[cfg(feature = "integration")]
 impl Client {
-    async fn expiry_recovery(&mut self) -> anyhow::Result<()> {
+    async fn expiry_recovery(
+        &mut self,
+        clock: Arc<rss_device_command_postgres::IntegrationClock>,
+    ) -> anyhow::Result<()> {
         self.set_authorized(true).await?;
         let expiry = Uuid::new_v4();
-        let expires_at = self.app.clock.unix_seconds()? + 5;
+        let expires_at = clock.now() / 1_000_000 + 1;
         ensure!(self.call(Method::POST,"",Some(json!({"operationId":expiry,"task":{"kind":"state_verify","field":"model","expectedValue":"after-deadline"},"deadline":expires_at}))).await?.0==StatusCode::ACCEPTED);
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
@@ -52,16 +63,15 @@ impl Client {
             crate::test_support::identity::audit_store(&config).await?,
             crate::flow::execution::open_content(&config)?,
             std::collections::BTreeMap::new(),
+            rss_device_command_postgres::CommandClock::Controlled(clock.clone()),
         ))
         .await?;
         eprintln!("command T2: restarted runtime admitted");
-        tokio::time::timeout(Duration::from_secs(10), async {
-            while self.app.clock.unix_seconds()? <= expires_at {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-            Ok::<(), anyhow::Error>(())
-        })
-        .await??;
+        let persisted: (String, String) = sqlx::query_as(
+            "SELECT c.status,o.status FROM rss_device_command.commands c JOIN rss_transactional_messaging.outbox o ON o.tenant_id=c.tenant_id AND o.message_id=c.outbox_message_id WHERE c.tenant_id=$1::uuid AND c.command_id=$2",
+        ).bind(case_tenant()).bind(expiry.to_string()).fetch_one(&mut pg).await?;
+        ensure!(persisted == ("queued".into(), "pending".into()));
+        clock.advance_to(expires_at * 1_000_000)?;
         let timer = recovery::Timer::new();
         let cancel = tokio_util::sync::CancellationToken::new();
         let control = rss_reconcile::Control::new(&timer, Duration::from_secs(2), &cancel);

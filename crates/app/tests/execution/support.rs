@@ -133,8 +133,10 @@ impl Client {
         Ok(())
     }
 }
-pub(crate) async fn ordinary() -> anyhow::Result<(crate::windows::test_support::Host, Client)> {
-    let host = crate::windows::test_support::Host::open().await?;
+pub(crate) async fn ordinary(
+    command_clock: rss_device_command_postgres::CommandClock,
+) -> anyhow::Result<(crate::windows::test_support::Host, Client)> {
+    let host = crate::windows::test_support::Host::with_agent(None, command_clock).await?;
     let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
     let credential =
         crate::device::test_support::proof(case_tenant(), rss_mdm_inventory::Channel::Mdm, 91);
@@ -154,6 +156,7 @@ async fn relay_crash_child() -> anyhow::Result<()> {
         crate::test_support::identity::audit_store(&config).await?,
         crate::flow::execution::open_content(&config)?,
         std::collections::BTreeMap::new(),
+        rss_device_command_postgres::CommandClock::Postgres,
     ))
     .await?;
     let relay = PgOutboxStore::<()>::new(

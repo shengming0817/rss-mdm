@@ -472,6 +472,7 @@ pub(crate) async fn worker(
         crate::test_support::identity::audit_store(&config).await?,
         content,
         std::collections::BTreeMap::new(),
+        rss_device_command_postgres::CommandClock::Postgres,
     )
     .await?;
     worker_for(&config, worker).await

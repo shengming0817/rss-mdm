@@ -27,6 +27,11 @@ async fn candidate_reference_survives_admission_withdrawal_and_fences_archive() 
         .await
         .unwrap();
     crate::publication_support::withdraw_version_admission(&referenced).await;
+    for record in crate::audit_test_support::decode_hex(&pg::sql(&format!(
+        "SELECT encode(canonical,'hex') FROM rss_audit.records WHERE tenant_id='{}' ORDER BY position", pg::tenant()
+    ))).unwrap() {
+        rss_mdm_timeline_service::project(record.decoded.event()).unwrap();
+    }
     assert!(matches!(
         execute(&planning, &archive(&referenced)).await,
         Err(crate::Error::Service(rss_mdm_flow_service::Error::Conflict))

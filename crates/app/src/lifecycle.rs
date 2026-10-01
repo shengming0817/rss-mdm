@@ -216,6 +216,7 @@ pub async fn serve(
                             audit_store.clone(),
                             content,
                             planning.publications.services.clone(),
+                            rss_device_command_postgres::CommandClock::Postgres,
                         )
                         .await
                         .map_err(|e| ProcessError::at("startup.execution", e))?;

@@ -11,7 +11,7 @@ use sqlx::Connection;
 #[tokio::test]
 #[ignore = "make t2 MODULE=execution.commands.admission"]
 async fn authorized_idempotent_atomic_admission() -> anyhow::Result<()> {
-    let (host, mut client) = ordinary().await?;
+    let (host, mut client) = ordinary(rss_device_command_postgres::CommandClock::Postgres).await?;
     client.admission_transactions().await?;
     host.close().await?;
     Ok(())
@@ -19,7 +19,7 @@ async fn authorized_idempotent_atomic_admission() -> anyhow::Result<()> {
 #[tokio::test]
 #[ignore = "make t2 MODULE=execution.commands.admission"]
 async fn minimum_role_scope_and_storage_admission() -> anyhow::Result<()> {
-    let (host, mut client) = ordinary().await?;
+    let (host, mut client) = ordinary(rss_device_command_postgres::CommandClock::Postgres).await?;
     client.accept_approved().await?;
     client.admission_and_scope().await?;
     host.close().await?;
@@ -388,7 +388,7 @@ impl Client {
 #[tokio::test]
 #[ignore = "make t2 MODULE=execution.commands.admission"]
 async fn cancellation_request_identity_does_not_claim_another_device() -> anyhow::Result<()> {
-    let (host, mut client) = ordinary().await?;
+    let (host, mut client) = ordinary(rss_device_command_postgres::CommandClock::Postgres).await?;
     let (other, other_operation) = client.timeline_pair().await?;
     let cancelled = client
         .call(
@@ -429,7 +429,7 @@ async fn cancellation_request_identity_does_not_claim_another_device() -> anyhow
 #[tokio::test]
 #[ignore = "make t2 MODULE=execution.commands.admission"]
 async fn child_dispatch_keeps_its_device_and_parent_search_link() -> anyhow::Result<()> {
-    let (host, mut client) = ordinary().await?;
+    let (host, mut client) = ordinary(rss_device_command_postgres::CommandClock::Postgres).await?;
     let (other, child) = client.timeline_pair().await?;
     let parent = Uuid::new_v4();
     let mut pg =

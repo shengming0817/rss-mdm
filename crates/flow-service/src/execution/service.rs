@@ -137,7 +137,7 @@ impl ExecutionService {
         fingerprint: Vec<u8>,
         audit: &RequestAudit,
     ) -> Result<Value> {
-        let now = storage::now(tx).await?;
+        let now = self.store.now(tx).await? / 1_000_000;
         input.validate(now)?;
         let (registration, registration_generation) =
             storage::current_registration(tx, device).await?;

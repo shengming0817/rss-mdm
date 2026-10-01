@@ -11,6 +11,7 @@ mod apple_push;
 mod configuration;
 mod managed_registration;
 pub use configuration::Diagnosis as ConfigurationDiagnosis;
+pub mod health;
 mod lifecycle;
 pub mod model;
 pub mod native;
@@ -41,6 +42,7 @@ pub fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
 }
 
 pub struct ExecutionService {
+    pub readiness: health::Readiness,
     pub exports: std::collections::BTreeMap<
         String,
         Arc<rss_mdm_software_service::publication::PublicationService>,
