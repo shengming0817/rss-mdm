@@ -166,7 +166,7 @@ async fn expired_guard_after_lock_rejects_mutation_and_replay() {
             .await
             .unwrap();
         let audit = RequestAudit::new(tenant().to_string(), "management_write");
-        audit.set_principal("operator", "mdm");
+        audit.set_principal("operator", crate::test_support::INSTANCE);
         let expires = rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
             + Duration::from_millis(150);
         let authorize = || {

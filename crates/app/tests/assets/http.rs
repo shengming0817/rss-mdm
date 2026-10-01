@@ -234,13 +234,13 @@ mod storage {
                     },
                 ),
                 owner: assets::Owner {
-                    instance: "mdm".into(),
+                    instance: crate::test_support::INSTANCE.into(),
                     principal: "operator".into(),
                 },
             };
             let audit = || {
                 let audit = RequestAudit::new(tenant.to_string(), "management_write");
-                audit.set_principal("operator", "mdm");
+                audit.set_principal("operator", crate::test_support::INSTANCE);
                 audit
             };
             runtime.inject_next_transaction_fault(
@@ -259,6 +259,9 @@ mod storage {
             };
             let original = canonical();
             assert!(!original.is_empty());
+            for record in crate::audit_test_support::decode_hex(&original).unwrap() {
+                rss_mdm_timeline_service::project(record.decoded.event()).unwrap();
+            }
             let replay = audit();
             let receipt = service
                 .execute(&command, &replay, &|| Ok(()))
@@ -287,7 +290,7 @@ mod storage {
                     },
                 ),
                 owner: assets::Owner {
-                    instance: "mdm".into(),
+                    instance: crate::test_support::INSTANCE.into(),
                     principal: "operator".into(),
                 },
             };
