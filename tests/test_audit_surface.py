@@ -72,6 +72,8 @@ OWNERS = {
  'windows_policy': 'crates/windows-channel/src/boundary.rs'}
 
 DECLARATIONS = {
+ ('management_read','crates/management-http/src/enrollment/directory.rs'),
+ ('management_read','crates/management-http/src/planning/remote_operations/http.rs'),
  ('timeline_read','crates/management-http/src/boundary.rs'),
  ('audit_search','crates/management-http/src/boundary.rs'),
  ('runtime_diagnostics_read','crates/management-http/src/runtime_diagnostics.rs'),

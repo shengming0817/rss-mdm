@@ -3,6 +3,7 @@
 //! Immutable Resource versions and lifecycle over the host-owned RSS transaction.
 mod artifacts;
 mod codec;
+pub mod directory;
 pub use artifacts::artifact_referenced_in;
 
 mod error;

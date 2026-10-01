@@ -110,7 +110,7 @@ impl ResourceStore {
     pub fn tenant(&self) -> TenantId {
         self.tenant
     }
-    fn check(&self, tx: &PgTransaction<'_>) -> InTransaction<()> {
+    pub(crate) fn check(&self, tx: &PgTransaction<'_>) -> InTransaction<()> {
         self.writer.validate_transaction(tx)?;
         Ok(if tx.tenant_id() == self.tenant {
             Ok(())

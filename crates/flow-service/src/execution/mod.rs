@@ -93,4 +93,5 @@ pub mod channels;
 
 pub use service::target;
 
+pub mod directory;
 pub mod timeline;

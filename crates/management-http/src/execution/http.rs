@@ -2,17 +2,31 @@ use super::*;
 use crate::authorization::context::RequestAuth;
 use axum::{
     Extension, Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{get, post},
 };
 use serde_json::Value;
 pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
+        .route("/operations", get(directory))
         .route("/devices/{device}/operations", post(create))
         .route("/devices/{device}/operations/{id}", get(read))
         .route("/devices/{device}/operations/{id}/cancel", post(cancel))
         .route("/devices/{device}/operations/{id}/approve", post(approve))
+}
+async fn directory(
+    State(s): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    query: std::result::Result<
+        Query<rss_mdm_flow_service::execution::directory::Query>,
+        axum::extract::rejection::QueryRejection,
+    >,
+) -> std::result::Result<Json<Value>, Error> {
+    audit.set_action("command_read");
+    let Query(q) = query.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
+    Ok(Json(s.execution.directory(&auth.proof, &q, &audit).await?))
 }
 async fn create(
     State(app): State<Arc<HttpState>>,

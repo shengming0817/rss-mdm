@@ -79,6 +79,29 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
             );
         }
         ensure!(ids.len() == 26, "run history lost records: {ids:?}");
+        let mut path=format!("/api/v2/operations?kind=action_run&policy={plan}&limit=3&descending=true");
+        let mut directory_ids=Vec::new();
+        loop {
+            let (status,page)=author.call(router,Method::GET,&path,None).await?;
+            ensure!(status==StatusCode::OK,"cross-device directory: {status} {page}");
+            ensure!(page["statistics"]["total"]==26 && page["statistics"]["actionRuns"]==26);
+            for item in page["items"].as_array().context("directory items")? {
+                ensure!(item["evidence"]["result"].get("output").is_none());
+                ensure!(item["evidence"]["result"]["diagnostics"].get("stdout").is_none());
+                directory_ids.push(item["id"].as_str().context("directory id")?.to_owned());
+            }
+            let Some(cursor)=page["nextCursor"].as_object() else{break};
+            path=format!("/api/v2/operations?kind=action_run&policy={plan}&limit=3&descending=true&after={}&afterKind={}",cursor["id"].as_str().unwrap(),cursor["kind"].as_str().unwrap());
+            ensure!(directory_ids.len()<=26,"directory repeated pages");
+        }
+        ensure!(directory_ids.len()==26 && directory_ids.windows(2).all(|pair|pair[0]>pair[1]));
+        let filtered=author.call(router,Method::GET,&format!("/api/v2/policies?action=execution&resource={resource}&limit=1"),None).await?;
+        ensure!(filtered.0==StatusCode::OK && filtered.1["items"][0]["id"]==plan.to_string());
+        let grants_without_read=fixture.grants.iter().filter(|g|g.operation!=crate::authorization::Permission::OperationRead).cloned().collect();
+        crate::test_support::identity::set_grants(case_tenant(),&fixture.author_id,grants_without_read).await?;
+        ensure!(author.call(router,Method::GET,&path,None).await?.0==StatusCode::FORBIDDEN);
+        let mut restored=fixture.grants.clone();restored.extend(crate::test_support::identity::device_grants(None,&["operation_read"])?);
+        crate::test_support::identity::set_grants(case_tenant(),&fixture.author_id,restored).await?;
         ensure!(
             ids.windows(2).all(|pair| pair[0] > pair[1]),
             "equal-time run history was not ordered by descending task id: {ids:?}"

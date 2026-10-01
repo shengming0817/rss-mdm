@@ -13,10 +13,32 @@ struct Page {
 }
 pub fn routes() -> Router<Arc<Policies>> {
     Router::new()
-        .route("/remote-operations", post(create))
+        .route("/remote-operations", post(create).get(directory))
         .route("/remote-operations/{id}", get(read))
         .route("/remote-operations/{id}/cancel", post(cancel))
         .route("/remote-operations/{id}/runs/{run}", get(run_detail))
+}
+
+async fn directory(
+    State(s): State<Arc<Policies>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    query: Result<
+        Query<rss_mdm_flow_service::planning::remote_operations::directory::Query>,
+        axum::extract::rejection::QueryRejection,
+    >,
+) -> Result<Json<Value>, Error> {
+    audit.set_action("management_read");
+    let Query(q) = query.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
+    Ok(Json(
+        rss_mdm_flow_service::planning::remote_operations::directory::list(
+            &s,
+            &auth.proof,
+            &q,
+            &audit,
+        )
+        .await?,
+    ))
 }
 async fn create(
     State(s): State<Arc<Policies>>,

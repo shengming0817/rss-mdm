@@ -2,6 +2,14 @@
 
 Group 持有成员求值；Scope 组合目标并集、限制并集和排除并集；Policy 持续引用 Scope 并分配闭合 Action；资源绑定位于需要资源的 Action 内。管理入口是 `/api/v2`，资源入口是 `/api/v3`。写入带 operationId、expectedRevision、input；提交未知时重试原身份和原文档。
 
+目录读取使用 `GET /api/v2/groups`、`GET /api/v2/scopes`、`GET /api/v2/policies` 和
+`GET /api/v3/resources`，返回 `items/nextCursor`。统一支持 `limit`（默认 64、1–1000）、
+`after` 和 `descending`，按 ID 排序；`nextCursor` 作为下次请求的 `after`。
+Group 可筛选 `kind/deleted/name`，Scope 可筛选 `deleted/ready`，Policy 可筛选
+`enabled/action/scope/resource`，Resource 可筛选 `kind/active`。删除对象默认不进入 Group/Scope 目录。
+无名称的 Scope、Policy、Resource 使用既有 ID，不新增名称或另一套对象模型。
+权限沿用原 owner；Group 成员摘要仍要求全设备 `inventory_read`。翻页不冻结权限或业务状态。
+
 动态组创建或规则变化自动计算，相关事实按字段和设备增量求值，必要时全算。静态组使用 add/remove。预览保存独立计算结果，不发布正式成员、不产生执行。计算检查点固定输入水位并分页恢复；新输入合并到待处理水位，旧计算完成后自动追赶。
 
 编辑 revision、计算发布版本、成员语义 memberVersion 各自独立。无差分重算不改变编辑 CAS 或成员语义版本。Scope 也分别记录定义、计算与目标语义版本；持续匹配设备保留入组坐标，退出后重入取得新坐标。历史结果不会被新事实改写。

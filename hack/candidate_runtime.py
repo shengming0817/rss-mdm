@@ -20,6 +20,13 @@ from candidate_fixture import INSTANCE, ADMIN, TENANTS, installation
 TENANT = TENANTS[0]
 PASSWORD = "Candidate-only-correct-horse-battery-2026!"
 
+def public_host_inputs(config):
+    """Only public bootstrap fields derived from the product's existing runtime input."""
+    return {
+        "ui.json": {"canonicalOrigin": config["product_origin"], "oidcEnabled": config["identity"]["oidc"] is not None},
+        "mdm.json": {"canonicalOrigin": config["product_origin"], "tenant": config["identity"]["tenant_id"]},
+    }
+
 def require(condition, message):
     if not condition:
         raise RuntimeError(message)
@@ -131,7 +138,7 @@ def inputs(root, example, gateway_file):
     write(operator,"initialize.json",dict(database=database(operator,"mdm_identity_maintenance"),installation=installation(),tenant_id=TENANT,principal_id=ADMIN,
                                           login="admin",password_file=write(operator,"account-password",PASSWORD)))
     gateway=gateway_file.read_text().replace("listen 443 ssl;","listen 8445 ssl;")
-    gateway=gateway.replace("/run/config/ui.json","/certs/ui.json")
+    gateway=gateway.replace("/run/config/ui.json","/certs/ui.json").replace("/run/config/mdm.json","/certs/mdm.json")
     gateway=gateway.replace("/private/mdm-tls.crt","/certs/server.crt").replace("/private/mdm-tls.key","/certs/server.key")
     (root/"nginx.conf").write_text(gateway)
     root.chmod(0o700)
@@ -322,7 +329,8 @@ class Candidate:
             path.write_text(json.dumps(authorization))
             gateway=(self.root/"nginx.conf").read_text().replace("mdm.example.test",self.host)
             (self.root/"nginx.conf").write_text(gateway)
-            (self.root/"ui.json").write_text(json.dumps({"canonicalOrigin":"https://"+self.host,"oidcEnabled":self.config["identity"]["oidc"] is not None}))
+            for name, value in public_host_inputs(self.config).items():
+                (self.root/name).write_text(json.dumps(value))
             self.pg_tls=self.secret_volume("pg-tls",["server.crt","server.key"],999)
             self.created.append(self.pg)
             self.command("run","-d","--name",self.pg,"--network",self.network,"--network-alias",self.host,"-p","127.0.0.1::8445","-v",self.pg_tls+":/certs:ro","-e","POSTGRES_PASSWORD=candidate-fixture","-e","POSTGRES_DB=mdm_test",self.providers["postgres"],"sh","-ec","cp /certs/server.key /tmp/server.key; cp /certs/server.crt /tmp/server.crt; chown postgres:postgres /tmp/server.*; chmod 600 /tmp/server.key; exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key",stage=Stage.POSTGRES)
@@ -341,7 +349,7 @@ class Candidate:
             self.operator("initialize-authorization","authorization.json",Stage.AUTHORIZATION_INITIALIZE)
             self.operator("initialize-authorization","authorization.json",Stage.AUTHORIZATION_REPLAY)
             self.start_server()
-            self.gateway_inputs=self.secret_volume("gateway-inputs",["server.crt","server.key","nginx.conf","ui.json"],10001)
+            self.gateway_inputs=self.secret_volume("gateway-inputs",["server.crt","server.key","nginx.conf","ui.json","mdm.json"],10001)
             self.created.append(self.gateway)
             self.command("run","-d","--name",self.gateway,"--network","container:"+self.pg,"-v",self.gateway_inputs+":/certs:ro",self.web["id"],"-c","/certs/nginx.conf",stage=Stage.GATEWAY)
             self.port=int(self.command("port",self.pg,"8445/tcp",stage=Stage.PORT).rsplit(":",1)[1])
