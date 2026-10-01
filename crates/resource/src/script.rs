@@ -111,8 +111,8 @@ impl ScriptDefinition {
     /// Validate schemas, budgets, argument destinations and collection mappings.
     pub fn new(spec: ScriptSpec) -> Result<Self, Error> {
         if !(1..=3600).contains(&spec.timeout_seconds)
-            || !(1..=1_048_576).contains(&spec.output_bytes)
-            || !(1..=1000).contains(&spec.max_rows)
+            || !(1..=16_777_216).contains(&spec.output_bytes)
+            || spec.max_rows==0
         {
             return Err(Error::InvalidInput);
         }

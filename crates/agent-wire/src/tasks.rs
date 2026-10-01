@@ -28,7 +28,7 @@ fn accepted<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
     }
     Ok(true)
 }
-fn required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+pub(crate) fn required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,
@@ -181,6 +181,10 @@ pub enum TaskEvent {
     Cancelled,
     /// Process evidence. Successful exit alone does not prove the requested side effect.
     Result(TaskResult),
+    /// A bounded fragment of a collection output; never a terminal snapshot.
+    OutputChunk(crate::OutputChunk),
+    /// Terminal evidence whose output must be fully assembled and verified.
+    ChunkedResult(crate::ChunkedTaskResult),
     /// Independent software detection evidence after local software-plan execution.
     SoftwareResult(SoftwareTaskResult),
     /// Only the enrollment UI outcome; active MDM registration is server-owned.
@@ -408,7 +412,7 @@ impl TaskResult {
             || serde_json::to_vec(&output)
                 .map_err(|_| WireError::InvalidValue)?
                 .len()
-                > 1_048_576
+                > crate::OUTPUT_MAX_BYTES
         {
             return Err(WireError::InvalidValue);
         }
@@ -662,8 +666,8 @@ impl TaskSpec {
             || self.content.length == 0
             || self.content.length > 16_777_216
             || !(1..=3600).contains(&self.timeout_seconds)
-            || !(1..=1_048_576).contains(&self.output_bytes)
-            || !(1..=1000).contains(&self.max_rows)
+            || !(1..=16_777_216).contains(&self.output_bytes)
+            || self.max_rows==0
             || self.arguments.len() > 64
             || self.environment.len() > 32
             || self
@@ -812,7 +816,7 @@ pub struct SoftwareTaskCommand {
 impl SoftwareTaskCommand {
     fn validate(&self) -> Result<(), WireError> {
         if !(1..=86400).contains(&self.timeout_seconds)
-            || !(1..=1_048_576).contains(&self.output_bytes)
+            || !(1..=16_777_216).contains(&self.output_bytes)
             || self.arguments.len() > 128
             || self.environment.len() > 32
             || self
