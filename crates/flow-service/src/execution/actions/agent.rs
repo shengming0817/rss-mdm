@@ -83,7 +83,7 @@ impl ExecutionService {
                 let target=super::model::Target {device:p.device().into(),registration:p.registration(),generation:p.generation()};
                 match &policy {
                     db::ScheduledPolicy::Enrollment(_) if enrollment_capable => super::production::accept_for_device(service,tx,&policy,&target,input.operation_id(),now).await?,
-                    db::ScheduledPolicy::Script(_) if script_capable => super::production::accept_for_device(service,tx,&policy,&target,input.operation_id(),now).await?,
+                    db::ScheduledPolicy::Script(script) if script_capable && input.profiles().contains(&script.frozen.executor_profile()) => super::production::accept_for_device(service,tx,&policy,&target,input.operation_id(),now).await?,
                     db::ScheduledPolicy::Software(software) if software_capable => super::software::accept_for_device(service,tx,software,&target,now).await?,
                     _ => (),
                 }
@@ -94,7 +94,7 @@ impl ExecutionService {
                 let mut run=db::load_run(tx,stored(Uuid::parse_str(&id))?).await?;belongs(&run,p)?;let plan=db::load_source(&service.policy_reader,tx,run.source).await?;
                 let previous=run.state.clone();
                 run.state.expire(now,plan.timeout_seconds());
-                let capable=match &plan { db::ScheduledPolicy::Script(_) => script_capable, db::ScheduledPolicy::Software(_) => software_capable, db::ScheduledPolicy::Enrollment(_) => enrollment_capable };
+                let capable=match &plan { db::ScheduledPolicy::Script(script) => script_capable && input.profiles().contains(&script.frozen.executor_profile()), db::ScheduledPolicy::Software(_) => software_capable, db::ScheduledPolicy::Enrollment(_) => enrollment_capable };
                 let allowed=capable && plan.authorized_in(service,tx,&run.target,now).await?;
                 if plan.withdrawn_in(service,tx,&run.target,now).await?{run.state.cancel();}
                 super::recovery::audit_recovery(service,tx,&run,&previous).await?;

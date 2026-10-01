@@ -556,3 +556,20 @@ fn task_results_require_bounded_coherent_diagnostics() {
         Err(WireError::InvalidValue)
     );
 }
+
+#[test]
+fn claims_require_current_unique_executor_profiles() {
+    use rss_mdm_agent_wire::TaskClaimRequest;
+    let base = json!({"wireVersion":5,"operationId":Uuid::new_v4(),"profiles":["osquery"]});
+    assert!(serde_json::from_value::<TaskClaimRequest>(base.clone()).is_ok());
+    for profiles in [json!([]),json!(["posix_sh","osquery"])] {
+        let mut value=base.clone();value["profiles"]=profiles;
+        assert!(serde_json::from_value::<TaskClaimRequest>(value).is_ok());
+    }
+    for profiles in [json!(["osquery","osquery"]),json!(["arbitrary"])] {
+        let mut value=base.clone();value["profiles"]=profiles;
+        assert!(serde_json::from_value::<TaskClaimRequest>(value).is_err());
+    }
+    let mut missing=base;missing.as_object_mut().unwrap().remove("profiles");
+    assert!(serde_json::from_value::<TaskClaimRequest>(missing).is_err());
+}

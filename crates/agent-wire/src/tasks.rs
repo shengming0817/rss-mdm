@@ -511,6 +511,7 @@ struct ClaimInput {
     wire_version: u8,
     #[serde(with = "strict_uuid")]
     operation_id: Uuid,
+    profiles: Vec<ExecutorProfile>,
 }
 impl From<TaskClaimRequest> for ClaimInput {
     fn from(v: TaskClaimRequest) -> Self {
@@ -523,20 +524,23 @@ impl TryFrom<ClaimInput> for TaskClaimRequest {
         if v.wire_version != WIRE_VERSION {
             return Err(WireError::InvalidValue);
         }
-        Self::new(v.operation_id)
+        Self::new(v.operation_id, v.profiles)
     }
 }
 impl TaskClaimRequest {
     /// Construct one bounded poll with a stable retry identity.
-    pub fn new(operation_id: Uuid) -> Result<Self, WireError> {
-        if operation_id.is_nil() {
+    pub fn new(operation_id: Uuid, profiles: Vec<ExecutorProfile>) -> Result<Self, WireError> {
+        if operation_id.is_nil() || profiles.len() > 4 || profiles.iter().enumerate().any(|(i,p)| profiles[..i].contains(p)) {
             return Err(WireError::InvalidValue);
         }
         Ok(Self(ClaimInput {
             wire_version: WIRE_VERSION,
             operation_id,
+            profiles,
         }))
     }
+    /// Currently configured controlled executors; an empty list still receives cancellations.
+    pub fn profiles(&self) -> &[ExecutorProfile] { &self.0.profiles }
     /// Poll replay identity.
     pub fn operation_id(&self) -> Uuid {
         self.0.operation_id
