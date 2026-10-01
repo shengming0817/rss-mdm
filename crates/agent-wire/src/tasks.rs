@@ -534,7 +534,13 @@ impl TryFrom<ClaimInput> for TaskClaimRequest {
 impl TaskClaimRequest {
     /// Construct one bounded poll with a stable retry identity.
     pub fn new(operation_id: Uuid, profiles: Vec<ExecutorProfile>) -> Result<Self, WireError> {
-        if operation_id.is_nil() || profiles.len() > 4 || profiles.iter().enumerate().any(|(i,p)| profiles[..i].contains(p)) {
+        if operation_id.is_nil()
+            || profiles.len() > 4
+            || profiles
+                .iter()
+                .enumerate()
+                .any(|(i, p)| profiles[..i].contains(p))
+        {
             return Err(WireError::InvalidValue);
         }
         Ok(Self(ClaimInput {
@@ -544,7 +550,9 @@ impl TaskClaimRequest {
         }))
     }
     /// Currently configured controlled executors; an empty list still receives cancellations.
-    pub fn profiles(&self) -> &[ExecutorProfile] { &self.0.profiles }
+    pub fn profiles(&self) -> &[ExecutorProfile] {
+        &self.0.profiles
+    }
     /// Poll replay identity.
     pub fn operation_id(&self) -> Uuid {
         self.0.operation_id
@@ -667,7 +675,7 @@ impl TaskSpec {
             || self.content.length > 16_777_216
             || !(1..=3600).contains(&self.timeout_seconds)
             || !(1..=16_777_216).contains(&self.output_bytes)
-            || self.max_rows==0
+            || self.max_rows == 0
             || self.arguments.len() > 64
             || self.environment.len() > 32
             || self

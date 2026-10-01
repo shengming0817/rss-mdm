@@ -25,11 +25,15 @@ fn params<T>(v: ParamInput<T>) -> std::result::Result<T, Error> {
 pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route("/asset-fields", get(fields))
+        .route("/asset-fields/{field}", put(field_write))
+        .route("/asset-fields/{field}/references", get(field_references))
         .route("/device-queries", post(search))
         .route("/device-queries/{id}", get(query_status))
         .route("/device-queries/{id}/items", get(query_items))
         .route("/device-queries/{id}/facets/{facet}", get(query_facets))
         .route("/devices/{id}/inventory", get(detail))
+        .route("/devices/{id}/collections/{run}", get(collection_run))
+        .route("/devices/{id}/inventory-lists/{field}", get(list_items))
         .route("/devices/{id}/manual-fields/{field}", put(manual))
         .route("/saved-queries", get(saved_list))
         .route("/saved-queries/{id}", get(saved_read).put(saved_write))
@@ -46,11 +50,17 @@ fn authorize(
     command: &Command,
 ) -> std::result::Result<(), rss_mdm_inventory_service::Error> {
     match command {
+        Command::FieldWrite { .. } | Command::FieldReferences { .. } => auth
+            .proof
+            .manage(Permission::InventoryFieldsWrite)
+            .map_err(rss_mdm_inventory_service::Error::from),
         Command::Manual { device, .. } => auth
             .proof
             .require(Permission::InventoryAssign, Some(device))
             .map_err(rss_mdm_inventory_service::Error::from),
-        Command::Detail { device, .. } => auth
+        Command::Detail { device, .. }
+        | Command::CollectionRun { device, .. }
+        | Command::ListItems { device, .. } => auth
             .proof
             .require(Permission::InventoryRead, Some(device))
             .map_err(rss_mdm_inventory_service::Error::from),
@@ -81,7 +91,12 @@ async fn run(
     });
     match &command {
         Command::Manual { device, .. } => audit.target_device(device),
-        Command::Detail { device, .. } => audit.target(device),
+        Command::Detail { device, .. }
+        | Command::CollectionRun { device, .. }
+        | Command::ListItems { device, .. } => audit.target(device),
+        Command::FieldWrite { field, .. } | Command::FieldReferences { field } => {
+            audit.target(field.as_str())
+        }
         Command::QueryStatus { task, .. }
         | Command::QueryItems { task, .. }
         | Command::QueryFacets { task, .. } => audit.target(&task.to_string()),
@@ -315,4 +330,80 @@ async fn query_facets(
 
 pub struct HttpState {
     pub assets: std::sync::Arc<super::AssetService>,
+}
+
+async fn field_write(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(key): Path<String>,
+    payload: BodyInput<Operation<FieldChange>>,
+) -> std::result::Result<HttpResponse, Error> {
+    let field = FieldKey::parse(&key).map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
+    run(
+        &app,
+        &auth,
+        &audit,
+        Command::FieldWrite {
+            field,
+            change: body(payload)?,
+        },
+    )
+    .await
+}
+async fn field_references(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(key): Path<String>,
+) -> std::result::Result<HttpResponse, Error> {
+    let field = FieldKey::parse(&key).map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
+    run(&app, &auth, &audit, Command::FieldReferences { field }).await
+}
+
+async fn collection_run(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path((device, id)): Path<(String, Uuid)>,
+    parameters: ParamInput<Empty>,
+) -> std::result::Result<HttpResponse, Error> {
+    params(parameters)?;
+    let scope = ReadScope::from_proof(&auth.proof)?;
+    run(
+        &app,
+        &auth,
+        &audit,
+        Command::CollectionRun {
+            device,
+            run: id,
+            scope,
+        },
+    )
+    .await
+}
+
+async fn list_items(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path((device, key)): Path<(String, String)>,
+    parameters: ParamInput<Page>,
+) -> std::result::Result<HttpResponse, Error> {
+    let page = params(parameters)?;
+    let field = FieldKey::parse(&key).map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
+    let scope = ReadScope::from_proof(&auth.proof)?;
+    run(
+        &app,
+        &auth,
+        &audit,
+        Command::ListItems {
+            device,
+            field,
+            scope,
+            limit: page.limit.unwrap_or(50),
+            cursor: page.cursor,
+        },
+    )
+    .await
 }

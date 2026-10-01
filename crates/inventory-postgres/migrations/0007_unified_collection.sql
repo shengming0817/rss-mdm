@@ -52,5 +52,6 @@ DO $$ DECLARE t text; BEGIN
   EXECUTE format('REVOKE ALL ON mdm.%I FROM PUBLIC',t);
  END LOOP;
 END $$;
-GRANT SELECT ON mdm.field_versions,mdm.collection_definitions,mdm.collection_results TO mdm_runtime,mdm_api;
+GRANT SELECT ON mdm.field_versions,mdm.collection_definitions,mdm.collection_results TO mdm_runtime;
+GRANT SELECT ON mdm.field_versions,mdm.collection_definitions TO mdm_api;
 COMMIT;

@@ -370,10 +370,24 @@ impl FieldDefinition {
         }
         Ok(())
     }
+    /// Stable identity order for keyed inventories; ordinary arrays remain ordered values.
+    pub fn canonical_value(&self, mut value: Scalar) -> Result<Scalar> {
+        self.validate_scalar(&value)?;
+        if let (Some(key), Scalar::Array(items)) = (&self.item_key, &mut value) {
+            items.sort_by(|a, b| match (a, b) {
+                (Scalar::Object(a), Scalar::Object(b)) => a.get(key).cmp(&b.get(key)),
+                _ => unreachable!("validated keyed list"),
+            });
+        }
+        Ok(value)
+    }
     /// Allowed operators are derived from the type, never a second editable dictionary.
     pub fn operations(&self) -> Vec<Operator> {
         use Operator::*;
-        if !self.searchable {
+        if !self.searchable
+            || matches!(&self.value_type, ValueType::Object { .. })
+            || matches!(&self.value_type,ValueType::Array {items,..} if matches!(items.as_ref(),ValueType::Object {..}|ValueType::Array {..}))
+        {
             return Vec::new();
         }
         let mut operations = match self.value_type {

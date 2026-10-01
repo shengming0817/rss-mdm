@@ -4,7 +4,13 @@ use rss_transactional_messaging_postgres::{PgError, PgTransaction};
 use std::collections::BTreeSet;
 pub(crate) async fn insert(tx: &mut PgTransaction<'_>, version: &Version) -> Result<(), PgError> {
     let mut artifacts = BTreeSet::new();
+    let mut fields = BTreeSet::new();
     for variant in version.variants() {
+        if let Declaration::Script { definition, .. } = variant.declaration()
+            && let ScriptPurpose::Collection { mappings } = &definition.spec().purpose
+        {
+            fields.extend(mappings.keys().cloned());
+        }
         match variant.declaration() {
             Declaration::Software { definition } => {
                 for artifact in definition.spec().artifacts.values() {
@@ -40,6 +46,12 @@ pub(crate) async fn insert(tx: &mut PgTransaction<'_>, version: &Version) -> Res
         })
         .await?;
     }
+    let tenant = tx.tenant_id().to_string();
+    let owner = version.resource().as_str().to_owned();
+    let version = version.label().as_str().to_owned();
+    tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query("INSERT INTO mdm_resource.field_refs SELECT $1::uuid,$2,$3,f,false FROM unnest($4::text[]) f").bind(tenant).bind(owner).bind(version).bind(fields.into_iter().collect::<Vec<_>>()).execute(c).await?;Ok(())
+    })).await?;
     Ok(())
 }
 pub(crate) async fn archive(
@@ -50,7 +62,7 @@ pub(crate) async fn archive(
     let tenant = tx.tenant_id().to_string();
     let owner = owner.as_str().to_owned();
     let version = version.as_str().to_owned();
-    tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_resource.artifact_refs SET archived=true WHERE tenant_id=$1::uuid AND owner=$2 AND version=$3").bind(tenant).bind(owner).bind(version).execute(c).await?;Ok(())})).await?;
+    tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_resource.field_refs SET archived=true WHERE tenant_id=$1::uuid AND owner=$2 AND version=$3").bind(&tenant).bind(&owner).bind(&version).execute(&mut *c).await?;sqlx::query("UPDATE mdm_resource.artifact_refs SET archived=true WHERE tenant_id=$1::uuid AND owner=$2 AND version=$3").bind(tenant).bind(owner).bind(version).execute(c).await?;Ok(())})).await?;
     Ok(())
 }
 async fn lock(tx: &mut PgTransaction<'_>, digest: Digest) -> Result<(), PgError> {
@@ -72,4 +84,12 @@ pub async fn artifact_referenced_in(
     lock(tx, digest).await?;
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_resource.artifact_refs WHERE tenant_id=$1::uuid AND sha256=$2 AND NOT archived)").bind(tenant).bind(digest.bytes().to_vec()).fetch_one(c).await})).await
+}
+
+/// Number of non-archived template versions referencing a field in the borrowed tenant.
+/// The product caller holds its configuration mutation lock through the field change.
+pub async fn field_references_in(tx: &mut PgTransaction<'_>, field: &str) -> Result<i64, PgError> {
+    let tenant = tx.tenant_id().to_string();
+    let field = field.to_owned();
+    tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT count(*) FROM mdm_resource.field_refs WHERE tenant_id=$1::uuid AND field=$2 AND NOT archived").bind(tenant).bind(field).fetch_one(c).await})).await
 }

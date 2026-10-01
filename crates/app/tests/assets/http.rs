@@ -23,7 +23,18 @@ mod identity_read {
         // Use the public Scope encoder, not JSON map key order, for the persisted identity.
         let scope: rss_observation::Scope = serde_json::from_str(&scope)?;
         let encoded = scope.encode()?.replace('\'', "''");
-        let coverage = serde_json::to_string(&rss_mdm_inventory::coverage())?;
+        let coverage = serde_json::to_string(
+            &crate::test_support::inventory::definition(
+                "inventory",
+                "mdm.windows",
+                &[
+                    rss_mdm_inventory::builtin::MODEL,
+                    rss_mdm_inventory::builtin::OS_VERSION,
+                ],
+            )
+            .coverage()
+            .unwrap(),
+        )?;
         let projection = rss_mdm_inventory_postgres::projection_scope(scope.tenant());
         let journal = projection.source().source();
         let generation = projection.generation();
@@ -92,8 +103,8 @@ mod storage {
     #[ignore = "MODULE=assets.http: real capability storage and transactions"]
     async fn asset_commit_unknown_recovers_original_receipts() {
         use assets::{
-            Command as AssetCommand, FieldKey, ManualChange, Owner, Query, SavedChange,
-            SavedDefinition, Scalar,
+            Command as AssetCommand, ManualChange, Owner, Query, SavedChange, SavedDefinition,
+            Scalar,
         };
         let m = planning(tenant()).await;
         let device = format!("unknown-{}", Uuid::new_v4());
@@ -226,7 +237,7 @@ mod storage {
             seed_device_in(tenant, &device);
             let command = assets::Command::Manual {
                 device: device.clone(),
-                field: assets::rss_mdm_inventory::builtin::ASSET_TAG,
+                field: rss_mdm_inventory::builtin::ASSET_TAG,
                 change: inventory_operation(
                     0,
                     assets::ManualChange::Set {
@@ -279,7 +290,7 @@ mod storage {
             denied.finalize(None);
             let competing = |value: &str| assets::Command::Manual {
                 device: device.clone(),
-                field: assets::rss_mdm_inventory::builtin::ASSET_TAG,
+                field: rss_mdm_inventory::builtin::ASSET_TAG,
                 change: inventory_operation(
                     1,
                     assets::ManualChange::Set {
@@ -339,7 +350,7 @@ mod manual {
         .await?;
         ensure!(
             catalog["asset"]["fields"].as_array().unwrap().len()
-                == rss_mdm_inventory::FieldKey::ALL.len()
+                == rss_mdm_inventory::builtin::fields().len()
         );
         let cases = [
             ("custom.asset_tag", "string", json!("A-2463")),

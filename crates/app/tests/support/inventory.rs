@@ -18,7 +18,18 @@ pub(crate) fn seed_source(
         epoch,
     )?;
     let encoded = scope.encode()?.replace('\'', "''");
-    let coverage = serde_json::to_string(&rss_mdm_inventory::coverage())?;
+    let coverage = serde_json::to_string(
+        &crate::test_support::inventory::definition(
+            "inventory",
+            "mdm.windows",
+            &[
+                rss_mdm_inventory::builtin::MODEL,
+                rss_mdm_inventory::builtin::OS_VERSION,
+            ],
+        )
+        .coverage()
+        .unwrap(),
+    )?;
     pg(&format!(
         "INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','{grant}','fixture','{INSTANCE}','{device}','enrollment','consumed',clock_timestamp()+interval '60 seconds'); INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source) VALUES('{TENANT}','{request}','{grant}','{source}'); INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','{device}','{channel}',1,'{request}','active'); INSERT INTO mdm_access.credentials VALUES('{TENANT}','{credential}','{registration}','{channel}',md5('{credential}')||md5('{registration}'),'active'); INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','{registration}','{source}','{epoch}','{coverage}',true); INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch) VALUES('{TENANT}','mdm.observation.v1','inventory-v3','{encoded}','{coverage}','device.model','{value}','fixture',1,2,'known','{value}','fixture',1,2,'{registration}','{source}','{epoch}');",
         TENANT = case_tenant()
@@ -55,4 +66,22 @@ pub(crate) async fn completed_windows_run(base: &Value, device: &str) -> Result<
     .await?;
     access.close().await;
     Ok(())
+}
+
+/// Explicit contract for a fixture collector; production never has a default field roster.
+pub(crate) fn definition(
+    dataset: &str,
+    source: &str,
+    keys: &[rss_mdm_inventory::FieldKey],
+) -> rss_mdm_inventory::CollectionDefinition {
+    let catalog = rss_mdm_inventory::Catalog::new(rss_mdm_inventory::builtin::fields()).unwrap();
+    rss_mdm_inventory::CollectionDefinition::new(
+        dataset,
+        "fixture",
+        rss_mdm_inventory::Source::parse(source).unwrap(),
+        keys.iter()
+            .map(|key| catalog.definition(*key).unwrap().clone())
+            .collect(),
+    )
+    .unwrap()
 }

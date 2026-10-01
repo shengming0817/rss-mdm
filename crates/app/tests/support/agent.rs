@@ -26,7 +26,7 @@ pub(crate) async fn register(router: &Router, browser: &mut Browser) -> Result<A
     );
     let operation = uuid::Uuid::new_v4();
     let registration_request = json!({
-        "wireVersion":4,
+        "wireVersion":5,
         "operationId":operation,
         "enrollmentId":enrollment["enrollmentId"],
         "password":password,

@@ -27,7 +27,7 @@ async fn publish(f: &mut Fixture) -> Result<Uuid> {
 }
 async fn report(f: &Fixture, sequence: u64, state: &str) -> Result<()> {
     let id = Uuid::new_v4();
-    let input = json!({"wireVersion":4,"reportId":id,"sequence":sequence,"observedAt":1,"body":{"kind":"mdmEnrollment","state":state}});
+    let input = json!({"wireVersion":5,"reportId":id,"sequence":sequence,"observedAt":1,"body":{"kind":"mdmEnrollment","state":state}});
     let response = agent_call(
         &f.router,
         Method::POST,

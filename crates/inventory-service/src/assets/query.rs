@@ -40,7 +40,19 @@ impl AssetService {
         q: &Query,
         at: Timepoint,
     ) -> Result<Response> {
-        self.validate_query(q, &catalog_in(tx, self.tenant, i64::MAX).await?)?;
+        let catalog = catalog_in(tx, self.tenant, i64::MAX).await?;
+        self.validate_query(q, &catalog)?;
+        if let Some(criteria) = &q.criteria {
+            filter::require_visible(&catalog, criteria, scope.sensitive)?;
+        }
+        for key in q.select.iter().chain(q.sort.iter().map(|s| &s.field)) {
+            if !scope.sensitive
+                && checked_input(catalog.definition(*key))?.sensitivity
+                    == rss_mdm_inventory::Sensitivity::Sensitive
+            {
+                return Err(Error::Forbidden.into());
+            }
+        }
         let tenant = self.tenant;
         let watermark = tx
             .with_connection(move |c| {
@@ -196,6 +208,7 @@ impl AssetService {
                 device.fields.retain(|f, _| q.select.contains(f));
                 device.revisions.retain(|f, _| q.select.contains(f));
             }
+            self.summarize_lists(&mut device, &catalog, scope, watermark)?;
             let bytes = stored(serde_json::to_vec(&device))?;
             if bytes.len() > 1024 * 1024 {
                 return Err(Error::Unavailable(Failure::AssetBytesLimit).into());

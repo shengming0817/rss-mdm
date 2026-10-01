@@ -112,7 +112,7 @@ impl ScriptDefinition {
     pub fn new(spec: ScriptSpec) -> Result<Self, Error> {
         if !(1..=3600).contains(&spec.timeout_seconds)
             || !(1..=16_777_216).contains(&spec.output_bytes)
-            || spec.max_rows==0
+            || spec.max_rows == 0
         {
             return Err(Error::InvalidInput);
         }

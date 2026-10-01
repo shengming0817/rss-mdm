@@ -55,6 +55,21 @@ pub async fn audit_recovery(
     run: &db::Run,
     previous: &super::state::RunState,
 ) -> Result<()> {
+    if run.state.cancellation != Cancellation::None || run.state.execution == Execution::Unknown {
+        if let Some(attempt) = run.state.attempt() {
+            super::collection::abandon(
+                service,
+                tx,
+                attempt,
+                if run.state.cancellation != Cancellation::None {
+                    "revoked"
+                } else {
+                    "timeout"
+                },
+            )
+            .await?;
+        }
+    }
     if *previous != run.state {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             tx.tenant_id().to_string(),

@@ -53,7 +53,7 @@ pub async fn publish_field_in(
         "invalid field revision"
     );
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2554))")
-        .bind(format!("{tenant}:field:{}", field.key.as_str()))
+        .bind(format!("{tenant}:field-catalog"))
         .execute(&mut *c)
         .await?;
     let catalog = catalog_in(c, tenant).await?;
@@ -69,6 +69,10 @@ pub async fn publish_field_in(
         .map(|v| v as u64)
         .or_else(|| old.map(|f| f.version))
         .unwrap_or(0);
+    ensure!(
+        old.is_some() || latest.is_none(),
+        "retired field identity cannot be reused"
+    );
     if actual != expected {
         return Ok(false);
     }
@@ -135,7 +139,7 @@ pub async fn retire_field_in(
         "system field cannot be removed"
     );
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2554))")
-        .bind(format!("{tenant}:field:{}", key.as_str()))
+        .bind(format!("{tenant}:field-catalog"))
         .execute(&mut *c)
         .await?;
     let catalog = catalog_in(c, tenant).await?;

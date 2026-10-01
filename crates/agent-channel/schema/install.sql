@@ -11,7 +11,7 @@ CREATE TABLE mdm_agent.bindings (
     capabilities text NOT NULL,
     platform text NOT NULL,
     architecture text NOT NULL,
-    CONSTRAINT agent_binding_profile CHECK (((wire_version = 4) AND (capabilities = ANY (ARRAY['["inventory.collect.v5"]'::text, '["inventory.collect.v5","task.execute.v5"]'::text, '["inventory.collect.v5","software.execute.v5"]'::text, '["inventory.collect.v5","task.execute.v5","software.execute.v5"]'::text, '["inventory.collect.v5","mdm.enrollment.v5"]'::text, '["inventory.collect.v5","task.execute.v5","mdm.enrollment.v5"]'::text, '["inventory.collect.v5","software.execute.v5","mdm.enrollment.v5"]'::text, '["inventory.collect.v5","task.execute.v5","software.execute.v5","mdm.enrollment.v5"]'::text])))),
+    CONSTRAINT agent_binding_profile CHECK (((wire_version = 5) AND (capabilities = ANY (ARRAY['["inventory.collect.v5"]'::text, '["inventory.collect.v5","task.execute.v5"]'::text, '["inventory.collect.v5","software.execute.v5"]'::text, '["inventory.collect.v5","task.execute.v5","software.execute.v5"]'::text, '["inventory.collect.v5","mdm.enrollment.v5"]'::text, '["inventory.collect.v5","task.execute.v5","mdm.enrollment.v5"]'::text, '["inventory.collect.v5","software.execute.v5","mdm.enrollment.v5"]'::text, '["inventory.collect.v5","task.execute.v5","software.execute.v5","mdm.enrollment.v5"]'::text])))),
     CONSTRAINT agent_bindings_architecture_check CHECK ((architecture = ANY (ARRAY['x86_64'::text, 'aarch64'::text]))),
     CONSTRAINT agent_bindings_platform_check CHECK ((platform = ANY (ARRAY['windows'::text, 'macos'::text])))
 );

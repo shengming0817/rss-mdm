@@ -216,8 +216,11 @@ pub fn resolve(
             matches!(s.state, State::Known(_) | State::Null)
                 && definition.sources.get(&s.evidence.source).copied() == selected_priority
         })
-        .map(|s| s.state.clone())
-        .collect();
+        .map(|s| match &s.state {
+            State::Known(value) => definition.canonical_value(value.clone()).map(State::Known),
+            state => Ok(state.clone()),
+        })
+        .collect::<Result<Vec<_>>>()?;
     let state = match values.first() {
         Some(first) if values.iter().any(|v| v != first) => State::Conflict,
         Some(first) => first.clone(),

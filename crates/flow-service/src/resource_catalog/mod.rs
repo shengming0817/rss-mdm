@@ -169,6 +169,35 @@ impl ResourceCatalog {
         at: Timepoint,
     ) -> Result<Value> {
         let rid = id(resource)?;
+        if let Change::Version { variants, .. } = &op.input {
+            let catalog = crate::assets::catalog_in(tx, self.tenant, i64::MAX).await?;
+            for variant in variants {
+                if let Declaration::Script { definition, .. } = &variant.declaration
+                    && let r::ScriptPurpose::Collection { mappings } = &definition.spec().purpose
+                {
+                    let source = if definition.spec().profile == r::ScriptProfile::Osquery {
+                        rss_mdm_inventory::Source::AgentOsquery
+                    } else {
+                        rss_mdm_inventory::Source::AgentScript
+                    };
+                    let platform = match variant.platform {
+                        Platform::Windows => rss_mdm_inventory::Platform::Windows,
+                        Platform::Macos => rss_mdm_inventory::Platform::Macos,
+                    };
+                    for key in mappings.keys() {
+                        let field =
+                            checked_input(catalog.definition(checked_input(
+                                rss_mdm_inventory::FieldKey::parse(key),
+                            )?))?;
+                        if !field.sources.contains_key(&source)
+                            || !field.platforms.contains(&platform)
+                        {
+                            return Err(Error::Malformed.into());
+                        }
+                    }
+                }
+            }
+        }
         let command = match &op.input {
             Change::FirewallVersion { version, enabled } => pg::Command::Insert(
                 self.author

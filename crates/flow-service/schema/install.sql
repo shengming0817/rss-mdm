@@ -787,4 +787,13 @@ CREATE POLICY tenant ON mdm_publication.operations USING ((tenant_id = (NULLIF(c
 ALTER TABLE mdm_resource_catalog.operations ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY tenant ON mdm_resource_catalog.operations USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
+CREATE TABLE mdm_commands.output_chunks (
+ tenant_id uuid NOT NULL,attempt uuid NOT NULL,chunk_index integer NOT NULL CHECK(chunk_index>=0 AND chunk_index<64),
+ manifest jsonb NOT NULL CHECK(octet_length(manifest::text)<=1024),bytes bytea NOT NULL CHECK(octet_length(bytes) BETWEEN 1 AND 262144),
+ PRIMARY KEY(tenant_id,attempt,chunk_index),FOREIGN KEY(tenant_id,attempt) REFERENCES mdm_commands.action_attempts(tenant_id,id)
+);
+ALTER TABLE mdm_commands.output_chunks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_commands.output_chunks FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_commands.output_chunks USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+REVOKE ALL ON mdm_commands.output_chunks FROM PUBLIC;
 COMMIT;

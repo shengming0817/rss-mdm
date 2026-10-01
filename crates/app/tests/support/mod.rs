@@ -280,7 +280,9 @@ pub(crate) fn pg_tenant(tenant: &str, sql: &str) -> Result<String> {
 pub(crate) async fn database(value: &Value) -> Result<Arc<crate::Database>> {
     let config: Config = serde_json::from_value(value.clone())?;
     Ok(Arc::new(
-        crate::Database::connect(config.access_database.options()?).await?,
+        crate::Database::connect(config.access_database.options()?)
+            .await
+            .map_err(|error| anyhow::anyhow!("access database rejected: {error:?}"))?,
     ))
 }
 

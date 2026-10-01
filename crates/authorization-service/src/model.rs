@@ -7,6 +7,8 @@ use uuid::Uuid;
 pub enum Permission {
     RuntimeDiagnosticsRead,
     InventoryRead,
+    InventorySensitiveRead,
+    InventoryFieldsWrite,
     ComplianceRead,
     ComplianceRuleRead,
     ComplianceWrite,
@@ -65,7 +67,9 @@ impl Permission {
             | Self::SoftwareDeploy
             | Self::OperationRead
             | Self::OperationCancel => true,
-            Self::RuntimeDiagnosticsRead
+            Self::InventorySensitiveRead
+            | Self::InventoryFieldsWrite
+            | Self::RuntimeDiagnosticsRead
             | Self::AuthorizationRead
             | Self::ComplianceRuleRead
             | Self::ComplianceWrite

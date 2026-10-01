@@ -214,7 +214,10 @@ async fn script_health_projection_is_queryable_group_input() -> Result<()> {
     )?
     .encode()?
     .replace('\'', "''");
-    let coverage = serde_json::to_string(&rss_mdm_inventory::enterprise_coverage(field))?;
+    let coverage = serde_json::to_string(
+        &crate::test_support::inventory::definition(field.as_str(), "agent.script", &[field])
+            .coverage()?,
+    )?;
     let value = serde_json::to_string(&rss_mdm_inventory::Scalar::Boolean(true))?;
     pg(&format!("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','{registration}','agent.script','{epoch}','enterprise-task-v1',true);
         INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch)

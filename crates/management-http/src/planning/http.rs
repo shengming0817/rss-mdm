@@ -162,7 +162,11 @@ async fn group_write(
         &auth,
         &audit,
         permission,
-        Command::Group { id, change },
+        Command::Group {
+            id,
+            change,
+            sensitive: assets::ReadScope::from_proof(&auth.proof)?.sensitive,
+        },
     )
     .await
 }

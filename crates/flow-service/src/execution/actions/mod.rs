@@ -8,6 +8,7 @@ pub mod state;
 pub mod storage;
 
 mod collection;
+mod output;
 
 mod poll;
 

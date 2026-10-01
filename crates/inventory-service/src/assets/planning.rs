@@ -72,9 +72,12 @@ impl SnapshotReader {
         ids.truncate(limit);
         let next = more.then(|| ids.last().expect("nonempty lookahead page").clone());
         let catalog = catalog_in(tx, self.tenant, watermark).await?;
-        let devices = self
+        let mut devices = self
             .asset_devices_at_in(tx, watermark, &ids, &catalog)
             .await?;
+        for device in &mut devices {
+            restrict_fields(device, &catalog, scope.sensitive);
+        }
         Ok(AssetPage {
             devices,
             next,
@@ -98,6 +101,7 @@ impl SnapshotReader {
                         device: id.clone(),
                         channels: BTreeSet::new(),
                         fields: BTreeMap::new(),
+                        lists: BTreeMap::new(),
                         quality: vec![],
                         revisions: BTreeMap::new(),
                     },
@@ -228,7 +232,7 @@ impl SnapshotReader {
             }
         }
         let result: Vec<_> = devices.into_values().collect();
-        if stored(serde_json::to_vec(&result))?.len() > 16 * 1024 * 1024 {
+        if stored(serde_json::to_vec(&result))?.len() > 64 * 1024 * 1024 {
             return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
         }
         Ok(result)

@@ -100,7 +100,10 @@ impl ExecutionService {
                 super::recovery::audit_recovery(service,tx,&run,&previous).await?;
                 if run.state.cancellation==Cancellation::None && run.available_at<=now && allowed {
                     let attempt=Uuid::new_v4();
+                    let previous_attempt=run.state.attempt();
                     if run.state.claim(attempt,now).is_ok(){
+                        if let Some(old)=previous_attempt {super::collection::abandon(service,tx,old,"superseded").await?;}
+                        if let db::ScheduledPolicy::Script(script)=&plan {super::collection::reserve(tx,&script.frozen,&run,now).await?;}
                         let signer=service.signer.as_ref().ok_or(Error::Unsupported)?;
                         let signed=signer.sign(plan.task(service,tx,&run.target,db::TaskIssue { run:run.id,attempt,permit:wire::TaskPermit::Offer,expiry:(now+60).min(run.deadline) }).await?)?;
                         let tenant=tx.tenant_id().to_string();let run_id=run.id.to_string();let reg=p.registration().to_string();let value=checked_input(serde_json::to_value(&signed))?;
@@ -174,16 +177,16 @@ impl ExecutionService {
                     if changed!=1{return Err(Error::Conflict.into());}
                     permit=Some(signed);
                 },
-                wire::TaskEvent::Cancelled=>{run.state.cancel();run.state.cancelled(input.attempt_id())?;},
+                wire::TaskEvent::Cancelled=>{run.state.cancel();run.state.cancelled(input.attempt_id())?;super::collection::abandon(service,tx,input.attempt_id(),"revoked").await?;},
                 wire::TaskEvent::Result(result)=>{
-                    let db::ScheduledPolicy::Script(script)=&plan else { return Err(Error::Malformed.into()); };
-                    let output=result.output();
-                    let schema_valid=script.frozen.definition.validate_output(output).is_ok();
-                    let success=result.exit_code()==Some(0) && result.quality()==wire::OutputQuality::Complete && schema_valid;
-                    let trusted=success && allowed && run.state.trusts_result(now,plan.timeout_seconds());
-                    run.state.result(input.attempt_id(),success)?;
-                    super::collection::accept(tx,&script.frozen,&run,output,trusted,now).await?;
-                    run.result=Some(json!({"exitCode":result.exit_code(),"quality":result.quality(),"schemaValid":schema_valid,"output":output,"diagnostics":result.diagnostics(),"trusted":trusted}));
+                    let db::ScheduledPolicy::Script(script)=&plan else {return Err(Error::Malformed.into());};
+                    super::collection::finish(tx,&script.frozen,&mut run,result,allowed,now).await?;
+                },
+                wire::TaskEvent::OutputChunk(chunk)=>super::output::append(tx,&plan,&run,chunk).await?,
+                wire::TaskEvent::ChunkedResult(reference)=>{
+                    let result=super::output::assemble(tx,&plan,&run,reference).await?;
+                    let db::ScheduledPolicy::Script(script)=&plan else {return Err(Error::Malformed.into());};
+                    super::collection::finish(tx,&script.frozen,&mut run,&result,allowed,now).await?;
                 },
                 wire::TaskEvent::SoftwareResult(result) => {
                     let db::ScheduledPolicy::Software(software)=&plan else { return Err(Error::Malformed.into()); };

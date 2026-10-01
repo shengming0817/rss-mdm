@@ -189,7 +189,11 @@ impl Compliance {
                     .ok_or(Error::NotFound)?;
                 Ok(json!({"id":id,"revision":revision,"definition":row}))
             }
-            Command::Put { id, request } => self.put(tx, *id, request).await,
+            Command::Put {
+                id,
+                request,
+                sensitive,
+            } => self.put(tx, *id, request, *sensitive).await,
             Command::Recompute { id, request } => {
                 let r = self.rule(tx, *id).await?;
                 if r.revision as u64 != request.expected_revision || !r.enabled {
@@ -215,11 +219,17 @@ impl Compliance {
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         request: &crate::operation::Operation<Definition>,
+        sensitive: bool,
     ) -> Result<Value> {
         let t = self.tenant();
         if id.is_nil() {
             return Err(Error::Malformed.into());
         }
+        crate::assets::filter::require_visible(
+            &crate::assets::catalog_in(tx, t, i64::MAX).await?,
+            &request.input.criteria,
+            sensitive,
+        )?;
         let fields = validate_definition(
             &request.input,
             t,

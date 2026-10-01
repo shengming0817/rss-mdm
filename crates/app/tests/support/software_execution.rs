@@ -52,7 +52,7 @@ pub(crate) async fn event_with(
         };
     }
     agent_call(router,Method::POST,&format!("/api/agent/v5/tasks/{}/events", task["payload"]["taskId"].as_str().unwrap()),Some(credential),
-        Some(json!({"wireVersion":4,"operationId":Uuid::new_v4(),"attemptId":task["payload"]["attemptId"],"event":event}))).await
+        Some(json!({"wireVersion":5,"operationId":Uuid::new_v4(),"attemptId":task["payload"]["attemptId"],"event":event}))).await
 }
 pub(crate) async fn claim(router: &Router) -> Result<Value> {
     claim_with(router, case_credential()).await
@@ -65,7 +65,7 @@ pub(crate) async fn claim_with(router: &Router, credential: &str) -> Result<Valu
                 Method::POST,
                 "/api/agent/v5/tasks/claim",
                 Some(credential),
-                Some(json!({"wireVersion":4,"operationId":Uuid::new_v4()})),
+                Some(json!({"wireVersion":5,"operationId":Uuid::new_v4(),"profiles":["posix_sh","bash","power_shell7","osquery"]})),
             )
             .await?;
             ensure!(response.0 == StatusCode::OK, "claim: {response:?}");
@@ -196,7 +196,7 @@ impl Fixture {
         ensure!(enrollment.0.is_success(), "enrollment: {enrollment:?}");
         author.operation = None;
         let registration=agent_call(&router,Method::POST,"/api/agent/v5/registrations",None,
-            Some(json!({"wireVersion":4,"operationId":Uuid::new_v4(),"enrollmentId":enrollment.1["enrollmentId"],"password":password,"credential":credential,"platform":platform_name,"architecture":architecture,"capabilities":["inventory.collect.v5","software.execute.v5"]}))).await?;
+            Some(json!({"wireVersion":5,"operationId":Uuid::new_v4(),"enrollmentId":enrollment.1["enrollmentId"],"password":password,"credential":credential,"platform":platform_name,"architecture":architecture,"capabilities":["inventory.collect.v5","software.execute.v5"]}))).await?;
         ensure!(
             registration.0 == StatusCode::CREATED,
             "registration: {registration:?}"

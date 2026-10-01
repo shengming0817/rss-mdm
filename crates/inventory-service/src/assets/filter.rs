@@ -279,3 +279,32 @@ pub struct FactPage {
     pub coverage: BTreeSet<String>,
     pub objects: Vec<g::ObjectSnapshot>,
 }
+
+/// Sensitive fields require an explicit grant when configuring a condition or executing a search.
+pub fn require_visible(catalog: &Catalog, criteria: &Criteria, sensitive: bool) -> Result<()> {
+    let mut pending = vec![(criteria, 1)];
+    let mut nodes = 0;
+    while let Some((current, depth)) = pending.pop() {
+        nodes += 1;
+        if depth > g::limits::DEPTH || nodes > g::limits::NODES {
+            return Err(Error::Malformed.into());
+        }
+        match current {
+            Criteria::Predicate { field, .. } => {
+                if !sensitive
+                    && checked_input(catalog.path(*field))?.root.sensitivity
+                        == rss_mdm_inventory::Sensitivity::Sensitive
+                {
+                    return Err(Error::Forbidden.into());
+                }
+            }
+            Criteria::And { children } | Criteria::Or { children } => {
+                if children.len() > g::limits::NODES {
+                    return Err(Error::Malformed.into());
+                }
+                pending.extend(children.iter().map(|c| (c, depth + 1)));
+            }
+        }
+    }
+    Ok(())
+}

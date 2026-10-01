@@ -15,10 +15,11 @@ fn persisted_asset_fingerprint_keeps_its_original_encoding() {
         },
         scope: ReadScope {
             subject: "operator".into(),
+            sensitive: false,
             devices: None,
         },
     };
-    let original=br#"["11111111-1111-4111-8111-111111111111","operator","mdm",{"kind":"Asset","command":{"kind":"search","request":{"operationId":"22222222-2222-4222-8222-222222222222","expectedRevision":0,"input":{"criteria":null,"select":[],"sort":null}},"scope":{"subject":"operator","devices":null}}}]"#;
+    let original=br#"["11111111-1111-4111-8111-111111111111","operator","mdm",{"kind":"Asset","command":{"kind":"search","request":{"operationId":"22222222-2222-4222-8222-222222222222","expectedRevision":0,"input":{"criteria":null,"select":[],"sort":null}},"scope":{"subject":"operator","sensitive":false,"devices":null}}}]"#;
     let (operation, digest) = operation_identity(&command, &audit).unwrap();
     assert_eq!(operation, Some(id));
     assert_eq!(digest, Sha256::digest(original).to_vec());
@@ -76,4 +77,89 @@ fn one_typed_condition_round_trips_through_the_existing_group_core() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn registered_paths_feed_group_sets_and_sensitive_conditions_need_an_explicit_grant() {
+    use rss_mdm_group_postgres::core as g;
+    use rss_mdm_inventory::{Catalog, ResolvedField, Sensitivity, State};
+    let tenant = TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
+    let mut fields = rss_mdm_inventory::builtin::fields();
+    let mut custom = fields[0].clone();
+    custom.key = FieldKey::parse("custom.security_agent.build").unwrap();
+    custom.sensitivity = Sensitivity::Sensitive;
+    fields.push(custom.clone());
+    let catalog = Catalog::new(fields).unwrap();
+    let sensitive = Criteria::Predicate {
+        field: custom.key,
+        op: Operator::Eq,
+        value: Some(Scalar::String("private".into())),
+        values: None,
+    };
+    assert!(filter::require_visible(&catalog, &sensitive, false).is_err());
+    assert!(filter::require_visible(&catalog, &sensitive, true).is_ok());
+    let path = FieldKey::parse("device.software.installed.name").unwrap();
+    let root = FieldKey::parse("device.software.installed").unwrap();
+    let condition = Criteria::Predicate {
+        field: path,
+        op: Operator::ContainsAny,
+        value: None,
+        values: Some(vec![Scalar::String("Repair Tool".into())]),
+    };
+    let rule = rule(tenant, Uuid::new_v4(), &condition, &catalog).unwrap();
+    let software = Scalar::Array(vec![Scalar::Object(
+        [
+            ("id".into(), Scalar::String("tool".into())),
+            ("name".into(), Scalar::String("Repair Tool".into())),
+            ("version".into(), Scalar::String("1".into())),
+            ("publisher".into(), Scalar::String("".into())),
+            ("scope".into(), Scalar::String("system".into())),
+        ]
+        .into(),
+    )]);
+    let mut device = DeviceView {
+        lists: BTreeMap::new(),
+        device: "device".into(),
+        channels: BTreeSet::new(),
+        quality: vec![],
+        revisions: BTreeMap::new(),
+        fields: [
+            (
+                root,
+                ResolvedField {
+                    field: root,
+                    state: State::Known(software),
+                    sources: vec![],
+                },
+            ),
+            (
+                custom.key,
+                ResolvedField {
+                    field: custom.key,
+                    state: State::Known(Scalar::String("private".into())),
+                    sources: vec![],
+                },
+            ),
+        ]
+        .into(),
+    };
+    let page = filter::page(tenant, &[device.clone()], &catalog, &rule).unwrap();
+    let decision = rule
+        .evaluate_page(
+            &g::PageInput {
+                tenant,
+                id: "inventory",
+                version: "1",
+                dictionary_version: rss_mdm_inventory::DICTIONARY,
+                coverage: &page.coverage,
+                objects: &page.objects,
+                after: None,
+            },
+            Timepoint::try_from(1).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(decision.objects[0].decision, g::Decision::Match);
+    restrict_fields(&mut device, &catalog, false);
+    assert!(!device.fields.contains_key(&custom.key));
+    assert!(device.fields.contains_key(&root));
 }

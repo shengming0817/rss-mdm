@@ -85,7 +85,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     );
     let report_id = uuid::Uuid::new_v4();
     let report = json!({
-        "wireVersion":4,
+        "wireVersion":5,
         "reportId":report_id,
         "sequence":0,
         "observedAt":1,
@@ -119,7 +119,7 @@ async fn durable_reports_and_projection() -> Result<()> {
         "report replay changed acknowledgement"
     );
     let concurrent_id = uuid::Uuid::new_v4();
-    let concurrent = json!({"wireVersion":4,"reportId":concurrent_id,"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
+    let concurrent = json!({"wireVersion":5,"reportId":concurrent_id,"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
     let mut same_id = tokio::task::JoinSet::new();
     for _ in 0..4 {
         let router = router.clone();
@@ -197,8 +197,8 @@ async fn durable_reports_and_projection() -> Result<()> {
     let partial_id = uuid::Uuid::new_v4();
     let failed_id = uuid::Uuid::new_v4();
     for body in [
-        json!({"wireVersion":4,"reportId":partial_id,"sequence":1,"observedAt":2,"body":{"kind":"partial","values":[{"field":"device.model","value":{"kind":"known","value":"Unconfirmed"}}]}}),
-        json!({"wireVersion":4,"reportId":failed_id,"sequence":2,"observedAt":3,"body":{"kind":"failed","code":"collectionFailed"}}),
+        json!({"wireVersion":5,"reportId":partial_id,"sequence":1,"observedAt":2,"body":{"kind":"partial","values":[{"field":"device.model","value":{"kind":"known","value":"Unconfirmed"}}]}}),
+        json!({"wireVersion":5,"reportId":failed_id,"sequence":2,"observedAt":3,"body":{"kind":"failed","code":"collectionFailed"}}),
     ] {
         ensure!(
             agent_call(
@@ -220,7 +220,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     let mut capacity = tokio::task::JoinSet::new();
     for sequence in [3, 4] {
         let router = router.clone();
-        let body = json!({"wireVersion":4,"reportId":uuid::Uuid::new_v4(),"sequence":sequence,"observedAt":4,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
+        let body = json!({"wireVersion":5,"reportId":uuid::Uuid::new_v4(),"sequence":sequence,"observedAt":4,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
         capacity.spawn(async move {
             agent_call(
                 &router,
@@ -284,7 +284,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     ] {
         let expected = "operation_unknown";
         let fault_report = uuid::Uuid::new_v4();
-        let body = json!({"wireVersion":4,"reportId":fault_report,"sequence":100+number,"observedAt":100+number,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
+        let body = json!({"wireVersion":5,"reportId":fault_report,"sequence":100+number,"observedAt":100+number,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
         audit_store.inject_next_fault(fault);
         let failed = agent_call(
             router,

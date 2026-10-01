@@ -71,7 +71,7 @@ async fn known_failure_has_bounded_retries() -> Result<()> {
     let exhausted = agent(
         &router,
         "/api/agent/v5/tasks/claim",
-        Some(json!({"wireVersion":4,"operationId":Uuid::new_v4()})),
+        Some(json!({"wireVersion":5,"operationId":Uuid::new_v4(),"profiles":["posix_sh","bash","power_shell7","osquery"]})),
     )
     .await?;
     ensure!(
@@ -135,7 +135,7 @@ async fn reboot_waits_for_detection() -> Result<()> {
     let reboot_retry = agent(
         &router,
         "/api/agent/v5/tasks/claim",
-        Some(json!({"wireVersion":4,"operationId":Uuid::new_v4()})),
+        Some(json!({"wireVersion":5,"operationId":Uuid::new_v4(),"profiles":["posix_sh","bash","power_shell7","osquery"]})),
     )
     .await?;
     ensure!(
@@ -199,7 +199,7 @@ async fn unknown_effect_survives_registration_replacement() -> Result<()> {
         "replacement enrollment: {next_enrollment:?}"
     );
     author.operation = None;
-    let next_registration=agent_call(&router,Method::POST,"/api/agent/v5/registrations",None,Some(json!({"wireVersion":4,"operationId":Uuid::new_v4(),"enrollmentId":next_enrollment.1["enrollmentId"],"password":next_password,"credential":next_credential,"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v5","software.execute.v5"]}))).await?;
+    let next_registration=agent_call(&router,Method::POST,"/api/agent/v5/registrations",None,Some(json!({"wireVersion":5,"operationId":Uuid::new_v4(),"enrollmentId":next_enrollment.1["enrollmentId"],"password":next_password,"credential":next_credential,"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v5","software.execute.v5"]}))).await?;
     ensure!(
         next_registration.0 == StatusCode::CREATED,
         "replacement registration: {next_registration:?}"
@@ -209,7 +209,7 @@ async fn unknown_effect_survives_registration_replacement() -> Result<()> {
         Method::POST,
         "/api/agent/v5/tasks/claim",
         Some(next_credential),
-        Some(json!({"wireVersion":4,"operationId":Uuid::new_v4()})),
+        Some(json!({"wireVersion":5,"operationId":Uuid::new_v4(),"profiles":["posix_sh","bash","power_shell7","osquery"]})),
     )
     .await?;
     ensure!(
@@ -245,7 +245,7 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
     ensure!(event(&router, &task, json!({"kind":"received"})).await?.0 == StatusCode::OK);
     ensure!(event(&router, &task, json!({"kind":"start"})).await?.0 == StatusCode::OK);
     let unknown_operation = Uuid::new_v4();
-    let unknown_request = json!({"wireVersion":4,"operationId":unknown_operation,"attemptId":task["payload"]["attemptId"],
+    let unknown_request = json!({"wireVersion":5,"operationId":unknown_operation,"attemptId":task["payload"]["attemptId"],
         "event":{"kind":"software_result","intent":"install","installerExitCode":0,"detection":"unknown","rebootRequired":false,
             "definitionDigest":task["payload"]["definitionDigest"],"observedVersion":null,
             "evidenceDigest":Sha256::digest(b"unknown detector evidence").to_vec(),
@@ -287,7 +287,7 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
     let no_retry = agent(
         &router,
         "/api/agent/v5/tasks/claim",
-        Some(json!({"wireVersion":4,"operationId":Uuid::new_v4()})),
+        Some(json!({"wireVersion":5,"operationId":Uuid::new_v4(),"profiles":["posix_sh","bash","power_shell7","osquery"]})),
     )
     .await?;
     ensure!(

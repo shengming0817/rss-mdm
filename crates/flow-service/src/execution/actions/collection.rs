@@ -27,9 +27,21 @@ pub async fn accept(
             NativeValue::Failed
         } else {
             match output.pointer(pointer) {
+                None if frozen.definition.spec().profile
+                    == rss_mdm_resource::ScriptProfile::Osquery
+                    && output.as_array().is_some_and(Vec::is_empty) =>
+                {
+                    NativeValue::Value(CollectedValue::Deleted)
+                }
                 None => NativeValue::Missing,
                 Some(Value::Null) if field.nullable => NativeValue::Value(CollectedValue::Null),
-                Some(value) => match field.value_type.decode_json(value) {
+                Some(value) => match if frozen.definition.spec().profile
+                    == rss_mdm_resource::ScriptProfile::Osquery
+                {
+                    sql_value(&field.value_type, value)
+                } else {
+                    field.value_type.decode_json(value)
+                } {
                     Ok(value) => NativeValue::Value(CollectedValue::Value(value)),
                     Err(_) => NativeValue::Invalid,
                 },
@@ -50,5 +62,164 @@ pub async fn accept(
         Box::pin(crate::collection::enterprise::accept_in(c, tenant, report))
     })
     .await?;
+    Ok(())
+}
+
+pub async fn reserve(
+    tx: &mut PgTransaction<'_>,
+    frozen: &FrozenAction,
+    run: &Run,
+    now: i64,
+) -> Result<()> {
+    let Some(definition) = frozen.collection.clone() else {
+        return Ok(());
+    };
+    let tenant = tx.tenant_id();
+    let registration = run.target.registration;
+    let task = run.id;
+    let attempt = run.state.attempt().ok_or(crate::Error::Conflict)?;
+    tx.with_connection(move |c| {
+        Box::pin(crate::collection::enterprise::start_in(
+            c,
+            tenant,
+            registration,
+            task,
+            attempt,
+            definition,
+            now,
+        ))
+    })
+    .await?;
+    Ok(())
+}
+/// Finish an abandoned attempt without publishing missing values as device facts.
+pub async fn abandon(
+    service: &crate::execution::ExecutionService,
+    tx: &mut PgTransaction<'_>,
+    attempt: uuid::Uuid,
+    reason: &'static str,
+) -> Result<()> {
+    let tenant = tx.tenant_id().to_string();
+    let fact=tx.with_connection(move|c|Box::pin(async move {
+        let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2 AND sealed_at IS NULL AND source IN('agent.script','agent.osquery'))")
+            .bind(&tenant).bind(attempt).fetch_one(&mut *c).await?;
+        if !exists {return Ok(None);}
+        let mut run=crate::collection::store::load_on(c,&tenant,attempt).await.map_err(|_|sqlx::Error::Protocol("invalid pending collection".into()))?;
+        crate::collection::store::seal(c,&mut run,reason).await.map_err(|_|sqlx::Error::Protocol("collection termination failed".into()))
+    })).await?;
+    if let Some(fact) = fact {
+        service.audit_store.append_in(tx, &fact, false).await?;
+    }
+    Ok(())
+}
+
+// osquery's JSON writer emits SQL INTEGER/DOUBLE columns as strings. Convert only according to
+// the frozen field type at this adapter boundary; script/MDM JSON remains strictly typed.
+fn sql_value(
+    kind: &rss_mdm_inventory::ValueType,
+    value: &Value,
+) -> rss_mdm_inventory::Result<rss_mdm_inventory::Scalar> {
+    use rss_mdm_inventory::{Invalid, ValueType as T};
+    let converted = match (kind, value) {
+        (T::Integer | T::Time, Value::String(text)) => {
+            Value::from(text.parse::<i64>().map_err(|_| Invalid::TypeMismatch)?)
+        }
+        (T::Number, Value::String(text)) => Value::Number(
+            serde_json::Number::from_f64(text.parse::<f64>().map_err(|_| Invalid::TypeMismatch)?)
+                .ok_or(Invalid::Value)?,
+        ),
+        (T::Boolean, Value::String(text)) => Value::Bool(match text.as_str() {
+            "0" => false,
+            "1" => true,
+            _ => return Err(Invalid::TypeMismatch),
+        }),
+        (T::Array { items, max_items }, Value::Array(values))
+            if values.len() <= *max_items as usize =>
+        {
+            return Ok(rss_mdm_inventory::Scalar::Array(
+                values
+                    .iter()
+                    .map(|v| sql_value(items, v))
+                    .collect::<rss_mdm_inventory::Result<_>>()?,
+            ));
+        }
+        (T::Object { properties }, Value::Object(values)) if properties.len() == values.len() => {
+            return Ok(rss_mdm_inventory::Scalar::Object(
+                properties
+                    .iter()
+                    .map(|(k, t)| {
+                        Ok((
+                            k.clone(),
+                            sql_value(t, values.get(k).ok_or(Invalid::TypeMismatch)?)?,
+                        ))
+                    })
+                    .collect::<rss_mdm_inventory::Result<_>>()?,
+            ));
+        }
+        _ => value.clone(),
+    };
+    kind.decode_json(&converted)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rss_mdm_inventory::{Scalar, ValueType as T};
+    #[test]
+    fn sql_text_columns_decode_only_by_declared_type() {
+        assert_eq!(
+            sql_value(&T::Integer, &Value::String("42".into())).unwrap(),
+            Scalar::Integer(42)
+        );
+        assert_eq!(
+            sql_value(&T::Boolean, &Value::String("0".into())).unwrap(),
+            Scalar::Boolean(false)
+        );
+        assert!(sql_value(&T::Number, &Value::String("NaN".into())).is_err());
+        assert!(sql_value(&T::Integer, &Value::String("1.5".into())).is_err());
+        assert!(sql_value(&T::Boolean, &Value::String("yes".into())).is_err());
+        assert!(T::Integer.decode_json(&Value::String("42".into())).is_err());
+    }
+}
+
+pub async fn finish(
+    tx: &mut PgTransaction<'_>,
+    frozen: &FrozenAction,
+    run: &mut Run,
+    result: &rss_mdm_agent_wire::TaskResult,
+    allowed: bool,
+    now: i64,
+) -> Result<()> {
+    use rss_mdm_agent_wire::OutputQuality;
+    use sha2::{Digest, Sha256};
+    let output = result.output();
+    let bytes = stored(serde_json::to_vec(output))?;
+    if bytes.len() > frozen.definition.spec().output_bytes as usize {
+        return Err(crate::Error::Malformed.into());
+    }
+    let schema_valid = frozen.definition.validate_output(output).is_ok();
+    let process_complete =
+        result.exit_code() == Some(0) && result.quality() == OutputQuality::Complete;
+    let success = process_complete && (schema_valid || frozen.collection.is_some());
+    let trusted = process_complete
+        && (schema_valid || frozen.collection.is_some())
+        && allowed
+        && run
+            .state
+            .trusts_result(now, frozen.definition.spec().timeout_seconds);
+    run.state
+        .result(run.state.attempt().ok_or(crate::Error::Conflict)?, success)?;
+    accept(tx, frozen, run, output, trusted, now).await?;
+    let (output, reference) = if bytes.len() > 1024 * 1024 {
+        (
+            Value::Null,
+            serde_json::json!({"bytes":bytes.len(),"sha256":format!("{:x}",Sha256::digest(&bytes))}),
+        )
+    } else {
+        (output.clone(), Value::Null)
+    };
+    run.result = Some(
+        serde_json::json!({"exitCode":result.exit_code(),"quality":result.quality(),"schemaValid":schema_valid,"output":output,"outputReference":reference,"diagnostics":result.diagnostics(),"trusted":trusted}),
+    );
     Ok(())
 }

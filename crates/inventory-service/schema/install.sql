@@ -183,7 +183,7 @@ CREATE TABLE mdm_assets.saved_queries (
     id uuid NOT NULL,
     revision bigint NOT NULL,
     document jsonb,
-    CONSTRAINT saved_queries_document_check CHECK ((octet_length((document)::text) <= 67108864)),
+    CONSTRAINT saved_queries_document_check CHECK ((octet_length((document)::text) <= 16384)),
     CONSTRAINT saved_queries_revision_check CHECK ((revision > 0))
 );
 

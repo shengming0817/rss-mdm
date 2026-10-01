@@ -635,4 +635,5 @@ GRANT USAGE ON SCHEMA mdm_commands,mdm_policy,mdm_resource,mdm_software,mdm_plan
 GRANT SELECT ON TABLE mdm_commands.operations,mdm_commands.attempts,mdm_policy.policies,mdm_policy.versions,mdm_resource.aggregates,mdm_resource.immutable,mdm_software.sources,mdm_software.approvals TO mdm_access;
 GRANT EXECUTE ON FUNCTION mdm_planning.scope_admission(uuid,text),mdm_commands.installation_status(uuid) TO mdm_access;
 
+GRANT SELECT,INSERT ON mdm_commands.output_chunks TO mdm_command_runtime;
 COMMIT;

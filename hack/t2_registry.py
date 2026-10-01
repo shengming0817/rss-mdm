@@ -294,6 +294,7 @@ for name, target in (('manual', 'manual'), ('reader', 'reader')):
         sources=('crates/inventory-postgres/src/*', 'crates/inventory-postgres/migrations/*'),
         tests=(f'crates/inventory-postgres/tests/{target}.rs',),
         support=('crates/inventory-postgres/tests/support/*',))
+MODULES['inventory.manual'] = replace(MODULES['inventory.manual'], policies=(CasePolicy('field_catalog_cas_history_and_rollback_are_atomic','reuse','tenant'),))
 for name in ('projection', 'recovery', 'process'):
     add('inventory.' + name,
         build=Build('rss-mdm-examples', features=('integration',)),

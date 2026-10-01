@@ -120,6 +120,7 @@ impl<C> Input<C> {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FactReference {
     pub source: String,
+    pub dataset: Option<String>,
     pub registration: Option<String>,
     pub registration_generation: Option<u64>,
     pub epoch: Option<String>,

@@ -65,19 +65,31 @@ pub struct Owner {
 #[serde(deny_unknown_fields)]
 pub struct ReadScope {
     pub subject: String,
+    pub sensitive: bool,
     pub devices: Option<BTreeSet<String>>,
 }
 impl ReadScope {
     pub fn all() -> Self {
         Self {
             subject: "group".into(),
+            sensitive: true,
             devices: None,
         }
     }
     pub fn from_proof(
         p: &crate::authorization::context::AuthorizedPrincipal,
     ) -> std::result::Result<Self, Error> {
+        let sensitive = match p.authorization()?.require(
+            p,
+            crate::authorization::Permission::InventorySensitiveRead,
+            None,
+        ) {
+            Ok(()) => true,
+            Err(crate::authorization::error::AuthorizationError::Forbidden) => false,
+            Err(e) => return Err(e.into()),
+        };
         Ok(Self {
+            sensitive,
             subject: format!("{}:{}", p.instance_id(), p.principal_id()),
             devices: p.authorization()?.inventory_devices(p)?,
         })
@@ -96,6 +108,7 @@ pub struct DeviceView {
     pub device: String,
     pub channels: BTreeSet<String>,
     pub fields: BTreeMap<FieldKey, rss_mdm_inventory::ResolvedField>,
+    pub lists: BTreeMap<FieldKey, super::lists::ListSummary>,
     pub quality: Vec<QualityRun>,
     pub revisions: BTreeMap<FieldKey, i64>,
 }
@@ -121,6 +134,26 @@ pub struct Summary {
     deny_unknown_fields
 )]
 pub enum Response {
+    ListItems {
+        device: String,
+        field: FieldKey,
+        watermark: i64,
+        total: usize,
+        items: Vec<Scalar>,
+        next_cursor: Option<String>,
+    },
+    CollectionRun {
+        run: super::runs::RunView,
+    },
+    Field {
+        field: FieldKey,
+        version: u64,
+        definition: Option<rss_mdm_inventory::FieldDefinition>,
+    },
+    FieldReferences {
+        field: FieldKey,
+        impact: super::FieldImpact,
+    },
     QueryStatus {
         task: Uuid,
         status: String,
@@ -167,6 +200,25 @@ pub enum Response {
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Command {
+    ListItems {
+        device: String,
+        field: FieldKey,
+        scope: ReadScope,
+        limit: usize,
+        cursor: Option<String>,
+    },
+    CollectionRun {
+        device: String,
+        run: Uuid,
+        scope: ReadScope,
+    },
+    FieldWrite {
+        field: FieldKey,
+        change: Operation<super::FieldChange>,
+    },
+    FieldReferences {
+        field: FieldKey,
+    },
     QueryStatus {
         task: Uuid,
         scope: ReadScope,
@@ -223,6 +275,7 @@ pub enum Command {
 impl Command {
     pub fn operation(&self) -> Option<Uuid> {
         match self {
+            Self::FieldWrite { change, .. } => Some(change.operation_id),
             Self::Search { request, .. } => Some(request.operation_id),
             Self::SavedExecute { operation, .. } => Some(*operation),
             Self::Manual { change, .. } => Some(change.operation_id),

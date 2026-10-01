@@ -59,6 +59,7 @@ async fn asset_history_rollback_replay_and_frozen_watermark() {
                         None,
                         1,
                         &assets::ReadScope {
+                            sensitive: true,
                             subject: "history".into(),
                             devices: Some([scope_device.clone()].into()),
                         },
@@ -115,16 +116,38 @@ async fn frozen_fields_manual_and_quality_survive_updates_deletes_and_rollback()
     .unwrap()
     .encode()
     .unwrap();
-    let coverage = serde_json::to_string(&rss_mdm_inventory::coverage()).unwrap();
+    let coverage = serde_json::to_string(
+        &crate::test_support::inventory::definition(
+            "inventory",
+            "mdm.windows",
+            &[
+                rss_mdm_inventory::builtin::MODEL,
+                rss_mdm_inventory::builtin::OS_VERSION,
+            ],
+        )
+        .coverage()
+        .unwrap(),
+    )
+    .unwrap();
     let collection = Uuid::new_v4();
-    let attempts = serde_json::to_string(&crate::collection::Attempts::default()).unwrap();
+    let attempts = serde_json::to_string(&crate::collection::Attempts::new(
+        crate::test_support::inventory::definition(
+            "inventory",
+            "mdm.windows",
+            &[
+                rss_mdm_inventory::builtin::MODEL,
+                rss_mdm_inventory::builtin::OS_VERSION,
+            ],
+        ),
+    ))
+    .unwrap();
     sql(&format!(
         "INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch) VALUES('{t}','mdm.observation.v1','inventory-v3','{scope}','{coverage}','device.model','Old','old-batch',1,2,'known','{registration}','mdm.windows','{epoch}'); INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result) VALUES('{t}','{collection}','{registration}','mdm.windows','{epoch}','{scope}',1,1,'{attempts}','pending')"
     ));
     let service = planning(t).await;
     let manual = |revision, input| assets::Command::Manual {
         device: device.into(),
-        field: assets::rss_mdm_inventory::builtin::IS_LOANER,
+        field: rss_mdm_inventory::builtin::IS_LOANER,
         owner: assets::Owner {
             instance: "history".into(),
             principal: "operator".into(),
@@ -160,10 +183,18 @@ async fn frozen_fields_manual_and_quality_survive_updates_deletes_and_rollback()
         true
     );
     assert_eq!(before["quality"][0]["result"], "pending");
-    let mut failed = crate::collection::Attempts::default();
-    failed.fields[0].quality = crate::collection::Quality::Failed;
-    failed.fields[0].status = Some(500);
-    failed.fields[0].received_at = Some(4);
+    let mut failed = crate::collection::Attempts::new(crate::test_support::inventory::definition(
+        "inventory",
+        "mdm.windows",
+        &[
+            rss_mdm_inventory::builtin::MODEL,
+            rss_mdm_inventory::builtin::OS_VERSION,
+        ],
+    ));
+    failed
+        .observe_status(rss_mdm_inventory::builtin::MODEL, 500, 4)
+        .unwrap();
+    failed.finish();
     let failed = serde_json::to_string(&failed).unwrap();
     let changes = format!(
         "UPDATE mdm.inventory SET value='New',batch_id='new-batch',observed_at=3,received_at=4 WHERE registration='{registration}'; UPDATE mdm.manual_assignments SET revision=revision+1,fact=jsonb_set(fact,'{{state}}','{{\"kind\":\"null\"}}') WHERE device='{device}'; UPDATE mdm_access.collection_runs SET attempts='{failed}',result='failed',reason='timeout',sealed_at=4 WHERE id='{collection}';"

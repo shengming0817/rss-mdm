@@ -669,4 +669,6 @@ pub struct ErrorBody {
 pub use rss_mdm_inventory::{CollectedValue, CollectionDefinition, FieldKey, Scalar};
 
 mod chunks;
-pub use chunks::{OutputManifest,OutputChunk,ChunkedTaskResult,OUTPUT_MAX_BYTES,OUTPUT_CHUNK_BYTES};
+pub use chunks::{
+    ChunkedTaskResult, OUTPUT_CHUNK_BYTES, OUTPUT_MAX_BYTES, OutputChunk, OutputManifest,
+};

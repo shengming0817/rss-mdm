@@ -30,9 +30,10 @@ impl Groups {
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         op: &Operation<GroupChange>,
-        at: Timepoint,
+        context: (Timepoint, bool),
         flow: &dyn Flow,
     ) -> Result<Value> {
+        let (at, sensitive) = context;
         let group = checked_input(pg::GroupId::parse(&id.to_string()))?;
         let operation = checked_input(pg::OperationId::parse(&op.operation_id.to_string()))?;
         let expected = || {
@@ -41,6 +42,15 @@ impl Groups {
             ))
         };
         let catalog = crate::assets::catalog_in(tx, self.tenant, i64::MAX).await?;
+        match &op.input {
+            GroupChange::Create {
+                criteria: Some(c), ..
+            }
+            | GroupChange::Rule { criteria: c } => {
+                assets::filter::require_visible(&catalog, c, sensitive)?
+            }
+            _ => (),
+        }
         let command = match &op.input {
             GroupChange::Create {
                 name,
@@ -141,6 +151,9 @@ impl Groups {
         };
         let receipt = checked(self.groups.execute_in(tx, operation, at, &command).await?)?;
         crate::compliance::group_changed(tx, id).await?;
+        if matches!(op.input, GroupChange::Delete) {
+            self.register_fields_in(tx, id, None).await?;
+        }
         let criteria = match &op.input {
             GroupChange::Create { criteria, .. } => Some(criteria.as_ref()),
             GroupChange::Rule { criteria } => Some(Some(criteria)),

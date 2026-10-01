@@ -6,7 +6,7 @@ Inventory 是唯一字段目录和来源解析 owner，应用把解析结果送�
 
 字段目录、类型及可用操作以 `/api/v2/asset-fields` 为准；值不隐式转换。Manual 可显式置空，标准字段禁止人工覆盖。
 
-known/null/missing/unsupported/deleted/conflict 是明确状态。同级来源相同值合并证据，不同值返回 conflict；一条来源删除不删除另一条来源。来源必须绑定当前有效注册及 epoch。Partial/Failed 保留最后完整事实，最新 CollectionRun 质量另行呈现。
+known/null/missing/unsupported/deleted/conflict 是明确状态。同级来源相同值合并证据，不同值返回 conflict；一条来源删除不删除另一条来源。来源必须绑定当前有效注册及 epoch。Partial 应用独立成功字段，缺失或失败字段保留此前可信事实；Failed 不清空事实，最新 CollectionRun 质量另行呈现。带 itemKey 的清单按条目身份比较，相同内容的不同返回顺序不产生冲突。
 
 没有字段 TTL、validUntil、expiresAt、到期或延迟生效判断。所有时间仅用于溯源；改变评估时间不会改变固定规则对相同事实的结果。会话、凭据和任务期限不受此规则影响。
 
@@ -16,7 +16,11 @@ known/null/missing/unsupported/deleted/conflict 是明确状态。同级来源�
 
 | 方法、路径 | 内容 |
 | --- | --- |
-| GET /asset-fields | 目录、类型、允许操作与是否 Manual |
+| GET /asset-fields | 唯一版本化目录、类型、来源优先级、敏感级别及可用操作 |
+| PUT /asset-fields/{field} | Operation 包装的 put/delete，expectedRevision 为字段版本 |
+| GET /asset-fields/{field}/references | Group、模板、合规及保存查询引用计数 |
+| GET /devices/{id}/collections/{run} | 当前设备所属采集的冻结身份、时间、字段质量及投递状态 |
+| GET /devices/{id}/inventory-lists/{field}?limit=50&cursor=… | 固定资产水位的清单分页，最多 100 条且受字节预算限制 |
 | GET /devices/{id}/inventory | 统一详情，不再接受 source 参数 |
 | POST /device-queries | 异步受理，Operation 包含 criteria/select/sort |
 | GET /device-queries/{task} | 状态、全结果计数与结果入口 |
@@ -28,7 +32,7 @@ known/null/missing/unsupported/deleted/conflict 是明确状态。同级来源�
 | PUT /saved-queries/{id} | CAS put/delete |
 | POST /saved-queries/{id}/execute | 按当前权限执行，正文为 Operation，expectedRevision 为保存查询版本，input 为 `{}` |
 
-资产响应为 `{ "asset": { "kind": "detail|page|accepted|query_status|facets|assignment|saved|saved_list|fields", ... } }`。详情/列表的 fields 以字段键索引，包含 state、sources 和原始 lastKnown 证据；Manual revisions 供下一次 CAS 使用。
+资产响应为 `{ "asset": { "kind": "detail|page|accepted|query_status|facets|assignment|saved|saved_list|fields", ... } }`。详情/列表的 fields 以字段键索引，包含 state、sources 和原始 lastKnown 证据；Manual revisions 供下一次 CAS 使用。数组通过独立 lists 返回状态、数量、摘要、来源和起始游标；用清单接口读取条目，详情不内嵌整份大清单。
 
 赋值例：
 
@@ -48,7 +52,7 @@ AND/OR 为 `{kind:"and|or",children:[…]}`；in/not_in 使用同类型 `values`
 
 ## 权限、分页与保存查询
 
-inventory_read 按 AllDevices/Device 并集限定候选集合，再计算匹配、总数和汇总；inventory_assign 独立授予 Manual 写。所有请求重取授权，运行中会话/来源失效会再次拒绝。Group 预览和重算还要求 inventory_read/all_devices，不能用部分设备集合替换全组成员。
+inventory_fields_write 管理目录；有权限管理员直接发布字段及启用模板，不增加申请或审批状态。删除检查引用，类型、单位、条目身份或敏感级别变化需要新字段身份。inventory_sensitive_read 控制敏感字段明文及敏感条件的配置。inventory_read 按 AllDevices/Device 并集限定候选集合，再计算匹配、总数和汇总；inventory_assign 独立授予 Manual 写。所有请求重取授权，运行中会话/来源失效会再次拒绝。Group 预览和重算还要求 inventory_read/all_devices，不能用部分设备集合替换全组成员。
 
 个人保存查询使用当前 inventory_read，并按 tenant/instance/principal 限定本人。put 的 input 为 `{action:"put",definition:{name:"…",query:{…}}}`；不保存 cursor、结果或授权集合。删除 UUID 不复用；执行重新验证当前目录与权限。
 

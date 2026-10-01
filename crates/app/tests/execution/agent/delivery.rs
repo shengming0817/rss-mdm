@@ -17,7 +17,7 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
     )
     .await?;
     author.operation = None;
-    let registration=agent_call(&router,Method::POST,"/api/agent/v5/registrations",None,Some(json!({"wireVersion":4,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_inventory_credential(),"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v5"]}))).await?;
+    let registration=agent_call(&router,Method::POST,"/api/agent/v5/registrations",None,Some(json!({"wireVersion":5,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_inventory_credential(),"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v5"]}))).await?;
     ensure!(
         registration.0 == StatusCode::CREATED
             && registration.1["capabilities"] == json!(["inventory.collect.v5"]),
@@ -28,7 +28,7 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
         Method::POST,
         "/api/agent/v5/tasks/claim",
         Some(case_inventory_credential()),
-        Some(json!({"wireVersion":4,"operationId":Uuid::new_v4()})),
+        Some(json!({"wireVersion":5,"operationId":Uuid::new_v4(),"profiles":["posix_sh","bash","power_shell7","osquery"]})),
     )
     .await?;
     ensure!(
@@ -44,7 +44,7 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
     )
     .await?;
     author.operation = None;
-    let registration=agent_call(&router,Method::POST,"/api/agent/v5/registrations",None,Some(json!({"wireVersion":4,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_credential(),"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v5","task.execute.v5"]}))).await?;
+    let registration=agent_call(&router,Method::POST,"/api/agent/v5/registrations",None,Some(json!({"wireVersion":5,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_credential(),"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v5","task.execute.v5"]}))).await?;
     ensure!(
         registration.0 == StatusCode::CREATED
             && registration.1["capabilities"] == json!(["inventory.collect.v5", "task.execute.v5"]),
@@ -138,6 +138,15 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
         now,
     };
     signed.verify(&context)?;
+    let attempt = signed.payload.attempt_id();
+    let reserved = pg(&format!(
+        "SELECT sequence FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{attempt}' AND result='pending' AND sealed_at IS NULL",
+        case_tenant()
+    ))?;
+    ensure!(
+        !reserved.trim().is_empty(),
+        "collection was not frozen before Offer"
+    );
     task_event(&router, &task, json!({"kind":"received"})).await?;
     let permit = task_event(&router, &task, json!({"kind":"start"})).await?;
     let ack: rss_mdm_agent_wire::TaskEventAck = serde_json::from_value(permit)?;
@@ -181,7 +190,7 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
         .trim()
             == "1"
     );
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{}' AND registration='{}' AND source='agent.script' AND delivery_pending", case_tenant(), registration["registrationId"].as_str().unwrap()))?.trim()=="2");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{}' AND registration='{}' AND source='agent.script' AND delivery_pending", case_tenant(), registration["registrationId"].as_str().unwrap()))?.trim()=="1");
     ensure!(
         pg(&format!(
             "SELECT count(*) FROM rss_device_command.commands WHERE command_id='{}'",
@@ -189,6 +198,13 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
         ))?
         .trim()
             == "0"
+    );
+    ensure!(
+        pg(&format!(
+            "SELECT sequence FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{attempt}' AND result='snapshot'",
+            case_tenant()
+        ))? == reserved,
+        "result changed collection ordering"
     );
     let runtime = agent_runtime(&base).await?;
     let inventory = crate::inventory_runtime::test_support::start(runtime.clone()).await?;
@@ -224,6 +240,71 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
     );
     crate::test_support::stop_worker(inventory).await?;
     runtime.close_fixture().await?;
+    crate::test_support::stop_worker(stack).await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.agent.delivery"]
+async fn chunked_results_require_complete_output_and_preserve_attempt_identity() -> Result<()> {
+    use rss_mdm_agent_wire as wire;
+    let mut fixture = Fixture::new().await?;
+    fixture.register().await?;
+    let (resource, _, _) = fixture.resource_with_output_limit(524288).await?;
+    fixture
+        .scope(
+            case_task_scope(),
+            json!([{"kind":"device","id":case_device_id()}]),
+        )
+        .await?;
+    let stack = worker(&fixture.base).await?;
+    publish(&mut fixture.author, &fixture.router, resource).await?;
+    let task = claim(&fixture.router).await?;
+    task_event(&fixture.router, &task, json!({"kind":"received"})).await?;
+    task_event(&fixture.router, &task, json!({"kind":"start"})).await?;
+    let result = wire::TaskResult::new(
+        Some(0),
+        wire::OutputQuality::Complete,
+        json!({"version":"1.2","healthy":true,"padding":"x".repeat(400000)}),
+        wire::TaskDiagnostics::new("".into(), "".into(), 1, 1, None)?,
+    )?;
+    let (reference, chunks) = wire::ChunkedTaskResult::split(result)?;
+    ensure!(chunks.len() == 2);
+    let mut final_event = serde_json::to_value(wire::TaskEvent::ChunkedResult(reference))?;
+    ensure!(
+        task_event_request(&fixture.router, &task, Uuid::new_v4(), &mut final_event)
+            .await?
+            .0
+            == StatusCode::BAD_REQUEST,
+        "missing output was accepted"
+    );
+    let operation = Uuid::new_v4();
+    let mut first = serde_json::to_value(wire::TaskEvent::OutputChunk(chunks[0].clone()))?;
+    let response = task_event_request(&fixture.router, &task, operation, &mut first).await?;
+    ensure!(response.0 == StatusCode::OK);
+    ensure!(response == task_event_request(&fixture.router, &task, operation, &mut first).await?);
+    let bad = wire::OutputChunk::new(
+        chunks[0].manifest().clone(),
+        0,
+        &vec![b'z'; wire::OUTPUT_CHUNK_BYTES],
+    )?;
+    let mut conflict = serde_json::to_value(wire::TaskEvent::OutputChunk(bad))?;
+    ensure!(
+        task_event_request(&fixture.router, &task, Uuid::new_v4(), &mut conflict)
+            .await?
+            .0
+            == StatusCode::CONFLICT
+    );
+    task_event(
+        &fixture.router,
+        &task,
+        serde_json::to_value(wire::TaskEvent::OutputChunk(chunks[1].clone()))?,
+    )
+    .await?;
+    task_event(&fixture.router, &task, final_event).await?;
+    let attempt = task["payload"]["attemptId"].as_str().unwrap();
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{attempt}' AND result='snapshot'",case_tenant()))?.trim()=="1");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.output_chunks WHERE tenant_id='{}' AND attempt='{attempt}'",case_tenant()))?.trim()=="2");
     crate::test_support::stop_worker(stack).await?;
     Ok(())
 }

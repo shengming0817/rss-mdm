@@ -22,6 +22,7 @@ fn scope(tenant: &str, source: &str) -> rss_observation::Scope {
 #[ignore = "make t2: real TLS PostgreSQL"]
 async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
     let mut writer = PgConnection::connect_with(&options("mdm_runtime")?).await?;
+    let mut catalog_writer = PgConnection::connect_with(&options("mdm_flow_runtime")?).await?;
     let a = "77777777-7777-4777-8777-777777777777";
     let b = "88888888-8888-4888-8888-888888888888";
     for (tenant, source, value) in [
@@ -29,6 +30,27 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
         (b, "mdm.windows", "B"),
         (a, "agent.builtin", "C"),
     ] {
+        let definition = rss_mdm_inventory::CollectionDefinition::new(
+            "inventory",
+            1,
+            rss_mdm_inventory::Source::parse(source)?,
+            rss_mdm_inventory::builtin::fields()
+                .into_iter()
+                .filter(|f| f.key == rss_mdm_inventory::builtin::MODEL)
+                .collect(),
+        )?;
+        let mut catalog_tx = catalog_writer.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(tenant)
+            .execute(&mut *catalog_tx)
+            .await?;
+        rss_mdm_inventory_postgres::register_collection_in(
+            &mut catalog_tx,
+            scope(tenant, source).tenant(),
+            &definition,
+        )
+        .await?;
+        catalog_tx.commit().await?;
         let mut tx = writer.begin().await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
             .bind(tenant)
@@ -36,8 +58,8 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
             .await?;
         let projection =
             rss_mdm_inventory_postgres::projection_scope(scope(tenant, source).tenant());
-        sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch) VALUES($1::uuid,$5,$6,$2,$4,'device.model',$3,'read-test',1,2,'known','reg',$7,'one') ON CONFLICT DO NOTHING")
-            .bind(tenant).bind(scope(tenant,source).encode()?).bind(value).bind(serde_json::to_string(&rss_mdm_inventory::coverage())?).bind(projection.source().source()).bind(projection.generation()).bind(source).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence) VALUES($1::uuid,$5,$6,$2,$4,'device.model',$3,'read-test',1,2,'known','reg',$7,'one',0) ON CONFLICT DO NOTHING")
+            .bind(tenant).bind(scope(tenant,source).encode()?).bind(serde_json::to_string(&rss_mdm_inventory::Scalar::String(value.into()))?).bind(serde_json::to_string(&definition.coverage()?)?).bind(projection.source().source()).bind(projection.generation()).bind(source).execute(&mut *tx).await?;
         tx.commit().await?;
     }
     assert!(

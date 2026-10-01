@@ -9,7 +9,7 @@ use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_registration_service::enrollment::managed::Authority;
 use sqlx::PgConnection;
 fn digest(input: &wire::ManagedRegistrationRequest) -> String {
-    rss_mdm_registration_service::enrollment::digest(&("mdm.agent.managed-registration/v4", input))
+    rss_mdm_registration_service::enrollment::digest(&("mdm.agent.managed-registration/v5", input))
 }
 pub async fn replay(
     c: &mut PgConnection,

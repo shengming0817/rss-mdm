@@ -37,7 +37,7 @@ async fn cancellation_backlog_does_not_starve_live_offer() -> Result<()> {
             Method::POST,
             "/api/agent/v5/tasks/claim",
             Some(case_credential()),
-            Some(json!({"wireVersion":4,"operationId":Uuid::new_v4()})),
+            Some(json!({"wireVersion":5,"operationId":Uuid::new_v4(),"profiles":["posix_sh","bash","power_shell7","osquery"]})),
         )
         .await?;
         ensure!(response.0 == StatusCode::OK, "poll paging: {response:?}");

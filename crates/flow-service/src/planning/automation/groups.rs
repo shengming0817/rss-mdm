@@ -236,6 +236,7 @@ impl Planning {
                         limit,
                         &assets::ReadScope {
                             subject: "group".into(),
+                            sensitive: true,
                             devices: build
                                 .request
                                 .changed_devices

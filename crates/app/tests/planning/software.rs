@@ -46,7 +46,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
     let waiting = agent(
         &router,
         "/api/agent/v5/tasks/claim",
-        Some(json!({"wireVersion":4,"operationId":Uuid::new_v4()})),
+        Some(json!({"wireVersion":5,"operationId":Uuid::new_v4(),"profiles":["posix_sh","bash","power_shell7","osquery"]})),
     )
     .await?;
     ensure!(
@@ -84,7 +84,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
     let gated = agent(
         &router,
         "/api/agent/v5/tasks/claim",
-        Some(json!({"wireVersion":4,"operationId":Uuid::new_v4()})),
+        Some(json!({"wireVersion":5,"operationId":Uuid::new_v4(),"profiles":["posix_sh","bash","power_shell7","osquery"]})),
     )
     .await?;
     ensure!(

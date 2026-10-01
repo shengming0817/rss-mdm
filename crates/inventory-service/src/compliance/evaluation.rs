@@ -280,9 +280,14 @@ fn assessment(
             device
                 .fields
                 .iter()
-                .find(|(k, _)| k.as_str() == field)
-                .map(|(k, v)| FieldEvidence {
-                    field: k.as_str().into(),
+                .find(|(k, _)| {
+                    k.as_str() == field
+                        || field
+                            .strip_prefix(k.as_str())
+                            .is_some_and(|rest| rest.starts_with('.'))
+                })
+                .map(|(_, v)| FieldEvidence {
+                    field: field.clone(),
                     sources: v
                         .sources
                         .iter()
@@ -290,6 +295,7 @@ fn assessment(
                             let e = &s.evidence;
                             FactReference {
                                 source: e.source.as_str().into(),
+                                dataset: e.dataset.clone(),
                                 registration: e.registration.clone(),
                                 registration_generation: e.registration_generation,
                                 epoch: e.epoch.clone(),

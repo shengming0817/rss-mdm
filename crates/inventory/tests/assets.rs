@@ -192,3 +192,32 @@ fn apple_observations_use_the_canonical_asset_resolver() {
         Err(rss_mdm_inventory::Invalid::SourceNotAllowed)
     );
 }
+
+#[test]
+fn keyed_list_consensus_ignores_provider_row_order() {
+    use rss_mdm_inventory::{ValueType, resolve};
+    let mut field = definition(builtin::MODEL);
+    field.item_key = Some("id".into());
+    field.value_type = ValueType::Array {
+        max_items: 10,
+        items: Box::new(ValueType::Object {
+            properties: [(
+                "id".into(),
+                ValueType::String {
+                    max_length: 20,
+                    allow_empty: false,
+                },
+            )]
+            .into(),
+        }),
+    };
+    let item = |id: &str| Scalar::Object([("id".into(), Scalar::String(id.into()))].into());
+    let mut a = fact("unused", "mdm.windows");
+    a.state = State::Known(Scalar::Array(vec![item("a"), item("b")]));
+    let mut b = fact("unused", "agent.builtin");
+    b.state = State::Known(Scalar::Array(vec![item("b"), item("a")]));
+    assert_eq!(
+        resolve(&field, vec![a, b]).unwrap().state,
+        State::Known(Scalar::Array(vec![item("a"), item("b")]))
+    );
+}

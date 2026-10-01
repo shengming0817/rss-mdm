@@ -32,6 +32,9 @@ pub async fn admit_storage_in(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
 ) -> Result<(), sqlx::Error> {
+    rss_mdm_inventory_postgres::verify_collections(c)
+        .await
+        .map_err(|error| sqlx::Error::Protocol(format!("collection storage admission: {error}")))?;
     rss_mdm_inventory_postgres::verify_watermark_fence(c).await?;
     rss_mdm_compliance_postgres::admit(c, tenant).await
 }

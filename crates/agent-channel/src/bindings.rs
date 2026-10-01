@@ -38,7 +38,7 @@ impl channels::Agent for Bindings {
         registrations: Vec<Uuid>,
     ) -> Pending<'a, std::collections::BTreeMap<Uuid, AgentBinding>> {
         Box::pin(async move {
-            let rows=sqlx::query("SELECT registration,platform,architecture,capabilities FROM mdm_agent.bindings WHERE tenant_id=$1::uuid AND registration=ANY($2) AND wire_version=4").bind(tenant).bind(registrations).fetch_all(c).await.map_err(|e|channels::Rejection::from(db(e)))?;
+            let rows=sqlx::query("SELECT registration,platform,architecture,capabilities FROM mdm_agent.bindings WHERE tenant_id=$1::uuid AND registration=ANY($2) AND wire_version=5").bind(tenant).bind(registrations).fetch_all(c).await.map_err(|e|channels::Rejection::from(db(e)))?;
             rows.into_iter()
                 .map(|r| {
                     let value = |key: &str| {
@@ -90,7 +90,7 @@ pub(crate) async fn bind_agent_in(
         rss_mdm_agent_wire::TaskArchitecture::X86_64 => "x86_64",
         rss_mdm_agent_wire::TaskArchitecture::Aarch64 => "aarch64",
     };
-    sqlx::query("INSERT INTO mdm_agent.bindings(tenant_id,registration,wire_version,capabilities,platform,architecture) VALUES($1::uuid,$2::uuid,4,$3,$4,$5)")
+    sqlx::query("INSERT INTO mdm_agent.bindings(tenant_id,registration,wire_version,capabilities,platform,architecture) VALUES($1::uuid,$2::uuid,5,$3,$4,$5)")
         .bind(tenant).bind(registration.to_string()).bind(capabilities).bind(platform).bind(architecture)
         .execute(&mut *tx).await.map_err(db)?;
     Ok(())

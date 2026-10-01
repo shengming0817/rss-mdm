@@ -892,6 +892,51 @@
       ""
     ],
     [
+      "output_chunks",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "output_chunks",
+      "attempt",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "output_chunks",
+      "chunk_index",
+      "integer",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "output_chunks",
+      "manifest",
+      "jsonb",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "output_chunks",
+      "bytes",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
       "policy_recovery",
       "tenant_id",
       "uuid",
@@ -1451,6 +1496,41 @@
       true
     ],
     [
+      "output_chunks",
+      "output_chunks_bytes_check",
+      "c",
+      "CHECK (((octet_length(bytes) >= 1) AND (octet_length(bytes) <= 262144)))",
+      true
+    ],
+    [
+      "output_chunks",
+      "output_chunks_chunk_index_check",
+      "c",
+      "CHECK (((chunk_index >= 0) AND (chunk_index < 64)))",
+      true
+    ],
+    [
+      "output_chunks",
+      "output_chunks_manifest_check",
+      "c",
+      "CHECK ((octet_length((manifest)::text) <= 1024))",
+      true
+    ],
+    [
+      "output_chunks",
+      "output_chunks_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, attempt, chunk_index)",
+      true
+    ],
+    [
+      "output_chunks",
+      "output_chunks_tenant_id_attempt_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, attempt) REFERENCES mdm_commands.action_attempts(tenant_id, id)",
+      true
+    ],
+    [
       "policy_recovery",
       "policy_recovery_pkey",
       "p",
@@ -1642,6 +1722,14 @@
       "operations",
       "remote_native_once",
       "CREATE UNIQUE INDEX remote_native_once ON mdm_commands.operations USING btree (tenant_id, remote_operation, device) WHERE (remote_operation IS NOT NULL)",
+      true,
+      true,
+      true
+    ],
+    [
+      "output_chunks",
+      "output_chunks_pkey",
+      "CREATE UNIQUE INDEX output_chunks_pkey ON mdm_commands.output_chunks USING btree (tenant_id, attempt, chunk_index)",
       true,
       true,
       true

@@ -241,12 +241,7 @@ pub async fn terminate(
     let rows = sqlx::query(selection!("tenant_id=$1::uuid AND registration=$2::uuid AND sealed_at IS NULL ORDER BY sequence FOR UPDATE"))
         .bind(tenant).bind(registration).fetch_all(&mut *tx).await.map_err(db)?;
     for row in rows {
-        if restored_scope(&row)?.dataset().as_str() == rss_mdm_inventory::DATASET {
-            facts.extend(seal(tx, &mut Run::from_row(row)?, reason).await?);
-        } else {
-            let id = Uuid::parse_str(row.try_get("id").map_err(db)?).map_err(|_| corrupt())?;
-            facts.extend(super::channel::abandon_in(tx, tenant, id, reason).await?);
-        }
+        facts.extend(seal(tx, &mut Run::from_row(row)?, reason).await?);
     }
     Ok(())
 }
