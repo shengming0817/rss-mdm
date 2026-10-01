@@ -42,7 +42,7 @@ impl PartialOrd for ObjectKey {
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-/// Supported primitive field types; no floating point or implicit coercions.
+/// Supported primitive field types; no non-finite numbers or implicit coercions.
 pub enum ScalarType {
     /// UTF-8 string, compared without case folding or normalization.
     String,
@@ -50,6 +50,8 @@ pub enum ScalarType {
     Boolean,
     /// Signed 64-bit integer.
     Integer,
+    /// Finite numeric quantity.
+    Number,
     /// Canonical UTC timepoint.
     Time,
 }
@@ -70,6 +72,8 @@ pub enum Scalar {
     Boolean(bool),
     /// Signed 64-bit integer literal.
     Integer(i64),
+    /// Finite numeric literal.
+    Number(ordered_float::NotNan<f64>),
     /// Canonical UTC timepoint literal.
     Time(Timepoint),
 }
@@ -80,12 +84,16 @@ impl Scalar {
             Self::String(_) => ScalarType::String,
             Self::Boolean(_) => ScalarType::Boolean,
             Self::Integer(_) => ScalarType::Integer,
+            Self::Number(_) => ScalarType::Number,
             Self::Time(_) => ScalarType::Time,
         }
     }
     pub(crate) fn validate(&self, budget: &mut Budget) -> Result<()> {
+        if matches!(self, Self::Number(n) if !n.into_inner().is_finite()) {
+            return Err(Error::InvalidType);
+        }
         if let Self::String(s) = self {
-            budget.text(s)?;
+            budget.scalar_text(s)?;
         }
         Ok(())
     }
@@ -118,7 +126,7 @@ impl Value {
                 v.validate(budget)?;
             }
             Self::Set { element, values } => {
-                LimitKind::SetItems.check(values.len())?;
+                budget.set(values.len())?;
                 budget.items(values.len())?; // Reserve before traversing any scalar.
                 for v in values {
                     if v.kind() != *element {

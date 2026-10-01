@@ -10,6 +10,7 @@ from build_run import lease_fds
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOGS = {'compliance': 'compliance-postgres/src/catalog', 'catalog': 'flow-service/src/execution/catalog', 'dependencies': 'flow-service/src/execution/dependencies', 'planning': 'flow-service/src/planning/catalog', 'assets': 'inventory-service/src/assets/catalog', 'automation': 'flow-service/src/automation/catalog', 'resources': 'flow-service/src/resource_catalog/catalog', 'publication': 'flow-service/src/software_publication/http_catalog', 'software': 'software-service/src/catalog/catalog', 'content': 'content-service/src/catalog', 'flow': 'flow-service/src/storage/catalog'}
+COMPONENT_CATALOGS = {"resource_core": ("mdm_resource", "resource-postgres/src/catalog.json"),"policy_core":("mdm_policy","policy-postgres/src/catalog.json")}
 NAMES = tuple(CATALOGS)
 
 def capture(container, mode, database):
@@ -17,14 +18,19 @@ def capture(container, mode, database):
     query = "BEGIN; SET LOCAL ROLE mdm_command_runtime; SET LOCAL search_path=pg_catalog;\n"
     paths = {name: ROOT / "crates" / (relative + ".sql") for name, relative in CATALOGS.items()}
     query += "\n".join(paths[name].read_text() + ";" for name in NAMES)
+    for schema, _ in COMPONENT_CATALOGS.values():
+        # Consume the shared backend catalog query; only its fixed schema argument differs.
+        query += "\nPREPARE component_catalog(text) AS " + (ROOT / "crates/backend-postgres-support/src/catalog.sql").read_text().rstrip().rstrip(';') + ";\n"
+        query += "EXECUTE component_catalog('" + schema + "'); DEALLOCATE component_catalog;\n"
     query += "\nROLLBACK;"
     result = subprocess.run(["docker", "exec", "-i", container, "psql", "-XqAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", database], input=query, text=True, capture_output=True, pass_fds=lease_fds())
     if result.returncode:
         raise RuntimeError("command catalog query failed: " + result.stderr)
     values = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
-    if len(values) != len(NAMES):
+    if len(values) != len(NAMES)+len(COMPONENT_CATALOGS):
         raise RuntimeError("command catalog query did not produce all contracts")
-    outputs = {paths[name].with_suffix(".json"): json.dumps(value, indent=2, sort_keys=True) + "\n" for name, value in zip(NAMES, values, strict=True)}
+    outputs = {paths[name].with_suffix(".json"): json.dumps(value, indent=2, sort_keys=True) + "\n" for name, value in zip(NAMES, values[:len(NAMES)], strict=True)}
+    outputs.update({ROOT / "crates" / path:json.dumps(value,indent=2,sort_keys=True)+"\n" for (_,path),value in zip(COMPONENT_CATALOGS.values(),values[len(NAMES):],strict=True)})
     if mode == "check":
         mismatches = [path.name for path, content in outputs.items() if json.loads(path.read_text()) != json.loads(content)]
         if mismatches:

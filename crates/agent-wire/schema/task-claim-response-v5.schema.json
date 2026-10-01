@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/mdm/agent/v4/task-claim-response.schema.json",
+  "$id": "https://rss.example/mdm/agent/v5/task-claim-response.schema.json",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -10,7 +10,7 @@
   ],
   "properties": {
     "wireVersion": {
-      "const": 4
+      "const": 5
     },
     "task": {
       "oneOf": [
@@ -55,7 +55,7 @@
                   ],
                   "properties": {
                     "wireVersion": {
-                      "const": 4
+                      "const": 5
                     },
                     "tenantId": {
                       "type": "string",
@@ -151,7 +151,7 @@
                         "power_shell7",
                         "posix_sh",
                         "bash",
-                        "osquery_info_v1"
+                        "osquery"
                       ]
                     },
                     "runAs": {
@@ -194,12 +194,12 @@
                     "outputBytes": {
                       "type": "integer",
                       "minimum": 1,
-                      "maximum": 1048576
+                      "maximum": 16777216
                     },
                     "maxRows": {
                       "type": "integer",
                       "minimum": 1,
-                      "maximum": 1000
+                      "maximum": 65535
                     },
                     "platform": {
                       "enum": [
@@ -212,6 +212,36 @@
                         "x86_64",
                         "aarch64"
                       ]
+                    },
+                    "sqlParameters": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "maxProperties": 32,
+                      "propertyNames": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64,
+                        "pattern": "^[a-zA-Z0-9_]+$"
+                      },
+                      "additionalProperties": {
+                        "oneOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 4096,
+                            "pattern": "^[^\\u0000]*$"
+                          },
+                          {
+                            "type": "boolean"
+                          },
+                          {
+                            "type": "integer",
+                            "minimum": -9223372036854775808,
+                            "maximum": 9223372036854775807
+                          }
+                        ]
+                      }
                     }
                   },
                   "allOf": [
@@ -219,11 +249,14 @@
                       "if": {
                         "properties": {
                           "profile": {
-                            "const": "osquery_info_v1"
+                            "const": "osquery"
                           }
                         }
                       },
                       "then": {
+                        "required": [
+                          "sqlParameters"
+                        ],
                         "properties": {
                           "arguments": {
                             "maxItems": 0
@@ -231,11 +264,18 @@
                           "environment": {
                             "maxProperties": 0
                           },
-                          "maxRows": {
-                            "const": 1
-                          },
                           "runAs": {
                             "const": "system"
+                          },
+                          "sqlParameters": {
+                            "type": "object"
+                          }
+                        }
+                      },
+                      "else": {
+                        "properties": {
+                          "sqlParameters": {
+                            "type": "null"
                           }
                         }
                       }
@@ -265,7 +305,7 @@
                   ],
                   "properties": {
                     "wireVersion": {
-                      "const": 4
+                      "const": 5
                     },
                     "tenantId": {
                       "type": "string",
@@ -444,7 +484,7 @@
                   ],
                   "properties": {
                     "wireVersion": {
-                      "const": 4
+                      "const": 5
                     },
                     "tenantId": {
                       "type": "string",

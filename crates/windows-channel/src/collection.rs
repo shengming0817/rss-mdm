@@ -9,22 +9,18 @@ use rss_mdm_windows_mdm::{
 use rss_observation::Scope;
 use sqlx::Row;
 use uuid::Uuid;
-const FIELD_COUNT: usize = FieldKey::OBSERVED_COUNT;
+const NATIVE_FIELDS: &[(FieldKey, &str)] = &[
+    (rss_mdm_inventory::builtin::MODEL, "./DevInfo/Mod"),
+    (rss_mdm_inventory::builtin::OS_VERSION, "./DevDetail/SwV"),
+];
 fn corrupt() -> Error {
     Error::Unavailable(Failure::Database)
 }
-fn uri(key: FieldKey) -> &'static str {
-    match key {
-        FieldKey::Model => "./DevInfo/Mod",
-        FieldKey::OsVersion => "./DevDetail/SwV",
-        _ => unreachable!("collection only uses observed catalog entries"),
-    }
-}
-fn field_index(command: u32, first: u32) -> Option<usize> {
+fn field_index(command: u32, first: u32, count: usize) -> Option<usize> {
     command
         .checked_sub(first)
-        .map(|offset| offset as usize)
-        .filter(|index| *index < FIELD_COUNT)
+        .map(|n| n as usize)
+        .filter(|n| *n < count)
 }
 
 fn apply(
@@ -40,15 +36,18 @@ fn apply(
         }
         // Only Get statuses affect collection. Other sent command acknowledgements are harmless.
         if status.message_id == message
-            && let Some(index) = field_index(status.command_id, first)
+            && let Some(index) = field_index(status.command_id, first, NATIVE_FIELDS.len())
         {
-            attempts.observe_status(
-                FieldKey::observed()
-                    .nth(index)
-                    .ok_or(CollectionError::CorrelationConflict)?,
-                status.code,
-                received_at,
-            )?;
+            attempts
+                .observe_status(
+                    NATIVE_FIELDS
+                        .get(index)
+                        .ok_or(CollectionError::CorrelationConflict)?
+                        .0,
+                    status.code,
+                    received_at,
+                )
+                .map_err(|_| CollectionError::CorrelationConflict)?;
         }
     }
     for result in &correlated.results {
@@ -58,22 +57,23 @@ fn apply(
         {
             return Err(CollectionError::CorrelationConflict);
         }
-        let index = field_index(result.reference.command_id, first)
+        let index = field_index(result.reference.command_id, first, NATIVE_FIELDS.len())
             .ok_or(CollectionError::CorrelationConflict)?;
-        if result.reference.uri
-            != uri(FieldKey::observed()
-                .nth(index)
-                .expect("collection field index"))
-        {
+        if result.reference.uri != NATIVE_FIELDS[index].1 {
             return Err(CollectionError::CorrelationConflict);
         }
-        attempts.observe_value(
-            FieldKey::observed()
-                .nth(index)
-                .ok_or(CollectionError::CorrelationConflict)?,
-            result.value.0.clone(),
-            received_at,
-        )?;
+        attempts
+            .observe_value(
+                NATIVE_FIELDS
+                    .get(index)
+                    .ok_or(CollectionError::CorrelationConflict)?
+                    .0,
+                rss_mdm_inventory::CollectedValue::Value(rss_mdm_inventory::Scalar::String(
+                    result.value.0.clone(),
+                )),
+                received_at,
+            )
+            .map_err(|_| CollectionError::CorrelationConflict)?;
     }
     Ok(())
 }
@@ -88,19 +88,19 @@ pub async fn create(
         scope.registration().as_str(),
         rss_mdm_inventory::ReportSource::MdmWindows,
         scope.epoch().as_str(),
-        FIELD_COUNT as i64,
+        NATIVE_FIELDS.len() as i64,
         i64::from(u32::MAX),
     )
     .await
     .map_err(db)?
     .ok_or(Error::Conflict)?;
-    for (index, key) in FieldKey::observed().enumerate() {
+    for (index, (_, uri)) in NATIVE_FIELDS.iter().enumerate() {
         response.commands.push(Command::Get {
             id: first as u32 + index as u32,
             meta: None,
             items: vec![Item {
                 source: None,
-                target: Some(uri(key).into()),
+                target: Some((*uri).into()),
                 meta: None,
                 data: None,
             }],
@@ -108,7 +108,9 @@ pub async fn create(
     }
     let (request, _) =
         syncml::encode_request(response, &CodecLimits::default()).map_err(|_| corrupt())?;
-    let id = store::start_in(tx, scope, sequence).await?;
+    let keys: Vec<_> = NATIVE_FIELDS.iter().map(|(field, _)| *field).collect();
+    let definition = store::freeze_in(tx, scope, 1, &keys).await?;
+    let id = store::start_in(tx, scope, sequence, definition).await?;
     sqlx::query("INSERT INTO mdm_windows.collections(tenant_id,id,registration,session_id,request_message,first_command,request) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,$6,$7)")
         .bind(scope.tenant().to_string()).bind(id.to_string()).bind(scope.registration().as_str()).bind(response.header.session_id.to_string()).bind(i64::from(response.header.message_id)).bind(first).bind(request)
         .execute(&mut *tx).await.map_err(db)?;
@@ -223,12 +225,18 @@ mod tests {
     use super::*;
     #[test]
     fn command_range_covers_catalog_and_rejects_outside_without_overflow() {
-        let first = u32::MAX - FIELD_COUNT as u32 + 1;
-        for (index, key) in FieldKey::observed().enumerate() {
-            assert_eq!(field_index(first + index as u32, first), Some(index));
-            assert!(uri(key).starts_with("./"));
+        let first = u32::MAX - NATIVE_FIELDS.len() as u32 + 1;
+        for (index, (_, uri)) in NATIVE_FIELDS.iter().enumerate() {
+            assert_eq!(
+                field_index(first + index as u32, first, NATIVE_FIELDS.len()),
+                Some(index)
+            );
+            assert!(uri.starts_with("./"));
         }
-        assert_eq!(field_index(first - 1, first), None);
-        assert_eq!(field_index(1024 + FIELD_COUNT as u32, 1024), None);
+        assert_eq!(field_index(first - 1, first, NATIVE_FIELDS.len()), None);
+        assert_eq!(
+            field_index(1024 + NATIVE_FIELDS.len() as u32, 1024, NATIVE_FIELDS.len()),
+            None
+        );
     }
 }

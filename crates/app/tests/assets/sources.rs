@@ -13,7 +13,7 @@ async fn source_matrix(browser: &mut Browser, router: &Router) -> Result<()> {
             == 2
     );
     pg(&format!(
-        "UPDATE mdm.inventory SET value='Different' WHERE registration='{agent}';"
+        "UPDATE mdm.inventory SET value='{{\"kind\":\"string\",\"value\":\"Different\"}}' WHERE registration='{agent}';"
     ))?;
     let detail = ok(browser, router, Method::GET, path, None).await?;
     ensure!(detail["asset"]["device"]["fields"]["device.model"]["state"]["kind"] == "conflict");
@@ -35,7 +35,7 @@ async fn source_matrix(browser: &mut Browser, router: &Router) -> Result<()> {
         detail["asset"]["device"]["fields"]["device.model"]["state"]["value"]["value"] == "Same"
     );
     pg(&format!(
-        "UPDATE mdm_access.registrations SET state='superseded' WHERE id='{mdm}'; UPDATE mdm.inventory SET value='Late old value' WHERE registration='{mdm}';"
+        "UPDATE mdm_access.registrations SET state='superseded' WHERE id='{mdm}'; UPDATE mdm.inventory SET value='{{\"kind\":\"string\",\"value\":\"Late old value\"}}' WHERE registration='{mdm}';"
     ))?;
     let detail = ok(browser, router, Method::GET, path, None).await?;
     ensure!(detail["asset"]["device"]["fields"]["device.model"]["state"]["kind"] == "deleted");
@@ -60,9 +60,20 @@ async fn retained_collection_quality(browser: &mut Browser, router: &Router) -> 
     .replace('\'', "''");
     let older = "80000000-0000-4000-8000-000000000001";
     let newer = "80000000-0000-4000-8000-000000000002";
+    let definition = crate::test_support::inventory::definition(
+        "inventory",
+        "agent.builtin",
+        &[
+            rss_mdm_inventory::builtin::MODEL,
+            rss_mdm_inventory::builtin::OS_VERSION,
+        ],
+    );
+    let progress =
+        rss_mdm_inventory::CollectionProgress::native(definition, Default::default(), 1)?;
+    let attempts = serde_json::to_string(&progress)?;
     for id in [older, newer] {
         pg(&format!(
-            "INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending) SELECT tenant_id,'{id}','{registration}','agent.builtin','{epoch}','{scope}',7,started_at,attempts,result,reason,batch,digest,sealed_at,false FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND source='mdm.windows' AND reason='complete' AND batch IS NOT NULL ORDER BY sequence DESC LIMIT 1",
+            "INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,reason,sealed_at,delivery_pending) VALUES('{TENANT}','{id}','{registration}','agent.builtin','{epoch}','{scope}',7,1,'{attempts}','failed','timeout',2,false)",
             TENANT = case_tenant()
         ))?;
     }

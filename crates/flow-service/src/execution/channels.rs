@@ -59,6 +59,12 @@ pub struct Observation {
     pub received_at: Option<i64>,
 }
 pub trait AppleStore: Send + Sync {
+    fn prepare_native_collection<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        id: Uuid,
+    ) -> Pending<'a, Vec<Fact>>;
     fn push_due<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -198,7 +204,6 @@ pub struct PushCandidate {
 }
 pub struct PendingCollection {
     pub id: Uuid,
-    pub approval: serde_json::Value,
 }
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -229,11 +234,11 @@ pub struct AgentBinding {
 impl AgentBinding {
     pub fn inventory(&self) -> bool {
         self.capabilities
-            .contains(&rss_mdm_agent_wire::Capability::InventoryBasicV4)
+            .contains(&rss_mdm_agent_wire::Capability::InventoryCollectionV5)
     }
     pub fn script(&self) -> bool {
         self.capabilities
-            .contains(&rss_mdm_agent_wire::Capability::TaskExecuteV4)
+            .contains(&rss_mdm_agent_wire::Capability::TaskExecuteV5)
     }
     pub fn software(&self) -> bool {
         self.capabilities
@@ -242,7 +247,7 @@ impl AgentBinding {
     }
     pub fn enrollment(&self) -> bool {
         self.capabilities
-            .contains(&rss_mdm_agent_wire::Capability::MdmEnrollmentV4)
+            .contains(&rss_mdm_agent_wire::Capability::MdmEnrollmentV5)
     }
     pub fn task(&self) -> bool {
         self.script() || self.software() || self.enrollment()
@@ -373,7 +378,7 @@ pub async fn agent_targets_in(
 }
 
 impl Rejection {
-    /// The native registration endpoint speaks the same closed Agent V4 errors.
+    /// The native registration endpoint speaks the same closed Agent V5 errors.
     pub fn agent_error(self) -> (u16, rss_mdm_agent_wire::ErrorBody) {
         use rss_mdm_agent_wire::ErrorCode as C;
         let (status, code) = match self {

@@ -6,6 +6,18 @@ use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 pub struct Store;
 impl channels::AppleStore for Store {
+    fn prepare_native_collection<'a>(
+        &'a self,
+        c: &'a mut sqlx::PgConnection,
+        tenant: String,
+        id: Uuid,
+    ) -> channels::Pending<'a, Vec<rss_mdm_audit_integration::Fact>> {
+        Box::pin(async move {
+            crate::collection::prepare_native(c, &tenant, id)
+                .await
+                .map_err(Into::into)
+        })
+    }
     fn push_due<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -138,8 +150,8 @@ impl channels::AppleStore for Store {
                 .await
                 .map_err(|e| channels::Rejection::from(Error::from(e)))?;
                 for id in &ids {
-                    if let Some(approval) = pending.remove(id) {
-                        result.push(channels::PendingCollection { id: *id, approval });
+                    if pending.remove(id) {
+                        result.push(channels::PendingCollection { id: *id });
                         if result.len() == limit {
                             break;
                         }

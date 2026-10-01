@@ -42,7 +42,9 @@ struct RunSummary {
 }
 #[derive(Serialize)]
 struct RunField {
-    field: &'static str,
+    item_count: usize,
+    invalid_items: usize,
+    field: String,
     quality: crate::collection::Quality,
     status: Option<u16>,
     received_at: Option<i64>,
@@ -88,10 +90,18 @@ impl CollectionService {
         let run = crate::collection::store::collection(&self.access, &scope, Some(id))
             .await?
             .ok_or(Error::NotFound)?;
-        let fields = rss_mdm_inventory::FieldKey::observed()
-            .zip(&run.attempts.fields)
+        let fields = run
+            .attempts
+            .fields()
+            .iter()
             .map(|(key, attempt)| RunField {
-                field: key.as_str(),
+                item_count: attempt.items().len(),
+                invalid_items: attempt
+                    .items()
+                    .iter()
+                    .filter(|q| **q == crate::collection::Quality::Invalid)
+                    .count(),
+                field: key.as_str().into(),
                 quality: attempt.quality,
                 status: attempt.status,
                 received_at: attempt.received_at,
@@ -107,7 +117,11 @@ impl CollectionService {
             registration: scope.registration().as_str().to_owned(),
             source: grant.coordinates.source,
             epoch: scope.epoch().as_str().to_owned(),
-            coverage: rss_mdm_inventory::coverage(),
+            coverage: run
+                .attempts
+                .definition()
+                .coverage()
+                .map_err(|_| Error::Malformed)?,
             fields,
             delivery: self.runtime.inspect(&run).await?,
         })

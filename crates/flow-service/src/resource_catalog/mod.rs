@@ -21,6 +21,7 @@ pub enum Kind {
     Software,
     Script,
     Configuration,
+    NativeCollection,
 }
 impl Kind {
     fn core(&self) -> r::Kind {
@@ -28,6 +29,7 @@ impl Kind {
             Self::Software => r::Kind::Software,
             Self::Script => r::Kind::Script,
             Self::Configuration => r::Kind::Configuration,
+            Self::NativeCollection => r::Kind::NativeCollection,
         }
     }
 }
@@ -64,6 +66,10 @@ enum Declaration {
     Script {
         artifact: Artifact,
         definition: r::ScriptDefinition,
+    },
+    NativeCollection {
+        artifact: Artifact,
+        definition: r::NativeCollectionDefinition,
     },
     Configuration {
         artifact: Artifact,
@@ -133,6 +139,13 @@ fn variant(v: &Variant) -> Result<r::Variant> {
             artifact: artifact(a)?,
             definition: definition.clone(),
         },
+        Declaration::NativeCollection {
+            artifact: a,
+            definition,
+        } => r::Declaration::NativeCollection {
+            artifact: artifact(a)?,
+            definition: definition.clone(),
+        },
         Declaration::Configuration {
             artifact: a,
             schema,
@@ -169,6 +182,69 @@ impl ResourceCatalog {
         at: Timepoint,
     ) -> Result<Value> {
         let rid = id(resource)?;
+        if let Change::Version { variants, .. } = &op.input {
+            let catalog = crate::assets::catalog_in(tx, self.tenant, i64::MAX).await?;
+            for variant in variants {
+                let binding = match &variant.declaration {
+                    Declaration::Script { definition, .. } => match &definition.spec().purpose {
+                        r::ScriptPurpose::Collection { mappings } => Some((
+                            if definition.spec().profile == r::ScriptProfile::Osquery {
+                                rss_mdm_inventory::Source::AgentOsquery
+                            } else {
+                                rss_mdm_inventory::Source::AgentScript
+                            },
+                            mappings.keys().collect::<Vec<_>>(),
+                        )),
+                        _ => None,
+                    },
+                    Declaration::NativeCollection { definition, .. } => Some((
+                        match definition.spec().adapter {
+                            r::NativeAdapter::WindowsCsp => rss_mdm_inventory::Source::MdmWindows,
+                            _ => rss_mdm_inventory::Source::MdmApple,
+                        },
+                        definition.spec().mappings.keys().collect(),
+                    )),
+                    _ => None,
+                };
+                if let Some((source, keys)) = binding {
+                    let platform = match variant.platform {
+                        Platform::Windows => rss_mdm_inventory::Platform::Windows,
+                        Platform::Macos => rss_mdm_inventory::Platform::Macos,
+                    };
+                    for key in keys {
+                        let field =
+                            checked_input(catalog.definition(checked_input(
+                                rss_mdm_inventory::FieldKey::parse(key),
+                            )?))?;
+                        if !field.sources.contains_key(&source)
+                            || !field.platforms.contains(&platform)
+                        {
+                            return Err(Error::Malformed.into());
+                        }
+                        if let Declaration::NativeCollection { definition, .. } =
+                            &variant.declaration
+                        {
+                            let mapping = &definition.spec().mappings[key];
+                            if !mapping.columns.is_empty() {
+                                let rss_mdm_inventory::ValueType::Array { items, .. } =
+                                    &field.value_type
+                                else {
+                                    return Err(Error::Malformed.into());
+                                };
+                                let rss_mdm_inventory::ValueType::Object { properties } =
+                                    items.as_ref()
+                                else {
+                                    return Err(Error::Malformed.into());
+                                };
+                                if mapping.columns.keys().ne(properties.keys()) {
+                                    return Err(Error::Malformed.into());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let command = match &op.input {
             Change::FirewallVersion { version, enabled } => pg::Command::Insert(
                 self.author
@@ -261,6 +337,13 @@ fn variant_view(v: &r::Variant) -> Variant {
             artifact: artifact_view(artifact),
             definition: definition.clone(),
         },
+        r::Declaration::NativeCollection {
+            artifact,
+            definition,
+        } => Declaration::NativeCollection {
+            artifact: artifact_view(artifact),
+            definition: definition.clone(),
+        },
         r::Declaration::Configuration {
             artifact,
             schema,
@@ -293,6 +376,7 @@ fn resource_kind(k: r::Kind) -> &'static str {
     match k {
         r::Kind::Software => "software",
         r::Kind::Script => "script",
+        r::Kind::NativeCollection => "native_collection",
         r::Kind::Configuration => "configuration",
     }
 }

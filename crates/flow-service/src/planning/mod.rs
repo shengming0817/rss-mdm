@@ -83,16 +83,19 @@ impl Planning {
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
     ) -> std::result::Result<Value, Error> {
         let group = match command {
-            Command::Group { id, change } => {
-                Some(rss_mdm_inventory_service::groups::Command::Group {
-                    id: *id,
-                    change: rss_mdm_inventory_service::operation::Operation {
-                        operation_id: change.operation_id,
-                        expected_revision: change.expected_revision,
-                        input: change.input.clone(),
-                    },
-                })
-            }
+            Command::Group {
+                id,
+                change,
+                sensitive,
+            } => Some(rss_mdm_inventory_service::groups::Command::Group {
+                id: *id,
+                sensitive: *sensitive,
+                change: Box::new(rss_mdm_inventory_service::operation::Operation {
+                    operation_id: change.operation_id,
+                    expected_revision: change.expected_revision,
+                    input: change.input.clone(),
+                }),
+            }),
             Command::GroupRead { id } => {
                 Some(rss_mdm_inventory_service::groups::Command::GroupRead { id: *id })
             }
@@ -227,7 +230,11 @@ impl Planning {
         at: Timepoint,
     ) -> Result<Value> {
         match command {
-            Command::Group { id, change } => self
+            Command::Group {
+                id,
+                change,
+                sensitive,
+            } => self
                 .inventory_groups()
                 .group_change(
                     tx,
@@ -237,7 +244,7 @@ impl Planning {
                         expected_revision: change.expected_revision,
                         input: change.input.clone(),
                     },
-                    at,
+                    (at, *sensitive),
                     self,
                 )
                 .await
@@ -298,6 +305,7 @@ pub enum Command {
     Group {
         id: Uuid,
         change: Operation<GroupChange>,
+        sensitive: bool,
     },
     GroupRead {
         id: Uuid,

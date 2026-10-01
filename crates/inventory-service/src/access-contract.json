@@ -18,7 +18,8 @@
         "batch",
         "digest",
         "sealed_at",
-        "delivery_pending"
+        "delivery_pending",
+        "evidence"
       ],
       "delete_policy": null
     },
@@ -36,6 +37,10 @@
       "search_path": "search_path=pg_catalog, pg_temp"
     }
   ],
-  "external_relations": [],
+  "external_relations": [
+    "mdm.field_versions",
+    "mdm.collection_definitions",
+    "mdm.collection_results"
+  ],
   "verified_schemas": []
 }

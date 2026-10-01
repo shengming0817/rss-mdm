@@ -5,6 +5,7 @@ use rss_mdm_inventory::SourceFact;
 use sqlx::Row;
 
 pub struct AssetPage {
+    pub catalog: rss_mdm_inventory::Catalog,
     pub devices: Vec<DeviceView>,
     pub next: Option<String>,
 }
@@ -70,8 +71,18 @@ impl SnapshotReader {
         let more = ids.len() > limit;
         ids.truncate(limit);
         let next = more.then(|| ids.last().expect("nonempty lookahead page").clone());
-        let devices = self.asset_devices_at_in(tx, watermark, &ids).await?;
-        Ok(AssetPage { devices, next })
+        let catalog = catalog_in(tx, self.tenant, watermark).await?;
+        let mut devices = self
+            .asset_devices_at_in(tx, watermark, &ids, &catalog)
+            .await?;
+        for device in &mut devices {
+            restrict_fields(device, &catalog, scope.sensitive);
+        }
+        Ok(AssetPage {
+            devices,
+            next,
+            catalog,
+        })
     }
 
     async fn asset_devices_at_in(
@@ -79,6 +90,7 @@ impl SnapshotReader {
         tx: &mut PgTransaction<'_>,
         watermark: i64,
         ids: &[String],
+        catalog: &rss_mdm_inventory::Catalog,
     ) -> Result<Vec<DeviceView>> {
         let mut devices: BTreeMap<_, _> = ids
             .iter()
@@ -89,6 +101,7 @@ impl SnapshotReader {
                         device: id.clone(),
                         channels: BTreeSet::new(),
                         fields: BTreeMap::new(),
+                        lists: BTreeMap::new(),
                         quality: vec![],
                         revisions: BTreeMap::new(),
                     },
@@ -107,6 +120,7 @@ impl SnapshotReader {
         if rows.len() > 2000 {
             return Err(Error::Unavailable(Failure::AssetSourceLimit).into());
         }
+        let datasets = datasets_in(tx, self.tenant).await?;
         let mut scopes = Vec::new();
         let mut subjects = BTreeMap::new();
         for row in rows {
@@ -116,7 +130,7 @@ impl SnapshotReader {
             if channel != source.channel().ok_or(Error::Malformed)?.as_str() {
                 return Err(Error::Unavailable(Failure::InventoryQuery).into());
             }
-            for dataset in rss_mdm_inventory::datasets(source) {
+            for dataset in datasets.get(&source).into_iter().flatten() {
                 let scope = crate::device::scope_dataset(
                     self.tenant,
                     stored(Uuid::parse_str(row.try_get("registration")?))?,
@@ -201,18 +215,24 @@ impl SnapshotReader {
                 .push(quality::decode(&row, *generation)?);
         }
         for (id, device) in &mut devices {
-            for field in FieldKey::ALL {
+            for definition in catalog.fields() {
+                let field = definition.key;
                 device.fields.insert(
                     field,
                     stored(rss_mdm_inventory::resolve(
-                        field,
-                        facts.remove(&(id.clone(), field)).unwrap_or_default(),
+                        definition,
+                        facts
+                            .remove(&(id.clone(), field))
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter(|fact| definition.sources.contains_key(&fact.evidence.source))
+                            .collect(),
                     ))?,
                 );
             }
         }
         let result: Vec<_> = devices.into_values().collect();
-        if stored(serde_json::to_vec(&result))?.len() > 16 * 1024 * 1024 {
+        if stored(serde_json::to_vec(&result))?.len() > 64 * 1024 * 1024 {
             return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
         }
         Ok(result)

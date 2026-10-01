@@ -143,11 +143,11 @@ impl Host {
         value["flow"]["storage"]["database"] = serde_json::json!({"host":"localhost","port":db.get_port(),"name":db.get_database().unwrap(),"user":"mdm_flow_runtime","password_file":management_password,"ca_file":root.join("ca.crt")});
         value["execution"]["database"] = value["flow"]["storage"]["database"].clone();
         value["execution"]["database"]["user"] = "mdm_command_runtime".into();
+        let original: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+        value["content"] = original["content"].clone();
         if let Some(agent) = agent {
             value["agent_installation"] = agent;
-            let original: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-            value["content"] = original["content"].clone();
         }
         let config: crate::config::Config = serde_json::from_value(value)?;
         let clock = Arc::new(crate::clock::SystemClock);

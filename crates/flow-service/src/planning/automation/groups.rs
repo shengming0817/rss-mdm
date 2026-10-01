@@ -142,9 +142,15 @@ impl Planning {
                     sqlx::query_scalar("SELECT coalesce(max(revision),$3) FROM (SELECT revision FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND revision>$2 AND revision<=$3 ORDER BY revision LIMIT 1000) b").bind(tenant).bind(base).bind(latest_watermark).fetch_one(c).await
                 })).await?;
                 let tenant = self.tenant.to_string();
-                changed_devices=Some(tx.with_connection(move|c|Box::pin(async move {
+                let catalog_changed=tx.with_connection(move|c|Box::pin(async move {
+                    sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm.asset_changes c JOIN mdm_assets.group_fields f ON f.tenant_id=c.tenant_id AND f.group_id=$4 AND f.field=ANY(c.fields) WHERE c.tenant_id=$1::uuid AND c.revision>$2 AND c.revision<=$3 AND c.kind='catalog')").bind(tenant).bind(base).bind(watermark).bind(id).fetch_one(c).await
+                })).await?;
+                let tenant = self.tenant.to_string();
+                if !catalog_changed {
+                    changed_devices=Some(tx.with_connection(move|c|Box::pin(async move {
                     sqlx::query_scalar::<_,String>("SELECT device FROM (SELECT DISTINCT coalesce(c.identity->>'device',(SELECT h.device FROM mdm_access.asset_authority_history h WHERE h.tenant_id=c.tenant_id AND h.kind='registration' AND h.identity=c.identity->>'registration' AND h.revision<=c.revision ORDER BY h.revision DESC LIMIT 1)) COLLATE \"C\" AS device FROM mdm.asset_changes c WHERE c.tenant_id=$1::uuid AND c.revision>$2 AND c.revision<=$3 AND (c.kind IN('device','registration','source','credential') OR EXISTS(SELECT 1 FROM mdm_assets.group_fields f WHERE f.tenant_id=c.tenant_id AND f.group_id=$4::uuid AND f.field=ANY(c.fields)))) changed WHERE device IS NOT NULL ORDER BY device").bind(tenant).bind(base).bind(watermark).bind(id.to_string()).fetch_all(c).await
                 })).await?);
+                }
             }
         }
         let job = JobInput::Group {
@@ -230,6 +236,7 @@ impl Planning {
                         limit,
                         &assets::ReadScope {
                             subject: "group".into(),
+                            sensitive: true,
                             devices: build
                                 .request
                                 .changed_devices
@@ -254,7 +261,23 @@ impl Planning {
                 if total > g::MAX_MEMBERS {
                     return Err(Error::Unavailable(Failure::AssetObjectLimit).into());
                 }
-                let data = stored(assets::filter::page(self.tenant, &page.devices))?;
+                let version = build
+                    .request
+                    .rule_version
+                    .as_deref()
+                    .ok_or(Error::Unavailable(Failure::Runtime))?;
+                let rule = group_checked(
+                    self.groups
+                        .rule_in(tx, build.request.group, version)
+                        .await?,
+                )?
+                .ok_or(Error::Unavailable(Failure::Runtime))?;
+                let data = stored(assets::filter::page(
+                    self.tenant,
+                    &page.devices,
+                    &page.catalog,
+                    &rule,
+                ))?;
                 if !data.objects.is_empty() {
                     let page_input = g::core::PageInput {
                         tenant: self.tenant,

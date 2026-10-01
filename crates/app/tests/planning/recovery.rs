@@ -147,6 +147,7 @@ async fn expired_guard_after_lock_rejects_mutation_and_replay() {
     for replay in [false, true] {
         let id = Uuid::new_v4();
         let command = Command::Group {
+            sensitive: true,
             id,
             change: operation(
                 0,
@@ -166,7 +167,7 @@ async fn expired_guard_after_lock_rejects_mutation_and_replay() {
             .await
             .unwrap();
         let audit = RequestAudit::new(tenant().to_string(), "management_write");
-        audit.set_principal("operator", "mdm");
+        audit.set_principal("operator", crate::test_support::INSTANCE);
         let expires = rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
             + Duration::from_millis(150);
         let authorize = || {
@@ -213,6 +214,7 @@ async fn result_cursors_survive_instances_restart_and_group_deletion() {
     execute(
         &first,
         &Command::Group {
+            sensitive: true,
             id: group,
             change: operation(
                 0,
@@ -229,6 +231,7 @@ async fn result_cursors_survive_instances_restart_and_group_deletion() {
     let accepted = execute(
         &first,
         &Command::Group {
+            sensitive: true,
             id: group,
             change: operation(
                 1,
@@ -276,6 +279,7 @@ async fn result_cursors_survive_instances_restart_and_group_deletion() {
     execute(
         &restarted,
         &Command::Group {
+            sensitive: true,
             id: group,
             change: operation(2, GroupChange::Delete),
         },

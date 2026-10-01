@@ -127,8 +127,43 @@ impl App {
             self.source_scope(),
         )?))
     }
+    // Trusted fixture input is converted by the collection owner before journal admission.
+    async fn prepare_fixture(&self, batch: &Batch) -> Result<Batch> {
+        use sqlx::Connection;
+        let definition = crate::fixture::definition();
+        definition.validate_scope(self.authority.scope())?;
+        definition.validate(batch)?;
+        let progress = model::CollectionProgress::reported(
+            definition.clone(),
+            batch.body(),
+            batch.observed_at_seconds(),
+        )?;
+        let mut connection =
+            sqlx::PgConnection::connect_with(&storage::collection_options()?).await?;
+        let mut tx = connection.begin().await?;
+        let tenant = self.authority.scope().tenant();
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(tenant.to_string())
+            .execute(&mut *tx)
+            .await?;
+        rss_mdm_inventory_postgres::register_collection_in(&mut tx, tenant, &definition).await?;
+        let reference = rss_mdm_inventory_postgres::seal_collection_in(
+            &mut tx,
+            rss_mdm_inventory_postgres::CollectionCompletion {
+                scope: self.authority.scope(),
+                run: batch.id().as_str(),
+                sequence: batch.sequence(),
+                observed_at: batch.observed_at_seconds(),
+                progress: &progress,
+            },
+        )
+        .await?;
+        tx.commit().await?;
+        connection.close().await?;
+        Ok(reference)
+    }
     pub async fn ingest(&self, batch: Batch) -> Result<ReceiveOutcome> {
-        model::validate(&batch)?;
+        let batch = self.prepare_fixture(&batch).await?;
         let scope = self.authority.scope().clone();
         self.observation
             .activate(

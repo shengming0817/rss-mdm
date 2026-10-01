@@ -74,7 +74,7 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
         .get::<axum::extract::MatchedPath>()
         .map(|p| p.as_str())
         .unwrap_or("");
-    let agent = route == "/api/agent/v4/managed-registrations";
+    let agent = route == "/api/agent/v5/managed-registrations";
     let audit = RequestAudit::new(envelope.tenant.clone(), route_action(route));
     let id = audit.request_id();
     let _permit = match envelope.admission.clone().try_acquire_owned() {
@@ -183,7 +183,7 @@ fn project(error: Error) -> Response {
 }
 fn route_action(route: &str) -> &'static str {
     match route {
-        "/api/agent/v4/managed-registrations" => "agent_registration",
+        "/api/agent/v5/managed-registrations" => "agent_registration",
         "/checkin" => "apple_checkin",
         "/mdm" => "apple_management",
         "/native/apple/scep/challenge" | "/native/apple/scep/notify" => "apple_scep",

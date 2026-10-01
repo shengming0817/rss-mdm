@@ -447,7 +447,7 @@ impl InventoryRuntime {
             }
             // The Audit transaction owns its settlement budget; never drop that owner
             // at the shorter discovery deadline or when shutdown is requested.
-            let expired = self.delivery.expire_apple(&self.tenant.to_string()).await;
+            let expired = self.delivery.expire_timed(&self.tenant.to_string()).await;
             if token.is_cancelled() {
                 return Ok(());
             }

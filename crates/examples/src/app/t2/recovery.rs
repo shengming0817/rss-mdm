@@ -56,7 +56,7 @@ async fn rollback_and_unknown(a: &App) -> Result<()> {
     let result = a
         .observation
         .receive(
-            &VerifiedBatch::verify(&authority, scope_for_app(), b.clone())?,
+            &VerifiedBatch::verify(&authority, scope_for_app(), a.prepare_fixture(&b).await?)?,
             a.clock.deadline(),
         )
         .await;

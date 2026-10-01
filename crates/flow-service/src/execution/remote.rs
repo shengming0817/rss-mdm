@@ -134,7 +134,10 @@ impl ExecutionService {
                 break;
             }
             let delivery: Uuid = row.try_get("delivery_id")?;
-            if row.try_get::<&str, _>("kind")? == "execution" {
+            if matches!(
+                row.try_get::<&str, _>("kind")?,
+                "execution" | "native_collection"
+            ) {
                 actions::recovery::recover_one(self, tx, delivery).await?;
             } else if operation.cancelled || operation.deadline <= now {
                 let device: String = row.try_get("device")?;
@@ -184,7 +187,7 @@ impl ExecutionService {
             Frozen::Software { .. }
             | Frozen::AgentInstall { .. }
             | Frozen::MdmEnrollment { .. } => Err(Error::Unsupported.into()),
-            Frozen::Execution { .. } => {
+            Frozen::Execution { .. } | Frozen::NativeCollection { .. } => {
                 self.accept_remote_execution(tx, operation, device, delivery, now)
                     .await
             }
@@ -206,30 +209,47 @@ impl ExecutionService {
 
         let tenant = tx.tenant_id().to_string();
         let name = device.to_owned();
+        let channel = if matches!(operation.frozen, Frozen::NativeCollection { .. }) {
+            rss_mdm_inventory::Channel::Mdm
+        } else {
+            rss_mdm_inventory::Channel::Agent
+        };
         tx.with_connection(move |c| {
             Box::pin(async move {
-                Ok(crate::device::store::lock_channel(
-                    c,
-                    &tenant,
-                    &name,
-                    rss_mdm_inventory::Channel::Agent,
-                )
-                .await)
+                Ok(crate::device::store::lock_channel(c, &tenant, &name, channel).await)
             })
         })
         .await??;
-        let _tenant = tx.tenant_id().to_string();
-        let name = device.to_owned();
-        let registration: Vec<_> =
-            super::channels::agent_targets_in(tx, self.agent_store.clone(), vec![name])
+        let registration = if let Frozen::NativeCollection { action, .. } = &operation.frozen {
+            let source = match action.input.platform {
+                Platform::Windows => rss_mdm_inventory::ReportSource::MdmWindows,
+                Platform::Macos => rss_mdm_inventory::ReportSource::MdmApple,
+            };
+            match storage::current_registration(tx, device).await {
+                Ok((registration, generation)) => {
+                    if storage::require_source(tx, registration, source)
+                        .await
+                        .is_err()
+                    {
+                        return record_target(tx, id, device, None, Some("channel_unsupported"))
+                            .await;
+                    }
+                    vec![(registration, generation)]
+                }
+                Err(Fault::Request(Error::Conflict)) => vec![],
+                Err(e) => return Err(e),
+            }
+        } else {
+            super::channels::agent_targets_in(tx, self.agent_store.clone(), vec![device.to_owned()])
                 .await?
                 .into_iter()
                 .filter(|r| r.binding.script())
                 .take(2)
                 .map(|r| (r.registration, r.generation))
-                .collect();
+                .collect()
+        };
         if registration.len() != 1 {
-            return record_target(tx, id, device, None, Some("agent_unavailable")).await;
+            return record_target(tx, id, device, None, Some("channel_unavailable")).await;
         }
         let (registration, generation) = registration[0];
         let tenant = tx.tenant_id().to_string();

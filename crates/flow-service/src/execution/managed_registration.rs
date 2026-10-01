@@ -45,7 +45,7 @@ impl ExecutionService {
                             )
                             .await?;
                         let digest = rss_mdm_registration_service::enrollment::digest(&(
-                            "mdm.agent.managed-registration/v4",
+                            "mdm.agent.managed-registration/v5",
                             input,
                         ));
                         let fact = Fact::business(

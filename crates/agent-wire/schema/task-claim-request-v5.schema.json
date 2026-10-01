@@ -1,16 +1,17 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/mdm/agent/v4/task-claim-request.schema.json",
+  "$id": "https://rss.example/mdm/agent/v5/task-claim-request.schema.json",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "wireVersion",
     "operationId",
+    "profiles",
     "executionContext"
   ],
   "properties": {
     "wireVersion": {
-      "const": 4
+      "const": 5
     },
     "operationId": {
       "type": "string",
@@ -18,6 +19,19 @@
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
       "not": {
         "const": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    "profiles": {
+      "type": "array",
+      "maxItems": 4,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "power_shell7",
+          "posix_sh",
+          "bash",
+          "osquery"
+        ]
       }
     },
     "executionContext": {

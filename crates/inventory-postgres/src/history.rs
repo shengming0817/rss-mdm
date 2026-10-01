@@ -29,20 +29,12 @@ pub async fn read_at_in(
         "invalid history page"
     );
     ensure!(
-        scopes
-            .iter()
-            .all(|s| s.tenant() == tenant && rss_mdm_inventory::scope_coverage(s).is_ok()),
+        scopes.iter().all(|s| s.tenant() == tenant
+            && rss_mdm_inventory::Source::parse(s.source().as_str())
+                .is_ok_and(|s| s != rss_mdm_inventory::Source::Manual)),
         "history source mismatch"
     );
     crate::reader::assert_tenant(c, tenant).await?;
-    let coverage = scopes
-        .iter()
-        .map(|s| {
-            Ok(serde_json::to_string(&rss_mdm_inventory::scope_coverage(
-                s,
-            )?)?)
-        })
-        .collect::<Result<Vec<_>>>()?;
     let scopes = scopes
         .iter()
         .map(Scope::encode)
@@ -51,23 +43,24 @@ pub async fn read_at_in(
     let rows = sqlx::query(
         r#"
       WITH requested AS (
-        SELECT sha256(convert_to(jsonb_build_array($2::text,$3::text,s,c)::text,'UTF8')) AS digest
-        FROM unnest($5::text[],$4::text[]) AS requested_scopes(s,c)
+        SELECT sha256(convert_to(jsonb_build_array($2::text,$3::text,s)::text,'UTF8')) AS digest
+        FROM unnest($4::text[]) s
       ), latest AS (
         SELECT DISTINCT ON(h.scope_digest,h.field) h.scope_digest,h.field,h.document
-        FROM mdm.inventory_history h JOIN requested r ON r.digest=h.scope_digest
-        WHERE h.tenant_id=$1::uuid AND h.revision<=$6
+        FROM mdm.inventory_history h JOIN requested q ON q.digest=h.scope_digest
+        WHERE h.tenant_id=$1::uuid AND h.revision<=$5
         ORDER BY h.scope_digest,h.field,h.revision DESC
       )
-      SELECT r.* FROM latest h
+      SELECT DISTINCT ON(r.scope,r.field) r.*,d.definition::text AS definition FROM latest h
       CROSS JOIN LATERAL jsonb_populate_record(NULL::mdm.inventory,h.document) r
-      WHERE h.document IS NOT NULL ORDER BY r.scope,r.field
+      JOIN mdm.collection_definitions d ON(d.tenant_id,d.coverage,d.source)=(r.tenant_id,r.coverage,r.source)
+      WHERE h.document IS NOT NULL AND r.journal=$2 AND r.generation=$3 AND r.scope=ANY($4)
+      ORDER BY r.scope,r.field,r.collection_sequence DESC
     "#,
     )
     .bind(tenant.to_string())
     .bind(projection.source().source())
     .bind(projection.generation())
-    .bind(coverage)
     .bind(scopes)
     .bind(watermark)
     .fetch_all(c)

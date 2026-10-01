@@ -4,7 +4,7 @@ WITH tables AS (
  ('mdm_windows.collections','channel_state'),
  ('mdm_agent.bindings','execution_context'),
  ('mdm_planning.remote_operations','staged'),('mdm_planning.remote_operations','cursor'),('mdm_planning.remote_operations','run_after'),
- ('mdm_commands.policy_recovery','recovery_after'),('mdm_commands.action_polls','policy_after'),
+ ('mdm_commands.policy_recovery','target_after'),('mdm_commands.policy_recovery','recovery_after'),('mdm_commands.action_polls','policy_after'),
  ('mdm_planning.configuration_claims','version'),('mdm_planning.configuration_claims','operation'),
  ('mdm_planning.configuration_devices','input_revision'),('mdm_planning.configuration_devices','observed_revision'),('mdm_planning.configuration_devices','operation'),('mdm_planning.configuration_devices','digest'),('mdm_planning.configuration_devices','diagnosis'),
  ('mdm_commands.action_polls','cancellation_after'),('mdm_commands.action_runs','state'),('mdm_commands.action_runs','result'),('mdm_commands.action_runs','gateway_accepted'),('mdm_commands.action_attempts','permit'),
@@ -24,16 +24,17 @@ WITH tables AS (
  ('mdm_commands.operations','approval'),('mdm_commands.operations','revision'),('mdm_commands.operations','gateway_accepted'),
  ('mdm_access.report_sources','next_sequence'),('mdm_access.report_sources','next_command'),('mdm_access.enrollment_certificates','server_nonce'),
  ('mdm_access.management_sessions','state'),('mdm_access.management_sessions','last_message'),('mdm_access.management_sessions','client_authenticated'),('mdm_access.management_sessions','correlation'),('mdm_access.management_sessions','nonce'),('mdm_access.management_sessions','run_id'),
- ('mdm_access.collection_runs','attempts'),('mdm_access.collection_runs','result'),('mdm_access.collection_runs','reason'),('mdm_access.collection_runs','batch'),('mdm_access.collection_runs','digest'),('mdm_access.collection_runs','sealed_at'),('mdm_access.collection_runs','delivery_pending')
+ ('mdm_access.collection_runs','evidence'),('mdm_access.collection_runs','attempts'),('mdm_access.collection_runs','result'),('mdm_access.collection_runs','reason'),('mdm_access.collection_runs','batch'),('mdm_access.collection_runs','digest'),('mdm_access.collection_runs','sealed_at'),('mdm_access.collection_runs','delivery_pending')
 ,
  ('mdm_apple.attempts','state'),('mdm_apple.attempts','response'),('mdm_apple.attempts','response_digest'),('mdm_apple.attempts','received_at'),('mdm_apple.attempts','next_attempt'),
  ('mdm_commands.apple_profiles','profile'),('mdm_commands.apple_profiles','operation'),('mdm_commands.apple_profiles','registration'),('mdm_commands.apple_profiles','version'),('mdm_commands.apple_profiles','enabled'),
  ('mdm_apple.devices','token'),('mdm_apple.devices','magic'),('mdm_apple.devices','state'),('mdm_apple.devices','push_id'),('mdm_apple.devices','push_lease_until'),('mdm_apple.devices','next_push'),('mdm_apple.devices','push_status'),('mdm_apple.devices','push_outcome'),('mdm_apple.devices','push_configuration'),('mdm_apple.devices','push_failures')
 ), allowed(relation,sel,ins,del) AS (VALUES
  ('mdm.inventory',true,false,false),
+ ('mdm.field_versions',true,false,false),('mdm.collection_definitions',true,true,false),('mdm.collection_results',true,true,false),
  ('mdm_software_composition.subjects',true,false,false),('mdm_software_composition.targets',true,false,false),('mdm_software_composition.projections',true,false,false),('mdm_software_release.aggregates',true,false,false),
  ('mdm_planning.remote_operations',true,false,false),('mdm_planning.remote_operation_targets',true,true,false),('mdm_commands.policy_recovery',true,true,false),('mdm_policy.policies',true,false,false),('mdm_policy.versions',true,false,false),('mdm_policy.triggers',true,false,false),('mdm_planning.configuration_claims',true,true,true),('mdm_planning.configuration_devices',true,true,false),
- ('mdm_commands.action_polls',true,true,false),('mdm_commands.action_runs',true,true,false),('mdm_commands.action_receipts',true,true,false),('mdm_commands.action_attempts',true,true,false),('mdm_resource.aggregates',true,false,false),('mdm_resource.immutable',true,false,false),('mdm_agent.bindings',true,false,false),
+ ('mdm_commands.output_chunks',true,true,false),('mdm_commands.action_polls',true,true,false),('mdm_commands.action_runs',true,true,false),('mdm_commands.action_receipts',true,true,false),('mdm_commands.action_attempts',true,true,false),('mdm_resource.aggregates',true,false,false),('mdm_resource.immutable',true,false,false),('mdm_agent.bindings',true,false,false),
  ('mdm_planning.scopes',true,false,false),('mdm_planning.scope_results',true,false,false),
  ('mdm_software.sources',true,false,false),('mdm_software.approvals',true,false,false),('mdm_software.materials',true,false,false),
  ('mdm_apple.attempts',true,true,false),('mdm_commands.apple_profiles',true,true,false),('mdm_apple.devices',true,false,false),('mdm_access.requests',true,false,false),
@@ -57,7 +58,7 @@ SELECT current_user='mdm_command_runtime' AND session_user=current_user
  AND NOT EXISTS(SELECT 1 FROM pg_auth_members WHERE member=(SELECT oid FROM pg_roles WHERE rolname=current_user) OR roleid=(SELECT oid FROM pg_roles WHERE rolname=current_user))
  AND NOT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname NOT LIKE 'pg_temp_%' AND has_schema_privilege(current_user,oid,'CREATE'))
  AND NOT has_database_privilege(current_user,current_database(),'CREATE')
- AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['action_attempts','action_polls','action_receipts','action_runs','apple_profiles','attempts','capabilities','capability_queries','devices','operations','policy_recovery','requests'] FROM tables)
+ AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['action_attempts','action_polls','action_receipts','action_runs','apple_profiles','attempts','capabilities','capability_queries','devices','operations','output_chunks','policy_recovery','requests'] FROM tables)
  AND NOT EXISTS(SELECT 1 FROM tables t WHERE relkind<>'r' OR relpersistence<>'p' OR NOT relrowsecurity OR NOT relforcerowsecurity OR relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)
   OR (SELECT count(*) FROM pg_policy WHERE polrelid=t.oid)<>1
   OR NOT EXISTS(SELECT 1 FROM pg_policy WHERE polrelid=t.oid AND polname='tenant' AND polcmd='*' AND polpermissive AND polroles=ARRAY[0::oid]

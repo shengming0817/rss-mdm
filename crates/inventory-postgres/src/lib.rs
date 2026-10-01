@@ -9,7 +9,7 @@
 //! scheduling, migration execution and recovery policy remain with the product.
 mod admission;
 mod inventory;
-pub use admission::verify as verify_admission;
+pub use admission::{verify as verify_admission, verify_collections};
 pub use inventory::{Inventory, definition, projection_scope};
 /// Owner-executed Inventory table, identity and tenant-isolation migration SQL.
 /// Embedding the SQL does not apply it; runtime credentials must not own the schema.
@@ -80,3 +80,14 @@ pub async fn verify_watermark_fence(
     }
     Ok(())
 }
+
+mod catalog;
+pub use catalog::{
+    catalog_at_in, catalog_in, collection_in, collection_version_in, datasets_in, publish_field_in,
+    register_collection_in, retire_field_in,
+};
+/// Single current field/collection format for fresh installations.
+pub const UNIFIED_COLLECTION_SQL: &str = include_str!("../migrations/0007_unified_collection.sql");
+
+mod results;
+pub use results::{CollectionCompletion, collection_result_in, seal_collection_in};

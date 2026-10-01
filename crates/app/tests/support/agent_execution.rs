@@ -51,8 +51,18 @@ pub(crate) async fn upload(
     id: Uuid,
     bytes: &[u8],
 ) -> Result<StatusCode> {
+    upload_for(browser, router, id, bytes, "macos", "aarch64").await
+}
+pub(crate) async fn upload_for(
+    browser: &Browser,
+    router: &Router,
+    id: Uuid,
+    bytes: &[u8],
+    platform: &str,
+    architecture: &str,
+) -> Result<StatusCode> {
     let _guard = super::software::content_setup_guard().await?;
-    let request=Request::builder().method(Method::POST).uri(format!("/api/v3/resources/{id}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
+    let request=Request::builder().method(Method::POST).uri(format!("/api/v3/resources/{id}/content?version=v1&variant=default&platform={platform}&architecture={architecture}&operation={}",Uuid::new_v4()))
         .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1").header("x-csrf-token",browser.csrf.as_ref().unwrap())
         .header("cookie",browser.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; ")).header("content-type","application/octet-stream").body(Body::from(bytes.to_vec()))?;
     Ok(router.clone().oneshot(request).await?.status())
@@ -76,15 +86,15 @@ pub(crate) async fn task_event_request(
         };
         kind["diagnostics"] = json!({"stdout":"captured stdout","stderr":"captured stderr","durationMs":1,"executedAt":1,"failure":failure});
     }
-    agent_call(router,Method::POST,&format!("/api/agent/v4/tasks/{}/events",task["payload"]["taskId"].as_str().unwrap()),Some(case_credential()),Some(json!({"wireVersion":4,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":operation,"attemptId":task["payload"]["attemptId"],"event":kind}))).await
+    agent_call(router,Method::POST,&format!("/api/agent/v5/tasks/{}/events",task["payload"]["taskId"].as_str().unwrap()),Some(case_credential()),Some(json!({"wireVersion":5,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":operation,"attemptId":task["payload"]["attemptId"],"event":kind}))).await
 }
 pub(crate) async fn claim_request(router: &Router, operation: Uuid) -> Result<(StatusCode, Value)> {
     agent_call(
         router,
         Method::POST,
-        "/api/agent/v4/tasks/claim",
+        "/api/agent/v5/tasks/claim",
         Some(case_credential()),
-        Some(json!({"wireVersion":4,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":operation})),
+        Some(json!({"wireVersion":5,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":operation})),
     )
     .await
 }
@@ -108,6 +118,7 @@ pub(crate) fn policy_definition(resource: Uuid, scope: Uuid) -> Value {
 }
 pub(crate) struct Fixture {
     pub(crate) base: Value,
+    pub(crate) builtin_collections: Vec<Value>,
     pub(crate) router: Router,
     pub(crate) execution: Arc<crate::execution::ExecutionService>,
     pub(crate) plan_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
@@ -138,7 +149,8 @@ impl Fixture {
                 .audit_store(&crate::config::AuditConfig::Plain)
                 .await?,
         )
-        .await?;
+        .await
+        .map_err(|error| anyhow::anyhow!("application fixture rejected: {error:?}"))?;
         let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
             "127.0.0.1".parse()?,
         )));
@@ -182,6 +194,7 @@ impl Fixture {
         crate::test_support::identity::set_grants(case_tenant(), &author_id, grants.clone())
             .await?;
         Ok(Self {
+            builtin_collections: Vec::new(),
             base,
             router,
             execution,
@@ -193,7 +206,7 @@ impl Fixture {
         })
     }
     pub(crate) async fn register(&mut self) -> Result<Value> {
-        self.register_profile(json!(["inventory.basic.v4", "task.execute.v4"]))
+        self.register_profile(json!(["inventory.collect.v5", "task.execute.v5"]))
             .await
     }
     pub(crate) async fn register_profile(&mut self, capabilities: Value) -> Result<Value> {
@@ -209,11 +222,12 @@ impl Fixture {
         )
         .await?;
         author.operation = None;
-        let registration=agent_call(router,Method::POST,"/api/agent/v4/registrations",None,Some(json!({"wireVersion":4,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_credential(),"platform":"macos","architecture":"aarch64","capabilities":capabilities}))).await?;
+        let registration=agent_call(router,Method::POST,"/api/agent/v5/registrations",None,Some(json!({"wireVersion":5,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_credential(),"platform":"macos","architecture":"aarch64","capabilities":capabilities}))).await?;
         ensure!(
             registration.0 == StatusCode::CREATED && registration.1["capabilities"] == capabilities,
             "task registration: {registration:?}"
         );
+        self.builtin_collections = registration.1["collections"].as_array().unwrap().clone();
         Ok(registration.1)
     }
     pub(crate) async fn scope(&mut self, scope: Uuid, targets: Value) -> Result<()> {
@@ -235,12 +249,18 @@ impl Fixture {
         Ok(())
     }
     pub(crate) async fn resource(&mut self) -> Result<(Uuid, &'static [u8], Value)> {
+        self.resource_with_output_limit(4096).await
+    }
+    pub(crate) async fn resource_with_output_limit(
+        &mut self,
+        output_bytes: u32,
+    ) -> Result<(Uuid, &'static [u8], Value)> {
         let router = &self.router;
         let author = &mut self.author;
         let id = Uuid::new_v4();
         let bytes = b"#!/bin/sh\nprintf '{\"version\":\"1.2\",\"healthy\":true}\n'\n";
         let digest: [u8; 32] = Sha256::digest(bytes).into();
-        let definition = json!({"profile":"posix_sh","runAs":"system","encoding":"utf8","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"bindings":{},"output":{"type":"object","properties":{"version":{"type":"string"},"healthy":{"type":"boolean"}},"required":["version","healthy"],"additionalProperties":false},"purpose":{"kind":"collection","mappings":{"custom.corporate_agent.version":"/version","custom.corporate_agent.healthy":"/healthy"}},"timeoutSeconds":60,"outputBytes":4096,"maxRows":1});
+        let definition = json!({"profile":"posix_sh","runAs":"system","encoding":"utf8","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"bindings":{},"output":{"type":"object","properties":{"version":{"type":"string"},"healthy":{"type":"boolean"},"padding":{"type":"string"}},"required":["version","healthy"],"additionalProperties":false},"purpose":{"kind":"collection","mappings":{"custom.corporate_agent.version":"/version","custom.corporate_agent.healthy":"/healthy"}},"timeoutSeconds":60,"outputBytes":output_bytes,"maxRows":1});
         resource(
             author,
             router,

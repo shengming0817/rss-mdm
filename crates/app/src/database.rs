@@ -149,6 +149,14 @@ async fn admission(pool: &PgPool) -> Result<(), Error> {
     )
     .await
     .map_err(db)?;
+    rss_mdm_inventory_postgres::verify_collections(&mut tx)
+        .await
+        .map_err(|error| {
+            #[cfg(feature = "integration")]
+            eprintln!("collection admission: {error}");
+            let _ = error;
+            Error::Unavailable(Failure::Database)
+        })?;
     let apple: bool = sqlx::query_scalar(rss_mdm_apple_channel::ACCESS_ADMISSION_SQL)
         .fetch_one(&mut *tx)
         .await
@@ -162,6 +170,10 @@ async fn admission(pool: &PgPool) -> Result<(), Error> {
         .await
         .map_err(db)?;
     if !valid || !apple || !flow || !timeline {
+        #[cfg(feature = "integration")]
+        eprintln!(
+            "access admission: aggregate={valid}, apple={apple}, flow={flow}, timeline={timeline}"
+        );
         return Err(Error::Unavailable(Failure::AccessAdmission));
     }
     tx.rollback().await.map_err(db)

@@ -9,24 +9,11 @@ impl Fixture {
             DEVICE = case_device()
         );
         self.pending_collections(65).await?;
-        // Replacing the admission rule invalidates all previously frozen approvals.
-        crate::test_support::identity::set_grants(
-            case_tenant(),
-            crate::test_support::case::admin(),
-            crate::test_support::identity::device_grants(
-                Some(case_device()),
-                &[
-                    "enrollment",
-                    "credentials",
-                    "inventory_read",
-                    "inventory_collect",
-                    "firewall_write",
-                    "operation_read",
-                    "operation_cancel",
-                ],
-            )?,
-        )
-        .await?;
+        // Expired queued reads cannot starve a current, authorized collection.
+        crate::test_support::pg(&format!(
+            "UPDATE mdm_access.collection_runs SET deadline=clock_timestamp()-interval '1 second' WHERE tenant_id='{}' AND source='mdm.apple' AND sealed_at IS NULL",
+            case_tenant()
+        ))?;
         let fresh = self
             .browser
             .call(
@@ -49,23 +36,20 @@ impl Fixture {
         .bind(case_tenant()).bind(case_device())
             .execute(&mut pg)
             .await?;
-        ensure!(
-            self.app
+        let mut wake = None;
+        for _ in 0..3 {
+            sqlx::query("UPDATE mdm_apple.devices SET next_push=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid").bind(case_tenant()).execute(&mut pg).await?;
+            wake = self
+                .app
                 .execution
                 .apple_wake(&self.app.apple()?.channel.push_fixture().configuration)
-                .await?
-                .is_none()
-        );
-        sqlx::query("UPDATE mdm_apple.devices SET next_push=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND registration IN (SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2)")
-        .bind(case_tenant()).bind(case_device())
-            .execute(&mut pg)
-            .await?;
-        let wake = self
-            .app
-            .execution
-            .apple_wake(&self.app.apple()?.channel.push_fixture().configuration)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("blocked queue page starved approved wake"))?;
+                .await?;
+            if wake.is_some() {
+                break;
+            }
+        }
+        let wake =
+            wake.ok_or_else(|| anyhow::anyhow!("expired queue starved a current collection"))?;
         self.app
             .execution
             .apple_pushed(&wake, Some(200), push::Outcome::Accepted)
@@ -76,7 +60,7 @@ impl Fixture {
         let (id, _) = peer.next("DeviceInformation").await?;
         ensure!(
             id == run,
-            "blocked queue page starved approved native request"
+            "expired queue page starved current native request"
         );
         peer.manage(
             "Acknowledged",
@@ -96,7 +80,7 @@ impl Fixture {
 
 #[tokio::test]
 #[ignore = "MODULE=apple.fairness: native protocol and durable state"]
-async fn blocked_queue_does_not_starve_approved_work() -> Result<()> {
+async fn expired_queue_does_not_starve_current_collection() -> Result<()> {
     let mut f = Fixture::start().await?;
     let (peer, device) = f.ready_local_peer().await?;
     f.queue_fairness(&peer).await?;

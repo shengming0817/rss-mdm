@@ -61,9 +61,9 @@ pub async fn read_in(
 ) -> Result<Vec<InventoryField>> {
     ensure!(scopes.len() <= 20_000, "asset scope budget exceeded");
     ensure!(
-        scopes
-            .iter()
-            .all(|s| s.tenant() == tenant && rss_mdm_inventory::scope_coverage(s).is_ok()),
+        scopes.iter().all(|s| s.tenant() == tenant
+            && rss_mdm_inventory::Source::parse(s.source().as_str())
+                .is_ok_and(|s| s != rss_mdm_inventory::Source::Manual)),
         "asset scope mismatch"
     );
     assert_tenant(connection, tenant).await?;
@@ -71,17 +71,9 @@ pub async fn read_in(
         .iter()
         .map(Scope::encode)
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    let coverages = scopes
-        .iter()
-        .map(|s| {
-            Ok(serde_json::to_string(&rss_mdm_inventory::scope_coverage(
-                s,
-            )?)?)
-        })
-        .collect::<Result<Vec<_>>>()?;
     let projection = super::projection_scope(tenant);
-    let rows=sqlx::query("SELECT scope,field,value,state,last_known,last_known_batch,last_known_observed,last_known_received,batch_id,observed_at,received_at,registration,source,epoch FROM mdm.inventory WHERE tenant_id=$1::uuid AND journal=$2 AND generation=$3 AND (coverage,scope) IN (SELECT * FROM unnest($4::text[],$5::text[])) ORDER BY scope,field")
-        .bind(tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(coverages).bind(keys).fetch_all(connection).await?;
+    let rows=sqlx::query("SELECT DISTINCT ON(i.scope,i.field) i.*,d.definition::text AS definition FROM mdm.inventory i JOIN mdm.collection_definitions d ON(d.tenant_id,d.coverage,d.source)=(i.tenant_id,i.coverage,i.source) WHERE i.tenant_id=$1::uuid AND i.journal=$2 AND i.generation=$3 AND i.scope=ANY($4) ORDER BY i.scope,i.field,i.collection_sequence DESC")
+        .bind(tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(keys).fetch_all(connection).await?;
     decode_rows(rows)
 }
 
@@ -89,14 +81,19 @@ pub(crate) fn decode_rows(rows: Vec<sqlx::postgres::PgRow>) -> Result<Vec<Invent
     rows.into_iter()
         .map(|r| {
             let field = FieldKey::parse(r.try_get::<&str, _>("field")?)?;
+            let definition: rss_mdm_inventory::CollectionDefinition =
+                serde_json::from_str(r.try_get("definition")?)?;
+            let field_definition = definition.field(field)?;
             let state = match r.try_get::<&str, _>("state")? {
-                "known" => State::Known(decode_value(field, r.try_get("value")?)?),
+                "known" => State::Known(decode_value(field_definition, r.try_get("value")?)?),
+                "null" => State::Null,
                 "deleted" => State::Deleted,
                 "unsupported" => State::Unsupported,
                 _ => anyhow::bail!("invalid asset state"),
             };
             let evidence = Evidence {
                 source: rss_mdm_inventory::Source::parse(r.try_get("source")?)?,
+                dataset: Some(definition.dataset().to_owned()),
                 registration: Some(r.try_get("registration")?),
                 registration_generation: None,
                 epoch: Some(r.try_get("epoch")?),
@@ -106,6 +103,12 @@ pub(crate) fn decode_rows(rows: Vec<sqlx::postgres::PgRow>) -> Result<Vec<Invent
                 actor: None,
             };
             let scope: Scope = serde_json::from_str(r.try_get("scope")?)?;
+            definition.validate_scope(&scope)?;
+            ensure!(
+                serde_json::to_string(&definition.coverage()?)?
+                    == r.try_get::<String, _>("coverage")?,
+                "inventory coverage mismatch"
+            );
             ensure!(
                 scope.registration().as_str()
                     == evidence.registration.as_deref().unwrap_or_default()
@@ -119,7 +122,7 @@ pub(crate) fn decode_rows(rows: Vec<sqlx::postgres::PgRow>) -> Result<Vec<Invent
                 prior.observed_at = r.try_get("last_known_observed")?;
                 prior.received_at = r.try_get("last_known_received")?;
                 Some(rss_mdm_inventory::KnownValue {
-                    value: decode_value(field, value)?,
+                    value: decode_value(field_definition, value)?,
                     evidence: prior,
                 })
             } else {
@@ -152,12 +155,8 @@ pub(crate) async fn assert_tenant(
     Ok(())
 }
 
-fn decode_value(field: FieldKey, value: String) -> Result<Scalar> {
-    let scalar = if field.is_enterprise() {
-        serde_json::from_str(&value)?
-    } else {
-        Scalar::String(value)
-    };
+fn decode_value(field: &rss_mdm_inventory::FieldDefinition, value: String) -> Result<Scalar> {
+    let scalar = serde_json::from_str(&value)?;
     field.validate_scalar(&scalar)?;
     Ok(scalar)
 }

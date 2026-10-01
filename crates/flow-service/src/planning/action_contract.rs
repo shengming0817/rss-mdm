@@ -20,6 +20,7 @@ pub struct ExecutionInput {
 pub struct FrozenAction {
     pub input: ExecutionInput,
     pub definition: r::ScriptDefinition,
+    pub collection: Option<rss_mdm_inventory::CollectionDefinition>,
     pub resource_digest: [u8; 32],
     pub artifact_reference: String,
     pub content: wire::TaskContent,
@@ -46,4 +47,25 @@ pub struct FrozenSoftwareAction {
     pub intent: rss_mdm_policy::SoftwareIntent,
     pub schedule: Schedule,
     pub run_lifetime_seconds: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct FrozenNativeCollection {
+    pub input: ExecutionInput,
+    pub definition: r::NativeCollectionDefinition,
+    pub collection: rss_mdm_inventory::CollectionDefinition,
+    pub resource_digest: [u8; 32],
+}
+pub trait ScheduledInput {
+    fn execution_input(&self) -> &ExecutionInput;
+}
+impl ScheduledInput for FrozenAction {
+    fn execution_input(&self) -> &ExecutionInput {
+        &self.input
+    }
+}
+impl ScheduledInput for FrozenNativeCollection {
+    fn execution_input(&self) -> &ExecutionInput {
+        &self.input
+    }
 }

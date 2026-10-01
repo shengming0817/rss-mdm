@@ -45,11 +45,14 @@ pub async fn assign_in(
     expected: i64,
     fact: &SourceFact,
 ) -> Result<Option<i64>> {
+    crate::reader::assert_tenant(c, tenant).await?;
+    let catalog = crate::catalog_in(c, tenant).await?;
+    let definition = catalog.definition(field)?;
     ensure!(
-        field.definition().manual && (0..i64::MAX).contains(&expected),
+        definition.manual && (0..i64::MAX).contains(&expected),
         "invalid manual assignment"
     );
-    rss_mdm_inventory::resolve(field, vec![fact.clone()])?;
+    rss_mdm_inventory::resolve(definition, vec![fact.clone()])?;
     crate::reader::assert_tenant(c, tenant).await?;
     let document = serde_json::to_string(fact)?;
     let revision=sqlx::query_scalar("INSERT INTO mdm.manual_assignments(tenant_id,device,field,revision,fact) SELECT $1::uuid,$2,$3,1,$5::jsonb WHERE $4=0 ON CONFLICT(tenant_id,device,field) DO NOTHING RETURNING revision")

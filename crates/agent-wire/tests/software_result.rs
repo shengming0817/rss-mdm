@@ -36,7 +36,7 @@ fn task() -> SoftwareTaskSpec {
         }],
     };
     let mut task = SoftwareTaskSpec {
-        wire_version: 4,
+        wire_version: 5,
         tenant_id: id,
         device_id: "device".into(),
         registration_id: id,

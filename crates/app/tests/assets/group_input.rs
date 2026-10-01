@@ -37,7 +37,7 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
     let owner = start(runtime.clone()).await?;
     let full = report(&service, &access, &proof, [Some("Collected"), Some("11")]).await?;
     wait_ready_projection(&runtime, &full).await?;
-    let criteria = predicate("device.model", "string", json!("Collected"));
+    let criteria = predicate("device.model", "string", json!("Unconfirmed"));
     for (values, result) in [
         ([Some("Unconfirmed"), None], "partial"),
         ([None, None], "failed"),
@@ -47,8 +47,7 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
             loop {
                 let delivery = runtime.inspect(&incomplete).await?;
                 if delivery.receipt.is_some()
-                    && delivery.projection
-                        == crate::inventory_runtime::ProjectionStatus::NotApplicable
+                    && delivery.projection == crate::inventory_runtime::ProjectionStatus::Projected
                 {
                     return Ok::<_, crate::Error>(());
                 }
@@ -66,7 +65,7 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
         .await?;
         ensure!(
             detail["asset"]["device"]["fields"]["device.model"]["state"]["value"]["value"]
-                == "Collected"
+                == "Unconfirmed"
         );
         ensure!(detail["asset"]["device"]["quality"][0]["result"] == result);
         let quality = &detail["asset"]["device"]["quality"][0];
@@ -117,7 +116,7 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
     .await?;
     let field = &detail["asset"]["device"]["fields"]["device.model"];
     ensure!(field["state"]["kind"] == "unsupported");
-    ensure!(field["sources"][0]["lastKnown"]["value"]["value"] == "Collected");
+    ensure!(field["sources"][0]["lastKnown"]["value"]["value"] == "Unconfirmed");
     let query = ok(
         browser,
         router,
@@ -204,7 +203,7 @@ async fn script_health_projection_is_queryable_group_input() -> Result<()> {
     // This consumer starts from a legal registered source and its projected fact.
     let (registration, _) = seed_source("asset-a", "agent", "agent.builtin", "fixture")?;
     let epoch = Uuid::new_v4();
-    let field = rss_mdm_inventory::FieldKey::CorporateAgentHealthy;
+    let field = rss_mdm_inventory::builtin::CORPORATE_AGENT_HEALTHY;
     let scope = crate::device::scope_dataset(
         rss_request_context::TenantId::parse(case_tenant())?,
         registration,
@@ -214,11 +213,17 @@ async fn script_health_projection_is_queryable_group_input() -> Result<()> {
     )?
     .encode()?
     .replace('\'', "''");
-    let coverage = serde_json::to_string(&rss_mdm_inventory::enterprise_coverage(field))?;
+    let coverage = serde_json::to_string(
+        &crate::test_support::inventory::definition(field.as_str(), "agent.script", &[field])
+            .coverage()?,
+    )?;
+    crate::test_support::inventory::register_definition(
+        &crate::test_support::inventory::definition(field.as_str(), "agent.script", &[field]),
+    )?;
     let value = serde_json::to_string(&rss_mdm_inventory::Scalar::Boolean(true))?;
-    pg(&format!("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','{registration}','agent.script','{epoch}','enterprise-task-v1',true);
-        INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch)
-        VALUES('{TENANT}','mdm.observation.v1','inventory-v3','{scope}','{coverage}','custom.corporate_agent.healthy','{value}','script-fixture',1,2,'known','{value}','script-fixture',1,2,'{registration}','agent.script','{epoch}');", TENANT = case_tenant()))?;
+    pg(&format!("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES('{TENANT}','{registration}','agent.script','{epoch}',true);
+        INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence)
+        VALUES('{TENANT}','mdm.observation.v1','inventory-v4','{scope}','{coverage}','custom.corporate_agent.healthy','{value}','script-fixture',1,2,'known','{value}','script-fixture',1,2,'{registration}','agent.script','{epoch}',0);", TENANT = case_tenant()))?;
     let criteria = predicate("custom.corporate_agent.healthy", "boolean", json!(true));
     let query = ok(
         &mut browser,

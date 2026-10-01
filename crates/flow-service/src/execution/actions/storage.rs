@@ -117,6 +117,7 @@ pub async fn audit_details(
 
 pub enum ScheduledPolicy {
     Script(ExecutionPolicy),
+    Native(ExecutionPolicy<crate::planning::action_contract::FrozenNativeCollection>),
     Software(SoftwareExecutionPolicy),
     Enrollment(crate::planning::policies::enrollment::EnrollmentPolicy),
 }
@@ -130,6 +131,7 @@ impl ScheduledPolicy {
     pub fn owner(&self) -> Uuid {
         match self {
             Self::Script(v) => v.owner,
+            Self::Native(v) => v.owner,
             Self::Software(v) => v.owner,
             Self::Enrollment(v) => v.owner,
         }
@@ -137,6 +139,7 @@ impl ScheduledPolicy {
     pub fn timeout_seconds(&self) -> u32 {
         match self {
             Self::Script(v) => v.frozen.definition.spec().timeout_seconds,
+            Self::Native(v) => v.frozen.definition.spec().timeout_seconds,
             Self::Software(v) => v.frozen.run_lifetime_seconds,
             Self::Enrollment(v) => v.frozen.run_lifetime_seconds,
         }
@@ -150,6 +153,7 @@ impl ScheduledPolicy {
     ) -> Result<bool> {
         match self {
             Self::Script(v) => v.authorized_in(tx, &target.device, now).await,
+            Self::Native(v) => v.authorized_in(tx, &target.device, now).await,
             Self::Enrollment(v) => v.authorized_in(service, tx, target, now).await,
             Self::Software(v) => {
                 let Some(binding) = crate::execution::channels::agent_binding_in(
@@ -183,6 +187,7 @@ impl ScheduledPolicy {
     ) -> Result<bool> {
         match self {
             Self::Script(v) => v.withdrawn_in(tx, &target.device).await,
+            Self::Native(v) => v.withdrawn_in(tx, &target.device).await,
             Self::Software(_) | Self::Enrollment(_) => {
                 Ok(!self.authorized_in(service, tx, target, now).await?)
             }
@@ -197,6 +202,7 @@ impl ScheduledPolicy {
     ) -> Result<rss_mdm_agent_wire::TaskPayload> {
         match self {
             Self::Enrollment(v) => v.task(service, tx, target, issue).await,
+            Self::Native(_) => Err(Error::Unsupported.into()),
             Self::Script(v) => Ok(v.frozen.task(
                 checked_input(Uuid::parse_str(&tx.tenant_id().to_string()))?,
                 target,
@@ -349,6 +355,9 @@ pub async fn load_policy_version(
                 frozen: *action,
             }),
         ),
+        crate::planning::policies::Frozen::NativeCollection { .. } => Ok(ScheduledPolicy::Native(
+            crate::planning::policies::admission::native_in(reader, tx, id).await?,
+        )),
         crate::planning::policies::Frozen::Execution { .. } => Ok(ScheduledPolicy::Script(
             crate::planning::policies::admission::read_in(reader, tx, id).await?,
         )),
@@ -366,8 +375,21 @@ pub async fn load_source(
 ) -> Result<ScheduledPolicy> {
     match source {
         Source::Policy { version } => load_policy_version(reader, tx, version).await,
-        Source::RemoteOperation { operation } => Ok(ScheduledPolicy::Script(
-            crate::planning::policies::admission::remote_in(tx, operation).await?,
-        )),
+        Source::RemoteOperation { operation } => {
+            let remote =
+                crate::planning::remote_operations::storage::read_in(tx, operation).await?;
+            if matches!(
+                remote.frozen,
+                crate::planning::policies::Frozen::NativeCollection { .. }
+            ) {
+                Ok(ScheduledPolicy::Native(
+                    crate::planning::policies::admission::remote_native_in(tx, operation).await?,
+                ))
+            } else {
+                Ok(ScheduledPolicy::Script(
+                    crate::planning::policies::admission::remote_in(tx, operation).await?,
+                ))
+            }
+        }
     }
 }

@@ -151,6 +151,14 @@ pub async fn read_on(
 }
 
 pub async fn admit(tx: &mut PgTransaction<'_>) -> Result<()> {
+    tx.with_connection(|c| {
+        Box::pin(async move {
+            rss_mdm_inventory_postgres::verify_collections(c)
+                .await
+                .map_err(|_| sqlx::Error::Protocol("collection execution admission".into()))
+        })
+    })
+    .await?;
     let (allowed, raw, dependencies) = tx
         .with_connection(|c| {
             Box::pin(async move {

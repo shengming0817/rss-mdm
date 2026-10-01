@@ -1,3 +1,4 @@
+use crate::test_support::*;
 mod identity_read {
     use crate::test_support::*;
     #[tokio::test]
@@ -17,30 +18,12 @@ mod identity_read {
             &["inventory_read"],
         )
         .await?;
-        let scope = serde_json::to_string(
-            &json!({"tenant":case_tenant(),"object":"99999999-9999-4999-8999-999999999991","registration":"99999999-9999-4999-8999-999999999991","source":"mdm.windows","dataset":"inventory","epoch":"99999999-9999-4999-8999-999999999992"}),
+        crate::test_support::inventory::seed_source(
+            case::name("device-1"),
+            "mdm",
+            "mdm.windows",
+            "Model-A",
         )?;
-        // Use the public Scope encoder, not JSON map key order, for the persisted identity.
-        let scope: rss_observation::Scope = serde_json::from_str(&scope)?;
-        let encoded = scope.encode()?.replace('\'', "''");
-        let coverage = serde_json::to_string(&rss_mdm_inventory::coverage())?;
-        let projection = rss_mdm_inventory_postgres::projection_scope(scope.tenant());
-        let journal = projection.source().source();
-        let generation = projection.generation();
-        // Read-path fixture only. Device registration/credential proof is exercised by device PG T2.
-        pg(&format!(
-            r#"
-            INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','99999999-9999-4999-8999-999999999993','read-fixture','{INSTANCE}','{DEVICE_ONE}','enrollment','consumed',clock_timestamp()+interval '200 seconds');
-            INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source) VALUES('{TENANT}','99999999-9999-4999-8999-999999999994','99999999-9999-4999-8999-999999999993','mdm.windows');
-            INSERT INTO mdm_access.devices VALUES('{TENANT}','{DEVICE_ONE}') ON CONFLICT DO NOTHING;
-            INSERT INTO mdm_access.registrations VALUES('{TENANT}','99999999-9999-4999-8999-999999999991','{DEVICE_ONE}','mdm',1,'99999999-9999-4999-8999-999999999994','active');
-            INSERT INTO mdm_access.credentials VALUES('{TENANT}','99999999-9999-4999-8999-999999999995','99999999-9999-4999-8999-999999999991','mdm',repeat('a',64),'active');
-            INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','99999999-9999-4999-8999-999999999991','mdm.windows','99999999-9999-4999-8999-999999999992','{coverage}',true);
-            INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch) VALUES('{TENANT}','{journal}','{generation}','{encoded}','{coverage}','device.model','Model-A','fixture',1,2,'known','99999999-9999-4999-8999-999999999991','mdm.windows','99999999-9999-4999-8999-999999999992');
-        "#,
-            TENANT = case_tenant(),
-            DEVICE_ONE = case::name("device-1")
-        ))?;
 
         let (status, assets) = browser.call(&authorized, Method::GET, query, None).await?;
         ensure!(
@@ -92,8 +75,8 @@ mod storage {
     #[ignore = "MODULE=assets.http: real capability storage and transactions"]
     async fn asset_commit_unknown_recovers_original_receipts() {
         use assets::{
-            Command as AssetCommand, FieldKey, ManualChange, Owner, Query, SavedChange,
-            SavedDefinition, Scalar,
+            Command as AssetCommand, ManualChange, Owner, Query, SavedChange, SavedDefinition,
+            Scalar,
         };
         let m = planning(tenant()).await;
         let device = format!("unknown-{}", Uuid::new_v4());
@@ -106,7 +89,7 @@ mod storage {
         let execution = [
             AssetCommand::Manual {
                 device: device.clone(),
-                field: FieldKey::AssetTag,
+                field: rss_mdm_inventory::builtin::ASSET_TAG,
                 change: inventory_operation(
                     0,
                     ManualChange::Set {
@@ -121,10 +104,10 @@ mod storage {
                 change: inventory_operation(
                     0,
                     SavedChange::Put {
-                        definition: SavedDefinition {
+                        definition: Box::new(SavedDefinition {
                             name: "mine".into(),
                             query: Query::default(),
-                        },
+                        }),
                     },
                 ),
             },
@@ -172,9 +155,9 @@ mod storage {
             scope: assets::ReadScope::all(),
         };
         for (table, expected) in [
-            ("mdm.inventory", "inventory_query"),
-            ("mdm.manual_assignments", "manual_query"),
-            ("mdm_access.collection_runs", "collection_query"),
+            ("mdm.inventory_history", "assets_storage"),
+            ("mdm.manual_history", "assets_storage"),
+            ("mdm_access.collection_history", "assets_storage"),
         ] {
             sql(&format!("REVOKE SELECT ON {table} FROM mdm_flow_runtime"));
             let outcome = execute_asset(&m, &command).await;
@@ -226,7 +209,7 @@ mod storage {
             seed_device_in(tenant, &device);
             let command = assets::Command::Manual {
                 device: device.clone(),
-                field: assets::FieldKey::AssetTag,
+                field: rss_mdm_inventory::builtin::ASSET_TAG,
                 change: inventory_operation(
                     0,
                     assets::ManualChange::Set {
@@ -240,7 +223,7 @@ mod storage {
             };
             let audit = || {
                 let audit = RequestAudit::new(tenant.to_string(), "management_write");
-                audit.set_principal("operator", "mdm");
+                audit.set_principal("operator", crate::test_support::INSTANCE);
                 audit
             };
             runtime.inject_next_transaction_fault(
@@ -279,7 +262,7 @@ mod storage {
             denied.finalize(None);
             let competing = |value: &str| assets::Command::Manual {
                 device: device.clone(),
-                field: assets::FieldKey::AssetTag,
+                field: rss_mdm_inventory::builtin::ASSET_TAG,
                 change: inventory_operation(
                     1,
                     assets::ManualChange::Set {
@@ -339,7 +322,7 @@ mod manual {
         .await?;
         ensure!(
             catalog["asset"]["fields"].as_array().unwrap().len()
-                == rss_mdm_inventory::FieldKey::ALL.len()
+                == rss_mdm_inventory::builtin::fields().len()
         );
         let cases = [
             ("custom.asset_tag", "string", json!("A-2463")),
@@ -542,4 +525,209 @@ mod manual {
         ensure!(pg(&format!("SELECT revision FROM mdm.manual_assignments WHERE tenant_id='{TENANT}' AND device='asset-a' AND field='custom.office_floor'", TENANT = case_tenant()))?.trim()=="4");
         fixture.close().await
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=assets.http"]
+async fn field_catalog_admin_publish_and_reference_checks_need_no_approval() -> Result<()> {
+    use crate::authorization::{Grant, Permission, Scope};
+    use crate::test_support::agent_execution::Fixture;
+    let mut fixture = Fixture::new().await?;
+    let key = "custom.registry_example";
+    let path = format!("/api/v2/asset-fields/{key}");
+    let definition = json!({"key":key,"version":1,"valueType":{"kind":"string","maxLength":128,"allowEmpty":false},"nullable":false,"manual":false,"sources":{"agent.script":100},"platforms":["macos"],"sensitivity":"standard","unit":null,"searchable":true,"itemKey":null});
+    let create = json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":definition}});
+    ensure!(
+        fixture
+            .author
+            .call(&fixture.router, Method::PUT, &path, Some(create.clone()))
+            .await?
+            .0
+            == StatusCode::FORBIDDEN
+    );
+    fixture.grants.push(Grant {
+        operation: Permission::InventoryFieldsWrite,
+        scope: Scope::Tenant,
+    });
+    crate::test_support::identity::set_grants(
+        case_tenant(),
+        &fixture.author_id,
+        fixture.grants.clone(),
+    )
+    .await?;
+    let published = fixture
+        .author
+        .call(&fixture.router, Method::PUT, &path, Some(create.clone()))
+        .await?;
+    ensure!(
+        published.0 == StatusCode::OK && published.1["asset"]["version"] == 1,
+        "field publish: {published:?}"
+    );
+    ensure!(
+        fixture
+            .author
+            .call(&fixture.router, Method::PUT, &path, Some(create))
+            .await?
+            == published,
+        "field publication replay changed"
+    );
+    let saved = format!("/api/v2/saved-queries/{}", Uuid::new_v4());
+    let value = json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"name":"field reference","query":{"criteria":{"kind":"predicate","field":key,"op":"eq","value":{"kind":"string","value":"yes"}},"select":[key],"sort":null}}}});
+    let response = fixture
+        .author
+        .call(&fixture.router, Method::PUT, &saved, Some(value))
+        .await?;
+    ensure!(response.0 == StatusCode::OK, "saved query: {response:?}");
+    let references = fixture
+        .author
+        .call(
+            &fixture.router,
+            Method::GET,
+            &format!("{path}/references"),
+            None,
+        )
+        .await?;
+    ensure!(
+        references.0 == StatusCode::OK && references.1["asset"]["impact"]["savedQueries"] == 1,
+        "references: {references:?}"
+    );
+    let delete =
+        || json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"delete"}});
+    ensure!(
+        fixture
+            .author
+            .call(&fixture.router, Method::PUT, &path, Some(delete()))
+            .await?
+            .0
+            == StatusCode::CONFLICT
+    );
+    ensure!(
+        fixture
+            .author
+            .call(&fixture.router, Method::PUT, &saved, Some(delete()))
+            .await?
+            .0
+            == StatusCode::OK
+    );
+    ensure!(
+        fixture
+            .author
+            .call(&fixture.router, Method::PUT, &path, Some(delete()))
+            .await?
+            .0
+            == StatusCode::OK
+    );
+    let recreate = json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":published.1["asset"]["definition"]}});
+    let rejected = fixture
+        .author
+        .call(&fixture.router, Method::PUT, &path, Some(recreate))
+        .await?;
+    ensure!(
+        rejected.0 == StatusCode::CONFLICT,
+        "retired field must remain a domain conflict: {rejected:?}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "MODULE=assets.http: bounded lists retain a single authorized snapshot"]
+async fn typed_list_pages_remain_frozen_across_field_updates() -> Result<()> {
+    use crate::authorization::{Grant, Permission, Scope};
+    use crate::test_support::agent_execution::{Fixture, case_device_id};
+    let mut f = Fixture::new().await?;
+    f.register().await?;
+    f.grants.extend([
+        Grant {
+            operation: Permission::InventoryFieldsWrite,
+            scope: Scope::Tenant,
+        },
+        Grant {
+            operation: Permission::InventoryAssign,
+            scope: Scope::AllDevices,
+        },
+    ]);
+    crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
+        .await?;
+    let key = "custom.page_values";
+    let definition = json!({"key":key,"version":1,"valueType":{"kind":"array","items":{"kind":"integer"},"maxItems":1000},"nullable":true,"manual":true,"sources":{"manual":0},"platforms":["macos","windows"],"sensitivity":"standard","unit":null,"searchable":true,"itemKey":null});
+    let result = f.author.call(&f.router, Method::PUT, &format!("/api/v2/asset-fields/{key}"), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":definition}}))).await?;
+    ensure!(result.0 == StatusCode::OK, "list field: {result:?}");
+    let field_path = format!("/api/v2/devices/{}/manual-fields/{key}", case_device_id());
+    let values: Vec<_> = (0..205)
+        .map(|v| json!({"kind":"integer","value":v}))
+        .collect();
+    let result = f.author.call(&f.router, Method::PUT, &field_path, Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"set","value":{"kind":"array","value":values}}}))).await?;
+    ensure!(result.0 == StatusCode::OK, "list write: {result:?}");
+    let list_path = format!("/api/v2/devices/{}/inventory-lists/{key}", case_device_id());
+    let first = f
+        .author
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("{list_path}?limit=100"),
+            None,
+        )
+        .await?;
+    ensure!(
+        first.0 == StatusCode::OK && first.1["asset"]["total"] == 205,
+        "first list page: {first:?}"
+    );
+    let cursor = first.1["asset"]["nextCursor"].as_str().unwrap();
+    let changed = f.author.call(&f.router, Method::PUT, &field_path, Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"set","value":{"kind":"array","value":[]}}}))).await?;
+    ensure!(changed.0 == StatusCode::OK, "list replacement: {changed:?}");
+    let second = f
+        .author
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("{list_path}?limit=100&cursor={cursor}"),
+            None,
+        )
+        .await?;
+    ensure!(
+        second.0 == StatusCode::OK
+            && second.1["asset"]["total"] == 205
+            && second.1["asset"]["watermark"] == first.1["asset"]["watermark"],
+        "snapshot drift: {second:?}"
+    );
+    let cursor = second.1["asset"]["nextCursor"].as_str().unwrap();
+    let last = f
+        .author
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("{list_path}?limit=100&cursor={cursor}"),
+            None,
+        )
+        .await?;
+    ensure!(
+        last.0 == StatusCode::OK
+            && last.1["asset"]["items"].as_array().unwrap().len() == 5
+            && last.1["asset"]["nextCursor"].is_null()
+    );
+    let combined: Vec<_> = [&first.1, &second.1, &last.1]
+        .into_iter()
+        .flat_map(|v| v["asset"]["items"].as_array().unwrap().clone())
+        .collect();
+    ensure!(combined == values, "pagination repeated or lost items");
+    let current = f
+        .author
+        .call(&f.router, Method::GET, &list_path, None)
+        .await?;
+    ensure!(
+        current.0 == StatusCode::OK && current.1["asset"]["total"] == 0,
+        "empty complete list: {current:?}"
+    );
+    let forged = f
+        .author
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("{list_path}?cursor={cursor}x"),
+            None,
+        )
+        .await?;
+    ensure!(forged.0.is_client_error());
+    Ok(())
 }

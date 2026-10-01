@@ -9,7 +9,7 @@ use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_registration_service::enrollment::managed::Authority;
 use sqlx::PgConnection;
 fn digest(input: &wire::ManagedRegistrationRequest) -> String {
-    rss_mdm_registration_service::enrollment::digest(&("mdm.agent.managed-registration/v4", input))
+    rss_mdm_registration_service::enrollment::digest(&("mdm.agent.managed-registration/v5", input))
 }
 pub async fn replay(
     c: &mut PgConnection,
@@ -82,6 +82,13 @@ pub async fn register(
         source: wire::ReportSource::AgentBuiltin,
         epoch: receipt.epoch,
         capabilities: input.capabilities.clone(),
+        collections: crate::builtin_collections(
+            c,
+            rss_request_context::TenantId::parse(&tenant).map_err(|_| Error::Malformed)?,
+            receipt.registration,
+            receipt.epoch,
+        )
+        .await?,
     };
     let digest = digest(input);
     let operation = Operation {

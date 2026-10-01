@@ -55,7 +55,7 @@ impl Fixture {
     }
     async fn source(&self, operation: &Operation<SourceChange>, rollback: bool) -> Result<Value> {
         let audit = RequestAudit::new(pg::tenant().to_string(), "software_source_write");
-        audit.set_principal("operator", "catalog-fixture");
+        audit.set_principal("operator", "33333333-3333-4333-8333-333333333333");
         let result = transaction(
             &self.runtime,
             (&self.catalog, &audit, operation),
@@ -95,7 +95,7 @@ impl Fixture {
         digest: [u8; 32],
     ) -> Result<Value> {
         let audit = RequestAudit::new(pg::tenant().to_string(), "software_version_write");
-        audit.set_principal("operator", "catalog-fixture");
+        audit.set_principal("operator", "33333333-3333-4333-8333-333333333333");
         let content = Content(digest);
         let result = transaction(
             &self.runtime,

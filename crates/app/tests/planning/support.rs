@@ -117,7 +117,7 @@ pub(crate) async fn planning(t: TenantId) -> Planning {
 
 pub(super) async fn execute(m: &Planning, c: &Command) -> std::result::Result<Value, Error> {
     let audit = RequestAudit::new(m.tenant.to_string(), "management_write");
-    audit.set_principal("operator", "mdm");
+    audit.set_principal("operator", crate::test_support::INSTANCE);
     let result = m.execute(c, &audit, &|| Ok(())).await;
     audit.finalize(None);
     result.map_err(Into::into)
@@ -137,7 +137,7 @@ pub(crate) async fn execute_asset_service(
     c: &assets::Command,
 ) -> std::result::Result<Value, Error> {
     let audit = RequestAudit::new(m.tenant.to_string(), "management_write");
-    audit.set_principal("operator", "mdm");
+    audit.set_principal("operator", crate::test_support::INSTANCE);
     let result = service.execute(c, &audit, &|| Ok(())).await;
     audit.finalize(None);
     result.map_err(Error::from)
@@ -169,7 +169,7 @@ pub(crate) fn seed_device_in(t: TenantId, device: &str) -> String {
     let request = Uuid::new_v4();
     let epoch = Uuid::new_v4();
     sql(&format!(
-        "SET rss.tenant_id='{t}'; INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{t}','{grant}','operator','mdm','{device}','enrollment','consumed',clock_timestamp()+interval '60 seconds');INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source) VALUES('{t}','{request}','{grant}','mdm.windows');INSERT INTO mdm_access.devices VALUES('{t}','{device}');INSERT INTO mdm_access.registrations VALUES('{t}','{registration}','{device}','mdm',1,'{request}','active');INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state) VALUES('{t}',gen_random_uuid(),'{registration}','mdm',encode(sha256(convert_to('{registration}','UTF8')),'hex'),'active');INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{t}','{registration}','mdm.windows','{epoch}','{{}}',true);"
+        "SET rss.tenant_id='{t}'; INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{t}','{grant}','operator','mdm','{device}','enrollment','consumed',clock_timestamp()+interval '60 seconds');INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source) VALUES('{t}','{request}','{grant}','mdm.windows');INSERT INTO mdm_access.devices VALUES('{t}','{device}');INSERT INTO mdm_access.registrations VALUES('{t}','{registration}','{device}','mdm',1,'{request}','active');INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state) VALUES('{t}',gen_random_uuid(),'{registration}','mdm',encode(sha256(convert_to('{registration}','UTF8')),'hex'),'active');INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES('{t}','{registration}','mdm.windows','{epoch}',true);"
     ));
     registration
 }
@@ -294,6 +294,7 @@ pub(crate) async fn query_job(service: &Planning, count: usize) -> Uuid {
                 input: assets::Query::default(),
             },
             scope: assets::ReadScope {
+                sensitive: true,
                 subject: prefix.to_string(),
                 devices: Some(
                     (1..=count)
@@ -354,6 +355,7 @@ pub(crate) async fn frozen_device(service: &Planning, device: &str, watermark: i
                         None,
                         1,
                         &assets::ReadScope {
+                            sensitive: true,
                             subject: "history-evidence".into(),
                             devices: Some([device].into()),
                         },

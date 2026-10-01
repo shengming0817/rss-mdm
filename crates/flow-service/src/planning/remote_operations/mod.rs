@@ -31,6 +31,7 @@ pub enum Targets {
 pub enum Action {
     Execute { parameters: Value },
     ApplyConfiguration,
+    CollectNative,
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -110,6 +111,19 @@ impl Input {
                 frequency: Frequency::OncePerVersion,
                 run_lifetime_seconds: (self.deadline - now) as u32,
             },
+            Action::CollectNative => PolicyAction::NativeCollection {
+                resource: self.resource.clone(),
+                schedule: rss_mdm_policy::schedule::Schedule {
+                    trigger: rss_mdm_policy::schedule::Trigger::Once { at: now },
+                    misfire: Default::default(),
+                    not_before: now,
+                    until: Some(self.deadline),
+                    jitter_seconds: 0,
+                    window: None,
+                },
+                frequency: Frequency::OncePerVersion,
+                run_lifetime_seconds: (self.deadline - now) as u32,
+            },
             Action::ApplyConfiguration => PolicyAction::Configuration {
                 resource: self.resource.clone(),
                 exit: Exit::Retain,
@@ -122,6 +136,7 @@ impl Input {
         match self.action {
             Action::Execute { .. } => Permission::ScriptExecute,
             Action::ApplyConfiguration => Permission::FirewallWrite,
+            Action::CollectNative => Permission::InventoryCollect,
         }
     }
     fn authorize(&self, proof: &AuthorizedPrincipal) -> std::result::Result<(), Error> {
@@ -180,9 +195,10 @@ impl Policies {
                     let version = ctx.0.resource_in(tx, &ctx.1.resource).await?;
                     Ok(
                         match super::policies::variant(&version, &ctx.1.resource)?.declaration() {
-                            rss_mdm_resource::Declaration::Script { artifact, .. } => {
-                                Some(artifact.clone())
-                            }
+                            rss_mdm_resource::Declaration::Script { artifact, .. }
+                            | rss_mdm_resource::Declaration::NativeCollection {
+                                artifact, ..
+                            } => Some(artifact.clone()),
                             _ => None,
                         },
                     )

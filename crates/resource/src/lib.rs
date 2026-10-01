@@ -6,7 +6,11 @@
 //! caller authorization or device effects. [`Artifact::verify`] checks supplied bytes.
 //! Persist snapshots and reference checks atomically in the consuming adapter; a
 //! returned decision does not prove a database commit or execution on a device.
+mod native_collection;
 mod script;
+pub use native_collection::*;
+mod sql;
+pub use sql::SqlTemplate;
 mod software;
 pub use script::*;
 pub use software::*;
@@ -125,6 +129,8 @@ pub enum Kind {
     Script,
     /// A configuration artifact with schema, application and detection identities.
     Configuration,
+    /// A published native MDM read template.
+    NativeCollection,
 }
 #[derive(
     Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
@@ -205,6 +211,13 @@ pub enum Declaration {
         /// Complete validated execution interface.
         definition: ScriptDefinition,
     },
+    /// Native read template and its exact canonical artifact.
+    NativeCollection {
+        /// Expected immutable template bytes.
+        artifact: Artifact,
+        /// Closed query adapter, output mappings and execution budget.
+        definition: NativeCollectionDefinition,
+    },
     /// Configuration metadata; construction does not apply it.
     Configuration {
         /// Expected immutable artifact; construction does not load its bytes.
@@ -226,13 +239,16 @@ impl Declaration {
             Self::Software { .. } => Kind::Software,
             Self::Script { .. } => Kind::Script,
             Self::Configuration { .. } => Kind::Configuration,
+            Self::NativeCollection { .. } => Kind::NativeCollection,
         }
     }
     /// Borrow the expected artifact shared by every declaration family.
     pub fn artifact(&self) -> &Artifact {
         match self {
             Self::Software { definition } => definition.primary(),
-            Self::Script { artifact, .. } | Self::Configuration { artifact, .. } => artifact,
+            Self::Script { artifact, .. }
+            | Self::Configuration { artifact, .. }
+            | Self::NativeCollection { artifact, .. } => artifact,
         }
     }
 }
@@ -350,6 +366,19 @@ impl Version {
             if let Declaration::Script { definition, .. } = &variant.declaration {
                 definition.validate_platform(variant.platform)?;
             }
+            if let Declaration::NativeCollection {
+                artifact,
+                definition,
+            } = &variant.declaration
+            {
+                definition.validate_platform(variant.platform)?;
+                let bytes = definition.canonical();
+                if artifact.length() != bytes.len() as u64
+                    || artifact.digest() != Digest::of(&bytes)
+                {
+                    return Err(Error::InvalidDigest);
+                }
+            }
         }
         variants.sort_by(|a, b| {
             (a.platform, a.architecture, &a.key).cmp(&(b.platform, b.architecture, &b.key))
@@ -418,6 +447,8 @@ impl Version {
             b"rss-mdm-resource-software-v3\0".to_vec()
         } else if self.kind == Kind::Script {
             b"rss-mdm-resource-script-v2\0".to_vec()
+        } else if self.kind == Kind::NativeCollection {
+            b"rss-mdm-resource-native-collection-v1\0".to_vec()
         } else {
             b"rss-mdm-resource-v1\0".to_vec()
         });
@@ -428,6 +459,7 @@ impl Version {
             Kind::Software => 1,
             Kind::Script => 2,
             Kind::Configuration => 3,
+            Kind::NativeCollection => 4,
         });
         e.0.extend((self.variants.len() as u32).to_be_bytes());
         for v in &self.variants {
@@ -451,6 +483,11 @@ impl Version {
                     e.0.extend(bytes);
                 }
                 Declaration::Script { definition, .. } => {
+                    let bytes = definition.canonical();
+                    e.0.extend((bytes.len() as u32).to_be_bytes());
+                    e.0.extend(bytes);
+                }
+                Declaration::NativeCollection { definition, .. } => {
                     let bytes = definition.canonical();
                     e.0.extend((bytes.len() as u32).to_be_bytes());
                     e.0.extend(bytes);

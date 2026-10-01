@@ -30,6 +30,7 @@ pub(crate) fn kind(k: Kind) -> u8 {
         Kind::Software => 0,
         Kind::Script => 1,
         Kind::Configuration => 2,
+        Kind::NativeCollection => 3,
     }
 }
 fn read_kind(v: &Value) -> Result<Kind, PgError> {
@@ -37,6 +38,7 @@ fn read_kind(v: &Value) -> Result<Kind, PgError> {
         0 => Ok(Kind::Software),
         1 => Ok(Kind::Script),
         2 => Ok(Kind::Configuration),
+        3 => Ok(Kind::NativeCollection),
         _ => Err(STORAGE.fault("codec::read_kind")),
     }
 }
@@ -59,6 +61,10 @@ fn read_artifact(v: &Value) -> Result<Artifact, PgError> {
 fn declaration(d: &Declaration) -> Value {
     match d {
         Declaration::Software { definition } => json!([4, definition]),
+        Declaration::NativeCollection {
+            artifact: a,
+            definition,
+        } => json!([5, artifact(a), definition]),
         Declaration::Script {
             artifact: a,
             definition,
@@ -87,6 +93,16 @@ fn read_declaration(v: &Value) -> Result<Declaration, PgError> {
         .first()
         .ok_or_else(|| STORAGE.fault("codec::read_declaration"))?)?
     {
+        5 => {
+            let a = array(v, 3)?;
+            Ok(Declaration::NativeCollection {
+                artifact: read_artifact(&a[1])?,
+                definition: STORAGE.json(
+                    "codec::native_collection",
+                    serde_json::from_value(a[2].clone()),
+                )?,
+            })
+        }
         4 => {
             let a = array(v, 2)?;
             Ok(Declaration::Software {
@@ -120,6 +136,7 @@ pub(crate) fn version(v: &Version) -> Result<Vec<u8>, PgError> {
             Kind::Software => 3,
             Kind::Script => 2,
             Kind::Configuration => 1,
+            Kind::NativeCollection => 4,
         },
         v.tenant().to_string(),
         v.resource().as_str(),
@@ -151,6 +168,7 @@ pub(crate) fn read_version(bytes: &[u8]) -> Result<Version, PgError> {
             Kind::Software => 3,
             Kind::Script => 2,
             Kind::Configuration => 1,
+            Kind::NativeCollection => 4,
         }
     {
         return Err(STORAGE.fault("codec::read_version"));
@@ -332,6 +350,7 @@ pub(crate) fn directory_header(
         Kind::Software => "software",
         Kind::Script => "script",
         Kind::Configuration => "configuration",
+        Kind::NativeCollection => "native_collection",
     };
     if !a[4].is_null() {
         STORAGE.invalid(

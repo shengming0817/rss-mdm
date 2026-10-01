@@ -160,6 +160,11 @@ pub async fn management_on(
     } else {
         filtered
     };
+    let filtered = if authenticated_session {
+        crate::template_collection::receive(tx, principal, &filtered, &previous, &mut facts).await?
+    } else {
+        filtered
+    };
     let (run_id, complete) = collect(
         tx,
         (&mut facts, audit),
@@ -181,6 +186,11 @@ pub async fn management_on(
     } else {
         false
     };
+    let template_pending = if authenticated_session {
+        crate::template_collection::send(tx, principal, &mut response).await?
+    } else {
+        false
+    };
     let pending =
         crate::execution::native::send_on(tx, principal, &mut response, authenticated_session)
             .await?;
@@ -188,7 +198,10 @@ pub async fn management_on(
         .map_err(|_| Error::Unavailable(Failure::Protocol))?;
     let correlation =
         std::str::from_utf8(&response).map_err(|_| Error::Unavailable(Failure::Protocol))?;
-    let state = session_state(complete && !pending && !channel_pending, run_id);
+    let state = session_state(
+        complete && !pending && !channel_pending && !template_pending,
+        run_id,
+    );
     if stored.is_none() {
         sqlx::query("INSERT INTO mdm_access.management_sessions(tenant_id,registration,session_id,generation,credential,state,last_message,client_authenticated,correlation,nonce,expires_at) VALUES($1::uuid,$2::uuid,$3,$4,$5::uuid,$6,$7,$8,$9,$10,clock_timestamp()+interval '15 minutes')")
                 .bind(&tenant).bind(&registration).bind(&session).bind(principal.generation()).bind(principal.credential().to_string()).bind(state).bind(message_id).bind(authenticated).bind(correlation).bind(&server.nonce).execute(&mut *tx).await.map_err(db)?;
@@ -260,14 +273,19 @@ async fn collect(
         return Err(Error::Unauthorized);
     }
     if stored.is_none() {
-        rss_mdm_inventory_service::collection::terminate(
-            tx,
-            facts,
-            &tenant,
-            &registration,
-            "superseded",
-        )
-        .await?;
+        let sessions: Vec<String> = sqlx::query_scalar("SELECT session_id FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state IN ('challenge','collecting')")
+            .bind(&tenant).bind(&registration).fetch_all(&mut *tx).await.map_err(db)?;
+        for session in sessions {
+            crate::collection::terminate_session(
+                tx,
+                facts,
+                &tenant,
+                &registration,
+                &session,
+                "superseded",
+            )
+            .await?;
+        }
         sqlx::query("UPDATE mdm_access.management_sessions SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state IN ('challenge','collecting')")
                 .bind(&tenant).bind(&registration).execute(&mut *tx).await.map_err(db)?;
     }
@@ -294,11 +312,12 @@ async fn collect(
         let id = crate::collection::create(tx, scope, response).await?;
         audit.operation(id, "windows_management");
         if message.header.message_id == 8 {
-            rss_mdm_inventory_service::collection::terminate(
+            crate::collection::terminate_session(
                 tx,
                 facts,
                 &tenant,
                 &registration,
+                &message.header.session_id.to_string(),
                 "message_budget",
             )
             .await?;

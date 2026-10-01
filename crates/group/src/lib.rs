@@ -62,8 +62,12 @@ pub mod limits {
     pub const NODES: usize = 256;
     /// Maximum dictionary entries, coverage keys or facts per object.
     pub const FIELDS: usize = 128;
-    /// Maximum scalar elements in one set.
+    /// Maximum scalar elements in one condition operand set.
     pub const SET_ITEMS: usize = 256;
+    /// Maximum scalar elements in one observed inventory set.
+    pub const FACT_SET_ITEMS: usize = 100_000;
+    /// Maximum UTF-8 bytes in one observed string.
+    pub const FACT_STRING_BYTES: usize = 65_536;
     /// Maximum UTF-8 bytes in one string, including identities.
     pub const STRING_BYTES: usize = 4096;
     /// Maximum accumulated string bytes in a rule and dictionary validation.
@@ -90,6 +94,10 @@ pub enum LimitKind {
     Fields,
     /// The [`limits::SET_ITEMS`] budget.
     SetItems,
+    /// The observed [`limits::FACT_SET_ITEMS`] budget.
+    FactSetItems,
+    /// The observed [`limits::FACT_STRING_BYTES`] budget.
+    FactStringBytes,
     /// The [`limits::STRING_BYTES`] budget.
     StringBytes,
     /// The [`limits::RULE_BYTES`] budget.
@@ -112,6 +120,8 @@ impl LimitKind {
             Self::Nodes => limits::NODES,
             Self::Fields => limits::FIELDS,
             Self::SetItems => limits::SET_ITEMS,
+            Self::FactSetItems => limits::FACT_SET_ITEMS,
+            Self::FactStringBytes => limits::FACT_STRING_BYTES,
             Self::StringBytes => limits::STRING_BYTES,
             Self::RuleBytes => limits::RULE_BYTES,
             Self::Objects => limits::OBJECTS,
@@ -155,6 +165,21 @@ impl Budget {
     }
     pub(crate) fn items(&mut self, n: usize) -> Result<()> {
         LimitKind::Items.add(&mut self.items, n)
+    }
+    pub(crate) fn set(&self, n: usize) -> Result<()> {
+        if self.byte_kind == LimitKind::RuleBytes {
+            LimitKind::SetItems.check(n)
+        } else {
+            LimitKind::FactSetItems.check(n)
+        }
+    }
+    pub(crate) fn scalar_text(&mut self, s: &str) -> Result<()> {
+        if self.byte_kind == LimitKind::RuleBytes {
+            LimitKind::StringBytes.check(s.len())?
+        } else {
+            LimitKind::FactStringBytes.check(s.len())?
+        }
+        self.byte_kind.add(&mut self.bytes, s.len())
     }
     pub(crate) fn text(&mut self, s: &str) -> Result<()> {
         LimitKind::StringBytes.check(s.len())?;

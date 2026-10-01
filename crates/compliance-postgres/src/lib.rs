@@ -281,3 +281,19 @@ pub async fn result_count(c: &mut PgConnection, t: TenantId, task: Uuid) -> Resu
     .fetch_one(c)
     .await
 }
+
+/// Count current compliance definitions referring to a registered asset field.
+pub async fn field_references_in(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    field: &str,
+) -> Result<i64> {
+    crate::tenant(c, tenant).await?;
+    sqlx::query_scalar(
+        "SELECT count(*) FROM mdm_compliance.fields WHERE tenant_id=$1::uuid AND field=$2",
+    )
+    .bind(tenant.to_string())
+    .bind(field)
+    .fetch_one(c)
+    .await
+}

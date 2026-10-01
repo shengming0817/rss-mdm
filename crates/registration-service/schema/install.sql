@@ -22,9 +22,9 @@ BEGIN
  WHEN 'report_sources' THEN
   k='source'; reg=(r->>'registration')::uuid;
   i=jsonb_build_array(r->>'registration',r->>'source')::text;
-  d=jsonb_build_object('registration',reg,'source',r->>'source','epoch',r->>'epoch','coverage',r->>'coverage','enabled',r->'enabled');
+  d=jsonb_build_object('registration',reg,'source',r->>'source','epoch',r->>'epoch','enabled',r->'enabled');
   -- Collection sequence/command allocation is not an asset change.
-  IF previous IS NOT NULL AND d=jsonb_build_object('registration',(previous->>'registration')::uuid,'source',previous->>'source','epoch',previous->>'epoch','coverage',previous->>'coverage','enabled',previous->'enabled') THEN RETURN NULL; END IF;
+  IF previous IS NOT NULL AND d=jsonb_build_object('registration',(previous->>'registration')::uuid,'source',previous->>'source','epoch',previous->>'epoch','enabled',previous->'enabled') THEN RETURN NULL; END IF;
  WHEN 'credentials' THEN
   k='credential'; i=r->>'id'; reg=(r->>'registration')::uuid;
   -- Credential locators and secrets never enter asset history.
@@ -129,7 +129,6 @@ CREATE TABLE mdm_access.report_sources (
     registration uuid NOT NULL,
     source text NOT NULL,
     epoch uuid NOT NULL,
-    coverage text NOT NULL,
     enabled boolean NOT NULL,
     next_command bigint DEFAULT 1024 NOT NULL,
     next_sequence bigint DEFAULT 0 NOT NULL,

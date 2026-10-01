@@ -121,6 +121,7 @@ impl ExecutionService {
                     })
                     .await?
                     .map_err(Error::from)?;
+                    actions::native_collection::settle_device(service, tx, p.device()).await?;
                     if let Some(id) = message.command {
                         receive(
                             service,
@@ -137,6 +138,7 @@ impl ExecutionService {
                     service
                         .reconcile_agent_install_in(tx, p.device(), audit)
                         .await?;
+                    actions::native_collection::settle_device(service, tx, p.device()).await?;
                     let response = send(service, tx, apple.clone(), p).await?;
                     service
                         .audit_store

@@ -16,6 +16,10 @@ pub mod channel;
 pub mod filter;
 
 mod directory;
+mod fields;
+mod lists;
+mod runs;
+pub use fields::{FieldChange, FieldImpact};
 mod model;
 pub mod planning;
 mod quality;
@@ -40,11 +44,45 @@ impl AssetService {
         at: Timepoint,
     ) -> Result<Value> {
         let response = match command {
+            Command::CollectionItems {
+                device,
+                run,
+                field,
+                scope,
+                offset,
+                limit,
+            } => {
+                self.collection_items(tx, device, *run, *field, scope, (*offset, *limit))
+                    .await?
+            }
+            Command::ListItems {
+                device,
+                field,
+                scope,
+                limit,
+                cursor,
+            } => {
+                self.list_items(tx, device, *field, scope, *limit, cursor.as_deref())
+                    .await?
+            }
+            Command::CollectionRun { device, run, scope } => Response::CollectionRun {
+                run: self.collection_run(tx, device, *run, scope).await?,
+            },
+            Command::FieldWrite { field, change } => self.field_write(tx, *field, change).await?,
+            Command::FieldReferences { field } => Response::FieldReferences {
+                field: *field,
+                impact: self.field_impact(tx, *field).await?,
+            },
             Command::Fields => Response::Fields {
                 dictionary: rss_mdm_inventory::DICTIONARY.into(),
-                fields: FieldKey::ALL
-                    .into_iter()
-                    .map(|f| checked_input(serde_json::to_value(f.definition())))
+                fields: catalog_in(tx, self.tenant, i64::MAX)
+                    .await?
+                    .fields()
+                    .map(|f| {
+                        let mut v = checked_input(serde_json::to_value(f))?;
+                        v["operations"] = checked_input(serde_json::to_value(f.operations()))?;
+                        Ok(v)
+                    })
                     .collect::<Result<_>>()?,
             },
             Command::Detail { device, scope } => {
@@ -55,9 +93,20 @@ impl AssetService {
                 {
                     return Err(Error::Forbidden.into());
                 }
-                Response::Detail {
-                    device: self.asset_detail_in(tx, device).await?,
+                let watermark = self.list_watermark(tx).await?;
+                let restricted = ReadScope {
+                    subject: scope.subject.clone(),
+                    sensitive: scope.sensitive,
+                    devices: Some([device.clone()].into()),
+                };
+                let mut page = planning::SnapshotReader {
+                    tenant: self.tenant,
                 }
+                .asset_page_in(tx, watermark, None, 1, &restricted)
+                .await?;
+                let mut view = page.devices.pop().ok_or(Error::NotFound)?;
+                self.summarize_lists(&mut view, &page.catalog, scope, watermark)?;
+                Response::Detail { device: view }
             }
             Command::Search { request, scope } => {
                 if request.expected_revision != 0 {
@@ -289,4 +338,48 @@ pub async fn timeline_device_in(
     }
     sqlx::query_scalar("SELECT response->'asset'->>'device' FROM mdm_assets.operations WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3 AND response->'asset'->>'kind'='assignment'")
         .bind(tenant).bind(actor).bind(operation).fetch_optional(c).await.map(Option::flatten)
+}
+
+/// Load one authoritative catalog snapshot within the caller's tenant transaction.
+pub async fn catalog_in(
+    tx: &mut PgTransaction<'_>,
+    tenant: TenantId,
+    watermark: i64,
+) -> Result<rss_mdm_inventory::Catalog> {
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            rss_mdm_inventory_postgres::catalog_at_in(c, tenant, watermark)
+                .await
+                .map_err(|_| sqlx::Error::Protocol("asset catalog unavailable".into()))
+        })
+    })
+    .await
+    .map_err(Into::into)
+}
+async fn datasets_in(
+    tx: &mut PgTransaction<'_>,
+    tenant: TenantId,
+) -> Result<BTreeMap<rss_mdm_inventory::Source, Vec<String>>> {
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            rss_mdm_inventory_postgres::datasets_in(c, tenant)
+                .await
+                .map_err(|_| sqlx::Error::Protocol("asset datasets unavailable".into()))
+        })
+    })
+    .await
+    .map_err(Into::into)
+}
+
+fn restrict_fields(device: &mut DeviceView, catalog: &rss_mdm_inventory::Catalog, sensitive: bool) {
+    let allowed = |key: &FieldKey| {
+        catalog
+            .definition(*key)
+            .is_ok_and(|f| fields::visible(f, sensitive))
+    };
+    device.fields.retain(|key, _| allowed(key));
+    device.revisions.retain(|key, _| allowed(key));
+    for run in &mut device.quality {
+        run.fields.retain(|f| allowed(&f.field));
+    }
 }

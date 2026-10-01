@@ -2,170 +2,6 @@ use super::*;
 use rss_mdm_inventory::{Evidence, SourceFact, State};
 use sqlx::Row;
 impl AssetService {
-    pub(super) async fn asset_detail_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        device: &str,
-    ) -> Result<DeviceView> {
-        let tenant = self.tenant.to_string();
-        let requested = device.to_owned();
-        let id: Option<String> = tx
-            .with_connection(move |c| {
-                Box::pin(async move { crate::device::read::find(c, tenant, requested).await })
-            })
-            .await
-            .map_err(|_| Error::Unavailable(Failure::AssetCandidates))?;
-        let ids = vec![id.ok_or(Error::NotFound)?];
-        let mut devices: BTreeMap<_, _> = ids
-            .iter()
-            .map(|id| {
-                (
-                    id.clone(),
-                    DeviceView {
-                        device: id.clone(),
-                        channels: BTreeSet::new(),
-                        fields: BTreeMap::new(),
-                        quality: vec![],
-                        revisions: BTreeMap::new(),
-                    },
-                )
-            })
-            .collect();
-        let tenant = self.tenant.to_string();
-        let selected = ids.clone();
-        let rows = tx
-            .with_connection(move |c| {
-                Box::pin(
-                    async move { crate::device::read::active_sources(c, tenant, selected).await },
-                )
-            })
-            .await
-            .map_err(|_| Error::Unavailable(Failure::AssetSources))?;
-        if rows.len() > 20_000 {
-            return Err(Error::Unavailable(Failure::AssetSourceLimit).into());
-        }
-        let mut scopes = Vec::new();
-        let mut subjects = BTreeMap::new();
-        let mut generations = BTreeMap::new();
-        for row in rows {
-            let device: String = row.try_get("device")?;
-            let source = stored(rss_mdm_inventory::Source::parse(row.try_get("source")?))?;
-            let channel: &str = row.try_get("channel")?;
-            if channel != source.channel().ok_or(Error::Malformed)?.as_str() {
-                return Err(Error::Unavailable(Failure::InventoryQuery).into());
-            }
-            for dataset in rss_mdm_inventory::datasets(source) {
-                let scope = crate::device::scope_dataset(
-                    self.tenant,
-                    checked_input(Uuid::parse_str(row.try_get("registration")?))?,
-                    source.as_str(),
-                    checked_input(Uuid::parse_str(row.try_get("epoch")?))?,
-                    dataset,
-                )?;
-                devices
-                    .get_mut(&device)
-                    .ok_or(Error::Malformed)?
-                    .channels
-                    .insert(row.try_get("channel")?);
-                generations.insert(
-                    checked_input(scope.encode())?,
-                    stored(u64::try_from(row.try_get::<i64, _>("generation")?))?,
-                );
-                subjects.insert(checked_input(scope.encode())?, device.clone());
-                scopes.push(scope);
-            }
-        }
-        let tenant = self.tenant;
-        let source_facts = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    rss_mdm_inventory_postgres::read_in(c, tenant, &scopes)
-                        .await
-                        .map_err(|_| sqlx::Error::Protocol("asset facts unavailable".into()))
-                })
-            })
-            .await
-            .map_err(|_| Error::Unavailable(Failure::InventoryQuery))?;
-        let mut facts: BTreeMap<(String, FieldKey), Vec<SourceFact>> = BTreeMap::new();
-        for mut row in source_facts {
-            row.fact.evidence.registration_generation =
-                Some(*generations.get(&row.scope).ok_or(Error::Malformed)?);
-            if let Some(last) = &mut row.fact.last_known {
-                last.evidence.registration_generation = row.fact.evidence.registration_generation;
-            }
-            let device = subjects.get(&row.scope).ok_or(Error::Malformed)?;
-            facts
-                .entry((device.clone(), row.field))
-                .or_default()
-                .push(row.fact);
-        }
-        let tenant = self.tenant;
-        let selected = ids.clone();
-        let assignments = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    rss_mdm_inventory_postgres::manual_in(c, tenant, &selected)
-                        .await
-                        .map_err(|_| sqlx::Error::Protocol("manual facts unavailable".into()))
-                })
-            })
-            .await
-            .map_err(|_| Error::Unavailable(Failure::ManualQuery))?;
-        for row in assignments {
-            devices
-                .get_mut(&row.device)
-                .ok_or(Error::Malformed)?
-                .revisions
-                .insert(row.field, row.revision);
-            facts
-                .entry((row.device, row.field))
-                .or_default()
-                .push(row.fact);
-        }
-        let tenant = self.tenant.to_string();
-        let keys: Vec<_> = subjects.keys().cloned().collect();
-        let quality = tx
-            .with_connection(move |c| {
-                Box::pin(
-                    async move { crate::collection::read::latest_quality(c, tenant, keys).await },
-                )
-            })
-            .await
-            .map_err(|_| Error::Unavailable(Failure::CollectionQuery))?;
-        for row in quality {
-            let scope: String = row.try_get("scope")?;
-            let device = subjects.get(&scope).ok_or(Error::Malformed)?;
-            let generation = *generations
-                .get(&scope)
-                .ok_or(Error::Unavailable(Failure::CollectionQuery))?;
-            devices
-                .get_mut(device)
-                .ok_or(Error::Malformed)?
-                .quality
-                .push(quality::decode(&row, generation)?);
-        }
-        for (id, device) in &mut devices {
-            for field in FieldKey::ALL {
-                device.fields.insert(
-                    field,
-                    stored(rss_mdm_inventory::resolve(
-                        field,
-                        facts.remove(&(id.clone(), field)).unwrap_or_default(),
-                    ))?,
-                );
-            }
-        }
-        let devices: Vec<_> = devices.into_values().collect();
-        if checked_input(serde_json::to_vec(&devices))?.len()
-            > rss_mdm_group_postgres::core::limits::BATCH_BYTES
-        {
-            return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
-        }
-        devices
-            .into_iter()
-            .next()
-            .ok_or_else(|| Error::NotFound.into())
-    }
     pub(super) async fn assign_asset(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -175,7 +11,9 @@ impl AssetService {
         owner: &Owner,
         at: Timepoint,
     ) -> Result<Response> {
-        if !field.definition().manual || change.expected_revision >= i64::MAX as u64 {
+        let catalog = catalog_in(tx, self.tenant, i64::MAX).await?;
+        let definition = checked_input(catalog.definition(field))?;
+        if !definition.manual || change.expected_revision >= i64::MAX as u64 {
             return Err(Error::Malformed.into());
         }
         checked_input(rss_observation::Id::new(device))?;
@@ -204,7 +42,7 @@ impl AssetService {
         let old = prior.into_iter().find(|a| a.field == field);
         let state = match &change.input {
             ManualChange::Set { value } => {
-                checked_input(field.validate_scalar(value))?;
+                checked_input(definition.validate_scalar(value))?;
                 State::Known(value.clone())
             }
             ManualChange::Null {} => State::Null,
@@ -212,6 +50,7 @@ impl AssetService {
         };
         let evidence = Evidence {
             source: rss_mdm_inventory::Source::Manual,
+            dataset: None,
             registration: None,
             registration_generation: None,
             epoch: None,
@@ -319,11 +158,14 @@ impl AssetService {
             SavedChange::Delete {} => None,
             SavedChange::Put { definition } => {
                 crate::authorization::exact_id(&definition.name)?;
-                self.validate_query(&definition.query)?;
+                self.validate_query(
+                    &definition.query,
+                    &catalog_in(tx, self.tenant, i64::MAX).await?,
+                )?;
                 if checked_input(serde_json::to_vec(definition))?.len() > 16384 {
                     return Err(Error::Malformed.into());
                 }
-                Some(definition.clone())
+                Some(definition.as_ref().clone())
             }
         };
         let tenant = self.tenant.to_string();

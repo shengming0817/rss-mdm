@@ -4,7 +4,7 @@
 mod artifacts;
 mod codec;
 pub mod directory;
-pub use artifacts::artifact_referenced_in;
+pub use artifacts::{artifact_referenced_in, field_references_in};
 
 mod error;
 mod event;
@@ -19,9 +19,16 @@ pub const MIGRATION_SQL: &str = include_str!("../migrations/0001.sql");
 use rss_mdm_backend_postgres_support::{Admission, BackendKind, BackendStorage};
 pub(crate) const STORAGE: BackendStorage = BackendStorage::new(BackendKind::Resource);
 pub(crate) const ADMISSION: Admission = Admission {
-    tables: &["aggregates", "artifact_refs", "immutable", "requests"],
+    tables: &[
+        "aggregates",
+        "artifact_refs",
+        "field_refs",
+        "immutable",
+        "requests",
+    ],
     update_columns: &[
         "artifact_refs.archived",
+        "field_refs.archived",
         "aggregates.revision",
         "aggregates.document",
         "aggregates.digest",

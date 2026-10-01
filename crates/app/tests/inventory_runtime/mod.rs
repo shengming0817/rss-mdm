@@ -224,34 +224,30 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     );
     runtime.close_fixture().await?;
 
-    // Fresh epoch; Partial/Failed receipts retain the last complete values.
+    // Fresh epoch: confirmed partial fields project; failed fields retain trusted values.
     let newer = proof(case_a(), Channel::Mdm, 122);
     let (_, registration) = bind(&service, &admin, &newer, "collection-recovery", 1).await?;
     let full = report(&service, &access, &newer, [Some("New"), Some("11")]).await?;
     let partial = report(&service, &access, &newer, [Some("Unconfirmed"), None]).await?;
     let failed = report(&service, &access, &newer, [None, None]).await?;
     ensure!(
-        matches!(partial.batch().unwrap().body(), Body::Partial(_))
-            && matches!(failed.batch().unwrap().body(), Body::Failed { .. })
+        matches!(partial.batch().unwrap().body(), Body::Snapshot(_))
+            && matches!(failed.batch().unwrap().body(), Body::Snapshot(_))
     );
     let runtime = open(access.clone()).await?;
     let owner = start(runtime.clone()).await?;
     wait_ready_projection(&runtime, &full).await?;
-    ensure!(
-        runtime.inspect(&partial).await?.projection
-            == crate::inventory_runtime::ProjectionStatus::NotApplicable
-    );
-    ensure!(
-        runtime.inspect(&failed).await?.projection
-            == crate::inventory_runtime::ProjectionStatus::NotApplicable
-    );
+    wait_ready_projection(&runtime, &partial).await?;
+    wait_ready_projection(&runtime, &failed).await?;
     ensure!(
         reader
             .read(full.scope.tenant(), std::slice::from_ref(&full.scope))
             .await?[0]
             .fact
             .state
-            == rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("New".into()))
+            == rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String(
+                "Unconfirmed".into()
+            ))
     );
     crate::test_support::stop_worker(owner).await?;
     runtime.close_fixture().await?;
