@@ -1,0 +1,214 @@
+//! Frozen CSP reads on the existing authenticated SyncML exchange and collection store.
+use crate::{Error, Failure, database::db, device::DevicePrincipal};
+use rss_mdm_inventory::{FieldKey, NativeValue};
+use rss_mdm_inventory_service::collection::{native, store};
+use rss_mdm_windows_mdm::{
+    CodecLimits,
+    syncml::{self as s, Command, Item},
+};
+use sqlx::{PgConnection, Row};
+use uuid::Uuid;
+fn corrupt() -> Error {
+    Error::Unavailable(Failure::Protocol)
+}
+fn refs(command: &Command) -> Option<(u32, u32)> {
+    match command {
+        Command::Status(v) if v.command_ref != 0 => Some((v.message_ref, v.command_ref)),
+        Command::Results(v) => Some((v.message_ref?, v.command_ref?)),
+        _ => None,
+    }
+}
+pub async fn send(
+    c: &mut PgConnection,
+    p: &DevicePrincipal,
+    response: &mut s::Message,
+) -> Result<bool, Error> {
+    if response.header.message_id >= 8 {
+        return Ok(false);
+    }
+    let row=sqlx::query("SELECT r.id FROM mdm_access.collection_runs r WHERE r.tenant_id=$1::uuid AND r.registration=$2 AND r.source='mdm.windows' AND r.sealed_at IS NULL AND r.evidence ? 'nativeTemplate' AND r.deadline>clock_timestamp() AND NOT EXISTS(SELECT 1 FROM mdm_windows.collections w WHERE (w.tenant_id,w.id)=(r.tenant_id,r.id)) ORDER BY r.sequence LIMIT 1 FOR UPDATE")
+        .bind(p.tenant().to_string()).bind(p.registration()).fetch_optional(&mut *c).await.map_err(db)?;
+    if let Some(row) = row {
+        let id: Uuid = row.try_get("id").map_err(db)?;
+        let template = native::template(c, &p.tenant().to_string(), id)
+            .await?
+            .ok_or_else(corrupt)?;
+        let first =
+            store::allocate_commands_in(c, p, template.spec().mappings.len() as i64).await?;
+        let commands = template
+            .spec()
+            .mappings
+            .values()
+            .enumerate()
+            .map(|(i, m)| Command::Get {
+                id: first + i as u32,
+                meta: None,
+                items: vec![Item {
+                    source: None,
+                    target: Some(m.query.clone()),
+                    meta: None,
+                    data: None,
+                }],
+            })
+            .collect::<Vec<_>>();
+        let request = s::Message {
+            header: response.header.clone(),
+            commands: commands.clone(),
+            final_message: true,
+        };
+        let bytes = s::encode(&request, &CodecLimits::default()).map_err(|_| corrupt())?;
+        sqlx::query("INSERT INTO mdm_windows.collections(tenant_id,id,registration,session_id,request_message,first_command,request) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)")
+            .bind(p.tenant().to_string()).bind(id).bind(p.registration()).bind(response.header.session_id.to_string()).bind(i64::from(response.header.message_id)).bind(i64::from(first)).bind(bytes).execute(&mut *c).await.map_err(db)?;
+        crate::execution::actions::native_collection::sent(c, &p.tenant().to_string(), id).await?;
+        response.commands.extend(commands);
+    }
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.collection_runs r JOIN mdm_windows.collections w USING(tenant_id,id) WHERE r.tenant_id=$1::uuid AND r.registration=$2 AND r.sealed_at IS NULL AND r.evidence ? 'nativeTemplate' AND w.session_id=$3)")
+        .bind(p.tenant().to_string()).bind(p.registration()).bind(response.header.session_id.to_string()).fetch_one(c).await.map_err(db)
+}
+pub async fn receive(
+    c: &mut PgConnection,
+    p: &DevicePrincipal,
+    message: &s::Message,
+    previous: &str,
+    facts: &mut Vec<rss_mdm_audit_integration::Fact>,
+) -> Result<s::Message, Error> {
+    let tenant = p.tenant().to_string();
+    let rows=sqlx::query("SELECT w.id,w.request,w.request_message,w.first_command FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND w.session_id=$3 AND r.evidence ? 'nativeTemplate' ORDER BY w.first_command")
+        .bind(&tenant).bind(p.registration()).bind(message.header.session_id.to_string()).fetch_all(&mut *c).await.map_err(db)?;
+    let mut consumed = std::collections::BTreeSet::new();
+    for row in rows {
+        let id: Uuid = row.try_get("id").map_err(db)?;
+        let template = native::template(c, &tenant, id)
+            .await?
+            .ok_or_else(corrupt)?;
+        let fields: Vec<_> = template.spec().mappings.iter().collect();
+        let first = row.try_get::<i64, _>("first_command").map_err(db)? as u32;
+        let msg = row.try_get::<i64, _>("request_message").map_err(db)? as u32;
+        let commands: Vec<_> = message
+            .commands
+            .iter()
+            .filter(|command| {
+                refs(command).is_some_and(|(m, i)| {
+                    m == msg && (first..first + fields.len() as u32).contains(&i)
+                })
+            })
+            .cloned()
+            .collect();
+        if commands.is_empty() {
+            continue;
+        }
+        consumed.extend(commands.iter().filter_map(refs));
+        let mut run = store::load_on(c, &tenant, id).await?;
+        if run.sealed_at.is_some() {
+            continue;
+        }
+        let limits = CodecLimits::default();
+        let original = s::decode(&row.try_get::<Vec<u8>, _>("request").map_err(db)?, &limits)
+            .map_err(|_| corrupt())?;
+        let (_, sent) = s::encode_request(&original, &limits).map_err(|_| corrupt())?;
+        let mut expected =
+            s::Expected::new(sent, message.header.message_id, &limits).map_err(|_| corrupt())?;
+        if !previous.is_empty() {
+            let prior = s::decode(previous.as_bytes(), &limits).map_err(|_| corrupt())?;
+            if prior.header.message_id != msg {
+                let (_, sent) = s::encode_request(&prior, &limits).map_err(|_| corrupt())?;
+                expected.record_sent(sent, &limits).map_err(|_| corrupt())?;
+            }
+        }
+        let correlated = s::correlate(
+            &expected,
+            &s::Message {
+                header: message.header.clone(),
+                commands: message
+                    .commands
+                    .iter()
+                    .filter(|command| {
+                        matches!(command, Command::Status(status) if status.command_ref == 0)
+                            || refs(command)
+                                .is_some_and(|r| commands.iter().any(|c| refs(c) == Some(r)))
+                    })
+                    .cloned()
+                    .collect(),
+                final_message: true,
+            },
+            &limits,
+        )
+        .map_err(|_| Error::Conflict)?;
+        let now: i64 =
+            sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
+                .fetch_one(&mut *c)
+                .await
+                .map_err(db)?;
+        for status in correlated.statuses {
+            if status.message_id != msg
+                || !(first..first + fields.len() as u32).contains(&status.command_id)
+            {
+                continue;
+            }
+            let key = FieldKey::parse(fields[(status.command_id - first) as usize].0)
+                .map_err(|_| corrupt())?;
+            run.attempts
+                .observe_status(key, status.code, now)
+                .map_err(|_| Error::Conflict)?;
+        }
+        for result in correlated.results {
+            if !result.explicit_message_ref
+                || !result.explicit_command_ref
+                || result.reference.message_id != msg
+                || !(first..first + fields.len() as u32).contains(&result.reference.command_id)
+            {
+                return Err(Error::Conflict);
+            }
+            let (key, mapping) = fields[(result.reference.command_id - first) as usize];
+            if result.reference.uri != mapping.query {
+                return Err(Error::Conflict);
+            }
+            let key = FieldKey::parse(key).map_err(|_| corrupt())?;
+            let field = run
+                .attempts
+                .definition()
+                .field(key)
+                .map_err(|_| corrupt())?;
+            let value = native::value(field, mapping, &serde_json::Value::String(result.value.0));
+            match value {
+                NativeValue::Value(value)
+                    if run.attempts.value_bytes().map_err(|_| corrupt())?
+                        + value.encode(field).map_err(|_| corrupt())?.len()
+                        <= template.spec().output_bytes as usize =>
+                {
+                    run.attempts
+                        .observe_value(key, value, now)
+                        .map_err(|_| Error::Conflict)?
+                }
+                NativeValue::InvalidItems(items) => run
+                    .attempts
+                    .observe_invalid_items(key, items, now)
+                    .map_err(|_| Error::Conflict)?,
+                _ => run
+                    .attempts
+                    .observe_invalid(key, now)
+                    .map_err(|_| Error::Conflict)?,
+            }
+        }
+        if run.attempts.complete() || message.header.message_id >= 8 {
+            let reason = if run.attempts.complete() {
+                "complete"
+            } else {
+                "message_budget"
+            };
+            facts.extend(store::seal(c, &mut run, reason).await?);
+        } else {
+            store::save_attempts_in(c, &run).await?;
+        }
+    }
+    Ok(s::Message {
+        header: message.header.clone(),
+        commands: message
+            .commands
+            .iter()
+            .filter(|v| !refs(v).is_some_and(|r| consumed.contains(&r)))
+            .cloned()
+            .collect(),
+        final_message: message.final_message,
+    })
+}

@@ -6,7 +6,7 @@ Inventory 是唯一字段目录和来源解析 owner，应用把解析结果送�
 
 字段目录、类型及可用操作以 `/api/v2/asset-fields` 为准；值不隐式转换。Manual 可显式置空，标准字段禁止人工覆盖。
 
-known/null/missing/unsupported/deleted/conflict 是明确状态。同级来源相同值合并证据，不同值返回 conflict；一条来源删除不删除另一条来源。来源必须绑定当前有效注册及 epoch。Partial/Failed 保留最后完整事实，最新 CollectionRun 质量另行呈现。
+known/null/missing/unsupported/deleted/conflict 是明确状态。同级来源相同值合并证据，不同值返回 conflict；一条来源删除不删除另一条来源。来源必须绑定当前有效注册及 epoch。Partial 应用独立成功字段，缺失或失败字段保留此前可信事实；Failed 不清空事实，最新 CollectionRun 质量另行呈现。带 itemKey 的清单按条目身份比较，相同内容的不同返回顺序不产生冲突。
 
 没有字段 TTL、validUntil、expiresAt、到期或延迟生效判断。所有时间仅用于溯源；改变评估时间不会改变固定规则对相同事实的结果。会话、凭据和任务期限不受此规则影响。
 
@@ -16,7 +16,11 @@ known/null/missing/unsupported/deleted/conflict 是明确状态。同级来源�
 
 | 方法、路径 | 内容 |
 | --- | --- |
-| GET /asset-fields | 目录、类型、允许操作与是否 Manual |
+| GET /asset-fields | 唯一版本化目录、类型、来源优先级、敏感级别及可用操作 |
+| PUT /asset-fields/{field} | Operation 包装的 put/delete，expectedRevision 为字段版本 |
+| GET /asset-fields/{field}/references | Group、模板、合规及保存查询引用计数 |
+| GET /devices/{id}/collections/{run} | 当前设备所属采集的冻结身份、时间、字段质量及投递状态 |
+| GET /devices/{id}/inventory-lists/{field}?limit=50&cursor=… | 固定资产水位的清单分页，最多 100 条且受字节预算限制 |
 | GET /devices/{id}/inventory | 统一详情，不再接受 source 参数 |
 | POST /device-queries | 异步受理，Operation 包含 criteria/select/sort |
 | GET /device-queries/{task} | 状态、全结果计数与结果入口 |
@@ -28,7 +32,7 @@ known/null/missing/unsupported/deleted/conflict 是明确状态。同级来源�
 | PUT /saved-queries/{id} | CAS put/delete |
 | POST /saved-queries/{id}/execute | 按当前权限执行，正文为 Operation，expectedRevision 为保存查询版本，input 为 `{}` |
 
-资产响应为 `{ "asset": { "kind": "detail|page|accepted|query_status|facets|assignment|saved|saved_list|fields", ... } }`。详情/列表的 fields 以字段键索引，包含 state、sources 和原始 lastKnown 证据；Manual revisions 供下一次 CAS 使用。
+资产响应为 `{ "asset": { "kind": "detail|page|accepted|query_status|facets|assignment|saved|saved_list|fields", ... } }`。详情/列表的 fields 以字段键索引，包含 state、sources 和原始 lastKnown 证据；Manual revisions 供下一次 CAS 使用。数组通过独立 lists 返回状态、数量、摘要、来源和起始游标；用清单接口读取条目，详情不内嵌整份大清单。
 
 赋值例：
 
@@ -48,7 +52,7 @@ AND/OR 为 `{kind:"and|or",children:[…]}`；in/not_in 使用同类型 `values`
 
 ## 权限、分页与保存查询
 
-inventory_read 按 AllDevices/Device 并集限定候选集合，再计算匹配、总数和汇总；inventory_assign 独立授予 Manual 写。所有请求重取授权，运行中会话/来源失效会再次拒绝。Group 预览和重算还要求 inventory_read/all_devices，不能用部分设备集合替换全组成员。
+inventory_fields_write 管理目录；有权限管理员直接发布字段及启用模板，不增加申请或审批状态。删除检查引用，类型、单位、条目身份或敏感级别变化需要新字段身份。inventory_sensitive_read 控制敏感字段明文及敏感条件的配置。inventory_read 按 AllDevices/Device 并集限定候选集合，再计算匹配、总数和汇总；inventory_assign 独立授予 Manual 写。所有请求重取授权，运行中会话/来源失效会再次拒绝。Group 预览和重算还要求 inventory_read/all_devices，不能用部分设备集合替换全组成员。
 
 个人保存查询使用当前 inventory_read，并按 tenant/instance/principal 限定本人。put 的 input 为 `{action:"put",definition:{name:"…",query:{…}}}`；不保存 cursor、结果或授权集合。删除 UUID 不复用；执行重新验证当前目录与权限。
 
@@ -89,3 +93,18 @@ severity 为 low/medium/high/critical，仅用于解释；platform 为 all/windo
 完成结论为 compliant/non_compliant/unknown/not_applicable；组资格不确定仍是 unknown。pending 只表示最新输入尚未完成，不能把 previous 当作当前合规。设备汇总优先明确失败、未知、待评估；至少一条适用规则且全部通过才是 compliant。无启用规则为 unknown/no_rules，全不适用为 not_applicable。
 
 历史保留规则版本、字典版本、资产水位、组成员集、评估时间、原因和无原始字段值的证据引用，以及 published/superseded/failed 标识。任务按固定输入分页，只有完整运行且输入仍有效才切换当前指针；旧运行不能覆盖新事实。任务阶段为 queued、evaluating、published、superseded 或 failed；processed 只统计已提交的设备评估。组输入未就绪时保留 group_input_pending 诊断。适用性证据分别保留平台判定、来源和各组资格，原因区分 platform_not_applicable、group_not_applicable、platform_unknown、group_unknown 与事实结论。规则列表使用 nextCursor，规则读取只返回 id/revision/definition。任务计数还要求 AllDevices 范围的 compliance_read，只有规则读取或部分设备权限不能读取全租户计数。未就绪的冻结输入以 superseded 结束并保留 group_input_pending 原因，组变更或发布唤醒既有 dispatcher 创建新运行，避免无进展热重试。失败诊断和恢复复用现有 automation；资产调度依次推进 Group、Scope、Compliance 后提交同一 checkpoint，重启继续持久任务；本接口不提供自动修复或标准合规认证声明。
+
+
+## 发布采集模板并复用策略
+
+原生读取使用 Resource 的 `native_collection` 类型，版本声明包含同名 declaration、canonical JSON artifact 及 definition。definition 指定 `adapter`、`mappings`、`timeoutSeconds`、`outputBytes`：`windows_csp` 只构造 CSP Get；`apple_device_information` 使用受限 Queries；`apple_installed_applications` 读取 InstalledApplicationList。Apple 当前落地的是 MDM adapter；不把尚未接入的 DDM status channel 计为已支持。
+
+每个 mapping 的键为字段身份，值为 `{query,pointer,columns}`。columns 为空时直接按字段类型解码；非空时把清单条目投影到声明的结构化属性。模板的 canonical JSON 是上传 artifact 的原文，发布时校验字段、来源、平台和结构。脚本与 SQL 使用已有 `script` Resource，SQL profile 为 `osquery`，执行只接受固定版本模板及声明参数。
+
+持续采集使用 Policy action `native_collection`，绑定精确 Resource、Schedule、Frequency 和 runLifetimeSeconds；脚本/SQL 使用现有 execution action。按需读取使用现有 remote-operation 的 `collect_native` action，脚本/SQL 使用 `execute`，目标为设备集合或 Scope 的冻结结果。有 inventory_collect、resource_write、policy_write 等对应权限的管理员直接启用，无新增审批状态。一次性操作不生成长期 Policy。
+
+`GET /api/v2/devices/{id}/collections/{run}` 返回统一进度、来源、模板版本和逐字段质量。列表字段另有 itemCount/invalidItems，终态 run 可通过 `GET /api/v2/devices/{id}/collections/{run}/fields/{field}/items?offset=0&limit=100` 分页读取逐条质量，最多1000条。无效列表保留旧可信值，质量页不回传不可信原文。
+
+资产详情中的 lists 只返回摘要，各来源摘要自带独立游标，冲突时仍可分页检查每份来源清单。使用 `GET /api/v2/devices/{id}/inventory-lists/{field}?limit=100&cursor=…` 读取选值后的列表。游标绑定字段、设备、租户、授权范围及资产水位；后续变更不混入旧分页。完整空列表与未执行、失败、部分输出分别表达。字段和清单没有 TTL。
+
+本地 `rss-mdm-fixture ingest-fixture` 只接受示例发布的 typed-fields-v2 collector 数据；显式设置 `MDM_COLLECTION_URL` 为有采集结果写权限的数据库身份。示例先提交冻结定义与结果，再用 `DATABASE_URL` 对应的投影运行身份提交 Observation 引用。两者不共享隐式提权或旧格式读取。

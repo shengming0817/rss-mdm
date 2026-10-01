@@ -85,7 +85,7 @@ pub fn routers(
     let management = Router::new()
         .route("/ManagementServer/MDM.svc", post(management::manage))
         .route(
-            "/api/agent/v4/managed-registrations",
+            "/api/agent/v5/managed-registrations",
             post(management::register_agent),
         );
     (
@@ -458,3 +458,5 @@ pub mod boundary;
 
 /// This capability's closed privileges in the shared access connection.
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
+
+mod template_collection;

@@ -19,27 +19,29 @@ pub async fn accept_in(
     let live_scope =
         crate::device::store::revalidate_source(tx, principal, InventorySource::AgentBuiltin)
             .await?;
-    let expected =
-        if scope.dataset().as_str() == rss_mdm_inventory::FieldKey::MdmEnrollment.as_str() {
-            crate::device::scope_dataset(
-                principal.tenant(),
-                principal.registration(),
-                InventorySource::AgentBuiltin.as_str(),
-                uuid::Uuid::parse_str(live_scope.epoch().as_str()).map_err(|_| Error::Malformed)?,
-                rss_mdm_inventory::FieldKey::MdmEnrollment.as_str(),
-            )?
-        } else {
-            live_scope
-        };
-    rss_mdm_inventory::validate(batch).map_err(|_| Error::Malformed)?;
-    if batch.coverage()
-        != &rss_mdm_inventory::scope_coverage(scope).map_err(|_| Error::Malformed)?
-    {
-        return Err(Error::Malformed);
-    }
+    let expected = crate::device::scope_dataset(
+        principal.tenant(),
+        principal.registration(),
+        InventorySource::AgentBuiltin.as_str(),
+        uuid::Uuid::parse_str(live_scope.epoch().as_str()).map_err(|_| Error::Malformed)?,
+        scope.dataset().as_str(),
+    )?;
     if &expected != scope {
         return Err(Error::Unauthorized);
     }
+    let coverage = serde_json::to_string(batch.coverage()).map_err(|_| Error::Malformed)?;
+    let definition = rss_mdm_inventory_postgres::collection_in(
+        tx,
+        principal.tenant(),
+        rss_mdm_inventory::Source::AgentBuiltin,
+        &coverage,
+    )
+    .await
+    .map_err(|_| Error::Malformed)?;
+    definition
+        .validate_scope(scope)
+        .map_err(|_| Error::Malformed)?;
+    definition.validate(batch).map_err(|_| Error::Malformed)?;
     // V1 report ids are tenant-global. This lock covers the absent-row case across registrations;
     // revalidate_source already holds the channel lock that serializes capacity and retention.
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2467))")
@@ -47,12 +49,12 @@ pub async fn accept_in(
         .execute(&mut *tx)
         .await
         .map_err(db)?;
-    if let Some(row) = sqlx::query("SELECT registration::text,source,epoch::text,digest,sealed_at FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR SHARE")
+    if let Some(row) = sqlx::query("SELECT registration::text,source,epoch::text,input_digest,sealed_at FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR SHARE")
         .bind(principal.tenant().to_string()).bind(batch.id().as_str().to_string()).fetch_optional(&mut *tx).await.map_err(db)? {
         if row.try_get::<String, _>("registration").map_err(db)? != principal.registration().to_string()
             || row.try_get::<String, _>("source").map_err(db)? != InventorySource::AgentBuiltin.as_str()
             || row.try_get::<String, _>("epoch").map_err(db)? != scope.epoch().as_str()
-            || row.try_get::<String, _>("digest").map_err(db)? != digest {
+            || row.try_get::<String, _>("input_digest").map_err(db)? != digest {
             return Err(Error::Conflict);
         }
         return Ok((row.try_get("sealed_at").map_err(db)?, false));
@@ -79,25 +81,27 @@ pub async fn accept_in(
         rss_observation::Body::Failed { .. } => "failed",
         _ => return Err(Error::Malformed),
     };
-    let attempts = if scope.dataset().as_str() == rss_mdm_inventory::DATASET {
-        serde_json::to_string(&crate::collection::Attempts::reported(
-            batch.body(),
-            received_at,
-        )?)
-    } else {
-        serde_json::to_string(&crate::collection::ChannelAttempt {
-            field: rss_mdm_inventory::FieldKey::MdmEnrollment,
-            quality: crate::collection::Quality::Success,
-            received_at,
-            evidence: None,
-        })
-    }
+    let progress = crate::collection::Attempts::reported(definition, batch.body(), received_at)
+        .map_err(|_| Error::Malformed)?;
+    let stored_batch = rss_mdm_inventory_postgres::seal_collection_in(
+        tx,
+        rss_mdm_inventory_postgres::CollectionCompletion {
+            scope,
+            run: batch.id().as_str(),
+            sequence: batch.sequence(),
+            observed_at: batch.observed_at_seconds(),
+            progress: &progress,
+        },
+    )
+    .await
     .map_err(|_| Error::Malformed)?;
-    sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending) VALUES($1::uuid,$4::uuid,$2::uuid,'agent.builtin',$3::uuid,$6,$5,$9,$11,$10,'complete',$7,$8,$9,true)")
+    let attempts = serde_json::to_string(&progress).map_err(|_| Error::Malformed)?;
+    let stored_digest = super::store::fingerprint(&stored_batch, scope)?;
+    sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending,input_digest) VALUES($1::uuid,$4::uuid,$2::uuid,'agent.builtin',$3::uuid,$6,$5,$9,$11,$10,'complete',$7,$8,$9,true,$12)")
         .bind(principal.tenant().to_string()).bind(principal.registration().to_string()).bind(scope.epoch().as_str()).bind(batch.id().as_str().to_string())
         .bind(i64::try_from(batch.sequence()).map_err(|_| Error::Malformed)?).bind(scope.encode().map_err(|_| Error::Malformed)?)
-        .bind(batch.encode()).bind(&digest).bind(received_at).bind(result)
-        .bind(attempts).execute(&mut *tx).await.map_err(db)?;
+        .bind(stored_batch.encode()).bind(&stored_digest).bind(received_at).bind(result)
+        .bind(attempts).bind(&digest).execute(&mut *tx).await.map_err(db)?;
     crate::wake::notify(tx).await.map_err(db)?;
     Ok((received_at, true))
 }

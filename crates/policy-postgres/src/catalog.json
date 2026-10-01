@@ -333,7 +333,7 @@
       "versions",
       "versions_action_kind_check",
       "c",
-      "CHECK ((action_kind = ANY (ARRAY['execution'::text, 'configuration'::text, 'software'::text, 'ensure_agent_installed'::text, 'request_mdm_enrollment'::text])))",
+      "CHECK ((action_kind = ANY (ARRAY['execution'::text, 'native_collection'::text, 'configuration'::text, 'software'::text, 'ensure_agent_installed'::text, 'request_mdm_enrollment'::text])))",
       true
     ],
     [

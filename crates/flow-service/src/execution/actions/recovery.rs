@@ -15,7 +15,7 @@ pub fn policy_id(entity: &str) -> Option<Uuid> {
 pub async fn active(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
     Ok(tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND v.policy=$2::uuid AND ((r.state->>'execution'='not_started' AND r.state->>'cancellation'<>'confirmed') OR r.state->>'execution'='running' OR (r.state->>'execution'='unknown' AND r.state->>'cancellation'='none' AND (NOT p.enabled OR p.current_version<>v.id))))").bind(tenant).bind(id.to_string()).fetch_one(c).await
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.id=$2::uuid AND p.enabled AND p.definition->'action'->>'kind'='native_collection') OR EXISTS(SELECT 1 FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND v.policy=$2::uuid AND ((r.state->>'execution'='not_started' AND r.state->>'cancellation'<>'confirmed') OR r.state->>'execution'='running' OR (r.state->>'execution'='unknown' AND r.state->>'cancellation'='none' AND (NOT p.enabled OR p.current_version<>v.id))))").bind(tenant).bind(id.to_string()).fetch_one(c).await
     })).await?)
 }
 pub async fn recover(
@@ -24,6 +24,7 @@ pub async fn recover(
     id: Uuid,
 ) -> Result<()> {
     crate::planning::policies::storage::lock(tx, id).await?;
+    super::native_collection::admit_policy(service, tx, id).await?;
     let tenant = tx.tenant_id().to_string();
     let runs=tx.with_connection(move|c|Box::pin(async move {
         sqlx::query("INSERT INTO mdm_commands.policy_recovery(tenant_id,policy) VALUES($1::uuid,$2::uuid) ON CONFLICT DO NOTHING").bind(&tenant).bind(id.to_string()).execute(&mut *c).await?;
@@ -55,6 +56,21 @@ pub async fn audit_recovery(
     run: &db::Run,
     previous: &super::state::RunState,
 ) -> Result<()> {
+    if (run.state.cancellation != Cancellation::None || run.state.execution == Execution::Unknown)
+        && let Some(attempt) = run.state.attempt()
+    {
+        super::collection::abandon(
+            service,
+            tx,
+            attempt,
+            if run.state.cancellation != Cancellation::None {
+                "revoked"
+            } else {
+                "timeout"
+            },
+        )
+        .await?;
+    }
     if *previous != run.state {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             tx.tenant_id().to_string(),
@@ -121,6 +137,37 @@ impl ExecutionService {
 
 #[cfg(feature = "integration")]
 impl ExecutionService {
+    /// Exercise the native check-in recovery funnel against persisted runs.
+    pub async fn settle_native_fixture(
+        &self,
+        device: &str,
+    ) -> std::result::Result<(), crate::Error> {
+        let audit = rss_mdm_audit_integration::RequestAudit::new(
+            self.tenant.to_string(),
+            "command_reconcile",
+        );
+        let result = crate::transaction::run(
+            &self.audit_store,
+            &self.runtime,
+            self.tenant,
+            &audit,
+            (self, device),
+            |ctx, tx| {
+                Box::pin(
+                    async move { super::native_collection::settle_device(ctx.0, tx, ctx.1).await },
+                )
+            },
+            crate::transaction::TransactionOwner::Execution,
+        )
+        .await;
+        audit.finalize(
+            result
+                .as_ref()
+                .err()
+                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+        );
+        result
+    }
     /// Exercise the production recovery transaction through the same action funnel as the worker.
     pub async fn recover_action_fixture(&self, id: Uuid) -> std::result::Result<(), crate::Error> {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
@@ -184,11 +231,24 @@ pub async fn recover_one(
     if stale || plan.withdrawn_in(service, tx, &run.target, now).await? {
         run.state.cancel();
     }
+    if !stale
+        && run.state.cancellation == Cancellation::None
+        && run.state.execution != Execution::Unknown
+        && let db::ScheduledPolicy::Native(native) = &plan
+    {
+        super::native_collection::advance_run(service, tx, &mut run, native, now).await?;
+    }
+    // A sealed protocol result is durable execution evidence, even after worker downtime.
     run.state.expire(now, plan.timeout_seconds());
     if run.state.execution == Execution::NotStarted
         && run.state.cancellation == Cancellation::Requested
     {
         run.state.cancel();
+    }
+    if matches!(plan, db::ScheduledPolicy::Native(_))
+        && run.state.cancellation == Cancellation::Requested
+    {
+        run.state.cancelled(run.id)?;
     }
     db::save_run(tx, &run).await?;
     audit_recovery(service, tx, &run, &previous).await?;

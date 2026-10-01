@@ -86,8 +86,8 @@ pub async fn enqueue_change_in(
         )
         .await?;
     }
-    // Only existing runs need cancellation/expiry recovery; there is no idle scheduler per device.
-    if old.is_some() {
+    // Native templates reuse this Policy recovery owner for due reads and pending-run recovery.
+    if old.is_some() || matches!(policy.definition.action, Action::NativeCollection { .. }) {
         wake_execution_in(tx, policy.id).await?;
     }
     Ok(())

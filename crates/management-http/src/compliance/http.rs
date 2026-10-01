@@ -106,6 +106,8 @@ async fn put(
         &a,
         &audit,
         Command::Put {
+            sensitive: rss_mdm_inventory_service::assets::ReadScope::from_proof(&a.proof)?
+                .sensitive,
             id,
             request: body
                 .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?

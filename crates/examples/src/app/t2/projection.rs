@@ -42,12 +42,18 @@ async fn projection_and_tenant_scopes() -> Result<()> {
     {
         let id = format!("incomplete-{i}");
         a.ingest(batch(&id, i as u64 + 1, body)).await?;
-        assert_eq!(a.project(&cancel).await?["applied"], 0);
+        assert_eq!(a.project(&cancel).await?["applied"], 1);
         let view = inspect(&a, &id).await?;
         assert!(!view["receipt"].is_null());
-        assert_eq!(view["projection"], "not_projected");
-        assert_eq!(view["assets"], original["assets"]);
-        assert_eq!(view["checkpoint"], original["checkpoint"]);
+        assert_eq!(view["projection"], "projected");
+        assert!(
+            view["assets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|a| a["fact"]["state"]["value"]["value"] == "partial")
+        );
+        assert_ne!(view["checkpoint"], original["checkpoint"]);
     }
     a.ingest(batch("full", 3, Body::Snapshot(facts("Model-B"))))
         .await?;
@@ -79,10 +85,10 @@ async fn projection_and_tenant_scopes() -> Result<()> {
     other.project(&cancel).await?;
     let sibling = app(scope(1, "d2")).await?;
     sibling
-        .ingest(batch("first", 0, Body::Snapshot(facts("Sibling"))))
+        .ingest(batch("sibling-first", 0, Body::Snapshot(facts("Sibling"))))
         .await?;
     assert_eq!(
-        inspect(&sibling, "first").await?["projection"],
+        inspect(&sibling, "sibling-first").await?["projection"],
         "not_projected"
     );
     sibling.project(&cancel).await?;
@@ -103,7 +109,7 @@ async fn projection_and_tenant_scopes() -> Result<()> {
         2
     );
     assert_eq!(
-        inspect(&sibling, "first").await?["assets"]
+        inspect(&sibling, "sibling-first").await?["assets"]
             .as_array()
             .unwrap()
             .len(),
@@ -137,7 +143,7 @@ impl rss_observation::Authority for JournalFixture {
 )]
 #[tokio::test]
 #[ignore = "MODULE=inventory.projection: real PostgreSQL"]
-async fn filter_and_poison() -> Result<()> {
+async fn unregistered_dataset_and_poison_are_rejected() -> Result<()> {
     let a = app(scope(4, "validation")).await?;
     let s = scope(4, "not-inventory");
     let s: Scope = serde_json::from_str(
@@ -164,8 +170,13 @@ async fn filter_and_poison() -> Result<()> {
         )
         .await?;
     let cancel = CancellationToken::new();
-    assert_eq!(a.project(&cancel).await?["filtered"], 1);
-    let s = scope(4, "validation");
+    assert!(
+        a.project(&cancel).await.is_err(),
+        "unregistered dataset was accepted"
+    );
+    a.close().await?;
+    let a = app(scope(1, "validation")).await?;
+    let s = scope(1, "validation");
     let producer = JournalFixture(s.clone());
     a.observation
         .activate(
@@ -263,7 +274,15 @@ async fn empty_and_delete() -> Result<()> {
     assert_eq!(before["projection"], "not_projected");
     a.project(&cancel).await?;
     let after = inspect(&a, "empty").await?;
-    assert_eq!(after["assets"], before["assets"]);
+    assert!(before["assets"].as_array().unwrap().is_empty());
+    assert_eq!(after["assets"].as_array().unwrap().len(), 2);
+    assert!(
+        after["assets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|v| v["fact"]["state"]["kind"] == "deleted" && v["fact"]["lastKnown"].is_null())
+    );
     assert_eq!(after["projection"], "projected");
     a.ingest(batch("populated", 1, Body::Snapshot(facts("Delete"))))
         .await?;

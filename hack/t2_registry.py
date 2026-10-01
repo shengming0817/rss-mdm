@@ -296,6 +296,7 @@ for name, target in (('manual', 'manual'), ('reader', 'reader')):
         sources=('crates/inventory-postgres/src/*', 'crates/inventory-postgres/migrations/*'),
         tests=(f'crates/inventory-postgres/tests/{target}.rs',),
         support=('crates/inventory-postgres/tests/support/*',))
+MODULES['inventory.manual'] = replace(MODULES['inventory.manual'], policies=(CasePolicy('field_catalog_cas_history_and_rollback_are_atomic','reuse','tenant'),))
 for name in ('projection', 'recovery', 'process'):
     add('inventory.' + name,
         build=Build('rss-mdm-examples', features=('integration',)),
@@ -486,7 +487,7 @@ MODULES['inventory.reader'] = replace(MODULES['inventory.reader'], db_mode='inst
     CasePolicy('watermark_fence_rejects_unrelated_grantee', 'fresh', 'objects'),
 ))
 MODULES['inventory.projection'] = replace(MODULES['inventory.projection'], db_mode='reuse', scope='pair', policies=(
-    CasePolicy('app::t2::projection::filter_and_poison', 'fresh', 'objects'),
+    CasePolicy('app::t2::projection::unregistered_dataset_and_poison_are_rejected', 'fresh', 'objects'),
     CasePolicy('app::t2::projection::invocation_horizon', 'fresh', 'objects'),
 ))
 MODULES['inventory.recovery'] = replace(MODULES['inventory.recovery'], db_mode='reuse', scope='tenant', policies=(
@@ -687,15 +688,15 @@ consume(('crates/compliance/src/*', 'crates/compliance-postgres/src/*', 'crates/
         'compliance.storage compliance.http compliance.evaluation compliance.recovery compliance.group_input')
 TASK_CONSUMERS = 'planning.onboarding planning.policy planning.agent_policy planning.frequency planning.remote planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
 consume(('crates/agent-wire/src/tasks.rs', 'crates/agent-wire/schema/task-*.json',
-         'crates/agent-wire/schema/signed-task-v4.schema.json', 'crates/flow-service/src/task_signing.rs'), TASK_CONSUMERS)
+         'crates/agent-wire/schema/signed-task-v5.schema.json', 'crates/flow-service/src/task_signing.rs'), TASK_CONSUMERS)
 # lib.rs owns shared identities, capability, errors, registration and report shapes.
-consume(('crates/agent-wire/src/lib.rs','crates/agent-wire/schema/error-body-v4.schema.json',
-         'crates/agent-wire/schema/agent-v4.schema-manifest.json'), TASK_CONSUMERS + ' agent.registration agent.reports execution.commands.onboarding apple.onboarding')
+consume(('crates/agent-wire/src/lib.rs','crates/agent-wire/schema/error-body-v5.schema.json',
+         'crates/agent-wire/schema/agent-v5.schema-manifest.json'), TASK_CONSUMERS + ' agent.registration agent.reports execution.commands.onboarding apple.onboarding')
 consume(('crates/agent-wire/schema/registration-*.json',), 'agent.registration')
 consume(('crates/agent-wire/schema/report-*.json',), 'agent.reports planning.onboarding')
 consume(('crates/agent-wire/src/onboarding.rs',),
         'agent.reports planning.onboarding execution.commands.onboarding apple.onboarding execution.agent.delivery execution.agent.poll execution.agent.recovery')
-consume(('crates/agent-wire/schema/managed-registration-request-v4.schema.json',),
+consume(('crates/agent-wire/schema/managed-registration-request-v5.schema.json',),
         'execution.commands.onboarding apple.onboarding')
 # Native onboarding shares one durable installation and managed-registration owner.
 consume(('crates/flow-service/src/execution/agent_install.rs',
@@ -1078,4 +1079,9 @@ def select_paths(paths):
 
 MODULES['execution.commands.windows'] = replace(MODULES['execution.commands.windows'], production_inputs=(*MODULES['execution.commands.windows'].production_inputs, 'crates/flow-service/src/execution/directory.rs', 'crates/management-http/src/execution/http.rs'), support_inputs=(*MODULES['execution.commands.windows'].support_inputs, 'crates/app/tests/support/agent_execution.rs'))
 
+MODULES['windows.management'] = replace(MODULES['windows.management'], test_inputs=(*MODULES['windows.management'].test_inputs, 'crates/app/tests/windows/collection.rs'), production_inputs=(*MODULES['windows.management'].production_inputs, 'crates/windows-channel/src/template_collection.rs'))
 consume(("crates/software-service/tests/support/imports.rs",), "software.catalog")
+
+consume(('crates/flow-service/src/execution/actions/output.rs',), 'execution.agent.delivery')
+consume(('crates/flow-service/src/execution/actions/native_collection.rs',
+         'crates/flow-service/src/execution/actions/recovery.rs'), 'windows.management apple.collection')

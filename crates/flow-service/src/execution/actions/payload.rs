@@ -7,6 +7,14 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 impl FrozenAction {
+    pub fn executor_profile(&self) -> wire::ExecutorProfile {
+        match self.definition.spec().profile {
+            r::ScriptProfile::PowerShell7 => wire::ExecutorProfile::PowerShell7,
+            r::ScriptProfile::PosixSh => wire::ExecutorProfile::PosixSh,
+            r::ScriptProfile::Bash => wire::ExecutorProfile::Bash,
+            r::ScriptProfile::Osquery => wire::ExecutorProfile::Osquery,
+        }
+    }
     pub fn task(
         &self,
         tenant: Uuid,
@@ -61,11 +69,19 @@ impl FrozenAction {
             expires_at: expiry,
             resource_digest: self.resource_digest,
             content: self.content.clone(),
-            profile: match spec.profile {
-                r::ScriptProfile::PowerShell7 => wire::ExecutorProfile::PowerShell7,
-                r::ScriptProfile::PosixSh => wire::ExecutorProfile::PosixSh,
-                r::ScriptProfile::Bash => wire::ExecutorProfile::Bash,
-                r::ScriptProfile::OsqueryInfoV1 => wire::ExecutorProfile::OsqueryInfoV1,
+            profile: self.executor_profile(),
+            sql_parameters: if spec.sql.is_some() {
+                Some(
+                    self.input
+                        .parameters
+                        .as_object()
+                        .ok_or(Error::Malformed)?
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                )
+            } else {
+                None
             },
             run_as: match spec.run_as {
                 r::RunAs::System => wire::ExecutionIdentity::System,

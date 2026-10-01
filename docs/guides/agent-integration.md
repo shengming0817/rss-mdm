@@ -8,7 +8,7 @@
 
 ```json
 {
-  "wireVersion": 4,
+  "wireVersion": 5,
   "operationId": "非 nil UUID",
   "enrollmentId": "管理员返回的 UUID",
   "password": "43 字符无填充 Base64URL",
@@ -24,52 +24,40 @@
     "msixSideload": false,
     "msixUnsigned": false
   },
-  "capabilities": ["inventory.basic.v4"]
+  "capabilities": ["inventory.collect.v5"]
 }
 ```
 
-V4 capability 按顺序声明库存基础能力，以及脚本 `task.execute.v4`、软件具体格式/作用域 profile（例如 `software.exe.system.v4`、`software.msix.registration.user.v4`、`software.msix.provisioning.system.v4`） 中实际支持的能力；还可声明标准注册入口能力 `mdm.enrollment.v4`，能力按协议规定顺序排列。仅库存注册访问任务返回 permission denied。平台和架构绑定在注册世代中，服务端据此选择精确任务变体，Agent 仍须用本机真实 OS/架构核验签名任务；声明本身不是受检硬件事实。V3 请求和路由不接受，不提供旧版解码或降级执行。
+V5 capability 按顺序声明库存基础能力，以及脚本 `task.execute.v5`、软件具体格式/作用域 profile（例如 `software.exe.system.v5`、`software.msix.registration.user.v5`、`software.msix.provisioning.system.v5`） 中实际支持的能力；还可声明标准注册入口能力 `mdm.enrollment.v5`，能力按协议规定顺序排列。仅库存注册访问任务返回 permission denied。平台和架构绑定在注册世代中，服务端据此选择精确任务变体，Agent 仍须用本机真实 OS/架构核验签名任务；声明本身不是受检硬件事实。V3 请求和路由不接受，不提供旧版解码或降级执行。
 
-`POST /api/agent/v4/registrations` 仅接受 `Content-Type: application/json`，成功首次提交返回 201，精确重放返回 200；同 operationId 改变内容返回 409。绑定事务同时验证原管理员当前会话和 enrollment 权限、channel、口令版本、期限与世代，保存注册/来源/capability/成功审计并将 Enrollment 标为 bound。数据库只保存 tenant 域隔离的 SHA-256 locator，不保存 credential 明文。
+`POST /api/agent/v5/registrations` 仅接受 `Content-Type: application/json`，成功首次提交返回 201，精确重放返回 200；同 operationId 改变内容返回 409。绑定事务同时验证原管理员当前会话和 enrollment 权限、channel、口令版本、期限与世代，保存注册/来源/capability/成功审计并将 Enrollment 标为 bound。数据库只保存 tenant 域隔离的 SHA-256 locator，不保存 credential 明文。
 
 同一设备再次完成 Agent 注册会建立下一世代并原子停用旧注册、旧 credential 和旧来源。MDM channel 世代相互独立。管理员撤销仍使用 `/api/v3/devices/{device}/registrations/{registration}/revoke` 和独立 `credentials` 权限。
 ## 报告与状态
 
-报告请求使用严格的 `Authorization: Bearer <credential>`：
+报告请求使用严格的 `Authorization: Bearer <credential>`。V5 注册回执的 `collections` 返回服务端选择的冻结采集定义；报告必须携带对应完整 `collection` 对象，以及 wireVersion、reportId、sequence、observedAt、body。Agent 按 dataset 选择回执中的定义，不能自行增加字段或来源。普通字段值示例：
 
 ```json
-{
-  "wireVersion": 4,
-  "reportId": "非 nil UUID",
-  "sequence": 0,
-  "observedAt": 1780000000,
-  "body": {
-    "kind": "snapshot",
-    "values": [
-      {"field": "device.model", "value": {"kind": "known", "value": "Model A"}},
-      {"field": "device.os.version", "value": {"kind": "unsupported"}}
-    ]
-  }
-}
+{"field":"device.model","value":{"kind":"value","value":{"kind":"string","value":"Model A"}}}
 ```
 
-V4 基础库存接受 snapshot、partial、failed；通道状态使用独立的 mdmEnrollment 报告，不接受 delta。所有 UUID 使用小写 hyphenated 词法，`reportId` 在 tenant 内全局唯一；字段仅为 `device.model` 和 `device.os.version`；known 文本最多 256 个 Unicode 标量，snapshot/partial 中字段会规范排序，重复字段、未知字段、未知 JSON 成员和控制字符均拒绝。`POST /api/agent/v4/reports` 在不可变报告、摘要和成功审计提交后返回 202/durable；相同 reportId 与相同语义返回原 receivedAt，不同语义返回 409。
+snapshot、partial、failed 分别表达完整快照、部分结果和失败。空的成功快照与未执行、失败不同。通道状态也使用目录中声明的普通字段；不存在 `mdmEnrollment` 报告特例。字段身份、类型、来源和预算由冻结的定义决定，重复字段、定义外字段和未知 JSON 成员被拒绝。`POST /api/agent/v5/reports` 在不可变报告、摘要和成功审计提交后返回 202/durable；相同 reportId 与相同语义返回原 receivedAt，不同语义返回 409。
 
 待投递报告达到有界容量时返回 service_unavailable，优先恢复既有 reportId。历史裁剪不得删除 pending 报告。Agent 与 Windows MDM 均由 `collection_runs` 持有不可变报告和最小交付进度，不存在第二套报告队列或 owner 分支。
 
 恢复及 Agent 状态读取共同核对持久报告的 tenant、registration、source、epoch、dataset、reportId、sequence、coverage、规范字节和摘要，并要求报告已封存；数据库关系列与冻结报告内容不一致时拒绝恢复。
 
-后台沿用唯一的 Inventory 运行时：持久报告恢复后提交 Observation，snapshot 可进入投影；partial/failed 形成 need-snapshot 决策而不投影。`GET /api/agent/v4/reports/{reportId}` 只允许当前有效 credential 读取当前注册/epoch 内的报告，返回 durable ack、Observation 状态与 Projection 状态。credential 被替换或撤销后，新报告和状态读取立即返回 401；替换前已提交的不可变报告仍可由后台恢复投递。
+后台沿用唯一的 Inventory 运行时：保存不可变完整 CollectionRun 结果，通过有界摘要引用提交 Observation。产品投影验证引用和来源后应用成功字段；部分结果与失败不能清空旧事实，只有完整快照或显式 tombstone 能删除对应来源旧项。`GET /api/agent/v5/reports/{reportId}` 只允许当前有效 credential 读取当前注册/epoch 内的报告，返回 durable ack、Observation 状态与 Projection 状态。credential 被替换或撤销后，新报告和状态读取立即返回 401；替换前已提交的不可变报告仍可由后台恢复投递。
 
-协议拒绝保留独立错误类别，不返回内部诊断或秘密。当前无已部署旧 Agent 的升级承诺；新注册须使用 V4，见 [运维](../deployment/operations.md)。企业任务签名、领取与启动许可见 [企业任务](enterprise-tasks.md)。
+协议拒绝保留独立错误类别，不返回内部诊断或秘密。当前无已部署旧 Agent 的升级承诺；新注册须使用 V5，见 [运维](../deployment/operations.md)。企业任务签名、领取与启动许可见 [企业任务](enterprise-tasks.md)。
 
 ## 由原生 MDM 安装后首次注册
 
-启用固定 Agent 安装策略后，安装器只获得公开的 installationOperation。Agent 自行生成并持久保存长期 credential 和 operationId，通过原生 MDM **实际客户端证书**在对应 Windows/Apple 管理 TLS 监听器调用 `POST /api/agent/v4/managed-registrations`：
+启用固定 Agent 安装策略后，安装器只获得公开的 installationOperation。Agent 自行生成并持久保存长期 credential 和 operationId，通过原生 MDM **实际客户端证书**在对应 Windows/Apple 管理 TLS 监听器调用 `POST /api/agent/v5/managed-registrations`：
 
 ```json
 {
-  "wireVersion": 4,
+  "wireVersion": 5,
   "operationId": "非 nil UUID，重试保持不变",
   "installationOperation": "原生安装 Operation UUID",
   "credential": "Agent 自行生成的 43 字符无填充 Base64URL",
@@ -84,7 +72,7 @@ V4 基础库存接受 snapshot、partial、failed；通道状态使用独立的 
     "msixSideload": false,
     "msixUnsigned": false
   },
-  "capabilities": ["inventory.basic.v4", "mdm.enrollment.v4"]
+  "capabilities": ["inventory.collect.v5", "mdm.enrollment.v5"]
 }
 ```
 
@@ -94,14 +82,16 @@ V4 基础库存接受 snapshot、partial、failed；通道状态使用独立的 
 
 ## Agent 上报本机 MDM 状态
 
-具有 `mdm.enrollment.v4` 的 Agent 用 `/reports` 提交 `body:{"kind":"mdmEnrollment","state":"unenrolled"}`；其它闭合状态为 `this_organization`、`other_organization`、`unknown`。sequence 仍属于该 Agent 来源的单调报告序列。该事实进入现有 CollectionRun、Observation、Inventory，字段为 `channel.mdm.enrollment`。标准入口任务的结果只说明入口是否打开，完成注册须由后续本机观察证明。
+具有 `mdm.enrollment.v5` 的 Agent 用 `/reports` 提交注册回执中对应的冻结 `collection`，并以 `body:{"kind":"snapshot","values":[{"field":"channel.mdm.enrollment","value":{"kind":"value","value":{"kind":"string","value":"unenrolled"}}}]}` 上报普通字段；其它闭合状态为 `this_organization`、`other_organization`、`unknown`。部分采集使用 `partial`，sequence 按该冻结采集定义的来源与 dataset 单调递增。该事实进入现有 CollectionRun、Observation、Inventory，字段为 `channel.mdm.enrollment`。标准入口任务的结果只说明入口是否打开，完成注册须由后续本机观察证明。
 
 ## #2534 的 V3 → V4 无兼容退出决定
 
-本次基线为 `1261f13`，V3 schema 指纹 `e4930817fec8a3032d9b3d144a4992c67bb45a89ffdecb0f08ca24e0ffbbc4c5`，V4 指纹 `925c5a7438f2a483fa280b5d5f8e26bcd451afa7d9a09c7a6129f37a155e40e0`。用户对 #2534 明确要求不向后兼容：V3 路由、schema、签名域和 capability 退出，所有 Agent 消费者须切换到 V4；不提供代理重写、双解码或旧执行许可。管理 HTTP API 的版本不随 Agent wire 一起变化。
+以下记录仅描述 #2534 当时的 V3→V4 退出决定；当前接入使用上文 V5 合同。该次基线为 `1261f13`，V3 schema 指纹 `e4930817fec8a3032d9b3d144a4992c67bb45a89ffdecb0f08ca24e0ffbbc4c5`，V4 指纹 `925c5a7438f2a483fa280b5d5f8e26bcd451afa7d9a09c7a6129f37a155e40e0`。用户对 #2534 明确要求不向后兼容：V3 路由、schema、签名域和 capability 退出，所有 Agent 消费者须切换到 V4；不提供代理重写、双解码或旧执行许可。管理 HTTP API 的版本不随 Agent wire 一起变化。
 
 V4 共 13 个网络 shape，新增 ManagedRegistrationRequest，并扩展通道观察和标准注册入口任务。当前数据库安装准入只接受空库或完整当前账本，不提供旧 Agent 注册数据的在线转换。固定签名 MSI/公证 PKG 及真实系统证书使用分别由 #2535/#2536 和 #2480/#2481 验证；本次受控协议样本不证明生产安装包或真机已可用。
 
+## 当前 V5 软件执行上下文与结果
+
 全部 Agent 注册（包括仅库存注册、托管安装注册）以及软件任务请求都必须包含完整 executionContext：递增 revision、OS 数字版本、systemBroker、明确 interactiveUser（没有会话时为 null）、来源范围只读凭据引用，以及 MSIX sideload/unsigned 能力。用户绑定包括精确 SID/UID 与 sessionId；上下文变化须使用更高 revision，旧 Offer 不能启动。每个依赖步骤分别检查 profile、执行上下文和材料；没有通用软件能力兜底。
 
-软件结果是绑定 definitionDigest 的逐步骤证据：index/stepDigest、target、package、native identity、独立 before/after 检测、process、重启及诊断。MSIX 注册与 provisioning 使用不同 identity 变体，错误步骤、用户会话、包身份或作用域拒绝投影。退出码不能代替独立检测；Unknown 保留原任务恢复身份。wire 保持 v4，只维护当前软件 shape 与指纹，消费方须更新精确依赖。
+软件结果是绑定 definitionDigest 的逐步骤证据：index/stepDigest、target、package、native identity、独立 before/after 检测、process、重启及诊断。MSIX 注册与 provisioning 使用不同 identity 变体，错误步骤、用户会话、包身份或作用域拒绝投影。退出码不能代替独立检测；Unknown 保留原任务恢复身份。当前 wire 为 V5，只维护当前软件 shape 与指纹，消费方须更新精确依赖。

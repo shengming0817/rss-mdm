@@ -155,6 +155,19 @@ pub enum Action {
         /// Maximum lifetime of each admitted run, from 60 seconds through seven days.
         run_lifetime_seconds: u32,
     },
+    /// A native MDM read template using the same schedule and membership frequency.
+    NativeCollection {
+        /// Exact immutable native template.
+        resource: ResourceBinding,
+        #[serde(default = "default_schedule")]
+        /// Calendar and check-in trigger.
+        schedule: Schedule,
+        #[serde(default)]
+        /// Existing Policy execution frequency.
+        frequency: Frequency,
+        /// Lifetime of the accepted collection.
+        run_lifetime_seconds: u32,
+    },
     /// A persistent native configuration without a script schedule.
     Configuration {
         /// Exact immutable native configuration resource.
@@ -356,6 +369,7 @@ impl Action {
     pub const fn kind(&self) -> &'static str {
         match self {
             Self::Execution { .. } => "execution",
+            Self::NativeCollection { .. } => "native_collection",
             Self::Configuration { .. } => "configuration",
             Self::Software { .. } => "software",
             Self::EnsureAgentInstalled { .. } => "ensure_agent_installed",
@@ -366,7 +380,8 @@ impl Action {
     /// Resource reference only for actions that actually consume a resource.
     pub fn resource(&self) -> Option<&ResourceBinding> {
         match self {
-            Self::Execution { resource, .. }
+            Self::NativeCollection { resource, .. }
+            | Self::Execution { resource, .. }
             | Self::Configuration { resource, .. }
             | Self::Software { resource, .. }
             | Self::EnsureAgentInstalled { resource, .. } => Some(resource),
@@ -387,6 +402,11 @@ impl Action {
         }
         match self {
             Action::Execution {
+                schedule,
+                run_lifetime_seconds,
+                ..
+            }
+            | Action::NativeCollection {
                 schedule,
                 run_lifetime_seconds,
                 ..

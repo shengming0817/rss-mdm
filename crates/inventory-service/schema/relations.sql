@@ -3,7 +3,7 @@ BEGIN;
 -- Inventory publishes collection changes through the SDK history contract.
 ALTER TABLE mdm.asset_changes DROP CONSTRAINT asset_changes_kind_check;
 ALTER TABLE mdm.asset_changes ADD CONSTRAINT asset_changes_kind_check
- CHECK(kind IN ('inventory','manual','device','registration','source','credential','collection'));
+ CHECK(kind IN ('inventory','manual','device','registration','source','credential','collection','catalog'));
 SET LOCAL check_function_bodies = false;
 
 CREATE TRIGGER collection_history AFTER INSERT OR DELETE OR UPDATE ON mdm_access.collection_runs FOR EACH ROW EXECUTE FUNCTION mdm_access.capture_collection_history();
@@ -265,4 +265,11 @@ BEGIN
  RETURN v;
 END $$;
 
+GRANT USAGE ON SCHEMA mdm TO mdm_access,mdm_command_runtime;
+GRANT SELECT ON mdm.field_versions TO mdm_access,mdm_command_runtime;
+GRANT SELECT,INSERT ON mdm.field_versions TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON mdm.collection_definitions TO mdm_access,mdm_command_runtime,mdm_flow_runtime;
+GRANT SELECT,INSERT ON mdm.collection_results TO mdm_access,mdm_command_runtime;
+GRANT EXECUTE ON FUNCTION mdm.record_asset_change(uuid,text,jsonb,text[]) TO mdm_flow_runtime;
+GRANT UPDATE(evidence) ON mdm_access.collection_runs TO mdm_access,mdm_command_runtime;
 COMMIT;

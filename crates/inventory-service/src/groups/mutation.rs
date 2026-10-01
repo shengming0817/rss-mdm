@@ -30,9 +30,10 @@ impl Groups {
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         op: &Operation<GroupChange>,
-        at: Timepoint,
+        context: (Timepoint, bool),
         flow: &dyn Flow,
     ) -> Result<Value> {
+        let (at, sensitive) = context;
         let group = checked_input(pg::GroupId::parse(&id.to_string()))?;
         let operation = checked_input(pg::OperationId::parse(&op.operation_id.to_string()))?;
         let expected = || {
@@ -40,6 +41,16 @@ impl Groups {
                 i64::try_from(op.expected_revision).map_err(|_| Error::Malformed)?,
             ))
         };
+        let catalog = crate::assets::catalog_in(tx, self.tenant, i64::MAX).await?;
+        match &op.input {
+            GroupChange::Create {
+                criteria: Some(c), ..
+            }
+            | GroupChange::Rule { criteria: c } => {
+                assets::filter::require_visible(&catalog, c, sensitive)?
+            }
+            _ => (),
+        }
         let command = match &op.input {
             GroupChange::Create {
                 name,
@@ -59,6 +70,7 @@ impl Groups {
                             self.tenant,
                             op.operation_id,
                             c,
+                            &catalog,
                         )?)),
                     },
                 }
@@ -72,7 +84,7 @@ impl Groups {
             GroupChange::Rule { criteria } => pg::Command::SetRule {
                 group,
                 expected: expected()?,
-                rule: rule(self.tenant, op.operation_id, criteria)?,
+                rule: rule(self.tenant, op.operation_id, criteria, &catalog)?,
             },
             GroupChange::Members { add, remove } => {
                 if add.len() + remove.len() > 1000 {
@@ -139,6 +151,9 @@ impl Groups {
         };
         let receipt = checked(self.groups.execute_in(tx, operation, at, &command).await?)?;
         crate::compliance::group_changed(tx, id).await?;
+        if matches!(op.input, GroupChange::Delete) {
+            self.register_fields_in(tx, id, None).await?;
+        }
         let criteria = match &op.input {
             GroupChange::Create { criteria, .. } => Some(criteria.as_ref()),
             GroupChange::Rule { criteria } => Some(Some(criteria)),
@@ -219,6 +234,18 @@ impl Groups {
         if let Some(criteria) = criteria {
             collect(criteria, &mut fields);
         }
+        let catalog = assets::catalog_in(tx, self.tenant, i64::MAX).await?;
+        let fields = fields
+            .into_iter()
+            .map(|name| {
+                let key = checked_input(assets::FieldKey::parse(&name))?;
+                Ok(checked_input(catalog.path(key))?
+                    .root
+                    .key
+                    .as_str()
+                    .to_owned())
+            })
+            .collect::<Result<std::collections::BTreeSet<_>>>()?;
         let tenant = self.tenant.to_string();
         let fields: Vec<_> = fields.into_iter().collect();
         tx.with_connection(move |c|Box::pin(async move {

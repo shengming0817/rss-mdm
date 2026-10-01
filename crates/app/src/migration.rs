@@ -199,6 +199,10 @@ fn units() -> Vec<(&'static str, &'static str)> {
             "asset-watermark-fence-v1",
             rss_mdm_inventory_postgres::WATERMARK_FENCE_MIGRATION_SQL,
         ),
+        (
+            "inventory-unified-v2",
+            rss_mdm_inventory_postgres::UNIFIED_COLLECTION_SQL,
+        ),
         ("compliance-v1", rss_mdm_compliance_postgres::MIGRATION_SQL),
         (
             "authorization-service-schema-v1",

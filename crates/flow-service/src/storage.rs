@@ -7,9 +7,12 @@ pub async fn admit(runtime: &PgRuntime, tenant: TenantId) -> std::result::Result
     runtime
         .local_tx(tenant, deadline(), |tx| {
             Box::pin(async move {
-                admit_in(tx)
-                    .await
-                    .map_err(|_| sqlx::Error::Protocol("host storage admission".into()).into())
+                admit_in(tx).await.map_err(|error| {
+                    #[cfg(feature = "integration")]
+                    eprintln!("host storage admission: {error:?}");
+                    let _ = error;
+                    sqlx::Error::Protocol("host storage admission".into()).into()
+                })
             })
         })
         .await
@@ -109,6 +112,7 @@ pub async fn admit_in(tx: &mut PgTransaction<'_>) -> Result<()> {
             })
             .await?;
         if !valid {
+            eprintln!("capability authority rejected: {owner}");
             return Err(Error::Unavailable(Failure::FlowAdmission).into());
         }
         let raw = tx

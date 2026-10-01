@@ -33,7 +33,7 @@ fn accepted<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
     }
     Ok(true)
 }
-fn required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+pub(crate) fn required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,
@@ -186,6 +186,10 @@ pub enum TaskEvent {
     Cancelled,
     /// Process evidence. Successful exit alone does not prove the requested side effect.
     Result(TaskResult),
+    /// A bounded fragment of a collection output; never a terminal snapshot.
+    OutputChunk(crate::OutputChunk),
+    /// Terminal evidence whose output must be fully assembled and verified.
+    ChunkedResult(crate::ChunkedTaskResult),
     /// Independent software detection evidence after local software-plan execution.
     SoftwareResult(SoftwareTaskResult),
     /// Only the enrollment UI outcome; active MDM registration is server-owned.
@@ -359,7 +363,7 @@ impl TaskResult {
             || serde_json::to_vec(&output)
                 .map_err(|_| WireError::InvalidValue)?
                 .len()
-                > 1_048_576
+                > crate::OUTPUT_MAX_BYTES
         {
             return Err(WireError::InvalidValue);
         }
@@ -474,6 +478,7 @@ struct ClaimInput {
     wire_version: u8,
     #[serde(with = "strict_uuid")]
     operation_id: Uuid,
+    profiles: Vec<ExecutorProfile>,
     execution_context: SoftwareExecutionContext,
 }
 impl From<TaskClaimRequest> for ClaimInput {
@@ -487,24 +492,36 @@ impl TryFrom<ClaimInput> for TaskClaimRequest {
         if v.wire_version != WIRE_VERSION {
             return Err(WireError::InvalidValue);
         }
-        Self::new(v.operation_id, v.execution_context)
+        Self::new(v.operation_id, v.profiles, v.execution_context)
     }
 }
 impl TaskClaimRequest {
     /// Construct one bounded poll with a stable retry identity.
     pub fn new(
         operation_id: Uuid,
+        profiles: Vec<ExecutorProfile>,
         execution_context: SoftwareExecutionContext,
     ) -> Result<Self, WireError> {
         execution_context.validate()?;
-        if operation_id.is_nil() {
+        if operation_id.is_nil()
+            || profiles.len() > 4
+            || profiles
+                .iter()
+                .enumerate()
+                .any(|(i, p)| profiles[..i].contains(p))
+        {
             return Err(WireError::InvalidValue);
         }
         Ok(Self(ClaimInput {
             wire_version: WIRE_VERSION,
             operation_id,
+            profiles,
             execution_context,
         }))
+    }
+    /// Currently configured controlled executors; an empty list still receives cancellations.
+    pub fn profiles(&self) -> &[ExecutorProfile] {
+        &self.0.profiles
     }
     /// Exact current context included in the operation fingerprint.
     pub fn execution_context(&self) -> &SoftwareExecutionContext {
@@ -525,8 +542,8 @@ pub enum ExecutorProfile {
     PosixSh,
     /// Bash on macOS.
     Bash,
-    /// Fixed version-only osquery query.
-    OsqueryInfoV1,
+    /// Bound query from a published read-only SQL template.
+    Osquery,
 }
 /// Required operating-system execution identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -591,6 +608,8 @@ pub struct TaskSpec {
     pub content: TaskContent,
     /// Fixed interpreter profile.
     pub profile: ExecutorProfile,
+    /// Literal parameters for the signed SQL template artifact; no free-form query text.
+    pub sql_parameters: Option<BTreeMap<String, serde_json::Value>>,
     /// Required execution identity.
     pub run_as: ExecutionIdentity,
     /// Literal arguments, with no shell interpolation.
@@ -629,8 +648,8 @@ impl TaskSpec {
             || self.content.length == 0
             || self.content.length > 16_777_216
             || !(1..=3600).contains(&self.timeout_seconds)
-            || !(1..=1_048_576).contains(&self.output_bytes)
-            || !(1..=1000).contains(&self.max_rows)
+            || !(1..=16_777_216).contains(&self.output_bytes)
+            || self.max_rows == 0
             || self.arguments.len() > 64
             || self.environment.len() > 32
             || self
@@ -644,11 +663,28 @@ impl TaskSpec {
                     || key.len() > 64
                     || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
             })
-            || (self.profile == ExecutorProfile::OsqueryInfoV1
+            || (self.profile == ExecutorProfile::Osquery
                 && (!self.arguments.is_empty()
                     || !self.environment.is_empty()
-                    || self.max_rows != 1
+                    || self.sql_parameters.as_ref().is_none_or(|p| {
+                        p.len() > 32
+                            || !serde_json::to_vec(p).is_ok_and(|b| b.len() <= 65536)
+                            || p.iter().any(|(k, v)| {
+                                k.is_empty()
+                                    || k.len() > 64
+                                    || !k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                                    || match v {
+                                        serde_json::Value::String(s) => {
+                                            s.len() > 4096 || s.contains('\0')
+                                        }
+                                        serde_json::Value::Bool(_) => false,
+                                        serde_json::Value::Number(n) => n.as_i64().is_none(),
+                                        _ => true,
+                                    }
+                            })
+                    })
                     || self.run_as != ExecutionIdentity::System))
+            || (self.profile != ExecutorProfile::Osquery && self.sql_parameters.is_some())
         {
             return Err(WireError::InvalidValue);
         }
@@ -665,7 +701,7 @@ impl TaskSpec {
         {
             return Err(WireError::InvalidValue);
         }
-        let mut bytes = b"rss-mdm-agent-script-task-v4-ed25519\0".to_vec();
+        let mut bytes = b"rss-mdm-agent-script-task-v5-ed25519\0".to_vec();
         bytes.extend((key_id.len() as u32).to_be_bytes());
         bytes.extend(key_id.as_bytes());
         bytes.extend(serde_json::to_vec(self).map_err(|_| WireError::InvalidValue)?);
@@ -799,41 +835,41 @@ impl SoftwareTaskAction {
             })
         };
         match &self.behavior {
-            B::Msi(n) => native(n.scope, C::SoftwareMsiSystemV4, C::SoftwareMsiUserV4),
-            B::Pkg(n) if n.scope == S::System => Some(C::SoftwarePkgSystemV4),
+            B::Msi(n) => native(n.scope, C::SoftwareMsiSystemV5, C::SoftwareMsiUserV5),
+            B::Pkg(n) if n.scope == S::System => Some(C::SoftwarePkgSystemV5),
             B::Pkg(_) => None,
-            B::Winget(n) => native(n.scope, C::SoftwareWingetSystemV4, C::SoftwareWingetUserV4),
-            B::Brew(n) if n.scope == S::User => Some(C::SoftwareBrewBottleUserV4),
+            B::Winget(n) => native(n.scope, C::SoftwareWingetSystemV5, C::SoftwareWingetUserV5),
+            B::Brew(n) if n.scope == S::User => Some(C::SoftwareBrewBottleUserV5),
             B::Brew(_) => None,
-            B::Exe(n) => native(n.scope, C::SoftwareExeSystemV4, C::SoftwareExeUserV4),
+            B::Exe(n) => native(n.scope, C::SoftwareExeSystemV5, C::SoftwareExeUserV5),
             B::Bundle(n) => Some(match (platform, n.install.invocation.run_as) {
                 (TaskPlatform::Windows, ExecutionIdentity::System) => {
-                    C::SoftwareBundleWindowsSystemV4
+                    C::SoftwareBundleWindowsSystemV5
                 }
                 (TaskPlatform::Windows, ExecutionIdentity::LoggedInUser) => {
-                    C::SoftwareBundleWindowsUserV4
+                    C::SoftwareBundleWindowsUserV5
                 }
-                (TaskPlatform::Macos, ExecutionIdentity::System) => C::SoftwareBundleMacosSystemV4,
+                (TaskPlatform::Macos, ExecutionIdentity::System) => C::SoftwareBundleMacosSystemV5,
                 (TaskPlatform::Macos, ExecutionIdentity::LoggedInUser) => {
-                    C::SoftwareBundleMacosUserV4
+                    C::SoftwareBundleMacosUserV5
                 }
             }),
             B::Dmg(n) => match (&n.payload, n.scope) {
                 (SoftwareTaskDmgPayload::AppCopy { .. }, S::System) => {
-                    Some(C::SoftwareDmgAppSystemV4)
+                    Some(C::SoftwareDmgAppSystemV5)
                 }
-                (SoftwareTaskDmgPayload::AppCopy { .. }, S::User) => Some(C::SoftwareDmgAppUserV4),
+                (SoftwareTaskDmgPayload::AppCopy { .. }, S::User) => Some(C::SoftwareDmgAppUserV5),
                 (SoftwareTaskDmgPayload::ContainedPkg { .. }, S::System) => {
-                    Some(C::SoftwareDmgPkgSystemV4)
+                    Some(C::SoftwareDmgPkgSystemV5)
                 }
                 _ => None,
             },
             B::Msix(n) => Some(match n.deployment {
                 SoftwareTaskMsixDeployment::TargetUserRegistration { .. } => {
-                    C::SoftwareMsixRegistrationUserV4
+                    C::SoftwareMsixRegistrationUserV5
                 }
                 SoftwareTaskMsixDeployment::DeviceProvisioning => {
-                    C::SoftwareMsixProvisioningSystemV4
+                    C::SoftwareMsixProvisioningSystemV5
                 }
             }),
         }
@@ -972,7 +1008,7 @@ impl SoftwareTaskSpec {
         {
             return Err(WireError::InvalidValue);
         }
-        let mut bytes = b"rss-mdm-agent-software-task-v4-ed25519\0".to_vec();
+        let mut bytes = b"rss-mdm-agent-software-task-v5-ed25519\0".to_vec();
         bytes.extend((key_id.len() as u32).to_be_bytes());
         bytes.extend(key_id.as_bytes());
         bytes.extend(serde_json::to_vec(self).map_err(|_| WireError::InvalidValue)?);

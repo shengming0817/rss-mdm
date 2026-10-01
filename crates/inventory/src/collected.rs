@@ -1,7 +1,7 @@
-//! Current internal Observation payload. It does not change the device protocol.
-use crate::{FieldKey, Invalid, Result};
+//! Canonical typed Observation value; source identity comes from the authenticated stream.
+use crate::{FieldDefinition, Invalid, Result, Scalar};
 use serde::{Deserialize, Serialize};
-/// A definitive collected outcome; ordinary failed/partial attempts remain quality evidence.
+/// Definitive per-field outcome. Failed/missing attempts never delete a last-known fact.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -10,41 +10,32 @@ use serde::{Deserialize, Serialize};
     deny_unknown_fields
 )]
 pub enum CollectedValue {
-    /// Valid nonempty standard text.
-    Known(String),
-    /// Typed scalar from an enterprise task.
-    Scalar(crate::Scalar),
-    /// The existing channel explicitly cannot implement the requested field Get.
+    /// Typed value validated against the frozen field version.
+    Value(Scalar),
+    /// Explicit legal null.
+    Null,
+    /// Explicit removal of this source's field; never inferred from failure.
+    Deleted,
+    /// Collector explicitly cannot provide this field.
     Unsupported,
 }
 impl CollectedValue {
-    /// Encode the current closed payload after validating its catalog field.
-    pub fn encode(&self, field: FieldKey) -> Result<Vec<u8>> {
-        self.validate(field)?;
+    /// Encode only the current schema after checking its frozen field definition.
+    pub fn encode(&self, definition: &FieldDefinition) -> Result<Vec<u8>> {
+        self.validate(definition)?;
         serde_json::to_vec(self).map_err(|_| Invalid::Encoding)
     }
-    /// Decode only the current payload; no legacy text fallback.
-    pub fn decode(field: FieldKey, bytes: &[u8]) -> Result<Self> {
+    /// Decode only the current typed schema; no legacy scalar/text fallback.
+    pub fn decode(definition: &FieldDefinition, bytes: &[u8]) -> Result<Self> {
         let value: Self = serde_json::from_slice(bytes).map_err(|_| Invalid::Encoding)?;
-        value.validate(field)?;
+        value.validate(definition)?;
         Ok(value)
     }
-    fn validate(&self, field: FieldKey) -> Result<()> {
-        if field.is_manual() {
-            return Err(Invalid::SourceNotAllowed);
+    fn validate(&self, definition: &FieldDefinition) -> Result<()> {
+        match self {
+            Self::Value(v) => definition.validate_scalar(v),
+            Self::Null if !definition.nullable => Err(Invalid::TypeMismatch),
+            _ => Ok(()),
         }
-        if field.is_enterprise() {
-            return match self {
-                Self::Scalar(value) => field.validate_scalar(value),
-                _ => Err(Invalid::TypeMismatch),
-            };
-        }
-        if matches!(self, Self::Scalar(_)) {
-            return Err(Invalid::TypeMismatch);
-        }
-        if let Self::Known(s) = self {
-            field.validate_scalar(&crate::Scalar::String(s.clone()))?;
-        }
-        Ok(())
     }
 }

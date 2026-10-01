@@ -211,8 +211,8 @@ impl DeviceService {
         let registration = uuid(&row, "id")?;
         let row=sqlx::query("SELECT device,generation,channel FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2::uuid AND channel=$3 AND state='active' FOR SHARE")
             .bind(&tenant).bind(registration.to_string()).bind(credential.channel.as_str()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
-        let child=sqlx::query("SELECT c.id::text AS id,s.epoch::text AS epoch FROM mdm_access.credentials c JOIN mdm_access.report_sources s ON (s.tenant_id,s.registration)=(c.tenant_id,c.registration) WHERE c.tenant_id=$1::uuid AND c.registration=$2::uuid AND c.channel=$3 AND c.locator=$4 AND c.state='active' AND s.source=$5 AND s.coverage=$6 AND s.enabled FOR SHARE OF c,s")
-            .bind(&tenant).bind(registration.to_string()).bind(credential.channel.as_str()).bind(locator(credential)).bind(source.as_str()).bind(coverage_key()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
+        let child=sqlx::query("SELECT c.id::text AS id,s.epoch::text AS epoch FROM mdm_access.credentials c JOIN mdm_access.report_sources s ON (s.tenant_id,s.registration)=(c.tenant_id,c.registration) WHERE c.tenant_id=$1::uuid AND c.registration=$2::uuid AND c.channel=$3 AND c.locator=$4 AND c.state='active' AND s.source=$5 AND s.enabled FOR SHARE OF c,s")
+            .bind(&tenant).bind(registration.to_string()).bind(credential.channel.as_str()).bind(locator(credential)).bind(source.as_str()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
         let principal = DevicePrincipal {
             tenant: credential.tenant,
             device: row.try_get("device").map_err(db)?,
@@ -245,8 +245,8 @@ impl DeviceService {
             Some(device),
         )?;
         let mut tx = self.access.begin(proof.tenant_id()).await?;
-        let row=sqlx::query("SELECT r.id::text AS id,s.epoch::text AS epoch FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON (s.tenant_id,s.registration)=(r.tenant_id,r.id) JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel=$3 AND r.state='active' AND c.state='active' AND s.source=$4 AND s.coverage=$5 AND s.enabled")
-            .bind(proof.tenant_id()).bind(device).bind(coordinates.source.channel().as_str()).bind(coordinates.source.as_str()).bind(coverage_key()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::NotFound)?;
+        let row=sqlx::query("SELECT r.id::text AS id,s.epoch::text AS epoch FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON (s.tenant_id,s.registration)=(r.tenant_id,r.id) JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel=$3 AND r.state='active' AND c.state='active' AND s.source=$4 AND s.enabled")
+            .bind(proof.tenant_id()).bind(device).bind(coordinates.source.channel().as_str()).bind(coordinates.source.as_str()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::NotFound)?;
         let scope = scope(
             TenantId::parse(proof.tenant_id()).map_err(|_| Error::Unauthorized)?,
             uuid(&row, "id")?,
@@ -402,8 +402,8 @@ pub(crate) async fn bind_authorized_in(
             .bind(tenant).bind(receipt.registration.to_string()).bind(&receipt.device).bind(receipt.channel.as_str()).bind(generation).bind(command.request_id.to_string()).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,'active')")
             .bind(tenant).bind(receipt.credential.to_string()).bind(receipt.registration.to_string()).bind(receipt.channel.as_str()).bind(locator(credential)).execute(&mut *tx).await.map_err(unique_or_db)?;
-    sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES($1::uuid,$2::uuid,$3,$4::uuid,$5,true)")
-            .bind(tenant).bind(receipt.registration.to_string()).bind(command.source.as_str()).bind(receipt.epoch.to_string()).bind(coverage_key()).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES($1::uuid,$2::uuid,$3,$4::uuid,true)")
+            .bind(tenant).bind(receipt.registration.to_string()).bind(command.source.as_str()).bind(receipt.epoch.to_string()).execute(&mut *tx).await.map_err(db)?;
     enterprise_sources(tx, tenant, &receipt).await?;
     Ok(receipt)
 }
@@ -418,7 +418,7 @@ async fn enterprise_sources(
             rss_mdm_inventory::Source::AgentScript,
             rss_mdm_inventory::Source::AgentOsquery,
         ] {
-            sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES($1::uuid,$2::uuid,$3,$4::uuid,'enterprise-task-v1',true)")
+            sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES($1::uuid,$2::uuid,$3,$4::uuid,true)")
                 .bind(tenant).bind(receipt.registration.to_string()).bind(source.as_str()).bind(Uuid::new_v4().to_string()).execute(&mut *tx).await.map_err(db)?;
         }
     }
@@ -463,8 +463,8 @@ pub async fn revalidate_source(
     }
     sqlx::query("SELECT id FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND registration=$2::uuid AND id=$3::uuid AND state='active'")
         .bind(&tenant).bind(&registration).bind(principal.credential().to_string()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
-    let row = sqlx::query("SELECT epoch::text FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND enabled AND coverage=$4 FOR UPDATE")
-        .bind(&tenant).bind(&registration).bind(source.as_str()).bind(crate::device::coverage_key()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
+    let row = sqlx::query("SELECT epoch::text FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND enabled FOR UPDATE")
+        .bind(&tenant).bind(&registration).bind(source.as_str()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
     crate::device::scope(
         principal.tenant(),
         principal.registration(),
@@ -645,7 +645,9 @@ pub async fn allocate_collection_in(
     source: rss_mdm_inventory::ReportSource,
 ) -> Result<CollectionSource, Error> {
     lock_channel(c, tenant, device, source.channel()).await?;
-    let row=sqlx::query("SELECT r.id,r.generation,s.epoch FROM mdm_access.registrations r JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) JOIN mdm_access.report_sources s ON (s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.state='active' AND c.state='active' AND s.source=$3 AND s.enabled AND s.coverage=$4 FOR SHARE OF r,c FOR UPDATE OF s").bind(tenant).bind(device).bind(source.as_str()).bind(crate::device::coverage_key()).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Conflict)?;
+    // The channel advisory lock serializes registration, credential replacement and revocation.
+    // A collecting owner only mutates the report sequence and needs no UPDATE privilege on identity rows.
+    let row=sqlx::query("SELECT r.id,r.generation,s.epoch FROM mdm_access.registrations r JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) JOIN mdm_access.report_sources s ON (s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.state='active' AND c.state='active' AND s.source=$3 AND s.enabled FOR UPDATE OF s").bind(tenant).bind(device).bind(source.as_str()).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Conflict)?;
     let registration: Uuid = row.try_get("id").map_err(db)?;
     let sequence=sqlx::query_scalar("UPDATE mdm_access.report_sources SET next_sequence=next_sequence+1 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND next_sequence<9223372036854775807 RETURNING next_sequence-1").bind(tenant).bind(registration).bind(source.as_str()).fetch_one(c).await.map_err(db)?;
     Ok(CollectionSource {
@@ -694,7 +696,7 @@ pub async fn allocate_task_report_in(
             "invalid enterprise report source".into(),
         ));
     }
-    sqlx::query_as("UPDATE mdm_access.report_sources SET next_sequence=next_sequence+1 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND enabled AND coverage='enterprise-task-v1' AND next_sequence<9223372036854775807 RETURNING epoch::text,next_sequence-1").bind(tenant).bind(registration).bind(source.as_str()).fetch_one(c).await
+    sqlx::query_as("UPDATE mdm_access.report_sources SET next_sequence=next_sequence+1 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND enabled AND next_sequence<9223372036854775807 RETURNING epoch::text,next_sequence-1").bind(tenant).bind(registration).bind(source.as_str()).fetch_one(c).await
 }
 pub async fn allocate_request_ids_in(
     c: &mut sqlx::PgConnection,

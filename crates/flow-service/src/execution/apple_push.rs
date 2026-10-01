@@ -217,29 +217,11 @@ async fn pending(
         })
         .await?
         .map_err(Error::from)?;
-    for collection in collections {
-        let approval: rss_mdm_authorization_service::UserGrant =
-            stored(serde_json::from_value(collection.approval))?;
-        if tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    Ok(approval
-                        .valid(c, crate::authorization::Permission::InventoryCollect, now)
-                        .await
-                        .map_err(crate::Error::from))
-                })
-            })
-            .await??
-        {
-            return Ok(true);
-        }
-        let tenant = tx.tenant_id().to_string();
-        let store = participant.clone();
-        tx.with_connection(move |c| {
-            Box::pin(async move { Ok(store.defer_collection(c, tenant, collection.id).await) })
-        })
-        .await?
-        .map_err(Error::from)?;
+    // Collection admission already checked the administrator's authority. The accepted
+    // run belongs to the organization and remains eligible after that session ends.
+    if !collections.is_empty() {
+        return Ok(true);
     }
+
     Ok(false)
 }

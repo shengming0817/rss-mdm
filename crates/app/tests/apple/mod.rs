@@ -409,7 +409,8 @@ mod renewal;
 
 impl Fixture {
     async fn close(self) -> Result<()> {
-        ensure!(self.owner.shutdown().join().await?.is_clean());
+        let report = self.owner.shutdown().join().await?;
+        ensure!(report.is_clean(), "Apple fixture shutdown: {report:?}");
         Ok(())
     }
     async fn scep_leaf(&mut self) -> Result<(scep_client::Device, Vec<u8>)> {

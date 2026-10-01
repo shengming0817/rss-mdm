@@ -15,9 +15,9 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     let mut f = execution::Fixture::with_config(
         Platform::Windows,
         json!([
-            "inventory.basic.v4",
-            "software.msi.system.v4",
-            "software.winget.system.v4"
+            "inventory.collect.v5",
+            "software.msi.system.v5",
+            "software.winget.system.v5"
         ]),
         local.clone(),
         cfg.clone(),
@@ -344,10 +344,10 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
             let r = agent_call(
                 &f.router,
                 Method::POST,
-                "/api/agent/v4/tasks/claim",
+                "/api/agent/v5/tasks/claim",
                 Some(&f.credential),
                 Some(
-                    json!({"wireVersion":4,"executionContext":local,"operationId":Uuid::new_v4()}),
+                    json!({"wireVersion":5,"executionContext":local,"operationId":Uuid::new_v4()}),
                 ),
             )
             .await?;

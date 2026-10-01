@@ -1,4 +1,11 @@
-use rss_mdm_inventory::{AgentInstallation, FieldKey, MdmEnrollment, Scalar, Source};
+use rss_mdm_inventory::{AgentInstallation, MdmEnrollment, Scalar, Source, builtin};
+fn definition(field: rss_mdm_inventory::FieldKey) -> rss_mdm_inventory::FieldDefinition {
+    rss_mdm_inventory::Catalog::new(builtin::fields())
+        .unwrap()
+        .definition(field)
+        .unwrap()
+        .clone()
+}
 #[test]
 fn only_explicit_absence_triggers_onboarding() {
     assert!(AgentInstallation::Absent.requires_install());
@@ -15,32 +22,40 @@ fn only_explicit_absence_triggers_onboarding() {
 }
 #[test]
 fn channel_facts_have_a_fixed_value_and_source_contract() {
-    let agent = FieldKey::AgentInstallation;
+    let agent = builtin::AGENT_INSTALLATION;
     assert_eq!(
-        agent.definition().sources,
-        &[Source::MdmWindows, Source::MdmApple]
+        definition(agent)
+            .sources
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+        &[Source::MdmApple, Source::MdmWindows]
     );
     assert_eq!(
-        FieldKey::MdmEnrollment.definition().sources,
+        definition(builtin::MDM_ENROLLMENT)
+            .sources
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
         &[Source::AgentBuiltin]
     );
     assert!(
-        agent
+        definition(agent)
             .validate_scalar(&Scalar::String("absent".into()))
             .is_ok()
     );
     assert!(
-        agent
+        definition(agent)
             .validate_scalar(&Scalar::String("offline".into()))
             .is_err()
     );
     assert!(
-        FieldKey::MdmEnrollment
+        definition(builtin::MDM_ENROLLMENT)
             .validate_scalar(&Scalar::String("other_organization".into()))
             .is_ok()
     );
     assert!(
-        FieldKey::MdmEnrollment
+        definition(builtin::MDM_ENROLLMENT)
             .validate_scalar(&Scalar::String("absent".into()))
             .is_err()
     );

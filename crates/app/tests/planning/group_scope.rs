@@ -35,7 +35,7 @@ async fn durable_asset_group_scope_pipeline() {
         &service,
         &assets::Command::Manual {
             device: device.clone(),
-            field: assets::FieldKey::IsLoaner,
+            field: rss_mdm_inventory::builtin::IS_LOANER,
             owner: owner.clone(),
             change: inventory_operation(
                 0,
@@ -51,6 +51,7 @@ async fn durable_asset_group_scope_pipeline() {
     let created = execute(
         &service,
         &Command::Group {
+            sensitive: true,
             id: group,
             change: operation(
                 0,
@@ -58,7 +59,7 @@ async fn durable_asset_group_scope_pipeline() {
                     name: "automation".into(),
                     description: String::new(),
                     criteria: Some(assets::Criteria::Predicate {
-                        field: assets::FieldKey::IsLoaner,
+                        field: rss_mdm_inventory::builtin::IS_LOANER,
                         op: assets::Operator::Eq,
                         value: Some(assets::Scalar::Boolean(true)),
                         values: None,
@@ -137,6 +138,7 @@ async fn durable_asset_group_scope_pipeline() {
     ));
     denied_audit.finalize(None);
     let query_scope = assets::ReadScope {
+        sensitive: true,
         subject: "query-owner".into(),
         devices: Some([device.clone()].into()),
     };
@@ -147,14 +149,14 @@ async fn durable_asset_group_scope_pipeline() {
                 0,
                 assets::Query {
                     criteria: Some(assets::Criteria::Predicate {
-                        field: assets::FieldKey::IsLoaner,
+                        field: rss_mdm_inventory::builtin::IS_LOANER,
                         op: assets::Operator::Eq,
                         value: Some(assets::Scalar::Boolean(true)),
                         values: None,
                     }),
-                    select: vec![assets::FieldKey::IsLoaner],
+                    select: vec![rss_mdm_inventory::builtin::IS_LOANER],
                     sort: Some(assets::Sort {
-                        field: assets::FieldKey::IsLoaner,
+                        field: rss_mdm_inventory::builtin::IS_LOANER,
                         descending: true,
                     }),
                 },
@@ -294,6 +296,7 @@ async fn group_scope_replay_and_audit_atomicity() {
     seed_device(&device);
     let group = Uuid::new_v4();
     let create = Command::Group {
+        sensitive: true,
         id: group,
         change: operation(
             0,
@@ -310,6 +313,7 @@ async fn group_scope_replay_and_audit_atomicity() {
     let members = execute(
         &m,
         &Command::Group {
+            sensitive: true,
             id: group,
             change: operation(
                 1,
@@ -350,6 +354,7 @@ async fn group_scope_replay_and_audit_atomicity() {
     let result = execute(
         &m,
         &Command::Group {
+            sensitive: true,
             id: denied,
             change: operation(
                 0,
@@ -393,6 +398,7 @@ async fn initial_empty_group_scope_and_revision_competition() {
     execute(
         &m,
         &Command::Group {
+            sensitive: true,
             id: g,
             change: operation(
                 0,
@@ -454,6 +460,7 @@ async fn registration_replacement_invalidates_direct_and_group_admission() {
     execute(
         &m,
         &Command::Group {
+            sensitive: true,
             id: group,
             change: operation(
                 0,
@@ -470,6 +477,7 @@ async fn registration_replacement_invalidates_direct_and_group_admission() {
     let membership = execute(
         &m,
         &Command::Group {
+            sensitive: true,
             id: group,
             change: operation(
                 1,
@@ -549,6 +557,7 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
         execute(
             &first,
             &Command::Group {
+                sensitive: true,
                 id: group,
                 change: operation(
                     0,
@@ -563,6 +572,7 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
         .await
         .unwrap();
         let delete = Command::Group {
+            sensitive: true,
             id: group,
             change: operation(1, GroupChange::Delete),
         };
@@ -609,6 +619,7 @@ async fn ingress_batches_reuse_published_group_coverage() {
     let accepted = execute(
         &service,
         &Command::Group {
+            sensitive: true,
             id: group,
             change: operation(
                 0,
@@ -616,7 +627,7 @@ async fn ingress_batches_reuse_published_group_coverage() {
                     name: "bounded-ingress".into(),
                     description: String::new(),
                     criteria: Some(assets::Criteria::Predicate {
-                        field: assets::FieldKey::IsLoaner,
+                        field: rss_mdm_inventory::builtin::IS_LOANER,
                         op: assets::Operator::Eq,
                         value: Some(assets::Scalar::Boolean(true)),
                         values: None,
@@ -716,6 +727,7 @@ async fn superseded_group_links_reused_successor() {
     let created = execute(
         &service,
         &Command::Group {
+            sensitive: true,
             id: group,
             change: operation(
                 0,
@@ -723,7 +735,7 @@ async fn superseded_group_links_reused_successor() {
                     name: "successor".into(),
                     description: String::new(),
                     criteria: Some(assets::Criteria::Predicate {
-                        field: assets::FieldKey::IsLoaner,
+                        field: rss_mdm_inventory::builtin::IS_LOANER,
                         op: assets::Operator::Eq,
                         value: Some(assets::Scalar::Boolean(true)),
                         values: None,
@@ -739,6 +751,7 @@ async fn superseded_group_links_reused_successor() {
     let next = execute(
         &service,
         &Command::Group {
+            sensitive: true,
             id: group,
             change: operation(1, GroupChange::Recompute {}),
         },

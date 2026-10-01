@@ -8,6 +8,7 @@ fn unknown_causes_and_absent_platform_are_not_compliance() {
     let mut input = input();
     let tenant = TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
     let device = crate::assets::DeviceView {
+        lists: Default::default(),
         device: "device".into(),
         channels: Default::default(),
         fields: Default::default(),
@@ -83,7 +84,8 @@ fn rules_have_no_timer_or_legacy_field_surface() {
         validate_definition(
             &rule,
             TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap(),
-            Uuid::new_v4()
+            Uuid::new_v4(),
+            &rss_mdm_inventory::Catalog::new(rss_mdm_inventory::builtin::fields()).unwrap(),
         )
         .is_err()
     );

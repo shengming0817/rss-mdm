@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Supported executor profiles; osquery uses a fixed product-owned query.
+/// Supported executor profiles; osquery consumes a published, validated SQL template.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScriptProfile {
@@ -14,8 +14,8 @@ pub enum ScriptProfile {
     PosixSh,
     /// Bash on macOS.
     Bash,
-    /// The fixed `SELECT version FROM osquery_info;` collection.
-    OsqueryInfoV1,
+    /// Bounded read-only SQL template collection.
+    Osquery,
 }
 /// Explicit execution identity; no implicit elevation or fallback.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -53,19 +53,6 @@ pub enum ParameterBinding {
         name: String,
     },
 }
-/// Collection fields owned by the product's finite inventory catalog.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
-pub enum ScriptField {
-    /// Corporate agent version as text.
-    #[serde(rename = "custom.corporate_agent.version")]
-    CorporateAgentVersion,
-    /// Corporate agent health as a boolean.
-    #[serde(rename = "custom.corporate_agent.healthy")]
-    CorporateAgentHealthy,
-    /// Version reported by the fixed osquery profile.
-    #[serde(rename = "custom.osquery.version")]
-    OsqueryVersion,
-}
 /// Declared purpose is part of the immutable digest, not inferred from script text.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -74,8 +61,8 @@ pub enum ScriptPurpose {
     Action,
     /// A typed, explicitly mapped collection output.
     Collection {
-        /// JSON pointers into the validated output, keyed by the finite field catalog.
-        mappings: BTreeMap<ScriptField, String>,
+        /// JSON pointers into the validated output, keyed by published inventory field identities.
+        mappings: BTreeMap<String, String>,
     },
 }
 /// Complete execution interface. Use [`ScriptDefinition::new`] to validate and freeze it.
@@ -84,6 +71,8 @@ pub enum ScriptPurpose {
 pub struct ScriptSpec {
     /// Selected executor profile.
     pub profile: ScriptProfile,
+    /// SQL template only for the osquery profile; literal parameters remain separate.
+    pub sql: Option<crate::SqlTemplate>,
     /// Required execution identity.
     pub run_as: RunAs,
     /// Exact artifact/output encoding.
@@ -122,8 +111,8 @@ impl ScriptDefinition {
     /// Validate schemas, budgets, argument destinations and collection mappings.
     pub fn new(spec: ScriptSpec) -> Result<Self, Error> {
         if !(1..=3600).contains(&spec.timeout_seconds)
-            || !(1..=1_048_576).contains(&spec.output_bytes)
-            || !(1..=1000).contains(&spec.max_rows)
+            || !(1..=16_777_216).contains(&spec.output_bytes)
+            || spec.max_rows == 0
         {
             return Err(Error::InvalidInput);
         }
@@ -141,8 +130,13 @@ impl ScriptDefinition {
     pub fn validate_platform(&self, platform: Platform) -> Result<(), Error> {
         match (self.0.profile, platform) {
             (ScriptProfile::PowerShell7, Platform::Windows)
-            | (ScriptProfile::PosixSh | ScriptProfile::Bash, Platform::MacOS)
-            | (ScriptProfile::OsqueryInfoV1, _) => Ok(()),
+            | (ScriptProfile::PosixSh | ScriptProfile::Bash, Platform::MacOS) => Ok(()),
+            (ScriptProfile::Osquery, _) => self
+                .0
+                .sql
+                .as_ref()
+                .ok_or(Error::InvalidInput)?
+                .validate_platform(platform),
             _ => Err(Error::InvalidInput),
         }
     }
@@ -159,9 +153,20 @@ impl ScriptDefinition {
         }
         Ok(())
     }
+    /// Enforce byte, nesting and row budgets independently of per-field schema quality.
+    pub fn validate_output_budget(&self, value: &Value) -> Result<(), Error> {
+        if serde_json::to_vec(value)
+            .map_err(|_| Error::InvalidInput)?
+            .len()
+            > self.0.output_bytes as usize
+        {
+            return Err(Error::InvalidInput);
+        }
+        output_structure(value, self.0.max_rows as usize, 0)
+    }
     /// Validate successful, complete output. Execution quality is checked by the caller.
     pub fn validate_output(&self, value: &Value) -> Result<(), Error> {
-        output_structure(value, self.0.max_rows as usize, 0)?;
+        self.validate_output_budget(value)?;
         validate(&self.0.output, value, self.0.output_bytes as usize)?;
         if value
             .as_array()
@@ -170,17 +175,8 @@ impl ScriptDefinition {
             return Err(Error::InvalidInput);
         }
         if let ScriptPurpose::Collection { mappings } = &self.0.purpose {
-            for (field, pointer) in mappings {
-                let value = value.pointer(pointer).ok_or(Error::InvalidInput)?;
-                let valid = match field {
-                    ScriptField::CorporateAgentHealthy => value.is_boolean(),
-                    _ => value.as_str().is_some_and(|s| {
-                        !s.trim().is_empty() && s.len() <= 256 && !s.chars().any(char::is_control)
-                    }),
-                };
-                if !valid {
-                    return Err(Error::InvalidInput);
-                }
+            for pointer in mappings.values() {
+                value.pointer(pointer).ok_or(Error::InvalidInput)?;
             }
         }
         Ok(())
@@ -228,7 +224,7 @@ fn bindings(spec: &ScriptSpec) -> Result<(), Error> {
     if params.get("type") != Some(&Value::from("object"))
         || params.get("additionalProperties") != Some(&Value::Bool(false))
         || props.len() > 32
-        || props.len() != spec.bindings.len()
+        || (spec.profile != ScriptProfile::Osquery && props.len() != spec.bindings.len())
         || required.len() != props.len()
         || required
             .iter()
@@ -237,6 +233,15 @@ fn bindings(spec: &ScriptSpec) -> Result<(), Error> {
             != props.keys().map(String::as_str).collect()
     {
         return Err(Error::InvalidInput);
+    }
+    if spec.profile == ScriptProfile::Osquery {
+        if !spec.bindings.is_empty()
+            || spec.sql.as_ref().ok_or(Error::InvalidInput)?.parameters()?
+                != props.keys().cloned().collect()
+        {
+            return Err(Error::InvalidInput);
+        }
+        return Ok(());
     }
     let mut destinations = BTreeSet::new();
     let mut positions = BTreeSet::new();
@@ -274,29 +279,41 @@ fn bindings(spec: &ScriptSpec) -> Result<(), Error> {
 }
 fn purpose(spec: &ScriptSpec) -> Result<(), Error> {
     if let ScriptPurpose::Collection { mappings } = &spec.purpose
-        && (mappings.is_empty() || mappings.values().any(|p| !pointer(p)))
+        && (mappings.is_empty()
+            || mappings.len() > 128
+            || mappings.keys().any(|k| !field_identity(k))
+            || mappings.values().any(|p| !pointer(p)))
     {
         return Err(Error::InvalidInput);
     }
-    if spec.profile == ScriptProfile::OsqueryInfoV1 {
-        let ScriptPurpose::Collection { mappings } = &spec.purpose else {
-            return Err(Error::InvalidInput);
-        };
-        if !spec.bindings.is_empty()
+    if spec.profile == ScriptProfile::Osquery {
+        if !matches!(spec.purpose, ScriptPurpose::Collection { .. })
+            || spec.sql.is_none()
             || spec.run_as != RunAs::System
-            || spec.max_rows != 1
-            || mappings.len() != 1
-            || mappings
-                .get(&ScriptField::OsqueryVersion)
-                .map(String::as_str)
-                != Some("/0/version")
         {
             return Err(Error::InvalidInput);
         }
+    } else if spec.sql.is_some() {
+        return Err(Error::InvalidInput);
     }
     Ok(())
 }
+fn field_identity(key: &str) -> bool {
+    let mut parts = key.split('.');
+    key.len() <= 128
+        && matches!(parts.next(), Some("device" | "custom" | "channel"))
+        && key.contains('.')
+        && parts.all(|p| {
+            !p.is_empty()
+                && p.as_bytes()[0].is_ascii_lowercase()
+                && p.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+        })
+}
 fn pointer(value: &str) -> bool {
+    if value.is_empty() {
+        return true;
+    }
     if !value.starts_with('/') || value.len() > 256 || value.chars().any(char::is_control) {
         return false;
     }

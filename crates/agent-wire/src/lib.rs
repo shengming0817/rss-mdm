@@ -2,7 +2,7 @@
 //! Strict Agent protocol values for RSS MDM.
 //!
 //! This package owns JSON values only. Device authority, persistence and HTTP authentication
-//! remain product responsibilities. V4 binds script and software tasks to one strict major.
+//! remain product responsibilities. V5 binds script and software tasks to one strict major.
 
 mod onboarding;
 pub use onboarding::*;
@@ -15,19 +15,19 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 /// Exact supported wire major.
-pub const WIRE_VERSION: u8 = 4;
+pub const WIRE_VERSION: u8 = 5;
 /// Maximum complete JSON request accepted by the product adapter.
-pub const MAX_REQUEST_BYTES: usize = 16 * 1024;
-/// Canonical manifest for every public Agent V4 JSON shape.
-pub const SCHEMA_MANIFEST: &str = include_str!("../schema/agent-v4.schema-manifest.json");
+pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
+/// Canonical manifest for every public Agent V5 JSON shape.
+pub const SCHEMA_MANIFEST: &str = include_str!("../schema/agent-v5.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "daec4499142f5b47eb0010cb9a0f6f8d708612e27258130faf5fc36cb470af06";
+    "bd3b2c18d590c7d168ae0ba05f2f4d634654751712c6eac093157e710c450c9e";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WireError {
-    /// A value is malformed or outside the V4 profile.
+    /// A value is malformed or outside the V5 profile.
     InvalidValue,
 }
 impl std::fmt::Display for WireError {
@@ -97,107 +97,107 @@ impl<'de> Deserialize<'de> for Secret {
     }
 }
 
-/// Closed V4 capability set.
+/// Closed V5 capability set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Capability {
     /// Full/partial/failed reports for the two basic inventory fields.
-    #[serde(rename = "inventory.basic.v4")]
-    InventoryBasicV4,
+    #[serde(rename = "inventory.collect.v5")]
+    InventoryCollectionV5,
     /// Receive and execute signed task offers.
-    #[serde(rename = "task.execute.v4")]
-    TaskExecuteV4,
-    /// Execute the exact software.msi.system.v4 profile.
-    #[serde(rename = "software.msi.system.v4")]
-    SoftwareMsiSystemV4,
-    /// Execute the exact software.msi.user.v4 profile.
-    #[serde(rename = "software.msi.user.v4")]
-    SoftwareMsiUserV4,
-    /// Execute the exact software.pkg.system.v4 profile.
-    #[serde(rename = "software.pkg.system.v4")]
-    SoftwarePkgSystemV4,
-    /// Execute the exact software.bundle.windows.system.v4 profile.
-    #[serde(rename = "software.bundle.windows.system.v4")]
-    SoftwareBundleWindowsSystemV4,
-    /// Execute the exact software.bundle.windows.user.v4 profile.
-    #[serde(rename = "software.bundle.windows.user.v4")]
-    SoftwareBundleWindowsUserV4,
-    /// Execute the exact software.bundle.macos.system.v4 profile.
-    #[serde(rename = "software.bundle.macos.system.v4")]
-    SoftwareBundleMacosSystemV4,
-    /// Execute the exact software.bundle.macos.user.v4 profile.
-    #[serde(rename = "software.bundle.macos.user.v4")]
-    SoftwareBundleMacosUserV4,
-    /// Execute the exact software.winget.system.v4 profile.
-    #[serde(rename = "software.winget.system.v4")]
-    SoftwareWingetSystemV4,
-    /// Execute the exact software.winget.user.v4 profile.
-    #[serde(rename = "software.winget.user.v4")]
-    SoftwareWingetUserV4,
-    /// Execute the exact software.brew.bottle.user.v4 profile.
-    #[serde(rename = "software.brew.bottle.user.v4")]
-    SoftwareBrewBottleUserV4,
-    /// Execute the exact software.exe.system.v4 profile.
-    #[serde(rename = "software.exe.system.v4")]
-    SoftwareExeSystemV4,
-    /// Execute the exact software.exe.user.v4 profile.
-    #[serde(rename = "software.exe.user.v4")]
-    SoftwareExeUserV4,
-    /// Execute the exact software.dmg.app.system.v4 profile.
-    #[serde(rename = "software.dmg.app.system.v4")]
-    SoftwareDmgAppSystemV4,
-    /// Execute the exact software.dmg.app.user.v4 profile.
-    #[serde(rename = "software.dmg.app.user.v4")]
-    SoftwareDmgAppUserV4,
-    /// Execute the exact software.dmg.pkg.system.v4 profile.
-    #[serde(rename = "software.dmg.pkg.system.v4")]
-    SoftwareDmgPkgSystemV4,
-    /// Execute the exact software.msix.registration.user.v4 profile.
-    #[serde(rename = "software.msix.registration.user.v4")]
-    SoftwareMsixRegistrationUserV4,
-    /// Execute the exact software.msix.provisioning.system.v4 profile.
-    #[serde(rename = "software.msix.provisioning.system.v4")]
-    SoftwareMsixProvisioningSystemV4,
+    #[serde(rename = "task.execute.v5")]
+    TaskExecuteV5,
+    /// Execute the exact software.msi.system.v5 profile.
+    #[serde(rename = "software.msi.system.v5")]
+    SoftwareMsiSystemV5,
+    /// Execute the exact software.msi.user.v5 profile.
+    #[serde(rename = "software.msi.user.v5")]
+    SoftwareMsiUserV5,
+    /// Execute the exact software.pkg.system.v5 profile.
+    #[serde(rename = "software.pkg.system.v5")]
+    SoftwarePkgSystemV5,
+    /// Execute the exact software.bundle.windows.system.v5 profile.
+    #[serde(rename = "software.bundle.windows.system.v5")]
+    SoftwareBundleWindowsSystemV5,
+    /// Execute the exact software.bundle.windows.user.v5 profile.
+    #[serde(rename = "software.bundle.windows.user.v5")]
+    SoftwareBundleWindowsUserV5,
+    /// Execute the exact software.bundle.macos.system.v5 profile.
+    #[serde(rename = "software.bundle.macos.system.v5")]
+    SoftwareBundleMacosSystemV5,
+    /// Execute the exact software.bundle.macos.user.v5 profile.
+    #[serde(rename = "software.bundle.macos.user.v5")]
+    SoftwareBundleMacosUserV5,
+    /// Execute the exact software.winget.system.v5 profile.
+    #[serde(rename = "software.winget.system.v5")]
+    SoftwareWingetSystemV5,
+    /// Execute the exact software.winget.user.v5 profile.
+    #[serde(rename = "software.winget.user.v5")]
+    SoftwareWingetUserV5,
+    /// Execute the exact software.brew.bottle.user.v5 profile.
+    #[serde(rename = "software.brew.bottle.user.v5")]
+    SoftwareBrewBottleUserV5,
+    /// Execute the exact software.exe.system.v5 profile.
+    #[serde(rename = "software.exe.system.v5")]
+    SoftwareExeSystemV5,
+    /// Execute the exact software.exe.user.v5 profile.
+    #[serde(rename = "software.exe.user.v5")]
+    SoftwareExeUserV5,
+    /// Execute the exact software.dmg.app.system.v5 profile.
+    #[serde(rename = "software.dmg.app.system.v5")]
+    SoftwareDmgAppSystemV5,
+    /// Execute the exact software.dmg.app.user.v5 profile.
+    #[serde(rename = "software.dmg.app.user.v5")]
+    SoftwareDmgAppUserV5,
+    /// Execute the exact software.dmg.pkg.system.v5 profile.
+    #[serde(rename = "software.dmg.pkg.system.v5")]
+    SoftwareDmgPkgSystemV5,
+    /// Execute the exact software.msix.registration.user.v5 profile.
+    #[serde(rename = "software.msix.registration.user.v5")]
+    SoftwareMsixRegistrationUserV5,
+    /// Execute the exact software.msix.provisioning.system.v5 profile.
+    #[serde(rename = "software.msix.provisioning.system.v5")]
+    SoftwareMsixProvisioningSystemV5,
     /// Open the standard MDM enrollment entry with OS/user approval.
-    #[serde(rename = "mdm.enrollment.v4")]
-    MdmEnrollmentV4,
+    #[serde(rename = "mdm.enrollment.v5")]
+    MdmEnrollmentV5,
 }
 impl Capability {
     /// Software support always refers to one concrete native/script scope profile.
     pub fn is_software(self) -> bool {
         !matches!(
             self,
-            Self::InventoryBasicV4 | Self::TaskExecuteV4 | Self::MdmEnrollmentV4
+            Self::InventoryCollectionV5 | Self::TaskExecuteV5 | Self::MdmEnrollmentV5
         )
     }
     /// Canonical persisted and queryable capability identity.
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::InventoryBasicV4 => "inventory.basic.v4",
-            Self::TaskExecuteV4 => "task.execute.v4",
-            Self::SoftwareMsiSystemV4 => "software.msi.system.v4",
-            Self::SoftwareMsiUserV4 => "software.msi.user.v4",
-            Self::SoftwarePkgSystemV4 => "software.pkg.system.v4",
-            Self::SoftwareBundleWindowsSystemV4 => "software.bundle.windows.system.v4",
-            Self::SoftwareBundleWindowsUserV4 => "software.bundle.windows.user.v4",
-            Self::SoftwareBundleMacosSystemV4 => "software.bundle.macos.system.v4",
-            Self::SoftwareBundleMacosUserV4 => "software.bundle.macos.user.v4",
-            Self::SoftwareWingetSystemV4 => "software.winget.system.v4",
-            Self::SoftwareWingetUserV4 => "software.winget.user.v4",
-            Self::SoftwareBrewBottleUserV4 => "software.brew.bottle.user.v4",
-            Self::SoftwareExeSystemV4 => "software.exe.system.v4",
-            Self::SoftwareExeUserV4 => "software.exe.user.v4",
-            Self::SoftwareDmgAppSystemV4 => "software.dmg.app.system.v4",
-            Self::SoftwareDmgAppUserV4 => "software.dmg.app.user.v4",
-            Self::SoftwareDmgPkgSystemV4 => "software.dmg.pkg.system.v4",
-            Self::SoftwareMsixRegistrationUserV4 => "software.msix.registration.user.v4",
-            Self::SoftwareMsixProvisioningSystemV4 => "software.msix.provisioning.system.v4",
-            Self::MdmEnrollmentV4 => "mdm.enrollment.v4",
+            Self::InventoryCollectionV5 => "inventory.collect.v5",
+            Self::TaskExecuteV5 => "task.execute.v5",
+            Self::SoftwareMsiSystemV5 => "software.msi.system.v5",
+            Self::SoftwareMsiUserV5 => "software.msi.user.v5",
+            Self::SoftwarePkgSystemV5 => "software.pkg.system.v5",
+            Self::SoftwareBundleWindowsSystemV5 => "software.bundle.windows.system.v5",
+            Self::SoftwareBundleWindowsUserV5 => "software.bundle.windows.user.v5",
+            Self::SoftwareBundleMacosSystemV5 => "software.bundle.macos.system.v5",
+            Self::SoftwareBundleMacosUserV5 => "software.bundle.macos.user.v5",
+            Self::SoftwareWingetSystemV5 => "software.winget.system.v5",
+            Self::SoftwareWingetUserV5 => "software.winget.user.v5",
+            Self::SoftwareBrewBottleUserV5 => "software.brew.bottle.user.v5",
+            Self::SoftwareExeSystemV5 => "software.exe.system.v5",
+            Self::SoftwareExeUserV5 => "software.exe.user.v5",
+            Self::SoftwareDmgAppSystemV5 => "software.dmg.app.system.v5",
+            Self::SoftwareDmgAppUserV5 => "software.dmg.app.user.v5",
+            Self::SoftwareDmgPkgSystemV5 => "software.dmg.pkg.system.v5",
+            Self::SoftwareMsixRegistrationUserV5 => "software.msix.registration.user.v5",
+            Self::SoftwareMsixProvisioningSystemV5 => "software.msix.provisioning.system.v5",
+            Self::MdmEnrollmentV5 => "mdm.enrollment.v5",
         }
     }
 }
-/// The only supported ordered capability sets for Agent V4.
+/// The only supported ordered capability sets for Agent V5.
 pub fn supported_capabilities(value: &[Capability]) -> bool {
-    value.first() == Some(&Capability::InventoryBasicV4)
+    value.first() == Some(&Capability::InventoryCollectionV5)
         && value.len() <= 20
         && value.windows(2).all(|pair| pair[0] < pair[1])
 }
@@ -257,7 +257,7 @@ impl RegistrationRequest {
     pub fn decode(body: &[u8]) -> Result<Self, ErrorCode> {
         decode_registration(body)
     }
-    /// Construct one supported V4 registration capability profile.
+    /// Construct one supported V5 registration capability profile.
     #[allow(
         clippy::too_many_arguments,
         reason = "registration freezes distinct operation, enrollment, credential, hardware, profiles and context values"
@@ -354,6 +354,8 @@ pub struct RegistrationReceipt {
     pub epoch: Uuid,
     /// Exact accepted capability set.
     pub capabilities: Vec<Capability>,
+    /// Server-selected built-in collector versions for this registration.
+    pub collections: Vec<CollectionDefinition>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -369,11 +371,25 @@ struct RawRegistrationReceipt {
     #[serde(with = "strict_uuid")]
     epoch: Uuid,
     capabilities: Vec<Capability>,
+    collections: Vec<CollectionDefinition>,
 }
 impl<'de> Deserialize<'de> for RegistrationReceipt {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = RawRegistrationReceipt::deserialize(deserializer)?;
         if raw.wire_version != WIRE_VERSION
+            || raw.collections.is_empty()
+            || raw.collections.len() > 16
+            || raw
+                .collections
+                .iter()
+                .any(|d| d.source() != rss_mdm_inventory::Source::AgentBuiltin)
+            || raw
+                .collections
+                .iter()
+                .map(|d| d.dataset())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != raw.collections.len()
             || raw.generation == 0
             || raw.generation > i64::MAX as u64
             || !supported_capabilities(&raw.capabilities)
@@ -392,34 +408,9 @@ impl<'de> Deserialize<'de> for RegistrationReceipt {
             source: raw.source,
             epoch: raw.epoch,
             capabilities: raw.capabilities,
+            collections: raw.collections,
         })
     }
-}
-
-/// Closed basic inventory field set.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum Field {
-    /// Device model.
-    #[serde(rename = "device.model")]
-    Model,
-    /// Operating-system version.
-    #[serde(rename = "device.os.version")]
-    OsVersion,
-}
-
-/// One supported collection outcome.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    content = "value",
-    rename_all = "camelCase",
-    deny_unknown_fields
-)]
-pub enum CollectedValue {
-    /// Valid nonblank text of at most 256 Unicode scalar values.
-    Known(String),
-    /// The collector explicitly cannot produce the field.
-    Unsupported,
 }
 
 /// One field and its explicit outcome.
@@ -427,7 +418,7 @@ pub enum CollectedValue {
 #[serde(deny_unknown_fields)]
 pub struct FieldValue {
     /// Field identity.
-    pub field: Field,
+    pub field: FieldKey,
     /// Collected outcome.
     pub value: CollectedValue,
 }
@@ -444,18 +435,13 @@ pub enum FailureCode {
     CollectionFailed,
 }
 
-/// Closed V4 report body.
+/// Closed V5 report body.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReportBody {
     /// Complete coverage. Omitted fields are absent from this source.
     Snapshot(Vec<FieldValue>),
     /// Incomplete evidence retained without projection.
     Partial(Vec<FieldValue>),
-    /// Independent snapshot of local MDM enrollment.
-    MdmEnrollment {
-        /// Positive local evidence; uncertainty is explicit.
-        state: MdmEnrollmentState,
-    },
     /// Whole-collection failure retained without projection.
     Failed {
         /// Safe failure category.
@@ -468,7 +454,6 @@ enum RawReportBody {
     Snapshot { values: Vec<FieldValue> },
     Partial { values: Vec<FieldValue> },
     Failed { code: FailureCode },
-    MdmEnrollment { state: MdmEnrollmentState },
 }
 impl From<&ReportBody> for RawReportBody {
     fn from(value: &ReportBody) -> Self {
@@ -480,7 +465,6 @@ impl From<&ReportBody> for RawReportBody {
                 values: values.clone(),
             },
             ReportBody::Failed { code } => Self::Failed { code: *code },
-            ReportBody::MdmEnrollment { state } => Self::MdmEnrollment { state: *state },
         }
     }
 }
@@ -490,7 +474,6 @@ impl From<RawReportBody> for ReportBody {
             RawReportBody::Snapshot { values } => Self::Snapshot(values),
             RawReportBody::Partial { values } => Self::Partial(values),
             RawReportBody::Failed { code } => Self::Failed { code },
-            RawReportBody::MdmEnrollment { state } => Self::MdmEnrollment { state },
         }
     }
 }
@@ -505,7 +488,7 @@ impl<'de> Deserialize<'de> for ReportBody {
     }
 }
 
-/// Strict V4 inventory report.
+/// Strict V5 inventory report.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportRequest {
@@ -514,6 +497,7 @@ pub struct ReportRequest {
     report_id: Uuid,
     sequence: u64,
     observed_at: i64,
+    collection: CollectionDefinition,
     body: ReportBody,
 }
 #[derive(Deserialize)]
@@ -524,6 +508,7 @@ struct RawReportRequest {
     report_id: Uuid,
     sequence: u64,
     observed_at: i64,
+    collection: CollectionDefinition,
     body: ReportBody,
 }
 impl<'de> Deserialize<'de> for ReportRequest {
@@ -532,15 +517,23 @@ impl<'de> Deserialize<'de> for ReportRequest {
         if raw.wire_version != WIRE_VERSION {
             return Err(D::Error::custom(WireError::InvalidValue));
         }
-        Self::new(raw.report_id, raw.sequence, raw.observed_at, raw.body).map_err(D::Error::custom)
+        Self::new(
+            raw.report_id,
+            raw.sequence,
+            raw.observed_at,
+            raw.collection,
+            raw.body,
+        )
+        .map_err(D::Error::custom)
     }
 }
 impl ReportRequest {
-    /// Construct and canonicalize one strict V4 report.
+    /// Construct and canonicalize one strict V5 report.
     pub fn new(
         report_id: Uuid,
         sequence: u64,
         observed_at: i64,
+        collection: CollectionDefinition,
         mut body: ReportBody,
     ) -> Result<Self, WireError> {
         if report_id.is_nil() || sequence > i64::MAX as u64 || observed_at < 0 {
@@ -548,17 +541,24 @@ impl ReportRequest {
         }
         let values = match &mut body {
             ReportBody::Snapshot(values) | ReportBody::Partial(values) => values,
-            ReportBody::Failed { .. } | ReportBody::MdmEnrollment { .. } => {
+            ReportBody::Failed { .. } => {
                 return Ok(Self {
                     wire_version: WIRE_VERSION,
                     report_id,
                     sequence,
                     observed_at,
+                    collection,
                     body,
                 });
             }
         };
-        if values.len() > 2 || values.iter().any(|value| !Self::valid_value(value)) {
+        if values.len() > 128
+            || values.iter().any(|value| {
+                !collection
+                    .field(value.field)
+                    .is_ok_and(|f| value.value.encode(f).is_ok())
+            })
+        {
             return Err(WireError::InvalidValue);
         }
         values.sort_by_key(|value| value.field);
@@ -570,18 +570,13 @@ impl ReportRequest {
             report_id,
             sequence,
             observed_at,
+            collection,
             body,
         })
     }
-    fn valid_value(value: &FieldValue) -> bool {
-        match &value.value {
-            CollectedValue::Known(text) => {
-                !text.trim().is_empty()
-                    && text.chars().count() <= 256
-                    && !text.chars().any(char::is_control)
-            }
-            CollectedValue::Unsupported => true,
-        }
+    /// Frozen collector identity and field schemas, checked against the server's published version.
+    pub fn collection(&self) -> &CollectionDefinition {
+        &self.collection
     }
     /// Immutable report identity within the authenticated registration.
     pub const fn report_id(&self) -> Uuid {
@@ -603,7 +598,7 @@ impl ReportRequest {
     pub fn values(&self) -> &[FieldValue] {
         match &self.body {
             ReportBody::Snapshot(values) | ReportBody::Partial(values) => values,
-            ReportBody::Failed { .. } | ReportBody::MdmEnrollment { .. } => &[],
+            ReportBody::Failed { .. } => &[],
         }
     }
     /// Canonical semantic JSON used for durable duplicate detection.
@@ -753,3 +748,11 @@ pub struct ErrorBody {
     /// Closed machine-readable code.
     pub code: ErrorCode,
 }
+
+/// Shared field and frozen collector contracts owned by Inventory.
+pub use rss_mdm_inventory::{CollectedValue, CollectionDefinition, FieldKey, Scalar};
+
+mod chunks;
+pub use chunks::{
+    ChunkedTaskResult, OUTPUT_CHUNK_BYTES, OUTPUT_MAX_BYTES, OutputChunk, OutputManifest,
+};

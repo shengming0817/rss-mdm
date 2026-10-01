@@ -10,7 +10,7 @@ CREATE TABLE mdm.inventory (
  batch_id text NOT NULL,
  observed_at bigint NOT NULL,
  received_at bigint NOT NULL,
- PRIMARY KEY(tenant_id,journal,generation,scope,coverage,field)
+ PRIMARY KEY(tenant_id,journal,generation,scope,field)
 );
 ALTER TABLE mdm.inventory ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm.inventory FORCE ROW LEVEL SECURITY;

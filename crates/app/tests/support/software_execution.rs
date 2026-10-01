@@ -45,8 +45,8 @@ pub(crate) async fn event_with(
     task: &Value,
     event: Value,
 ) -> Result<(StatusCode, Value)> {
-    agent_call(router,Method::POST,&format!("/api/agent/v4/tasks/{}/events", task["payload"]["taskId"].as_str().unwrap()),Some(credential),
-        Some(json!({"wireVersion":4,"executionContext":task["payload"]["executionContext"],"operationId":Uuid::new_v4(),"attemptId":task["payload"]["attemptId"],"event":event}))).await
+    agent_call(router,Method::POST,&format!("/api/agent/v5/tasks/{}/events", task["payload"]["taskId"].as_str().unwrap()),Some(credential),
+        Some(json!({"wireVersion":5,"executionContext":task["payload"]["executionContext"],"operationId":Uuid::new_v4(),"attemptId":task["payload"]["attemptId"],"event":event}))).await
 }
 pub(crate) fn result_event(
     task: &Value,
@@ -118,9 +118,9 @@ pub(crate) async fn claim_with(
             let response = agent_call(
                 router,
                 Method::POST,
-                "/api/agent/v4/tasks/claim",
+                "/api/agent/v5/tasks/claim",
                 Some(credential),
-                Some(json!({"wireVersion":4,"executionContext":crate::test_support::software_execution::context(platform),"operationId":Uuid::new_v4()})),
+                Some(json!({"wireVersion":5,"executionContext":crate::test_support::software_execution::context(platform),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
             )
             .await?;
             ensure!(response.0 == StatusCode::OK, "claim: {response:?}");
@@ -182,8 +182,8 @@ pub(crate) struct Fixture {
 impl Fixture {
     pub(crate) async fn approved(platform: Platform) -> Result<Self> {
         let capabilities = match platform {
-            Platform::Windows => json!(["inventory.basic.v4", "software.msi.system.v4"]),
-            Platform::MacOs => json!(["inventory.basic.v4", "software.pkg.system.v4"]),
+            Platform::Windows => json!(["inventory.collect.v5", "software.msi.system.v5"]),
+            Platform::MacOs => json!(["inventory.collect.v5", "software.pkg.system.v5"]),
         };
         Self::with_profiles(platform, capabilities, context(platform)).await
     }
@@ -276,8 +276,8 @@ impl Fixture {
             .await?;
         ensure!(enrollment.0.is_success(), "enrollment: {enrollment:?}");
         author.operation = None;
-        let registration=agent_call(&router,Method::POST,"/api/agent/v4/registrations",None,
-            Some(json!({"wireVersion":4,"executionContext":execution_context,"operationId":Uuid::new_v4(),"enrollmentId":enrollment.1["enrollmentId"],"password":password,"credential":credential,"platform":platform_name,"architecture":architecture,"capabilities":capabilities}))).await?;
+        let registration=agent_call(&router,Method::POST,"/api/agent/v5/registrations",None,
+            Some(json!({"wireVersion":5,"executionContext":execution_context,"operationId":Uuid::new_v4(),"enrollmentId":enrollment.1["enrollmentId"],"password":password,"credential":credential,"platform":platform_name,"architecture":architecture,"capabilities":capabilities}))).await?;
         ensure!(
             registration.0 == StatusCode::CREATED,
             "registration: {registration:?}"

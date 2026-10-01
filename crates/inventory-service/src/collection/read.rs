@@ -40,8 +40,8 @@ pub async fn pending_apple_in(
     tenant: &str,
     registration: uuid::Uuid,
     ids: &[uuid::Uuid],
-) -> Result<std::collections::BTreeMap<uuid::Uuid, serde_json::Value>, crate::Error> {
-    let rows=sqlx::query_as::<_,(uuid::Uuid,serde_json::Value)>("SELECT id,apple_approval FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source='mdm.apple' AND id=ANY($3) AND apple_approval IS NOT NULL AND sealed_at IS NULL AND apple_deadline>clock_timestamp()")
+) -> Result<std::collections::BTreeSet<uuid::Uuid>, crate::Error> {
+    let rows=sqlx::query_scalar::<_,uuid::Uuid>("SELECT id FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source='mdm.apple' AND id=ANY($3) AND sealed_at IS NULL AND deadline>clock_timestamp()")
  .bind(tenant).bind(registration).bind(ids).fetch_all(c).await.map_err(crate::database::db)?;
     Ok(rows.into_iter().collect())
 }

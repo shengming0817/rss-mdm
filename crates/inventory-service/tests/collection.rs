@@ -1,182 +1,72 @@
 use super::*;
-
-#[test]
-fn fragments_require_successful_status_and_valid_values_for_both_fields() {
-    let mut attempt = Attempts::default();
-    attempt.status(0, 200).unwrap();
-    attempt.value(0, "Model-A".into()).unwrap();
-    assert!(!attempt.complete());
-    assert!(matches!(
-        attempt.body(),
-        Some(rss_observation::Body::Partial(_))
-    ));
-    attempt.value(1, "10.0.26100".into()).unwrap();
-    assert!(!attempt.complete());
-    attempt.status(1, 200).unwrap();
-    assert!(attempt.complete());
-    assert!(matches!(
-        attempt.body(),
-        Some(rss_observation::Body::Snapshot(_))
-    ));
+use rss_mdm_inventory::{CollectedValue, CollectionDefinition, Scalar, Source, builtin};
+fn definition() -> CollectionDefinition {
+    CollectionDefinition::new(
+        "inventory",
+        1,
+        Source::MdmWindows,
+        builtin::fields()
+            .into_iter()
+            .filter(|f| [builtin::MODEL, builtin::OS_VERSION].contains(&f.key))
+            .collect(),
+    )
+    .unwrap()
 }
-
 #[test]
-fn timeout_without_report_has_no_observation_body() {
-    let mut attempt = Attempts::default();
-    attempt.finish();
-    assert!(attempt.body().is_none());
-    assert_eq!(attempt.fields[0].quality, Quality::Missing);
-}
-
-#[test]
-fn unconfirmed_values_remain_partial_and_invalid_input_is_bounded() {
-    let mut attempt = Attempts::default();
-    attempt.value(0, "A".into()).unwrap();
-    attempt.value(1, "10".into()).unwrap();
-    attempt.finish();
-    assert!(matches!(
-        attempt.body(),
-        Some(rss_observation::Body::Partial(_))
-    ));
-    let mut attempt = Attempts::default();
-    attempt.value(0, "\u{0001}".repeat(4096)).unwrap();
-    assert_eq!(attempt.fields[0].quality, Quality::Invalid);
-    assert!(serde_json::to_string(&attempt).unwrap().len() < 2048);
-}
-
-#[test]
-fn failures_never_overwrite_last_good_values() {
-    let mut attempt = Attempts::default();
-    attempt.status(0, 404).unwrap();
-    attempt.status(1, 500).unwrap();
-    assert!(attempt.complete());
-    assert!(matches!(
-        attempt.body(),
-        Some(rss_observation::Body::Failed { .. })
-    ));
-    assert!(attempt.value(0, "contradiction".into()).is_err());
-
-    let mut attempt = Attempts::default();
-    attempt.status(0, 200).unwrap();
-    attempt.value(0, "  ".into()).unwrap();
-    attempt.status(1, 200).unwrap();
-    attempt.value(1, "10".into()).unwrap();
-    assert!(attempt.complete());
-    assert_eq!(attempt.fields[0].quality, Quality::Invalid);
-    assert!(matches!(
-        attempt.body(),
-        Some(rss_observation::Body::Partial(_))
-    ));
-}
-
-#[test]
-fn persisted_fragments_reject_changed_facts() {
-    let mut attempt = Attempts::default();
-    attempt.value(0, "A".into()).unwrap();
-    let mut recovered: Attempts =
-        serde_json::from_str(&serde_json::to_string(&attempt).unwrap()).unwrap();
-    assert!(recovered.value(0, "B".into()).is_err());
-    assert!(recovered.status(0, 404).is_err());
-    recovered.status(0, 200).unwrap();
-    assert_eq!(recovered.fields[0].quality, Quality::Success);
-}
-
-#[test]
-fn persisted_field_order_matches_the_catalog() {
-    assert_eq!(
-        FieldKey::observed()
-            .map(FieldKey::as_str)
-            .collect::<Vec<_>>(),
-        ["device.model", "device.os.version"]
-    );
-    let persisted:Attempts=serde_json::from_str(r#"{"fields":[{"status":200,"quality":"success","received_at":1,"value":"model","value_digest":null},{"status":200,"quality":"success","received_at":2,"value":"os","value_digest":null}]}"#).unwrap();
-    let changes = persisted.body().unwrap();
-    assert_eq!(changes.changes()[0].key().as_str(), "device.model");
-    assert_eq!(changes.changes()[1].key().as_str(), "device.os.version");
-}
-
-#[test]
-fn explicit_unsupported_is_definitive_but_other_failures_are_not() {
-    let mut attempt = Attempts::default();
-    attempt.status(0, 501).unwrap();
-    attempt.status(1, 200).unwrap();
-    attempt.value(1, "11".into()).unwrap();
-    assert_eq!(attempt.fields[0].quality, Quality::Unsupported);
-    let body = attempt.body().unwrap();
-    assert!(matches!(body, Body::Snapshot(_)));
-    assert_eq!(
-        rss_mdm_inventory::CollectedValue::decode(
-            FieldKey::Model,
-            body.changes()[0].value().unwrap()
-        )
-        .unwrap(),
-        rss_mdm_inventory::CollectedValue::Unsupported
-    );
-    let mut partial = Attempts::default();
-    partial.status(0, 501).unwrap();
-    partial.status(1, 500).unwrap();
-    assert!(matches!(partial.body(), Some(Body::Partial(_))));
-}
-
-#[test]
-fn agent_reports_use_the_canonical_quality_model() {
-    use rss_mdm_inventory::CollectedValue;
-    let attempts = Attempts::reported(
-        &Body::Snapshot(vec![
-            Change::upsert(
-                Id::new(FieldKey::Model.as_str()).unwrap(),
-                CollectedValue::Known("Model-A".into())
-                    .encode(FieldKey::Model)
-                    .unwrap(),
-            ),
-            Change::upsert(
-                Id::new(FieldKey::OsVersion.as_str()).unwrap(),
-                CollectedValue::Unsupported
-                    .encode(FieldKey::OsVersion)
-                    .unwrap(),
-            ),
-        ]),
-        42,
+fn native_partial_and_failed_results_preserve_per_field_quality() {
+    let attempts = Attempts::native(
+        definition(),
+        [(
+            builtin::MODEL,
+            NativeValue::Value(CollectedValue::Value(Scalar::String("Mac".into()))),
+        )]
+        .into_iter()
+        .collect(),
+        100,
     )
     .unwrap();
-    assert_eq!(attempts.fields[0].quality, Quality::Success);
-    assert_eq!(attempts.fields[1].quality, Quality::Unsupported);
-    assert!(
-        attempts
-            .fields
-            .iter()
-            .all(|field| field.received_at == Some(42))
+    assert_eq!(attempts.fields()[&builtin::MODEL].quality, Quality::Success);
+    assert_eq!(
+        attempts.fields()[&builtin::OS_VERSION].quality,
+        Quality::Missing
     );
-    assert!(serde_json::from_str::<Attempts>(&serde_json::to_string(&attempts).unwrap()).is_ok());
-
+    assert!(attempts.fields().values().all(|f| f.status.is_none()));
+    assert!(matches!(attempts.body().unwrap(),Some(Body::Partial(v)) if v.len()==1));
+}
+#[test]
+fn successful_zero_fields_is_distinct_from_failure_and_unattempted() {
+    let empty = Attempts::reported(definition(), &Body::Snapshot(vec![]), 100).unwrap();
+    assert!(
+        empty
+            .fields()
+            .values()
+            .all(|f| f.quality == Quality::Deleted)
+    );
     let failed = Attempts::reported(
+        definition(),
         &Body::Failed {
-            code: Id::new("collection_failed").unwrap(),
+            code: Id::new("failed").unwrap(),
         },
-        43,
+        100,
     )
     .unwrap();
     assert!(
         failed
-            .fields
-            .iter()
-            .all(|field| field.quality == Quality::Failed)
+            .fields()
+            .values()
+            .all(|f| f.quality == Quality::Failed)
     );
+    let mut unattempted = Attempts::new(definition());
+    unattempted.finish();
+    assert!(
+        unattempted
+            .fields()
+            .values()
+            .all(|f| f.quality == Quality::Missing)
+    );
+    assert!(unattempted.body().unwrap().is_none());
 }
-
 #[test]
-fn native_partial_observation_keeps_missing_fields_without_fabricating_status() {
-    let attempts = Attempts::native(
-        [
-            NativeValue::Value("MacBookPro18,3".into()),
-            NativeValue::Missing,
-        ],
-        100,
-    );
-    assert_eq!(attempts.fields[0].quality, Quality::Success);
-    assert_eq!(attempts.fields[1].quality, Quality::Missing);
-    assert!(attempts.fields.iter().all(|f| f.status.is_none()));
-    assert!(matches!(attempts.body(),Some(Body::Partial(changes)) if changes.len()==1));
-    let failed = Attempts::native([NativeValue::Failed, NativeValue::Failed], 101);
-    assert!(matches!(failed.body(), Some(Body::Failed { .. })));
+fn legacy_positional_progress_cannot_be_restored() {
+    assert!(serde_json::from_str::<Attempts>(r#"{"fields":[{"status":200,"quality":"success","received_at":1,"value":"model","value_digest":null}]}"#).is_err());
 }

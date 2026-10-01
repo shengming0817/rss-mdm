@@ -1,6 +1,7 @@
 //! Authored Policy is the durable authority; execution progress never edits it.
 use super::action_contract::{
-    Architecture, ExecutionInput, FrozenAction, FrozenSoftwareAction, Platform,
+    Architecture, ExecutionInput, FrozenAction, FrozenNativeCollection, FrozenSoftwareAction,
+    Platform,
 };
 use crate::{
     Error,
@@ -30,6 +31,10 @@ pub use rss_mdm_policy::{Change, Policy};
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Frozen {
+    NativeCollection {
+        action: Box<FrozenNativeCollection>,
+        frequency: Frequency,
+    },
     Execution {
         action: Box<FrozenAction>,
         frequency: Frequency,
@@ -97,7 +102,8 @@ impl Policies {
                         } else {
                             let variant = variant(&version, binding)?;
                             Ok(match variant.declaration() {
-                                resource::Declaration::Script { artifact, .. } => {
+                                resource::Declaration::Script { artifact, .. }
+                                | resource::Declaration::NativeCollection { artifact, .. } => {
                                     Some(artifact.clone())
                                 }
                                 _ => None,
@@ -377,6 +383,50 @@ impl Policies {
         let exact = binding.exact().ok_or(Error::Malformed)?;
         match (action, v.declaration()) {
             (
+                Action::NativeCollection {
+                    schedule,
+                    frequency,
+                    run_lifetime_seconds,
+                    ..
+                },
+                resource::Declaration::NativeCollection {
+                    artifact,
+                    definition,
+                },
+            ) => {
+                if !verified.is_some_and(|v| v.matches(artifact)) {
+                    return Err(Error::Conflict.into());
+                }
+                let source = match definition.spec().adapter {
+                    resource::NativeAdapter::WindowsCsp => rss_mdm_inventory::Source::MdmWindows,
+                    _ => rss_mdm_inventory::Source::MdmApple,
+                };
+                let collection = freeze_collection(
+                    tx,
+                    self.planning.tenant,
+                    &version,
+                    v,
+                    source,
+                    definition.spec().mappings.keys(),
+                )
+                .await?;
+                Ok(Frozen::NativeCollection {
+                    frequency: *frequency,
+                    action: Box::new(FrozenNativeCollection {
+                        input: ExecutionInput {
+                            platform: exact.platform,
+                            architecture: exact.architecture,
+                            parameters: json!({}),
+                            schedule: schedule.clone(),
+                            run_lifetime_seconds: *run_lifetime_seconds,
+                        },
+                        definition: definition.clone(),
+                        collection,
+                        resource_digest: version.digest().bytes(),
+                    }),
+                })
+            }
+            (
                 Action::Execution {
                     parameters,
                     schedule,
@@ -397,14 +447,37 @@ impl Policies {
                 if artifact.length() > 16_777_216 {
                     return Err(Error::Malformed.into());
                 }
-                if script.spec().profile == resource::ScriptProfile::OsqueryInfoV1
-                    && artifact.digest()
-                        != resource::Digest::of(b"SELECT version FROM osquery_info;\n")
+                if let Some(sql) = &script.spec().sql
+                    && (artifact.digest() != resource::Digest::of(sql.query().as_bytes())
+                        || artifact.length() != sql.query().len() as u64)
                 {
                     return Err(Error::Malformed.into());
                 }
+                let collection = if let resource::ScriptPurpose::Collection { mappings } =
+                    &script.spec().purpose
+                {
+                    let source = if script.spec().profile == resource::ScriptProfile::Osquery {
+                        rss_mdm_inventory::Source::AgentOsquery
+                    } else {
+                        rss_mdm_inventory::Source::AgentScript
+                    };
+                    Some(
+                        freeze_collection(
+                            tx,
+                            self.planning.tenant,
+                            &version,
+                            v,
+                            source,
+                            mappings.keys(),
+                        )
+                        .await?,
+                    )
+                } else {
+                    None
+                };
                 Ok(Frozen::Execution {
                     action: Box::new(FrozenAction {
+                        collection,
                         input: ExecutionInput {
                             platform: exact.platform,
                             architecture: exact.architecture,
@@ -455,6 +528,7 @@ pub fn authorize_snapshot(
 ) -> std::result::Result<(), Error> {
     let permission = match definition.action {
         Action::Execution { .. } => Permission::ScriptExecute,
+        Action::NativeCollection { .. } => Permission::InventoryCollect,
         Action::Configuration { .. } => Permission::FirewallWrite,
         Action::Software { .. } | Action::EnsureAgentInstalled { .. } => Permission::SoftwareDeploy,
         Action::RequestMdmEnrollment { .. } => Permission::Enrollment,
@@ -472,6 +546,7 @@ pub fn authorize(
 ) -> std::result::Result<(), Error> {
     let permission = match definition.action {
         Action::Execution { .. } => Permission::ScriptExecute,
+        Action::NativeCollection { .. } => Permission::InventoryCollect,
         Action::Configuration { .. } => Permission::FirewallWrite,
         Action::Software { .. } | Action::EnsureAgentInstalled { .. } => Permission::SoftwareDeploy,
         Action::RequestMdmEnrollment { .. } => Permission::Enrollment,
@@ -502,3 +577,60 @@ pub fn variant<'a>(
 }
 
 pub mod read;
+
+async fn freeze_collection<'a>(
+    tx: &mut PgTransaction<'_>,
+    tenant: rss_request_context::TenantId,
+    version: &resource::Version,
+    variant: &resource::Variant,
+    source: rss_mdm_inventory::Source,
+    keys: impl Iterator<Item = &'a String>,
+) -> Result<rss_mdm_inventory::CollectionDefinition> {
+    use sha2::{Digest, Sha256};
+    let dataset = format!(
+        "resource.{:x}",
+        Sha256::digest(checked_input(serde_json::to_vec(&(
+            version.resource().as_str(),
+            variant.key().as_str()
+        )))?)
+    );
+    let template = format!("{:x}", Sha256::digest(version.digest().bytes()));
+    let lookup = (dataset.clone(), template.clone());
+    let existing = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                rss_mdm_inventory_postgres::collection_version_in(
+                    c, tenant, source, &lookup.0, &lookup.1,
+                )
+                .await
+                .map_err(|_| sqlx::Error::Protocol("collection lookup".into()))
+            })
+        })
+        .await?;
+    if let Some(existing) = existing {
+        return Ok(existing);
+    }
+    let catalog = crate::assets::catalog_in(tx, tenant, i64::MAX).await?;
+    let fields = keys
+        .map(|name| {
+            checked_input(
+                catalog
+                    .definition(checked_input(rss_mdm_inventory::FieldKey::parse(name))?)
+                    .cloned(),
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let definition = checked_input(rss_mdm_inventory::CollectionDefinition::new(
+        &dataset, template, source, fields,
+    ))?;
+    let frozen = definition.clone();
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            rss_mdm_inventory_postgres::register_collection_in(c, tenant, &frozen)
+                .await
+                .map_err(|_| sqlx::Error::Protocol("collection publication".into()))
+        })
+    })
+    .await?;
+    Ok(definition)
+}

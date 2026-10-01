@@ -244,9 +244,6 @@ impl DeviceService {
         result
     }
 }
-pub fn coverage_key() -> String {
-    serde_json::to_string(&rss_mdm_inventory::coverage()).expect("fixed coverage")
-}
 pub fn scope(
     tenant: TenantId,
     registration: Uuid,

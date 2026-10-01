@@ -58,7 +58,7 @@ BEGIN
  IF TG_OP='UPDATE' AND NEW IS NOT DISTINCT FROM OLD THEN RETURN NEW; END IF;
  IF TG_OP='DELETE' THEN r=to_jsonb(OLD); d=NULL; ELSE r=to_jsonb(NEW); d=r; END IF;
  t=(r->>'tenant_id')::uuid;
- s=sha256(convert_to(jsonb_build_array(r->>'journal',r->>'generation',r->>'scope',r->>'coverage')::text,'UTF8'));
+ s=sha256(convert_to(jsonb_build_array(r->>'journal',r->>'generation',r->>'scope')::text,'UTF8'));
  v=mdm.record_asset_change(t,'inventory',jsonb_build_object('registration',r->>'registration','scope',r->>'scope'),ARRAY[r->>'field']);
  INSERT INTO mdm.inventory_history VALUES(t,s,r->>'field',v,d);
  RETURN NULL;

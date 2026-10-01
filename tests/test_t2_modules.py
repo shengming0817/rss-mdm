@@ -8,6 +8,17 @@ from t2_registry import MODULES, select_paths
 
 
 class ModuleImpactTests(unittest.TestCase):
+    def test_collection_inputs_select_their_actual_protocol_consumers(self):
+        cases={
+            'crates/flow-service/src/execution/actions/output.rs': {'execution.agent.delivery'},
+            'crates/flow-service/src/execution/actions/native_collection.rs': {'windows.management','apple.collection'},
+            'crates/flow-service/src/execution/actions/recovery.rs': {'windows.management','apple.collection'},
+        }
+        for path,expected in cases.items():
+            selected=select_paths([path])
+            self.assertFalse(selected.full)
+            self.assertTrue(expected <= set(selected.modules),(path,selected.modules))
+
     def test_console_projection_inputs_select_their_http_consumers(self):
         for path in ('crates/resource-postgres/src/codec.rs',
                      'crates/inventory-postgres/src/lib.rs',
@@ -200,15 +211,15 @@ class ModuleImpactTests(unittest.TestCase):
                     'execution.agent.recovery','execution.software.offer','execution.software.content',
                     'execution.software.recovery'}
         for path in ('crates/agent-wire/src/tasks.rs',
-                     'crates/agent-wire/schema/signed-task-v4.schema.json',
+                     'crates/agent-wire/schema/signed-task-v5.schema.json',
                      'crates/flow-service/src/task_signing.rs'):
             selected = self.selected(path)
             self.assertTrue(expected <= selected, expected - selected)
             self.assertTrue(selected.isdisjoint({'agent.registration','agent.reports','windows.management',
                                                 'apple.policy','identity.sso','gateway.admission'}))
-        self.assertEqual(self.selected('crates/agent-wire/schema/registration-request-v4.schema.json'),
+        self.assertEqual(self.selected('crates/agent-wire/schema/registration-request-v5.schema.json'),
                          {'agent.registration'})
-        self.assertEqual(self.selected('crates/agent-wire/schema/report-request-v4.schema.json'),
+        self.assertEqual(self.selected('crates/agent-wire/schema/report-request-v5.schema.json'),
                          {'agent.reports','planning.onboarding'})
 
     def test_onboarding_wire_selects_its_actual_consumers(self):
@@ -216,7 +227,7 @@ class ModuleImpactTests(unittest.TestCase):
             'crates/agent-wire/src/onboarding.rs': {
                 'agent.reports','planning.onboarding','execution.commands.onboarding',
                 'apple.onboarding','execution.agent.delivery','execution.agent.poll','execution.agent.recovery'},
-            'crates/agent-wire/schema/managed-registration-request-v4.schema.json': {
+            'crates/agent-wire/schema/managed-registration-request-v5.schema.json': {
                 'execution.commands.onboarding','apple.onboarding'},
         }
         for path, expected in inputs.items():

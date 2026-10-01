@@ -40,6 +40,7 @@ impl ExecutionService {
                     })
                     .await?;
                     storage::lock(tx, p.device()).await?;
+                    actions::native_collection::settle_device(s, tx, p.device()).await?;
                     let w = w.clone();
                     let principal = p.clone();
                     let message = m.clone();
@@ -54,6 +55,7 @@ impl ExecutionService {
                         .await?
                         .map_err(Error::from)?;
                     settle_reports(s, tx, p, m.header.session_id).await?;
+                    actions::native_collection::settle_device(s, tx, p.device()).await?;
                     s.reconcile_agent_install_in(tx, p.device(), a).await?;
                     if !matches!(
                         a.snapshot().management_result,

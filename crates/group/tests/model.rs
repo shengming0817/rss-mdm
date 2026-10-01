@@ -987,3 +987,58 @@ fn bounded_page_rejects_missing_coverage_foreign_cursor_and_oversized_universe()
         1000
     );
 }
+
+#[test]
+fn finite_numeric_fields_use_numeric_order_and_reject_non_finite_values() {
+    let number = |v: f64| Value::Scalar(Scalar::Number(ordered_float::NotNan::new(v).unwrap()));
+    let rule = Rule::new(
+        tenant(),
+        "numeric",
+        "d",
+        vec![field(FieldType::Scalar(ScalarType::Number), &[Op::Lt])],
+        leaf(Op::Lt, Some(number(10.5))),
+    )
+    .unwrap();
+    let mut input = snapshot(FactState::Known(number(2.25)));
+    input.dictionary_version = "d".into();
+    let evaluated = rule.evaluate_page(&input.input(), time(1)).unwrap();
+    assert_eq!(evaluated.objects[0].decision, Decision::Match);
+    assert!(
+        Criteria::predicate(Predicate {
+            field: "device.model".into(),
+            op: Op::Eq,
+            operand: Some(Operand {
+                value: number(f64::INFINITY),
+                unit: None
+            })
+        })
+        .is_err()
+    );
+}
+
+#[test]
+fn inventory_sets_can_exceed_condition_operand_budget_without_truncation() {
+    let r = Rule::new(
+        tenant(),
+        "inventory",
+        "d",
+        vec![field(
+            FieldType::Set(ScalarType::Integer),
+            &[Op::ContainsAny],
+        )],
+        leaf(
+            Op::ContainsAny,
+            Some(set(ScalarType::Integer, vec![Scalar::Integer(299)])),
+        ),
+    )
+    .unwrap();
+    let mut input = snapshot(FactState::Known(set(
+        ScalarType::Integer,
+        (0..300).map(Scalar::Integer).collect(),
+    )));
+    input.dictionary_version = "d".into();
+    assert_eq!(
+        r.evaluate_page(&input.input(), time(1)).unwrap().objects[0].decision,
+        Decision::Match
+    );
+}

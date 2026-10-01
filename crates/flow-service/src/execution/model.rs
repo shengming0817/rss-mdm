@@ -14,12 +14,12 @@ pub enum Field {
 impl Field {
     pub fn key(self) -> FieldKey {
         match self {
-            Self::Model => FieldKey::Model,
-            Self::OsVersion => FieldKey::OsVersion,
+            Self::Model => rss_mdm_inventory::builtin::MODEL,
+            Self::OsVersion => rss_mdm_inventory::builtin::OS_VERSION,
         }
     }
     pub fn digest(self, value: &str) -> Result<StateDigest, Error> {
-        if !self.key().validate(value) {
+        if value.trim().is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
             return Err(Error::Malformed);
         }
         // Field and encoding identity are part of the semantic state. Values are exact UTF-8.

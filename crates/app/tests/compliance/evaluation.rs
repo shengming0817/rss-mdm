@@ -62,7 +62,7 @@ async fn collected_facts(b: &mut Browser, router: &Router, base: &Value) -> Resu
                         let delivery = runtime.inspect(&incomplete).await?;
                         if delivery.receipt.is_some()
                             && delivery.projection
-                                == crate::inventory_runtime::ProjectionStatus::NotApplicable
+                                == crate::inventory_runtime::ProjectionStatus::Projected
                         {
                             return Ok::<_, crate::Error>(());
                         }
@@ -70,12 +70,12 @@ async fn collected_facts(b: &mut Browser, router: &Router, base: &Value) -> Resu
                     }
                 })
                 .await??;
-                let retained = status(b, router, device, "compliant").await?;
+                let retained = status(b, router, device, "non_compliant").await?;
                 ensure!(
-                    retained["rules"][0]["current"]["evidence"] == current["evidence"],
-                    "failed collection replaced verified facts"
+                    retained["rules"][0]["current"]["factWatermark"].as_i64()
+                        > current["factWatermark"].as_i64()
                 );
-                // Explicit reevaluation also uses the same complete fact, even at a newer watermark.
+                // Partial success updates the confirmed field; later failure retains it.
                 let run = ok(
                     b,
                     router,
@@ -92,8 +92,8 @@ async fn collected_facts(b: &mut Browser, router: &Router, base: &Value) -> Resu
                 )
                 .await?;
                 ensure!(
-                    status(b, router, device, "compliant").await?["rules"][0]["current"]["status"]
-                        == "compliant"
+                    status(b, router, device, "non_compliant").await?["rules"][0]["current"]["status"]
+                        == "non_compliant"
                 );
             }
         }
@@ -119,7 +119,7 @@ async fn manual_and_collected_facts_evaluate_with_provenance() -> Result<()> {
     for source in ["agent.script", "agent.osquery"] {
         let epoch = Uuid::new_v4();
         pg(&format!(
-            "INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','{agent}','{source}','{epoch}','enterprise-task-v1',true)",
+            "INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES('{TENANT}','{agent}','{source}','{epoch}',true)",
             TENANT = case_tenant()
         ))?;
     }

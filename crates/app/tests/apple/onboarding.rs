@@ -150,8 +150,8 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         state["observation"]["installation"] == "unknown" && state["commandStatus"] != "applied",
         "unverified bundle promoted to installed: {state}"
     );
-    let input = json!({"wireVersion":4,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("managed-apple-agent"),"platform":"macos","architecture":"aarch64","capabilities":["inventory.basic.v4","mdm.enrollment.v4"]});
-    let url = format!("{}/api/agent/v4/managed-registrations", peer.origin);
+    let input = json!({"wireVersion":5,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("managed-apple-agent"),"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v5","mdm.enrollment.v5"]});
+    let url = format!("{}/api/agent/v5/managed-registrations", peer.origin);
     for (field, value, code) in [
         ("wireVersion", json!(3), "unsupported_wire"),
         (
@@ -161,7 +161,7 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         ),
         (
             "capabilities",
-            json!(["inventory.basic.v4", "inventory.basic.v4"]),
+            json!(["inventory.collect.v5", "inventory.collect.v5"]),
             "unsupported_capability",
         ),
         ("deviceId", json!("untrusted"), "malformed_request"),
@@ -307,7 +307,7 @@ async fn collected_bundle_presence_remains_unknown() -> Result<()> {
         loop {
             let value = pg(&format!("SELECT value FROM mdm.inventory WHERE tenant_id='{}' AND source='mdm.apple' AND field='channel.agent.installation'", case_tenant()))?;
             if !value.trim().is_empty() {
-                ensure!(value.trim() == "unknown", "unverified native observation: {value}");
+                ensure!(serde_json::from_str::<serde_json::Value>(value.trim())? == json!({"kind":"string","value":"unknown"}), "unverified native observation: {value}");
                 return Ok::<_, anyhow::Error>(());
             }
             tokio::time::sleep(Duration::from_millis(100)).await;

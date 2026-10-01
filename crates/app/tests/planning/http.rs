@@ -620,7 +620,9 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
             && preview["page"]["items"] == json!([crate::test_support::case::name("device-1")]),
         "trusted inventory mapping: {preview}"
     );
-    pg("UPDATE mdm.inventory SET value='Model-B' WHERE field='device.model'")?;
+    pg(
+        "UPDATE mdm.inventory SET value='{\"kind\":\"string\",\"value\":\"Model-B\"}' WHERE field='device.model'",
+    )?;
     await_ingress().await?;
     // Immutable previews retain their fixed input even after a fact writer advances it.
     ensure!(
@@ -656,7 +658,9 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
         members["page"]["items"] == json!([]),
         "new watermark did not observe the changed fact: {members}"
     );
-    pg("UPDATE mdm.inventory SET value='Model-A' WHERE field='device.model'")?;
+    pg(
+        "UPDATE mdm.inventory SET value='{\"kind\":\"string\",\"value\":\"Model-A\"}' WHERE field='device.model'",
+    )?;
     await_ingress().await?;
     // The old synchronous endpoint and snapshot request shape are gone.
     ensure!(
@@ -863,7 +867,7 @@ fn seed_management_device(device: &str) -> Result<()> {
     let request = uuid::Uuid::new_v4();
     let registration = uuid::Uuid::new_v4();
     pg(&format!(
-        "INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','{grant}','fixture','{INSTANCE}','{device}','enrollment','consumed',clock_timestamp()+interval '200 seconds');INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source) VALUES('{TENANT}','{request}','{grant}','mdm.windows');INSERT INTO mdm_access.devices VALUES('{TENANT}','{device}');INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','{device}','mdm',1,'{request}','active'); INSERT INTO mdm_access.credentials VALUES('{TENANT}',gen_random_uuid(),'{registration}','mdm',md5('{registration}')||md5('{registration}'),'active'); INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,coverage,enabled) VALUES('{TENANT}','{registration}','mdm.windows','77777777-7777-4777-8777-777777777777','device-basics/2/model-os/typed-v2',true);",
+        "INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','{grant}','fixture','{INSTANCE}','{device}','enrollment','consumed',clock_timestamp()+interval '200 seconds');INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source) VALUES('{TENANT}','{request}','{grant}','mdm.windows');INSERT INTO mdm_access.devices VALUES('{TENANT}','{device}');INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','{device}','mdm',1,'{request}','active'); INSERT INTO mdm_access.credentials VALUES('{TENANT}',gen_random_uuid(),'{registration}','mdm',md5('{registration}')||md5('{registration}'),'active'); INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES('{TENANT}','{registration}','mdm.windows','77777777-7777-4777-8777-777777777777',true);",
         TENANT = case_tenant()
     ))?;
     Ok(())

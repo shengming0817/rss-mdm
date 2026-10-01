@@ -28,6 +28,15 @@ CREATE TABLE mdm_resource.artifact_refs (
  sha256 bytea NOT NULL CHECK(octet_length(sha256)=32), length bigint NOT NULL CHECK(length>0), archived boolean NOT NULL,
  PRIMARY KEY(tenant_id,owner,version,sha256,length), FOREIGN KEY(tenant_id,owner) REFERENCES mdm_resource.aggregates(tenant_id,id)
 );
+CREATE TABLE mdm_resource.field_refs (
+ tenant_id uuid NOT NULL,owner text NOT NULL,version text NOT NULL,field text NOT NULL CHECK(length(field)<=128),archived boolean NOT NULL,
+ PRIMARY KEY(tenant_id,owner,version,field),FOREIGN KEY(tenant_id,owner) REFERENCES mdm_resource.aggregates(tenant_id,id)
+);
+CREATE INDEX field_refs_live ON mdm_resource.field_refs(tenant_id,field) WHERE NOT archived;
+ALTER TABLE mdm_resource.field_refs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_resource.field_refs FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_resource.field_refs USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+REVOKE ALL ON mdm_resource.field_refs FROM PUBLIC;
 CREATE INDEX artifact_refs_live ON mdm_resource.artifact_refs(tenant_id,sha256) WHERE NOT archived;
 ALTER TABLE mdm_resource.artifact_refs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_resource.artifact_refs FORCE ROW LEVEL SECURITY;
@@ -47,7 +56,7 @@ CREATE POLICY tenant ON mdm_resource.requests USING(tenant_id=nullif(current_set
 REVOKE ALL ON mdm_resource.requests FROM PUBLIC;
 GRANT USAGE ON SCHEMA mdm_resource TO mdm_resource_runtime;
 GRANT SELECT,INSERT ON ALL TABLES IN SCHEMA mdm_resource TO mdm_resource_runtime;
-GRANT UPDATE(archived) ON mdm_resource.artifact_refs TO mdm_resource_runtime;
+GRANT UPDATE(archived) ON mdm_resource.artifact_refs,mdm_resource.field_refs TO mdm_resource_runtime;
 GRANT UPDATE(revision,document,digest) ON mdm_resource.aggregates TO mdm_resource_runtime;
 GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_resource_runtime;
 GRANT SELECT ON rss_transactional_messaging.policy TO mdm_resource_runtime;

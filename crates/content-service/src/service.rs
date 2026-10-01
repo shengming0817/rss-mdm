@@ -81,6 +81,22 @@ async fn resolve_in(
                 definition.primary().clone()
             }
         }
+        r::Declaration::NativeCollection {
+            artifact,
+            definition,
+        } => {
+            let bytes = definition.canonical();
+            if artifact.length() != bytes.len() as u64
+                || artifact.digest() != r::Digest::of(&bytes)
+                || input
+                    .artifact
+                    .as_ref()
+                    .is_some_and(|id| id != artifact.reference().as_str())
+            {
+                return Err(Error::Malformed.into());
+            }
+            artifact.clone()
+        }
         r::Declaration::Script {
             artifact,
             definition,
@@ -93,9 +109,9 @@ async fn resolve_in(
             {
                 return Err(Error::Malformed.into());
             }
-            if definition.spec().profile == r::ScriptProfile::OsqueryInfoV1
-                && (artifact.length() != 32
-                    || artifact.digest() != r::Digest::of(b"SELECT version FROM osquery_info;\n"))
+            if let Some(sql) = &definition.spec().sql
+                && (artifact.length() != sql.query().len() as u64
+                    || artifact.digest() != r::Digest::of(sql.query().as_bytes()))
             {
                 return Err(Error::Malformed.into());
             }
