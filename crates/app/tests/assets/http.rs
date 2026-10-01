@@ -1,3 +1,4 @@
+use crate::test_support::*;
 mod identity_read {
     use crate::test_support::*;
     #[tokio::test]
@@ -553,4 +554,97 @@ mod manual {
         ensure!(pg(&format!("SELECT revision FROM mdm.manual_assignments WHERE tenant_id='{TENANT}' AND device='asset-a' AND field='custom.office_floor'", TENANT = case_tenant()))?.trim()=="4");
         fixture.close().await
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=assets.http"]
+async fn field_catalog_admin_publish_and_reference_checks_need_no_approval() -> Result<()> {
+    use crate::authorization::{Grant, Permission, Scope};
+    use crate::test_support::agent_execution::Fixture;
+    let mut fixture = Fixture::new().await?;
+    let key = "custom.registry_example";
+    let path = format!("/api/v2/asset-fields/{key}");
+    let definition = json!({"key":key,"version":1,"valueType":{"kind":"string","maxLength":128,"allowEmpty":false},"nullable":false,"manual":false,"sources":{"agent.script":100},"platforms":["macos"],"sensitivity":"standard","unit":null,"searchable":true,"itemKey":null});
+    let create = json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":definition}});
+    ensure!(
+        fixture
+            .author
+            .call(&fixture.router, Method::PUT, &path, Some(create.clone()))
+            .await?
+            .0
+            == StatusCode::FORBIDDEN
+    );
+    fixture.grants.push(Grant {
+        operation: Permission::InventoryFieldsWrite,
+        scope: Scope::Tenant,
+    });
+    crate::test_support::identity::set_grants(
+        case_tenant(),
+        &fixture.author_id,
+        fixture.grants.clone(),
+    )
+    .await?;
+    let published = fixture
+        .author
+        .call(&fixture.router, Method::PUT, &path, Some(create.clone()))
+        .await?;
+    ensure!(
+        published.0 == StatusCode::OK && published.1["asset"]["version"] == 1,
+        "field publish: {published:?}"
+    );
+    ensure!(
+        fixture
+            .author
+            .call(&fixture.router, Method::PUT, &path, Some(create))
+            .await?
+            == published,
+        "field publication replay changed"
+    );
+    let saved = format!("/api/v2/saved-queries/{}", Uuid::new_v4());
+    let value = json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"name":"field reference","query":{"criteria":{"kind":"predicate","field":key,"op":"eq","value":{"kind":"string","value":"yes"}},"select":[key],"sort":null}}}});
+    let response = fixture
+        .author
+        .call(&fixture.router, Method::PUT, &saved, Some(value))
+        .await?;
+    ensure!(response.0 == StatusCode::OK, "saved query: {response:?}");
+    let references = fixture
+        .author
+        .call(
+            &fixture.router,
+            Method::GET,
+            &format!("{path}/references"),
+            None,
+        )
+        .await?;
+    ensure!(
+        references.0 == StatusCode::OK && references.1["asset"]["impact"]["savedQueries"] == 1,
+        "references: {references:?}"
+    );
+    let delete =
+        || json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"delete"}});
+    ensure!(
+        fixture
+            .author
+            .call(&fixture.router, Method::PUT, &path, Some(delete()))
+            .await?
+            .0
+            == StatusCode::CONFLICT
+    );
+    ensure!(
+        fixture
+            .author
+            .call(&fixture.router, Method::PUT, &saved, Some(delete()))
+            .await?
+            .0
+            == StatusCode::OK
+    );
+    ensure!(
+        fixture
+            .author
+            .call(&fixture.router, Method::PUT, &path, Some(delete()))
+            .await?
+            .0
+            == StatusCode::OK
+    );
+    Ok(())
 }
