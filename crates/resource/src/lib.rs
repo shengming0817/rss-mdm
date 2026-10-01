@@ -6,7 +6,9 @@
 //! caller authorization or device effects. [`Artifact::verify`] checks supplied bytes.
 //! Persist snapshots and reference checks atomically in the consuming adapter; a
 //! returned decision does not prove a database commit or execution on a device.
+mod native_collection;
 mod script;
+pub use native_collection::*;
 mod sql;
 pub use sql::SqlTemplate;
 mod software;
