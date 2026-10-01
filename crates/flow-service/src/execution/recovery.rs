@@ -159,7 +159,13 @@ impl ExecutionService {
             policy,
             control,
             notify,
-            diagnostic,
+            |event| {
+                // The runner can expire and drop the claim future before the store returns.
+                if let rss_reconcile::Observation::ScanFailed { error, .. } = &event {
+                    self.readiness.scan(Err(error.kind()));
+                }
+                diagnostic(event);
+            },
         ))
         .await;
         if let Err(error) = &result {

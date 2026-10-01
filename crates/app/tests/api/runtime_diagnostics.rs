@@ -168,6 +168,54 @@ async fn execution_first_scan_failure_recovers_only_after_real_success() -> Resu
             }
         })
         .await??;
+        use sqlx::Connection;
+        let mut administrator =
+            sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+                .await?;
+        let mut blocked = administrator.begin().await?;
+        sqlx::query("LOCK TABLE rss_reconcile.targets IN ACCESS EXCLUSIVE MODE")
+            .execute(&mut *blocked)
+            .await?;
+        signals.command_recovery().notify_one();
+        let failed = tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                let state = fixture.source.execution.readiness.health();
+                if state.recovery
+                    == rss_mdm_flow_service::execution::health::Phase::Failed(
+                        rss_reconcile::ErrorKind::Deadline,
+                    )
+                {
+                    ensure!(
+                        state.task == Some(rss_runtime::TaskState::Running) && !state.is_ready()
+                    );
+                    let value = serde_json::to_value(
+                        fixture
+                            .source
+                            .collect(monotonic().now() + Duration::from_secs(1), false)
+                            .await,
+                    )?;
+                    let observed = component(&value, "execution_recovery");
+                    ensure!(
+                        observed["readiness"] == "not_ready" && observed["health"] == "degraded"
+                    );
+                    break Ok::<(), anyhow::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        blocked.rollback().await?;
+        failed??;
+        signals.command_recovery().notify_one();
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                if fixture.source.execution.readiness.health().is_ready() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await?;
         Ok::<(), anyhow::Error>(())
     }
     .await;

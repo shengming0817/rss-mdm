@@ -324,7 +324,7 @@ add('diagnostics.http', selectors=('api::t2::runtime_diagnostics::',), fixtures=
              'crates/flow-service/src/execution/health.rs', 'crates/flow-service/src/execution/recovery.rs',
              'crates/inventory-service/src/inventory_runtime/diagnostics.rs',
              'crates/flow-service/src/planning/automation/health.rs'),
-    tests=('crates/app/tests/api/runtime_diagnostics.rs',))
+    tests=('crates/app/tests/api/runtime_diagnostics.rs','crates/app/tests/api/execution_health.rs',))
 MODULES['diagnostics.http'] = replace(MODULES['diagnostics.http'], scope='tenant', support_inputs=('crates/app/tests/support/audit.rs','crates/app/tests/device/support.rs','crates/app/tests/inventory_runtime/support.rs','crates/app/tests/planning/support.rs'), policies=(
     CasePolicy('api::t2::runtime_diagnostics::execution_first_scan_failure_recovers_only_after_real_success', 'instance', 'tenant'),
     CasePolicy('api::t2::runtime_diagnostics::runner_failure_is_visible_while_bridge_and_queries_succeed', 'instance', 'tenant'),

@@ -11,7 +11,7 @@ rss-contract.workspace = true
 rss-request-context.workspace = true
 rss-transactional-messaging.workspace = true
 rss-transactional-messaging-postgres.workspace = true
-sqlx.workspace = true
+sqlx = { workspace = true, features = ["uuid"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

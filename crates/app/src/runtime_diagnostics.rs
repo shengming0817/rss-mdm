@@ -301,7 +301,11 @@ fn execution_component(state: rss_mdm_flow_service::execution::health::Health) -
     for phase in [state.recovery, state.relay] {
         match phase {
             Phase::Initializing => {
-                if state.task == Some(rss_runtime::TaskState::Running) && !state.stopping {
+                if state.task == Some(rss_runtime::TaskState::Running)
+                    && !state.stopping
+                    && !matches!(state.recovery, Phase::Failed(_))
+                    && !matches!(state.relay, Phase::Failed(_))
+                {
                     result.health = Health::Unknown;
                 }
                 result.reasons.push(Reason::Initializing);
@@ -460,3 +464,7 @@ fn run_result(value: rss_mdm_flow_service::planning::automation::RunObservation)
         observed_at: value.observed_at,
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/api/execution_health.rs"]
+mod tests;

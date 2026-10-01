@@ -97,9 +97,9 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
             .reconcile
             .claim_due(scope, limit, lease, control)
             .await;
-        self.0
-            .readiness
-            .scan(result.as_ref().map(|_| ()).map_err(|e| e.kind()));
+        if result.is_ok() {
+            self.0.readiness.scan(Ok(()));
+        }
         result
     }
     async fn renew<T: rss_reconcile::Timer>(
