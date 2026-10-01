@@ -72,9 +72,7 @@ async fn resolve_in(
         r::Declaration::Software { definition } => {
             if let Some(reference) = &input.artifact {
                 definition
-                    .spec()
-                    .artifacts
-                    .values()
+                    .materials()
                     .find(|a| &a.reference == reference)
                     .ok_or(Error::Malformed)?
                     .artifact()
@@ -109,9 +107,7 @@ async fn resolve_in(
         r::Declaration::Software { definition } => (
             Some(definition.spec().source.clone()),
             definition
-                .spec()
-                .artifacts
-                .values()
+                .materials()
                 .find(|a| a.reference == artifact.reference().as_str())
                 .and_then(|a| a.origin.clone()),
         ),

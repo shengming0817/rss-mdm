@@ -327,6 +327,8 @@ impl From<catalog::Error> for Fault {
             catalog::Error::Audit(e) => Self::from(e),
             catalog::Error::Fact(e) => Self::from(e),
             catalog::Error::Input => Error::Malformed.into(),
+            catalog::Error::Unsupported => Error::Unsupported.into(),
+            catalog::Error::Dependency => Error::Forbidden.into(),
             catalog::Error::Conflict => Error::Conflict.into(),
             catalog::Error::NotAdmitted => Error::Forbidden.into(),
             catalog::Error::Missing => {

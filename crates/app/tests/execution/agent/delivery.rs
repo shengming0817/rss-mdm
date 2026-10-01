@@ -17,7 +17,7 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
     )
     .await?;
     author.operation = None;
-    let registration=agent_call(&router,Method::POST,"/api/agent/v4/registrations",None,Some(json!({"wireVersion":4,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_inventory_credential(),"platform":"macos","architecture":"aarch64","capabilities":["inventory.basic.v4"]}))).await?;
+    let registration=agent_call(&router,Method::POST,"/api/agent/v4/registrations",None,Some(json!({"wireVersion":4,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_inventory_credential(),"platform":"macos","architecture":"aarch64","capabilities":["inventory.basic.v4"]}))).await?;
     ensure!(
         registration.0 == StatusCode::CREATED
             && registration.1["capabilities"] == json!(["inventory.basic.v4"]),
@@ -28,7 +28,7 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
         Method::POST,
         "/api/agent/v4/tasks/claim",
         Some(case_inventory_credential()),
-        Some(json!({"wireVersion":4,"operationId":Uuid::new_v4()})),
+        Some(json!({"wireVersion":4,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(
@@ -44,7 +44,7 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
     )
     .await?;
     author.operation = None;
-    let registration=agent_call(&router,Method::POST,"/api/agent/v4/registrations",None,Some(json!({"wireVersion":4,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_credential(),"platform":"macos","architecture":"aarch64","capabilities":["inventory.basic.v4","task.execute.v4"]}))).await?;
+    let registration=agent_call(&router,Method::POST,"/api/agent/v4/registrations",None,Some(json!({"wireVersion":4,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_credential(),"platform":"macos","architecture":"aarch64","capabilities":["inventory.basic.v4","task.execute.v4"]}))).await?;
     ensure!(
         registration.0 == StatusCode::CREATED
             && registration.1["capabilities"] == json!(["inventory.basic.v4", "task.execute.v4"]),

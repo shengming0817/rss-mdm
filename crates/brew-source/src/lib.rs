@@ -8,11 +8,15 @@
 //! [`Error::OutcomeUnknown`]. There is no clone, push, artifact download or install.
 //! The host owns repository access, authentication and durable operation records.
 mod git;
+mod import;
 mod template;
 pub use git::{CommitId, DocumentPresence, Prepared, PublishResult, Repository, Snapshot};
+pub use import::{TapImport, TapPayload};
 use rss_request_context::TenantId;
 use std::fmt;
-pub use template::{Artifact, Bottle, BottleTag, Cask, CaskArtifact, Document, Formula};
+pub use template::{
+    Artifact, Bottle, BottleLayout, BottleTag, Cask, CaskArtifact, Cellar, Document, Formula,
+};
 
 /// Maximum rendered document and bounded Git output size in bytes (1 MiB).
 pub const MAX_DOCUMENT: usize = 1024 * 1024;

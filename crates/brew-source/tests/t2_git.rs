@@ -266,3 +266,75 @@ async fn conditional_removal_preserves_other_paths_and_old_commits() {
             .is_err()
     );
 }
+
+#[tokio::test]
+#[ignore = "explicit real-provider T2 target"]
+async fn immutable_snapshot_has_only_frozen_documents_and_replays_after_later_publish() {
+    let (dir, repo) = repository().await;
+    let first = repo
+        .prepare_snapshot(None, vec![document("1")], "first", now())
+        .await
+        .unwrap();
+    repo.apply(&first).await.unwrap();
+    let second = repo
+        .prepare_snapshot(
+            Some(first.target().clone()),
+            vec![document("2")],
+            "second",
+            now(),
+        )
+        .await
+        .unwrap();
+    repo.apply(&second).await.unwrap();
+    assert_eq!(
+        repo.apply(&first).await.unwrap(),
+        PublishResult::AlreadyApplied
+    );
+    let history = Command::new("/usr/bin/git")
+        .arg("--git-dir")
+        .arg(dir.path())
+        .args(["rev-list", "--count", second.target().as_str()])
+        .output()
+        .unwrap();
+    assert!(history.status.success());
+    assert_eq!(history.stdout, b"1\n");
+    assert!(repo.snapshot_exists(first.target()).await.unwrap());
+    repo.withdraw_snapshot(first.target()).await.unwrap();
+    assert!(!repo.snapshot_exists(first.target()).await.unwrap());
+    assert!(repo.snapshot_exists(second.target()).await.unwrap());
+}
+
+#[tokio::test]
+#[ignore = "explicit real-provider T2 target"]
+async fn readonly_upload_pack_advertises_only_the_selected_snapshot() {
+    let (_dir, repo) = repository().await;
+    let first = repo
+        .prepare_snapshot(None, vec![document("1")], "first", now())
+        .await
+        .unwrap();
+    repo.apply(&first).await.unwrap();
+    let second = repo
+        .prepare_snapshot(
+            Some(first.target().clone()),
+            vec![document("2")],
+            "second",
+            now(),
+        )
+        .await
+        .unwrap();
+    repo.apply(&second).await.unwrap();
+    let advertised = repo
+        .upload_pack(first.target(), true, false, &[])
+        .await
+        .unwrap();
+    let text = String::from_utf8(advertised).unwrap();
+    assert!(text.contains(first.target().as_str()));
+    assert!(!text.contains(second.target().as_str()));
+    assert!(text.contains("refs/heads/main"));
+    repo.withdraw_snapshot(first.target()).await.unwrap();
+    assert!(
+        repo.upload_pack(first.target(), true, false, &[])
+            .await
+            .is_err()
+    );
+}

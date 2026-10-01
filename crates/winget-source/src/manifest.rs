@@ -37,6 +37,14 @@ impl Manifest {
     pub const fn sha256(&self) -> [u8; 32] {
         self.sha256
     }
+    /// Complete selected installer behavior, retained rather than stripped during conversion.
+    pub fn installer_metadata(&self) -> &Value {
+        &self.document["Data"]["Versions"][0]["Installers"][0]
+    }
+    /// Validated default locale used to derive publication metadata.
+    pub fn locale_metadata(&self) -> &Value {
+        &self.document["Data"]["Versions"][0]["DefaultLocale"]
+    }
     /// Require an exact artifact digest match, returning InvalidDigest on mismatch.
     pub fn verify_expected_digest(&self, expected: [u8; 32]) -> Result<(), Error> {
         if self.sha256 == expected {
@@ -198,8 +206,15 @@ pub fn parse_manifest(query: &Query, bytes: &[u8]) -> Result<Manifest, Error> {
                     "Scope",
                     "InstallerUrl",
                     "InstallerSha256",
+                    "InstallerSwitches",
+                    "InstallerSuccessCodes",
+                    "ProductCode",
+                    "Dependencies",
+                    "UpgradeBehavior",
+                    "MinimumOSVersion",
                 ],
             )?;
+            validate_behavior(installer)?;
             if installer.get("InstallerIdentifier").is_some() {
                 identity(text(installer, "InstallerIdentifier")?)?;
             }
@@ -223,6 +238,73 @@ pub fn parse_manifest(query: &Query, bytes: &[u8]) -> Result<Manifest, Error> {
         }
     }
     found.ok_or(Error::NotFound)
+}
+
+fn validate_behavior(installer: &Value) -> Result<(), Error> {
+    if let Some(switches) = installer.get("InstallerSwitches") {
+        keys(
+            switches,
+            &["Silent", "SilentWithProgress", "Upgrade", "Custom"],
+        )?;
+        for value in switches.as_object().ok_or(Error::InvalidResponse)?.values() {
+            let s = value.as_str().ok_or(Error::InvalidResponse)?;
+            if s.is_empty() || s.len() > 4096 || s.chars().any(char::is_control) {
+                return Err(Error::InvalidResponse);
+            }
+        }
+    }
+    if let Some(codes) = installer.get("InstallerSuccessCodes") {
+        let codes = codes
+            .as_array()
+            .filter(|a| a.len() <= 32)
+            .ok_or(Error::BudgetExceeded)?;
+        let mut seen = std::collections::BTreeSet::new();
+        for code in codes {
+            let code = code
+                .as_i64()
+                .and_then(|n| i32::try_from(n).ok())
+                .ok_or(Error::InvalidResponse)?;
+            if !seen.insert(code) {
+                return Err(Error::InvalidResponse);
+            }
+        }
+    }
+    validate_dependencies(installer)?;
+    if installer
+        .get("UpgradeBehavior")
+        .is_some_and(|v| !matches!(v.as_str(), Some("install" | "uninstallPrevious" | "deny")))
+    {
+        return Err(Error::Unsupported);
+    }
+    for key in ["ProductCode", "MinimumOSVersion"] {
+        if installer.get(key).is_some() {
+            text(installer, key)?;
+        }
+    }
+    Ok(())
+}
+fn validate_dependencies(installer: &Value) -> Result<(), Error> {
+    let Some(deps) = installer.get("Dependencies") else {
+        return Ok(());
+    };
+    keys(deps, &["PackageDependencies"])?;
+    let values = deps["PackageDependencies"]
+        .as_array()
+        .filter(|a| a.len() <= 32)
+        .ok_or(Error::InvalidResponse)?;
+    let mut ids = std::collections::BTreeSet::new();
+    for dep in values {
+        keys(dep, &["PackageIdentifier", "MinimumVersion"])?;
+        let id = text(dep, "PackageIdentifier")?;
+        identity(id)?;
+        if !ids.insert(id) {
+            return Err(Error::InvalidResponse);
+        }
+        if dep.get("MinimumVersion").is_some() {
+            identity(text(dep, "MinimumVersion")?)?;
+        }
+    }
+    Ok(())
 }
 
 fn validate_locale(locale: &Value) -> Result<(), Error> {

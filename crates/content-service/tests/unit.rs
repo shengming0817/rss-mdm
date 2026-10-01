@@ -14,6 +14,44 @@ fn config(directory: PathBuf) -> Config {
         max_expansion_ratio: 100,
     }
 }
+
+#[test]
+fn msix_content_identity_must_match_the_approved_definition() {
+    use rss_mdm_resource::{SoftwareBehavior, SoftwareDefinition};
+    use std::io::Write;
+    let directory = tempfile::tempdir().unwrap();
+    let cfg = config(directory.path().to_owned());
+    let declaration = serde_json::json!({"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"Acme.App","version":"1.0.0.0","provenance":{"kind":"private"},"artifacts":{"installer":{"reference":"installer","length":3,"sha256":vec![1;32]}},"behavior":{"kind":"msix","container":{"kind":"package","installer":"installer"},"identity":{"name":"Acme.App","publisher":"CN=Acme","version":[1,0,0,0],"architecture":"x86_64","resourceId":""},"dependencies":[],"deployment":{"kind":"device_provisioning"},"minimumOs":[10,0,19041,0],"requireSideload":true,"allowUnsigned":false,"uninstall":true,"invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place"},"signatures":[],"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"export":{"kind":"disabled"}});
+    let definition: SoftwareDefinition = serde_json::from_value(declaration).unwrap();
+    let SoftwareBehavior::Msix(msix) = &definition.spec().behavior else {
+        panic!("msix fixture");
+    };
+    for publisher in ["CN=Acme", "CN=Other"] {
+        let path = directory.path().join("app.msix");
+        let mut writer = zip::ZipWriter::new(File::create(&path).unwrap());
+        writer
+            .start_file("AppxManifest.xml", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        write!(writer,"<Package xmlns=\"http://schemas.microsoft.com/appx/manifest/foundation/windows10\"><Identity Name=\"Acme.App\" Publisher=\"{publisher}\" Version=\"1.0.0.0\" ProcessorArchitecture=\"x64\"/><Dependencies><TargetDeviceFamily Name=\"Windows.Desktop\" MinVersion=\"10.0.19041.0\" MaxVersionTested=\"10.0.19041.0\"/></Dependencies></Package>").unwrap();
+        writer.finish().unwrap();
+        let deadline = rss_request_context::Deadline::from_timeout(
+            &RuntimeTimer,
+            std::time::Duration::from_secs(60),
+        )
+        .unwrap();
+        assert_eq!(
+            super::native::msix(
+                &mut File::open(path).unwrap(),
+                msix,
+                &cfg,
+                &RuntimeTimer,
+                deadline
+            )
+            .is_ok(),
+            publisher == "CN=Acme"
+        );
+    }
+}
 fn binding(bytes: &[u8]) -> Binding {
     Binding {
         resource: "app".into(),
@@ -152,7 +190,7 @@ fn bundle_checks_closed_manifest_paths_and_member_bytes() {
             writer.write_all(b"bad").unwrap();
         }
         writer.finish().unwrap();
-        let definition:SoftwareDefinition=serde_json::from_value(serde_json::json!({"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"App","version":"1","format":"bundle","primary":"zip","artifacts":{"zip":{"reference":"zip","length":std::fs::metadata(&path).unwrap().len(),"sha256":vec![2;32]}},"install":{"executor":"power_shell7","entry":"install.ps1","runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096},"uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"bundle":manifest})).unwrap();
+        let definition:SoftwareDefinition=serde_json::from_value(serde_json::json!({"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"App","version":"1","artifacts":{"zip":{"reference":"zip","length":std::fs::metadata(&path).unwrap().len(),"sha256":vec![2;32]}},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"behavior":{"kind":"bundle","archive":"zip","manifest":manifest,"install":{"interpreter":"power_shell7","entry":"install.ps1","invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}})).unwrap();
         let result = super::bundle::validate(
             &mut File::open(path).unwrap(),
             &definition,
@@ -379,7 +417,7 @@ fn bundle_rejects_unsafe_zip_structure_and_small_budget_overruns() {
     let valid = |bytes: &[u8], cfg: &Config| {
         let path = directory.path().join("boundary.zip");
         fs::write(&path, bytes).unwrap();
-        let definition: SoftwareDefinition=serde_json::from_value(serde_json::json!({"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"App","version":"1","format":"bundle","primary":"zip","artifacts":{"zip":{"reference":"zip","length":bytes.len(),"sha256":vec![2;32]}},"install":{"executor":"power_shell7","entry":"install.ps1","runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096},"uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"bundle":manifest})).unwrap();
+        let definition: SoftwareDefinition=serde_json::from_value(serde_json::json!({"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"App","version":"1","artifacts":{"zip":{"reference":"zip","length":bytes.len(),"sha256":vec![2;32]}},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"behavior":{"kind":"bundle","archive":"zip","manifest":manifest,"install":{"interpreter":"power_shell7","entry":"install.ps1","invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}})).unwrap();
         super::bundle::validate(
             &mut File::open(path).unwrap(),
             &definition,
@@ -524,4 +562,140 @@ async fn upload_operation_is_scoped_to_actor() {
         store.begin(id, changed, 100).await,
         Err(Error::Conflict)
     ));
+}
+
+#[tokio::test]
+async fn msix_nested_material_shares_the_pending_upload_disk_budget() {
+    use rss_mdm_resource as r;
+    use rss_mdm_software_service::catalog::ContentPort;
+    use std::io::{Cursor, Write};
+    fn archive(files: Vec<(&str, Vec<u8>)>) -> Vec<u8> {
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for (path, bytes) in files {
+            zip.start_file(
+                path,
+                zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored),
+            )
+            .unwrap();
+            zip.write_all(&bytes).unwrap();
+        }
+        zip.finish().unwrap().into_inner()
+    }
+    let package=archive(vec![("AppxManifest.xml",br#"<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"><Identity Name="Acme.App" Publisher="CN=Acme" Version="1.0.0.0" ProcessorArchitecture="x64"/><Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0"/></Dependencies></Package>"#.to_vec())]);
+    let bundle_xml = format!(
+        r#"<Bundle xmlns="http://schemas.microsoft.com/appx/2013/bundle"><Identity Name="Acme.App" Publisher="CN=Acme" Version="1.0.0.0"/><Packages><Package FileName="Acme.msix" Type="application" Architecture="x64" Version="1.0.0.0" Size="{}"/></Packages></Bundle>"#,
+        package.len()
+    );
+    let bytes = archive(vec![
+        (
+            "AppxMetadata/AppxBundleManifest.xml",
+            bundle_xml.into_bytes(),
+        ),
+        ("Acme.msix", package.clone()),
+    ]);
+    let identity = serde_json::json!({"name":"Acme.App","publisher":"CN=Acme","version":[1,0,0,0],"architecture":"x86_64","resourceId":""});
+    let definition:r::SoftwareDefinition=serde_json::from_value(serde_json::json!({"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"Acme.App","version":"1.0.0.0","provenance":{"kind":"private"},"artifacts":{"installer":{"reference":"installer","length":bytes.len(),"sha256":r::Digest::of(&bytes).bytes()}},"behavior":{"kind":"msix","container":{"kind":"bundle","installer":"installer","members":[{"path":"Acme.msix","identity":identity,"length":package.len(),"sha256":r::Digest::of(&package).bytes()}]},"identity":identity,"dependencies":[],"deployment":{"kind":"device_provisioning"},"minimumOs":[10,0,19041,0],"requireSideload":true,"allowUnsigned":false,"uninstall":true,"invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place"},"signatures":[],"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"export":{"kind":"disabled"}})).unwrap();
+    let r::SoftwareBehavior::Msix(expected) = &definition.spec().behavior else {
+        panic!("msix");
+    };
+    for kind in ["application", "resource"] {
+        let xml = format!(
+            r#"<Bundle xmlns="http://schemas.microsoft.com/appx/2013/bundle"><Identity Name="Acme.App" Publisher="CN=Acme" Version="1.0.0.0"/><Packages><Package FileName="Acme.msix" Type="application" Architecture="x64" Version="1.0.0.0" Size="{}"/><Package FileName="Extra.msix" Type="{kind}" Architecture="x64" Version="1.0.0.0" Size="{}"/></Packages></Bundle>"#,
+            package.len(),
+            package.len()
+        );
+        let extra = archive(vec![
+            ("AppxMetadata/AppxBundleManifest.xml", xml.into_bytes()),
+            ("Acme.msix", package.clone()),
+            ("Extra.msix", package.clone()),
+        ]);
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(&extra).unwrap();
+        file.rewind().unwrap();
+        let deadline =
+            Deadline::from_timeout(&RuntimeTimer, std::time::Duration::from_secs(60)).unwrap();
+        assert!(
+            super::native::msix(
+                &mut file,
+                expected,
+                &config(PathBuf::new()),
+                &RuntimeTimer,
+                deadline
+            )
+            .is_err(),
+            "accepted undeclared {kind}"
+        );
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = config(dir.path().to_owned());
+    cfg.max_artifact_bytes = 1024 * 1024;
+    cfg.max_temporary_bytes = 1024 * 1024;
+    let tenant =
+        rss_request_context::TenantId::parse("10000000-0000-0000-0000-000000000001").unwrap();
+    let store = Store::open(&cfg, &tenant.to_string(), Arc::new(RuntimeTimer)).unwrap();
+    let id = Uuid::new_v4();
+    store.begin(id, binding(&bytes), 100).await.unwrap();
+    store
+        .append("user", id, 0, 100, Cursor::new(bytes))
+        .await
+        .unwrap();
+    store.finish("user", id, 100).await.unwrap();
+    let version = r::Version::new(
+        tenant,
+        r::Id::new("app").unwrap(),
+        r::Id::new("1").unwrap(),
+        r::Kind::Software,
+        vec![r::Variant::new(
+            r::Platform::Windows,
+            r::Architecture::X86_64,
+            r::Id::new("default").unwrap(),
+            r::Declaration::Software { definition },
+        )],
+    )
+    .unwrap();
+    assert!(ContentPort::verify(store.as_ref(), &version).await.is_ok());
+    let pending = vec![8; 1024 * 1024 - 1];
+    let id = Uuid::new_v4();
+    store.begin(id, binding(&pending), 100).await.unwrap();
+    assert!(
+        ContentPort::verify(store.as_ref(), &version).await.is_err(),
+        "nested spool escaped the shared disk reservation"
+    );
+}
+
+#[test]
+fn xml_reads_bound_actual_output_even_when_zip_length_is_forged() {
+    use std::io::{Cursor, Write};
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    writer
+        .start_file(
+            "AppxManifest.xml",
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated),
+        )
+        .unwrap();
+    writer.write_all(&vec![b' '; 2 * 1_048_576]).unwrap();
+    let mut bytes = writer.finish().unwrap().into_inner();
+    let central = bytes.windows(4).position(|w| w == b"PK\x01\x02").unwrap();
+    bytes[central + 24..central + 28].copy_from_slice(&1u32.to_le_bytes());
+    let mut file = tempfile::tempfile().unwrap();
+    file.write_all(&bytes).unwrap();
+    file.rewind().unwrap();
+    let mut archive = zip::ZipArchive::new(&mut file).unwrap();
+    let deadline =
+        Deadline::from_timeout(&RuntimeTimer, std::time::Duration::from_secs(60)).unwrap();
+    let mut entry = archive.by_name("AppxManifest.xml").unwrap();
+    let length = entry.size();
+    assert!(matches!(
+        super::native::read_xml_bytes(&mut entry, length, &RuntimeTimer, deadline, &mut Vec::new()),
+        Err(Error::Malformed)
+    ));
+    // The bounded reader is independently checked so post-read XML rejection cannot mask over-allocation.
+    let mut reader = Cursor::new(vec![b' '; 2 * 1_048_576]);
+    assert!(
+        super::native::read_xml_bytes(&mut reader, 1, &RuntimeTimer, deadline, &mut Vec::new())
+            .is_err()
+    );
+    assert!(reader.position() <= 8192);
 }

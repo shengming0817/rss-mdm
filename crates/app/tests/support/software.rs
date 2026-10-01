@@ -19,6 +19,13 @@ pub(crate) async fn content_setup_guard() -> Result<std::fs::File> {
     .await?
 }
 pub(crate) struct HttpServer(tokio::task::JoinHandle<std::io::Result<()>>);
+impl HttpServer {
+    pub(crate) fn start(listener: tokio::net::TcpListener, router: Router) -> Self {
+        Self(tokio::spawn(
+            async move { axum::serve(listener, router).await },
+        ))
+    }
+}
 impl Drop for HttpServer {
     fn drop(&mut self) {
         self.0.abort();
@@ -44,11 +51,19 @@ impl Fixture {
         } else {
             None
         };
+        Self::with_peer(peer).await
+    }
+    pub(crate) async fn with_peer(peer: Option<publication_support::Server>) -> Result<Self> {
         let mut base: Value =
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
         let directory = std::path::PathBuf::from(base["content"]["directory"].as_str().unwrap());
         if let Some(peer) = &peer {
             base["content"]["imports"][&peer.logical] = json!([{"base":format!("{}artifacts/",peer.base),"addresses":[peer.address],"private_ca":peer.ca}]);
+            if !peer.state.lock().unwrap().source_documents.is_empty() {
+                for protocol in ["rest", "community", "brew", "bottle"] {
+                    base["content"]["imports"][format!("{}-{protocol}", peer.logical)] = json!([{"base":peer.base,"addresses":[peer.address],"private_ca":peer.ca},{"base":"https://raw.githubusercontent.com/","addresses":[peer.address],"private_ca":peer.ca}]);
+                }
+            }
         }
         let (router, execution, runtime) = crate::api::application_fixture(
             serde_json::from_value(base.clone())?,
@@ -103,7 +118,7 @@ impl Fixture {
             |peer| peer.logical.clone(),
         );
         let source_path = format!("/api/v3/software/sources/{source}/revisions/1");
-        let registered=write(&mut user,&router,&source_path,0,json!({"action":"register","definition":{"id":source,"revision":"1","kind":"private","location":null,"publishers":[]}})).await?;
+        let registered=write(&mut user,&router,&source_path,0,json!({"action":"register","definition":{"id":source,"revision":"1","protocol":{"kind":"private"}}})).await?;
         write(
             &mut user,
             &router,

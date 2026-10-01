@@ -152,7 +152,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
         "/ManagementServer/MDM.svc",
         "/api/agent/v4/managed-registrations",
     );
-    let input = json!({"wireVersion":4,"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("managed-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.basic.v4","task.execute.v4"]});
+    let input = json!({"wireVersion":4,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("managed-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.basic.v4","task.execute.v4"]});
     let spoof = peer
         .mutual
         .post(&url)
@@ -544,7 +544,7 @@ async fn cancellation_blocks_registration_and_preserves_uncertain_native_effect(
         "/ManagementServer/MDM.svc",
         "/api/agent/v4/managed-registrations",
     );
-    let input = json!({"wireVersion":4,"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("cancelled-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.basic.v4"]});
+    let input = json!({"wireVersion":4,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("cancelled-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.basic.v4"]});
     ensure!(peer.mutual.post(url).json(&input).send().await?.status() == StatusCode::FORBIDDEN);
     ensure!(package_status(&client.router, operation).await? == StatusCode::FORBIDDEN);
     let state = client
@@ -586,7 +586,7 @@ async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -
         "/ManagementServer/MDM.svc",
         "/api/agent/v4/managed-registrations",
     );
-    let input = json!({"wireVersion":4,"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("expired-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.basic.v4"]});
+    let input = json!({"wireVersion":4,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("expired-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.basic.v4"]});
     ensure!(peer.mutual.post(url).json(&input).send().await?.status() == StatusCode::FORBIDDEN);
     ensure!(package_status(&client.router, operation).await? == StatusCode::FORBIDDEN);
     let state = client
@@ -611,7 +611,7 @@ async fn replacement_rejects_old_installation_and_requires_current_epoch_absence
         "/ManagementServer/MDM.svc",
         "/api/agent/v4/managed-registrations",
     );
-    let input = json!({"wireVersion":4,"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("replacement-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.basic.v4"]});
+    let input = json!({"wireVersion":4,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("replacement-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.basic.v4"]});
     ensure!(peer.mutual.post(&url).json(&input).send().await?.status() == StatusCode::UNAUTHORIZED);
     ensure!(
         current
@@ -714,7 +714,7 @@ async fn scope_exit_preserves_dispatched_installation_authority_until_its_deadli
         "/ManagementServer/MDM.svc",
         "/api/agent/v4/managed-registrations",
     );
-    let input = json!({"wireVersion":4,"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("scope-exit-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.basic.v4"]});
+    let input = json!({"wireVersion":4,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("scope-exit-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.basic.v4"]});
     let response = peer.mutual.post(&url).json(&input).send().await?;
     let status = response.status();
     let receipt: Value = response.json().await?;

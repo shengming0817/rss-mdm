@@ -152,6 +152,18 @@ impl ScheduledPolicy {
             Self::Script(v) => v.authorized_in(tx, &target.device, now).await,
             Self::Enrollment(v) => v.authorized_in(service, tx, target, now).await,
             Self::Software(v) => {
+                let Some(binding) = crate::execution::channels::agent_binding_in(
+                    tx,
+                    service.agent_store.clone(),
+                    target.registration,
+                )
+                .await?
+                else {
+                    return Ok(false);
+                };
+                if !v.supported_in(service, tx, &binding).await? {
+                    return Ok(false);
+                }
                 let Some((platform, architecture)) =
                     agent_profile_in(service, tx, target.registration).await?
                 else {
@@ -198,9 +210,21 @@ impl ScheduledPolicy {
                 let (platform, architecture) = agent_profile_in(service, tx, target.registration)
                     .await?
                     .ok_or(Error::Forbidden)?;
+                let binding = crate::execution::channels::agent_binding_in(
+                    tx,
+                    service.agent_store.clone(),
+                    target.registration,
+                )
+                .await?
+                .ok_or(Error::Forbidden)?;
+                let task_platform = match platform {
+                    rss_mdm_policy::Platform::Windows => wire::TaskPlatform::Windows,
+                    rss_mdm_policy::Platform::Macos => wire::TaskPlatform::Macos,
+                };
                 let selected_steps = v
                     .execution_steps_in(service, tx, platform, architecture)
-                    .await?;
+                    .await?
+                    .ok_or(Error::Forbidden)?;
                 let mut steps = Vec::new();
                 for (index, selected) in selected_steps.iter().enumerate() {
                     let variant = selected
@@ -216,45 +240,25 @@ impl ScheduledPolicy {
                     else {
                         return Err(Error::Malformed.into());
                     };
-                    let action = software_action(definition.spec());
-                    let artifacts = definition
-                        .spec()
-                        .artifacts
-                        .iter()
-                        .map(|(key, artifact)| wire::SoftwareTaskArtifact {
-                            key: format!("{index}/{key}"),
-                            length: artifact.length,
-                            sha256: artifact.sha256,
-                        })
-                        .collect();
-                    let export_identity = if matches!(
-                        definition.spec().format,
-                        rss_mdm_resource::SoftwareFormat::Winget
-                            | rss_mdm_resource::SoftwareFormat::Brew
-                    ) {
-                        let identity = checked_input(serde_json::to_vec(&(
-                            &definition.spec().source,
-                            &definition.spec().package,
-                            &definition.spec().version,
-                            selected.variant().as_str(),
-                        )))?;
-                        let digest = ring::digest::digest(&ring::digest::SHA256, &identity);
-                        Some(format!(
-                            "sha256.{}",
-                            digest
-                                .as_ref()
-                                .iter()
-                                .map(|byte| format!("{byte:02x}"))
-                                .collect::<String>()
-                        ))
-                    } else {
-                        None
-                    };
-                    steps.push(wire::SoftwareTaskStep {
-                        action,
-                        artifacts,
-                        export_identity,
-                    });
+                    let action = super::software_wire::software_action(definition.spec());
+                    let export = super::software_exports::for_step_in(
+                        service,
+                        tx,
+                        &v.frozen.delivery,
+                        selected,
+                        &action,
+                    )
+                    .await?;
+                    steps.push(
+                        super::software_wire::software_step(
+                            definition.spec(),
+                            index,
+                            task_platform,
+                            &binding.execution_context,
+                            export,
+                        )
+                        .map_err(|_| Error::Forbidden)?,
+                    );
                 }
                 let plan_bytes = checked_input(serde_json::to_vec(&steps))?;
                 let digest: [u8; 32] = ring::digest::digest(&ring::digest::SHA256, &plan_bytes)
@@ -280,6 +284,7 @@ impl ScheduledPolicy {
                     permit: issue.permit,
                     expires_at: issue.expiry,
                     steps,
+                    execution_context: binding.execution_context,
                     definition_digest: digest,
                     intent: match v.intent() {
                         rss_mdm_policy::SoftwareIntent::RequiredInstall
@@ -328,106 +333,6 @@ pub async fn agent_profile_in(
             Ok((platform, architecture))
         })
         .transpose()
-}
-fn software_action(
-    spec: &rss_mdm_resource::SoftwareSpec,
-) -> rss_mdm_agent_wire::SoftwareTaskAction {
-    use rss_mdm_agent_wire as w;
-    use rss_mdm_resource as r;
-    fn command(input: &r::SoftwareCommand) -> w::SoftwareTaskCommand {
-        use r::SoftwareExecutor as E;
-        w::SoftwareTaskCommand {
-            executor: match input.executor {
-                E::Msi => w::SoftwareTaskExecutor::Msi,
-                E::PackageInstaller => w::SoftwareTaskExecutor::PackageInstaller,
-                E::PowerShell7 => w::SoftwareTaskExecutor::PowerShell7,
-                E::PosixSh => w::SoftwareTaskExecutor::PosixSh,
-                E::Bash => w::SoftwareTaskExecutor::Bash,
-                E::Winget => w::SoftwareTaskExecutor::Winget,
-                E::Brew => w::SoftwareTaskExecutor::Brew,
-            },
-            entry: input.entry.clone(),
-            run_as: match input.run_as {
-                r::RunAs::System => w::ExecutionIdentity::System,
-                r::RunAs::LoggedInUser => w::ExecutionIdentity::LoggedInUser,
-            },
-            arguments: input.arguments.clone(),
-            environment: input.environment.clone(),
-            timeout_seconds: input.timeout_seconds,
-            output_bytes: input.output_bytes,
-        }
-    }
-    let bundle = spec.bundle.as_ref().map(|b| w::SoftwareTaskBundle {
-        schema: b.schema,
-        platform: match b.platform {
-            r::Platform::Windows => w::TaskPlatform::Windows,
-            r::Platform::MacOS => w::TaskPlatform::Macos,
-        },
-        architecture: match b.architecture {
-            r::Architecture::X86_64 => w::TaskArchitecture::X86_64,
-            r::Architecture::Aarch64 => w::TaskArchitecture::Aarch64,
-        },
-        entries: b
-            .entries
-            .iter()
-            .map(|(name, entry)| {
-                (
-                    name.clone(),
-                    w::SoftwareTaskBundleEntry {
-                        length: entry.length,
-                        sha256: entry.sha256,
-                    },
-                )
-            })
-            .collect(),
-    });
-    w::SoftwareTaskAction {
-        package: spec.package.clone(),
-        version: spec.version.clone(),
-        format: match spec.format {
-            r::SoftwareFormat::Msi => w::SoftwareTaskFormat::Msi,
-            r::SoftwareFormat::Pkg => w::SoftwareTaskFormat::Pkg,
-            r::SoftwareFormat::Bundle => w::SoftwareTaskFormat::Bundle,
-            r::SoftwareFormat::Winget => w::SoftwareTaskFormat::Winget,
-            r::SoftwareFormat::Brew => w::SoftwareTaskFormat::Brew,
-        },
-        primary: spec.primary.clone(),
-        install: command(&spec.install),
-        uninstall: spec.uninstall.as_ref().map(command),
-        detect: match &spec.detect {
-            r::SoftwareDetection::MsiProduct {
-                product_code,
-                version,
-            } => w::SoftwareTaskDetection::MsiProduct {
-                product_code: product_code.clone(),
-                version: version.clone(),
-            },
-            r::SoftwareDetection::PkgReceipt { receipt, version } => {
-                w::SoftwareTaskDetection::PkgReceipt {
-                    receipt: receipt.clone(),
-                    version: version.clone(),
-                }
-            }
-            r::SoftwareDetection::Script { command: detector } => {
-                w::SoftwareTaskDetection::Script {
-                    command: command(detector),
-                }
-            }
-        },
-        reboot: match spec.reboot {
-            r::SoftwareReboot::Forbid => w::SoftwareTaskReboot::Forbid,
-            r::SoftwareReboot::Report => w::SoftwareTaskReboot::Report,
-        },
-        downgrade: match spec.downgrade {
-            r::SoftwareDowngrade::Deny => w::SoftwareTaskDowngrade::Deny,
-            r::SoftwareDowngrade::Allow => w::SoftwareTaskDowngrade::Allow,
-        },
-        ownership: match spec.ownership {
-            r::SoftwareOwnership::ManagedOnly => w::SoftwareTaskOwnership::ManagedOnly,
-            r::SoftwareOwnership::AllowUserExisting => w::SoftwareTaskOwnership::AllowUserExisting,
-        },
-        bundle,
-    }
 }
 pub async fn load_policy_version(
     reader: &rss_mdm_policy_postgres::PolicyReader,

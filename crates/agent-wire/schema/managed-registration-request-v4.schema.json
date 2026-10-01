@@ -10,7 +10,8 @@
     "credential",
     "capabilities",
     "platform",
-    "architecture"
+    "architecture",
+    "executionContext"
   ],
   "properties": {
     "wireVersion": {
@@ -23,44 +24,39 @@
       "$ref": "#/$defs/secret"
     },
     "capabilities": {
-      "enum": [
-        [
-          "inventory.basic.v4"
-        ],
-        [
-          "inventory.basic.v4",
-          "task.execute.v4"
-        ],
-        [
-          "inventory.basic.v4",
-          "software.execute.v4"
-        ],
-        [
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "uniqueItems": true,
+      "prefixItems": [
+        {
+          "const": "inventory.basic.v4"
+        }
+      ],
+      "items": {
+        "enum": [
           "inventory.basic.v4",
           "task.execute.v4",
-          "software.execute.v4"
-        ],
-        [
-          "inventory.basic.v4",
-          "mdm.enrollment.v4"
-        ],
-        [
-          "inventory.basic.v4",
-          "task.execute.v4",
-          "mdm.enrollment.v4"
-        ],
-        [
-          "inventory.basic.v4",
-          "software.execute.v4",
-          "mdm.enrollment.v4"
-        ],
-        [
-          "inventory.basic.v4",
-          "task.execute.v4",
-          "software.execute.v4",
+          "software.msi.system.v4",
+          "software.msi.user.v4",
+          "software.pkg.system.v4",
+          "software.bundle.windows.system.v4",
+          "software.bundle.windows.user.v4",
+          "software.bundle.macos.system.v4",
+          "software.bundle.macos.user.v4",
+          "software.winget.system.v4",
+          "software.winget.user.v4",
+          "software.brew.bottle.user.v4",
+          "software.exe.system.v4",
+          "software.exe.user.v4",
+          "software.dmg.app.system.v4",
+          "software.dmg.app.user.v4",
+          "software.dmg.pkg.system.v4",
+          "software.msix.registration.user.v4",
+          "software.msix.provisioning.system.v4",
           "mdm.enrollment.v4"
         ]
-      ]
+      }
     },
     "platform": {
       "enum": [
@@ -76,6 +72,9 @@
     },
     "installationOperation": {
       "$ref": "#/$defs/nonNilUuid"
+    },
+    "executionContext": {
+      "$ref": "#/$defs/SoftwareExecutionContext"
     }
   },
   "$defs": {
@@ -90,6 +89,114 @@
     "secret": {
       "type": "string",
       "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+    },
+    "SoftwareExecutionContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "osVersion",
+        "systemBroker",
+        "interactiveUser",
+        "sourceCredentials",
+        "msixSideload",
+        "msixUnsigned"
+      ],
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "osVersion": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "not": {
+            "const": [
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        },
+        "systemBroker": {
+          "type": "boolean"
+        },
+        "interactiveUser": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "identity",
+                "sessionId",
+                "administrator"
+              ],
+              "properties": {
+                "identity": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 184,
+                  "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+                },
+                "sessionId": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                  "not": {
+                    "const": "00000000-0000-0000-0000-000000000000"
+                  }
+                },
+                "administrator": {
+                  "type": "boolean"
+                }
+              }
+            }
+          ]
+        },
+        "sourceCredentials": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "source",
+              "reference"
+            ],
+            "properties": {
+              "source": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+              },
+              "reference": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+              }
+            }
+          }
+        },
+        "msixSideload": {
+          "type": "boolean"
+        },
+        "msixUnsigned": {
+          "type": "boolean"
+        }
+      }
     }
   }
 }

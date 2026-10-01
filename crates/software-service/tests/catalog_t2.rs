@@ -92,3 +92,6 @@ async fn schema_and_effective_privileges_are_exact() -> Result<()> {
 mod materials;
 #[path = "catalog/transactions.rs"]
 mod transactions;
+
+#[path = "support/imports.rs"]
+mod imported_fixture;

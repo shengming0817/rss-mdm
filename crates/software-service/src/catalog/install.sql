@@ -25,3 +25,6 @@ DO $$ DECLARE t text; BEGIN FOREACH t IN ARRAY ARRAY['sources','approvals','oper
  EXECUTE format('GRANT SELECT,INSERT ON mdm_software.%I TO mdm_flow_runtime',t);
 END LOOP; END $$;
 GRANT UPDATE(admission) ON mdm_software.sources,mdm_software.approvals TO mdm_flow_runtime;
+
+GRANT USAGE ON SCHEMA mdm_software TO mdm_software_driver;
+GRANT SELECT ON mdm_software.sources,mdm_software.approvals TO mdm_software_driver;

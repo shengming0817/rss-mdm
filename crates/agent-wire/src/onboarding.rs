@@ -50,6 +50,8 @@ pub struct ManagedRegistrationRequest {
     pub platform: TaskPlatform,
     /// Locally verified processor architecture.
     pub architecture: TaskArchitecture,
+    /// Current locally reported environment, required even when no software profile is installed.
+    pub execution_context: crate::SoftwareExecutionContext,
 }
 impl ManagedRegistrationRequest {
     /// Decode the closed request with the same negotiation errors as regular registration.
@@ -66,6 +68,7 @@ impl ManagedRegistrationRequest {
         {
             return Err(WireError::InvalidValue);
         }
+        self.execution_context.validate_for(self.platform)?;
         Ok(())
     }
 }

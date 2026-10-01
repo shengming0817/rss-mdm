@@ -1,21 +1,21 @@
 use super::{Error, Result};
 use rss_mdm_brew_source as brew;
 use rss_mdm_software_release as rel;
-use rss_mdm_winget_source as winget;
 use rss_request_context::TenantId;
 use sha2::{Digest, Sha256};
-use std::{net::IpAddr, path::PathBuf};
+use std::path::PathBuf;
 #[derive(Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WingetConfig {
     pub base: String,
-    pub addresses: Vec<IpAddr>,
-    pub private_ca: Option<Vec<u8>>,
-    pub credential_reference: String,
+    pub artifacts_base: String,
 }
 #[derive(Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BrewConfig {
+    pub base: String,
+    pub artifacts_base: String,
+    pub credential_reference: String,
     pub tap: String,
     pub repository: PathBuf,
 }
@@ -52,12 +52,16 @@ impl ServiceIdentity {
 }
 pub(super) enum Driver {
     Winget {
-        publisher: Box<winget::Publisher>,
-        access: winget::WriteAccess,
+        base: String,
+        artifacts_base: String,
     },
     Brew {
+        base: String,
+        artifacts_base: String,
+        access: crate::BrewReadAccess,
         repo: brew::Repository,
         tap: String,
+        credential_reference: String,
     },
 }
 pub(super) struct Binding {
@@ -101,6 +105,17 @@ impl Sources {
         if values
             .iter()
             .any(|b| std::mem::discriminant(&b.driver) != std::mem::discriminant(&values[0].driver))
+        {
+            return Err(Error::Input);
+        }
+        let artifact_base = |b: &Binding| match &b.driver {
+            Driver::Winget { artifacts_base, .. } | Driver::Brew { artifacts_base, .. } => {
+                artifacts_base.clone()
+            }
+        };
+        if values
+            .iter()
+            .any(|b| artifact_base(b) != artifact_base(&values[0]))
         {
             return Err(Error::Input);
         }
@@ -149,44 +164,27 @@ async fn compile(
     let (driver, physical, configuration) = match config {
         SourceConfig::Winget(c) => {
             let physical = super::artifact::checked_url(&c.base)?.to_string();
-            let mut source = winget::Source::new(
-                tenant,
-                logical,
-                &c.base,
-                c.addresses.clone(),
-                &c.credential_reference,
-            )
-            .map_err(|cause| Error::Input.context("config::compile", cause))?;
-            if let Some(ca) = &c.private_ca {
-                source = source
-                    .with_root_certificate(ca)
-                    .map_err(|cause| Error::Input.context("config::compile", cause))?;
+            let artifacts_base = super::artifact::checked_url(&c.artifacts_base)?.to_string();
+            if !physical.ends_with('/') || !artifacts_base.ends_with('/') {
+                return Err(Error::Input);
             }
-            let access = credentials.winget(tenant, logical, &c.credential_reference)?;
             let configuration = serde_json::to_vec(&serde_json::json!([
-                1,
-                "winget",
+                2,
+                "hosted-winget",
                 physical,
-                c.addresses
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>(),
-                c.private_ca.as_ref().map(|b| Sha256::digest(b).to_vec()),
-                c.credential_reference
+                artifacts_base
             ]))
-            .map_err(|cause| Error::Input.context("config::compile", cause))?;
+            .map_err(|_| Error::Input)?;
             (
                 Driver::Winget {
-                    publisher: Box::new(
-                        winget::Publisher::new(source)
-                            .map_err(|cause| Error::Input.context("config::compile", cause))?,
-                    ),
-                    access,
+                    base: physical.clone(),
+                    artifacts_base,
                 },
                 physical,
                 configuration,
             )
         }
+
         SourceConfig::Brew(c) => {
             let path = c
                 .repository
@@ -196,10 +194,34 @@ async fn compile(
             let repo = brew::Repository::open(&path, tenant, &c.tap)
                 .await
                 .map_err(|cause| Error::Source.context("config::compile", cause))?;
-            let configuration =
-                serde_json::to_vec(&serde_json::json!([1, "brew", physical, c.tap]))
-                    .map_err(|cause| Error::Input.context("config::compile", cause))?;
-            (Driver::Brew { repo, tap: c.tap }, physical, configuration)
+            let base = super::artifact::checked_url(&c.base)?.to_string();
+            let artifacts_base = super::artifact::checked_url(&c.artifacts_base)?.to_string();
+            if !base.ends_with('/') || !artifacts_base.ends_with('/') {
+                return Err(Error::Input);
+            }
+            let access = credentials.brew_read(tenant, logical, &c.credential_reference)?;
+            let configuration = serde_json::to_vec(&serde_json::json!([
+                2,
+                "brew",
+                physical,
+                c.tap,
+                base,
+                artifacts_base,
+                c.credential_reference
+            ]))
+            .map_err(|cause| Error::Input.context("config::compile", cause))?;
+            (
+                Driver::Brew {
+                    repo,
+                    tap: c.tap,
+                    base,
+                    artifacts_base,
+                    access,
+                    credential_reference: c.credential_reference,
+                },
+                physical,
+                configuration,
+            )
         }
     };
     Ok(Binding {

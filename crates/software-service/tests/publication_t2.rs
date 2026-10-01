@@ -1,6 +1,5 @@
 use rss_mdm_software_release as rel;
 use rss_mdm_software_service::publication::*;
-use tracing::instrument::WithSubscriber;
 #[path = "../../../tests/support/software/mod.rs"]
 mod publication_support;
 use publication_support::pg::*;
@@ -49,17 +48,6 @@ fn assert_publication_audit(p: &rel::Publication, candidate: &rel::CandidateId, 
         if outcome == "unknown" { 202 } else { 200 }
     );
     assert_eq!(fact.as_object().unwrap().len(), 7);
-}
-#[derive(Clone)]
-struct AuditLog(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-impl std::io::Write for AuditLog {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
 }
 #[path = "publication/artifact.rs"]
 mod artifact;

@@ -38,6 +38,10 @@ fn controlled_cask_and_bottle() {
     let f = Formula::new(
         PackageKey::new(tenant(), "acme/private", "tool").unwrap(),
         "1.2",
+        BottleLayout {
+            revision: 0,
+            rebuild: 0,
+        },
         "Tool",
         "https://acme.example/",
         artifact(),
@@ -47,6 +51,7 @@ fn controlled_cask_and_bottle() {
                 BottleTag::Arm64Sonoma,
                 "https://files.example/bottles",
                 [2; 32],
+                Cellar::AnySkipRelocation,
             )
             .unwrap(),
         ],
@@ -139,11 +144,23 @@ fn dependency_and_artifact_checks_are_explicit() {
         Formula::new(
             PackageKey::new(tenant(), "acme/private", "tool").unwrap(),
             "1",
+            BottleLayout {
+                revision: 0,
+                rebuild: 0
+            },
             "desc",
             "https://acme.example/",
             artifact(),
             "tool",
-            vec![Bottle::new(BottleTag::Sonoma, "https://files.example/", [1; 32]).unwrap()],
+            vec![
+                Bottle::new(
+                    BottleTag::Sonoma,
+                    "https://files.example/",
+                    [1; 32],
+                    Cellar::AnySkipRelocation
+                )
+                .unwrap()
+            ],
             vec![dependency]
         )
         .unwrap_err(),
@@ -156,7 +173,7 @@ fn dependency_and_artifact_checks_are_explicit() {
 }
 
 #[test]
-fn pkg_requires_literal_anchored_receipt_uninstall_metadata() {
+fn pkg_receipt_metadata_does_not_authorize_implicit_removal() {
     let make = |receipts| {
         Cask::new(
             PackageKey::new(tenant(), "acme/private", "app").unwrap(),
@@ -175,6 +192,38 @@ fn pkg_requires_literal_anchored_receipt_uninstall_metadata() {
     assert!(make(vec!["com.acme.*".into()]).is_err());
     let doc = make(vec!["com.acme.app".into()]).unwrap().render().unwrap();
     let text = std::str::from_utf8(doc.bytes()).unwrap();
-    assert!(text.contains(r#"uninstall pkgutil: ["^com\\.acme\\.app$"]"#));
+    assert!(!text.contains("uninstall pkgutil"));
     assert!(text.contains("depends_on arch: :arm64"));
+}
+
+#[test]
+fn bottle_layout_preserves_cellar_formula_revision_and_rebuild() {
+    let formula = Formula::new(
+        PackageKey::new(tenant(), "acme/private", "tool").unwrap(),
+        "1.2",
+        BottleLayout {
+            revision: 2,
+            rebuild: 3,
+        },
+        "Tool",
+        "https://acme.example/",
+        artifact(),
+        "tool",
+        vec![
+            Bottle::new(
+                BottleTag::Arm64Sonoma,
+                "https://files.example/bottles",
+                [2; 32],
+                Cellar::Any,
+            )
+            .unwrap(),
+        ],
+        vec![],
+    )
+    .unwrap();
+    let text = String::from_utf8(formula.render().unwrap().bytes().to_vec()).unwrap();
+    assert!(text.contains("revision 2"));
+    assert!(text.contains("rebuild 3"));
+    assert!(text.contains("cellar: :any, arm64_sonoma:"));
+    assert!(text.contains("source installation is unsupported"));
 }

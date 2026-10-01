@@ -150,7 +150,7 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         state["observation"]["installation"] == "unknown" && state["commandStatus"] != "applied",
         "unverified bundle promoted to installed: {state}"
     );
-    let input = json!({"wireVersion":4,"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("managed-apple-agent"),"platform":"macos","architecture":"aarch64","capabilities":["inventory.basic.v4","mdm.enrollment.v4"]});
+    let input = json!({"wireVersion":4,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("managed-apple-agent"),"platform":"macos","architecture":"aarch64","capabilities":["inventory.basic.v4","mdm.enrollment.v4"]});
     let url = format!("{}/api/agent/v4/managed-registrations", peer.origin);
     for (field, value, code) in [
         ("wireVersion", json!(3), "unsupported_wire"),

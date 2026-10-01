@@ -221,6 +221,7 @@ impl PushOutcome {
 
 #[derive(Clone)]
 pub struct AgentBinding {
+    pub execution_context: rss_mdm_agent_wire::SoftwareExecutionContext,
     pub platform: String,
     pub architecture: String,
     pub capabilities: Vec<rss_mdm_agent_wire::Capability>,
@@ -236,7 +237,8 @@ impl AgentBinding {
     }
     pub fn software(&self) -> bool {
         self.capabilities
-            .contains(&rss_mdm_agent_wire::Capability::SoftwareExecuteV4)
+            .iter()
+            .any(|capability| capability.is_software())
     }
     pub fn enrollment(&self) -> bool {
         self.capabilities
@@ -247,6 +249,13 @@ impl AgentBinding {
     }
 }
 pub trait Agent: Send + Sync {
+    fn update_context<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        registration: Uuid,
+        context: &'a rss_mdm_agent_wire::SoftwareExecutionContext,
+    ) -> Pending<'a, ()>;
     fn managed_replay<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -294,6 +303,26 @@ pub async fn agent_binding_in(
         })
         .await?
         .map_err(crate::Error::from)?)
+}
+
+pub async fn agent_context_in(
+    tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+    store: std::sync::Arc<dyn Agent>,
+    registration: Uuid,
+    context: &rss_mdm_agent_wire::SoftwareExecutionContext,
+) -> crate::transaction::Result<()> {
+    let tenant = tx.tenant_id().to_string();
+    let context = context.clone();
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            Ok(store
+                .update_context(c, tenant, registration, &context)
+                .await)
+        })
+    })
+    .await?
+    .map_err(crate::Error::from)?;
+    Ok(())
 }
 
 pub struct RegisteredAgent {

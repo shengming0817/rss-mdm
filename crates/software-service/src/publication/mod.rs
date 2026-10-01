@@ -1,10 +1,17 @@
 //! Controlled backend use cases. Planning HTTP identity/authorization belongs to N12.
 mod artifact;
 mod config;
+mod derive;
 mod driver;
+mod execution;
+pub use execution::{NativeExport, NativeExportProtocol};
+mod read;
 mod service;
 mod spec;
+pub use derive::derive_document;
+pub use read::PublishedSoftware;
 mod storage;
+mod worker;
 pub use artifact::{ArtifactOrigin, ArtifactReader};
 pub use config::{BrewConfig, RingSources, ServiceIdentity, SourceConfig, WingetConfig};
 pub use driver::{Withdrawal, WithdrawalExecution};
@@ -12,8 +19,9 @@ use rss_transactional_messaging_postgres::PgError;
 pub use service::{CandidateInput, PublicationService, ServiceRequest};
 pub use spec::{
     BottleInput, BrewArtifact, BrewDependency, BrewPayload, BrewRecipe, CaskInstall,
-    PublicArtifact, Submission, winget_variant,
+    ExportDocument, PublicArtifact,
 };
+pub use worker::{PublicationWork, PublicationWorkPage};
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("software candidate not found")]
@@ -26,6 +34,8 @@ pub enum Error {
         #[source]
         source: SafeCause,
     },
+    #[error("native export cannot express this complete behavior")]
+    Unsupported,
     #[error("invalid publication input")]
     Input,
     #[error("service identity or source binding rejected")]

@@ -140,6 +140,7 @@ impl Definition {
     pub fn semantic(&self) -> Result<[u8; 32], Error> {
         let bytes = match &self.action {
             crate::Action::Software {
+                delivery,
                 intent,
                 admission_operation,
                 schedule,
@@ -147,6 +148,7 @@ impl Definition {
                 ..
             } => serde_json::to_vec(&(
                 self.action.resource(),
+                delivery,
                 intent,
                 admission_operation,
                 schedule,

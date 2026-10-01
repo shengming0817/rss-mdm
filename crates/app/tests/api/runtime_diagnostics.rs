@@ -53,6 +53,7 @@ impl Fixture {
                 authority.audit.clone(),
                 authority.identity.tenant,
                 Arc::new(crate::clock::SystemClock),
+                None,
                 |r| resources.push(r),
             )
             .await?;

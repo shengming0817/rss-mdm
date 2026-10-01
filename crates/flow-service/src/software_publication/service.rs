@@ -26,6 +26,7 @@ fn actor(
 fn failure(e: service::Error) -> Error {
     match e {
         service::Error::Diagnostic { category, .. } => failure(*category),
+        service::Error::Unsupported => Error::Unsupported,
         service::Error::Input
         | service::Error::Content
         | service::Error::ArtifactAddress
@@ -64,13 +65,7 @@ pub async fn read(
             crate::software_publication::error::PublicationError::MissingCandidate,
         ))?;
     let mut view = summary(&candidate);
-    view.submission = Some(
-        service
-            .submission(&id, cutoff())
-            .await
-            .map_err(failure)?
-            .into(),
-    );
+    view.document = Some(service.document(&id, cutoff()).await.map_err(failure)?);
     Ok(view)
 }
 pub async fn write(
@@ -207,7 +202,7 @@ async fn perform(
             resource,
             version,
             expected_resource_revision,
-            submission,
+            resource_digest,
         } => {
             if request.expected_revision != 0 {
                 return Err(Error::Conflict);
@@ -223,7 +218,7 @@ async fn perform(
                         version: rss_mdm_resource::Id::new(version)
                             .map_err(|_| Error::Malformed)?,
                         expected_resource_revision: *expected_resource_revision,
-                        submission: submission.clone().into(),
+                        resource_digest: *resource_digest,
                         as_of: request.as_of,
                     },
                     cutoff,
@@ -383,7 +378,7 @@ fn summary(c: &rel::Candidate) -> wire::Candidate {
         manifest_digest: snapshot.content.manifest().bytes(),
         source_snapshot: snapshot.content.source_snapshot().bytes(),
         rings,
-        submission: None,
+        document: None,
     }
 }
 
@@ -440,7 +435,7 @@ async fn withdraw(
 }
 
 pub struct PublicationDirectory {
-    pub services: std::collections::BTreeMap<String, service::PublicationService>,
+    pub services: std::collections::BTreeMap<String, Arc<service::PublicationService>>,
     pub tenant: TenantId,
     pub runtime: Arc<PgRuntime>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,

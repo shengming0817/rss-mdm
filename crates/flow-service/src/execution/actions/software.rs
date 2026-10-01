@@ -19,6 +19,18 @@ pub async fn accept_for_device(
     target: &Target,
     now: i64,
 ) -> Result<()> {
+    let Some(binding) = crate::execution::channels::agent_binding_in(
+        tx,
+        service.agent_store.clone(),
+        target.registration,
+    )
+    .await?
+    else {
+        return Ok(());
+    };
+    if !policy.supported_in(service, tx, &binding).await? {
+        return Ok(());
+    }
     let Some((stage, _entry)) = policy.entry_in(tx, &target.device, now).await? else {
         return Ok(());
     };
@@ -41,7 +53,7 @@ pub async fn accept_for_device(
     let stage_scope = policy.stages()?[stage].scope;
     let prefix = format!("software:stage:{stage_scope}:%");
     let (pending, last, verified, failures, attempts): (bool, Option<i64>, bool, i64, i64) = tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_as("SELECT coalesce(bool_or(r.state->>'execution' IN ('unknown','waiting_reboot') OR ((r.state->>'execution'='running' OR (r.state->>'execution'='not_started' AND r.deadline>$5)) AND r.state->>'cancellation'<>'confirmed')),false),max(r.created_at) FILTER(WHERE r.policy_version=$4::uuid AND r.occurrence LIKE $6),coalesce(bool_or(r.policy_version=$4::uuid AND r.result->>'effect'='verified'),false),count(*) FILTER(WHERE r.policy_version=$4::uuid AND r.result->>'effect'='failed'),count(*) FILTER(WHERE r.policy_version=$4::uuid AND r.occurrence LIKE $6) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON (p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND p.definition->'resource'->>'id'=$2 AND r.device=$3")
+        sqlx::query_as("SELECT coalesce(bool_or(r.state->>'execution' IN ('unknown','waiting_reboot') OR ((r.state->>'execution'='running' OR (r.state->>'execution'='not_started' AND r.deadline>$5)) AND r.state->>'cancellation'<>'confirmed')),false),max(r.created_at) FILTER(WHERE r.policy_version=$4::uuid AND r.occurrence LIKE $6),coalesce(bool_or(r.policy_version=$4::uuid AND r.result->>'effect'='verified'),false),count(*) FILTER(WHERE r.policy_version=$4::uuid AND r.result->>'effect'='failed'),count(*) FILTER(WHERE r.policy_version=$4::uuid AND r.occurrence LIKE $6) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON (p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND v.resource=$2 AND r.device=$3")
             .bind(tenant).bind(resource).bind(device).bind(version).bind(now).bind(prefix).fetch_one(c).await
     })).await?;
     if pending || verified || failures >= 3 {

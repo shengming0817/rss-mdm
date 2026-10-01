@@ -108,30 +108,7 @@ impl Store {
                 }
                 return Ok(old);
             }
-            let mut reserved = 0u64;
-            let mut count = 0usize;
-            for entry in fs::read_dir(&store.directory).map_err(|_| storage())? {
-                let entry = entry.map_err(|_| storage())?;
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                let Some(raw) = name
-                    .strip_prefix(".upload-")
-                    .and_then(|s| s.strip_suffix(".json"))
-                else {
-                    continue;
-                };
-                let Ok(other) = Uuid::parse_str(raw) else {
-                    continue;
-                };
-                // Expired uploads still occupy space until explicitly reclaimed.
-                let value = store.load_upload(other, i64::MIN)?;
-                if !value.complete || store.upload_path(other, "part").exists() {
-                    reserved = reserved
-                        .checked_add(value.binding.length)
-                        .ok_or_else(invariant)?;
-                    count += 1;
-                }
-            }
+            let (reserved, count) = store.temporary_usage_locked()?;
             if count >= store.config.max_uploads
                 || reserved
                     .checked_add(binding.length)
@@ -303,3 +280,47 @@ impl Store {
     }
 }
 pub use UploadBinding as Binding;
+
+impl Store {
+    // Called only while holding the existing cross-process upload reservation lock.
+    fn temporary_usage_locked(&self) -> Result<(u64, usize), Error> {
+        let mut reserved = 0u64;
+        let mut count = 0usize;
+        for entry in fs::read_dir(&self.directory).map_err(|_| storage())? {
+            let entry = entry.map_err(|_| storage())?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let Some(raw) = name
+                .strip_prefix(".upload-")
+                .and_then(|s| s.strip_suffix(".json"))
+            else {
+                continue;
+            };
+            let Ok(other) = Uuid::parse_str(raw) else {
+                continue;
+            };
+            // Expired uploads still occupy space until explicitly reclaimed.
+            let value = self.load_upload(other, i64::MIN)?;
+            if !value.complete || self.upload_path(other, "part").exists() {
+                reserved = reserved
+                    .checked_add(value.binding.length)
+                    .ok_or_else(invariant)?;
+                count += 1;
+            }
+        }
+        Ok((reserved, count))
+    }
+    pub(super) fn native_temporary_space(&self, bytes: u64) -> Result<File, Error> {
+        let guard = lock(&self.directory.join(".upload.lock"))?;
+        let (reserved, _) = self.temporary_usage_locked()?;
+        if reserved
+            .checked_add(bytes)
+            .is_none_or(|value| value > self.config.max_temporary_bytes)
+        {
+            return Err(Error::Conflict);
+        }
+        // Holding this lock makes simultaneous nested verification and new uploads
+        // obey the same disk budget, including other Store handles and processes.
+        Ok(guard)
+    }
+}

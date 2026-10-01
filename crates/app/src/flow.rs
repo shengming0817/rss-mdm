@@ -58,6 +58,7 @@ impl Config {
         audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         tenant: TenantId,
         clock: Arc<dyn crate::clock::Clock>,
+        content: Option<Arc<rss_mdm_content_service::Store>>,
         mut acquire: impl FnMut(Resource),
     ) -> std::result::Result<Arc<Flow>, Error> {
         let invalid = || Error::Configuration(crate::ConfigIssue::Flow);
@@ -138,7 +139,7 @@ impl Config {
                 };
                 if !self.publication.sources.is_empty() {
                     let setup = self
-                        .open_publications(tenant, &mut service, &mut acquire)
+                        .open_publications(tenant, &mut service, content, &mut acquire)
                         .await;
                     if let Err(error) = setup {
                         if let Some(p) = &service.publication_runtime {
@@ -160,6 +161,7 @@ impl Config {
         &self,
         tenant: TenantId,
         planning: &mut Flow,
+        content: Option<Arc<rss_mdm_content_service::Store>>,
         acquire: &mut impl FnMut(Resource),
     ) -> std::result::Result<(), Error> {
         use rss_mdm_software_service::publication as p;
@@ -196,14 +198,9 @@ impl Config {
         crate::database::admit_audit_runtime(&runtime, &planning.publications.audit_store, tenant)
             .await?;
         for source in &self.publication.sources {
-            let artifacts = p::ArtifactReader::new(
-                source.artifacts.clone(),
-                source.max_artifact_bytes,
-                Duration::from_secs(5),
-            )
-            .map_err(|_| invalid())?;
             let service = p::PublicationService::connect(
                 rss_mdm_software_service::Host {
+                    content: content.clone().ok_or_else(invalid)?,
                     runtime: runtime.clone(),
                     audit: Arc::new(crate::software_publication::host::Audit(
                         planning.publications.audit_store.clone(),
@@ -217,7 +214,6 @@ impl Config {
                 tenant,
                 source.name.clone(),
                 source.rings.clone(),
-                artifacts,
                 p::ServiceIdentity {
                     backend: rss_mdm_software_release::ActorId::new(tenant, "mdm-software-backend")
                         .map_err(|_| invalid())?,
@@ -233,7 +229,7 @@ impl Config {
             if Arc::get_mut(&mut planning.publications)
                 .expect("unshared startup directory")
                 .services
-                .insert(source.name.clone(), service)
+                .insert(source.name.clone(), Arc::new(service))
                 .is_some()
             {
                 return Err(invalid());

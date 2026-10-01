@@ -108,6 +108,73 @@ impl ArtifactReader {
         .await
         .map_err(|cause| Error::ArtifactTimeout.context("artifact::open", cause))?
     }
+    /// Bounded source metadata using the same reviewed destinations and TLS policy.
+    /// Only the REST exact-Version query is allowed; no caller credential/query forwarding.
+    pub async fn document(&self, value: &str) -> Result<Vec<u8>> {
+        let mut url = url::Url::parse(value).map_err(|_| Error::Input)?;
+        let query = url.query().map(str::to_owned);
+        if query.is_some() {
+            let pairs: Vec<_> = url.query_pairs().collect();
+            if pairs.len() != 1
+                || pairs[0].0 != "Version"
+                || pairs[0].1.is_empty()
+                || pairs[0].1.len() > 128
+                || !pairs[0]
+                    .1
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._+-".contains(&b))
+            {
+                return Err(Error::Input);
+            }
+        }
+        url.set_query(None);
+        checked_url(url.as_str())?;
+        let client = &self
+            .origins
+            .iter()
+            .find(|(base, _)| base.origin() == url.origin() && url.path().starts_with(base.path()))
+            .ok_or(Error::ArtifactAddress)?
+            .1;
+        url.set_query(query.as_deref());
+        tokio::time::timeout(self.deadline, async {
+            let mut response = client
+                .get(url)
+                .header("Version", "1.0.0")
+                .header("Accept-Encoding", "identity")
+                .send()
+                .await
+                .map_err(|cause| Error::ArtifactTransport.context("artifact::document", cause))?;
+            let limit = self.max_bytes.min(4 * 1024 * 1024);
+            if response.status() != reqwest::StatusCode::OK
+                || response
+                    .headers()
+                    .get("Content-Encoding")
+                    .is_some_and(|v| v != "identity")
+            {
+                return Err(Error::ArtifactTransport);
+            }
+            if response.content_length().is_some_and(|n| n > limit) {
+                return Err(Error::ArtifactBudget);
+            }
+            let mut bytes = Vec::new();
+            while let Some(chunk) = response
+                .chunk()
+                .await
+                .map_err(|cause| Error::ArtifactTransport.context("artifact::document", cause))?
+            {
+                if bytes.len() as u64 + chunk.len() as u64 > limit {
+                    return Err(Error::ArtifactBudget);
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            if bytes.is_empty() {
+                return Err(Error::Input);
+            }
+            Ok(bytes)
+        })
+        .await
+        .map_err(|cause| Error::ArtifactTimeout.context("artifact::document", cause))?
+    }
     pub async fn verify(&self, url: &str, length: u64, digest: [u8; 32]) -> Result<()> {
         tokio::time::timeout(self.deadline, async {
             let mut response = self.open(url, length).await.map_err(|error| match error {

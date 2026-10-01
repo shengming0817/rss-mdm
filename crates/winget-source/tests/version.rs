@@ -29,7 +29,7 @@ fn complete_manifest_preserves_all_installers_and_canonical_order() {
         VersionManifest::parse(tenant(), "private", &serde_json::to_vec(&body).unwrap()).unwrap()
     );
     body["Versions"][0]["Installers"][0]["InstallerSwitches"] =
-        serde_json::json!({"Silent":"/bad"});
+        serde_json::json!({"Interactive":"/wizard"});
     assert!(
         VersionManifest::parse(tenant(), "private", &serde_json::to_vec(&body).unwrap()).is_err()
     );

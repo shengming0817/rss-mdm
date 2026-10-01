@@ -90,6 +90,7 @@ pub async fn serve(
                         runtime,
                         execution,
                         automation,
+                        publications,
                         identity_audit,
                         timeline,
                         notifications,
@@ -187,6 +188,8 @@ pub async fn serve(
                             clock,
                             readiness,
                         ));
+                        let content = crate::flow::execution::open_content(&compiled.config)
+                            .map_err(|e| ProcessError::at("startup.content", e))?;
                         let planning = compiled
                             .config
                             .flow
@@ -201,16 +204,24 @@ pub async fn serve(
                                     ))
                                 })?,
                                 Arc::new(crate::clock::SystemClock),
+                                content.clone(),
                                 |resource| {
                                     startup.stage_resource(DynManagedResource::new_box(resource))
                                 },
                             )
                             .await
                             .map_err(|e| ProcessError::at("startup.flow", e))?;
-                        let execution =
-                            crate::flow::execution::open(&compiled.config, audit_store.clone())
-                                .await
-                                .map_err(|e| ProcessError::at("startup.execution", e))?;
+                        let execution = crate::flow::execution::open(
+                            &compiled.config,
+                            audit_store.clone(),
+                            content,
+                            planning.publications.services.clone(),
+                        )
+                        .await
+                        .map_err(|e| ProcessError::at("startup.execution", e))?;
+                        startup.stage_resource(DynManagedResource::new_box(
+                            crate::execution::Resource(execution.clone()),
+                        ));
                         let automation = crate::automation::Automation::connect(
                             planning.planning.clone(),
                             planning.assets.clone(),
@@ -226,9 +237,6 @@ pub async fn serve(
                         .map_err(|e| ProcessError::at("startup.asset_automation", e.into()))?;
                         startup.stage_resource(DynManagedResource::new_box(
                             crate::automation::Resource(automation.clone()),
-                        ));
-                        startup.stage_resource(DynManagedResource::new_box(
-                            crate::execution::Resource(execution.clone()),
                         ));
                         let listen = compiled.config.listen;
                         let tenant = compiled.config.identity.tenant_id.clone();
@@ -265,7 +273,7 @@ pub async fn serve(
                                 monotonic,
                                 access: access.clone(),
                                 runtime: runtime.clone(),
-                                flow: planning,
+                                flow: planning.clone(),
                                 execution: execution.clone(),
                                 identity,
                             },
@@ -308,6 +316,7 @@ pub async fn serve(
                             runtime,
                             execution,
                             automation,
+                            planning.publications.clone(),
                             identity_audit,
                             timeline,
                             notifications,
@@ -334,6 +343,7 @@ pub async fn serve(
                             .critical(),
                         );
                     }
+                    launch.stage_deferred_task_with_token(publications.registration().critical());
                     launch.stage_deferred_task_with_token(identity_audit.registration().critical());
                     launch.stage_deferred_task_with_token(timeline.registration().critical());
                     launch.stage_deferred_task_with_token(

@@ -200,7 +200,7 @@ async fn admission_rejects_schema_and_reachable_privilege_drift() {
 async fn explicit_trigger_does_not_edit_configuration() {
     let mut definition = definition();
     definition.action = serde_json::from_value(
-        serde_json::json!({"kind":"execution","parameters":{},"runLifetimeSeconds":300}),
+        serde_json::json!({"kind":"execution","resource":{"id":"script","version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"parameters":{},"runLifetimeSeconds":300}),
     )
     .unwrap();
     let runtime = runtime().await;

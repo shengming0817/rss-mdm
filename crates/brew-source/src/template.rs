@@ -97,6 +97,10 @@ pub enum BottleTag {
     Sonoma,
 }
 impl BottleTag {
+    /// Exact Homebrew platform spelling, not a generic architecture fallback.
+    pub fn as_str(self) -> &'static str {
+        self.symbol()
+    }
     fn symbol(self) -> &'static str {
         match self {
             Self::Arm64Sonoma => "arm64_sonoma",
@@ -104,9 +108,34 @@ impl BottleTag {
         }
     }
 }
+/// Closed relocatable bottle cellar requirements.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Cellar {
+    /// Relocation is supported.
+    Any,
+    /// No relocation is necessary.
+    AnySkipRelocation,
+}
+impl Cellar {
+    fn symbol(self) -> &'static str {
+        match self {
+            Self::Any => "any",
+            Self::AnySkipRelocation => "any_skip_relocation",
+        }
+    }
+}
+/// Frozen Formula and bottle revision coordinates.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BottleLayout {
+    /// Formula revision, included in the bottle filename.
+    pub revision: u32,
+    /// Bottle rebuild, included in the bottle filename.
+    pub rebuild: u32,
+}
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// One bottle platform, shared root URL and expected artifact SHA-256.
 pub struct Bottle {
+    cellar: Cellar,
     tag: BottleTag,
     root_url: String,
     sha256: [u8; 32],
@@ -115,9 +144,15 @@ impl Bottle {
     /// Validate `root_url` under [`Artifact`] URL constraints.
     /// Invalid URLs return [`Error::InvalidInput`]; neither the bottle nor its digest
     /// is verified. [`Formula::new`] checks tag uniqueness and the common root URL.
-    pub fn new(tag: BottleTag, root_url: &str, sha256: [u8; 32]) -> Result<Self, Error> {
+    pub fn new(
+        tag: BottleTag,
+        root_url: &str,
+        sha256: [u8; 32],
+        cellar: Cellar,
+    ) -> Result<Self, Error> {
         url(root_url)?;
         Ok(Self {
+            cellar,
             tag,
             root_url: root_url.into(),
             sha256,
@@ -131,13 +166,13 @@ impl Bottle {
 pub enum CaskArtifact {
     /// A single `.app` filename under this type's filename constraints.
     App(String),
-    /// Exact pkgutil receipt IDs, never arbitrary shell or Ruby.
+    /// Exact receipt evidence for a PKG; receipt-forget is not file removal.
     Pkg {
         /// A single `.pkg` filename under this type's filename constraints.
         path: String,
         /// 1–32 distinct receipt IDs, each at most 255 bytes with at least two
         /// nonempty dot-separated components of ASCII letters, digits, `_` or `-`.
-        /// Rendered as escaped, anchored patterns; arbitrary uninstall commands are unsupported.
+        /// Retained as detection evidence; rendering does not authorize PKG removal.
         receipts: Vec<String>,
     },
 }
@@ -181,16 +216,7 @@ impl CaskArtifact {
     fn render(&self) -> String {
         match self {
             Self::App(s) => format!("app {}", quote(s)),
-            Self::Pkg { path, receipts } => {
-                let mut receipts = receipts.clone();
-                receipts.sort();
-                let patterns = receipts
-                    .iter()
-                    .map(|id| quote(&format!("^{}$", id.replace('.', "\\."))))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("pkg {}\n  uninstall pkgutil: [{}]", quote(path), patterns)
-            }
+            Self::Pkg { path, .. } => format!("pkg {}", quote(path)),
         }
     }
 }
@@ -280,6 +306,7 @@ impl Cask {
 #[derive(Clone, Debug)]
 /// Validated fixed Formula template for one prebuilt executable.
 pub struct Formula {
+    layout: BottleLayout,
     key: PackageKey,
     version: String,
     description: String,
@@ -290,6 +317,10 @@ pub struct Formula {
     dependencies: Vec<PackageKey>,
 }
 impl Formula {
+    /// Original prebuilt executable identity retained for approved bottle material checks.
+    pub fn executable(&self) -> &str {
+        &self.executable
+    }
     /// Validate a fixed template declaring one prebuilt executable in the source archive.
     /// Release uses 1–128 ASCII letters/digits or `._+-`; description is 1–4096 bytes
     /// without controls. Homepage follows [`Artifact`] URL rules; executable follows
@@ -302,6 +333,7 @@ impl Formula {
     pub fn new(
         key: PackageKey,
         release: &str,
+        layout: BottleLayout,
         description: &str,
         homepage: &str,
         source: Artifact,
@@ -334,6 +366,7 @@ impl Formula {
             return Err(Error::Duplicate);
         }
         Ok(Self {
+            layout,
             key,
             version: release.into(),
             description: description.into(),
@@ -368,9 +401,20 @@ impl Formula {
             quote(&hex(&self.source.sha256)),
             quote(&self.bottles[0].root_url)
         );
+        if self.layout.revision > 0 {
+            s = s.replacen(
+                "\n\n  bottle do",
+                &format!("\n  revision {}\n\n  bottle do", self.layout.revision),
+                1,
+            );
+        }
+        if self.layout.rebuild > 0 {
+            s.push_str(&format!("    rebuild {}\n", self.layout.rebuild));
+        }
         for b in &self.bottles {
             s.push_str(&format!(
-                "    sha256 {}: {}\n",
+                "    sha256 cellar: :{}, {}: {}\n",
+                b.cellar.symbol(),
                 b.tag.symbol(),
                 quote(&hex(&b.sha256))
             ));
@@ -382,10 +426,8 @@ impl Formula {
                 quote(&format!("{}/{}", d.tap, d.name))
             ));
         }
-        s.push_str(&format!(
-            "\n  def install\n    bin.install {}\n  end\nend\n",
-            quote(&self.executable)
-        ));
+        // The original source archive is evidence, never an alternate executable delivery.
+        s.push_str("\n  def install\n    odie \"RSS bottle-only: source installation is unsupported\"\n  end\nend\n");
         Document::new(self.key.clone(), format!("Formula/{}.rb", self.key.name), s)
     }
 }

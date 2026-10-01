@@ -24,13 +24,27 @@ def embedded(schema, path):
     return schema
 
 
+def software_result_event(payload):
+    result=payload["$defs"]["SoftwareTaskResult"]
+    return {"type":"object","additionalProperties":False,"required":["kind",*result["required"]],"properties":{"kind":{"const":"software_result"},**copy.deepcopy(result["properties"])}}
+
+def event_variant(schema):
+    return next(value for value in schema["properties"]["event"]["oneOf"] if value["properties"]["kind"].get("const")=="software_result")
+
+
 def write():
-    payload = json.loads((SCHEMAS / "task-payload-v4.schema.json").read_text())["oneOf"]
+    payload = json.loads((SCHEMAS / "task-payload-v4.schema.json").read_text())
     for name, path in EMBEDDED.items():
         file = SCHEMAS / name
         schema = json.loads(file.read_text())
-        embedded(schema, path)["oneOf"] = copy.deepcopy(payload)
+        embedded(schema, path)["oneOf"] = copy.deepcopy(payload["oneOf"])
+        schema["$defs"] = copy.deepcopy(payload["$defs"])
         file.write_text(json.dumps(schema, indent=2, ensure_ascii=False) + "\n")
+    event_file=SCHEMAS / "task-event-request-v4.schema.json"
+    event_schema=json.loads(event_file.read_text())
+    variant=event_variant(event_schema);variant.clear();variant.update(software_result_event(payload))
+    event_schema["$defs"]=copy.deepcopy(payload["$defs"])
+    event_file.write_text(json.dumps(event_schema,indent=2,ensure_ascii=False)+"\n")
     manifest = json.loads(MANIFEST.read_text())
     digest = hashlib.sha256()
     for entry in manifest["schemas"]:
@@ -53,10 +67,14 @@ def check():
     actual = {path.name for path in SCHEMAS.glob("*.json")}
     if actual != set(files) | {MANIFEST.name}:
         raise ValueError("schema directory differs from the V4 manifest")
-    payload = json.loads((SCHEMAS / "task-payload-v4.schema.json").read_text())["oneOf"]
+    payload = json.loads((SCHEMAS / "task-payload-v4.schema.json").read_text())
     for name, path in EMBEDDED.items():
-        if embedded(json.loads((SCHEMAS / name).read_text()), path)["oneOf"] != payload:
+        schema = json.loads((SCHEMAS / name).read_text())
+        if embedded(schema, path)["oneOf"] != payload["oneOf"] or schema.get("$defs") != payload["$defs"]:
             raise ValueError(f"{name}: embedded task contract differs from the canonical payload")
+    event=json.loads((SCHEMAS / "task-event-request-v4.schema.json").read_text())
+    if event_variant(event)!=software_result_event(payload) or event.get("$defs")!=payload["$defs"]:
+        raise ValueError("task-event-request-v4.schema.json: software result differs from the canonical contract")
     digest = hashlib.sha256()
     for name in files:
         data = (SCHEMAS / name).read_bytes()
