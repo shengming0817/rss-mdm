@@ -40,7 +40,7 @@ impl ContentPort for Store {
                     let Declaration::Software { definition } = variant.declaration() else {
                         return Err(catalog::Error::Input);
                     };
-                    for artifact in definition.spec().artifacts.values() {
+                    for artifact in definition.materials() {
                         let artifact = artifact.artifact().map_err(|_| catalog::Error::Input)?;
                         let coordinate = (artifact.length(), artifact.digest().bytes());
                         let index = if let Some(index) = seen.get(&coordinate) {
@@ -57,7 +57,9 @@ impl ContentPort for Store {
                             seen.insert(coordinate, index);
                             index
                         };
-                        if &artifact == definition.primary() && definition.spec().bundle.is_some() {
+                        if &artifact == definition.primary()
+                            && definition.spec().behavior.bundle().is_some()
+                        {
                             validate(
                                 &mut files[index].file,
                                 definition,
@@ -67,6 +69,41 @@ impl ContentPort for Store {
                             )
                             .map_err(|_| catalog::Error::Content)?;
                         }
+                    }
+                    if let rss_mdm_resource::SoftwareBehavior::Msix(msix) =
+                        &definition.spec().behavior
+                    {
+                        let coordinate = (
+                            definition.primary().length(),
+                            definition.primary().digest().bytes(),
+                        );
+                        let index = *seen.get(&coordinate).ok_or(catalog::Error::Content)?;
+                        let _temporary =
+                            if let rss_mdm_resource::MsixContainer::Bundle { members, .. } =
+                                &msix.container
+                            {
+                                Some(
+                                    store
+                                        .native_temporary_space(
+                                            members
+                                                .iter()
+                                                .map(|member| member.length)
+                                                .max()
+                                                .ok_or(catalog::Error::Content)?,
+                                        )
+                                        .map_err(|_| catalog::Error::Content)?,
+                                )
+                            } else {
+                                None
+                            };
+                        super::native::msix(
+                            &mut files[index].file,
+                            msix,
+                            &store.config,
+                            store.timer.as_ref(),
+                            deadline,
+                        )
+                        .map_err(|_| catalog::Error::Content)?;
                     }
                 }
                 Ok(Box::new(PinnedSoftware {
@@ -99,7 +136,7 @@ fn read_at<const N: usize>(file: &mut File, offset: u64) -> Result<[u8; N], Erro
     Ok(b)
 }
 // Check directory budgets and every raw name BEFORE ZipArchive allocates/deduplicates metadata.
-fn directory(file: &mut File, config: &Config) -> Result<(u64, u64), Error> {
+pub(super) fn directory(file: &mut File, config: &Config) -> Result<(u64, u64), Error> {
     let length = file.metadata().map_err(|_| invalid())?.len();
     let end = length.checked_sub(22).ok_or_else(invalid)?;
     let e = read_at::<22>(file, end)?;
@@ -185,7 +222,7 @@ pub(super) fn validate(
     timer: &dyn Clock,
     deadline: Deadline,
 ) -> Result<(), Error> {
-    let expected = definition.spec().bundle.as_ref().ok_or_else(invalid)?;
+    let expected = definition.spec().behavior.bundle().ok_or_else(invalid)?;
     let (count, central) = directory(file, config)?;
     let mut local = file.try_clone().map_err(|_| invalid())?;
     let mut archive = zip::ZipArchive::with_config(

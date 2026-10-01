@@ -146,6 +146,9 @@ impl Config {
         if product.origin().ascii_serialization() != self.product_origin {
             return Err(Error::Configuration(ConfigIssue::ProductOrigin));
         }
+        self.flow
+            .publication
+            .validate_hosted(&self.product_origin)?;
         let instance = rss_identity_core::InstanceId::parse(&self.identity.instance_id)
             .map_err(|_| Error::Configuration(ConfigIssue::Instance))?;
         if instance.to_string() != self.identity.instance_id {

@@ -100,6 +100,7 @@ impl Fixture {
                     .await?,
                 rss_request_context::TenantId::parse(case_tenant())?,
                 clock.clone(),
+                None,
                 |_| {},
             )
             .await?;
@@ -108,6 +109,8 @@ impl Fixture {
             access
                 .audit_store(&crate::config::AuditConfig::Plain)
                 .await?,
+            crate::flow::execution::open_content(config)?,
+            std::collections::BTreeMap::new(),
         )
         .await?;
         let identity = crate::identity::Identity::connect(

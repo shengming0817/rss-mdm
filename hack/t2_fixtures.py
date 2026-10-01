@@ -201,7 +201,7 @@ class RunFixtures:
         with self.lock:
             self.certificates.prepare_inputs()
             directory = self.certificates.root / 'source-cert'
-            self.certificates.issue_leaf(directory, ['source.invalid'])
+            self.certificates.issue_leaf(directory, ['source.invalid', 'raw.githubusercontent.com'])
             for source, target in ((self.certificates.root / 'ca.crt', 'ca.pem'),
                                    (directory / 'server.crt', 'server.pem'),
                                    (directory / 'server.key', 'server.key')):

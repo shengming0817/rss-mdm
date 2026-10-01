@@ -4,6 +4,7 @@ pub mod model;
 mod receipts;
 pub mod service;
 pub mod wire;
+mod worker;
 
 pub const HTTP_CATALOG_SQL: &str = include_str!("http_catalog.sql");
 pub const HTTP_CATALOG_JSON: &str = include_str!("http_catalog.json");

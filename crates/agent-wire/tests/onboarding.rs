@@ -29,7 +29,7 @@ fn managed_registration_has_no_device_identity_or_bearer_claim() {
     ))
     .unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
-    let value = json!({"wireVersion":5,"operationId":Uuid::new_v4(),"installationOperation":Uuid::new_v4(),"credential":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","capabilities":["inventory.collect.v5"],"platform":"windows","architecture":"x86_64"});
+    let value = json!({"wireVersion":5,"operationId":Uuid::new_v4(),"installationOperation":Uuid::new_v4(),"credential":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","capabilities":["inventory.collect.v5"],"platform":"windows","architecture":"x86_64","executionContext":{"revision":1,"osVersion":[10,0,22621,0],"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false}});
     serde_json::from_value::<ManagedRegistrationRequest>(value.clone())
         .unwrap()
         .validate()

@@ -1,4 +1,3 @@
-use super::wire;
 use rss_mdm_software_release as rel;
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Serialize, Deserialize)]
@@ -13,7 +12,7 @@ pub enum Change {
         resource: String,
         version: String,
         expected_resource_revision: u64,
-        submission: wire::Submission,
+        resource_digest: [u8; 32],
     },
     Validate {
         ring: Ring,

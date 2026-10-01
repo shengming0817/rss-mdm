@@ -162,6 +162,108 @@ impl SoftwareExecutionPolicy {
         }
         Ok(None)
     }
+    /// One support decision covers the complete exact dependency closure.
+    pub async fn supported_in(
+        &self,
+        service: &crate::execution::ExecutionService,
+        tx: &mut PgTransaction<'_>,
+        binding: &crate::execution::channels::AgentBinding,
+    ) -> Result<bool> {
+        let platform = match binding.platform.as_str() {
+            "windows" => Platform::Windows,
+            "macos" => Platform::Macos,
+            _ => return Ok(false),
+        };
+        let architecture = match binding.architecture.as_str() {
+            "x86_64" => Architecture::X86_64,
+            "aarch64" => Architecture::Aarch64,
+            _ => return Ok(false),
+        };
+        let steps = match self
+            .execution_steps_in(service, tx, platform, architecture)
+            .await
+        {
+            Ok(Some(v)) => v,
+            Ok(None) => return Ok(false),
+            Err(crate::transaction::Fault::Request(Error::Unsupported)) => return Ok(false),
+            Err(e) => return Err(e),
+        };
+        self.supported_steps_in(service, tx, binding, platform, steps)
+            .await
+    }
+    async fn supported_steps_in(
+        &self,
+        service: &crate::execution::ExecutionService,
+        tx: &mut PgTransaction<'_>,
+        binding: &crate::execution::channels::AgentBinding,
+        platform: Platform,
+        steps: Vec<FrozenSoftware>,
+    ) -> Result<bool> {
+        let mut artifact_count = 0usize;
+        for (index, selected) in steps.into_iter().enumerate() {
+            let variant = selected
+                .version()
+                .resolve(
+                    selected.platform(),
+                    selected.architecture(),
+                    selected.variant(),
+                )
+                .map_err(|_| Error::Malformed)?;
+            let resource::Declaration::Software { definition } = variant.declaration() else {
+                return Err(Error::Malformed.into());
+            };
+            let action =
+                crate::execution::actions::software_wire::software_action(definition.spec());
+            let task_platform = match platform {
+                Platform::Windows => rss_mdm_agent_wire::TaskPlatform::Windows,
+                Platform::Macos => rss_mdm_agent_wire::TaskPlatform::Macos,
+            };
+            let export = match crate::execution::actions::software_exports::for_step_in(
+                service,
+                tx,
+                &self.frozen.delivery,
+                &selected,
+                &action,
+            )
+            .await
+            {
+                Ok(export) => export,
+                Err(crate::transaction::Fault::Request(Error::Unsupported)) => return Ok(false),
+                Err(error) => return Err(error),
+            };
+            let step = match crate::execution::actions::software_wire::software_step(
+                definition.spec(),
+                index,
+                task_platform,
+                &binding.execution_context,
+                export,
+            ) {
+                Ok(step) => step,
+                Err(_) => return Ok(false),
+            };
+            artifact_count += step.artifacts.len();
+            if artifact_count > 64
+                || step
+                    .export
+                    .validate_for(
+                        &step,
+                        Uuid::parse_str(&tx.tenant_id().to_string())
+                            .map_err(|_| Error::Malformed)?,
+                        &binding.execution_context,
+                    )
+                    .is_err()
+            {
+                return Ok(false);
+            }
+            if action
+                .required_profile(task_platform)
+                .is_none_or(|required| !binding.capabilities.contains(&required))
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
     /// Current stage denominator and independently verified results; never infer from publication.
     pub async fn stage_progress_in(
         &self,
@@ -176,15 +278,15 @@ impl SoftwareExecutionPolicy {
         &self,
         tx: &mut PgTransaction<'_>,
         index: usize,
-        agent: Arc<dyn crate::execution::channels::Agent>,
+        service: &crate::execution::ExecutionService,
     ) -> Result<StageCounts> {
-        self.counts_in(tx, index, Some(agent)).await
+        self.counts_in(tx, index, Some(service)).await
     }
     async fn counts_in(
         &self,
         tx: &mut PgTransaction<'_>,
         index: usize,
-        agent: Option<Arc<dyn crate::execution::channels::Agent>>,
+        service: Option<&crate::execution::ExecutionService>,
     ) -> Result<StageCounts> {
         let stages = &self.rollout()?.stages;
         let stage = stages.get(index).ok_or(Error::Malformed)?;
@@ -196,22 +298,22 @@ impl SoftwareExecutionPolicy {
         let prefix = format!("software:stage:{}:%", stage.scope);
         let optional = matches!(self.intent(), SoftwareIntent::AvailableInstall);
         let now = crate::execution::storage::now(tx).await?;
-        let include_capabilities = agent.is_some();
+        let include_capabilities = service.is_some();
         let (total, reported, waiting_user, unknown, waiting_reboot, failed, verified, targets): (i64, i64, i64, i64, i64, i64, i64, Option<Vec<String>>) = tx.with_connection(move |c| Box::pin(async move {
             sqlx::query_as("WITH targets AS (SELECT r.device FROM mdm_planning.scopes s JOIN mdm_planning.scope_results r ON (r.tenant_id,r.run)=(s.tenant_id,s.resolution) JOIN mdm_planning.scopes root ON root.tenant_id=s.tenant_id AND root.id=$6::uuid AND NOT root.deleted JOIN mdm_planning.scope_results rr ON (rr.tenant_id,rr.run,rr.device)=(root.tenant_id,root.resolution,r.device) AND rr.matched WHERE s.tenant_id=$1::uuid AND s.id=$2::uuid AND NOT s.deleted AND r.matched AND NOT EXISTS (SELECT 1 FROM mdm_planning.scopes p JOIN mdm_planning.scope_results x ON (x.tenant_id,x.run)=(p.tenant_id,p.resolution) WHERE p.tenant_id=s.tenant_id AND p.id=ANY($3::uuid[]) AND x.device=r.device AND x.matched)) SELECT count(*),count(*) FILTER(WHERE latest.result IS NOT NULL),count(*) FILTER(WHERE $7::boolean AND latest.state->>'execution'='not_started' AND latest.state->>'cancellation'='none' AND latest.state->'delivery'->>'kind' IN ('claimed','received') AND (latest.state->'delivery'->>'leaseUntil')::bigint>$8),count(*) FILTER(WHERE latest.result->>'effect'='unknown' OR latest.state->>'execution'='unknown'),count(*) FILTER(WHERE latest.result->>'effect'='waiting_reboot'),count(*) FILTER(WHERE latest.result->>'effect'='failed'),count(*) FILTER(WHERE latest.result->>'effect'='verified'),array_agg(targets.device) FILTER(WHERE $9::boolean) FROM targets LEFT JOIN LATERAL (SELECT a.state,a.result FROM mdm_commands.action_runs a WHERE a.tenant_id=$1::uuid AND a.policy_version=$4::uuid AND a.device=targets.device AND a.occurrence LIKE $5 ORDER BY a.created_at DESC,a.id DESC LIMIT 1) latest ON true")
                 .bind(tenant).bind(scope).bind(earlier).bind(version).bind(prefix).bind(root).bind(optional).bind(now).bind(include_capabilities).fetch_one(c).await
         })).await?;
-        let unsupported = if let Some(agent) = agent {
+        let unsupported = if let Some(service) = service {
             let mut supported = std::collections::BTreeSet::new();
             for devices in targets.unwrap_or_default().chunks(128) {
                 for target in crate::execution::channels::agent_targets_in(
                     tx,
-                    agent.clone(),
+                    service.agent_store.clone(),
                     devices.to_vec(),
                 )
                 .await?
                 {
-                    if target.binding.software() {
+                    if self.supported_in(service, tx, &target.binding).await? {
                         supported.insert(target.device);
                     }
                 }
@@ -240,15 +342,17 @@ impl SoftwareExecutionPolicy {
             )),
         )
     }
-    /// Resolve exact fixed prerequisites on the server, in dependency-first order.
+    /// Resolve exact fixed prerequisites in dependency-first order.
+    /// Missing/withdrawn admission is None; storage and integrity failures remain errors.
     pub async fn execution_steps_in(
         &self,
         service: &crate::execution::ExecutionService,
         tx: &mut PgTransaction<'_>,
         platform: Platform,
         architecture: Architecture,
-    ) -> Result<Vec<FrozenSoftware>> {
+    ) -> Result<Option<Vec<FrozenSoftware>>> {
         let catalog = self.catalog(service);
+        catalog.lock_in(tx).await?;
         let target_platform = match platform {
             Platform::Windows => resource::Platform::Windows,
             Platform::Macos => resource::Platform::MacOS,
@@ -282,7 +386,11 @@ impl SoftwareExecutionPolicy {
             if !active.insert(key.clone()) || active.len() + done.len() > 256 {
                 return Err(Error::Malformed.into());
             }
-            let version = catalog.version_in(tx, &resource_id, &version_id).await?;
+            let version = match catalog.version_in(tx, &resource_id, &version_id).await {
+                Ok(version) => version,
+                Err(CatalogError::NotAdmitted | CatalogError::Missing) => return Ok(None),
+                Err(error) => return Err(error.into()),
+            };
             if version.digest().bytes() != digest {
                 return Err(Error::Conflict.into());
             }
@@ -309,9 +417,14 @@ impl SoftwareExecutionPolicy {
                     target_architecture,
                     &checked_input(resource::Id::new(&variant_key))?,
                 )
-                .await?;
+                .await;
+            let selected = match selected {
+                Ok(selected) => selected,
+                Err(CatalogError::NotAdmitted | CatalogError::Missing) => return Ok(None),
+                Err(error) => return Err(error.into()),
+            };
             if root && selected.admission().operation != self.frozen.admission_operation {
-                return Err(Error::Conflict.into());
+                return Ok(None);
             }
             let variant = selected
                 .version()
@@ -341,7 +454,7 @@ impl SoftwareExecutionPolicy {
         if ordered.is_empty() || ordered.len() > 32 {
             return Err(Error::Unsupported.into());
         }
-        Ok(ordered)
+        Ok(Some(ordered))
     }
     /// Recheck the original enterprise approval and immutable target bytes in the transaction.
     pub async fn admitted_in(
@@ -490,12 +603,6 @@ impl SoftwareExecutionPolicy {
             ));
         }
         let binding = &registrations[0].binding;
-        if !binding.software() {
-            return Ok(TaskAdmission::new(
-                TaskAdmissionState::UnsupportedCapability,
-                Some(index),
-            ));
-        }
         let (platform, architecture) = (&binding.platform, &binding.architecture);
         let platform = match platform.as_str() {
             "windows" => Platform::Windows,
@@ -520,6 +627,34 @@ impl SoftwareExecutionPolicy {
         {
             return Ok(TaskAdmission::new(
                 TaskAdmissionState::ApprovalWithdrawn,
+                Some(index),
+            ));
+        }
+        let steps = match self
+            .execution_steps_in(service, tx, platform, architecture)
+            .await
+        {
+            Ok(Some(steps)) => steps,
+            Ok(None) => {
+                return Ok(TaskAdmission::new(
+                    TaskAdmissionState::ApprovalWithdrawn,
+                    Some(index),
+                ));
+            }
+            Err(crate::transaction::Fault::Request(Error::Unsupported)) => {
+                return Ok(TaskAdmission::new(
+                    TaskAdmissionState::UnsupportedCapability,
+                    Some(index),
+                ));
+            }
+            Err(error) => return Err(error),
+        };
+        if !self
+            .supported_steps_in(service, tx, binding, platform, steps)
+            .await?
+        {
+            return Ok(TaskAdmission::new(
+                TaskAdmissionState::UnsupportedCapability,
                 Some(index),
             ));
         }

@@ -1,6 +1,5 @@
 use crate::publication_support::{Server, pg, seed};
 use crate::resource_catalog::{self as resources, Command};
-use rss_mdm_software_service::publication::Error as PublicationError;
 
 fn archive(input: &rss_mdm_software_service::publication::CandidateInput) -> Command {
     Command::Resource {
@@ -16,47 +15,48 @@ fn archive(input: &rss_mdm_software_service::publication::CandidateInput) -> Com
 
 #[tokio::test]
 #[ignore = "real PG reference/archival concurrency + HTTPS: make t2 MODULE=planning.resource_archive"]
-async fn candidate_reference_blocks_archive_and_race_is_atomic() {
+async fn candidate_reference_survives_admission_withdrawal_and_fences_archive() {
     let server = Server::new().await;
     let runtime = pg::runtime().await;
     let publication = server.service(runtime.clone(), server.winget()).await;
     let planning = crate::planning::test_support::planning(pg::tenant()).await;
 
-    let referenced = seed(runtime.clone(), &server, server.winget_submission()).await;
+    let referenced = seed(runtime.clone(), &server, server.winget_document()).await;
     publication
         .create_candidate(&referenced, pg::cutoff())
         .await
         .unwrap();
+    crate::publication_support::withdraw_version_admission(&referenced).await;
     assert!(matches!(
         execute(&planning, &archive(&referenced)).await,
         Err(crate::Error::Service(rss_mdm_flow_service::Error::Conflict))
     ));
 
-    let racing = seed(runtime.clone(), &server, server.winget_submission()).await;
+    let mut document = server.winget_document();
+    let rss_mdm_software_service::publication::ExportDocument::Winget { manifest } = &mut document
+    else {
+        unreachable!()
+    };
+    manifest["PackageIdentifier"] = serde_json::json!("Acme.Race");
+    let racing = seed(runtime.clone(), &server, document).await;
     let archive = archive(&racing);
     let (created, archived) = tokio::join!(
         publication.create_candidate(&racing, pg::cutoff()),
         execute(&planning, &archive)
     );
-    match (created, archived) {
-        (Ok(_), Err(crate::Error::Service(rss_mdm_flow_service::Error::Conflict))) => assert!(
-            publication
-                .candidate(&racing.candidate, pg::cutoff())
-                .await
-                .unwrap()
-                .is_some()
-        ),
-        // Archive may win before the first immutable-version read, in which case
-        // the version is no longer usable content. Either ordering must leave no candidate.
-        (Err(PublicationError::Conflict | PublicationError::Content), Ok(_)) => assert!(
-            publication
-                .candidate(&racing.candidate, pg::cutoff())
-                .await
-                .unwrap()
-                .is_none()
-        ),
-        result => panic!("reference and archival must serialize: {result:?}"),
-    }
+    // Current enterprise approval already protects the version before the publication is added.
+    assert!(created.is_ok(), "candidate creation: {created:?}");
+    assert!(matches!(
+        archived,
+        Err(crate::Error::Service(rss_mdm_flow_service::Error::Conflict))
+    ));
+    assert!(
+        publication
+            .candidate(&racing.candidate, pg::cutoff())
+            .await
+            .unwrap()
+            .is_some()
+    );
 
     planning.runtime.close().await;
     runtime.close().await;

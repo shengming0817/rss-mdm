@@ -109,23 +109,7 @@ impl ReleaseStore {
         if id.tenant() != self.tenant {
             return Ok(Err(Rejection::TenantMismatch));
         }
-        let c = STORAGE
-            .read(tx, id.value())
-            .await?
-            .map(
-                |AggregateRecord {
-                     revision: rev,
-                     document: b,
-                 }| {
-                    let c = codec::read_snapshot(&b)?;
-                    if c.snapshot().id != *id || rev != c.snapshot().revision {
-                        return Err(STORAGE.fault("store::get_in"));
-                    }
-                    Ok(c)
-                },
-            )
-            .transpose()?;
-        Ok(Ok(c))
+        read_candidate_in(tx, id).await
     }
     /// Lock and restore a candidate for companion app decisions. The caller retains the transaction lock.
     pub async fn lock_candidate_in(
@@ -573,4 +557,39 @@ fn decode_attempt(
         cursor: row.try_get("key")?,
         publication,
     })
+}
+
+/// Read and lock the existing publication authority from a caller-owned product transaction.
+/// This narrow reference reader performs no writes or runtime-owner substitution.
+pub async fn lock_candidate_reference_in(
+    tx: &mut PgTransaction<'_>,
+    id: &CandidateId,
+) -> InTransaction<Candidate> {
+    if tx.tenant_id() != id.tenant() {
+        return Ok(Err(Rejection::TenantMismatch));
+    }
+    STORAGE.lock(tx, "candidate", id.value()).await?;
+    Ok(input!(read_candidate_in(tx, id).await?).ok_or(Rejection::NotFound))
+}
+async fn read_candidate_in(
+    tx: &mut PgTransaction<'_>,
+    id: &CandidateId,
+) -> InTransaction<Option<Candidate>> {
+    let c = STORAGE
+        .read(tx, id.value())
+        .await?
+        .map(
+            |AggregateRecord {
+                 revision: rev,
+                 document: b,
+             }| {
+                let c = codec::read_snapshot(&b)?;
+                if c.snapshot().id != *id || rev != c.snapshot().revision {
+                    return Err(STORAGE.fault("store::get_in"));
+                }
+                Ok(c)
+            },
+        )
+        .transpose()?;
+    Ok(Ok(c))
 }

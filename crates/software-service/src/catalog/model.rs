@@ -2,59 +2,93 @@ use super::{Error, Result};
 use rss_mdm_resource::{SoftwareSource, Version};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+/// Current source protocol, without invalid kind/location combinations or credentials.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SourceKind {
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SourceProtocol {
+    /// Private enterprise authoring.
     Private,
-    Winget,
-    Brew,
+    /// Existing exact REST source, distinct from our hosted output.
+    WingetRest {
+        location: String,
+        identifier: String,
+    },
+    /// Official community YAML at one complete commit.
+    WingetCommunity { repository: String, commit: String },
+    /// Controlled Cask/Formula source at one complete commit.
+    BrewTap {
+        repository: String,
+        tap: String,
+        commit: String,
+    },
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceDefinition {
     pub id: String,
     pub revision: String,
-    pub kind: SourceKind,
-    pub location: Option<String>,
-    pub publishers: Vec<String>,
+    pub protocol: SourceProtocol,
+}
+fn source_url(value: &str) -> Result<()> {
+    let u = url::Url::parse(value).map_err(|_| Error::Input)?;
+    if u.scheme() != "https"
+        || u.host_str().is_none()
+        || !u.username().is_empty()
+        || u.password().is_some()
+        || u.query().is_some()
+        || u.fragment().is_some()
+        || value.len() > 2048
+    {
+        return Err(Error::Input);
+    }
+    Ok(())
+}
+fn source_commit(value: &str) -> Result<()> {
+    if value.len() != 40
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || matches!(b, b'a'..=b'f'))
+    {
+        return Err(Error::Input);
+    }
+    Ok(())
 }
 impl SourceDefinition {
     pub fn snapshot(&self) -> Result<SoftwareSource> {
         rss_mdm_resource::Id::new(&self.id).map_err(|_| Error::Input)?;
         rss_mdm_resource::Id::new(&self.revision).map_err(|_| Error::Input)?;
-        if self.publishers.len() > 32
-            || self
-                .publishers
-                .iter()
-                .any(|v| v.is_empty() || v.len() > 1024 || v.chars().any(char::is_control))
-        {
-            return Err(Error::Input);
-        }
-        match (&self.kind, &self.location) {
-            (SourceKind::Private, None) => (),
-            (SourceKind::Winget, Some(location)) => {
-                let u = url::Url::parse(location).map_err(|_| Error::Input)?;
-                if u.scheme() != "https"
-                    || u.host_str().is_none()
-                    || !u.username().is_empty()
-                    || u.password().is_some()
-                    || u.query().is_some()
-                    || u.fragment().is_some()
-                    || location.len() > 2048
-                {
-                    return Err(Error::Input);
-                }
+        match &self.protocol {
+            SourceProtocol::Private => {}
+            SourceProtocol::WingetRest {
+                location,
+                identifier,
+            } => {
+                source_url(location)?;
+                rss_mdm_resource::Id::new(identifier).map_err(|_| Error::Input)?;
             }
-            (SourceKind::Brew, Some(location)) => {
-                if location.split('/').count() != 2
-                    || !location
+            SourceProtocol::WingetCommunity { repository, commit } => {
+                source_url(repository)?;
+                source_commit(commit)?;
+            }
+            SourceProtocol::BrewTap {
+                repository,
+                tap,
+                commit,
+            } => {
+                source_url(repository)?;
+                source_commit(commit)?;
+                if tap.len() > 255
+                    || tap.split('/').count() != 2
+                    || tap
+                        .split('/')
+                        .any(|s| s.is_empty() || s == "." || s == ".." || s.starts_with('-'))
+                    || !tap
                         .bytes()
                         .all(|b| b.is_ascii_alphanumeric() || b"._-/".contains(&b))
                 {
                     return Err(Error::Input);
                 }
             }
-            _ => return Err(Error::Input),
         }
         Ok(SoftwareSource {
             id: self.id.clone(),

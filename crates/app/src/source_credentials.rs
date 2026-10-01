@@ -24,20 +24,20 @@ impl SourceCredentials {
     }
 }
 impl Credentials for SourceCredentials {
-    fn winget(
+    fn brew_read(
         &self,
         tenant: rss_request_context::TenantId,
         source: &str,
         reference: &str,
-    ) -> rss_mdm_software_service::publication::Result<rss_mdm_winget_source::WriteAccess> {
+    ) -> rss_mdm_software_service::publication::Result<rss_mdm_software_service::BrewReadAccess>
+    {
         use rss_mdm_software_service::publication::Error;
         if tenant != self.tenant || source != self.source {
             return Err(Error::Identity);
         }
-        rss_mdm_winget_source::WriteAccess::new(
+        rss_mdm_software_service::BrewReadAccess::new(
             tenant,
             source,
-            reference,
             self.values.get(reference).ok_or(Error::Identity)?,
         )
         .map_err(|_| Error::Identity)

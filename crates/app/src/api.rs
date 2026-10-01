@@ -77,6 +77,7 @@ pub(crate) async fn application_fixture(
             .await?,
     )
     .await?;
+    let content = crate::flow::execution::open_content(&config)?;
     let planning = config
         .flow
         .open(
@@ -84,10 +85,17 @@ pub(crate) async fn application_fixture(
             rss_request_context::TenantId::parse(&config.identity.tenant_id)
                 .map_err(|_| Error::Service(rss_mdm_flow_service::Error::Malformed))?,
             clock.clone(),
+            content.clone(),
             |_| {},
         )
         .await?;
-    let execution = crate::flow::execution::open(&config, audit_store.clone()).await?;
+    let execution = crate::flow::execution::open(
+        &config,
+        audit_store.clone(),
+        content,
+        planning.publications.services.clone(),
+    )
+    .await?;
     let compiled = config.compile()?;
     let identity = match identity {
         Some(identity) => identity,
@@ -339,6 +347,8 @@ pub(crate) fn from_state(
             catalog: state.flow.catalog.clone(),
             publications: state.flow.publications.clone(),
             software_catalog: Arc::new(rss_mdm_flow_service::software_catalog::Access {
+                resources: state.flow.catalog.clone(),
+                clock: Arc::new(crate::clock::ContentClock(state.clock.clone())),
                 runtime: state.flow.runtime.clone(),
                 audit: state.audit_store.clone(),
                 tenant: state.execution.tenant,
@@ -444,6 +454,15 @@ pub(crate) fn from_state(
         )
         .merge(authentication)
         .merge(host_routes)
+        .merge(
+            rss_mdm_management_http::software_native::routes().with_state(Arc::new(
+                rss_mdm_management_http::software_native::StateData {
+                    directory: state.flow.publications.clone(),
+                    content: state.content_writer.clone(),
+                    requests: state.requests.clone(),
+                },
+            )),
+        )
         .layer(DefaultBodyLimit::max(16384));
     crate::native::Routers {
         apple,

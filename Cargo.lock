@@ -2843,6 +2843,7 @@ dependencies = [
  "bytes",
  "futures",
  "libc",
+ "quick-xml",
  "rss-contract",
  "rss-mdm-audit-integration",
  "rss-mdm-authorization-service",
@@ -3046,6 +3047,7 @@ name = "rss-mdm-management-http"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "futures",
  "rss-audit-postgres",
  "rss-identity-core",
@@ -3062,6 +3064,7 @@ dependencies = [
  "rss-mdm-inventory-service",
  "rss-mdm-registration-service",
  "rss-mdm-resource",
+ "rss-mdm-software-release",
  "rss-mdm-software-service",
  "rss-mdm-timeline-service",
  "rss-observation",
@@ -3074,6 +3077,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-util",
+ "url",
  "uuid",
 ]
 
@@ -3217,6 +3221,7 @@ dependencies = [
  "rss-contract",
  "rss-mdm-audit-integration",
  "rss-mdm-brew-source",
+ "rss-mdm-content-service",
  "rss-mdm-resource",
  "rss-mdm-resource-postgres",
  "rss-mdm-software-release",
@@ -3322,6 +3327,7 @@ dependencies = [
  "reqwest",
  "rss-request-context",
  "serde_json",
+ "serde_yaml_ng",
  "tokio",
  "tokio-rustls",
  "url",
@@ -3744,6 +3750,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.5",
+]
+
+[[package]]
+name = "serde_yaml_ng"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b4db627b98b36d4203a7b458cf3573730f2bb591b28871d916dfa9efabfd41f"
+dependencies = [
+ "indexmap 2.14.2",
+ "itoa",
+ "ryu",
+ "serde",
+ "unsafe-libyaml",
 ]
 
 [[package]]
@@ -4486,6 +4505,12 @@ name = "unicode-properties"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7df058c713841ad818f1dc5d3fd88063241cc61f49f5fbea4b951e8cf5a8d71d"
+
+[[package]]
+name = "unsafe-libyaml"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "untrusted"

@@ -47,6 +47,16 @@ class WireArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "fingerprint"):
                 self.check_copy(schema)
 
+    def test_referenced_behavior_mutation_fails_embedded_contract(self):
+        directory, schema = self.fixture()
+        with directory:
+            path = schema / "task-payload-v5.schema.json"
+            value = json.loads(path.read_text())
+            value["$defs"]["SoftwareTaskInvocation"]["properties"]["timeoutSeconds"]["maximum"] += 1
+            path.write_text(json.dumps(value))
+            with self.assertRaisesRegex(ValueError, "embedded task contract"):
+                self.check_copy(schema)
+
     def test_missing_or_extra_shape_fails(self):
         directory, schema = self.fixture()
         with directory:

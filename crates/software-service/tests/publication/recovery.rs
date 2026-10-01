@@ -2,12 +2,12 @@ use super::*;
 
 #[tokio::test]
 #[ignore = "real PG COMMIT ACK loss + HTTPS: make t2 MODULE=publication.recovery"]
-async fn publication_result_commit_unknown_recovers_one_external_call_and_audit() {
+async fn publication_result_commit_unknown_recovers_one_projection_and_audit() {
     let server = Server::new().await;
     let proxy = ack::AckProxy::start().await;
     let runtime = runtime_at(Some(proxy.port), "mdm_software_driver").await;
     let service = server.service(runtime.clone(), server.winget()).await;
-    let input = seed(runtime.clone(), &server, server.winget_submission()).await;
+    let input = seed(runtime.clone(), &server, server.winget_document()).await;
     service.create_candidate(&input, cutoff()).await.unwrap();
     let p = authorize(&service, &input.candidate, rel::Ring::Test).await;
     let gate = ack::CommitGate::start(input.candidate.value()).await;
@@ -35,7 +35,7 @@ async fn publication_result_commit_unknown_recovers_one_external_call_and_audit(
             .unwrap(),
         rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_))
     ));
-    assert_eq!(server.state.lock().unwrap().posts, 1);
+    assert_eq!(server.state.lock().unwrap().posts, 0);
     assert_eq!(
         audit_records()
             .iter()

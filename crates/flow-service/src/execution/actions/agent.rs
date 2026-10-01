@@ -61,7 +61,7 @@ impl ExecutionService {
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
         crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,p,input,audit),|ctx,tx|Box::pin(async move{
-            let (service,p,input,audit)=*ctx;storage::lock(tx,p.device()).await?;principal(service,tx,p).await?;
+            let (service,p,input,audit)=*ctx;storage::lock(tx,p.device()).await?;principal(service,tx,p).await?;crate::execution::channels::agent_context_in(tx,service.agent_store.clone(),p.registration(),input.execution_context()).await?;
             let actor=format!("agent:{}",p.registration());let hash=fingerprint(input)?;let now=storage::now(tx).await?;
             let event_key = format!("agent:{}:offer:{}",p.registration(),input.operation_id());
             // Old successful polls are replayable only while their exact offer remains authorized.
@@ -94,7 +94,7 @@ impl ExecutionService {
                 let mut run=db::load_run(tx,stored(Uuid::parse_str(&id))?).await?;belongs(&run,p)?;let plan=db::load_source(&service.policy_reader,tx,run.source).await?;
                 let previous=run.state.clone();
                 run.state.expire(now,plan.timeout_seconds());
-                let capable=match &plan { db::ScheduledPolicy::Native(_) => false, db::ScheduledPolicy::Script(script) => script_capable && input.profiles().contains(&script.frozen.executor_profile()), db::ScheduledPolicy::Software(_) => software_capable, db::ScheduledPolicy::Enrollment(_) => enrollment_capable };
+                let capable=match &plan { db::ScheduledPolicy::Native(_) => false, db::ScheduledPolicy::Script(script) => script_capable && input.profiles().contains(&script.frozen.executor_profile()), db::ScheduledPolicy::Software(software) => software.supported_in(service,tx,&binding).await?, db::ScheduledPolicy::Enrollment(_) => enrollment_capable };
                 let allowed=capable && plan.authorized_in(service,tx,&run.target,now).await?;
                 if plan.withdrawn_in(service,tx,&run.target,now).await?{run.state.cancel();}
                 super::recovery::audit_recovery(service,tx,&run,&previous).await?;
@@ -133,7 +133,7 @@ impl ExecutionService {
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
         crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,p,id,input,audit),|ctx,tx|Box::pin(async move{
-            let (service,p,id,input,audit)=*ctx;storage::lock(tx,p.device()).await?;principal(service,tx,p).await?;
+            let (service,p,id,input,audit)=*ctx;storage::lock(tx,p.device()).await?;principal(service,tx,p).await?;crate::execution::channels::agent_context_in(tx,service.agent_store.clone(),p.registration(),input.execution_context()).await?;
             let mut run=db::load_run(tx,id).await?;belongs(&run,p)?;run.source.audit(audit);audit.target(&id.to_string());let plan=db::load_source(&service.policy_reader,tx,run.source).await?;let now=storage::now(tx).await?;
             let allowed=plan.authorized_in(service,tx,&run.target,now).await?;
             if matches!(input.event(),wire::TaskEvent::Start|wire::TaskEvent::Received) && !allowed{return Err(Error::Forbidden.into());}
@@ -168,7 +168,7 @@ impl ExecutionService {
                         let wire::TaskPayload::Software(offered)=signed.payload else {return Err(Error::Malformed.into());};
                         let current=plan.task(service,tx,&run.target,db::TaskIssue {run:id,attempt:input.attempt_id(),permit:wire::TaskPermit::Offer,expiry:offered.expires_at}).await?;
                         let wire::TaskPayload::Software(current)=current else {return Err(Error::Malformed.into());};
-                        if current.steps!=offered.steps || current.definition_digest!=offered.definition_digest {return Err(Error::Forbidden.into());}
+                        if current.steps!=offered.steps || current.definition_digest!=offered.definition_digest || current.execution_context!=offered.execution_context {return Err(Error::Forbidden.into());}
                     }
                     run.state.start(input.attempt_id(),now)?;
                     let signed=service.signer.as_ref().ok_or(Error::Unsupported)?.sign(plan.task(service,tx,&run.target,db::TaskIssue { run:id,attempt:input.attempt_id(),permit:wire::TaskPermit::Start,expiry:(now+15).min(run.deadline) }).await?)?;
@@ -197,7 +197,7 @@ impl ExecutionService {
                     })).await?;
                     let signed:wire::SignedTask=stored(serde_json::from_value(offer))?;
                     let wire::TaskPayload::Software(spec)=signed.payload else { return Err(Error::Malformed.into()); };
-                    let expected_version=spec.steps.last().map(|s|s.action.version.as_str()).ok_or(Error::Malformed)?;
+                    result.validate_for(&spec).map_err(|_|Error::Malformed)?;
                     let intended=match software.intent() {
                         rss_mdm_policy::SoftwareIntent::RequiredInstall | rss_mdm_policy::SoftwareIntent::AvailableInstall => wire::SoftwareTaskIntent::Install,
                         rss_mdm_policy::SoftwareIntent::ExplicitUninstall => wire::SoftwareTaskIntent::Uninstall,
@@ -207,32 +207,29 @@ impl ExecutionService {
                     let late_detection=matches!(run.state.execution,Execution::Unknown | Execution::WaitingReboot)
                         && run.state.attempt()==Some(input.attempt_id())
                         && run.state.cancellation==Cancellation::None;
-                    let trusted=allowed && (run.state.trusts_result(now,plan.timeout_seconds()) || late_detection);
-                    let matches_intent=match (result.intent,result.detection) {
-                        (wire::SoftwareTaskIntent::Install,wire::SoftwareDetectionState::Present)
-                        | (wire::SoftwareTaskIntent::Detect,wire::SoftwareDetectionState::Present) =>
-                            result.observed_version.as_deref()==Some(expected_version),
-                        (wire::SoftwareTaskIntent::Uninstall,wire::SoftwareDetectionState::Absent) => true,
-                        _ => false,
-                    };
-                    let effect=if !trusted || result.detection==wire::SoftwareDetectionState::Unknown {
+                    let target_context=spec.steps.iter().all(|step|step.action.execution_target(spec.platform,input.execution_context()).is_ok_and(|current|current==step.target));
+                    let trusted=allowed && target_context && (run.state.trusts_result(now,plan.timeout_seconds()) || late_detection);
+                    let matches_intent=result.steps.iter().zip(&spec.steps).enumerate().all(|(index,(result,step))| {
+                        let intent=if index+1==spec.steps.len(){spec.intent}else{wire::SoftwareTaskIntent::Install};
+                        result.after.satisfies(intent,&step.action.detected_version())
+                    });
+                    let unknown=result.steps.iter().any(|step|step.after.is_unknown());
+                    let reboot=result.steps.iter().any(|step|step.reboot_required);
+                    let reboot_allowed=result.steps.iter().zip(&spec.steps).all(|(result,step)|!result.reboot_required||step.action.reboot==wire::SoftwareTaskReboot::Report);
+                    let effect=if !trusted || unknown {
                         run.state.uncertain_result(input.attempt_id())?;"unknown"
-                    } else if result.reboot_required {
+                    } else if reboot && reboot_allowed {
                         run.state.waiting_reboot(input.attempt_id())?;"waiting_reboot"
-                    } else if matches_intent {
+                    } else if matches_intent && !reboot {
                         run.state.result(input.attempt_id(),true)?;"verified"
                     } else {
                         run.state.result(input.attempt_id(),false)?;"failed"
                     };
                     let previous_effect=run.result.as_ref().and_then(|v|v["effect"].as_str()).map(str::to_owned);
+                    let evidence=checked_input(serde_json::to_value(result))?;
                     software_audit=Some(json!({"taskId":id,"attemptId":input.attempt_id(),"previousEffect":previous_effect,
-                        "effect":effect,"detection":result.detection,"definitionDigest":result.definition_digest,
-                        "evidenceDigest":result.evidence_digest,"rebootRequired":result.reboot_required}));
-                    run.result=Some(json!({"intent":result.intent,"installerExitCode":result.installer_exit_code,
-                        "detection":result.detection,"definitionDigest":result.definition_digest,
-                        "observedVersion":result.observed_version,"evidenceDigest":result.evidence_digest,
-                        "rebootRequired":result.reboot_required,
-                        "diagnostics":result.diagnostics,"effect":effect}));
+                        "effect":effect,"definitionDigest":result.definition_digest,"steps":result.steps}));
+                    run.result=Some(json!({"intent":result.intent,"definitionDigest":result.definition_digest,"evidence":evidence,"effect":effect}));
                 },
             }
             db::save_run(tx,&run).await?;let response=checked_input(serde_json::to_value(wire::TaskEventAck::new(permit,!allowed || run.state.cancellation!=Cancellation::None)))?;
@@ -292,7 +289,7 @@ impl ExecutionService {
                     let (index,local_key)=key.split_once('/').ok_or(Error::Malformed)?;
                     let index:usize=index.parse().map_err(|_|Error::Malformed)?;
                     let (platform, architecture) = db::agent_profile_in(service,tx, run.target.registration).await?.ok_or(Error::Forbidden)?;
-                    let steps=software.execution_steps_in(service,tx,platform,architecture).await?;
+                    let steps=software.execution_steps_in(service,tx,platform,architecture).await?.ok_or(Error::Forbidden)?;
                     let selected=steps.get(index).ok_or(Error::NotFound)?;
                     let variant = selected.version().resolve(selected.platform(),selected.architecture(),selected.variant()).map_err(|_| Error::Malformed)?;
                     let rss_mdm_resource::Declaration::Software { definition } = variant.declaration() else { return Err(Error::Malformed.into()); };

@@ -38,6 +38,7 @@ impl FrozenAction {
 /// Enterprise software input frozen at Policy publication, before per-device admission.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct FrozenSoftwareAction {
+    pub delivery: rss_mdm_policy::SoftwareDelivery,
     pub resource: String,
     pub version: String,
     pub variants: BTreeMap<rss_mdm_policy::SoftwareTarget, String>,

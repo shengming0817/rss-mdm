@@ -38,7 +38,7 @@ make ci-full
 | `software.{catalog,http}` | Catalog 借用事务和精确批准归 Software Service target；App 保留 DTO、授权及发布 HTTP 回执接缝。 |
 | `content.{http,mirror,gc}` | HTTP 流/Range/文件绑定、受控 HTTPS mirror、引用和 GC 同对象竞争；纯 ZIP/文件逻辑继续是 T1。 |
 | `planning.software`、`execution.software.{offer,content,recovery}` | rollout 时间/成功率门与执行版本归 Planning；安装/卸载交付、内容许可、检测、未知/重启/重试归 Execution。 |
-| `publication.{winget,brew,mapping,withdrawal,recovery,artifact}` | Software Service 验证外部发布、ring、持久意图和未知结果恢复；artifact-only 不启动 PG。 |
+| `publication.{winget,brew,mapping,withdrawal,recovery,artifact}` | Software Service 验证自托管发布、ring、持久意图和未知结果恢复；artifact-only 不启动 PG。 |
 | `planning.resource_archive` | 产品引用和 Resource archive 的同对象竞争，保留 App owner。 |
 | `sources.{winget,brew_git,brew_recovery}` | Sources 自有真实 HTTPS/TLS/凭据及 Git/ref/ACK 协议，无产品 PG/Identity。 |
 | `native.tls`、`windows.{issuance,enrollment,management,commands,retention,limits}` | TLS 生命周期、签发/注册、会话/nonce、轻量注册→命令、保留期和限流；删除两条完整 native 矩阵。 |

@@ -19,6 +19,18 @@ pub async fn accept_for_device(
     target: &Target,
     now: i64,
 ) -> Result<()> {
+    let Some(binding) = crate::execution::channels::agent_binding_in(
+        tx,
+        service.agent_store.clone(),
+        target.registration,
+    )
+    .await?
+    else {
+        return Ok(());
+    };
+    if !policy.supported_in(service, tx, &binding).await? {
+        return Ok(());
+    }
     let Some((stage, _entry)) = policy.entry_in(tx, &target.device, now).await? else {
         return Ok(());
     };

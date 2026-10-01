@@ -42,44 +42,39 @@
       "$ref": "#/$defs/nonNilUuid"
     },
     "capabilities": {
-      "enum": [
-        [
-          "inventory.collect.v5"
-        ],
-        [
-          "inventory.collect.v5",
-          "task.execute.v5"
-        ],
-        [
-          "inventory.collect.v5",
-          "software.execute.v5"
-        ],
-        [
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "uniqueItems": true,
+      "prefixItems": [
+        {
+          "const": "inventory.collect.v5"
+        }
+      ],
+      "items": {
+        "enum": [
           "inventory.collect.v5",
           "task.execute.v5",
-          "software.execute.v5"
-        ],
-        [
-          "inventory.collect.v5",
-          "mdm.enrollment.v5"
-        ],
-        [
-          "inventory.collect.v5",
-          "task.execute.v5",
-          "mdm.enrollment.v5"
-        ],
-        [
-          "inventory.collect.v5",
-          "software.execute.v5",
-          "mdm.enrollment.v5"
-        ],
-        [
-          "inventory.collect.v5",
-          "task.execute.v5",
-          "software.execute.v5",
+          "software.msi.system.v5",
+          "software.msi.user.v5",
+          "software.pkg.system.v5",
+          "software.bundle.windows.system.v5",
+          "software.bundle.windows.user.v5",
+          "software.bundle.macos.system.v5",
+          "software.bundle.macos.user.v5",
+          "software.winget.system.v5",
+          "software.winget.user.v5",
+          "software.brew.bottle.user.v5",
+          "software.exe.system.v5",
+          "software.exe.user.v5",
+          "software.dmg.app.system.v5",
+          "software.dmg.app.user.v5",
+          "software.dmg.pkg.system.v5",
+          "software.msix.registration.user.v5",
+          "software.msix.provisioning.system.v5",
           "mdm.enrollment.v5"
         ]
-      ]
+      }
     },
     "collections": {
       "type": "array",

@@ -1,4 +1,4 @@
-//! Agent V4 ingress; request fields carry no tenant or registration authority.
+//! Agent V5 ingress; request fields carry no tenant or registration authority.
 use rss_mdm_authorization_service as authorization;
 use rss_mdm_flow_service::{Error, Failure};
 use rss_mdm_inventory_service::collection;
@@ -320,6 +320,7 @@ async fn register_on(
         &capabilities,
         input.platform(),
         input.architecture(),
+        input.execution_context(),
     )
     .await?;
     crate::enrollment::store::mark_bound_in(tx, proof.tenant_id(), auth, true).await?;
@@ -587,6 +588,7 @@ fn registration_digest(input: &wire::RegistrationRequest) -> String {
         input.password().expose(),
         input.credential().expose(),
         capabilities.as_str(),
+        &serde_json::to_string(input.execution_context()).expect("validated execution context"),
         match input.platform() {
             wire::TaskPlatform::Windows => "windows",
             wire::TaskPlatform::Macos => "macos",

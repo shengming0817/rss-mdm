@@ -148,7 +148,7 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
         .await?;
     ensure!(status == StatusCode::OK);
     let next_operation = uuid::Uuid::new_v4();
-    let next_registration = json!({"wireVersion":5,"operationId":next_operation,"enrollmentId":next_enrollment["enrollmentId"],"password":next_password,"credential":next_credential,"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v5"]});
+    let next_registration = json!({"wireVersion":5,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":next_operation,"enrollmentId":next_enrollment["enrollmentId"],"password":next_password,"credential":next_credential,"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v5"]});
     audit_store.inject_next_fault(rss_audit_postgres::PgFault::BeforeCommitPending);
     let rolled_back = agent_call(
         router,

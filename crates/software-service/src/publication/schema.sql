@@ -61,4 +61,6 @@ GRANT UPDATE(complete) ON mdm_software_composition.withdrawals TO mdm_software_d
 GRANT UPDATE(publication) ON mdm_software_composition.projections TO mdm_software_driver;
 GRANT DELETE ON mdm_software_composition.projections TO mdm_software_driver;
 GRANT USAGE ON SCHEMA mdm_access TO mdm_software_driver;
+GRANT USAGE ON SCHEMA mdm_software_composition,mdm_software_release TO mdm_command_runtime,mdm_flow_runtime;
+GRANT SELECT ON mdm_software_composition.subjects,mdm_software_composition.targets,mdm_software_composition.projections,mdm_software_release.aggregates TO mdm_command_runtime,mdm_flow_runtime;
 COMMIT;

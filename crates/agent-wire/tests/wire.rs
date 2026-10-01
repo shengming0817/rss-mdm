@@ -20,7 +20,8 @@ fn registration() -> Value {
         "password": secret(),
         "credential": secret(),
         "capabilities": ["inventory.collect.v5"],
-        "platform": "macos", "architecture": "aarch64"
+        "platform": "macos", "architecture": "aarch64",
+        "executionContext":{"revision":1,"osVersion":[14,0,0,0],"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false}
     })
 }
 
@@ -54,6 +55,15 @@ fn producers_construct_the_only_supported_shape() {
         vec![Capability::InventoryCollectionV5],
         TaskPlatform::Macos,
         TaskArchitecture::Aarch64,
+        rss_mdm_agent_wire::SoftwareExecutionContext {
+            revision: 1,
+            os_version: [14, 0, 0, 0],
+            system_broker: true,
+            interactive_user: None,
+            source_credentials: vec![],
+            msix_sideload: false,
+            msix_unsigned: false,
+        },
     )
     .unwrap();
     assert_eq!(serde_json::to_value(request).unwrap()["wireVersion"], 5);
@@ -66,6 +76,15 @@ fn producers_construct_the_only_supported_shape() {
             vec![Capability::InventoryCollectionV5],
             TaskPlatform::Macos,
             TaskArchitecture::Aarch64,
+            rss_mdm_agent_wire::SoftwareExecutionContext {
+                revision: 1,
+                os_version: [14, 0, 0, 0],
+                system_broker: true,
+                interactive_user: None,
+                source_credentials: vec![],
+                msix_sideload: false,
+                msix_unsigned: false
+            }
         ),
         Err(WireError::InvalidValue)
     ));
@@ -87,6 +106,15 @@ fn producers_construct_the_only_supported_shape() {
         vec![Capability::InventoryCollectionV5, Capability::TaskExecuteV5],
         TaskPlatform::Macos,
         TaskArchitecture::Aarch64,
+        rss_mdm_agent_wire::SoftwareExecutionContext {
+            revision: 1,
+            os_version: [14, 0, 0, 0],
+            system_broker: true,
+            interactive_user: None,
+            source_credentials: vec![],
+            msix_sideload: false,
+            msix_unsigned: false,
+        },
     )
     .unwrap();
     assert_eq!(
@@ -102,6 +130,15 @@ fn producers_construct_the_only_supported_shape() {
             vec![Capability::TaskExecuteV5],
             TaskPlatform::Macos,
             TaskArchitecture::Aarch64,
+            rss_mdm_agent_wire::SoftwareExecutionContext {
+                revision: 1,
+                os_version: [14, 0, 0, 0],
+                system_broker: true,
+                interactive_user: None,
+                source_credentials: vec![],
+                msix_sideload: false,
+                msix_unsigned: false
+            }
         )
         .is_err()
     );

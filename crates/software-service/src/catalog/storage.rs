@@ -1,6 +1,6 @@
 use super::*;
 use sqlx::Row;
-pub(super) async fn lock(tx: &mut PgTransaction<'_>) -> Result<()> {
+pub(crate) async fn lock(tx: &mut PgTransaction<'_>) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move |c| {
         Box::pin(async move {

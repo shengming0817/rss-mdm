@@ -769,6 +769,8 @@ AC-06-19-03　禁止公共回退的设备无法借错误源解析安装公共同
 
 ---
 
+当前后端以单一 Resource.Software 闭合行为提供 MSI/PKG/Bundle/WinGet/Brew/EXE/DMG/MSIX，导入保留固定来源原始证据与转换器版本，原生输出从批准的完整定义派生。WinGet 输出由 rss-mdm 公开只读托管，Brew 输出使用来源范围只读凭据与固定系统 Git upload-pack；只有批准并发布的材料可读取。目录批准不表示 OS 信任认证，MSIX 用户注册与设备 provisioning 分别核实。接口与操作矩阵见[软件指南](../guides/resources-and-software.md)。终端执行由 #2587、可信接线由 #2564 承接；Windows 原生 WinGet 消费与真实安装证据未齐备前，不宣称对应产品组合已验收。
+
 # 06.20　WMD-BRW：Homebrew 私有仓库与执行器
 
 目标：在 macOS 上复用 Homebrew 的 Formula/Cask/Bottle 生态，以 Agent 统一执行和回执；不是开发替代 Homebrew 的包管理器。

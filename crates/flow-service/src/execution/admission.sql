@@ -2,6 +2,7 @@ WITH tables AS (
  SELECT c.* FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_commands' AND c.relkind='r'
 ), update_columns(relation, col) AS (VALUES
  ('mdm_windows.collections','channel_state'),
+ ('mdm_agent.bindings','execution_context'),
  ('mdm_planning.remote_operations','staged'),('mdm_planning.remote_operations','cursor'),('mdm_planning.remote_operations','run_after'),
  ('mdm_commands.policy_recovery','target_after'),('mdm_commands.policy_recovery','recovery_after'),('mdm_commands.action_polls','policy_after'),
  ('mdm_planning.configuration_claims','version'),('mdm_planning.configuration_claims','operation'),
@@ -31,6 +32,7 @@ WITH tables AS (
 ), allowed(relation,sel,ins,del) AS (VALUES
  ('mdm.inventory',true,false,false),
  ('mdm.field_versions',true,false,false),('mdm.collection_definitions',true,true,false),('mdm.collection_results',true,true,false),
+ ('mdm_software_composition.subjects',true,false,false),('mdm_software_composition.targets',true,false,false),('mdm_software_composition.projections',true,false,false),('mdm_software_release.aggregates',true,false,false),
  ('mdm_planning.remote_operations',true,false,false),('mdm_planning.remote_operation_targets',true,true,false),('mdm_commands.policy_recovery',true,true,false),('mdm_policy.policies',true,false,false),('mdm_policy.versions',true,false,false),('mdm_policy.triggers',true,false,false),('mdm_planning.configuration_claims',true,true,true),('mdm_planning.configuration_devices',true,true,false),
  ('mdm_commands.output_chunks',true,true,false),('mdm_commands.action_polls',true,true,false),('mdm_commands.action_runs',true,true,false),('mdm_commands.action_receipts',true,true,false),('mdm_commands.action_attempts',true,true,false),('mdm_resource.aggregates',true,false,false),('mdm_resource.immutable',true,false,false),('mdm_agent.bindings',true,false,false),
  ('mdm_planning.scopes',true,false,false),('mdm_planning.scope_results',true,false,false),

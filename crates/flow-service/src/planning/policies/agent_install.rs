@@ -205,7 +205,7 @@ impl Policies {
             let spec = definition.spec();
             let artifact = spec
                 .artifacts
-                .get(&spec.primary)
+                .get(spec.behavior.installer())
                 .ok_or(Error::Malformed)?
                 .clone();
             checked_input(artifact.artifact())?;
@@ -214,41 +214,36 @@ impl Policies {
                 || artifact.sha256 != pin.sha256
                 || spec.artifacts.len() != 1
                 || !spec.dependencies.is_empty()
-                || spec.bundle.is_some()
+                || spec.behavior.bundle().is_some()
                 || spec.downgrade != resource::SoftwareDowngrade::Deny
-                || !spec.install.arguments.is_empty()
-                || !spec.install.environment.is_empty()
-                || spec.install.entry.is_some()
-                || spec.install.run_as != resource::RunAs::System
+                || !spec.behavior.invocation().arguments.is_empty()
+                || !spec.behavior.invocation().environment.is_empty()
+                || spec.behavior.invocation().run_as != resource::RunAs::System
             {
                 return Err(Error::Unsupported.into());
             }
-            let exact = match (
-                &pin.identity,
-                &spec.detect,
-                spec.format,
-                spec.install.executor,
-            ) {
-                (
-                    Identity::Windows { product, .. },
-                    resource::SoftwareDetection::MsiProduct {
-                        product_code,
-                        version,
-                    },
-                    resource::SoftwareFormat::Msi,
-                    resource::SoftwareExecutor::Msi,
-                ) => {
-                    Uuid::parse_str(product_code).ok() == Some(*product) && version == &pin.version
+            let exact = match (&pin.identity, &spec.behavior) {
+                (Identity::Windows { product, .. }, resource::SoftwareBehavior::Msi(native)) => {
+                    match &native.detect {
+                        resource::SoftwareDetection::MsiProduct {
+                            product_code,
+                            version,
+                        } => {
+                            Uuid::parse_str(product_code).ok() == Some(*product)
+                                && version == &pin.version
+                        }
+                        _ => false,
+                    }
                 }
-                (
-                    Identity::Macos { receipt, .. },
-                    resource::SoftwareDetection::PkgReceipt {
-                        receipt: actual,
-                        version,
-                    },
-                    resource::SoftwareFormat::Pkg,
-                    resource::SoftwareExecutor::PackageInstaller,
-                ) => actual == receipt && version == &pin.version,
+                (Identity::Macos { receipt, .. }, resource::SoftwareBehavior::Pkg(native)) => {
+                    match &native.detect {
+                        resource::SoftwareDetection::PkgReceipt {
+                            receipt: actual,
+                            version,
+                        } => actual == receipt && version == &pin.version,
+                        _ => false,
+                    }
+                }
                 _ => false,
             };
             if !exact {

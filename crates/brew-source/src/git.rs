@@ -1,3 +1,8 @@
+enum ChangeMode {
+    Publish,
+    Remove,
+    Snapshot,
+}
 use crate::*;
 use rss_contract::Timepoint;
 use std::{
@@ -62,6 +67,7 @@ impl Snapshot {
 /// Prepared local commit bound to the exact repository, tenant, tap and original base.
 /// Retain it for [`Repository::apply`] retries and reconciliation; preparation is not publication.
 pub struct Prepared {
+    snapshot: bool,
     repository: PathBuf,
     tenant: TenantId,
     tap: String,
@@ -182,7 +188,7 @@ impl Repository {
         operation: &str,
         at: Timepoint,
     ) -> Result<Prepared, Error> {
-        self.prepare_change(base, document, operation, at, false)
+        self.prepare_change(base, document, vec![], operation, at, ChangeMode::Publish)
             .await
     }
     /// Prepare removal after [`Self::read`] verifies exact document bytes at `base`.
@@ -197,18 +203,106 @@ impl Repository {
         at: Timepoint,
     ) -> Result<Prepared, Error> {
         self.read(&base, &document).await?;
-        self.prepare_change(Some(base), document, operation, at, true)
+        self.prepare_change(
+            Some(base),
+            document,
+            vec![],
+            operation,
+            at,
+            ChangeMode::Remove,
+        )
+        .await
+    }
+    /// Prepare an isolated immutable Tap tree containing exactly the supplied documents.
+    /// The current main is only a CAS token; no parent or previous tree is exposed.
+    pub async fn prepare_snapshot(
+        &self,
+        base: Option<CommitId>,
+        mut documents: Vec<Document>,
+        operation: &str,
+        at: Timepoint,
+    ) -> Result<Prepared, Error> {
+        if documents.is_empty()
+            || documents.len() > 256
+            || documents.iter().map(|d| d.bytes().len()).sum::<usize>() > 16 * 1024 * 1024
+        {
+            return Err(Error::BudgetExceeded);
+        }
+        documents.sort_by(|a, b| a.path().cmp(b.path()));
+        if documents.windows(2).any(|w| w[0].path() == w[1].path()) {
+            return Err(Error::Duplicate);
+        }
+        let document = documents.remove(0);
+        self.prepare_change(
+            base,
+            document,
+            documents,
+            operation,
+            at,
+            ChangeMode::Snapshot,
+        )
+        .await
+    }
+    /// Inspect the exact immutable snapshot reference; no main/history fallback.
+    pub async fn snapshot_exists(&self, target: &CommitId) -> Result<bool, Error> {
+        let reference = format!("refs/namespaces/{}/refs/heads/main", target.as_str());
+        match self
+            .run(
+                &["rev-parse", "--verify", "--quiet", &reference],
+                None,
+                None,
+                None,
+            )
             .await
+        {
+            Ok(bytes) => Ok(output_id(&bytes)? == *target),
+            Err(Error::GitFailure {
+                exit_code: Some(1), ..
+            }) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+    /// Revoke only the exact snapshot reference, preserving later publications.
+    /// A failed acknowledgement is resolved against the same original reference.
+    pub async fn withdraw_snapshot(&self, target: &CommitId) -> Result<(), Error> {
+        if !self.snapshot_exists(target).await? {
+            return Ok(());
+        }
+        let reference = format!("refs/namespaces/{}/refs/heads/main", target.as_str());
+        match self
+            .run(
+                &[
+                    "update-ref",
+                    "--no-deref",
+                    "-d",
+                    &reference,
+                    target.as_str(),
+                ],
+                None,
+                None,
+                None,
+            )
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(_) if !self.snapshot_exists(target).await? => Ok(()),
+            Err(_) => Err(Error::OutcomeUnknown),
+        }
     }
     async fn prepare_change(
         &self,
         base: Option<CommitId>,
         document: Document,
+        extra: Vec<Document>,
         operation: &str,
         at: Timepoint,
-        remove: bool,
+        mode: ChangeMode,
     ) -> Result<Prepared, Error> {
-        self.document(&document)?;
+        let remove = matches!(mode, ChangeMode::Remove);
+        let snapshot = matches!(mode, ChangeMode::Snapshot);
+        for doc in std::iter::once(&document).chain(extra.iter()) {
+            self.document(doc)?;
+        }
         token(operation)?;
         if let Some(b) = &base {
             self.commit(b).await?;
@@ -216,7 +310,7 @@ impl Repository {
         }
         let temp = tempfile::tempdir().map_err(|_| Error::Git)?;
         let index = temp.path().join("index");
-        if let Some(b) = &base {
+        if !snapshot && let Some(b) = &base {
             self.run(&["read-tree", b.as_str()], None, Some(&index), None)
                 .await?;
         } else {
@@ -236,34 +330,36 @@ impl Repository {
             )
             .await?;
         } else {
-            let blob = self
-                .run(
-                    &["hash-object", "-w", "--stdin"],
-                    Some(document.bytes()),
+            for document in std::iter::once(&document).chain(extra.iter()) {
+                let blob = self
+                    .run(
+                        &["hash-object", "-w", "--stdin"],
+                        Some(document.bytes()),
+                        None,
+                        None,
+                    )
+                    .await?;
+                let blob = output_id(&blob)?;
+                self.run(
+                    &[
+                        "update-index",
+                        "--add",
+                        "--cacheinfo",
+                        "100644",
+                        blob.as_str(),
+                        document.path(),
+                    ],
                     None,
+                    Some(&index),
                     None,
                 )
                 .await?;
-            let blob = output_id(&blob)?;
-            self.run(
-                &[
-                    "update-index",
-                    "--add",
-                    "--cacheinfo",
-                    "100644",
-                    blob.as_str(),
-                    document.path(),
-                ],
-                None,
-                Some(&index),
-                None,
-            )
-            .await?;
+            }
         }
         let tree = self.run(&["write-tree"], None, Some(&index), None).await?;
         let tree = output_id(&tree)?;
         let mut args = vec!["commit-tree", tree.as_str()];
-        if let Some(b) = &base {
+        if !snapshot && let Some(b) = &base {
             args.extend(["-p", b.as_str()]);
         }
         let message = format!(
@@ -278,6 +374,7 @@ impl Repository {
                 .await?,
         )?;
         Ok(Prepared {
+            snapshot,
             repository: self.path.clone(),
             tenant: self.tenant,
             tap: self.tap.clone(),
@@ -352,6 +449,9 @@ impl Repository {
         update: impl std::future::Future<Output = Result<Vec<u8>, Error>>,
     ) -> Result<PublishResult, Error> {
         self.prepared(p)?;
+        if p.snapshot && self.snapshot_exists(&p.target).await? {
+            return Ok(PublishResult::AlreadyApplied);
+        }
         let current = self.head().await?;
         if current.as_ref() == Some(&p.target) {
             return Ok(PublishResult::AlreadyApplied);
@@ -373,6 +473,22 @@ impl Repository {
             .base
             .as_ref()
             .map_or("0000000000000000000000000000000000000000", CommitId::as_str);
+        if p.snapshot {
+            let transaction = format!(
+                "start\nupdate refs/heads/main {} {old}\ncreate refs/namespaces/{}/refs/heads/main {}\nprepare\ncommit\n",
+                p.target.as_str(),
+                p.target.as_str(),
+                p.target.as_str()
+            );
+            return self
+                .run(
+                    &["update-ref", "--no-deref", "--stdin"],
+                    Some(transaction.as_bytes()),
+                    None,
+                    None,
+                )
+                .await;
+        }
         self.run(
             &[
                 "update-ref",
@@ -488,12 +604,46 @@ impl Repository {
             Err(e) => Err(e),
         }
     }
+    /// Bounded read-only smart-HTTP transport for one still-published immutable Tap.
+    /// Uses only upload-pack, an exact Git namespace and the repository bound at startup.
+    pub async fn upload_pack(
+        &self,
+        snapshot: &CommitId,
+        advertise: bool,
+        v2: bool,
+        input: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        if input.len() > 1024 * 1024 || (advertise && !input.is_empty()) {
+            return Err(Error::BudgetExceeded);
+        }
+        if !self.snapshot_exists(snapshot).await? {
+            return Err(Error::NotFound);
+        }
+        let path = self.path.to_str().ok_or(Error::PathDenied)?;
+        let mut args = vec!["upload-pack", "--strict", "--stateless-rpc"];
+        if advertise {
+            args.push("--advertise-refs");
+        }
+        args.push(path);
+        self.run_bounded(&args, Some(input), None, None, Some((snapshot, v2)))
+            .await
+    }
     async fn run(
         &self,
         args: &[&str],
         input: Option<&[u8]>,
         index: Option<&Path>,
         at: Option<Timepoint>,
+    ) -> Result<Vec<u8>, Error> {
+        self.run_bounded(args, input, index, at, None).await
+    }
+    async fn run_bounded(
+        &self,
+        args: &[&str],
+        input: Option<&[u8]>,
+        index: Option<&Path>,
+        at: Option<Timepoint>,
+        namespace: Option<(&CommitId, bool)>,
     ) -> Result<Vec<u8>, Error> {
         let stage = match args.first().copied() {
             Some("read-tree") => GitStage::ReadTree,
@@ -533,12 +683,32 @@ impl Repository {
                 "core.attributesFile=/dev/null",
                 "-c",
                 "commit.gpgsign=false",
+                "-c",
+                "uploadpack.allowTipSHA1InWant=false",
+                "-c",
+                "uploadpack.allowReachableSHA1InWant=false",
+                "-c",
+                "uploadpack.allowAnySHA1InWant=false",
+                "-c",
+                "uploadpack.allowRefInWant=false",
+                "-c",
+                "uploadpack.allowFilter=false",
             ])
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true);
+        let output_limit = if namespace.is_some() {
+            16 * 1024 * 1024 + 65536
+        } else {
+            MAX_DOCUMENT
+        };
+        if let Some((snapshot, v2)) = namespace {
+            command
+                .env("GIT_NAMESPACE", snapshot.as_str())
+                .env("GIT_PROTOCOL", if v2 { "version=2" } else { "version=1" });
+        }
         if let Some(index) = index {
             command.env("GIT_INDEX_FILE", index);
         }
@@ -565,11 +735,11 @@ impl Repository {
             let reader = async {
                 let mut out = Vec::new();
                 stdout
-                    .take((MAX_DOCUMENT + 1) as u64)
+                    .take((output_limit + 1) as u64)
                     .read_to_end(&mut out)
                     .await
                     .map_err(|_| failure)?;
-                if out.len() > MAX_DOCUMENT {
+                if out.len() > output_limit {
                     return Err(Error::BudgetExceeded);
                 }
                 Ok(out)

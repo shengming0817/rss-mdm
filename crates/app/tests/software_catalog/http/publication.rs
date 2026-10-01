@@ -1,418 +1,407 @@
-use crate::test_support::planning_http::*;
+mod brew;
+use crate::test_support::software::write;
+use crate::test_support::software_execution::{self as execution, Platform};
 use crate::test_support::*;
-use anyhow::Context;
-#[tokio::test]
+use sha2::{Digest, Sha256};
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=software.http"]
-async fn publication_http_authority_receipts_and_unknown_outcome() -> Result<()> {
-    let fixture = authority::Authority::open().await?;
-    let base = &fixture.base;
-    let reader = authority::reader(base).await?;
-    let session = &fixture.browser("other")?;
+async fn publication_http_authority_receipts_and_public_native_binding() -> Result<()> {
     let server = publication_support::Server::new().await;
-    let cfg = publication_http::configuration(base, &server);
-    let initial = app(&cfg, reader.clone()).await?;
-    let member = browser_subject(session, &initial).await?;
-    let publisher_grants = json!([
-        "group_read",
-        "group_write",
+    let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    let cfg = publication_http::configuration(&base, &server);
+    let mut local = execution::context(Platform::Windows);
+    local["interactiveUser"] = json!({"identity":"S-1-5-21-100-200-300-1001","sessionId":Uuid::new_v4(),"administrator":true});
+    let mut f = execution::Fixture::with_config(
+        Platform::Windows,
+        json!([
+            "inventory.collect.v5",
+            "software.msi.system.v5",
+            "software.winget.system.v5"
+        ]),
+        local.clone(),
+        cfg.clone(),
+    )
+    .await?;
+    let subject = browser_subject(&f.author, &f.router).await?;
+    let mut grants = crate::test_support::identity::device_grants(
+        None,
+        &[
+            "enrollment",
+            "inventory_read",
+            "software_deploy",
+            "operation_read",
+        ],
+    )?;
+    for name in [
         "resource_read",
         "resource_write",
+        "software_read",
+        "software_write",
+        "software_approve",
+        "software_withdraw",
+        "policy_read",
+        "policy_write",
+        "scope_read",
+        "scope_write",
         "release_read",
         "release_write",
         "release_validate",
         "release_publish",
         "release_recover",
-        "release_withdraw"
-    ]);
-    set_management_grants(&member, publisher_grants.clone()).await?;
-    let mut approver = Browser::default();
-    approver.login(&initial, "admin").await?;
-    let subject = approver
-        .call(&initial, Method::GET, "/api/v1/authorization", None)
-        .await?
-        .1["principalId"]
-        .clone();
-    set_management_grants(
-        subject.as_str().unwrap(),
-        json!(["release_read", "release_approve"]),
-    )
-    .await?;
-    set_management_grants(&member, publisher_grants.clone()).await?;
-    set_management_grants(
-        subject.as_str().unwrap(),
-        json!(["release_read", "release_approve"]),
-    )
-    .await?;
-    let router = app(&cfg, reader.clone()).await?;
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let address = listener.local_addr()?;
-    let hosted = router.clone();
-    let task = tokio::spawn(async move { axum::serve(listener, hosted).await });
-    let _server = Server(task);
-    let transport = Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(12))
-        .build()?;
-    let mut publisher = Browser {
-        network: Some((transport.clone(), format!("http://{address}"))),
-        ..Default::default()
-    };
-    approver = Browser {
-        network: Some((transport, format!("http://{address}"))),
-        ..approver
-    };
-    publisher.cookies = session.cookies.clone();
-    publisher.csrf = session.csrf.clone();
-    let resource = uuid::Uuid::new_v4();
+        "release_withdraw",
+    ] {
+        grants.push(crate::authorization::Grant {
+            operation: serde_json::from_value(json!(name))?,
+            scope: crate::authorization::Scope::Tenant,
+        });
+    }
+    crate::test_support::identity::set_grants(case_tenant(), &subject, grants).await?;
+    let stack = execution::worker_for(&serde_json::from_value(cfg)?, f.execution.clone()).await?;
+    let resource = Uuid::new_v4();
     let resource_path = format!("/api/v3/resources/{resource}");
-    let shared_operation = uuid::Uuid::new_v4();
-    let resource_request = json!({"operationId":shared_operation,"expectedRevision":0,"input":{"action":"create","kind":"software"}});
-    let (status, resource_receipt) = settled_write(
-        &mut publisher,
-        &router,
+    let bytes = b"frozen native MSI bytes";
+    let invocation = json!({"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}});
+    let definition = json!({"source":f.source_snapshot,"package":"Acme.App","version":"1.0","provenance":{"kind":"private"},"artifacts":{"package":{"reference":"installer","length":bytes.len(),"sha256":<[u8;32]>::from(Sha256::digest(bytes))}},"behavior":{"kind":"winget","installer":"package","scope":"system","install":invocation,"upgradeInvocation":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1.0"}},"signatures":[],"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"export":{"kind":"winget","locale":"en-US","name":"Acme App","publisher":"Acme","description":"Frozen enterprise application","license":"Proprietary"}});
+    write(
+        &mut f.author,
+        &f.router,
         &resource_path,
-        resource_request.clone(),
+        0,
+        json!({"action":"create","kind":"software"}),
     )
     .await?;
-    ensure!(status.is_success(), "resource identity: {resource_receipt}");
-    let shared_group = format!("/api/v2/groups/{}", uuid::Uuid::new_v4());
-    let group_request = json!({"operationId":shared_operation,"expectedRevision":0,"input":{"action":"create","name":"owner-scoped-operation","description":"","criteria":null}});
-    let (status, group_receipt) = settled_write(
-        &mut publisher,
-        &router,
-        &shared_group,
-        group_request.clone(),
+    write(&mut f.author,&f.router,&resource_path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":"windows","architecture":"x86_64","key":"default","declaration":{"kind":"software","definition":definition}}]})).await?;
+    execution::upload_windows(&f.author, &f.router, &resource_path, bytes).await?;
+    write(
+        &mut f.author,
+        &f.router,
+        &resource_path,
+        2,
+        json!({"action":"activate","version":"v1"}),
     )
     .await?;
-    ensure!(status.is_success(), "planning identity: {group_receipt}");
-    let shared_saved = format!("/api/v2/saved-queries/{}", uuid::Uuid::new_v4());
-    let saved_request = json!({"operationId":shared_operation,"expectedRevision":0,"input":{"action":"put","definition":{"name":"owner-scoped-operation","query":{}}}});
-    let (status, saved_receipt) = publisher
+    let admitted = write(
+        &mut f.author,
+        &f.router,
+        &format!("/api/v3/software/resources/{resource}/versions/v1"),
+        0,
+        json!({"action":"approve","evidence":["frozen enterprise materials"]}),
+    )
+    .await?;
+    let catalog = f
+        .author
         .call(
-            &router,
-            Method::PUT,
-            &shared_saved,
-            Some(saved_request.clone()),
+            &f.router,
+            Method::GET,
+            &format!("/api/v3/software/resources/{resource}/versions/v1"),
+            None,
         )
         .await?;
-    ensure!(status.is_success(), "assets identity: {saved_receipt}");
-    let variants=[("x86_64","x64"),("aarch64","arm64")].iter().map(|(arch,key)|json!({"platform":"windows","architecture":arch,"key":"msi.machine.no-id","declaration":{"kind":"software","definition":crate::publication_support::software_definition(&server.logical,"Acme.App","1",rss_mdm_resource::Platform::Windows,key)}})).collect::<Vec<_>>();
-    call(
-        &mut publisher,
-        &router,
-        &resource_path,
-        1,
-        json!({"action":"version","version":"v1","kind":"software","variants":variants}),
-    )
-    .await?;
     let path = format!(
         "/api/v1/software-sources/{}/candidates/{}",
         server.logical,
-        uuid::Uuid::new_v4()
+        Uuid::new_v4()
     );
-    let original_csrf = publisher.csrf.take();
-    for token in [None, Some("incorrect-token".to_owned())] {
-        publisher.csrf = token;
-        let blocked = uuid::Uuid::new_v4();
-        let response=publisher.call(&router,Method::POST,&path,Some(json!({"operationId":blocked,"expectedRevision":0,"input":{"action":"candidate","resource":resource,"version":"v1","expectedResourceRevision":2,"submission":server.winget_submission()}}))).await?;
-        ensure!(
-            response.0 == StatusCode::FORBIDDEN,
-            "publication accepted absent/incorrect csrf token"
-        );
-        ensure!(
-            pg(&format!(
-                "SELECT count(*) FROM mdm_publication.operations WHERE id='{blocked}'"
-            ))?
-            .trim()
-                == "0"
-        );
-    }
-    publisher.csrf = original_csrf;
-    let bad_operation = uuid::Uuid::new_v4();
-    let (bad_status,_)=publisher.call(&router,Method::POST,&path,Some(json!({"operationId":bad_operation,"expectedRevision":0,"input":{"action":"candidate","resource":"missing","version":"v1","expectedResourceRevision":1,"submission":server.winget_submission()}}))).await?;
-    ensure!(bad_status.is_client_error());
+    let input = json!({"action":"candidate","resource":resource,"version":"v1","expectedResourceRevision":3,"resourceDigest":catalog.1["resourceDigest"]});
+    let operation = Uuid::new_v4();
+    let request = json!({"operationId":operation,"expectedRevision":0,"input":input});
+    let mut old = request.clone();
+    old["input"]["document"] = json!({});
+    let malformed = Request::builder()
+        .method(Method::POST)
+        .uri(&path)
+        .header("host", "mdm.example.test")
+        .header("origin", "https://mdm.example.test")
+        .header("x-identity-request", "1")
+        .header("x-csrf-token", f.author.csrf.as_ref().unwrap())
+        .header(
+            "cookie",
+            f.author
+                .cookies
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&old)?))?;
     ensure!(
-        audit_count(|r| r.source() == "mdm.business"
-            && r.operation() == Some(bad_operation.to_string().as_str())
-            && r.result() == "success")?
-        .to_string()
-            == "0",
-        "failed publication intent claimed success"
+        f.router.clone().oneshot(malformed).await?.status() == StatusCode::UNPROCESSABLE_ENTITY,
+        "independent manifest input accepted"
     );
+    let csrf = f.author.csrf.take();
     ensure!(
-        audit_count(
-            |r| r.operation() == Some(bad_operation.to_string().as_str())
-                && r.result() == "unknown"
-                && r.status() == 202
-                && r.payload["software"]["stage"] == "management_admission"
-        )?
-        .to_string()
-            == "1"
-    );
-    let candidate_request = json!({"operationId":shared_operation,"expectedRevision":0,"input":{"action":"candidate","resource":resource,"version":"v1","expectedResourceRevision":2,"submission":server.winget_submission()}});
-    let (status, candidate) =
-        settled_write(&mut publisher, &router, &path, candidate_request.clone()).await?;
-    ensure!(status.is_success(), "publication identity: {candidate}");
-    ensure!(pg(&format!("SELECT (SELECT count(*) FROM mdm_resource_catalog.operations WHERE id='{shared_operation}')+(SELECT count(*) FROM mdm_assets.group_operations WHERE id='{shared_operation}')+(SELECT count(*) FROM mdm_assets.operations WHERE id='{shared_operation}')+(SELECT count(*) FROM mdm_publication.operations WHERE id='{shared_operation}')"))?.trim()=="4");
-    let event_count = audit_count(|r| {
-        r.source() == "mdm.business"
-            && matches!(r.action(), "management_write" | "software_preflight")
-            && r.operation() == Some(shared_operation.to_string().as_str())
-    })?;
-    ensure!(
-        event_count >= 4,
-        "each owner must retain an independent business event; found {event_count}"
-    );
-    for (method, route, request, expected) in [
-        (
-            Method::POST,
-            &resource_path,
-            resource_request,
-            &resource_receipt,
-        ),
-        (
-            Method::POST,
-            &shared_group,
-            group_request.clone(),
-            &group_receipt,
-        ),
-        (Method::PUT, &shared_saved, saved_request, &saved_receipt),
-        (Method::POST, &path, candidate_request, &candidate),
-    ] {
-        let replay = publisher
-            .call(&router, method, route, Some(request))
-            .await?;
-        ensure!(
-            replay.0.is_success() && &replay.1 == expected,
-            "owner replay {route}: {replay:?}"
-        );
-    }
-    ensure!(
-        audit_count(|r| r.source() == "mdm.business"
-            && matches!(r.action(), "management_write" | "software_preflight")
-            && r.operation() == Some(shared_operation.to_string().as_str()))?
-            == event_count
-    );
-    let mut conflict = group_request;
-    conflict["input"]["name"] = json!("different-request");
-    let rejected = publisher
-        .call(&router, Method::POST, &shared_group, Some(conflict))
-        .await?;
-    ensure!(
-        rejected.0 == StatusCode::CONFLICT,
-        "same-owner identity conflict: {rejected:?}"
-    );
-    let validated = call(
-        &mut publisher,
-        &router,
-        &path,
-        candidate["revision"].as_u64().unwrap(),
-        json!({"action":"validate","ring":"test"}),
-    )
-    .await?;
-    let approval = json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":validated["revision"],"input":{"action":"approve","ring":"test","publisherSubject":member}});
-    ensure!(
-        publisher
-            .call(&router, Method::POST, &path, Some(approval.clone()))
+        f.author
+            .call(&f.router, Method::POST, &path, Some(request.clone()))
             .await?
             .0
             == StatusCode::FORBIDDEN
     );
-    let (status, approved) = approver
-        .call(&router, Method::POST, &path, Some(approval))
+    f.author.csrf = csrf;
+    let candidate = f
+        .author
+        .call(&f.router, Method::POST, &path, Some(request.clone()))
         .await?;
-    ensure!(status == StatusCode::OK, "approve: {status} {approved}");
-    let authorized = call(
-        &mut publisher,
-        &router,
+    ensure!(candidate.0 == StatusCode::OK, "candidate: {candidate:?}");
+    let replay = f
+        .author
+        .call(&f.router, Method::POST, &path, Some(request))
+        .await?;
+    ensure!(
+        replay.0 == StatusCode::OK && replay.1 == candidate.1,
+        "candidate replay: {replay:?}"
+    );
+    let validated = write(
+        &mut f.author,
+        &f.router,
+        &path,
+        candidate.1["revision"].as_u64().unwrap(),
+        json!({"action":"validate","ring":"test"}),
+    )
+    .await?;
+    let mut approver = Browser::default();
+    ensure!(approver.login(&f.router, "admin").await? == StatusCode::OK);
+    let approver_subject = browser_subject(&approver, &f.router).await?;
+    let grants = ["release_read", "release_approve"]
+        .into_iter()
+        .map(|name| {
+            Ok(crate::authorization::Grant {
+                operation: serde_json::from_value(json!(name))?,
+                scope: crate::authorization::Scope::Tenant,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    crate::test_support::identity::set_grants(case_tenant(), &approver_subject, grants).await?;
+    let approved = write(
+        &mut approver,
+        &f.router,
+        &path,
+        validated["revision"].as_u64().unwrap(),
+        json!({"action":"approve","ring":"test","publisherSubject":subject}),
+    )
+    .await?;
+    let authorized = write(
+        &mut f.author,
+        &f.router,
         &path,
         approved["revision"].as_u64().unwrap(),
         json!({"action":"authorize","ring":"test"}),
     )
     .await?;
     let publication = &authorized["rings"][0]["publication"];
-    let request = json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":authorized["revision"],"input":{"action":"publish","ring":"test","publication":publication["id"],"attempt":publication["attempt"]}});
-    // Let revocation own Audit before publication starts. Hold its authorization
-    // lock until publication is visibly waiting on Audit, then release in lock order.
-    use sqlx::Connection;
-    let mut holder =
-        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
-            .await?;
-    let authorization_key = format!("{TENANT}:{INSTANCE}", TENANT = case_tenant());
-    sqlx::query("SELECT pg_advisory_lock(hashtextextended($1,2363))")
-        .bind(&authorization_key)
-        .execute(&mut holder)
-        .await?;
-    let posts_before = server.state.lock().unwrap().posts;
-    let mut delayed = publisher.clone();
-    let begin_publication = tokio::sync::Notify::new();
-    let release = async {
-        for (phase, query) in [
-            (
-                "revocation authorization lock",
-                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE usename='mdm_access' AND wait_event_type='Lock' AND query LIKE '%2363%')",
-            ),
-            (
-                "publication Audit lock",
-                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE usename='mdm_flow_runtime' AND wait_event_type='Lock' AND query LIKE '%rss_audit.reserve%')",
-            ),
-        ] {
-            tokio::time::timeout(Duration::from_secs(1), async {
-                loop {
-                    if sqlx::query_scalar::<_, bool>(query)
-                        .fetch_one(&mut holder)
-                        .await?
-                    {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(5)).await;
-                }
-                Ok::<_, sqlx::Error>(())
-            })
-            .await
-            .with_context(|| format!("missing barrier: {phase}"))??;
-            begin_publication.notify_one();
-        }
-        sqlx::query("SELECT pg_advisory_unlock(hashtextextended($1,2363))")
-            .bind(&authorization_key)
-            .execute(&mut holder)
-            .await?;
-        anyhow::Ok(())
+    let id = publication["id"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| format!("{:02x}", n.as_u64().unwrap()))
+        .collect::<String>();
+    let native = format!(
+        "/software/native/sources/{}/test/exports/{id}",
+        server.logical
+    );
+    let public = |method: Method, url: String, body: Body| {
+        Request::builder()
+            .method(method)
+            .uri(url)
+            .header("host", "mdm.example.test")
+            .header("Version", "1.0.0")
+            .header("content-type", "application/json")
+            .body(body)
     };
-    let (delayed, revoked, released) = tokio::join!(
-        async {
-            begin_publication.notified().await;
-            delayed
-                .call(&router, Method::POST, &path, Some(request.clone()))
-                .await
-        },
-        set_management_grants(&member, json!([])),
-        release,
-    );
-    released?;
-    holder.close().await?;
-    revoked?;
-    set_management_grants(&member, publisher_grants).await?;
     ensure!(
-        delayed?.0 == StatusCode::FORBIDDEN,
-        "delayed publication used revoked permission"
+        f.router
+            .clone()
+            .oneshot(public(
+                Method::GET,
+                format!("{native}/information"),
+                Body::empty()
+            )?)
+            .await?
+            .status()
+            == StatusCode::NOT_FOUND
     );
-    ensure!(
-        server.state.lock().unwrap().posts == posts_before,
-        "revoked publication reached source"
-    );
-    {
-        let mut state = server.state.lock().unwrap();
-        state.drop_post_response = true;
-        state.hidden_reads = 1;
+    let published=write(&mut f.author,&f.router,&path,authorized["revision"].as_u64().unwrap(),json!({"action":"publish","ring":"test","publication":publication["id"],"attempt":publication["attempt"]})).await?;
+    let info = f
+        .router
+        .clone()
+        .oneshot(public(
+            Method::GET,
+            format!("{native}/information"),
+            Body::empty(),
+        )?)
+        .await?;
+    ensure!(info.status() == StatusCode::OK);
+    ensure!(info.headers()["cache-control"] == "no-store");
+    let search = f
+        .router
+        .clone()
+        .oneshot(public(
+            Method::POST,
+            format!("{native}/manifestSearch"),
+            Body::from(serde_json::to_vec(
+                &json!({"Query":{"KeyWord":"Acme.App","MatchType":"Exact"}}),
+            )?),
+        )?)
+        .await?;
+    ensure!(search.status() == StatusCode::OK);
+    let search: Value = serde_json::from_slice(&search.into_body().collect().await?.to_bytes())?;
+    ensure!(search["Data"][0]["PackageIdentifier"] == "Acme.App");
+    for prefix in [
+        native.clone(),
+        format!("/software/native/sources/{}/test", server.logical),
+    ] {
+        let response = f
+            .router
+            .clone()
+            .oneshot(public(
+                Method::GET,
+                format!("{prefix}/packageManifests/Acme.App"),
+                Body::empty(),
+            )?)
+            .await?;
+        ensure!(
+            response.status() == StatusCode::OK,
+            "native exact ID request without Version: {}",
+            response.status()
+        );
+        let body: Value =
+            serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
+        ensure!(body["Data"]["Versions"][0]["PackageVersion"] == "1.0");
     }
-    let (unknown, _) = publisher
-        .call(&router, Method::POST, &path, Some(request.clone()))
+    let manifest = f
+        .router
+        .clone()
+        .oneshot(public(
+            Method::GET,
+            format!("{native}/packageManifests/Acme.App?Version=1.0"),
+            Body::empty(),
+        )?)
         .await?;
-    ensure!(
-        unknown == StatusCode::SERVICE_UNAVAILABLE,
-        "uncertain source result claimed HTTP success"
-    );
-    let operation = request["operationId"].as_str().unwrap();
-    ensure!(
-        audit_count(|r| r.operation() == Some(operation.to_string().as_str())
-            && r.action() == "management_write"
-            && r.result() == "unknown")?
-        .to_string()
-            == "1"
-    );
-    let (status, published) = publisher
-        .call(&router, Method::POST, &path, Some(request.clone()))
+    ensure!(manifest.status() == StatusCode::OK);
+    let manifest: Value =
+        serde_json::from_slice(&manifest.into_body().collect().await?.to_bytes())?;
+    let artifact = url::Url::parse(
+        manifest["Data"]["Versions"][0]["Installers"][0]["InstallerUrl"]
+            .as_str()
+            .unwrap(),
+    )?
+    .path()
+    .to_owned();
+    let served = f
+        .router
+        .clone()
+        .oneshot(public(Method::GET, artifact.clone(), Body::empty())?)
         .await?;
+    ensure!(served.status() == StatusCode::OK);
+    ensure!(served.into_body().collect().await?.to_bytes() == bytes.as_slice());
+    let policy = Uuid::new_v4();
+    let policy_path = format!("/api/v2/policies/{policy}");
+    write(&mut f.author,&f.router,&policy_path,0,json!({"action":"put","enabled":true,"definition":{"scope":f.scope,"action":{"kind":"software","resource":{"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"intent":"required_install","delivery":{"kind":"native","source":server.logical,"ring":"test"},"admissionOperation":admitted["admission"]["operation"],"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":f.scope,"opensAt":0}]}}}})).await?;
+    {
+        use sqlx::Connection;
+        let mut owner =
+            sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+                .await?;
+        sqlx::query("BEGIN").execute(&mut owner).await?;
+        let catalog_lock = format!("mdm-software:{}", case_tenant());
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+            .bind(&catalog_lock)
+            .execute(&mut owner)
+            .await?;
+        let probe_path = format!("/api/v2/policies/{policy}/devices");
+        let request = f.author.call(&f.router, Method::GET, &probe_path, None);
+        tokio::pin!(request);
+        tokio::select! {
+            response=&mut request=>anyhow::bail!("support query bypassed catalog gate: {response:?}"),
+            result=tokio::time::timeout(Duration::from_secs(10),async {
+                loop {
+                    let waiting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND NOT granted AND classid::bigint=((hashtextextended($1,0)>>32)&4294967295) AND objid::bigint=(hashtextextended($1,0)&4294967295))").bind(&catalog_lock).fetch_one(&mut owner).await?;
+                    if waiting {break anyhow::Ok(());}
+                    tokio::task::yield_now().await;
+                }
+            })=>result??,
+        }
+        let free: bool =
+            sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,2388))")
+                .bind(format!(
+                    "mdm_resource:{}:resource:{resource}",
+                    case_tenant()
+                ))
+                .fetch_one(&mut owner)
+                .await?;
+        sqlx::query("ROLLBACK").execute(&mut owner).await?;
+        let response = request.await?;
+        ensure!(
+            free,
+            "support query acquired Resource before software catalog lock"
+        );
+        ensure!(response.0 == StatusCode::OK, "support probe: {response:?}");
+        owner.close().await?;
+    }
+    let task = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let r = agent_call(
+                &f.router,
+                Method::POST,
+                "/api/agent/v5/tasks/claim",
+                Some(&f.credential),
+                Some(
+                    json!({"wireVersion":5,"executionContext":local,"operationId":Uuid::new_v4()}),
+                ),
+            )
+            .await?;
+            ensure!(r.0 == StatusCode::OK, "claim: {r:?}");
+            if !r.1["task"].is_null() {
+                break anyhow::Ok(r.1["task"].clone());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await??;
     ensure!(
-        status == StatusCode::OK && published["rings"][0]["publication"]["outcome"] == "published",
-        "publish: {status} {published}"
+        task["payload"]["steps"][0]["export"]["kind"] == "winget"
+            && task["payload"]["steps"][0]["export"]["uri"]
+                .as_str()
+                .unwrap()
+                .contains(&id),
+        "binding: {task}"
     );
-    let publication_operation = request["operationId"].as_str().unwrap().to_owned();
     ensure!(
-        audit_count(
-            |r| r.operation() == Some(publication_operation.to_string().as_str())
-                && r.action() == "management_write"
-                && r.result() == "success"
-        )?
-        .to_string()
-            == "1",
-        "first publication mislabeled as replay"
-    );
-    ensure!(
-        publisher
-            .call(&router, Method::POST, &path, Some(request))
+        execution::event_with(&f.router, &f.credential, &task, json!({"kind":"received"}))
             .await?
             .0
             == StatusCode::OK
     );
+    write(
+        &mut f.author,
+        &f.router,
+        &path,
+        published["revision"].as_u64().unwrap(),
+        json!({"action":"withdraw","ring":"test"}),
+    )
+    .await?;
     ensure!(
-        audit_count(|r| r.source() == "mdm.request"
-            && r.operation() == Some(publication_operation.to_string().as_str())
-            && r.action() == "management_write"
-            && r.result() == "replay")?
-        .to_string()
-            == "1",
-        "terminal retry was not audited as replay"
-    );
-    ensure!(
-        server.state.lock().unwrap().posts == 1,
-        "HTTP replay republished content"
-    );
-    ensure!(
-        audit_count(|r| r.action() == "software_approve"
-            && r.actor() == subject.as_str()
-            && r.payload["instance"] == INSTANCE)?
-        .to_string()
-            == "1",
-        "approval lost real actor"
-    );
-    let withdraw = json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":published["revision"],"input":{"action":"withdraw","ring":"pilot"}});
-    let (status, withdrawn) = publisher
-        .call(&router, Method::POST, &path, Some(withdraw.clone()))
-        .await?;
-    ensure!(
-        status == StatusCode::OK,
-        "unpublished withdrawal: {status} {withdrawn}"
-    );
-    let (status, _) = publisher
-        .call(&router, Method::POST, &path, Some(withdraw.clone()))
-        .await?;
-    ensure!(status == StatusCode::OK);
-    let operation = withdraw["operationId"].as_str().unwrap();
-    ensure!(
-        audit_count(|r| r.operation() == Some(operation.to_string().as_str())
-            && r.action() == "management_write"
-            && r.result() == "success")?
-        .to_string()
-            == "1",
-        "unpublished withdrawal replay was marked as performed"
-    );
-    ensure!(
-        audit_count(|r| r.source() == "mdm.request"
-            && r.operation() == Some(operation.to_string().as_str())
-            && r.action() == "management_write"
-            && r.result() == "replay")?
-        .to_string()
-            == "1"
-    );
-    let fresh = json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":withdrawn["revision"],"input":{"action":"withdraw","ring":"pilot"}});
-    ensure!(
-        publisher
-            .call(&router, Method::POST, &path, Some(fresh.clone()))
+        execution::event_with(&f.router, &f.credential, &task, json!({"kind":"start"}))
             .await?
             .0
-            == StatusCode::OK
+            == StatusCode::FORBIDDEN,
+        "withdrawn export started"
     );
-    let operation = fresh["operationId"].as_str().unwrap();
+    for url in [format!("{native}/information"), artifact] {
+        ensure!(
+            f.router
+                .clone()
+                .oneshot(public(Method::GET, url, Body::empty())?)
+                .await?
+                .status()
+                == StatusCode::NOT_FOUND
+        );
+    }
     ensure!(
-        audit_count(|r| r.operation() == Some(operation.to_string().as_str())
-            && r.action() == "management_write"
-            && r.result() == "success")?
-        .to_string()
-            == "1"
+        server.state.lock().unwrap().posts == 0 && server.state.lock().unwrap().deletes == 0,
+        "owned source used external writes"
     );
-    reader.close().await;
+    crate::test_support::stop_worker(stack).await?;
     Ok(())
 }

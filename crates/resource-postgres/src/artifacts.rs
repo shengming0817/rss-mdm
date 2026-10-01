@@ -16,7 +16,7 @@ pub(crate) async fn insert(tx: &mut PgTransaction<'_>, version: &Version) -> Res
         }
         match variant.declaration() {
             Declaration::Software { definition } => {
-                for artifact in definition.spec().artifacts.values() {
+                for artifact in definition.materials() {
                     artifacts.insert((artifact.sha256, artifact.length));
                 }
             }

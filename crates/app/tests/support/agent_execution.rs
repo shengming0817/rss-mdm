@@ -86,7 +86,7 @@ pub(crate) async fn task_event_request(
         };
         kind["diagnostics"] = json!({"stdout":"captured stdout","stderr":"captured stderr","durationMs":1,"executedAt":1,"failure":failure});
     }
-    agent_call(router,Method::POST,&format!("/api/agent/v5/tasks/{}/events",task["payload"]["taskId"].as_str().unwrap()),Some(case_credential()),Some(json!({"wireVersion":5,"operationId":operation,"attemptId":task["payload"]["attemptId"],"event":kind}))).await
+    agent_call(router,Method::POST,&format!("/api/agent/v5/tasks/{}/events",task["payload"]["taskId"].as_str().unwrap()),Some(case_credential()),Some(json!({"wireVersion":5,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":operation,"attemptId":task["payload"]["attemptId"],"event":kind}))).await
 }
 pub(crate) async fn claim_request(router: &Router, operation: Uuid) -> Result<(StatusCode, Value)> {
     agent_call(
@@ -94,7 +94,7 @@ pub(crate) async fn claim_request(router: &Router, operation: Uuid) -> Result<(S
         Method::POST,
         "/api/agent/v5/tasks/claim",
         Some(case_credential()),
-        Some(json!({"wireVersion":5,"operationId":operation,"profiles":["posix_sh","bash","power_shell7","osquery"]})),
+        Some(json!({"wireVersion":5,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":operation})),
     )
     .await
 }
@@ -222,7 +222,7 @@ impl Fixture {
         )
         .await?;
         author.operation = None;
-        let registration=agent_call(router,Method::POST,"/api/agent/v5/registrations",None,Some(json!({"wireVersion":5,"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_credential(),"platform":"macos","architecture":"aarch64","capabilities":capabilities}))).await?;
+        let registration=agent_call(router,Method::POST,"/api/agent/v5/registrations",None,Some(json!({"wireVersion":5,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_credential(),"platform":"macos","architecture":"aarch64","capabilities":capabilities}))).await?;
         ensure!(
             registration.0 == StatusCode::CREATED && registration.1["capabilities"] == capabilities,
             "task registration: {registration:?}"
@@ -295,6 +295,8 @@ pub(crate) async fn worker(base: &Value) -> Result<Option<rss_runtime::ShutdownS
     let service = crate::flow::execution::open(
         &config,
         crate::test_support::identity::audit_store(&config).await?,
+        crate::flow::execution::open_content(&config)?,
+        std::collections::BTreeMap::new(),
     )
     .await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(

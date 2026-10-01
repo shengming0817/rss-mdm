@@ -11,7 +11,9 @@ CREATE TABLE mdm_agent.bindings (
     capabilities text NOT NULL,
     platform text NOT NULL,
     architecture text NOT NULL,
-    CONSTRAINT agent_binding_profile CHECK (((wire_version = 5) AND (capabilities = ANY (ARRAY['["inventory.collect.v5"]'::text, '["inventory.collect.v5","task.execute.v5"]'::text, '["inventory.collect.v5","software.execute.v5"]'::text, '["inventory.collect.v5","task.execute.v5","software.execute.v5"]'::text, '["inventory.collect.v5","mdm.enrollment.v5"]'::text, '["inventory.collect.v5","task.execute.v5","mdm.enrollment.v5"]'::text, '["inventory.collect.v5","software.execute.v5","mdm.enrollment.v5"]'::text, '["inventory.collect.v5","task.execute.v5","software.execute.v5","mdm.enrollment.v5"]'::text])))),
+    execution_context jsonb NOT NULL,
+    CONSTRAINT agent_execution_context CHECK (jsonb_typeof(execution_context)='object' AND (execution_context->>'revision')::bigint>0 AND octet_length(execution_context::text)<=8192),
+    CONSTRAINT agent_binding_profile CHECK (wire_version=5 AND capabilities ~ '^\["inventory\.collect\.v5"(,"task\.execute\.v5")?(,"software\.msi\.system\.v5")?(,"software\.msi\.user\.v5")?(,"software\.pkg\.system\.v5")?(,"software\.bundle\.windows\.system\.v5")?(,"software\.bundle\.windows\.user\.v5")?(,"software\.bundle\.macos\.system\.v5")?(,"software\.bundle\.macos\.user\.v5")?(,"software\.winget\.system\.v5")?(,"software\.winget\.user\.v5")?(,"software\.brew\.bottle\.user\.v5")?(,"software\.exe\.system\.v5")?(,"software\.exe\.user\.v5")?(,"software\.dmg\.app\.system\.v5")?(,"software\.dmg\.app\.user\.v5")?(,"software\.dmg\.pkg\.system\.v5")?(,"software\.msix\.registration\.user\.v5")?(,"software\.msix\.provisioning\.system\.v5")?(,"mdm\.enrollment\.v5")?\]$'),
     CONSTRAINT agent_bindings_architecture_check CHECK ((architecture = ANY (ARRAY['x86_64'::text, 'aarch64'::text]))),
     CONSTRAINT agent_bindings_platform_check CHECK ((platform = ANY (ARRAY['windows'::text, 'macos'::text])))
 );

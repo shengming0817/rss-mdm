@@ -2,7 +2,7 @@
 use super::{
     Error, InTransaction, Result,
     config::{Driver, Sources},
-    spec::Submission,
+    spec::ExportDocument,
 };
 use rss_contract::Timepoint;
 use rss_mdm_software_release as rel;
@@ -19,7 +19,7 @@ pub(super) struct Subject {
     pub resource_digest: [u8; 32],
     pub expected_resource_revision: u64,
     pub coordinate: String,
-    pub submission: Submission,
+    pub document: ExportDocument,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -34,6 +34,7 @@ pub(super) struct Target {
     pub slot: String,
     pub base: Option<String>,
     pub commit: Option<String>,
+    pub snapshot: Option<String>,
     pub at: i64,
     pub commit_at: i64,
 }
@@ -105,6 +106,9 @@ pub(super) async fn lock(
     kind: &str,
     id: &str,
 ) -> std::result::Result<(), PgError> {
+    crate::catalog::storage::lock(tx)
+        .await
+        .map_err(|_| fault())?;
     let key = format!("mdm-software:{}:{kind}:{id}", tx.tenant_id());
     tx.with_connection(move |c| {
         Box::pin(async move {
@@ -917,30 +921,6 @@ const PROJECTION_SQL: &str = "SELECT publication FROM mdm_software_composition.p
 const PREPARE_WITHDRAWAL_SQL: &str = "INSERT INTO mdm_software_composition.targets(tenant_id,id,candidate,document,digest,withdrawal_id) SELECT $1::uuid,$2,$3,$4,$5,$2 WHERE EXISTS(SELECT 1 FROM mdm_software_composition.withdrawals WHERE tenant_id=$1::uuid AND id=$2 AND NOT complete)";
 const COMPLETE_NOOP_SQL: &str = "UPDATE mdm_software_composition.withdrawals w SET complete=true WHERE tenant_id=$1::uuid AND id=$2 AND NOT EXISTS(SELECT 1 FROM mdm_software_composition.targets t WHERE t.tenant_id=w.tenant_id AND t.id=w.id AND t.attempted)";
 
-const RESET_WITHDRAWAL_PREFLIGHT_SQL: &str = "UPDATE mdm_software_composition.targets SET attempted=false WHERE tenant_id=$1::uuid AND id=$2 AND attempted AND NOT acknowledged";
-pub(super) async fn reset_withdrawal_preflight(
-    tx: &mut PgTransaction<'_>,
-    key: &str,
-) -> std::result::Result<(), PgError> {
-    let (tenant, key) = (tx.tenant_id().to_string(), key.to_owned());
-    let changed = tx
-        .with_connection(move |c| {
-            Box::pin(async move {
-                sqlx::query(RESET_WITHDRAWAL_PREFLIGHT_SQL)
-                    .bind(tenant)
-                    .bind(key)
-                    .execute(c)
-                    .await
-                    .map(|r| r.rows_affected())
-            })
-        })
-        .await?;
-    if changed != 1 {
-        return Err(fault());
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod audit_tests {
     use super::*;
@@ -960,6 +940,7 @@ mod audit_tests {
             slot: "slot".into(),
             base: None,
             commit: None,
+            snapshot: None,
             at: 10,
             commit_at: 10,
         }

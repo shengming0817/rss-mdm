@@ -33,6 +33,7 @@ tokio = { workspace = true, features = ["time", "io-util"] }
 workspace = true
 
 [dev-dependencies]
+rss-mdm-content-service.workspace = true
 rss-audit-core.workspace = true
 
 rss-audit-postgres.workspace = true

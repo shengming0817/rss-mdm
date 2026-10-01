@@ -71,6 +71,8 @@ class Module:
             result.add('docker')
         if self.postgres or set(self.fixtures) & {'tls', 'windows', 'apple', 'scep', 'apns'}:
             result.add('openssl')
+        if 'homebrew' in self.fixtures:
+            result.add('brew')
         if 'git' in self.fixtures:
             result.add('/usr/bin/git')
         if set(self.fixtures) & {'scep', 'oracle'}:
@@ -576,7 +578,9 @@ MODULES['software.catalog'] = replace(MODULES['software.catalog'], db_mode='inst
     CasePolicy('transactions::source_receipts_follow_the_borrowed_transaction', 'reuse', 'tenant'),
 ))
 MODULES['software.http'] = replace(MODULES['software.http'], db_mode='reuse', scope='objects', policies=(
-    CasePolicy('software_catalog::t2::http::publication::publication_http_authority_receipts_and_unknown_outcome', 'reuse', 'tenant'),
+    CasePolicy('software_catalog::t2::http::imports::exact_rest_community_and_brew_imports_preserve_evidence_and_replay', 'fresh', 'objects', ('identity','tls')),
+    CasePolicy('software_catalog::t2::http::publication::brew::immutable_native_tap_is_consumed_by_git_and_homebrew_and_withdrawn', 'fresh', 'objects', ('identity','tls','git','homebrew')),
+    CasePolicy('software_catalog::t2::http::publication::publication_http_authority_receipts_and_public_native_binding', 'reuse', 'tenant', ('identity','tls','local_worker')),
 ))
 MODULES['content.http'] = replace(MODULES['content.http'], db_mode='fresh', scope='objects')
 MODULES['content.mirror'] = replace(MODULES['content.mirror'], db_mode='fresh', scope='objects')
@@ -882,6 +886,7 @@ MODULES['assets.group_input'] = replace(MODULES['assets.group_input'], support_i
 
 # Verified helper call sites. These edges select tests, never production consumers.
 APP_HELPER_CONSUMERS = {
+    'support/software_execution.rs': ('software.http','planning.software','execution.software.offer','execution.software.content','execution.software.recovery'),
     'support/software.rs': (
         'software.http','content.http','content.mirror','content.gc','planning.software',
         'execution.software.offer','execution.software.content','execution.software.recovery'),
@@ -977,7 +982,7 @@ def matches(path, patterns):
     return any(fnmatchcase(path, pattern) for pattern in patterns)
 
 
-T1_INPUTS = ('crates/authorization-service/tests/unit.rs','crates/inventory-service/tests/runtime.rs') + tuple(f'crates/{name}/tests/*' for name in (
+T1_INPUTS = ('crates/authorization-service/tests/unit.rs','crates/inventory-service/tests/runtime.rs','crates/flow-service/tests/software_publication_worker.rs') + tuple(f'crates/{name}/tests/*' for name in (
     'inventory', 'group', 'scope', 'policy', 'resource', 'software-release',
     'compliance', 'agent-wire', 'windows-mdm', 'apple-mdm', 'content-service')) + (
     'crates/app/tests/agent/unit.rs',
@@ -998,6 +1003,7 @@ T1_INPUTS = ('crates/authorization-service/tests/unit.rs','crates/inventory-serv
     'crates/app/tests/execution/model_unit.rs',
     'crates/app/tests/execution/recovery_unit.rs',
     'crates/app/tests/flow/unit.rs',
+    'crates/app/tests/config/publication_unit.rs',
     'crates/app/tests/identity/unit.rs',
     'crates/app/tests/lifecycle/unit.rs',
     'crates/app/tests/native/admission_unit.rs',
@@ -1071,3 +1077,4 @@ def select_paths(paths):
 MODULES['execution.commands.windows'] = replace(MODULES['execution.commands.windows'], production_inputs=(*MODULES['execution.commands.windows'].production_inputs, 'crates/flow-service/src/execution/directory.rs', 'crates/management-http/src/execution/http.rs'), support_inputs=(*MODULES['execution.commands.windows'].support_inputs, 'crates/app/tests/support/agent_execution.rs'))
 
 MODULES['windows.management'] = replace(MODULES['windows.management'], test_inputs=(*MODULES['windows.management'].test_inputs, 'crates/app/tests/windows/collection.rs'), production_inputs=(*MODULES['windows.management'].production_inputs, 'crates/windows-channel/src/template_collection.rs'))
+consume(("crates/software-service/tests/support/imports.rs",), "software.catalog")

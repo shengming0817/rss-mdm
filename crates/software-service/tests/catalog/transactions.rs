@@ -187,7 +187,7 @@ impl VerifiedContent for Content {
 }
 fn register() -> Operation<SourceChange> {
     serde_json::from_value(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"register","definition":{
-        "id":pg::case::name("private-fixture"),"revision":"1","kind":"private","location":null,"publishers":[]
+        "id":pg::case::name("private-fixture"),"revision":"1","protocol":{"kind":"private"}
     }}})).unwrap()
 }
 fn approve(revision: u64) -> Operation<VersionChange> {
@@ -367,6 +367,106 @@ async fn dependency_admission_uses_exact_current_approval() -> Result<()> {
             .await
             .is_err()
     );
+    fixture.runtime.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "MODULE=software.catalog: source conversion + Resource atomicity and original identity recovery"]
+async fn import_receipt_survives_unknown_commit_and_source_withdrawal() -> Result<()> {
+    use rss_mdm_software_service::imports::{self, ImportRequest};
+    let fixture = Fixture::open().await;
+    let mut source = crate::imported_fixture::source();
+    source.id = pg::case::name("private-fixture").to_owned();
+    fixture
+        .source(
+            &Operation {
+                operation_id: Uuid::new_v4(),
+                expected_revision: 0,
+                input: SourceChange::Register {
+                    definition: source.clone(),
+                },
+            },
+            false,
+        )
+        .await?;
+    fixture
+        .source(
+            &Operation {
+                operation_id: Uuid::new_v4(),
+                expected_revision: 1,
+                input: SourceChange::Approve {
+                    evidence: vec!["reviewed fixed community snapshot".into()],
+                },
+            },
+            false,
+        )
+        .await?;
+    let mut input = crate::imported_fixture::input();
+    input["source"] = json!(source.snapshot()?);
+    input["resource"] = json!(Uuid::new_v4().to_string());
+    let input: ImportRequest = serde_json::from_value(input)?;
+    let prepared = imports::prepare(
+        pg::tenant(),
+        &source,
+        &input,
+        &crate::imported_fixture::documents(),
+    )?;
+    let op = Operation {
+        operation_id: Uuid::new_v4(),
+        expected_revision: 0,
+        input,
+    };
+    let resources =
+        resource::ResourceStore::new(fixture.runtime.clone(), pg::tenant(), pg::deadline()).await?;
+    let audit = RequestAudit::new(pg::tenant().to_string(), "software_import");
+    audit.set_principal("operator", "catalog-fixture");
+    let run = |prepared| {
+        transaction(
+            &fixture.runtime,
+            (&fixture.catalog, &resources, &audit, &op, prepared),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (catalog, resources, audit, op, prepared) = *ctx;
+                    catalog.import_in(tx, resources, audit, op, prepared).await
+                })
+            },
+        )
+    };
+    fixture
+        .runtime
+        .inject_next_transaction_fault(PgTransactionFault::CommitUnknownAfterAck);
+    ensure!(run(Some(&prepared)).await.is_err());
+    let original = run(None).await?;
+    ensure!(original["resourceDigest"] == json!(prepared.version.digest().bytes()));
+    fixture
+        .source(
+            &Operation {
+                operation_id: Uuid::new_v4(),
+                expected_revision: 2,
+                input: SourceChange::Withdraw {
+                    evidence: vec!["source withdrawn".into()],
+                },
+            },
+            false,
+        )
+        .await?;
+    ensure!(run(None).await? == original);
+    let mut changed = op.clone();
+    changed.input.installer_length += 1;
+    ensure!(
+        transaction(
+            &fixture.runtime,
+            (&fixture.catalog, &resources, &audit, &changed, &prepared),
+            |ctx, tx| Box::pin(async move {
+                let (c, r, a, o, p) = *ctx;
+                c.import_in(tx, r, a, o, Some(p)).await
+            })
+        )
+        .await
+        .is_err()
+    );
+    audit.finalize(None);
     fixture.runtime.close().await;
     Ok(())
 }

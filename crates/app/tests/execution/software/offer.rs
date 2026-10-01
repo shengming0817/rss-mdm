@@ -1,3 +1,4 @@
+mod formats;
 use crate::test_support::software::write;
 use crate::test_support::software_execution::*;
 use crate::test_support::*;
@@ -5,8 +6,12 @@ use sqlx::Connection;
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.offer"]
 async fn required_available_and_uninstall_delivery() -> Result<()> {
-    let fixture = Fixture::approved(Platform::MacOs).await?;
-    let stack = worker(&fixture.base).await?;
+    let fixture = Fixture::approved(Platform::MacOs)
+        .await
+        .map_err(|e| anyhow::anyhow!("approved fixture: {e:#}"))?;
+    let stack = worker(&fixture.base, fixture.execution.content.clone())
+        .await
+        .map_err(|e| anyhow::anyhow!("software worker: {e:#}"))?;
     let router = fixture.router;
     let mut author = fixture.author;
     let bytes = fixture.bytes;
@@ -41,7 +46,12 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
         start.0 == StatusCode::OK && start.1["permit"]["payload"]["permit"] == "start",
         "start: {start:?}"
     );
-    let result=event(&router,&task,json!({"kind":"software_result","intent":"install","installerExitCode":0,"detection":"present","rebootRequired":false,"diagnostics":{"stdout":"","stderr":"","durationMs":1,"executedAt":1,"failure":null}})).await?;
+    let result = event(
+        &router,
+        &task,
+        result_event(&task, "install", Some(0), "present", false)?,
+    )
+    .await?;
     ensure!(result.0 == StatusCode::OK, "result: {result:?}");
     let status = author
         .call(
@@ -97,7 +107,7 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
     let repeated = agent(
         &router,
         "/api/agent/v5/tasks/claim",
-        Some(json!({"wireVersion":5,"operationId":Uuid::new_v4(),"profiles":["posix_sh","bash","power_shell7","osquery"]})),
+        Some(json!({"wireVersion":5,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(
@@ -165,7 +175,15 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
             == StatusCode::OK
     );
     ensure!(event(&router, &optional, json!({"kind":"start"})).await?.0 == StatusCode::OK);
-    ensure!(event(&router,&optional,json!({"kind":"software_result","intent":"install","installerExitCode":17,"detection":"present","rebootRequired":false,"diagnostics":{"stdout":"","stderr":"","durationMs":1,"executedAt":1,"failure":null}})).await?.0==StatusCode::OK);
+    ensure!(
+        event(
+            &router,
+            &optional,
+            result_event(&optional, "install", Some(17), "present", false)?
+        )
+        .await?
+        .0 == StatusCode::OK
+    );
     let optional_status = author
         .call(
             &router,
@@ -213,7 +231,15 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
             .0
             == StatusCode::OK
     );
-    ensure!(event(&router,&removal_task,json!({"kind":"software_result","intent":"uninstall","installerExitCode":0,"detection":"absent","rebootRequired":false,"diagnostics":{"stdout":"","stderr":"","durationMs":1,"executedAt":1,"failure":null}})).await?.0==StatusCode::OK);
+    ensure!(
+        event(
+            &router,
+            &removal_task,
+            result_event(&removal_task, "uninstall", Some(0), "absent", false)?
+        )
+        .await?
+        .0 == StatusCode::OK
+    );
     let removed = author
         .call(
             &router,
@@ -241,7 +267,9 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
 #[ignore = "make t2 MODULE=execution.software.offer"]
 async fn windows_variant_delivery_and_detection() -> Result<()> {
     let fixture = Fixture::approved(Platform::Windows).await?;
-    let stack = worker(&fixture.base).await?;
+    let stack = worker(&fixture.base, fixture.execution.content.clone())
+        .await
+        .map_err(|e| anyhow::anyhow!("software worker: {e:#}"))?;
     let router = fixture.router;
     let mut author = fixture.author;
     let resource = fixture.resource;
@@ -251,7 +279,7 @@ async fn windows_variant_delivery_and_detection() -> Result<()> {
     let windows_policy = Uuid::new_v4();
     write(&mut author,&router,&format!("/api/v2/policies/{windows_policy}"),0,json!({"action":"put","enabled":true,
         "definition":{"scope":windows_scope,
-        "action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"kind":"software","intent":"required_install","admissionOperation":first_operation,"runLifetimeSeconds":600,
+        "action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"kind":"software","intent":"required_install","delivery":{"kind":"direct"},"admissionOperation":first_operation,"runLifetimeSeconds":600,
         "rollout":{"stages":[{"scope":windows_scope,"opensAt":0}]}}}})).await?;
     let windows_page = author
         .call(
@@ -265,13 +293,13 @@ async fn windows_variant_delivery_and_detection() -> Result<()> {
         windows_page.1["items"][0]["taskAdmission"]["state"] == "eligible",
         "windows admission: {windows_page:?}"
     );
-    let windows_task = claim_with(&router, &windows_credential).await?;
+    let windows_task = claim_with(&router, &windows_credential, Platform::Windows).await?;
     ensure!(
         windows_task["payload"]["platform"] == "windows"
             && windows_task["payload"]["architecture"] == "x86_64"
             && windows_task["payload"]["steps"][0]["action"]["package"]
                 == "Private.WindowsDependency"
-            && windows_task["payload"]["steps"][1]["action"]["format"] == "msi",
+            && windows_task["payload"]["steps"][1]["action"]["behavior"]["kind"] == "msi",
         "windows variant: {windows_task}"
     );
     ensure!(
@@ -294,7 +322,16 @@ async fn windows_variant_delivery_and_detection() -> Result<()> {
         .await?
         .0 == StatusCode::OK
     );
-    ensure!(event_with(&router,&windows_credential,&windows_task,json!({"kind":"software_result","intent":"install","installerExitCode":0,"detection":"present","rebootRequired":false,"diagnostics":{"stdout":"","stderr":"","durationMs":1,"executedAt":1,"failure":null}})).await?.0==StatusCode::OK);
+    ensure!(
+        event_with(
+            &router,
+            &windows_credential,
+            &windows_task,
+            result_event(&windows_task, "install", Some(0), "present", false)?
+        )
+        .await?
+        .0 == StatusCode::OK
+    );
     let windows_rollout = author
         .call(
             &router,

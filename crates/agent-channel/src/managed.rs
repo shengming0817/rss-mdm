@@ -67,6 +67,7 @@ pub async fn register(
         &serde_json::to_string(&input.capabilities).map_err(|_| Error::Malformed)?,
         input.platform,
         input.architecture,
+        &input.execution_context,
     )
     .await?;
     let output = wire::RegistrationReceipt {

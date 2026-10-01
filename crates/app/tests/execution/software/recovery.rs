@@ -2,13 +2,12 @@ use crate::test_support::software::write;
 use crate::test_support::software_execution::case_device;
 use crate::test_support::software_execution::*;
 use crate::test_support::*;
-use sha2::{Digest, Sha256};
 use sqlx::Connection;
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn known_failure_has_bounded_retries() -> Result<()> {
     let fixture = Fixture::approved(Platform::MacOs).await?;
-    let stack = worker(&fixture.base).await?;
+    let stack = worker(&fixture.base, fixture.execution.content.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
     let first_operation = fixture.first_operation;
@@ -31,7 +30,15 @@ async fn known_failure_has_bounded_retries() -> Result<()> {
             .0
             == StatusCode::OK
     );
-    ensure!(event(&router,&failed_task,json!({"kind":"software_result","intent":"install","installerExitCode":1,"detection":"absent","rebootRequired":false,"diagnostics":{"stdout":"","stderr":"","durationMs":1,"executedAt":1,"failure":null}})).await?.0==StatusCode::OK);
+    ensure!(
+        event(
+            &router,
+            &failed_task,
+            result_event(&failed_task, "install", Some(1), "absent", false)?
+        )
+        .await?
+        .0 == StatusCode::OK
+    );
     let failed_detail = author
         .call(
             &router,
@@ -65,13 +72,21 @@ async fn known_failure_has_bounded_retries() -> Result<()> {
         let retry = claim(&router).await?;
         ensure!(event(&router, &retry, json!({"kind":"received"})).await?.0 == StatusCode::OK);
         ensure!(event(&router, &retry, json!({"kind":"start"})).await?.0 == StatusCode::OK);
-        ensure!(event(&router,&retry,json!({"kind":"software_result","intent":"install","installerExitCode":1,"detection":"absent","rebootRequired":false,"diagnostics":{"stdout":"","stderr":"","durationMs":1,"executedAt":1,"failure":null}})).await?.0==StatusCode::OK);
+        ensure!(
+            event(
+                &router,
+                &retry,
+                result_event(&retry, "install", Some(1), "absent", false)?
+            )
+            .await?
+            .0 == StatusCode::OK
+        );
         previous_failure = retry["payload"]["taskId"].as_str().unwrap().to_owned();
     }
     let exhausted = agent(
         &router,
         "/api/agent/v5/tasks/claim",
-        Some(json!({"wireVersion":5,"operationId":Uuid::new_v4(),"profiles":["posix_sh","bash","power_shell7","osquery"]})),
+        Some(json!({"wireVersion":5,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(
@@ -93,7 +108,7 @@ async fn known_failure_has_bounded_retries() -> Result<()> {
 #[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn reboot_waits_for_detection() -> Result<()> {
     let fixture = Fixture::approved(Platform::MacOs).await?;
-    let stack = worker(&fixture.base).await?;
+    let stack = worker(&fixture.base, fixture.execution.content.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
     let first_operation = fixture.first_operation;
@@ -116,7 +131,15 @@ async fn reboot_waits_for_detection() -> Result<()> {
             .0
             == StatusCode::OK
     );
-    ensure!(event(&router,&reboot_task,json!({"kind":"software_result","intent":"install","installerExitCode":0,"detection":"absent","rebootRequired":true,"diagnostics":{"stdout":"","stderr":"","durationMs":1,"executedAt":1,"failure":null}})).await?.0==StatusCode::OK);
+    ensure!(
+        event(
+            &router,
+            &reboot_task,
+            result_event(&reboot_task, "install", Some(0), "absent", true)?
+        )
+        .await?
+        .0 == StatusCode::OK
+    );
     let reboot_detail = author
         .call(
             &router,
@@ -135,14 +158,22 @@ async fn reboot_waits_for_detection() -> Result<()> {
     let reboot_retry = agent(
         &router,
         "/api/agent/v5/tasks/claim",
-        Some(json!({"wireVersion":5,"operationId":Uuid::new_v4(),"profiles":["posix_sh","bash","power_shell7","osquery"]})),
+        Some(json!({"wireVersion":5,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(
         reboot_retry.1["task"].is_null(),
         "reboot caused blind retry: {reboot_retry:?}"
     );
-    ensure!(event(&router,&reboot_task,json!({"kind":"software_result","intent":"install","installerExitCode":0,"detection":"present","rebootRequired":false,"diagnostics":{"stdout":"","stderr":"","durationMs":1,"executedAt":1,"failure":null}})).await?.0==StatusCode::OK);
+    ensure!(
+        event(
+            &router,
+            &reboot_task,
+            result_event(&reboot_task, "install", Some(0), "present", false)?
+        )
+        .await?
+        .0 == StatusCode::OK
+    );
     write(
         &mut author,
         &router,
@@ -158,7 +189,7 @@ async fn reboot_waits_for_detection() -> Result<()> {
 #[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn unknown_effect_survives_registration_replacement() -> Result<()> {
     let fixture = Fixture::approved(Platform::MacOs).await?;
-    let stack = worker(&fixture.base).await?;
+    let stack = worker(&fixture.base, fixture.execution.content.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
     let first_operation = fixture.first_operation;
@@ -180,7 +211,15 @@ async fn unknown_effect_survives_registration_replacement() -> Result<()> {
             .0
             == StatusCode::OK
     );
-    ensure!(event(&router,&unknown_task,json!({"kind":"software_result","intent":"install","installerExitCode":null,"detection":"unknown","rebootRequired":false,"diagnostics":{"stdout":"","stderr":"","durationMs":1,"executedAt":1,"failure":null}})).await?.0==StatusCode::OK);
+    ensure!(
+        event(
+            &router,
+            &unknown_task,
+            result_event(&unknown_task, "install", None, "unknown", false)?
+        )
+        .await?
+        .0 == StatusCode::OK
+    );
     let next_password = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI";
     let next_credential = &crate::test_support::credential("replacement");
     author.operation = Some(Uuid::new_v4());
@@ -199,7 +238,7 @@ async fn unknown_effect_survives_registration_replacement() -> Result<()> {
         "replacement enrollment: {next_enrollment:?}"
     );
     author.operation = None;
-    let next_registration=agent_call(&router,Method::POST,"/api/agent/v5/registrations",None,Some(json!({"wireVersion":5,"operationId":Uuid::new_v4(),"enrollmentId":next_enrollment.1["enrollmentId"],"password":next_password,"credential":next_credential,"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v5","software.execute.v5"]}))).await?;
+    let next_registration=agent_call(&router,Method::POST,"/api/agent/v5/registrations",None,Some(json!({"wireVersion":5,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":Uuid::new_v4(),"enrollmentId":next_enrollment.1["enrollmentId"],"password":next_password,"credential":next_credential,"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v5","software.pkg.system.v5"]}))).await?;
     ensure!(
         next_registration.0 == StatusCode::CREATED,
         "replacement registration: {next_registration:?}"
@@ -209,7 +248,7 @@ async fn unknown_effect_survives_registration_replacement() -> Result<()> {
         Method::POST,
         "/api/agent/v5/tasks/claim",
         Some(next_credential),
-        Some(json!({"wireVersion":5,"operationId":Uuid::new_v4(),"profiles":["posix_sh","bash","power_shell7","osquery"]})),
+        Some(json!({"wireVersion":5,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(
@@ -223,7 +262,7 @@ async fn unknown_effect_survives_registration_replacement() -> Result<()> {
 #[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn unknown_result_replay_and_late_detection() -> Result<()> {
     let fixture = Fixture::approved(Platform::MacOs).await?;
-    let stack = worker(&fixture.base).await?;
+    let stack = worker(&fixture.base, fixture.execution.content.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
     let first_operation = fixture.first_operation;
@@ -245,11 +284,7 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
     ensure!(event(&router, &task, json!({"kind":"received"})).await?.0 == StatusCode::OK);
     ensure!(event(&router, &task, json!({"kind":"start"})).await?.0 == StatusCode::OK);
     let unknown_operation = Uuid::new_v4();
-    let unknown_request = json!({"wireVersion":5,"operationId":unknown_operation,"attemptId":task["payload"]["attemptId"],
-        "event":{"kind":"software_result","intent":"install","installerExitCode":0,"detection":"unknown","rebootRequired":false,
-            "definitionDigest":task["payload"]["definitionDigest"],"observedVersion":null,
-            "evidenceDigest":Sha256::digest(b"unknown detector evidence").to_vec(),
-            "diagnostics":{"stdout":"","stderr":"","durationMs":1,"executedAt":1,"failure":null}}});
+    let unknown_request = json!({"wireVersion":5,"executionContext":task["payload"]["executionContext"],"operationId":unknown_operation,"attemptId":task["payload"]["attemptId"],"event":result_event(&task,"install",Some(0),"unknown",false)?});
     let result = agent(
         &router,
         &format!(
@@ -287,7 +322,7 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
     let no_retry = agent(
         &router,
         "/api/agent/v5/tasks/claim",
-        Some(json!({"wireVersion":5,"operationId":Uuid::new_v4(),"profiles":["posix_sh","bash","power_shell7","osquery"]})),
+        Some(json!({"wireVersion":5,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(
@@ -297,7 +332,7 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
     let late = event(
         &router,
         &task,
-        json!({"kind":"software_result","intent":"install","installerExitCode":0,"detection":"present","rebootRequired":false,"diagnostics":{"stdout":"","stderr":"","durationMs":1,"executedAt":1,"failure":null}}),
+        result_event(&task, "install", Some(0), "present", false)?,
     )
     .await?;
     ensure!(late.0 == StatusCode::OK, "late detection: {late:?}");
@@ -312,6 +347,66 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
     ensure!(
         resolved.1["stages"][0]["unknown"] == 0 && resolved.1["stages"][0]["verifiedSuccess"] == 1,
         "late detection did not resolve unknown: {resolved:?}"
+    );
+    crate::test_support::stop_worker(stack).await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.software.recovery"]
+async fn withdrawn_software_does_not_poison_claims_for_other_policies_or_outside_scope()
+-> Result<()> {
+    let mut f = Fixture::approved(Platform::MacOs).await?;
+    let outside = prepared_scope(&f.base, &mut f.author, &f.router, &[]).await?;
+    let dependency = f
+        .author
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("/api/v3/software/resources/{}/versions/v1", f.dependency),
+            None,
+        )
+        .await?;
+    ensure!(dependency.0 == StatusCode::OK);
+    let approval = dependency.1["admission"]["operation"].clone();
+    let mut ids = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+    ids.sort();
+    for (policy, resource, scope, operation) in [
+        (ids[0], f.resource, f.scope, &f.first_operation),
+        (ids[1], f.resource, outside, &f.first_operation),
+        (ids[2], f.dependency, f.scope, &approval),
+    ] {
+        write(&mut f.author,&f.router,&format!("/api/v2/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":authored(resource,scope,"required_install",operation)})).await?;
+    }
+    write(
+        &mut f.author,
+        &f.router,
+        &format!("/api/v3/software/resources/{}/versions/v1", f.resource),
+        1,
+        json!({"action":"withdraw","evidence":["withdraw only the root"]}),
+    )
+    .await?;
+    let stack = worker(&f.base, f.execution.content.clone()).await?;
+    let task = claim(&f.router).await?;
+    ensure!(
+        task["payload"]["steps"].as_array().is_some_and(
+            |steps| steps.len() == 1 && steps[0]["action"]["package"] == "Private.Dependency"
+        ),
+        "withdrawal blocked unrelated valid policy: {task}"
+    );
+    let page = f
+        .author
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("/api/v2/policies/{}/devices", ids[0]),
+            None,
+        )
+        .await?;
+    ensure!(
+        page.0 == StatusCode::OK
+            && page.1["items"][0]["taskAdmission"]["state"] == "approval_withdrawn",
+        "withdrawal diagnosis: {page:?}"
     );
     crate::test_support::stop_worker(stack).await?;
     Ok(())

@@ -22,7 +22,7 @@ pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/agent-v5.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "015de99e660aa51c5adda5c9babbbafcc5fdeae9ef6f63d54e1fb79b42c58aea";
+    "bd3b2c18d590c7d168ae0ba05f2f4d634654751712c6eac093157e710c450c9e";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,20 +106,91 @@ pub enum Capability {
     /// Receive and execute signed task offers.
     #[serde(rename = "task.execute.v5")]
     TaskExecuteV5,
-    /// Execute approved enterprise software tasks.
-    #[serde(rename = "software.execute.v5")]
-    SoftwareExecuteV5,
+    /// Execute the exact software.msi.system.v5 profile.
+    #[serde(rename = "software.msi.system.v5")]
+    SoftwareMsiSystemV5,
+    /// Execute the exact software.msi.user.v5 profile.
+    #[serde(rename = "software.msi.user.v5")]
+    SoftwareMsiUserV5,
+    /// Execute the exact software.pkg.system.v5 profile.
+    #[serde(rename = "software.pkg.system.v5")]
+    SoftwarePkgSystemV5,
+    /// Execute the exact software.bundle.windows.system.v5 profile.
+    #[serde(rename = "software.bundle.windows.system.v5")]
+    SoftwareBundleWindowsSystemV5,
+    /// Execute the exact software.bundle.windows.user.v5 profile.
+    #[serde(rename = "software.bundle.windows.user.v5")]
+    SoftwareBundleWindowsUserV5,
+    /// Execute the exact software.bundle.macos.system.v5 profile.
+    #[serde(rename = "software.bundle.macos.system.v5")]
+    SoftwareBundleMacosSystemV5,
+    /// Execute the exact software.bundle.macos.user.v5 profile.
+    #[serde(rename = "software.bundle.macos.user.v5")]
+    SoftwareBundleMacosUserV5,
+    /// Execute the exact software.winget.system.v5 profile.
+    #[serde(rename = "software.winget.system.v5")]
+    SoftwareWingetSystemV5,
+    /// Execute the exact software.winget.user.v5 profile.
+    #[serde(rename = "software.winget.user.v5")]
+    SoftwareWingetUserV5,
+    /// Execute the exact software.brew.bottle.user.v5 profile.
+    #[serde(rename = "software.brew.bottle.user.v5")]
+    SoftwareBrewBottleUserV5,
+    /// Execute the exact software.exe.system.v5 profile.
+    #[serde(rename = "software.exe.system.v5")]
+    SoftwareExeSystemV5,
+    /// Execute the exact software.exe.user.v5 profile.
+    #[serde(rename = "software.exe.user.v5")]
+    SoftwareExeUserV5,
+    /// Execute the exact software.dmg.app.system.v5 profile.
+    #[serde(rename = "software.dmg.app.system.v5")]
+    SoftwareDmgAppSystemV5,
+    /// Execute the exact software.dmg.app.user.v5 profile.
+    #[serde(rename = "software.dmg.app.user.v5")]
+    SoftwareDmgAppUserV5,
+    /// Execute the exact software.dmg.pkg.system.v5 profile.
+    #[serde(rename = "software.dmg.pkg.system.v5")]
+    SoftwareDmgPkgSystemV5,
+    /// Execute the exact software.msix.registration.user.v5 profile.
+    #[serde(rename = "software.msix.registration.user.v5")]
+    SoftwareMsixRegistrationUserV5,
+    /// Execute the exact software.msix.provisioning.system.v5 profile.
+    #[serde(rename = "software.msix.provisioning.system.v5")]
+    SoftwareMsixProvisioningSystemV5,
     /// Open the standard MDM enrollment entry with OS/user approval.
     #[serde(rename = "mdm.enrollment.v5")]
     MdmEnrollmentV5,
 }
 impl Capability {
+    /// Software support always refers to one concrete native/script scope profile.
+    pub fn is_software(self) -> bool {
+        !matches!(
+            self,
+            Self::InventoryCollectionV5 | Self::TaskExecuteV5 | Self::MdmEnrollmentV5
+        )
+    }
     /// Canonical persisted and queryable capability identity.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::InventoryCollectionV5 => "inventory.collect.v5",
             Self::TaskExecuteV5 => "task.execute.v5",
-            Self::SoftwareExecuteV5 => "software.execute.v5",
+            Self::SoftwareMsiSystemV5 => "software.msi.system.v5",
+            Self::SoftwareMsiUserV5 => "software.msi.user.v5",
+            Self::SoftwarePkgSystemV5 => "software.pkg.system.v5",
+            Self::SoftwareBundleWindowsSystemV5 => "software.bundle.windows.system.v5",
+            Self::SoftwareBundleWindowsUserV5 => "software.bundle.windows.user.v5",
+            Self::SoftwareBundleMacosSystemV5 => "software.bundle.macos.system.v5",
+            Self::SoftwareBundleMacosUserV5 => "software.bundle.macos.user.v5",
+            Self::SoftwareWingetSystemV5 => "software.winget.system.v5",
+            Self::SoftwareWingetUserV5 => "software.winget.user.v5",
+            Self::SoftwareBrewBottleUserV5 => "software.brew.bottle.user.v5",
+            Self::SoftwareExeSystemV5 => "software.exe.system.v5",
+            Self::SoftwareExeUserV5 => "software.exe.user.v5",
+            Self::SoftwareDmgAppSystemV5 => "software.dmg.app.system.v5",
+            Self::SoftwareDmgAppUserV5 => "software.dmg.app.user.v5",
+            Self::SoftwareDmgPkgSystemV5 => "software.dmg.pkg.system.v5",
+            Self::SoftwareMsixRegistrationUserV5 => "software.msix.registration.user.v5",
+            Self::SoftwareMsixProvisioningSystemV5 => "software.msix.provisioning.system.v5",
             Self::MdmEnrollmentV5 => "mdm.enrollment.v5",
         }
     }
@@ -127,7 +198,7 @@ impl Capability {
 /// The only supported ordered capability sets for Agent V5.
 pub fn supported_capabilities(value: &[Capability]) -> bool {
     value.first() == Some(&Capability::InventoryCollectionV5)
-        && value.len() <= 4
+        && value.len() <= 20
         && value.windows(2).all(|pair| pair[0] < pair[1])
 }
 
@@ -145,6 +216,7 @@ pub struct RegistrationRequest {
     capabilities: Vec<Capability>,
     platform: TaskPlatform,
     architecture: TaskArchitecture,
+    execution_context: SoftwareExecutionContext,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -159,6 +231,7 @@ struct RawRegistrationRequest {
     capabilities: Vec<Capability>,
     platform: TaskPlatform,
     architecture: TaskArchitecture,
+    execution_context: SoftwareExecutionContext,
 }
 impl<'de> Deserialize<'de> for RegistrationRequest {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -174,6 +247,7 @@ impl<'de> Deserialize<'de> for RegistrationRequest {
             raw.capabilities,
             raw.platform,
             raw.architecture,
+            raw.execution_context,
         )
         .map_err(D::Error::custom)
     }
@@ -184,6 +258,10 @@ impl RegistrationRequest {
         decode_registration(body)
     }
     /// Construct one supported V5 registration capability profile.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "registration freezes distinct operation, enrollment, credential, hardware, profiles and context values"
+    )]
     pub fn new(
         operation_id: Uuid,
         enrollment_id: Uuid,
@@ -192,11 +270,13 @@ impl RegistrationRequest {
         capabilities: Vec<Capability>,
         platform: TaskPlatform,
         architecture: TaskArchitecture,
+        execution_context: SoftwareExecutionContext,
     ) -> Result<Self, WireError> {
         if operation_id.is_nil() || enrollment_id.is_nil() || !supported_capabilities(&capabilities)
         {
             return Err(WireError::InvalidValue);
         }
+        execution_context.validate_for(platform)?;
         Ok(Self {
             wire_version: WIRE_VERSION,
             operation_id,
@@ -206,6 +286,7 @@ impl RegistrationRequest {
             capabilities,
             platform,
             architecture,
+            execution_context,
         })
     }
     /// Stable retry identity selected by the Agent.
@@ -227,6 +308,10 @@ impl RegistrationRequest {
     /// Exact requested capabilities.
     pub fn capabilities(&self) -> &[Capability] {
         &self.capabilities
+    }
+    /// Complete current locally reported environment.
+    pub fn execution_context(&self) -> &SoftwareExecutionContext {
+        &self.execution_context
     }
     /// Target operating system asserted at enrollment and verified locally by the Agent.
     pub const fn platform(&self) -> TaskPlatform {

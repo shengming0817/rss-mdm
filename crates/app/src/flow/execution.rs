@@ -10,9 +10,32 @@ use rss_transactional_messaging_postgres::{
     PgConfig, PgError, PgOutboxStore, PgPassword, PgPrivateCa, PgRuntime,
 };
 use std::{sync::Arc, time::Duration};
+pub(crate) fn open_content(
+    config: &crate::config::Config,
+) -> std::result::Result<Option<Arc<rss_mdm_content_service::Store>>, Error> {
+    let tenant = TenantId::parse(&config.identity.tenant_id)
+        .map_err(|_| Error::Configuration(crate::ConfigIssue::Execution))?;
+    config
+        .content
+        .as_ref()
+        .map(|c| {
+            rss_mdm_content_service::Store::open(
+                c,
+                &tenant.to_string(),
+                Arc::new(crate::lifecycle::RuntimeTimer),
+            )
+        })
+        .transpose()
+        .map_err(Into::into)
+}
 pub(crate) async fn open(
     config: &crate::config::Config,
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
+    content: Option<Arc<rss_mdm_content_service::Store>>,
+    exports: std::collections::BTreeMap<
+        String,
+        Arc<rss_mdm_software_service::publication::PublicationService>,
+    >,
 ) -> std::result::Result<Arc<ExecutionService>, Error> {
     let bad = || Error::Configuration(crate::ConfigIssue::Execution);
     let database = &config.execution.database;
@@ -41,17 +64,6 @@ pub(crate) async fn open(
             .map_err(|_| Error::Unavailable(Failure::CommandStorage))?,
     );
     let result = async {
-        let content = config
-            .content
-            .as_ref()
-            .map(|c| {
-                rss_mdm_content_service::Store::open(
-                    c,
-                    &tenant.to_string(),
-                    Arc::new(crate::lifecycle::RuntimeTimer),
-                )
-            })
-            .transpose()?;
         crate::database::admit_audit_runtime(&runtime, &audit_store, tenant).await?;
         let outbox = Arc::new(
             PgOutboxStore::new(
@@ -119,6 +131,7 @@ pub(crate) async fn open(
         config.agent_installation.validate()?;
         config.enrollment_entries.validate()?;
         Ok(Arc::new(ExecutionService {
+            exports,
             agent_installation: config.agent_installation.clone(),
             enrollment_entries: config.enrollment_entries.clone(),
             agent_store: Arc::new(rss_mdm_agent_channel::Bindings),

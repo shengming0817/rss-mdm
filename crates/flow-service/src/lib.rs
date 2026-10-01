@@ -32,3 +32,7 @@ pub mod storage;
 /// Exact read-only execution authority required by native Agent registration.
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 pub const ACCESS_ADMISSION_SQL: &str = include_str!("access-admission.sql");
+
+#[cfg(test)]
+#[path = "../tests/software_publication.rs"]
+mod software_publication_contract;

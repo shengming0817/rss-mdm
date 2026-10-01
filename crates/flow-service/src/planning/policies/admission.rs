@@ -2,7 +2,7 @@
 use super::*;
 use crate::planning::action_contract::ScheduledInput;
 enum Authority {
-    Policy(Policy),
+    Policy(Box<Policy>),
     Remote(crate::planning::remote_operations::Remote),
 }
 pub struct ExecutionPolicy<T = FrozenAction> {
@@ -28,7 +28,7 @@ pub async fn read_in(
         active: policy.enabled && policy.version == id,
         frozen: *action,
         frequency,
-        authority: Authority::Policy(policy),
+        authority: Authority::Policy(Box::new(policy)),
     })
 }
 impl<T: ScheduledInput> ExecutionPolicy<T> {
@@ -143,7 +143,7 @@ pub async fn native_in(
         frozen: *action,
         frequency,
         active: policy.enabled && policy.version == id,
-        authority: Authority::Policy(policy),
+        authority: Authority::Policy(Box::new(policy)),
     })
 }
 pub async fn remote_native_in(

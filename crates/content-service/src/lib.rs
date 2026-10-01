@@ -4,6 +4,7 @@ mod range;
 pub use range::range;
 mod bundle;
 mod cleanup;
+mod native;
 pub use cleanup::Garbage;
 #[cfg(test)]
 #[path = "../tests/unit.rs"]
@@ -221,6 +222,33 @@ impl Store {
             std::time::Duration::from_secs(self.config.transfer_seconds),
         )
         .map_err(|_| storage())
+    }
+    /// Pin a bounded material set under one transfer permit until the caller settles its transaction.
+    pub async fn verify_materials(
+        self: &Arc<Self>,
+        artifacts: &[Artifact],
+    ) -> Result<Vec<Verified>, Error> {
+        if artifacts.is_empty() || artifacts.len() > 128 {
+            return Err(Error::Malformed);
+        }
+        let permit = self
+            .transfers
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| Error::Conflict)?;
+        let store = self.clone();
+        let artifacts = artifacts.to_vec();
+        let deadline = self.deadline()?;
+        tokio::task::spawn_blocking(move || {
+            let mut files = artifacts
+                .iter()
+                .map(|a| store.verify_sync(a, deadline))
+                .collect::<Result<Vec<_>, _>>()?;
+            files[0]._permit = Some(permit);
+            Ok(files)
+        })
+        .await
+        .map_err(|_| storage())?
     }
     pub async fn verify(self: &Arc<Self>, artifact: &Artifact) -> Result<Verified, Error> {
         let store = self.clone();

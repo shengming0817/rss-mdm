@@ -21,7 +21,7 @@ pub struct CandidateInput {
     pub resource: resource::Id,
     pub version: resource::Id,
     pub expected_resource_revision: u64,
-    pub submission: Submission,
+    pub resource_digest: [u8; 32],
     pub as_of: Timepoint,
 }
 #[derive(Clone)]
@@ -46,9 +46,10 @@ pub struct PublicationService {
     pub(super) runtime: Arc<PgRuntime>,
     pub(super) audit_store: Arc<dyn crate::AuditPort>,
     pub(super) resources: ResourceStore,
+    pub(super) catalog: crate::catalog::Catalog,
     pub(super) releases: ReleaseStore,
     pub(super) sources: Sources,
-    pub(super) artifacts: ArtifactReader,
+    pub(super) content: Arc<dyn crate::catalog::ContentPort>,
     pub(super) actors: ServiceIdentity,
 }
 impl PublicationService {
@@ -57,7 +58,6 @@ impl PublicationService {
         tenant: TenantId,
         logical_source: String,
         config: RingSources,
-        artifacts: ArtifactReader,
         actors: ServiceIdentity,
         cutoff: Deadline,
     ) -> Result<Self> {
@@ -65,6 +65,7 @@ impl PublicationService {
             runtime,
             audit: audit_store,
             credentials,
+            content,
         } = host;
         actors.check(tenant)?;
         let sources = tokio::time::timeout_at(
@@ -104,12 +105,13 @@ impl PublicationService {
                 .await,
         )?;
         Ok(Self {
+            catalog: crate::catalog::Catalog::new(runtime.clone(), tenant, audit_store.clone()),
             runtime,
             audit_store,
             resources,
             releases,
             sources,
-            artifacts,
+            content,
             actors,
         })
     }
@@ -123,11 +125,15 @@ impl PublicationService {
     ) -> Result<Option<rel::Candidate>> {
         Ok(self.releases.get(id, budget(cutoff)).await?)
     }
-    /// Public, credential-free submission retained with the immutable candidate.
+    /// Public, credential-free document retained with the immutable candidate.
     /// The product caller authorizes disclosure before invoking this reader.
-    pub async fn submission(&self, id: &rel::CandidateId, cutoff: Deadline) -> Result<Submission> {
+    pub async fn document(
+        &self,
+        id: &rel::CandidateId,
+        cutoff: Deadline,
+    ) -> Result<ExportDocument> {
         let (_, subject, _) = self.context(id, cutoff).await?;
-        Ok(subject.submission)
+        Ok(subject.document)
     }
     /// Returns the durable receipt and whether creation was already committed.
     pub async fn create_candidate(
@@ -146,7 +152,11 @@ impl PublicationService {
             .version(&input.resource, &input.version, budget(cutoff))
             .await?
             .ok_or(Error::Content)?;
-        let prepared = spec::prepare(&self.sources, &version, &input.submission)?;
+        if version.digest().bytes() != input.resource_digest {
+            return Err(Error::Content);
+        }
+        let dependencies = self.export_dependencies(&version, cutoff).await?;
+        let prepared = spec::prepare(&self.sources, &version, &dependencies)?;
         if self
             .releases
             .operation(&input.request, budget(cutoff))
@@ -167,7 +177,7 @@ impl PublicationService {
             resource_digest: version.digest().bytes(),
             expected_resource_revision: input.expected_resource_revision,
             coordinate: prepared.coordinate,
-            submission: prepared.submission,
+            document: prepared.document,
         };
         settle(
             self.runtime
@@ -181,6 +191,7 @@ impl PublicationService {
                                 .lock_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                            input!(s.catalog.lock_in(tx).await.map_err(|_| Error::Content));
                             tx.prepare_outbox_partitions(&[s
                                 .releases
                                 .partition(c.snapshot().id.value())?])
@@ -237,18 +248,7 @@ impl PublicationService {
                 true,
             )));
         }
-        let (v, state, revision) = input!(
-            self.resources
-                .lock_version_in(tx, &i.resource, &i.version)
-                .await?
-                .map_err(|cause| Error::Content.context("service::create_in", cause))
-        );
-        if v.digest().bytes() != subject.resource_digest
-            || revision != i.expected_resource_revision
-            || !matches!(state, resource::State::Frozen | resource::State::Active)
-        {
-            return Ok(Err(Error::Conflict));
-        }
+        let v = input!(self.candidate_resource_in(tx, i, subject).await?);
         let material = Sha256::digest(db::encode(&serde_json::json!([
             v.digest().bytes(),
             c.snapshot().content.manifest().bytes()
@@ -271,6 +271,37 @@ impl PublicationService {
             .await
             .map_err(rss_transactional_messaging_postgres::PgError::from)?;
         Ok(Ok((receipt, false)))
+    }
+    async fn candidate_resource_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        i: &CandidateInput,
+        subject: &Subject,
+    ) -> InTransaction<resource::Version> {
+        input!(
+            self.catalog
+                .lock_in(tx)
+                .await
+                .map_err(|cause| Error::Content.context("service::admission_lock", cause))
+        );
+        let (v, state, revision) = input!(
+            self.resources
+                .lock_version_in(tx, &i.resource, &i.version)
+                .await?
+                .map_err(|cause| Error::Content.context("service::create_in", cause))
+        );
+        if (v.digest().bytes(), revision) != (subject.resource_digest, i.expected_resource_revision)
+            || !matches!(state, resource::State::Frozen | resource::State::Active)
+        {
+            return Ok(Err(Error::Conflict));
+        }
+        input!(
+            self.catalog
+                .publication_admitted_in(tx, &v)
+                .await
+                .map_err(|cause| Error::Content.context("service::create_in", cause))
+        );
+        Ok(Ok(v))
     }
     async fn retired_owner(&self, tx: &mut PgTransaction<'_>, owner: &str) -> InTransaction<()> {
         let id = db::required(
@@ -500,6 +531,7 @@ impl PublicationService {
                                 .lock_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                            input!(s.catalog.lock_in(tx).await.map_err(|_| Error::Content));
                             tx.prepare_outbox_partitions(&[s
                                 .releases
                                 .partition(c.snapshot().id.value())?])
@@ -621,11 +653,12 @@ impl PublicationService {
             slot,
             base: state.cursor,
             commit: None,
+            snapshot: None,
             at: p.authorized_at.unix_seconds(),
             commit_at: p.authorized_at.unix_seconds(),
         };
-        if let Driver::Brew { repo, tap } = &binding.driver {
-            let Submission::Brew { recipe } = &subject.submission else {
+        if let Driver::Brew { repo, tap, .. } = &binding.driver {
+            let ExportDocument::Brew { recipe } = &subject.document else {
                 return Err(Error::Content);
             };
             if repo
@@ -645,15 +678,16 @@ impl PublicationService {
                 .transpose()
                 .map_err(|cause| Error::Content.context("service::prepare_target", cause))?;
             let prepared = repo
-                .prepare(
+                .prepare_snapshot(
                     base,
-                    recipe.render(self.tenant(), tap)?,
+                    recipe.documents(self.tenant(), tap)?,
                     &operation(&target),
                     p.authorized_at,
                 )
                 .await
                 .map_err(|cause| Error::Source.context("service::prepare_target", cause))?;
             target.commit = Some(prepared.target().as_str().into());
+            target.snapshot = target.commit.clone();
         }
         Ok(target)
     }
@@ -715,6 +749,7 @@ impl PublicationService {
                                 .lock_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                            input!(s.catalog.lock_in(tx).await.map_err(|_| Error::Content));
                             tx.prepare_outbox_partitions(&[s.releases.partition(id.value())?])
                                 .await?;
                             let transition = input!(
@@ -759,6 +794,7 @@ impl PublicationService {
                             .lock_in(tx)
                             .await
                             .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                        input!(s.catalog.lock_in(tx).await.map_err(|_| Error::Content));
                         let Some(c) = input!(s.releases.get_in(tx, id).await?.map_err(|cause| {
                             Error::Conflict.context("service::context", cause)
                         })) else {
@@ -783,16 +819,69 @@ impl PublicationService {
                 })
                 .await,
         )?;
-        let prepared = spec::prepare(&self.sources, &version, &subject.submission)?;
+        let dependencies = self.export_dependencies(&version, cutoff).await?;
+        let prepared = spec::prepare(&self.sources, &version, &dependencies)?;
+        if serde_json::to_vec(&prepared.document).map_err(|_| Error::Content)?
+            != serde_json::to_vec(&subject.document).map_err(|_| Error::Content)?
+        {
+            return Err(Error::Content);
+        }
         if prepared.content != c.snapshot().content || prepared.coordinate != subject.coordinate {
             return Err(Error::Content);
         }
         Ok((c, subject, prepared))
     }
+    pub(super) async fn export_dependencies(
+        &self,
+        root: &resource::Version,
+        cutoff: Deadline,
+    ) -> Result<Vec<resource::Version>> {
+        let mut pending = vec![root.clone()];
+        let mut seen = std::collections::BTreeMap::new();
+        while let Some(version) = pending.pop() {
+            for variant in version.variants() {
+                let resource::Declaration::Software { definition } = variant.declaration() else {
+                    return Err(Error::Content);
+                };
+                for dependency in &definition.spec().dependencies {
+                    let key = (dependency.resource.clone(), dependency.version.clone());
+                    if seen.get(&key).is_some_and(|v: &resource::Version| {
+                        v.digest().bytes() != dependency.sha256
+                    }) {
+                        return Err(Error::Content);
+                    }
+                    if seen.contains_key(&key) {
+                        continue;
+                    }
+                    if seen.len() >= 256 {
+                        return Err(Error::Content);
+                    }
+                    let child = self
+                        .resources
+                        .version(
+                            &resource::Id::new(&dependency.resource).map_err(|_| Error::Content)?,
+                            &resource::Id::new(&dependency.version).map_err(|_| Error::Content)?,
+                            budget(cutoff),
+                        )
+                        .await?
+                        .ok_or(Error::Content)?;
+                    if child.digest().bytes() != dependency.sha256 {
+                        return Err(Error::Content);
+                    }
+                    seen.insert(key, child.clone());
+                    pending.push(child);
+                }
+            }
+        }
+        Ok(seen.into_values().collect())
+    }
     pub(super) async fn verify(&self, p: &PreparedContent, cutoff: Deadline) -> Result<()> {
         tokio::time::timeout_at(cutoff.instant().into(), async {
-            for a in &p.artifacts {
-                self.artifacts.verify(&a.url, a.length, a.sha256).await?;
+            for resource in &p.resources {
+                self.content
+                    .verify(resource)
+                    .await
+                    .map_err(|_| Error::Content)?;
             }
             Ok(())
         })
@@ -812,9 +901,14 @@ impl PublicationService {
             "service::resource_usable",
             resource::Id::new(&subject.version),
         )?;
-        let (v, state, _) = input!(
-            self.resources
-                .lock_version_in(tx, &id, &version)
+        input!(
+            self.catalog
+                .lock_in(tx)
+                .await
+                .map_err(|cause| Error::Content.context("service::admission_lock", cause))
+        );
+        let (v, state) = input!(
+            rss_mdm_resource_postgres::lock_reference_in(tx, &id, &version)
                 .await?
                 .map_err(|cause| Error::Content.context("service::resource_usable", cause))
         );
@@ -823,6 +917,12 @@ impl PublicationService {
         {
             return Ok(Err(Error::Content));
         }
+        input!(
+            self.catalog
+                .publication_admitted_in(tx, &v)
+                .await
+                .map_err(|cause| Error::Content.context("service::resource_usable", cause))
+        );
         Ok(Ok(()))
     }
     pub(super) async fn transition_audited(
@@ -845,6 +945,7 @@ impl PublicationService {
                                 .lock_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                            input!(s.catalog.lock_in(tx).await.map_err(|_| Error::Content));
                             tx.prepare_outbox_partitions(&[s
                                 .releases
                                 .partition(c.snapshot().id.value())?])

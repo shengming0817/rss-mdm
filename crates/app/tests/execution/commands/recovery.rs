@@ -50,6 +50,8 @@ impl Client {
         let restarted = Box::pin(crate::flow::execution::open(
             &config,
             crate::test_support::identity::audit_store(&config).await?,
+            crate::flow::execution::open_content(&config)?,
+            std::collections::BTreeMap::new(),
         ))
         .await?;
         eprintln!("command T2: restarted runtime admitted");

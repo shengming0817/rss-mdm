@@ -190,6 +190,8 @@ impl Host {
             store
                 .audit_store(&crate::config::AuditConfig::Plain)
                 .await?,
+            crate::flow::execution::open_content(&config)?,
+            std::collections::BTreeMap::new(),
         )
         .await
         .map_err(|e| anyhow::anyhow!("command startup: {e:?}"))?;
@@ -587,6 +589,7 @@ async fn management(
                 .await?,
             tenant,
             Arc::new(crate::clock::SystemClock),
+            None,
             |_| {},
         )
         .await?;
