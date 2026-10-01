@@ -118,6 +118,7 @@ pub(crate) fn policy_definition(resource: Uuid, scope: Uuid) -> Value {
 }
 pub(crate) struct Fixture {
     pub(crate) base: Value,
+    pub(crate) builtin_collections: Vec<Value>,
     pub(crate) router: Router,
     pub(crate) execution: Arc<crate::execution::ExecutionService>,
     pub(crate) plan_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
@@ -193,6 +194,7 @@ impl Fixture {
         crate::test_support::identity::set_grants(case_tenant(), &author_id, grants.clone())
             .await?;
         Ok(Self {
+            builtin_collections: Vec::new(),
             base,
             router,
             execution,
@@ -225,6 +227,7 @@ impl Fixture {
             registration.0 == StatusCode::CREATED && registration.1["capabilities"] == capabilities,
             "task registration: {registration:?}"
         );
+        self.builtin_collections = registration.1["collections"].as_array().unwrap().clone();
         Ok(registration.1)
     }
     pub(crate) async fn scope(&mut self, scope: Uuid, targets: Value) -> Result<()> {

@@ -19,7 +19,7 @@ SCENARIOS = ('local_ui','account_ui','inventory','permissions','cookie_csrf','re
              'account_disabled','membership_removed','restart','isolation','enterprise','unknown_subject',
              'private_binding','idp_down','pg_down','installation_mismatch','safe_logs')
 PLAYWRIGHT_INTEGRITY='sha512-9bW6zvX/m0lEbgTKJ6YppOKx8H3VOPBMOCFh2irXFOT4BbHgrx5hPjwJYLT40Lu+4qtD36qKc/Hn56StUW57IA=='
-INVENTORY_GENERATION='inventory-v3'
+INVENTORY_GENERATION='inventory-v4'
 
 FAULT_SCENARIOS = {'restart','idp_down','pg_down','installation_mismatch'}
 
@@ -66,7 +66,14 @@ def enterprise(stack):
 
 def seed_inventory(stack):
     registration='99999999-9999-4999-8999-999999999991';epoch='99999999-9999-4999-8999-999999999992'
-    coverage=json.dumps(dict(id='device-basics',version='2',definition='model-os',format='typed-v2'),separators=(',',':'))
+    definition=dict(dataset='inventory',version='auth-fixture-v1',source='mdm.windows',fields=[dict(
+        key='device.model',version=1,valueType=dict(kind='string',maxLength=256,allowEmpty=False),
+        nullable=False,manual=False,sources={'mdm.windows':0},platforms=['windows'],
+        sensitivity='standard',unit=None,searchable=True,itemKey=None)])
+    document=json.dumps(definition,separators=(',',':'))
+    fingerprint=hashlib.sha256(document.encode()).hexdigest()
+    coverage=json.dumps(dict(id='inventory',version='auth-fixture-v1',definition=fingerprint,format='typed-fields-v2'),separators=(',',':'))
+    value=json.dumps(dict(kind='string',value='Model-2364'),separators=(',',':'))
     scope=json.dumps(dict(tenant=TENANT,object=registration,registration=registration,source='mdm.windows',dataset='inventory',epoch=epoch),separators=(',',':'))
     stack.sql(f"""
     BEGIN;
@@ -76,8 +83,9 @@ def seed_inventory(stack):
     INSERT INTO mdm_access.devices VALUES('{TENANT}','device-1');
     INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','device-1','mdm',1,'99999999-9999-4999-8999-999999999994','active');
     INSERT INTO mdm_access.credentials VALUES('{TENANT}','99999999-9999-4999-8999-999999999995','{registration}','mdm',repeat('a',64),'active');
-    INSERT INTO mdm_access.report_sources VALUES('{TENANT}','{registration}','mdm.windows','{epoch}','{coverage}',true);
-    INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch) VALUES('{TENANT}','mdm.observation.v1','{INVENTORY_GENERATION}','{scope}','{coverage}','device.model','Model-2364','synthetic-2364',1,2,'known','{registration}','mdm.windows','{epoch}');
+    INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES('{TENANT}','{registration}','mdm.windows','{epoch}',true);
+    INSERT INTO mdm.collection_definitions(tenant_id,dataset,version,source,fingerprint,coverage,definition) VALUES('{TENANT}','inventory','auth-fixture-v1','mdm.windows','{fingerprint}','{coverage}','{document}');
+    INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence) VALUES('{TENANT}','mdm.observation.v1','{INVENTORY_GENERATION}','{scope}','{coverage}','device.model','{value}','synthetic-2364',1,2,'known','{registration}','mdm.windows','{epoch}',0);
     COMMIT;
     """)
 

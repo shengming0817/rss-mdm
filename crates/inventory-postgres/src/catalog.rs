@@ -69,10 +69,9 @@ pub async fn publish_field_in(
         .map(|v| v as u64)
         .or_else(|| old.map(|f| f.version))
         .unwrap_or(0);
-    ensure!(
-        old.is_some() || latest.is_none(),
-        "retired field identity cannot be reused"
-    );
+    if old.is_none() && latest.is_some() {
+        return Ok(false);
+    }
     if actual != expected {
         return Ok(false);
     }

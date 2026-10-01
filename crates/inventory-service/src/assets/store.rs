@@ -165,7 +165,7 @@ impl AssetService {
                 if checked_input(serde_json::to_vec(definition))?.len() > 16384 {
                     return Err(Error::Malformed.into());
                 }
-                Some(definition.clone())
+                Some(definition.as_ref().clone())
             }
         };
         let tenant = self.tenant.to_string();

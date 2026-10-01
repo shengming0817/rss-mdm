@@ -469,10 +469,9 @@ impl ReportRequest {
         };
         if values.len() > 128
             || values.iter().any(|value| {
-                collection
+                !collection
                     .field(value.field)
                     .is_ok_and(|f| value.value.encode(f).is_ok())
-                    == false
             })
         {
             return Err(WireError::InvalidValue);

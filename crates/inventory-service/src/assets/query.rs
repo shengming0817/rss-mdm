@@ -68,7 +68,7 @@ impl AssetService {
                 tx,
                 task,
                 &JobInput::AssetQuery {
-                    query: q.clone(),
+                    query: Box::new(q.clone()),
                     scope: scope.clone(),
                     watermark,
                     as_of: at.unix_seconds(),

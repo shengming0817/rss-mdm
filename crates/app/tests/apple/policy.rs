@@ -227,9 +227,10 @@ impl Fixture {
             )
             .await?;
         ensure!(refused.0 == StatusCode::FORBIDDEN);
+        let (accepted, _) = peer.next("DeviceInformation").await?;
         ensure!(
-            peer.manage("Idle", None, None).await?.is_empty(),
-            "revoked approval dispatched native work"
+            accepted.to_string() == run,
+            "accepted collection changed after author permission update"
         );
         ensure!(self.operation(op).await?["authorization"] == "blocked");
         ensure!(

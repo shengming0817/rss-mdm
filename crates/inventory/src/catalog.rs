@@ -429,10 +429,10 @@ impl Catalog {
         for key in fields.keys() {
             let name = key.as_str();
             for (index, _) in name.match_indices('.') {
-                if let Ok(parent) = FieldKey::parse(&name[..index]) {
-                    if fields.contains_key(&parent) {
-                        return Err(Invalid::DuplicateField);
-                    }
+                if let Ok(parent) = FieldKey::parse(&name[..index])
+                    && fields.contains_key(&parent)
+                {
+                    return Err(Invalid::DuplicateField);
                 }
             }
         }

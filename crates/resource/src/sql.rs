@@ -271,10 +271,7 @@ impl Expressions {
             Expr::Value(v) => match &v.value {
                 Value::SingleQuotedString(s) if s.len() <= 4096 && !s.contains('\0') => (),
                 Value::Number(n, false)
-                    if n.len() <= 64 && n.parse::<f64>().is_ok_and(f64::is_finite) =>
-                {
-                    ()
-                }
+                    if n.len() <= 64 && n.parse::<f64>().is_ok_and(f64::is_finite) => {}
                 Value::Boolean(_) | Value::Null => (),
                 Value::Placeholder(p) => {
                     let name = p.strip_prefix(':').ok_or(Error::InvalidInput)?;
@@ -292,19 +289,19 @@ impl Expressions {
                 op: UnaryOperator::Not | UnaryOperator::Minus | UnaryOperator::Plus,
                 expr,
             } => self.check(expr, depth + 1)?,
-            Expr::BinaryOp { left, op, right }
-                if matches!(
-                    op,
+            Expr::BinaryOp {
+                left,
+                op:
                     BinaryOperator::Eq
-                        | BinaryOperator::NotEq
-                        | BinaryOperator::Lt
-                        | BinaryOperator::LtEq
-                        | BinaryOperator::Gt
-                        | BinaryOperator::GtEq
-                        | BinaryOperator::And
-                        | BinaryOperator::Or
-                ) =>
-            {
+                    | BinaryOperator::NotEq
+                    | BinaryOperator::Lt
+                    | BinaryOperator::LtEq
+                    | BinaryOperator::Gt
+                    | BinaryOperator::GtEq
+                    | BinaryOperator::And
+                    | BinaryOperator::Or,
+                right,
+            } => {
                 self.check(left, depth + 1)?;
                 self.check(right, depth + 1)?;
             }

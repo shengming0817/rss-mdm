@@ -33,7 +33,7 @@ fn batch(id: &str, sequence: u64, body: Body) -> Batch {
         .unwrap()
         .try_into()
         .unwrap(),
-        model::coverage(),
+        crate::fixture::definition().coverage().unwrap(),
         body,
     )
     .unwrap()
@@ -42,14 +42,22 @@ fn facts(value: &str) -> Vec<Change> {
     vec![
         Change::upsert(
             Id::new("device.model").unwrap(),
-            rss_mdm_inventory::CollectedValue::Known(value.into())
-                .encode(rss_mdm_inventory::builtin::MODEL)
+            rss_mdm_inventory::CollectedValue::Value(model::Scalar::String(value.into()))
+                .encode(
+                    crate::fixture::definition()
+                        .field(model::builtin::MODEL)
+                        .unwrap(),
+                )
                 .unwrap(),
         ),
         Change::upsert(
             Id::new("device.os.version").unwrap(),
-            rss_mdm_inventory::CollectedValue::Known("1".into())
-                .encode(rss_mdm_inventory::builtin::OS_VERSION)
+            rss_mdm_inventory::CollectedValue::Value(model::Scalar::String("1".into()))
+                .encode(
+                    crate::fixture::definition()
+                        .field(model::builtin::OS_VERSION)
+                        .unwrap(),
+                )
                 .unwrap(),
         ),
     ]

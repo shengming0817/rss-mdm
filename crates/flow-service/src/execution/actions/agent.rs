@@ -282,7 +282,7 @@ impl ExecutionService {
             if now>=expiry { return Err(Error::Forbidden.into()); }
             match plan {
                 db::ScheduledPolicy::Enrollment(_) => Err(Error::NotFound.into()),
-                db::ScheduledPolicy::Native(_) => return Err(Error::Forbidden.into()),
+                db::ScheduledPolicy::Native(_) => Err(Error::Forbidden.into()),
                 db::ScheduledPolicy::Script(script) => {
                     if key.is_some() { return Err(Error::Malformed.into()); }
                     script.frozen.artifact().map_err(Into::into)

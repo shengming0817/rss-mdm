@@ -10,7 +10,7 @@ pub enum JobInput {
         input: Box<compliance::Input>,
     },
     AssetQuery {
-        query: assets::Query,
+        query: Box<assets::Query>,
         scope: assets::ReadScope,
         watermark: i64,
         as_of: i64,

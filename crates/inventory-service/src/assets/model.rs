@@ -52,7 +52,7 @@ pub struct SavedDefinition {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SavedChange {
-    Put { definition: SavedDefinition },
+    Put { definition: Box<SavedDefinition> },
     Delete {},
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]

@@ -90,11 +90,11 @@ impl Planning {
             } => Some(rss_mdm_inventory_service::groups::Command::Group {
                 id: *id,
                 sensitive: *sensitive,
-                change: rss_mdm_inventory_service::operation::Operation {
+                change: Box::new(rss_mdm_inventory_service::operation::Operation {
                     operation_id: change.operation_id,
                     expected_revision: change.expected_revision,
                     input: change.input.clone(),
-                },
+                }),
             }),
             Command::GroupRead { id } => {
                 Some(rss_mdm_inventory_service::groups::Command::GroupRead { id: *id })

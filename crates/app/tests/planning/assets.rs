@@ -129,7 +129,8 @@ async fn frozen_fields_manual_and_quality_survive_updates_deletes_and_rollback()
         .unwrap(),
     )
     .unwrap();
-    crate::test_support::inventory::register_definition(
+    sql(&crate::test_support::inventory::definition_sql(
+        &t.to_string(),
         &crate::test_support::inventory::definition(
             "inventory",
             "mdm.windows",
@@ -139,7 +140,7 @@ async fn frozen_fields_manual_and_quality_survive_updates_deletes_and_rollback()
             ],
         ),
     )
-    .unwrap();
+    .unwrap());
     let old_value =
         serde_json::to_string(&rss_mdm_inventory::Scalar::String("Old".into())).unwrap();
     let new_value =

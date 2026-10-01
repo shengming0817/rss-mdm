@@ -103,15 +103,9 @@ impl TryFrom<Document> for CollectionProgress {
                 match &f.value {
                     Some(CollectedValue::Value(crate::Scalar::Array(values)))
                         if values.len() == f.items.len()
-                            && f.items.iter().all(|q| *q == Quality::Success) =>
-                    {
-                        ()
-                    }
+                            && f.items.iter().all(|q| *q == Quality::Success) => {}
                     None if f.terminal == Some(Quality::Invalid)
-                        && f.items.contains(&Quality::Invalid) =>
-                    {
-                        ()
-                    }
+                        && f.items.contains(&Quality::Invalid) => {}
                     _ => return Err(Invalid::Evidence),
                 }
             }

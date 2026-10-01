@@ -70,7 +70,7 @@ async fn execute(
         service.tenant.to_string(),
         "management_write",
     );
-    audit.set_principal("operator", "mdm");
+    audit.set_principal("operator", crate::test_support::INSTANCE);
     let result = service.catalog.execute(command, &audit, &|| Ok(())).await;
     audit.finalize(None);
     result.map_err(Into::into)

@@ -61,7 +61,6 @@ def write_collections():
         if name.startswith("report-"):
             schema["required"]=list(dict.fromkeys(schema["required"]+["collection"]))
             schema["properties"]["collection"]={"$ref":"#/$defs/collection"}
-            schema["properties"]["body"]["oneOf"]=[b for b in schema["properties"]["body"]["oneOf"] if b.get("properties",{}).get("kind",{}).get("const")!="mdmEnrollment"]
             schema["$defs"]["valuesBody"]["properties"]["values"]={"type":"array","maxItems":128,"items":{"$ref":"#/$defs/fieldValue"}}
         else:
             schema["required"]=list(dict.fromkeys(schema["required"]+["collections"]))

@@ -380,5 +380,6 @@ async fn session_replay_nonce_collection_and_revoke() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "integration")]
 #[path = "collection.rs"]
 mod collection;

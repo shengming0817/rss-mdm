@@ -61,10 +61,10 @@ impl ReportSource {
 /// All allowed asset sources. Serialized as their canonical stable identifier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Source {
-    /// Approved collection script evidence.
+    /// Controlled collection script evidence.
     #[serde(rename = "agent.script")]
     AgentScript,
-    /// Fixed osquery info evidence.
+    /// Published SQL template evidence.
     #[serde(rename = "agent.osquery")]
     AgentOsquery,
     /// Apple MDM evidence.

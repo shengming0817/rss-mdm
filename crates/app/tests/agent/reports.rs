@@ -86,12 +86,13 @@ async fn durable_reports_and_projection() -> Result<()> {
     let report_id = uuid::Uuid::new_v4();
     let report = json!({
         "wireVersion":5,
+        "collection":registration["collections"][0],
         "reportId":report_id,
         "sequence":0,
         "observedAt":1,
         "body":{"kind":"snapshot","values":[
-            {"field":"device.model","value":{"kind":"known","value":"Agent Model"}},
-            {"field":"device.os.version","value":{"kind":"known","value":"1.0"}}
+            {"field":"device.model","value":{"kind":"value","value":{"kind":"string","value":"Agent Model"}}},
+            {"field":"device.os.version","value":{"kind":"value","value":{"kind":"string","value":"1.0"}}}
         ]}
     });
     let (status, ack) = agent_call(
@@ -119,7 +120,7 @@ async fn durable_reports_and_projection() -> Result<()> {
         "report replay changed acknowledgement"
     );
     let concurrent_id = uuid::Uuid::new_v4();
-    let concurrent = json!({"wireVersion":5,"reportId":concurrent_id,"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
+    let concurrent = json!({"wireVersion":5,"collection":registration["collections"][0],"reportId":concurrent_id,"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
     let mut same_id = tokio::task::JoinSet::new();
     for _ in 0..4 {
         let router = router.clone();
@@ -186,7 +187,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     let owner = crate::inventory_runtime::test_support::start(runtime.clone()).await?;
     wait_agent_status(router, credential, report_id, "snapshot", "applied").await?;
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND source='agent.builtin' AND id='{report_id}' AND NOT delivery_pending", TENANT = case_tenant()))?.trim() == "1");
-    ensure!(pg(&format!("SELECT string_agg(field||'='||coalesce(value,''),',' ORDER BY field) FROM mdm.inventory WHERE tenant_id='{TENANT}' AND batch_id='{report_id}'", TENANT = case_tenant()))?.trim() == "device.model=Agent Model,device.os.version=1.0");
+    ensure!(pg(&format!("SELECT string_agg(field||'='||coalesce(value::jsonb->>'value',''),',' ORDER BY field) FROM mdm.inventory WHERE tenant_id='{TENANT}' AND batch_id='{report_id}'", TENANT = case_tenant()))?.trim() == "device.model=Agent Model,device.os.version=1.0");
     crate::test_support::stop_worker(owner).await?;
     runtime.close_fixture().await?;
 
@@ -197,8 +198,8 @@ async fn durable_reports_and_projection() -> Result<()> {
     let partial_id = uuid::Uuid::new_v4();
     let failed_id = uuid::Uuid::new_v4();
     for body in [
-        json!({"wireVersion":5,"reportId":partial_id,"sequence":1,"observedAt":2,"body":{"kind":"partial","values":[{"field":"device.model","value":{"kind":"known","value":"Unconfirmed"}}]}}),
-        json!({"wireVersion":5,"reportId":failed_id,"sequence":2,"observedAt":3,"body":{"kind":"failed","code":"collectionFailed"}}),
+        json!({"wireVersion":5,"collection":registration["collections"][0],"reportId":partial_id,"sequence":1,"observedAt":2,"body":{"kind":"partial","values":[{"field":"device.model","value":{"kind":"value","value":{"kind":"string","value":"Unconfirmed"}}}]}}),
+        json!({"wireVersion":5,"collection":registration["collections"][0],"reportId":failed_id,"sequence":2,"observedAt":3,"body":{"kind":"failed","code":"collectionFailed"}}),
     ] {
         ensure!(
             agent_call(
@@ -220,7 +221,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     let mut capacity = tokio::task::JoinSet::new();
     for sequence in [3, 4] {
         let router = router.clone();
-        let body = json!({"wireVersion":5,"reportId":uuid::Uuid::new_v4(),"sequence":sequence,"observedAt":4,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
+        let body = json!({"wireVersion":5,"collection":registration["collections"][0],"reportId":uuid::Uuid::new_v4(),"sequence":sequence,"observedAt":4,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
         capacity.spawn(async move {
             agent_call(
                 &router,
@@ -259,23 +260,9 @@ async fn durable_reports_and_projection() -> Result<()> {
     ))?;
     let runtime = agent_runtime(config).await?;
     let owner = crate::inventory_runtime::test_support::start(runtime.clone()).await?;
-    wait_agent_status(
-        router,
-        credential,
-        partial_id,
-        "needSnapshotPartial",
-        "notApplicable",
-    )
-    .await?;
-    wait_agent_status(
-        router,
-        credential,
-        failed_id,
-        "needSnapshotCollectionFailed",
-        "notApplicable",
-    )
-    .await?;
-    ensure!(pg(&format!("SELECT count(*) FROM mdm.inventory WHERE tenant_id='{TENANT}' AND batch_id IN ('{partial_id}','{failed_id}')", TENANT = case_tenant()))?.trim() == "0");
+    wait_agent_status(router, credential, partial_id, "snapshot", "applied").await?;
+    wait_agent_status(router, credential, failed_id, "snapshot", "applied").await?;
+    ensure!(pg(&format!("SELECT count(*) FROM mdm.inventory WHERE tenant_id='{TENANT}' AND batch_id IN ('{partial_id}','{failed_id}')", TENANT = case_tenant()))?.trim() == "1");
     crate::test_support::stop_worker(owner).await?;
     runtime.close_fixture().await?;
     for (number, fault, committed) in [
@@ -284,7 +271,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     ] {
         let expected = "operation_unknown";
         let fault_report = uuid::Uuid::new_v4();
-        let body = json!({"wireVersion":5,"reportId":fault_report,"sequence":100+number,"observedAt":100+number,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
+        let body = json!({"wireVersion":5,"collection":registration["collections"][0],"reportId":fault_report,"sequence":100+number,"observedAt":100+number,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
         audit_store.inject_next_fault(fault);
         let failed = agent_call(
             router,

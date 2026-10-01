@@ -36,7 +36,7 @@ pub async fn accept_in(
             "invalid task collector source".into(),
         ));
     }
-    rss_mdm_inventory_postgres::register_collection_in(c, tenant, &definition)
+    rss_mdm_inventory_postgres::register_collection_in(c, tenant, definition)
         .await
         .map_err(|_| sqlx::Error::Protocol("invalid task collector".into()))?;
     let row = sqlx::query("SELECT scope,sequence,attempts,sealed_at,evidence FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2 AND registration=$3 FOR UPDATE")

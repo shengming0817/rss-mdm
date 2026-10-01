@@ -52,7 +52,7 @@ impl AssetService {
                 offset,
                 limit,
             } => {
-                self.collection_items(tx, device, *run, *field, scope, *offset, *limit)
+                self.collection_items(tx, device, *run, *field, scope, (*offset, *limit))
                     .await?
             }
             Command::ListItems {

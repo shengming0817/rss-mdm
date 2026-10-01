@@ -4,7 +4,7 @@ use rss_mdm_inventory::{FieldDefinition, Sensitivity};
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum FieldChange {
-    Put { definition: FieldDefinition },
+    Put { definition: Box<FieldDefinition> },
     Delete {},
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -61,18 +61,16 @@ impl AssetService {
                 if let Some(seed) = rss_mdm_inventory::builtin::fields()
                     .into_iter()
                     .find(|f| f.key == field)
-                {
-                    if seed.value_type != definition.value_type
+                    && (seed.value_type != definition.value_type
                         || seed.nullable != definition.nullable
                         || seed.manual != definition.manual
                         || seed.item_key != definition.item_key
                         || !definition
                             .sources
                             .keys()
-                            .all(|s| seed.sources.contains_key(s))
-                    {
-                        return Err(Error::Conflict.into());
-                    }
+                            .all(|s| seed.sources.contains_key(s)))
+                {
+                    return Err(Error::Conflict.into());
                 }
 
                 if definition.key != field || definition.version != expected + 1 {
@@ -99,7 +97,7 @@ impl AssetService {
                 } else if !field.as_str().starts_with("custom.") {
                     return Err(Error::Malformed.into());
                 }
-                Some(definition.clone())
+                Some(definition.as_ref().clone())
             }
             FieldChange::Delete {} => {
                 if old.is_none()

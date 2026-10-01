@@ -1,4 +1,4 @@
-"""Regressions for the complete current Agent V4 schema artifact."""
+"""Regressions for the complete current Agent V5 schema artifact."""
 import importlib.util
 import json
 from pathlib import Path
@@ -24,13 +24,13 @@ class WireArtifactTests(unittest.TestCase):
         return directory, schema
 
     def check_copy(self, schema):
-        with patch.object(artifact, "SCHEMAS", schema), patch.object(artifact, "MANIFEST", schema / "agent-v4.schema-manifest.json"):
+        with patch.object(artifact, "SCHEMAS", schema), patch.object(artifact, "MANIFEST", schema / "agent-v5.schema-manifest.json"):
             artifact.check()
 
     def test_task_mutation_fails_embedded_contract(self):
         directory, schema = self.fixture()
         with directory:
-            path = schema / "task-payload-v4.schema.json"
+            path = schema / "task-payload-v5.schema.json"
             value = json.loads(path.read_text())
             value["oneOf"][1]["properties"]["intent"]["enum"].append("arbitrary")
             path.write_text(json.dumps(value))
@@ -40,7 +40,7 @@ class WireArtifactTests(unittest.TestCase):
     def test_other_schema_mutation_fails_fingerprint(self):
         directory, schema = self.fixture()
         with directory:
-            path = schema / "report-ack-v4.schema.json"
+            path = schema / "report-ack-v5.schema.json"
             value = json.loads(path.read_text())
             value["$id"] += "#changed"
             path.write_text(json.dumps(value))
@@ -50,7 +50,7 @@ class WireArtifactTests(unittest.TestCase):
     def test_missing_or_extra_shape_fails(self):
         directory, schema = self.fixture()
         with directory:
-            (schema / "report-ack-v4.schema.json").unlink()
+            (schema / "report-ack-v5.schema.json").unlink()
             with self.assertRaisesRegex(ValueError, "schema directory"):
                 self.check_copy(schema)
         directory, schema = self.fixture()
@@ -62,7 +62,7 @@ class WireArtifactTests(unittest.TestCase):
     def test_manifest_cannot_drop_a_public_shape(self):
         directory, schema = self.fixture()
         with directory:
-            path = schema / "agent-v4.schema-manifest.json"
+            path = schema / "agent-v5.schema-manifest.json"
             value = json.loads(path.read_text())
             value["schemas"].pop()
             path.write_text(json.dumps(value))
@@ -72,9 +72,9 @@ class WireArtifactTests(unittest.TestCase):
     def test_major_and_schema_identity_are_exact(self):
         directory, schema = self.fixture()
         with directory:
-            path = schema / "agent-v4.schema-manifest.json"
+            path = schema / "agent-v5.schema-manifest.json"
             value = json.loads(path.read_text())
             value["wireVersion"] = 2
             path.write_text(json.dumps(value))
-            with self.assertRaisesRegex(ValueError, "Agent V4"):
+            with self.assertRaisesRegex(ValueError, "Agent V5"):
                 self.check_copy(schema)

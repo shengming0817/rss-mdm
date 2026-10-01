@@ -27,7 +27,18 @@ async fn publish(f: &mut Fixture) -> Result<Uuid> {
 }
 async fn report(f: &Fixture, sequence: u64, state: &str) -> Result<()> {
     let id = Uuid::new_v4();
-    let input = json!({"wireVersion":5,"reportId":id,"sequence":sequence,"observedAt":1,"body":{"kind":"mdmEnrollment","state":state}});
+    let collection = f
+        .builtin_collections
+        .iter()
+        .find(|definition| {
+            definition["fields"].as_array().is_some_and(|fields| {
+                fields
+                    .iter()
+                    .any(|field| field["key"] == "channel.mdm.enrollment")
+            })
+        })
+        .ok_or_else(|| anyhow::anyhow!("server did not publish enrollment collection"))?;
+    let input = json!({"wireVersion":5,"collection":collection,"reportId":id,"sequence":sequence,"observedAt":1,"body":{"kind":"snapshot","values":[{"field":"channel.mdm.enrollment","value":{"kind":"value","value":{"kind":"string","value":state}}}]}});
     let response = agent_call(
         &f.router,
         Method::POST,

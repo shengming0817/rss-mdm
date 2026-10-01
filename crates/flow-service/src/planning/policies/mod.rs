@@ -444,12 +444,11 @@ impl Policies {
                 if artifact.length() > 16_777_216 {
                     return Err(Error::Malformed.into());
                 }
-                if let Some(sql) = &script.spec().sql {
-                    if artifact.digest() != resource::Digest::of(sql.query().as_bytes())
-                        || artifact.length() != sql.query().len() as u64
-                    {
-                        return Err(Error::Malformed.into());
-                    }
+                if let Some(sql) = &script.spec().sql
+                    && (artifact.digest() != resource::Digest::of(sql.query().as_bytes())
+                        || artifact.length() != sql.query().len() as u64)
+                {
+                    return Err(Error::Malformed.into());
                 }
                 let collection = if let resource::ScriptPurpose::Collection { mappings } =
                     &script.spec().purpose

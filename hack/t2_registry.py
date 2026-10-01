@@ -483,7 +483,7 @@ MODULES['inventory.reader'] = replace(MODULES['inventory.reader'], db_mode='inst
     CasePolicy('watermark_fence_rejects_unrelated_grantee', 'fresh', 'objects'),
 ))
 MODULES['inventory.projection'] = replace(MODULES['inventory.projection'], db_mode='reuse', scope='pair', policies=(
-    CasePolicy('app::t2::projection::filter_and_poison', 'fresh', 'objects'),
+    CasePolicy('app::t2::projection::unregistered_dataset_and_poison_are_rejected', 'fresh', 'objects'),
     CasePolicy('app::t2::projection::invocation_horizon', 'fresh', 'objects'),
 ))
 MODULES['inventory.recovery'] = replace(MODULES['inventory.recovery'], db_mode='reuse', scope='tenant', policies=(
@@ -1069,3 +1069,5 @@ def select_paths(paths):
     return Impact(full, tuple(sorted(modules)), tuple(sorted(tools)), tuple(sorted(reasons)))
 
 MODULES['execution.commands.windows'] = replace(MODULES['execution.commands.windows'], production_inputs=(*MODULES['execution.commands.windows'].production_inputs, 'crates/flow-service/src/execution/directory.rs', 'crates/management-http/src/execution/http.rs'), support_inputs=(*MODULES['execution.commands.windows'].support_inputs, 'crates/app/tests/support/agent_execution.rs'))
+
+MODULES['windows.management'] = replace(MODULES['windows.management'], test_inputs=(*MODULES['windows.management'].test_inputs, 'crates/app/tests/windows/collection.rs'), production_inputs=(*MODULES['windows.management'].production_inputs, 'crates/windows-channel/src/template_collection.rs'))

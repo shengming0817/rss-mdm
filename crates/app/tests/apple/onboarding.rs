@@ -307,7 +307,7 @@ async fn collected_bundle_presence_remains_unknown() -> Result<()> {
         loop {
             let value = pg(&format!("SELECT value FROM mdm.inventory WHERE tenant_id='{}' AND source='mdm.apple' AND field='channel.agent.installation'", case_tenant()))?;
             if !value.trim().is_empty() {
-                ensure!(value.trim() == "unknown", "unverified native observation: {value}");
+                ensure!(serde_json::from_str::<serde_json::Value>(value.trim())? == json!({"kind":"string","value":"unknown"}), "unverified native observation: {value}");
                 return Ok::<_, anyhow::Error>(());
             }
             tokio::time::sleep(Duration::from_millis(100)).await;

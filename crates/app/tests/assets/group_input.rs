@@ -37,7 +37,7 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
     let owner = start(runtime.clone()).await?;
     let full = report(&service, &access, &proof, [Some("Collected"), Some("11")]).await?;
     wait_ready_projection(&runtime, &full).await?;
-    let criteria = predicate("device.model", "string", json!("Collected"));
+    let criteria = predicate("device.model", "string", json!("Unconfirmed"));
     for (values, result) in [
         ([Some("Unconfirmed"), None], "partial"),
         ([None, None], "failed"),
@@ -47,8 +47,7 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
             loop {
                 let delivery = runtime.inspect(&incomplete).await?;
                 if delivery.receipt.is_some()
-                    && delivery.projection
-                        == crate::inventory_runtime::ProjectionStatus::NotApplicable
+                    && delivery.projection == crate::inventory_runtime::ProjectionStatus::Projected
                 {
                     return Ok::<_, crate::Error>(());
                 }
@@ -66,7 +65,7 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
         .await?;
         ensure!(
             detail["asset"]["device"]["fields"]["device.model"]["state"]["value"]["value"]
-                == "Collected"
+                == "Unconfirmed"
         );
         ensure!(detail["asset"]["device"]["quality"][0]["result"] == result);
         let quality = &detail["asset"]["device"]["quality"][0];
@@ -117,7 +116,7 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
     .await?;
     let field = &detail["asset"]["device"]["fields"]["device.model"];
     ensure!(field["state"]["kind"] == "unsupported");
-    ensure!(field["sources"][0]["lastKnown"]["value"]["value"] == "Collected");
+    ensure!(field["sources"][0]["lastKnown"]["value"]["value"] == "Unconfirmed");
     let query = ok(
         browser,
         router,

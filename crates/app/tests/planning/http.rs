@@ -620,7 +620,9 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
             && preview["page"]["items"] == json!([crate::test_support::case::name("device-1")]),
         "trusted inventory mapping: {preview}"
     );
-    pg("UPDATE mdm.inventory SET value='Model-B' WHERE field='device.model'")?;
+    pg(
+        "UPDATE mdm.inventory SET value='{\"kind\":\"string\",\"value\":\"Model-B\"}' WHERE field='device.model'",
+    )?;
     await_ingress().await?;
     // Immutable previews retain their fixed input even after a fact writer advances it.
     ensure!(
@@ -656,7 +658,9 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
         members["page"]["items"] == json!([]),
         "new watermark did not observe the changed fact: {members}"
     );
-    pg("UPDATE mdm.inventory SET value='Model-A' WHERE field='device.model'")?;
+    pg(
+        "UPDATE mdm.inventory SET value='{\"kind\":\"string\",\"value\":\"Model-A\"}' WHERE field='device.model'",
+    )?;
     await_ingress().await?;
     // The old synchronous endpoint and snapshot request shape are gone.
     ensure!(

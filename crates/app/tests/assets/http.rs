@@ -104,10 +104,10 @@ mod storage {
                 change: inventory_operation(
                     0,
                     SavedChange::Put {
-                        definition: SavedDefinition {
+                        definition: Box::new(SavedDefinition {
                             name: "mine".into(),
                             query: Query::default(),
-                        },
+                        }),
                     },
                 ),
             },
@@ -155,9 +155,9 @@ mod storage {
             scope: assets::ReadScope::all(),
         };
         for (table, expected) in [
-            ("mdm.inventory", "inventory_query"),
-            ("mdm.manual_assignments", "manual_query"),
-            ("mdm_access.collection_runs", "collection_query"),
+            ("mdm.inventory_history", "assets_storage"),
+            ("mdm.manual_history", "assets_storage"),
+            ("mdm_access.collection_history", "assets_storage"),
         ] {
             sql(&format!("REVOKE SELECT ON {table} FROM mdm_flow_runtime"));
             let outcome = execute_asset(&m, &command).await;
@@ -223,7 +223,7 @@ mod storage {
             };
             let audit = || {
                 let audit = RequestAudit::new(tenant.to_string(), "management_write");
-                audit.set_principal("operator", "mdm");
+                audit.set_principal("operator", crate::test_support::INSTANCE);
                 audit
             };
             runtime.inject_next_transaction_fault(
@@ -617,6 +617,16 @@ async fn field_catalog_admin_publish_and_reference_checks_need_no_approval() -> 
             .0
             == StatusCode::OK
     );
+    let recreate = json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":published.1["asset"]["definition"]}});
+    let rejected = fixture
+        .author
+        .call(&fixture.router, Method::PUT, &path, Some(recreate))
+        .await?;
+    ensure!(
+        rejected.0 == StatusCode::CONFLICT,
+        "retired field must remain a domain conflict: {rejected:?}"
+    );
+
     Ok(())
 }
 

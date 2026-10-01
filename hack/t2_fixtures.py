@@ -267,6 +267,7 @@ class RunFixtures:
                 port = owner.port()
                 env.update(PG_CA_FILE=str(root / 'ca.crt'),
                            DATABASE_URL=f'postgres://mdm_runtime:runtime-fixture@localhost:{port}/{database}',
+                           MDM_COLLECTION_URL=f'postgres://mdm_access:access-fixture@localhost:{port}/{database}',
                            MDM_OWNER_URL=f'postgres://mdm_owner:owner-fixture@localhost:{port}/{database}',
                            MDM_ADMIN_URL=f'postgres://postgres:local-fixture@localhost:{port}/{database}',
                            MDM_TEST_PG_CONTAINER=owner.container())

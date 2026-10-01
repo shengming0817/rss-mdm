@@ -182,27 +182,6 @@ fn sql_value(
     kind.decode_json(&converted)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rss_mdm_inventory::{Scalar, ValueType as T};
-    #[test]
-    fn sql_text_columns_decode_only_by_declared_type() {
-        assert_eq!(
-            sql_value(&T::Integer, &Value::String("42".into())).unwrap(),
-            Scalar::Integer(42)
-        );
-        assert_eq!(
-            sql_value(&T::Boolean, &Value::String("0".into())).unwrap(),
-            Scalar::Boolean(false)
-        );
-        assert!(sql_value(&T::Number, &Value::String("NaN".into())).is_err());
-        assert!(sql_value(&T::Integer, &Value::String("1.5".into())).is_err());
-        assert!(sql_value(&T::Boolean, &Value::String("yes".into())).is_err());
-        assert!(T::Integer.decode_json(&Value::String("42".into())).is_err());
-    }
-}
-
 pub async fn finish(
     tx: &mut PgTransaction<'_>,
     frozen: &FrozenAction,
@@ -243,4 +222,25 @@ pub async fn finish(
         serde_json::json!({"exitCode":result.exit_code(),"quality":result.quality(),"schemaValid":schema_valid,"output":output,"outputReference":reference,"diagnostics":result.diagnostics(),"trusted":trusted}),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rss_mdm_inventory::{Scalar, ValueType as T};
+    #[test]
+    fn sql_text_columns_decode_only_by_declared_type() {
+        assert_eq!(
+            sql_value(&T::Integer, &Value::String("42".into())).unwrap(),
+            Scalar::Integer(42)
+        );
+        assert_eq!(
+            sql_value(&T::Boolean, &Value::String("0".into())).unwrap(),
+            Scalar::Boolean(false)
+        );
+        assert!(sql_value(&T::Number, &Value::String("NaN".into())).is_err());
+        assert!(sql_value(&T::Integer, &Value::String("1.5".into())).is_err());
+        assert!(sql_value(&T::Boolean, &Value::String("yes".into())).is_err());
+        assert!(T::Integer.decode_json(&Value::String("42".into())).is_err());
+    }
 }

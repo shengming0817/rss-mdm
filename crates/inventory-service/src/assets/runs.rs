@@ -94,9 +94,9 @@ impl AssetService {
         id: Uuid,
         field: FieldKey,
         scope: &ReadScope,
-        offset: usize,
-        limit: usize,
+        page: (usize, usize),
     ) -> Result<Response> {
+        let (offset, limit) = page;
         if !(1..=1000).contains(&limit) || offset > 100000 {
             return Err(Error::Malformed.into());
         }

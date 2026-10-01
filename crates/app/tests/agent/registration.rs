@@ -35,6 +35,9 @@ async fn registration_binding_and_replay() -> Result<()> {
         "/api/agent/v3/registrations",
         "/api/agent/v3/reports",
         "/api/agent/v3/tasks/claim",
+        "/api/agent/v4/registrations",
+        "/api/agent/v4/reports",
+        "/api/agent/v4/tasks/claim",
     ] {
         let response = router
             .clone()
@@ -94,7 +97,7 @@ async fn registration_binding_and_replay() -> Result<()> {
         "registration replay was not recovered"
     );
     let report_id = uuid::Uuid::new_v4();
-    let prior = json!({"wireVersion":5,"reportId":report_id,"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"collectionFailed"}});
+    let prior = json!({"wireVersion":5,"collection":registration["collections"][0],"reportId":report_id,"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"collectionFailed"}});
     ensure!(
         agent_call(
             router,
@@ -128,9 +131,10 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
     .await?;
     let agent = crate::test_support::agent::register(router, browser).await?;
     let credential = agent.credential;
+    let registration = agent.registration;
     let report_id = uuid::Uuid::new_v4();
     ensure!(agent_call(router, Method::POST, "/api/agent/v5/reports", Some(credential),
-        Some(json!({"wireVersion":5,"reportId":report_id,"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"collectionFailed"}}))).await?.0 == StatusCode::ACCEPTED);
+        Some(json!({"wireVersion":5,"collection":registration["collections"][0],"reportId":report_id,"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"collectionFailed"}}))).await?.0 == StatusCode::ACCEPTED);
     let next_password = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI";
     let next_credential = &crate::test_support::credential("replacement");
     browser.operation = Some(uuid::Uuid::new_v4());
@@ -188,7 +192,7 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
         recovered.1 == stored_receipt,
         "registration ACK-loss retry did not recover the committed receipt"
     );
-    ensure!(agent_call(router, Method::POST, "/api/agent/v5/reports", Some(credential), Some(json!({"wireVersion":5,"reportId":uuid::Uuid::new_v4(),"sequence":2,"observedAt":2,"body":{"kind":"failed","code":"collectionFailed"}}))).await?.0 == StatusCode::UNAUTHORIZED);
+    ensure!(agent_call(router, Method::POST, "/api/agent/v5/reports", Some(credential), Some(json!({"wireVersion":5,"collection":registration["collections"][0],"reportId":uuid::Uuid::new_v4(),"sequence":2,"observedAt":2,"body":{"kind":"failed","code":"collectionFailed"}}))).await?.0 == StatusCode::UNAUTHORIZED);
     ensure!(
         agent_call(
             router,

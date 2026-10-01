@@ -5,7 +5,7 @@ use rss_mdm_audit_integration::RequestAudit;
 pub enum Command {
     Group {
         id: Uuid,
-        change: Operation<GroupChange>,
+        change: Box<Operation<GroupChange>>,
         sensitive: bool,
     },
     GroupRead {

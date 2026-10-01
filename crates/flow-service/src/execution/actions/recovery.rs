@@ -56,20 +56,20 @@ pub async fn audit_recovery(
     run: &db::Run,
     previous: &super::state::RunState,
 ) -> Result<()> {
-    if run.state.cancellation != Cancellation::None || run.state.execution == Execution::Unknown {
-        if let Some(attempt) = run.state.attempt() {
-            super::collection::abandon(
-                service,
-                tx,
-                attempt,
-                if run.state.cancellation != Cancellation::None {
-                    "revoked"
-                } else {
-                    "timeout"
-                },
-            )
-            .await?;
-        }
+    if (run.state.cancellation != Cancellation::None || run.state.execution == Execution::Unknown)
+        && let Some(attempt) = run.state.attempt()
+    {
+        super::collection::abandon(
+            service,
+            tx,
+            attempt,
+            if run.state.cancellation != Cancellation::None {
+                "revoked"
+            } else {
+                "timeout"
+            },
+        )
+        .await?;
     }
     if *previous != run.state {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
@@ -204,10 +204,9 @@ pub async fn recover_one(
     if !stale
         && run.state.cancellation == Cancellation::None
         && run.state.execution != Execution::Unknown
+        && let db::ScheduledPolicy::Native(native) = &plan
     {
-        if let db::ScheduledPolicy::Native(native) = &plan {
-            super::native_collection::advance_run(service, tx, &mut run, native, now).await?;
-        }
+        super::native_collection::advance_run(service, tx, &mut run, native, now).await?;
     }
     if run.state.execution == Execution::NotStarted
         && run.state.cancellation == Cancellation::Requested

@@ -326,7 +326,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
     );
     ensure!(package_status(&client.router, operation).await? == StatusCode::FORBIDDEN);
     ensure!(peer.mutual.post(&url).json(&input).send().await?.status() == StatusCode::UNAUTHORIZED);
-    let report = json!({"wireVersion":5,"reportId":Uuid::new_v4(),"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"collectionFailed"}});
+    let report = json!({"wireVersion":5,"collection":receipt["collections"][0],"reportId":Uuid::new_v4(),"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"collectionFailed"}});
     ensure!(
         agent_call(
             &client.router,
@@ -434,6 +434,25 @@ async fn execute(peer: &crate::windows::test_support::Peer) -> Result<(s::Messag
             )
         }) {
             return Ok((initial, next));
+        }
+        // Admission can finish after the first exchange. A newly delivered Prepare still needs its ACK.
+        if next
+            .commands
+            .iter()
+            .any(|command| !matches!(command, s::Command::Status(_)))
+        {
+            next = post(peer, &reply(&initial, &next, false)).await?;
+            if next.commands.iter().any(|command| {
+                matches!(
+                    command,
+                    s::Command::AgentInstall {
+                        command: rss_mdm_windows_mdm::agent_install::AgentCommand::Install(_),
+                        ..
+                    }
+                )
+            }) {
+                return Ok((initial, next));
+            }
         }
         // The just-sealed normal report may still be awaiting Inventory/Scope projection.
         tokio::time::sleep(Duration::from_millis(150)).await;

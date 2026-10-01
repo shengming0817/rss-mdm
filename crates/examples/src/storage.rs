@@ -72,3 +72,12 @@ pub async fn close_pool(pool: &PgPool) -> Result<()> {
         .await
         .context("pool drain deadline")
 }
+
+/// Explicit producer credentials, separate from the read/project runtime identity.
+pub fn collection_options() -> Result<PgConnectOptions> {
+    Ok(std::env::var("MDM_COLLECTION_URL")
+        .context("MDM_COLLECTION_URL required for fixture ingestion")?
+        .parse::<PgConnectOptions>()?
+        .ssl_mode(PgSslMode::VerifyFull)
+        .ssl_root_cert(std::env::var("PG_CA_FILE")?))
+}
