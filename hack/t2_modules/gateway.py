@@ -24,7 +24,7 @@ def verify(context):
     # A buffered control proves the fixture distinguishes early delivery from completion.
     locations = ''.join('location = ' + path + ' { limit_rate 512; return 200 "' + stream_body + '"; }' for path in [*stream_paths, buffered_path])
     locations += 'location = /api/unsupported-test { default_type application/json; return 404 \'{"code":"not_found"}\'; }'
-    config=config.rsplit('}',1)[0]+'server { listen 127.0.0.1:8082; '+locations+' location / { return 200 "$http_x_forwarded_for"; } }}'
+    config=config.rsplit('}',1)[0]+'server { listen 127.0.0.1:8082; client_max_body_size 2m; '+locations+' location / { return 200 "$http_x_forwarded_for"; } }}'
     with context.gateway(config) as (name,port):
         def request(path,forward='',body=None,method='POST'):
             c=http.client.HTTPConnection('127.0.0.1',port,timeout=3)
@@ -74,6 +74,11 @@ def verify(context):
         if 200 not in statuses or 429 not in statuses or statuses.count(200)>14:raise RuntimeError('caller-controlled source bypassed login admission')
         time.sleep(3.2)
         if request('/api/v2/tenants/11111111-1111-4111-8111-111111111111/login')[0]!=200:raise RuntimeError('login budget did not recover')
+        import base64
+        chunk=json.dumps({'wireVersion':5,'event':{'kind':'output_chunk','data':base64.urlsafe_b64encode(b'x'*262144).decode().rstrip('=')}})
+        if request('/api/agent/v5/tasks/task/events',body=chunk)[0]!=200:raise RuntimeError('valid output chunk blocked by gateway')
+        if request('/api/agent/v5/tasks/task/events',body='x'*1114113)[0]!=413:raise RuntimeError('oversized task event accepted')
+        if request('/api/agent/v4/tasks/task/events',body=chunk)[0]!=413:raise RuntimeError('legacy route inherited V5 upload budget')
         if request('/api/probe',body='x'*16385)[0]!=413:raise RuntimeError('oversized request was not rejected')
         if request('/api/probe?credential=synthetic-sensitive-value')[0]!=200:raise RuntimeError('gateway probe failed')
         held=[]
@@ -106,7 +111,7 @@ def verify(context):
         if 200 not in statuses or 429 not in statuses: raise RuntimeError('general API admission is not bounded')
         log=subprocess.run(['docker','logs',name],check=True,capture_output=True,text=True,timeout=10)
         if 'synthetic-sensitive-value' in log.stdout+log.stderr or 'mdm_gateway' not in log.stdout:raise RuntimeError('gateway logging contract failed')
-        print('login gateway T2: actual peer budget, spoofed forwarding rejection, bounded recovery and V4 content streaming passed')
+        print('login gateway T2: actual peer budget, spoofed forwarding rejection, bounded recovery and V5 content streaming and bounded result uploads passed')
 
 def main(context):
     verify(context)

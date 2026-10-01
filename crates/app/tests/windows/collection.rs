@@ -205,7 +205,25 @@ async fn native_template_policy_uses_correlated_get_and_collection_run() -> anyh
         result.0 == StatusCode::OK && result.1["asset"]["run"]["result"] == "snapshot",
         "native progress: {result:?}"
     );
-    pg.close().await?;
     crate::test_support::stop_worker(Some(owner)).await?;
+    // Restore the durable pre-settlement state while retaining the already sealed response.
+    // Recovery happens after its original execution timeout, as after worker downtime.
+    sqlx::query("UPDATE mdm_commands.action_runs SET state=jsonb_set(jsonb_set(state,'{execution}','\"running\"'),'{startedAt}',to_jsonb($3::bigint)) WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(runs[0]).bind(now-120).execute(&mut pg).await?;
+    host.app.execution.recover_action_fixture(policy).await?;
+    let state:String=sqlx::query_scalar("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(runs[0]).fetch_one(&mut pg).await?;
+    ensure!(
+        state == "succeeded",
+        "sealed success was lost after downtime: {state}"
+    );
+    // Shift the completed occurrence to the previous interval; the current one is due.
+    sqlx::query("UPDATE mdm_commands.action_runs SET occurrence='timer:'||($3::bigint)::text||':'||registration::text,created_at=$3 WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(runs[0]).bind(now-3600).execute(&mut pg).await?;
+    host.app.execution.recover_action_fixture(policy).await?;
+    let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2")
+        .bind(case_tenant()).bind(policy).fetch_one(&mut pg).await?;
+    ensure!(count == 2, "completed run blocked the next occurrence");
+    pg.close().await?;
     host.close().await
 }

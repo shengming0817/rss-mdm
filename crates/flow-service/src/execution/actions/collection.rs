@@ -197,12 +197,12 @@ pub async fn finish(
     if bytes.len() > frozen.definition.spec().output_bytes as usize {
         return Err(crate::Error::Malformed.into());
     }
+    let budget_valid = frozen.definition.validate_output_budget(output).is_ok();
     let schema_valid = frozen.definition.validate_output(output).is_ok();
     let process_complete =
         result.exit_code() == Some(0) && result.quality() == OutputQuality::Complete;
-    let success = process_complete && (schema_valid || frozen.collection.is_some());
-    let trusted = process_complete
-        && (schema_valid || frozen.collection.is_some())
+    let success = process_complete && budget_valid && (schema_valid || frozen.collection.is_some());
+    let trusted = success
         && allowed
         && run
             .state
@@ -210,7 +210,7 @@ pub async fn finish(
     run.state
         .result(run.state.attempt().ok_or(crate::Error::Conflict)?, success)?;
     accept(tx, frozen, run, output, trusted, now).await?;
-    let (output, reference) = if bytes.len() > 1024 * 1024 {
+    let (output, reference) = if !budget_valid || bytes.len() > 1024 * 1024 {
         (
             Value::Null,
             serde_json::json!({"bytes":bytes.len(),"sha256":format!("{:x}",Sha256::digest(&bytes))}),
@@ -219,7 +219,7 @@ pub async fn finish(
         (output.clone(), Value::Null)
     };
     run.result = Some(
-        serde_json::json!({"exitCode":result.exit_code(),"quality":result.quality(),"schemaValid":schema_valid,"output":output,"outputReference":reference,"diagnostics":result.diagnostics(),"trusted":trusted}),
+        serde_json::json!({"exitCode":result.exit_code(),"quality":result.quality(),"schemaValid":schema_valid,"budgetValid":budget_valid,"output":output,"outputReference":reference,"diagnostics":result.diagnostics(),"trusted":trusted}),
     );
     Ok(())
 }

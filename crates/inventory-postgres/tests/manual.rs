@@ -167,10 +167,29 @@ async fn field_catalog_cas_history_and_rollback_are_atomic()
         &field
     );
     field.version = 3;
+    assert!(!pg::publish_field_in(&mut tx, tenant, 2, &field).await?);
+    // Retired identities stay reserved without consuming the active catalog budget.
+    field.version = 1;
+    for index in 0..1025 {
+        field.key = rss_mdm_inventory::FieldKey::parse(&format!("custom.retired_{index}"))?;
+        assert!(pg::publish_field_in(&mut tx, tenant, 0, &field).await?);
+        assert!(pg::retire_field_in(&mut tx, tenant, field.key, 1).await?);
+    }
+    field.key = rss_mdm_inventory::FieldKey::parse("custom.after_retirement")?;
+    assert!(pg::publish_field_in(&mut tx, tenant, 0, &field).await?);
+    assert_eq!(
+        pg::catalog_in(&mut tx, tenant)
+            .await?
+            .definition(field.key)?,
+        &field
+    );
     assert!(
-        pg::publish_field_in(&mut tx, tenant, 2, &field)
-            .await
-            .is_err()
+        pg::catalog_at_in(&mut tx, tenant, published)
+            .await?
+            .definition(rss_mdm_inventory::FieldKey::parse(
+                "custom.catalog_test.floor"
+            )?)
+            .is_ok()
     );
     tx.commit().await?;
     c.close().await?;

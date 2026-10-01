@@ -308,3 +308,75 @@ async fn chunked_results_require_complete_output_and_preserve_attempt_identity()
     crate::test_support::stop_worker(stack).await?;
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.agent.delivery"]
+async fn collection_structure_budget_precedes_partial_field_acceptance() -> Result<()> {
+    use rss_mdm_agent_wire as wire;
+    let mut fixture = Fixture::new().await?;
+    fixture.register().await?;
+    fixture
+        .scope(
+            case_task_scope(),
+            json!([{"kind":"device","id":case_device_id()}]),
+        )
+        .await?;
+    let stack = worker(&fixture.base).await?;
+    for mode in ["direct", "chunked", "truncated", "partial"] {
+        let (resource, _, _) = fixture.resource_with_output_limit(524288).await?;
+        publish(&mut fixture.author, &fixture.router, resource).await?;
+        let task = claim(&fixture.router).await?;
+        task_event(&fixture.router, &task, json!({"kind":"received"})).await?;
+        task_event(&fixture.router, &task, json!({"kind":"start"})).await?;
+        let output = if mode == "partial" {
+            json!({"healthy":true})
+        } else {
+            json!({"version":"1.2","healthy":true,"items":[{"id":"a"},{"id":"b"}]})
+        };
+        let (quality, failure) = if mode == "truncated" {
+            (
+                wire::OutputQuality::Truncated,
+                Some(wire::TaskFailure::OutputLimit),
+            )
+        } else {
+            (wire::OutputQuality::Complete, None)
+        };
+        let result = wire::TaskResult::new(
+            Some(0),
+            quality,
+            output,
+            wire::TaskDiagnostics::new("".into(), "".into(), 1, 1, failure)?,
+        )?;
+        let event = if mode == "chunked" {
+            let (reference, chunks) = wire::ChunkedTaskResult::split(result)?;
+            for chunk in chunks {
+                task_event(
+                    &fixture.router,
+                    &task,
+                    serde_json::to_value(wire::TaskEvent::OutputChunk(chunk))?,
+                )
+                .await?;
+            }
+            wire::TaskEvent::ChunkedResult(reference)
+        } else {
+            wire::TaskEvent::Result(result)
+        };
+        // A budget violation is a terminal failed collection, never a trusted partial
+        // snapshot or an endlessly retried transport rejection.
+        task_event(&fixture.router, &task, serde_json::to_value(event)?).await?;
+        let attempt = task["payload"]["attemptId"].as_str().unwrap();
+        let expected = if mode == "partial" {
+            "partial"
+        } else {
+            "failed"
+        };
+        ensure!(pg(&format!("SELECT result FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{attempt}'",case_tenant()))?.trim()==expected,"invalid collection outcome: {mode}");
+        if mode != "partial" {
+            let id = task["payload"]["taskId"].as_str().unwrap();
+            ensure!(pg(&format!("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{id}'",case_tenant()))?.trim()=="failed");
+            ensure!(pg(&format!("SELECT result->>'trusted' FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{id}'",case_tenant()))?.trim()=="false");
+        }
+    }
+    crate::test_support::stop_worker(stack).await?;
+    Ok(())
+}

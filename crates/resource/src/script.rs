@@ -153,9 +153,20 @@ impl ScriptDefinition {
         }
         Ok(())
     }
+    /// Enforce byte, nesting and row budgets independently of per-field schema quality.
+    pub fn validate_output_budget(&self, value: &Value) -> Result<(), Error> {
+        if serde_json::to_vec(value)
+            .map_err(|_| Error::InvalidInput)?
+            .len()
+            > self.0.output_bytes as usize
+        {
+            return Err(Error::InvalidInput);
+        }
+        output_structure(value, self.0.max_rows as usize, 0)
+    }
     /// Validate successful, complete output. Execution quality is checked by the caller.
     pub fn validate_output(&self, value: &Value) -> Result<(), Error> {
-        output_structure(value, self.0.max_rows as usize, 0)?;
+        self.validate_output_budget(value)?;
         validate(&self.0.output, value, self.0.output_bytes as usize)?;
         if value
             .as_array()

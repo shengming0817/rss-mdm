@@ -64,7 +64,7 @@ snapshot、partial、failed 分别表达完整快照、部分结果和失败。�
 
 ## Agent 上报本机 MDM 状态
 
-具有 `mdm.enrollment.v5` 的 Agent 用 `/reports` 提交 `body:{"kind":"mdmEnrollment","state":"unenrolled"}`；其它闭合状态为 `this_organization`、`other_organization`、`unknown`。sequence 仍属于该 Agent 来源的单调报告序列。该事实进入现有 CollectionRun、Observation、Inventory，字段为 `channel.mdm.enrollment`。标准入口任务的结果只说明入口是否打开，完成注册须由后续本机观察证明。
+具有 `mdm.enrollment.v5` 的 Agent 用 `/reports` 提交注册回执中对应的冻结 `collection`，并以 `body:{"kind":"snapshot","values":[{"field":"channel.mdm.enrollment","value":{"kind":"value","value":{"kind":"string","value":"unenrolled"}}}]}` 上报普通字段；其它闭合状态为 `this_organization`、`other_organization`、`unknown`。部分采集使用 `partial`，sequence 按该冻结采集定义的来源与 dataset 单调递增。该事实进入现有 CollectionRun、Observation、Inventory，字段为 `channel.mdm.enrollment`。标准入口任务的结果只说明入口是否打开，完成注册须由后续本机观察证明。
 
 ## #2534 的 V3 → V4 无兼容退出决定
 

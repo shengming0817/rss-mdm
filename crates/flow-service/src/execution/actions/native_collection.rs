@@ -70,6 +70,35 @@ pub async fn advance_run(
     native: &ExecutionPolicy<FrozenNativeCollection>,
     now: i64,
 ) -> Result<()> {
+    if matches!(
+        run.state.execution,
+        Execution::Running | Execution::NotStarted
+    ) {
+        let tenant = tx.tenant_id().to_string();
+        let id = run.id;
+        let result:Option<(String,String)>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_as("SELECT result,reason FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2 AND sealed_at IS NOT NULL").bind(tenant).bind(id).fetch_optional(c).await})).await?;
+        if let Some((result, reason)) = result {
+            if reason == "complete" {
+                run.state.execution = if result == "failed" {
+                    Execution::Failed
+                } else {
+                    Execution::Succeeded
+                };
+            } else if run.state.execution == Execution::NotStarted {
+                run.state.cancel();
+            } else {
+                run.state.execution = Execution::Unknown;
+            }
+            run.result =
+                Some(serde_json::json!({"collectionRun":run.id,"result":result,"reason":reason}));
+        }
+    }
+    if !matches!(
+        run.state.execution,
+        Execution::Running | Execution::NotStarted
+    ) {
+        return Ok(());
+    }
     if !native.authorized_in(tx, &run.target.device, now).await? {
         return Ok(());
     }
@@ -132,29 +161,6 @@ pub async fn advance_run(
                 attempt: run.id,
                 lease_until: run.deadline,
             };
-        }
-    }
-    if matches!(
-        run.state.execution,
-        Execution::Running | Execution::NotStarted
-    ) {
-        let tenant = tx.tenant_id().to_string();
-        let id = run.id;
-        let result:Option<(String,String)>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_as("SELECT result,reason FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2 AND sealed_at IS NOT NULL").bind(tenant).bind(id).fetch_optional(c).await})).await?;
-        if let Some((result, reason)) = result {
-            if reason == "complete" {
-                run.state.execution = if result == "failed" {
-                    Execution::Failed
-                } else {
-                    Execution::Succeeded
-                };
-            } else if run.state.execution == Execution::NotStarted {
-                run.state.cancel();
-            } else {
-                run.state.execution = Execution::Unknown;
-            }
-            run.result =
-                Some(serde_json::json!({"collectionRun":run.id,"result":result,"reason":reason}));
         }
     }
     Ok(())

@@ -200,7 +200,6 @@ pub async fn recover_one(
     if stale || plan.withdrawn_in(service, tx, &run.target, now).await? {
         run.state.cancel();
     }
-    run.state.expire(now, plan.timeout_seconds());
     if !stale
         && run.state.cancellation == Cancellation::None
         && run.state.execution != Execution::Unknown
@@ -208,6 +207,8 @@ pub async fn recover_one(
     {
         super::native_collection::advance_run(service, tx, &mut run, native, now).await?;
     }
+    // A sealed protocol result is durable execution evidence, even after worker downtime.
+    run.state.expire(now, plan.timeout_seconds());
     if run.state.execution == Execution::NotStarted
         && run.state.cancellation == Cancellation::Requested
     {

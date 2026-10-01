@@ -16,7 +16,7 @@ pub async fn catalog_at_in(
 ) -> Result<Catalog> {
     crate::reader::assert_tenant(c, tenant).await?;
     ensure!(watermark >= 0, "invalid catalog watermark");
-    let rows=sqlx::query("SELECT DISTINCT ON(field) field,definition::text AS definition FROM mdm.field_versions WHERE tenant_id=$1::uuid AND revision<=$2 ORDER BY field,version DESC LIMIT 1025")
+    let rows=sqlx::query("SELECT field,definition::text AS definition FROM (SELECT DISTINCT ON(field) field,definition FROM mdm.field_versions WHERE tenant_id=$1::uuid AND revision<=$2 ORDER BY field,version DESC) latest WHERE definition IS NOT NULL ORDER BY field LIMIT 1025")
         .bind(tenant.to_string()).bind(watermark).fetch_all(c).await?;
     ensure!(rows.len() <= 1024, "field catalog capacity");
     let mut fields: BTreeMap<_, _> = builtin::fields().into_iter().map(|f| (f.key, f)).collect();
