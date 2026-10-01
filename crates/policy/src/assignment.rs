@@ -106,6 +106,31 @@ pub enum Exit {
     /// Remove only effects that the selected resource supports removing.
     Remove,
 }
+/// Explicit delivery authority for the native behaviors in a software dependency closure.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SoftwareDelivery {
+    /// Concrete installers consume approved task content directly.
+    Direct,
+    /// Native package managers consume already published immutable snapshots from this output source.
+    Native {
+        /// Exact configured logical output source; imported provenance remains separate.
+        source: String,
+        /// Exact enterprise publication environment.
+        ring: SoftwareDeliveryRing,
+    },
+}
+/// Explicit software publication environment selected by the deployment author.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SoftwareDeliveryRing {
+    /// Test publication.
+    Test,
+    /// Pilot publication.
+    Pilot,
+    /// Production publication.
+    Production,
+}
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(
     tag = "kind",
@@ -140,6 +165,8 @@ pub enum Action {
     },
     /// Enterprise software installed or removed through the Agent.
     Software {
+        /// Explicit content or frozen native-source delivery authority.
+        delivery: SoftwareDelivery,
         /// Approved logical software release and exact platform variants.
         resource: ResourceBinding,
         /// Required, self-service, or explicit removal semantics.
@@ -374,9 +401,19 @@ impl Action {
                 schedule,
                 run_lifetime_seconds,
                 rollout,
+                delivery,
                 ..
             } => {
                 schedule.validate()?;
+                if let SoftwareDelivery::Native { source, .. } = delivery
+                    && (source.is_empty()
+                        || source.len() > 128
+                        || !source
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)))
+                {
+                    return Err(Error::Malformed);
+                }
                 if admission_operation.is_nil()
                     || !(60..=604800).contains(run_lifetime_seconds)
                     || rollout.stages.is_empty()
@@ -488,6 +525,7 @@ mod tests {
             },
                 "kind": "software",
                 "intent": "required_install",
+                "delivery": {"kind":"direct"},
                 "runLifetimeSeconds": 3600,
                 "admissionOperation": "22222222-2222-4222-8222-222222222222",
                 "rollout": {"stages": [{"scope": "11111111-1111-1111-1111-111111111111", "opensAt": 0}]}

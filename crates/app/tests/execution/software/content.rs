@@ -6,7 +6,7 @@ use sqlx::Connection;
 #[ignore = "make t2 MODULE=execution.software.content"]
 async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
     let fixture = Fixture::approved(Platform::MacOs).await?;
-    let stack = worker(&fixture.base).await?;
+    let stack = worker(&fixture.base, fixture.execution.content.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
     let resource = fixture.resource;
@@ -117,7 +117,7 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
 #[ignore = "make t2 MODULE=execution.software.content"]
 async fn uninstall_content_permission() -> Result<()> {
     let fixture = Fixture::approved(Platform::MacOs).await?;
-    let stack = worker(&fixture.base).await?;
+    let stack = worker(&fixture.base, fixture.execution.content.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
     let removal = fixture.removal;
@@ -167,7 +167,7 @@ async fn uninstall_content_permission() -> Result<()> {
 #[ignore = "make t2 MODULE=execution.software.content"]
 async fn windows_variant_content() -> Result<()> {
     let fixture = Fixture::approved(Platform::Windows).await?;
-    let stack = worker(&fixture.base).await?;
+    let stack = worker(&fixture.base, fixture.execution.content.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
     let resource = fixture.resource;
@@ -178,7 +178,7 @@ async fn windows_variant_content() -> Result<()> {
     let windows_policy = Uuid::new_v4();
     write(&mut author,&router,&format!("/api/v2/policies/{windows_policy}"),0,json!({"action":"put","enabled":true,
         "definition":{"scope":windows_scope,
-        "action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"kind":"software","intent":"required_install","admissionOperation":first_operation,"runLifetimeSeconds":600,
+        "action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"kind":"software","intent":"required_install","delivery":{"kind":"direct"},"admissionOperation":first_operation,"runLifetimeSeconds":600,
         "rollout":{"stages":[{"scope":windows_scope,"opensAt":0}]}}}})).await?;
     let windows_page = author
         .call(
@@ -192,13 +192,13 @@ async fn windows_variant_content() -> Result<()> {
         windows_page.1["items"][0]["taskAdmission"]["state"] == "eligible",
         "windows admission: {windows_page:?}"
     );
-    let windows_task = claim_with(&router, &windows_credential).await?;
+    let windows_task = claim_with(&router, &windows_credential, Platform::Windows).await?;
     ensure!(
         windows_task["payload"]["platform"] == "windows"
             && windows_task["payload"]["architecture"] == "x86_64"
             && windows_task["payload"]["steps"][0]["action"]["package"]
                 == "Private.WindowsDependency"
-            && windows_task["payload"]["steps"][1]["action"]["format"] == "msi",
+            && windows_task["payload"]["steps"][1]["action"]["behavior"]["kind"] == "msi",
         "windows variant: {windows_task}"
     );
     let windows_content = Request::builder()

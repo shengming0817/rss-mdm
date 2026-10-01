@@ -44,7 +44,7 @@ SELECT
  WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%'
  AND c.relkind IN ('r','v','m','f')
  AND n.nspname NOT IN ('mdm_resource','mdm_software_release','mdm_software_composition')
- AND (n.nspname,c.relname) NOT IN (('rss_audit','heads'),('rss_audit','records'),('rss_ledger','heads'),('rss_ledger','entries'),('mdm_audit','receipts'),('rss_transactional_messaging','policy'),('rss_transactional_messaging','outbox'))
+ AND (n.nspname,c.relname) NOT IN (('rss_audit','heads'),('rss_audit','records'),('rss_ledger','heads'),('rss_ledger','entries'),('mdm_audit','receipts'),('mdm_software','sources'),('mdm_software','approvals'),('rss_transactional_messaging','policy'),('rss_transactional_messaging','outbox'))
  AND (has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,REFERENCES')))
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
  WHERE c.relkind='S' AND n.nspname NOT IN ('pg_catalog','information_schema')
@@ -63,3 +63,11 @@ SELECT
  WHERE c.oid='mdm_audit.receipts'::regclass AND (a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable)))
  AND NOT EXISTS(SELECT 1 FROM pg_attribute c,LATERAL aclexplode(c.attacl) a
  WHERE c.attrelid='mdm_audit.receipts'::regclass AND (a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable)))
+
+ AND has_schema_privilege(current_user,'mdm_software','USAGE')
+ AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+ WHERE n.nspname='mdm_software' AND c.relkind='r'
+ AND (has_table_privilege(current_user,c.oid,'SELECT')<>(c.relname IN('sources','approvals'))
+ OR has_table_privilege(current_user,c.oid,'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+ OR has_any_column_privilege(current_user,c.oid,'INSERT,UPDATE,REFERENCES')
+ OR NOT c.relrowsecurity OR NOT c.relforcerowsecurity OR c.relowner IN(SELECT oid FROM reachable)))

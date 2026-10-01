@@ -201,6 +201,18 @@ impl ResourceCatalog {
                 }
             }
         };
+        if let pg::Command::Insert(version) = &command
+            && version.kind() == r::Kind::Software
+        {
+            let catalog = rss_mdm_software_service::catalog::Catalog::new(
+                self.runtime.clone(),
+                self.tenant,
+                Arc::new(crate::software_publication::host::Audit(
+                    self.audit_store.clone(),
+                )),
+            );
+            catalog.private_authoring_in(tx, version).await?;
+        }
         json(&checked(
             self.resources
                 .execute_in(
@@ -338,6 +350,9 @@ pub enum Command {
     },
 }
 impl ResourceCatalog {
+    pub(crate) fn software_resources(&self) -> &pg::ResourceStore {
+        &self.resources
+    }
     pub async fn new(
         audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         runtime: Arc<PgRuntime>,

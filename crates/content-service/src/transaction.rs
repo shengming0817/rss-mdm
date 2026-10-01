@@ -207,6 +207,8 @@ impl From<rss_mdm_software_service::catalog::Error> for Fault {
             C::Audit(e) => e.into(),
             C::Fact(e) => e.into(),
             C::Input => Error::Malformed.into(),
+            C::Unsupported => Error::Unsupported.into(),
+            C::Dependency => Error::Forbidden.into(),
             C::Conflict => Error::Conflict.into(),
             C::NotAdmitted => Error::Forbidden.into(),
             C::Missing => Error::Missing.into(),

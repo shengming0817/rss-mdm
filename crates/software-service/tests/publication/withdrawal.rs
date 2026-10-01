@@ -1,188 +1,152 @@
 use super::*;
 
 #[tokio::test]
-#[ignore = "real PG + HTTPS: make t2 MODULE=publication.withdrawal"]
-async fn ring_isolation_unstarted_withdrawal_and_lost_delete_ack() {
+#[ignore = "real PG + content: make t2 MODULE=publication.withdrawal"]
+async fn quarantine_denies_all_reads_and_ring_cleanup_preserves_other_projections() {
     let server = Server::new().await;
     let runtime = runtime().await;
     let service = server.service(runtime.clone(), server.winget()).await;
-    let input = seed(runtime.clone(), &server, server.winget_submission()).await;
+    let input = seed(runtime.clone(), &server, server.winget_document()).await;
     service.create_candidate(&input, cutoff()).await.unwrap();
-    let p = authorize(&service, &input.candidate, rel::Ring::Test).await;
-    service.publish(p.id(), 1, at(10), cutoff()).await.unwrap();
-    assert_eq!(server.state.lock().unwrap().manifests.len(), 1);
+    let test = authorize(&service, &input.candidate, rel::Ring::Test).await;
+    service
+        .publish(test.id(), 1, at(10), cutoff())
+        .await
+        .unwrap();
     let pilot = authorize(&service, &input.candidate, rel::Ring::Pilot).await;
     service
         .publish(pilot.id(), 1, at(10), cutoff())
         .await
         .unwrap();
-    assert_eq!(server.state.lock().unwrap().manifests.len(), 2);
-    let production = authorize(&service, &input.candidate, rel::Ring::Production).await;
+    assert!(
+        service
+            .published(rel::Ring::Test, test.id().digest().bytes(), cutoff())
+            .await
+            .is_ok()
+    );
+    assert!(
+        service
+            .published(rel::Ring::Pilot, pilot.id().digest().bytes(), cutoff())
+            .await
+            .is_ok()
+    );
+    assert!(
+        service
+            .published(rel::Ring::Pilot, test.id().digest().bytes(), cutoff())
+            .await
+            .is_err()
+    );
+    let request = request_for(&service, &input.candidate).await;
     assert_eq!(
         service
-            .withdraw(
-                &input.candidate,
-                rel::Ring::Production,
-                &request_for(&service, &input.candidate).await,
-                cutoff()
-            )
+            .withdraw(&input.candidate, rel::Ring::Test, &request, cutoff())
             .await
             .unwrap()
             .outcome,
         Withdrawal::Complete
     );
-    assert_eq!(server.state.lock().unwrap().posts, 2);
+    // Candidate quarantine fences reads in every ring, while each projection is removed by its own intent.
     assert!(
         service
-            .publish(production.id(), 1, at(10), cutoff())
+            .published(rel::Ring::Test, test.id().digest().bytes(), cutoff())
             .await
-            .is_ok()
+            .is_err()
     );
-    assert_eq!(server.state.lock().unwrap().posts, 2);
-    server.state.lock().unwrap().reject_information_once = true;
+    assert!(
+        service
+            .published(rel::Ring::Pilot, pilot.id().digest().bytes(), cutoff())
+            .await
+            .is_err()
+    );
+    assert!(
+        service
+            .published_page(rel::Ring::Test, "", 100, cutoff())
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         service
-            .withdraw(
-                &input.candidate,
-                rel::Ring::Test,
-                &request_for(&service, &input.candidate).await,
-                cutoff()
-            )
+            .published_page(rel::Ring::Pilot, "", 100, cutoff())
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        service
+            .withdraw(&input.candidate, rel::Ring::Test, &request, cutoff())
+            .await
+            .unwrap()
+            .replayed
+    );
+    let request = request_for(&service, &input.candidate).await;
+    assert_eq!(
+        service
+            .withdraw(&input.candidate, rel::Ring::Pilot, &request, cutoff())
             .await
             .unwrap()
             .outcome,
-        Withdrawal::PreflightRetryable
+        Withdrawal::Complete
     );
-    assert_eq!(server.state.lock().unwrap().deletes, 0);
-    assert_eq!(
+    assert!(
         service
-            .reconcile_withdrawal(p.id(), 1, cutoff())
-            .await
-            .unwrap(),
-        Withdrawal::PreflightRetryable
-    );
-    assert_eq!(server.state.lock().unwrap().deletes, 0);
-    drop(service);
-    let service = server.service(runtime.clone(), server.winget()).await;
-    assert_eq!(
-        service
-            .withdrawal_status(p.id(), 1, cutoff())
-            .await
-            .unwrap(),
-        Some(Withdrawal::PreflightRetryable)
-    );
-    assert_eq!(server.state.lock().unwrap().deletes, 0);
-    let bindings = audit_records()
-        .iter()
-        .filter(|r| r.event().facts().resource().id().as_str() == input.candidate.value())
-        .map(audit_payload)
-        .filter(|p| p["software"]["stage"] == "record_result")
-        .map(|p| p["software"]["binding"].as_str().unwrap().to_owned())
-        .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(bindings.len(), 2);
-    server.state.lock().unwrap().drop_delete_response = true;
-    let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let writer = logs.clone();
-    let subscriber = tracing_subscriber::fmt()
-        .without_time()
-        .with_ansi(false)
-        .with_writer(move || AuditLog(writer.clone()))
-        .finish();
-    assert_eq!(
-        service
-            .withdraw(
-                &input.candidate,
-                rel::Ring::Test,
-                &request_for(&service, &input.candidate).await,
-                cutoff()
-            )
-            .with_subscriber(subscriber)
+            .published_page(rel::Ring::Pilot, "", 100, cutoff())
             .await
             .unwrap()
-            .outcome,
-        Withdrawal::SourceOutcomeUnknown
+            .is_empty()
     );
-    let logs = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
-    assert!(logs.contains("software source write needs reconciliation"));
-    for field in [
-        "tenant=",
-        "publication=",
-        "attempt=1",
-        "ring=0",
-        "source_binding=",
-    ] {
-        assert!(logs.contains(field), "missing {field}: {logs}");
-    }
-    assert!(!logs.contains(&server.base));
-    assert!(!logs.contains("x-functions-key"));
-    assert_eq!(
-        service
-            .reconcile_withdrawal(p.id(), 1, cutoff())
-            .await
-            .unwrap(),
-        Withdrawal::SourceOutcomeUnknown
-    );
-    assert_eq!(server.state.lock().unwrap().deletes, 1);
-    drop(service);
-    let restarted = server.service(runtime.clone(), server.winget()).await;
-    assert_eq!(
-        restarted
-            .withdrawal_status(p.id(), 1, cutoff())
-            .await
-            .unwrap(),
-        Some(Withdrawal::SourceOutcomeUnknown)
-    );
-    assert_eq!(server.state.lock().unwrap().deletes, 1);
+    assert_eq!(server.state.lock().unwrap().posts, 0);
+    assert_eq!(server.state.lock().unwrap().deletes, 0);
     runtime.close().await;
 }
 
 #[tokio::test]
-#[ignore = "real PG + HTTPS: make t2 MODULE=publication.withdrawal"]
-async fn preflight_failure_allows_explicit_retry_without_resubmitting_unknown() {
+#[ignore = "real PG + content: make t2 MODULE=publication.withdrawal"]
+async fn unstarted_withdrawal_cancels_original_attempt_without_publishing() {
     let server = Server::new().await;
     let runtime = runtime().await;
     let service = server.service(runtime.clone(), server.winget()).await;
-    let input = seed(runtime.clone(), &server, server.winget_submission()).await;
+    let input = seed(runtime.clone(), &server, server.winget_document()).await;
     service.create_candidate(&input, cutoff()).await.unwrap();
     let p = authorize(&service, &input.candidate, rel::Ring::Test).await;
-    server.state.lock().unwrap().reject_information_once = true;
+    let request = request_for(&service, &input.candidate).await;
+    assert_eq!(
+        service
+            .withdraw(&input.candidate, rel::Ring::Test, &request, cutoff())
+            .await
+            .unwrap()
+            .outcome,
+        Withdrawal::Complete
+    );
     assert!(matches!(
-        service.publish(p.id(), 1, at(10), cutoff()).await.unwrap(),
+        service
+            .publish(p.id(), p.attempt, at(10), cutoff())
+            .await
+            .unwrap(),
         rel::PublicationOutcome::Reported(rel::PublicationResult::NotApplied(_))
     ));
+    assert!(
+        service
+            .published(rel::Ring::Test, p.id().digest().bytes(), cutoff())
+            .await
+            .is_err()
+    );
+    assert!(
+        service
+            .reconciliation_page("", 32, cutoff())
+            .await
+            .unwrap()
+            .work
+            .is_empty()
+    );
+    assert_eq!(
+        service
+            .reconcile_withdrawal(p.id(), p.attempt, cutoff())
+            .await
+            .unwrap(),
+        Withdrawal::Complete
+    );
     assert_eq!(server.state.lock().unwrap().posts, 0);
-    let c = service
-        .candidate(&input.candidate, cutoff())
-        .await
-        .unwrap()
-        .unwrap();
-    let r = request(&c);
-    let rel::Transition::Applied {
-        decision: rel::Decision::Publish(next),
-        ..
-    } = service
-        .retry(&input.candidate, rel::Ring::Test, 1, &r, cutoff())
-        .await
-        .unwrap()
-    else {
-        panic!()
-    };
-    assert_eq!(next.id(), p.id());
-    assert_eq!(next.attempt, 2);
-    assert!(matches!(
-        service
-            .publish(next.id(), 2, at(10), cutoff())
-            .await
-            .unwrap(),
-        rel::PublicationOutcome::Reported(rel::PublicationResult::Applied(_))
-    ));
-    assert_eq!(server.state.lock().unwrap().posts, 1);
-    assert!(matches!(
-        service
-            .retry(&input.candidate, rel::Ring::Test, 1, &r, cutoff())
-            .await
-            .unwrap(),
-        rel::Transition::Replayed(_)
-    ));
     runtime.close().await;
 }

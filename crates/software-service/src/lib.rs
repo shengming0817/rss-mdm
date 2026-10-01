@@ -27,16 +27,51 @@ pub trait AuditPort: Send + Sync {
 }
 /// Resolves only a host-approved exact credential binding, without exposing credential files.
 pub trait Credentials: Send + Sync {
-    fn winget(
+    fn brew_read(
         &self,
         tenant: TenantId,
         source: &str,
         reference: &str,
-    ) -> publication::Result<rss_mdm_winget_source::WriteAccess>;
+    ) -> publication::Result<BrewReadAccess>;
+}
+/// A source-scoped read credential for the narrow Brew upload-pack/artifact surface.
+/// Neither tokens nor their hashes are serialized into source definitions or documents.
+pub struct BrewReadAccess {
+    tenant: TenantId,
+    source: String,
+    digest: [u8; 32],
+}
+impl BrewReadAccess {
+    pub fn new(tenant: TenantId, source: &str, token: &str) -> publication::Result<Self> {
+        use sha2::{Digest, Sha256};
+        rss_mdm_resource::Id::new(source).map_err(|_| publication::Error::Input)?;
+        if token.len() < 32 || token.len() > 512 || !token.bytes().all(|b| b.is_ascii_graphic()) {
+            return Err(publication::Error::Input);
+        }
+        Ok(Self {
+            tenant,
+            source: source.into(),
+            digest: Sha256::digest(token.as_bytes()).into(),
+        })
+    }
+    pub fn permits(&self, tenant: TenantId, source: &str, token: &str) -> bool {
+        use sha2::{Digest, Sha256};
+        if tenant != self.tenant || source != self.source || token.len() > 512 {
+            return false;
+        }
+        let digest = Sha256::digest(token.as_bytes());
+        self.digest
+            .iter()
+            .zip(digest.iter())
+            .fold(0u8, |sum, (a, b)| sum | (a ^ b))
+            == 0
+    }
 }
 pub struct Host {
+    pub content: Arc<dyn catalog::ContentPort>,
     pub runtime: Arc<PgRuntime>,
     pub audit: Arc<dyn AuditPort>,
     pub credentials: Arc<dyn Credentials>,
 }
 pub mod catalog;
+pub mod imports;

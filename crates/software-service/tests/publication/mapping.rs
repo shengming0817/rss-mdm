@@ -7,20 +7,14 @@ async fn complete_variant_mapping_and_resource_reference_protection() {
     let server = Server::new().await;
     let runtime = runtime().await;
     let service = server.service(runtime.clone(), server.winget()).await;
-    let mut input = seed(runtime.clone(), &server, server.winget_submission()).await;
-    let original = input.submission.clone();
-    let Submission::Winget { manifest } = &mut input.submission else {
-        panic!()
-    };
-    manifest["Versions"][0]["Installers"]
-        .as_array_mut()
-        .unwrap()
-        .pop();
+    let mut input = seed(runtime.clone(), &server, server.winget_document()).await;
+    let original = input.resource_digest;
+    input.resource_digest = [0; 32];
     assert!(matches!(
         service.create_candidate(&input, cutoff()).await,
         Err(Error::Content)
     ));
-    input.submission = original;
+    input.resource_digest = original;
     let (receipt, replayed) = service.create_candidate(&input, cutoff()).await.unwrap();
     assert!(!replayed);
     assert_eq!(
@@ -41,7 +35,6 @@ async fn complete_variant_mapping_and_resource_reference_protection() {
             tenant(),
             server.logical.clone(),
             same,
-            server.artifacts(),
             actors(),
             cutoff()
         )
@@ -54,7 +47,6 @@ async fn complete_variant_mapping_and_resource_reference_protection() {
             tenant(),
             server.logical.clone(),
             server.winget(),
-            server.artifacts(),
             actors(),
             cutoff(),
         )
@@ -80,7 +72,6 @@ async fn complete_variant_mapping_and_resource_reference_protection() {
             tenant(),
             format!("{}-alias", server.logical),
             server.winget(),
-            server.artifacts(),
             actors(),
             cutoff()
         )
@@ -95,7 +86,6 @@ async fn complete_variant_mapping_and_resource_reference_protection() {
             tenant(),
             server.logical.clone(),
             swapped,
-            server.artifacts(),
             actors(),
             cutoff()
         )

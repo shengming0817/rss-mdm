@@ -3,7 +3,7 @@ use rss_request_context::TenantId;
 use serde_json::{Value, json};
 
 fn spec() -> Value {
-    json!({"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"Acme.App","version":"1.0+enterprise","format":"msi","primary":"package","artifacts":{"package":{"reference":"app-msi","length":3,"sha256":vec![2;32]}},"install":{"executor":"msi","entry":null,"runAs":"system","arguments":["/qn"],"environment":{},"timeoutSeconds":600,"outputBytes":4096},"uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1.0+enterprise"},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"bundle":null})
+    json!({"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"Acme.App","version":"1.0+enterprise","artifacts":{"package":{"reference":"app-msi","length":3,"sha256":vec![2;32]}},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":["/qn"],"environment":{},"timeoutSeconds":600,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1.0+enterprise"},"upgradeInvocation":{"runAs":"system","arguments":["/qn"],"environment":{},"timeoutSeconds":600,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}})
 }
 fn version(value: Value) -> Result<Version, String> {
     let definition: SoftwareDefinition =
@@ -26,10 +26,12 @@ fn version(value: Value) -> Result<Version, String> {
 fn complete_software_definition_is_frozen_without_external_manifest() {
     let original = version(spec()).unwrap();
     for (pointer, value) in [
-        ("/install/runAs", json!("logged_in_user")),
-        ("/install/timeoutSeconds", json!(601)),
-        ("/install/outputBytes", json!(8192)),
-        ("/install/environment", json!({"RSS_PARAM_MODE":"safe"})),
+        ("/behavior/install/timeoutSeconds", json!(601)),
+        ("/behavior/install/outputBytes", json!(8192)),
+        (
+            "/behavior/install/environment",
+            json!({"RSS_PARAM_MODE":"safe"}),
+        ),
         ("/source/id", json!("another-source")),
         ("/source/sha256", json!(vec![3; 32])),
         ("/package", json!("Acme.Other")),
@@ -40,9 +42,9 @@ fn complete_software_definition_is_frozen_without_external_manifest() {
             "/dependencies",
             json!([{"resource":"dependency","version":"v1","sha256":vec![3;32]}]),
         ),
-        ("/install/arguments", json!(["/quiet"])),
+        ("/behavior/install/arguments", json!(["/quiet"])),
         ("/source/revision", json!("2")),
-        ("/detect/version", json!("2")),
+        ("/behavior/detect/version", json!("2")),
         ("/reboot", json!("forbid")),
         ("/artifacts/package/length", json!(4)),
     ] {
@@ -59,7 +61,7 @@ fn complete_software_definition_is_frozen_without_external_manifest() {
     resource.insert(original.clone(), at).unwrap();
     assert!(!resource.insert(original, at).unwrap());
     let mut changed = spec();
-    changed["install"]["arguments"] = json!(["/quiet"]);
+    changed["behavior"]["install"]["arguments"] = json!(["/quiet"]);
     assert_eq!(
         resource.insert(version(changed).unwrap(), at),
         Err(Error::IdentityConflict)
@@ -67,20 +69,20 @@ fn complete_software_definition_is_frozen_without_external_manifest() {
 }
 #[test]
 fn incomplete_or_unbounded_software_is_rejected() {
-    for pointer in ["detect", "install", "artifacts", "source"] {
+    for pointer in ["behavior", "artifacts", "source"] {
         let mut v = spec();
         v.as_object_mut().unwrap().remove(pointer);
         assert!(version(v).is_err(), "{pointer}");
     }
     for (pointer, value) in [
-        ("/install/timeoutSeconds", json!(0)),
-        ("/install/environment", json!({"PATH":"evil"})),
-        ("/primary", json!("missing")),
+        ("/behavior/install/timeoutSeconds", json!(0)),
+        ("/behavior/install/environment", json!({"PATH":"evil"})),
+        ("/behavior/installer", json!("missing")),
         (
             "/dependencies",
             json!([{"resource":"app","version":"v1","sha256":vec![3;32]}]),
         ),
-        ("/detect", json!({"kind":"exit_zero"})),
+        ("/behavior/detect", json!({"kind":"exit_zero"})),
     ] {
         let mut v = spec();
         *v.pointer_mut(pointer).unwrap() = value;
@@ -96,16 +98,15 @@ fn software_validation_reports_closed_context_without_input_values() {
     for (pointer, value, category) in [
         ("/source/id", json!("secret-source-value!"), "Source"),
         ("/package", json!(""), "Identity"),
-        ("/primary", json!("missing"), "Artifact"),
+        ("/behavior/installer", json!("missing"), "Artifact"),
         (
             "/dependencies",
             json!([{"resource":"..","version":"v1","sha256":vec![3;32]}]),
             "Dependency",
         ),
-        ("/format", json!("bundle"), "Bundle"),
-        ("/install/timeoutSeconds", json!(0), "Command"),
+        ("/behavior/install/timeoutSeconds", json!(0), "Command"),
         (
-            "/detect/productCode",
+            "/behavior/detect/productCode",
             json!("bad-product-code"),
             "Detection",
         ),

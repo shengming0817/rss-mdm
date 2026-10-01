@@ -78,7 +78,7 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
             Method::POST,
             release.clone(),
             Some(
-                json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"candidate","resource":"missing","version":"v1","expectedResourceRevision":1,"submission":{"kind":"Winget","manifest":{}}}}),
+                json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"candidate","resource":"missing","version":"v1","expectedResourceRevision":1,"resourceDigest":vec![1;32]}}),
             ),
         ),
         (

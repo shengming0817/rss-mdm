@@ -25,12 +25,13 @@ thiserror.workspace = true
 libc.workspace = true
 futures.workspace = true
 bytes.workspace = true
+quick-xml.workspace = true
+tempfile.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "sync", "rt", "time"] }
 tokio-util = { workspace = true, features = ["io"] }
 zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
-tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 
 [lints]

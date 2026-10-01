@@ -152,6 +152,8 @@ async fn relay_crash_child() -> anyhow::Result<()> {
     let service = Box::pin(crate::flow::execution::open(
         &config,
         crate::test_support::identity::audit_store(&config).await?,
+        crate::flow::execution::open_content(&config)?,
+        std::collections::BTreeMap::new(),
     ))
     .await?;
     let relay = PgOutboxStore::<()>::new(

@@ -3,7 +3,7 @@ use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json, Router,
     extract::{Path, State},
-    routing::get,
+    routing::{get, post},
 };
 use rss_mdm_audit_integration::RequestAudit;
 pub(crate) use rss_mdm_flow_service::software_catalog::Access as HttpState;
@@ -12,6 +12,7 @@ use serde_json::Value;
 use std::sync::Arc;
 pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
+        .route("/software/imports", post(import))
         .route(
             "/software/resources/{id}/versions/{version}/content",
             get(download),
@@ -107,4 +108,16 @@ async fn download(
     )
     .await?;
     crate::content::http::response(content, &headers).await
+}
+
+async fn import(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Json(op): Json<Operation<rss_mdm_software_service::imports::ImportRequest>>,
+) -> Result<Json<Value>, Error> {
+    rss_mdm_flow_service::software_catalog::import(&app, &auth.proof, &audit, op)
+        .await
+        .map(Json)
+        .map_err(Into::into)
 }

@@ -1,7 +1,7 @@
 //! Read-only bridge from a published Policy version to Agent execution.
 use super::*;
 enum Authority {
-    Policy(Policy),
+    Policy(Box<Policy>),
     Remote(crate::planning::remote_operations::Remote),
 }
 pub struct ExecutionPolicy {
@@ -27,7 +27,7 @@ pub async fn read_in(
         active: policy.enabled && policy.version == id,
         frozen: *action,
         frequency,
-        authority: Authority::Policy(policy),
+        authority: Authority::Policy(Box::new(policy)),
     })
 }
 impl ExecutionPolicy {

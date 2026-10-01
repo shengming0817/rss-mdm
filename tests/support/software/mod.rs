@@ -21,6 +21,7 @@ use tokio::{
 };
 #[derive(Default)]
 pub struct State {
+    pub source_documents: BTreeMap<String, Vec<u8>>,
     pub manifests: BTreeMap<String, serde_json::Value>,
     pub posts: usize,
     pub deletes: usize,
@@ -48,9 +49,17 @@ impl Drop for Server {
 }
 impl Server {
     pub async fn new() -> Self {
+        Self::at_port(0).await
+    }
+    pub async fn at_port(port: u16) -> Self {
         let root = PathBuf::from(std::env::var("SOURCE_T2_TLS").unwrap());
         let address = std::env::var("SOURCE_T2_ADDRESS").unwrap().parse().unwrap();
-        let listener = TcpListener::bind((address, 0)).await.unwrap();
+        let bind_address = if port == 443 {
+            "0.0.0.0".parse().unwrap()
+        } else {
+            address
+        };
+        let listener = TcpListener::bind((bind_address, port)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let certs =
             tokio_rustls::rustls::pki_types::CertificateDer::pem_file_iter(root.join("server.pem"))
@@ -115,9 +124,7 @@ impl Server {
         let [test, pilot, production] = ["test", "pilot", "production"].map(|ring| {
             SourceConfig::Winget(WingetConfig {
                 base: format!("{}{ring}/", self.base),
-                addresses: vec![self.address],
-                private_ca: Some(self.ca.clone()),
-                credential_reference: "source-key".into(),
+                artifacts_base: format!("{}hosted/artifacts/", self.base),
             })
         });
         RingSources {
@@ -136,14 +143,13 @@ impl Server {
             tenant(),
             self.logical.clone(),
             config,
-            self.artifacts(),
             actors(),
             cutoff(),
         )
         .await
         .unwrap()
     }
-    pub fn winget_submission(&self) -> Submission {
+    pub fn winget_document(&self) -> ExportDocument {
         let mut v: serde_json::Value = serde_json::from_str(include_str!(
             "../../../crates/winget-source/tests/fixtures/msi.json"
         ))
@@ -160,7 +166,7 @@ impl Server {
             .as_array_mut()
             .unwrap()
             .push(arm);
-        Submission::Winget {
+        ExportDocument::Winget {
             manifest: v["Data"].clone(),
         }
     }
@@ -176,6 +182,14 @@ fn respond(
 ) -> Option<(u16, Vec<u8>)> {
     let mut s = state.lock().unwrap();
     let lower = header.to_ascii_lowercase();
+    if let Some(document) = s.source_documents.get(path) {
+        assert!(
+            !lower.contains("authorization:")
+                && !lower.contains("cookie:")
+                && !lower.contains("x-functions-key:")
+        );
+        return Some((200, document.clone()));
+    }
     if path.starts_with("/artifacts/") {
         s.artifact_auth_leaked |= lower.contains("authorization:")
             || lower.contains("cookie:")
@@ -285,24 +299,29 @@ pub fn request(c: &rel::Candidate) -> ServiceRequest {
         as_of: at(10),
     }
 }
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "typed provider fixtures retain format-specific immutable material and admission setup"
+)]
 pub async fn seed(
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     server: &Server,
-    submission: Submission,
+    document: ExportDocument,
 ) -> CandidateInput {
     let store = resource_pg::ResourceStore::new(runtime, tenant(), deadline())
         .await
         .unwrap();
+    let source_snapshot = admit_private_source(&server.logical).await;
     let key = id(&unique());
     let mut variants = Vec::new();
-    let (package, package_version, platform, variant) = match &submission {
-        Submission::Winget { .. } => (
-            "Acme.App",
-            "1",
+    let (package, package_version, platform, variant) = match &document {
+        ExportDocument::Winget { manifest } => (
+            manifest["PackageIdentifier"].as_str().unwrap(),
+            manifest["Versions"][0]["PackageVersion"].as_str().unwrap(),
             resource::Platform::Windows,
             "msi.machine.no-id",
         ),
-        Submission::Brew { recipe } => (
+        ExportDocument::Brew { recipe } => (
             recipe.package.as_str(),
             recipe.version.as_str(),
             resource::Platform::MacOS,
@@ -332,7 +351,107 @@ pub async fn seed(
                     )
                     .spec()
                     .clone();
-                    if let Submission::Brew { recipe } = &submission
+                    spec.source = source_snapshot.clone();
+                    match &document {
+                        ExportDocument::Winget { manifest } => {
+                            let version = &manifest["Versions"][0];
+                            let metadata = &version["DefaultLocale"];
+                            spec.export = resource::SoftwareExport::Winget {
+                                locale: metadata["PackageLocale"].as_str().unwrap().into(),
+                                name: metadata["PackageName"].as_str().unwrap().into(),
+                                publisher: metadata["Publisher"].as_str().unwrap().into(),
+                                description: metadata["ShortDescription"].as_str().unwrap().into(),
+                                license: metadata["License"].as_str().unwrap().into(),
+                            };
+                            let installer = version["Installers"]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .find(|i| {
+                                    i["Architecture"]
+                                        == if arch == resource::Architecture::X86_64 {
+                                            "x64"
+                                        } else {
+                                            "arm64"
+                                        }
+                                })
+                                .unwrap();
+                            spec.artifacts.get_mut("package").unwrap().origin =
+                                Some(installer["InstallerUrl"].as_str().unwrap().into());
+                        }
+                        ExportDocument::Brew { recipe } => {
+                            let payload = match &recipe.payload {
+                                BrewPayload::Cask { artifacts, install } => {
+                                    let file = artifacts
+                                        .iter()
+                                        .find(|a| {
+                                            a.architecture
+                                                == if arch == resource::Architecture::X86_64 {
+                                                    "x86_64"
+                                                } else {
+                                                    "aarch64"
+                                                }
+                                        })
+                                        .unwrap();
+                                    spec.artifacts.get_mut("package").unwrap().origin =
+                                        Some(file.artifact.url.clone());
+                                    let (path, receipts) = match install {
+                                        CaskInstall::Pkg { path, receipts } => {
+                                            (path.clone(), receipts.clone())
+                                        }
+                                        CaskInstall::App { path } => (path.clone(), vec![]),
+                                    };
+                                    if let resource::SoftwareBehavior::Brew(n) = &mut spec.behavior
+                                    {
+                                        n.scope = resource::SoftwareScope::System;
+                                        n.install.run_as = resource::RunAs::System;
+                                        n.upgrade_invocation.run_as = resource::RunAs::System;
+                                        let native = n.clone();
+                                        spec.behavior = resource::SoftwareBehavior::Pkg(native);
+                                    }
+                                    resource::BrewExport::Cask { path, receipts }
+                                }
+                                BrewPayload::Formula {
+                                    source: _,
+                                    executable,
+                                    bottles,
+                                    revision,
+                                    rebuild,
+                                    ..
+                                } => {
+                                    let b = bottles
+                                        .iter()
+                                        .find(|b| {
+                                            b.tag
+                                                == if arch == resource::Architecture::X86_64 {
+                                                    "sonoma"
+                                                } else {
+                                                    "arm64_sonoma"
+                                                }
+                                        })
+                                        .unwrap();
+                                    spec.artifacts.get_mut("package").unwrap().origin =
+                                        Some(b.artifact.url.clone());
+                                    resource::BrewExport::Bottle {
+                                        artifact: "package".into(),
+                                        source: "source".into(),
+                                        tag: b.tag.clone(),
+                                        cellar: b.cellar.clone(),
+                                        revision: *revision,
+                                        rebuild: *rebuild,
+                                        executable: executable.clone(),
+                                    }
+                                }
+                            };
+                            spec.export = resource::SoftwareExport::Brew {
+                                name: recipe.name.clone(),
+                                description: recipe.description.clone(),
+                                homepage: recipe.homepage.clone(),
+                                payload,
+                            };
+                        }
+                    }
+                    if let ExportDocument::Brew { recipe } = &document
                         && let BrewPayload::Formula {
                             source,
                             dependencies,
@@ -366,9 +485,45 @@ pub async fn seed(
         variants,
     )
     .unwrap();
+    let content = stored_content();
+    for v in version.variants() {
+        let resource::Declaration::Software { definition } = v.declaration() else {
+            unreachable!()
+        };
+        for artifact in definition.materials() {
+            let upload = uuid::Uuid::new_v4();
+            let actor = "publication-fixture";
+            let binding = rss_mdm_content_service::Binding {
+                resource: key.as_str().into(),
+                version: version.label().as_str().into(),
+                variant: v.key().as_str().into(),
+                platform: v.platform(),
+                architecture: v.architecture(),
+                resource_digest: version.digest().bytes(),
+                source: Some(definition.spec().source.clone()),
+                origin: artifact.origin.clone(),
+                reference: artifact.reference.clone(),
+                length: artifact.length,
+                sha256: artifact.sha256,
+                actor: actor.into(),
+            };
+            content.begin(upload, binding, 1700000000).await.unwrap();
+            content
+                .append(
+                    actor,
+                    upload,
+                    0,
+                    1700000000,
+                    std::io::Cursor::new(b"abc".to_vec()),
+                )
+                .await
+                .unwrap();
+            content.finish(actor, upload, 1700000000).await.unwrap();
+        }
+    }
     for (revision, command) in [
         (0, resource_pg::Command::Create(resource::Kind::Software)),
-        (1, resource_pg::Command::Insert(version)),
+        (1, resource_pg::Command::Insert(version.clone())),
     ] {
         store
             .execute(
@@ -384,6 +539,7 @@ pub async fn seed(
             .await
             .unwrap();
     }
+    admit_version(&version).await;
     CandidateInput {
         actor: rel::ActorId::new(tenant(), "publisher").unwrap(),
         candidate: rel::CandidateId::new(tenant(), unique()).unwrap(),
@@ -391,7 +547,7 @@ pub async fn seed(
         resource: key,
         version: id("one"),
         expected_resource_revision: 2,
-        submission,
+        resource_digest: version.digest().bytes(),
         as_of: at(1),
     }
 }
@@ -449,6 +605,9 @@ pub fn brew_config() -> (tempfile::TempDir, RingSources) {
                 .success()
         );
         SourceConfig::Brew(BrewConfig {
+            base: format!("https://hosted.example.test/brew/{ring}/"),
+            artifacts_base: "https://hosted.example.test/artifacts/".into(),
+            credential_reference: "source-key".into(),
             tap: format!("acme/{ring}"),
             repository,
         })
@@ -463,8 +622,8 @@ pub fn brew_config() -> (tempfile::TempDir, RingSources) {
         },
     )
 }
-pub fn cask(server: &Server, package: &str, version: &str) -> Submission {
-    Submission::Brew {
+pub fn cask(server: &Server, package: &str, version: &str) -> ExportDocument {
+    ExportDocument::Brew {
         recipe: BrewRecipe {
             package: package.into(),
             version: version.into(),
@@ -493,8 +652,8 @@ pub fn cask(server: &Server, package: &str, version: &str) -> Submission {
         .into(),
     }
 }
-pub fn formula(server: &Server) -> Submission {
-    Submission::Brew {
+pub fn formula(server: &Server) -> ExportDocument {
+    ExportDocument::Brew {
         recipe: BrewRecipe {
             package: "tool".into(),
             version: "1".into(),
@@ -502,6 +661,8 @@ pub fn formula(server: &Server) -> Submission {
             description: "Controlled tool".into(),
             homepage: "https://example.com/".into(),
             payload: BrewPayload::Formula {
+                revision: 0,
+                rebuild: 0,
                 source: PublicArtifact {
                     key: "source".into(),
                     url: format!("{}artifacts/source.tar.gz", server.base),
@@ -512,6 +673,7 @@ pub fn formula(server: &Server) -> Submission {
                 bottles: [("sonoma", "x64"), ("arm64_sonoma", "arm64")]
                     .into_iter()
                     .map(|(tag, key)| BottleInput {
+                        cellar: "any_skip_relocation".into(),
                         tag: tag.into(),
                         root_url: format!("{}artifacts", server.base),
                         artifact: PublicArtifact {
@@ -555,7 +717,7 @@ pub fn software_definition(
     key: &str,
 ) -> resource::SoftwareDefinition {
     let windows = platform == resource::Platform::Windows;
-    serde_json::from_value(serde_json::json!({"source":{"id":source,"revision":"1","sha256":vec![1;32]},"package":package,"version":version,"format":if windows {"winget"} else {"brew"},"primary":"package","artifacts":{"package":{"reference":key,"length":3,"sha256":resource::Digest::of(b"abc").bytes()}},"install":{"executor":if windows {"winget"} else {"brew"},"entry":null,"runAs":if windows {"system"}else{"logged_in_user"},"arguments":[],"environment":{},"timeoutSeconds":600,"outputBytes":4096},"uninstall":null,"detect":if windows {serde_json::json!({"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":version})}else{serde_json::json!({"kind":"pkg_receipt","receipt":"com.acme.app","version":version})},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"bundle":null})).unwrap()
+    serde_json::from_value(serde_json::json!({"source":{"id":source,"revision":"1","sha256":vec![1;32]},"package":package,"version":version,"artifacts":{"package":{"reference":key,"length":3,"sha256":resource::Digest::of(b"abc").bytes()}},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"behavior":{"kind":if windows {"winget"} else {"brew"},"installer":"package","scope":if (if windows {"system"}else{"logged_in_user"}) == "logged_in_user" {"user"} else {"system"},"install":{"runAs":if windows {"system"}else{"logged_in_user"},"arguments":[],"environment":{},"timeoutSeconds":600,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":if windows {serde_json::json!({"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":version})}else{serde_json::json!({"kind":"pkg_receipt","receipt":"com.acme.app","version":version})},"upgradeInvocation":{"runAs":if windows {"system"}else{"logged_in_user"},"arguments":[],"environment":{},"timeoutSeconds":600,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}})).unwrap()
 }
 
 pub fn host(
@@ -565,6 +727,7 @@ pub fn host(
     rss_mdm_software_service::Host {
         runtime,
         audit: Arc::new(TestAudit(audit)),
+        content: stored_content(),
         credentials: Arc::new(TestCredentials),
     }
 }
@@ -596,18 +759,220 @@ impl rss_mdm_software_service::AuditPort for TestAudit {
 }
 struct TestCredentials;
 impl rss_mdm_software_service::Credentials for TestCredentials {
-    fn winget(
+    fn brew_read(
         &self,
         tenant: rss_request_context::TenantId,
         source: &str,
-        reference: &str,
-    ) -> rss_mdm_software_service::publication::Result<rss_mdm_winget_source::WriteAccess> {
-        rss_mdm_winget_source::WriteAccess::new(tenant, source, reference, "fixture-source-token")
-            .map_err(|_| rss_mdm_software_service::publication::Error::Identity)
+        _reference: &str,
+    ) -> rss_mdm_software_service::publication::Result<rss_mdm_software_service::BrewReadAccess>
+    {
+        rss_mdm_software_service::BrewReadAccess::new(
+            tenant,
+            source,
+            "fixture-read-only-token-2531-000000000",
+        )
+        .map_err(|_| rss_mdm_software_service::publication::Error::Identity)
     }
 }
 
 pub fn private_definition(source: serde_json::Value, bytes: &[u8]) -> serde_json::Value {
     let digest = rss_mdm_resource::Digest::of(bytes).bytes();
-    serde_json::json!({"source":source,"package":"Acme.Private","version":"1+enterprise","format":"msi","primary":"package","artifacts":{"package":{"reference":"installer","length":bytes.len(),"sha256":digest}},"install":{"executor":"msi","entry":null,"runAs":"system","arguments":["/qn"],"environment":{},"timeoutSeconds":600,"outputBytes":4096},"uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1+enterprise"},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"bundle":null})
+    serde_json::json!({"source":source,"package":"Acme.Private","version":"1+enterprise","artifacts":{"package":{"reference":"installer","length":bytes.len(),"sha256":digest}},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":["/qn"],"environment":{},"timeoutSeconds":600,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1+enterprise"},"upgradeInvocation":{"runAs":"system","arguments":["/qn"],"environment":{},"timeoutSeconds":600,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}})
+}
+
+struct ContentClock;
+impl rss_request_context::Clock for ContentClock {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "real content fixture clock provider"
+    )]
+    fn now(&self) -> std::time::Instant {
+        std::time::Instant::now()
+    }
+}
+pub fn stored_content() -> Arc<rss_mdm_content_service::Store> {
+    static CONTENT: std::sync::OnceLock<(tempfile::TempDir, Arc<rss_mdm_content_service::Store>)> =
+        std::sync::OnceLock::new();
+    CONTENT
+        .get_or_init(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let store = rss_mdm_content_service::Store::open(
+                &rss_mdm_content_service::Config {
+                    directory: dir.path().to_owned(),
+                    imports: Default::default(),
+                    max_artifact_bytes: 16 * 1024 * 1024,
+                    max_temporary_bytes: 64 * 1024 * 1024,
+                    max_uploads: 64,
+                    transfer_seconds: 30,
+                    retention_seconds: 3600,
+                    max_bundle_bytes: 16 * 1024 * 1024,
+                    max_bundle_entries: 256,
+                    max_expansion_ratio: 100,
+                },
+                &tenant().to_string(),
+                Arc::new(ContentClock),
+            )
+            .unwrap();
+            (dir, store)
+        })
+        .1
+        .clone()
+}
+
+async fn admit_private_source(source: &str) -> resource::SoftwareSource {
+    use rss_mdm_software_service::catalog as c;
+    let runtime = pg::runtime_at(None, "mdm_flow_runtime").await;
+    let audit = pg::audit_store_for("mdm_flow_runtime").await;
+    let catalog = c::Catalog::new(runtime.clone(), tenant(), Arc::new(TestAudit(audit)));
+    let definition = c::SourceDefinition {
+        id: source.into(),
+        revision: "1".into(),
+        protocol: c::SourceProtocol::Private,
+    };
+    let snapshot = definition.snapshot().unwrap();
+    for (expected_revision, input) in [
+        (0, c::SourceChange::Register { definition }),
+        (
+            1,
+            c::SourceChange::Approve {
+                evidence: vec!["controlled fixture source".into()],
+            },
+        ),
+    ] {
+        let request = rss_mdm_audit_integration::RequestAudit::new(
+            tenant().to_string(),
+            "software_source_write",
+        );
+        request.set_principal("operator", "publication-fixture");
+        let op = c::Operation {
+            operation_id: uuid::Uuid::new_v4(),
+            expected_revision,
+            input,
+        };
+        let result = runtime
+            .local_tx_with_context(
+                tenant(),
+                deadline(),
+                (&catalog, &request, &op, source),
+                |(catalog, request, op, source), tx| {
+                    Box::pin(async move {
+                        if let Ok(value) = catalog.source_read_in(tx, source, "1").await
+                            && value["admission"]["state"] == "approved"
+                        {
+                            return Ok(Ok(()));
+                        }
+                        catalog
+                            .source_in(tx, request, source, "1", op)
+                            .await
+                            .map(|_| Ok(()))
+                            .map_err(|_| {
+                                sqlx::Error::Protocol("fixture source approval".into()).into()
+                            })
+                    })
+                },
+            )
+            .await;
+        result.fold(|r| r, Err, Err, Err, Err, Err).unwrap();
+        request.finalize(None);
+    }
+    runtime.close().await;
+    snapshot
+}
+async fn admit_version(version: &resource::Version) {
+    use rss_mdm_software_service::catalog::{self as c, ContentPort};
+    let runtime = pg::runtime_at(None, "mdm_flow_runtime").await;
+    let audit = pg::audit_store_for("mdm_flow_runtime").await;
+    let catalog = c::Catalog::new(runtime.clone(), tenant(), Arc::new(TestAudit(audit)));
+    let content = stored_content().as_ref().verify(version).await.unwrap();
+    let op = c::Operation {
+        operation_id: uuid::Uuid::new_v4(),
+        expected_revision: 0,
+        input: c::VersionChange::Approve {
+            evidence: vec!["complete fixture bytes and definition".into()],
+        },
+    };
+    let request = rss_mdm_audit_integration::RequestAudit::new(
+        tenant().to_string(),
+        "software_version_write",
+    );
+    request.set_principal("operator", "publication-fixture");
+    runtime
+        .local_tx_with_context(
+            tenant(),
+            deadline(),
+            (&catalog, &request, &op, &content, version),
+            |(catalog, request, op, content, version), tx| {
+                Box::pin(async move {
+                    catalog
+                        .version_change_in(
+                            tx,
+                            request,
+                            version.resource().as_str(),
+                            version.label().as_str(),
+                            op,
+                            Some(content.as_ref()),
+                        )
+                        .await
+                        .map(|_| Ok(()))
+                        .map_err(|_| {
+                            sqlx::Error::Protocol("fixture version approval".into()).into()
+                        })
+                })
+            },
+        )
+        .await
+        .fold(|r| r, Err, Err, Err, Err, Err)
+        .unwrap();
+    request.finalize(None);
+    runtime.close().await;
+}
+
+/// Withdraw only the enterprise admission; an existing publication reference still fences archival.
+pub async fn withdraw_version_admission(input: &CandidateInput) {
+    use rss_mdm_software_service::catalog as c;
+    let runtime = pg::runtime_at(None, "mdm_flow_runtime").await;
+    let catalog = c::Catalog::new(
+        runtime.clone(),
+        tenant(),
+        Arc::new(TestAudit(pg::audit_store_for("mdm_flow_runtime").await)),
+    );
+    let request =
+        rss_mdm_audit_integration::RequestAudit::new(tenant().to_string(), "software_withdraw");
+    request.set_principal("publisher", "publication-fixture");
+    let op = c::Operation {
+        operation_id: uuid::Uuid::new_v4(),
+        expected_revision: 1,
+        input: c::VersionChange::Withdraw {
+            evidence: vec!["fixture admission withdrawal".into()],
+        },
+    };
+    runtime
+        .local_tx_with_context(
+            tenant(),
+            pg::deadline(),
+            (&catalog, &request, &op, input),
+            |(catalog, request, op, input), tx| {
+                Box::pin(async move {
+                    catalog
+                        .version_change_in(
+                            tx,
+                            request,
+                            input.resource.as_str(),
+                            input.version.as_str(),
+                            op,
+                            None,
+                        )
+                        .await
+                        .map(|_| ())
+                        .map_err(|_| {
+                            sqlx::Error::Protocol("fixture admission withdrawal".into()).into()
+                        })
+                })
+            },
+        )
+        .await
+        .fold(Ok, Err, Err, Err, Err, Err)
+        .unwrap();
+    request.finalize(None);
+    runtime.close().await;
 }

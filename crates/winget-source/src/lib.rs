@@ -1,11 +1,11 @@
-//! Bounded REST Source 1.0 metadata and complete-version publication; no CLI or installation.
+//! Bounded read-only REST Source 1.0 and community metadata; no CLI or installation.
 #![deny(missing_docs)]
-mod publisher;
 mod version;
-pub use publisher::{Inspection, Publisher, WriteAccess, WriteResponse};
 pub use version::VersionManifest;
+mod community;
 mod http;
 mod manifest;
+pub use community::CommunityManifest;
 pub use http::{Access, Client, Source};
 pub use manifest::{Manifest, parse_manifest};
 use rss_request_context::TenantId;

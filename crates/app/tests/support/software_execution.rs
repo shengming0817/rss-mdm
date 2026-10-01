@@ -7,6 +7,13 @@ use crate::test_support::software::write;
 use crate::test_support::*;
 use sha2::{Digest, Sha256};
 
+pub(crate) fn context(platform: Platform) -> Value {
+    let os = match platform {
+        Platform::Windows => [10, 0, 22621, 0],
+        Platform::MacOs => [14, 0, 0, 0],
+    };
+    json!({"revision":1,"osVersion":os,"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false})
+}
 pub(crate) fn case_device() -> &'static str {
     crate::test_support::case::name("software-deployment-device")
 }
@@ -36,28 +43,76 @@ pub(crate) async fn event_with(
     router: &Router,
     credential: &str,
     task: &Value,
-    mut event: Value,
+    event: Value,
 ) -> Result<(StatusCode, Value)> {
-    if event["kind"] == "software_result" {
-        event["definitionDigest"] = task["payload"]["definitionDigest"].clone();
-        event["evidenceDigest"] = json!(Sha256::digest(b"controlled detector evidence").to_vec());
-        event["observedVersion"] = if event["detection"] == "present" {
-            task["payload"]["steps"]
-                .as_array()
-                .and_then(|steps| steps.last())
-                .ok_or_else(|| anyhow::anyhow!("missing executable step"))?["action"]["version"]
-                .clone()
-        } else {
-            Value::Null
-        };
-    }
     agent_call(router,Method::POST,&format!("/api/agent/v4/tasks/{}/events", task["payload"]["taskId"].as_str().unwrap()),Some(credential),
-        Some(json!({"wireVersion":4,"operationId":Uuid::new_v4(),"attemptId":task["payload"]["attemptId"],"event":event}))).await
+        Some(json!({"wireVersion":4,"executionContext":task["payload"]["executionContext"],"operationId":Uuid::new_v4(),"attemptId":task["payload"]["attemptId"],"event":event}))).await
+}
+pub(crate) fn result_event(
+    task: &Value,
+    intent: &str,
+    exit_code: Option<i32>,
+    state: &str,
+    reboot: bool,
+) -> Result<Value> {
+    use rss_mdm_agent_wire as wire;
+    let spec: wire::SoftwareTaskSpec = serde_json::from_value(task["payload"].clone())?;
+    let mut steps = Vec::new();
+    for (index, step) in spec.steps.iter().enumerate() {
+        let after = match state {
+            "present" => wire::SoftwareDetectionObservation::Present {
+                version: step.action.detected_version(),
+                evidence_sha256: Sha256::digest(b"controlled present observation").into(),
+                observed_at: 2,
+            },
+            "absent" => wire::SoftwareDetectionObservation::Absent {
+                evidence_sha256: Sha256::digest(b"controlled absent observation").into(),
+                observed_at: 2,
+            },
+            "unknown" => wire::SoftwareDetectionObservation::Unknown {
+                diagnostic: "controlled detector unavailable".into(),
+            },
+            _ => anyhow::bail!("unsupported test observation"),
+        };
+        steps.push(wire::SoftwareStepResult {
+            index: index.try_into()?,
+            step_digest: step.digest()?,
+            target: step.target.clone(),
+            package: step.action.package.clone(),
+            identity: step.action.observed_identity(),
+            before: wire::SoftwareDetectionObservation::Absent {
+                evidence_sha256: Sha256::digest(b"controlled prior observation").into(),
+                observed_at: 1,
+            },
+            after,
+            process: exit_code.map_or(wire::SoftwareProcessObservation::NotRun, |code| {
+                wire::SoftwareProcessObservation::Exited { code }
+            }),
+            reboot_required: reboot,
+            diagnostics: wire::TaskDiagnostics::new("".into(), "".into(), 1, 1, None)?,
+        });
+    }
+    let result = wire::SoftwareTaskResult {
+        intent: match intent {
+            "install" => wire::SoftwareTaskIntent::Install,
+            "uninstall" => wire::SoftwareTaskIntent::Uninstall,
+            _ => anyhow::bail!("unsupported test intent"),
+        },
+        definition_digest: spec.definition_digest,
+        steps,
+    };
+    let mut value = serde_json::to_value(result)?;
+    value["kind"] = json!("software_result");
+    Ok(value)
 }
 pub(crate) async fn claim(router: &Router) -> Result<Value> {
-    claim_with(router, case_credential()).await
+    claim_with(router, case_credential(), Platform::MacOs).await
 }
-pub(crate) async fn claim_with(router: &Router, credential: &str) -> Result<Value> {
+pub(crate) async fn claim_with(
+    router: &Router,
+    credential: &str,
+    platform: Platform,
+) -> Result<Value> {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let response = agent_call(
@@ -65,7 +120,7 @@ pub(crate) async fn claim_with(router: &Router, credential: &str) -> Result<Valu
                 Method::POST,
                 "/api/agent/v4/tasks/claim",
                 Some(credential),
-                Some(json!({"wireVersion":4,"operationId":Uuid::new_v4()})),
+                Some(json!({"wireVersion":4,"executionContext":crate::test_support::software_execution::context(platform),"operationId":Uuid::new_v4()})),
             )
             .await?;
             ensure!(response.0 == StatusCode::OK, "claim: {response:?}");
@@ -108,7 +163,11 @@ pub(crate) enum Platform {
 /// A real authorized session, one Agent/Scope, and an approved dependency/root pair.
 /// Action assertions belong to callers; only the requested platform is prepared.
 pub(crate) struct Fixture {
+    pub(crate) source_snapshot: Value,
+    pub(crate) dependency: Uuid,
+    pub(crate) dependency_digest: Value,
     pub(crate) base: Value,
+    pub(crate) execution: Arc<crate::execution::ExecutionService>,
     pub(crate) router: Router,
     pub(crate) author: Browser,
     pub(crate) resource: Uuid,
@@ -122,9 +181,29 @@ pub(crate) struct Fixture {
 }
 impl Fixture {
     pub(crate) async fn approved(platform: Platform) -> Result<Self> {
+        let capabilities = match platform {
+            Platform::Windows => json!(["inventory.basic.v4", "software.msi.system.v4"]),
+            Platform::MacOs => json!(["inventory.basic.v4", "software.pkg.system.v4"]),
+        };
+        Self::with_profiles(platform, capabilities, context(platform)).await
+    }
+    pub(crate) async fn with_profiles(
+        platform: Platform,
+        capabilities: Value,
+        execution_context: Value,
+    ) -> Result<Self> {
         let base: Value =
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-        let (router, _, _) = crate::api::application_fixture(
+        Self::with_config(platform, capabilities, execution_context, base).await
+    }
+    pub(crate) async fn with_config(
+        platform: Platform,
+        capabilities: Value,
+        execution_context: Value,
+        base: Value,
+    ) -> Result<Self> {
+        let setup_guard = super::software::content_setup_guard().await?;
+        let (router, execution, _) = crate::api::application_fixture(
             serde_json::from_value(base.clone())?,
             Arc::new(crate::clock::SystemClock),
             monotonic(),
@@ -135,7 +214,9 @@ impl Fixture {
                 .audit_store(&crate::config::AuditConfig::Plain)
                 .await?,
         )
-        .await?;
+        .await
+        .map_err(|e| anyhow::anyhow!("software fixture application: {e:?}"))?;
+        drop(setup_guard);
         let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
             "127.0.0.1".parse()?,
         )));
@@ -196,15 +277,17 @@ impl Fixture {
         ensure!(enrollment.0.is_success(), "enrollment: {enrollment:?}");
         author.operation = None;
         let registration=agent_call(&router,Method::POST,"/api/agent/v4/registrations",None,
-            Some(json!({"wireVersion":4,"operationId":Uuid::new_v4(),"enrollmentId":enrollment.1["enrollmentId"],"password":password,"credential":credential,"platform":platform_name,"architecture":architecture,"capabilities":["inventory.basic.v4","software.execute.v4"]}))).await?;
+            Some(json!({"wireVersion":4,"executionContext":execution_context,"operationId":Uuid::new_v4(),"enrollmentId":enrollment.1["enrollmentId"],"password":password,"credential":credential,"platform":platform_name,"architecture":architecture,"capabilities":capabilities}))).await?;
         ensure!(
             registration.0 == StatusCode::CREATED,
             "registration: {registration:?}"
         );
-        let scope = prepared_scope(&base, &mut author, &router, &[device]).await?;
+        let scope = prepared_scope(&base, &mut author, &router, &[device])
+            .await
+            .map_err(|e| anyhow::anyhow!("software fixture scope: {e:#}"))?;
         let source = Uuid::new_v4().to_string();
         let source_path = format!("/api/v3/software/sources/{source}/revisions/1");
-        let registered=write(&mut author,&router,&source_path,0,json!({"action":"register","definition":{"id":source,"revision":"1","kind":"private","location":null,"publishers":[]}})).await?;
+        let registered=write(&mut author,&router,&source_path,0,json!({"action":"register","definition":{"id":source,"revision":"1","protocol":{"kind":"private"}}})).await?;
         write(
             &mut author,
             &router,
@@ -225,11 +308,11 @@ impl Fixture {
         .await?;
         let dependency_bytes = format!("controlled dependency package {dependency}").into_bytes();
         let dependency_digest: [u8; 32] = Sha256::digest(&dependency_bytes).into();
-        let dependency_definition = json!({"source":registered["snapshot"],"package":"Private.Dependency","version":"1","format":"pkg","primary":"scripts/install.sh","artifacts":{"scripts/install.sh":{"reference":"dep-installer","length":dependency_bytes.len(),"sha256":dependency_digest}},"install":{"executor":"package_installer","entry":null,"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096},"uninstall":null,"detect":{"kind":"pkg_receipt","receipt":"com.private.dependency","version":"1"},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"bundle":null});
+        let dependency_definition = json!({"source":registered["snapshot"],"package":"Private.Dependency","version":"1","artifacts":{"scripts/install.sh":{"reference":"dep-installer","length":dependency_bytes.len(),"sha256":dependency_digest}},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"behavior":{"kind":"pkg","installer":"scripts/install.sh","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"pkg_receipt","receipt":"com.private.dependency","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
         let windows_dependency_bytes =
             format!("controlled windows dependency msi {dependency}").into_bytes();
         let windows_dependency_digest: [u8; 32] = Sha256::digest(&windows_dependency_bytes).into();
-        let windows_dependency_definition = json!({"source":registered["snapshot"],"package":"Private.WindowsDependency","version":"1","format":"msi","primary":"package","artifacts":{"package":{"reference":"dep-win-installer","length":windows_dependency_bytes.len(),"sha256":windows_dependency_digest}},"install":{"executor":"msi","entry":null,"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096},"uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"bundle":null});
+        let windows_dependency_definition = json!({"source":registered["snapshot"],"package":"Private.WindowsDependency","version":"1","artifacts":{"package":{"reference":"dep-win-installer","length":windows_dependency_bytes.len(),"sha256":windows_dependency_digest}},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
         write(&mut author,&router,&dependency_path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":platform_name,"architecture":architecture,"key":"default","declaration":{"kind":"software","definition":if platform == Platform::MacOs { dependency_definition } else { windows_dependency_definition }}}]})).await?;
         if platform == Platform::MacOs {
             let request=Request::builder().method(Method::POST).uri(format!("{dependency_path}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
@@ -286,10 +369,10 @@ impl Fixture {
         let digest: [u8; 32] = Sha256::digest(&bytes).into();
         let removal = format!("#!/bin/sh\n# {resource}\nexit 0\n").into_bytes();
         let removal_digest: [u8; 32] = Sha256::digest(&removal).into();
-        let definition = json!({"source":registered["snapshot"],"package":"Private.Controlled","version":"1","format":"pkg","primary":"package","artifacts":{"package":{"reference":"installer","length":bytes.len(),"sha256":digest},"remove":{"reference":"remover","length":removal.len(),"sha256":removal_digest}},"install":{"executor":"package_installer","entry":null,"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096},"uninstall":{"executor":"posix_sh","entry":"remove","runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096},"detect":{"kind":"pkg_receipt","receipt":"com.private.controlled","version":"1"},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[{"resource":dependency,"version":"v1","sha256":dependency_version.1["resourceDigest"]}],"bundle":null});
+        let definition = json!({"source":registered["snapshot"],"package":"Private.Controlled","version":"1","artifacts":{"package":{"reference":"installer","length":bytes.len(),"sha256":digest},"remove":{"reference":"remover","length":removal.len(),"sha256":removal_digest}},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[{"resource":dependency,"version":"v1","sha256":dependency_version.1["resourceDigest"]}],"behavior":{"kind":"pkg","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":{"installer":"remove","invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"detect":{"kind":"pkg_receipt","receipt":"com.private.controlled","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
         let windows_bytes = format!("controlled windows root msi {resource}").into_bytes();
         let windows_digest: [u8; 32] = Sha256::digest(&windows_bytes).into();
-        let windows_definition = json!({"source":registered["snapshot"],"package":"Private.WindowsControlled","version":"1","format":"msi","primary":"package","artifacts":{"package":{"reference":"win-installer","length":windows_bytes.len(),"sha256":windows_digest}},"install":{"executor":"msi","entry":null,"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096},"uninstall":null,"detect":{"kind":"msi_product","productCode":"{BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF}","version":"1"},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[{"resource":dependency,"version":"v1","sha256":dependency_version.1["resourceDigest"]}],"bundle":null});
+        let windows_definition = json!({"source":registered["snapshot"],"package":"Private.WindowsControlled","version":"1","artifacts":{"package":{"reference":"win-installer","length":windows_bytes.len(),"sha256":windows_digest}},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[{"resource":dependency,"version":"v1","sha256":dependency_version.1["resourceDigest"]}],"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF}","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
         write(&mut author,&router,&path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":platform_name,"architecture":architecture,"key":"default","declaration":{"kind":"software","definition":if platform == Platform::MacOs { definition } else { windows_definition }}}]})).await?;
         if platform == Platform::MacOs {
             let request=Request::builder().method(Method::POST).uri(format!("{path}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
@@ -325,7 +408,11 @@ impl Fixture {
         .await?;
         let first_operation = first_approval["admission"]["operation"].clone();
         Ok(Self {
+            source_snapshot: registered["snapshot"].clone(),
+            dependency,
+            dependency_digest: dependency_version.1["resourceDigest"].clone(),
             base,
+            execution,
             router,
             author,
             resource,
@@ -372,7 +459,10 @@ pub(crate) async fn prepared_scope(
     Ok(scope)
 }
 
-pub(crate) async fn worker(base: &Value) -> Result<Option<rss_runtime::ShutdownStack>> {
+pub(crate) async fn worker(
+    base: &Value,
+    content: Option<Arc<rss_mdm_content_service::Store>>,
+) -> Result<Option<rss_runtime::ShutdownStack>> {
     if !crate::test_support::case::owns_worker() {
         return Ok(None);
     }
@@ -380,8 +470,19 @@ pub(crate) async fn worker(base: &Value) -> Result<Option<rss_runtime::ShutdownS
     let worker = crate::flow::execution::open(
         &config,
         crate::test_support::identity::audit_store(&config).await?,
+        content,
+        std::collections::BTreeMap::new(),
     )
     .await?;
+    worker_for(&config, worker).await
+}
+pub(crate) async fn worker_for(
+    config: &Config,
+    worker: Arc<crate::execution::ExecutionService>,
+) -> Result<Option<rss_runtime::ShutdownStack>> {
+    if !crate::test_support::case::owns_worker() {
+        return Ok(None);
+    }
     let mut stack = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
@@ -405,5 +506,5 @@ pub(crate) async fn worker(base: &Value) -> Result<Option<rss_runtime::ShutdownS
     Ok(Some(stack))
 }
 pub(crate) fn authored(resource: Uuid, scope: Uuid, intent: &str, operation: &Value) -> Value {
-    json!({"scope":scope,"action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"macos_aarch64":"default"}},"kind":"software","intent":intent,"admissionOperation":operation,"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":scope,"opensAt":0}]}}})
+    json!({"scope":scope,"action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"macos_aarch64":"default"}},"kind":"software","intent":intent,"delivery":{"kind":"direct"},"admissionOperation":operation,"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":scope,"opensAt":0}]}}})
 }

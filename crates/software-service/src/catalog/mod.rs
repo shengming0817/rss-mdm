@@ -1,8 +1,9 @@
 //! Borrowed-transaction enterprise admission; external publication is a separate capability.
+mod imports;
 mod model;
 pub use model::*;
 mod event;
-mod storage;
+pub(crate) mod storage;
 use crate::AuditPort;
 use rss_mdm_audit_integration::{Fact, RequestAudit};
 use rss_mdm_resource as r;
@@ -15,6 +16,10 @@ use std::sync::Arc;
 pub enum Error {
     #[error("invalid software definition or evidence")]
     Input,
+    #[error("software source behavior unsupported")]
+    Unsupported,
+    #[error("exact source dependency unavailable or mismatched")]
+    Dependency,
     #[error("software revision or operation conflict")]
     Conflict,
     #[error("software source or version not admitted")]
@@ -48,6 +53,11 @@ impl Catalog {
             audit,
             writer: PgOutboxWriter::new(runtime, event::domain()),
         }
+    }
+    /// Shared software admission lock, acquired before Resource locks by companions.
+    pub async fn lock_in(&self, tx: &mut PgTransaction<'_>) -> Result<()> {
+        self.tenant(tx)?;
+        storage::lock(tx).await
     }
     async fn begin(&self, tx: &mut PgTransaction<'_>, key: &str) -> Result<()> {
         if tx.tenant_id() != self.tenant {
@@ -262,6 +272,61 @@ impl Catalog {
         self.record(tx, audit, (&key, op.operation_id, &hash), &value, false)
             .await?;
         Ok(value)
+    }
+    /// Direct authoring is private; imported evidence is produced only by the importer.
+    pub async fn private_authoring_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        version: &r::Version,
+    ) -> Result<()> {
+        self.tenant(tx)?;
+        storage::lock(tx).await?;
+        for variant in version.variants() {
+            let r::Declaration::Software { definition } = variant.declaration() else {
+                return Err(Error::Input);
+            };
+            if !matches!(definition.spec().provenance, r::SoftwareProvenance::Private) {
+                return Err(Error::Input);
+            }
+            let (source, _) = storage::source(
+                tx,
+                &definition.spec().source.id,
+                &definition.spec().source.revision,
+            )
+            .await?
+            .ok_or(Error::Missing)?;
+            if !matches!(source.protocol, SourceProtocol::Private)
+                || source.snapshot()? != definition.spec().source
+            {
+                return Err(Error::Input);
+            }
+        }
+        Ok(())
+    }
+    /// Native publication borrows the same source/version/dependency approval locks.
+    /// This grants no mutation capability to the publication runtime.
+    pub async fn publication_admitted_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        version: &r::Version,
+    ) -> Result<()> {
+        self.tenant(tx)?;
+        storage::lock(tx).await?;
+        let current = self
+            .version_in(tx, version.resource().as_str(), version.label().as_str())
+            .await?;
+        let admission =
+            storage::admission(tx, version.resource().as_str(), version.label().as_str())
+                .await?
+                .ok_or(Error::NotAdmitted)?;
+        if current.digest() != version.digest()
+            || admission.digest != version.digest().bytes()
+            || !matches!(admission.state, AdmissionState::Approved)
+        {
+            return Err(Error::NotAdmitted);
+        }
+        self.check_sources(tx, version).await?;
+        self.dependencies(tx, version).await
     }
     /// Hold current source admission stable through the caller's final transaction.
     pub async fn source_admitted_in(

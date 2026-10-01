@@ -26,6 +26,7 @@ pub struct BrewArtifact {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BottleInput {
+    pub cellar: String,
     pub tag: String,
     pub root_url: String,
     pub artifact: PublicArtifact,
@@ -33,6 +34,7 @@ pub struct BottleInput {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BrewDependency {
+    pub recipe: Box<BrewRecipe>,
     pub tap: String,
     pub name: String,
     pub snapshot: [u8; 32],
@@ -52,6 +54,8 @@ pub enum BrewPayload {
         install: CaskInstall,
     },
     Formula {
+        revision: u32,
+        rebuild: u32,
         source: PublicArtifact,
         executable: String,
         bottles: Vec<BottleInput>,
@@ -70,15 +74,16 @@ pub struct BrewRecipe {
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
-pub enum Submission {
+pub enum ExportDocument {
     Winget { manifest: serde_json::Value },
     Brew { recipe: Box<BrewRecipe> },
 }
 pub(super) struct PreparedContent {
+    pub resources: Vec<resource::Version>,
     pub content: rel::Content,
     pub artifacts: Vec<PublicArtifact>,
     pub coordinate: String,
-    pub submission: Submission,
+    pub document: ExportDocument,
 }
 /// Resource keys retain type, scope and optional installer identity without ambiguity.
 pub fn winget_variant(q: &winget::Query) -> String {
@@ -96,220 +101,117 @@ fn architecture(a: resource::Architecture) -> &'static str {
         resource::Architecture::Aarch64 => "aarch64",
     }
 }
-fn primary<'a>(
-    version: &'a resource::Version,
-    platform: resource::Platform,
-    arch: &str,
-    variant: &str,
-    source: &str,
-    package: &str,
-    package_version: &str,
-) -> Result<&'a resource::Artifact> {
-    let v = version
-        .variants()
-        .iter()
-        .find(|v| {
-            v.platform() == platform
-                && architecture(v.architecture()) == arch
-                && v.key().as_str() == variant
-        })
-        .ok_or(Error::Content)?;
-    let resource::Declaration::Software { definition } = v.declaration() else {
-        return Err(Error::Content);
-    };
-    let spec = definition.spec();
-    if spec.source.id != source || spec.package != package || spec.version != package_version {
-        return Err(Error::Content);
-    }
-    Ok(definition.primary())
-}
-
-fn matches_primary(primary: &resource::Artifact, artifact: &PublicArtifact) -> Result<()> {
-    if primary.reference().as_str() != artifact.key
-        || primary.length() != artifact.length
-        || primary.digest().bytes() != artifact.sha256
-    {
-        return Err(Error::Content);
-    }
-    Ok(())
-}
 pub(super) fn prepare(
     sources: &Sources,
     version: &resource::Version,
-    submission: &Submission,
+    dependencies: &[resource::Version],
 ) -> Result<PreparedContent> {
     if version.tenant() != sources.tenant || version.kind() != resource::Kind::Software {
         return Err(Error::Content);
     }
-    let (platform, package, package_version, manifest, variants, artifacts, coordinate, submission) =
-        match submission {
-            Submission::Winget { manifest } => {
-                if !matches!(sources.bindings[0].driver, Driver::Winget { .. }) {
+    let artifact_base = match &sources.bindings[0].driver {
+        Driver::Winget { artifacts_base, .. } | Driver::Brew { artifacts_base, .. } => {
+            artifacts_base
+        }
+    };
+    let document = super::derive_document(version, dependencies, artifact_base)?;
+    let exported = super::derive::exported_materials(version, dependencies, artifact_base)?;
+    let (platform, package, package_version, manifest, coordinate) = match &document {
+        ExportDocument::Winget { manifest } => {
+            if !matches!(sources.bindings[0].driver, Driver::Winget { .. }) {
+                return Err(Error::Unsupported);
+            }
+            let m = winget::VersionManifest::parse(
+                sources.tenant,
+                &sources.logical,
+                &serde_json::to_vec(manifest).map_err(|_| Error::Content)?,
+            )
+            .map_err(|cause| Error::Content.context("spec::prepare", cause))?;
+            (
+                resource::Platform::Windows,
+                m.package().to_owned(),
+                m.version().to_owned(),
+                rel::Digest::of(m.bytes()),
+                format!("{}/{}", m.package(), m.version()),
+            )
+        }
+        ExportDocument::Brew { recipe } => {
+            let Driver::Brew { tap, .. } = &sources.bindings[0].driver else {
+                return Err(Error::Unsupported);
+            };
+            let rendered = recipe.render(sources.tenant, tap)?;
+            for binding in &sources.bindings {
+                let Driver::Brew { tap, .. } = &binding.driver else {
+                    return Err(Error::Unsupported);
+                };
+                if recipe.render(sources.tenant, tap)?.bytes() != rendered.bytes() {
                     return Err(Error::Content);
                 }
-                let m = winget::VersionManifest::parse(
-                    sources.tenant,
-                    &sources.logical,
-                    &serde_json::to_vec(manifest)
-                        .map_err(|cause| Error::Input.context("spec::prepare", cause))?,
-                )
-                .map_err(|cause| Error::Content.context("spec::prepare", cause))?;
-                let mut variants = Vec::new();
-                let mut artifacts = Vec::new();
-                for item in m.installers() {
-                    let q = item.query();
-                    let arch = match q.architecture() {
-                        winget::Architecture::X64 => "x86_64",
-                        winget::Architecture::Arm64 => "aarch64",
-                    };
-                    let key = winget_variant(q);
-                    let a = primary(
-                        version,
-                        resource::Platform::Windows,
-                        arch,
-                        &key,
-                        &sources.logical,
-                        m.package(),
-                        m.version(),
-                    )?;
-                    if a.digest().bytes() != item.sha256() {
-                        return Err(Error::Content);
-                    }
-                    let file = PublicArtifact {
-                        key: a.reference().as_str().into(),
-                        url: item.artifact_url().into(),
-                        length: a.length(),
-                        sha256: item.sha256(),
-                    };
-                    variants.push(
-                        rel::VariantContent::new(arch, key, vec![release_artifact(&file)?])
-                            .map_err(|cause| Error::Content.context("spec::prepare", cause))?,
-                    );
-                    artifacts.push(file);
-                }
-                let canonical = Submission::Winget {
-                    manifest: serde_json::from_slice(m.bytes())
-                        .map_err(|cause| Error::Content.context("spec::prepare", cause))?,
-                };
-                (
-                    resource::Platform::Windows,
-                    m.package().to_owned(),
-                    m.version().to_owned(),
-                    rel::Digest::of(m.bytes()),
-                    variants,
-                    artifacts,
-                    format!("{}/{}", m.package(), m.version()),
-                    canonical,
-                )
             }
-            Submission::Brew { recipe } => {
-                let Driver::Brew { tap, .. } = &sources.bindings[0].driver else {
-                    return Err(Error::Content);
-                };
-                let document = recipe.render(sources.tenant, tap)?;
-                // All rings must publish identical bytes; only their dedicated Tap identities differ.
-                for binding in &sources.bindings {
-                    let Driver::Brew { tap, .. } = &binding.driver else {
-                        return Err(Error::Content);
-                    };
-                    if recipe.render(sources.tenant, tap)?.bytes() != document.bytes() {
-                        return Err(Error::Content);
-                    }
-                }
-                let (primaries, extra) = recipe.artifacts()?;
-                let mut variants = Vec::new();
-                let mut files = extra.clone();
-                for (arch, kind, file) in primaries {
-                    matches_primary(
-                        primary(
-                            version,
-                            resource::Platform::MacOS,
-                            &arch,
-                            &kind,
-                            &sources.logical,
-                            &recipe.package,
-                            &recipe.version,
-                        )?,
-                        &file,
-                    )?;
-                    let mut artifacts = vec![release_artifact(&file)?];
-                    for extra in &extra {
-                        artifacts.push(release_artifact(extra)?);
-                    }
-                    variants.push(
-                        rel::VariantContent::new(arch, kind, artifacts)
-                            .map_err(|cause| Error::Content.context("spec::prepare", cause))?,
-                    );
-                    files.push(file);
-                }
-                (
-                    resource::Platform::MacOS,
-                    recipe.package.clone(),
-                    recipe.version.clone(),
-                    rel::Digest::of(document.bytes()),
-                    variants,
-                    files,
-                    document.path().into(),
-                    submission.clone(),
-                )
-            }
-        };
-    if version
-        .variants()
-        .iter()
-        .filter(|v| v.platform() == platform)
-        .count()
-        != variants.len()
-    {
-        return Err(Error::Content);
-    }
+            (
+                resource::Platform::MacOS,
+                recipe.package.clone(),
+                recipe.version.clone(),
+                rel::Digest::of(rendered.bytes()),
+                format!("{}/{}", rendered.path(), recipe.version),
+            )
+        }
+    };
     let mut unique = BTreeMap::new();
-    for a in artifacts {
-        super::artifact::checked_url(&a.url)?;
-        if a.length == 0 {
-            return Err(Error::Content);
+    let mut variants = Vec::new();
+    for variant in version.variants() {
+        if variant.platform() != platform {
+            return Err(Error::Unsupported);
         }
-        if unique
-            .insert(a.key.clone(), a.clone())
-            .is_some_and(|old| old != a)
-        {
-            return Err(Error::Content);
-        }
-    }
-    let mut declared = BTreeMap::new();
-    for variant in version
-        .variants()
-        .iter()
-        .filter(|v| v.platform() == platform)
-    {
-        let resource::Declaration::Software { definition } = variant.declaration() else {
-            return Err(Error::Content);
-        };
-        for artifact in definition.spec().artifacts.values() {
-            if declared
-                .insert(artifact.reference.clone(), artifact.clone())
-                .is_some_and(|old| old != *artifact)
+        let mut files = Vec::new();
+        for selected in std::iter::once(version).chain(dependencies.iter()) {
+            for v in selected
+                .variants()
+                .iter()
+                .filter(|v| v.platform() == platform && v.architecture() == variant.architecture())
             {
-                return Err(Error::Content);
+                let resource::Declaration::Software { definition } = v.declaration() else {
+                    return Err(Error::Content);
+                };
+                for a in definition.spec().artifacts.values() {
+                    let key = format!("content.{}", super::hex(&a.sha256));
+                    let file = exported
+                        .iter()
+                        .find(|file| file.sha256 == a.sha256 && file.length == a.length)
+                        .ok_or(Error::Content)?
+                        .clone();
+                    super::artifact::checked_url(&file.url)?;
+                    if unique
+                        .insert(key.clone(), file.clone())
+                        .is_some_and(|old| old.length != file.length || old.sha256 != file.sha256)
+                    {
+                        return Err(Error::Content);
+                    }
+                    files.push(release_artifact(&file)?);
+                }
             }
         }
-    }
-    if declared.len() != unique.len()
-        || unique.values().any(|a| {
-            declared.get(&a.key).is_none_or(|expected| {
-                expected.length != a.length
-                    || expected.sha256 != a.sha256
-                    || expected.origin.as_ref().is_some_and(|url| url != &a.url)
-            })
-        })
-    {
-        return Err(Error::Content);
-    }
-    let input = serde_json::to_vec(&submission)
-        .map_err(|cause| Error::Content.context("spec::prepare", cause))?;
-    let description = rel::Digest::of(
-        &serde_json::to_vec(&serde_json::json!([version.digest().bytes(), input]))
+        files.sort_by(|a, b| a.key().cmp(b.key()));
+        files.dedup();
+        variants.push(
+            rel::VariantContent::new(
+                architecture(variant.architecture()),
+                variant.key().as_str(),
+                files,
+            )
             .map_err(|cause| Error::Content.context("spec::prepare", cause))?,
+        );
+    }
+    let description = rel::Digest::of(
+        &serde_json::to_vec(&serde_json::json!([
+            version.digest().bytes(),
+            dependencies
+                .iter()
+                .map(|v| v.digest().bytes())
+                .collect::<Vec<_>>(),
+            document
+        ]))
+        .map_err(|_| Error::Content)?,
     );
     let content = rel::Content::new(
         rel::SoftwareIdentity::new(rel::SoftwareIdentityFields {
@@ -323,27 +225,54 @@ pub(super) fn prepare(
             }
             .into(),
         })
-        .map_err(|cause| Error::Content.context("spec::prepare", cause))?,
+        .map_err(|_| Error::Content)?,
         description,
         rel::Digest::from_bytes(sources.digest),
         manifest,
         variants,
     )
-    .map_err(|cause| Error::Content.context("spec::prepare", cause))?;
+    .map_err(|_| Error::Content)?;
     Ok(PreparedContent {
+        resources: std::iter::once(version.clone())
+            .chain(dependencies.iter().cloned())
+            .collect(),
         content,
         artifacts: unique.into_values().collect(),
         coordinate,
-        submission,
+        document,
     })
 }
 fn release_artifact(a: &PublicArtifact) -> Result<rel::Artifact> {
     rel::Artifact::new(&a.key, rel::Digest::from_bytes(a.sha256))
         .map_err(|cause| Error::Content.context("spec::release_artifact", cause))
 }
-type PrimaryArtifact = (String, String, PublicArtifact);
-type ArtifactSet = (Vec<PrimaryArtifact>, Vec<PublicArtifact>);
 impl BrewRecipe {
+    pub(super) fn documents(
+        &self,
+        tenant: rss_request_context::TenantId,
+        tap: &str,
+    ) -> Result<Vec<brew::Document>> {
+        let mut pending = vec![(self, 0usize)];
+        let mut documents = BTreeMap::new();
+        while let Some((recipe, depth)) = pending.pop() {
+            if depth > 32 || documents.len() >= 256 {
+                return Err(Error::Content);
+            }
+            let document = recipe.render(tenant, tap)?;
+            if documents
+                .get(document.path())
+                .is_some_and(|old: &brew::Document| old.bytes() != document.bytes())
+            {
+                return Err(Error::Content);
+            }
+            let fresh = !documents.contains_key(document.path());
+            documents.insert(document.path().to_owned(), document);
+            if fresh && let BrewPayload::Formula { dependencies, .. } = &recipe.payload {
+                pending.extend(dependencies.iter().map(|d| (d.recipe.as_ref(), depth + 1)));
+            }
+        }
+        Ok(documents.into_values().collect())
+    }
     pub(super) fn render(
         &self,
         tenant: rss_request_context::TenantId,
@@ -383,6 +312,8 @@ impl BrewRecipe {
                 .render()
             }
             BrewPayload::Formula {
+                revision,
+                rebuild,
                 source,
                 executable,
                 bottles,
@@ -393,8 +324,22 @@ impl BrewRecipe {
                     .map(|b| {
                         let (tag, _) = bottle_tag(&b.tag)?;
                         let root = super::artifact::checked_url(&b.root_url)?;
-                        let filename =
-                            format!("{}-{}.{}.bottle.tar.gz", self.package, self.version, b.tag);
+                        let filename = format!(
+                            "{}-{}{}.{}.bottle{}.tar.gz",
+                            self.package,
+                            self.version,
+                            if *revision == 0 {
+                                String::new()
+                            } else {
+                                format!("_{revision}")
+                            },
+                            b.tag,
+                            if *rebuild == 0 {
+                                String::new()
+                            } else {
+                                format!(".{rebuild}")
+                            }
+                        );
                         let encoded: String =
                             url::form_urlencoded::byte_serialize(filename.as_bytes()).collect();
                         let expected =
@@ -402,8 +347,17 @@ impl BrewRecipe {
                         if expected != b.artifact.url {
                             return Err(Error::Content);
                         }
-                        brew::Bottle::new(tag, &b.root_url, b.artifact.sha256)
-                            .map_err(|cause| Error::Content.context("spec::render", cause))
+                        brew::Bottle::new(
+                            tag,
+                            &b.root_url,
+                            b.artifact.sha256,
+                            match b.cellar.as_str() {
+                                "any" => brew::Cellar::Any,
+                                "any_skip_relocation" => brew::Cellar::AnySkipRelocation,
+                                _ => return Err(Error::Unsupported),
+                            },
+                        )
+                        .map_err(|cause| Error::Content.context("spec::render", cause))
                     })
                     .collect::<Result<Vec<_>>>()?;
                 let deps = dependencies
@@ -416,6 +370,10 @@ impl BrewRecipe {
                 brew::Formula::new(
                     key,
                     &self.version,
+                    brew::BottleLayout {
+                        revision: *revision,
+                        rebuild: *rebuild,
+                    },
                     &self.description,
                     &self.homepage,
                     brew::Artifact::new(&source.url, source.sha256)
@@ -430,40 +388,8 @@ impl BrewRecipe {
         };
         document.map_err(|cause| Error::Content.context("spec::render", cause))
     }
-    fn artifacts(&self) -> Result<ArtifactSet> {
-        match &self.payload {
-            BrewPayload::Cask { artifacts, .. } => Ok((
-                artifacts
-                    .iter()
-                    .map(|a| (a.architecture.clone(), "cask".into(), a.artifact.clone()))
-                    .collect(),
-                vec![],
-            )),
-            BrewPayload::Formula {
-                source,
-                bottles,
-                dependencies,
-                ..
-            } => {
-                let mut extra = vec![source.clone()];
-                for d in dependencies {
-                    if d.artifacts.is_empty() || d.snapshot == [0; 32] {
-                        return Err(Error::Content);
-                    }
-                    extra.extend(d.artifacts.clone());
-                }
-                let primary = bottles
-                    .iter()
-                    .map(|b| {
-                        let (_, arch) = bottle_tag(&b.tag)?;
-                        Ok((arch.into(), "bottle".into(), b.artifact.clone()))
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                Ok((primary, extra))
-            }
-        }
-    }
 }
+
 fn brew_architecture(a: &str) -> Result<brew::Architecture> {
     match a {
         "aarch64" => Ok(brew::Architecture::Arm64),

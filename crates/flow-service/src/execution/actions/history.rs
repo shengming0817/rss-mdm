@@ -6,7 +6,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-pub const RESULT_SUMMARY_SQL: &str = "CASE WHEN r.result IS NULL THEN NULL ELSE (r.result-'output') || jsonb_build_object('diagnostics',(r.result->'diagnostics')-'stdout'-'stderr') END";
+pub const RESULT_SUMMARY_SQL: &str = "CASE WHEN r.result IS NULL THEN NULL WHEN r.result->'evidence' IS NOT NULL THEN jsonb_set(r.result,'{evidence,steps}',(SELECT jsonb_agg(value || jsonb_build_object('diagnostics',(value->'diagnostics')-'stdout'-'stderr') ORDER BY position) FROM jsonb_array_elements(r.result#>'{evidence,steps}') WITH ORDINALITY AS item(value,position))) ELSE (r.result-'output') || jsonb_build_object('diagnostics',(r.result->'diagnostics')-'stdout'-'stderr') END";
+
 #[derive(Clone, Copy)]
 enum RunOwner {
     Policy(Uuid),
@@ -35,7 +36,7 @@ impl ExecutionService {
             let mut stages=Vec::new();
             let mut prior=(0,0);
             for (index,stage) in software.stages()?.iter().enumerate() {
-                let counts=software.stage_counts_in(tx,index,service.agent_store.clone()).await?;
+                let counts=software.stage_counts_in(tx,index,service).await?;
                 stages.push(json!({"scope":stage.scope,"opensAt":stage.opens_at,
                     "minimumVerifiedPercent":stage.minimum_verified_percent,
                     "open":policy.enabled && stage.open(now,prior.0,prior.1),

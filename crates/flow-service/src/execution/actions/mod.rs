@@ -17,3 +17,6 @@ mod payload;
 mod software;
 
 pub mod model;
+
+pub(crate) mod software_exports;
+pub(crate) mod software_wire;

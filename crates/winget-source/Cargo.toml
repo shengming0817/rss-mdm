@@ -9,6 +9,7 @@ publish.workspace = true
 rss-request-context = { workspace = true }
 reqwest = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml_ng.workspace = true
 url = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 

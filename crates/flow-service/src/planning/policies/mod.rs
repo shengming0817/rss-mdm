@@ -246,6 +246,7 @@ impl Policies {
         if let (
             ResourceBinding::Software(selection),
             Action::Software {
+                delivery,
                 intent,
                 admission_operation,
                 schedule,
@@ -309,7 +310,7 @@ impl Policies {
                     return Err(Error::Malformed.into());
                 };
                 if matches!(intent, SoftwareIntent::ExplicitUninstall)
-                    && definition.spec().uninstall.is_none()
+                    && !definition.spec().behavior.supports_removal()
                 {
                     return Err(Error::Unsupported.into());
                 }
@@ -319,6 +320,7 @@ impl Policies {
             }
             let action_definition = action;
             let action = FrozenSoftwareAction {
+                delivery: delivery.clone(),
                 resource_digest: version.digest().bytes(),
                 resource: binding.id().to_owned(),
                 version: binding.version().to_owned(),

@@ -5,7 +5,8 @@
   "additionalProperties": false,
   "required": [
     "wireVersion",
-    "operationId"
+    "operationId",
+    "executionContext"
   ],
   "properties": {
     "wireVersion": {
@@ -17,6 +18,119 @@
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
       "not": {
         "const": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    "executionContext": {
+      "$ref": "#/$defs/SoftwareExecutionContext"
+    }
+  },
+  "$defs": {
+    "SoftwareExecutionContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "osVersion",
+        "systemBroker",
+        "interactiveUser",
+        "sourceCredentials",
+        "msixSideload",
+        "msixUnsigned"
+      ],
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "osVersion": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "not": {
+            "const": [
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        },
+        "systemBroker": {
+          "type": "boolean"
+        },
+        "interactiveUser": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "identity",
+                "sessionId",
+                "administrator"
+              ],
+              "properties": {
+                "identity": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 184,
+                  "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+                },
+                "sessionId": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                  "not": {
+                    "const": "00000000-0000-0000-0000-000000000000"
+                  }
+                },
+                "administrator": {
+                  "type": "boolean"
+                }
+              }
+            }
+          ]
+        },
+        "sourceCredentials": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "source",
+              "reference"
+            ],
+            "properties": {
+              "source": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+              },
+              "reference": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+              }
+            }
+          }
+        },
+        "msixSideload": {
+          "type": "boolean"
+        },
+        "msixUnsigned": {
+          "type": "boolean"
+        }
       }
     }
   }

@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 #[ignore = "real PG + HTTPS + bare Git: make t2 MODULE=publication.brew"]
-async fn brew_full_version_recovery_shared_tap_and_old_version_withdrawal() {
+async fn brew_immutable_tap_recovery_and_version_specific_withdrawal() {
     let server = Server::new().await;
     let runtime = runtime().await;
     let (_root, config) = brew_config();
@@ -65,7 +65,54 @@ async fn brew_full_version_recovery_shared_tap_and_old_version_withdrawal() {
             .outcome,
         Withdrawal::Complete
     );
-    assert!(git(&config, &["show", "refs/heads/main:Formula/tool.rb"]).contains("class Tool"));
+    // Each native Tap contains precisely its frozen definition and dependencies.
+    let other_snapshot = service
+        .published(rel::Ring::Test, p2.id().digest().bytes(), cutoff())
+        .await
+        .unwrap()
+        .snapshot
+        .unwrap();
+    assert!(
+        git(
+            &config,
+            &["show", &format!("{other_snapshot}:Formula/tool.rb")]
+        )
+        .contains("class Tool")
+    );
+    assert!(
+        service
+            .published(rel::Ring::Test, p2.id().digest().bytes(), cutoff())
+            .await
+            .is_ok()
+    );
+    assert!(
+        service
+            .published(rel::Ring::Test, p1.id().digest().bytes(), cutoff())
+            .await
+            .is_err()
+    );
+    assert!(
+        service
+            .published(rel::Ring::Test, p3.id().digest().bytes(), cutoff())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        git(
+            &config,
+            &["rev-list", "--parents", "-n", "1", current.trim()]
+        )
+        .split_whitespace()
+        .count(),
+        1
+    );
+    let refs = git(
+        &config,
+        &["for-each-ref", "--format=%(refname)", "refs/namespaces"],
+    );
+    assert!(refs.contains(&other_snapshot));
+    assert!(!refs.contains(old.trim()));
+    assert!(!refs.contains(current.trim()));
     assert!(
         git(&config, &["show", &format!("{}:Casks/app.rb", old.trim())]).contains("version \"1\"")
     );

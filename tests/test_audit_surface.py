@@ -177,7 +177,6 @@ DECLARATIONS = {
  ('software_call', 'crates/software-service/src/publication/driver.rs'),
  ('software_candidate', 'crates/software-service/src/publication/service.rs'),
  ('software_preflight', 'crates/flow-service/src/software_publication/service.rs'),
- ('software_preflight', 'crates/software-service/src/publication/driver.rs'),
  ('software_result', 'crates/software-service/src/publication/driver.rs'),
  ('software_validate', 'crates/software-service/src/publication/service.rs'),
  ('software_withdraw', 'crates/software-service/src/publication/driver.rs'),
