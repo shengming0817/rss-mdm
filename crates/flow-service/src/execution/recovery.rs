@@ -35,6 +35,8 @@ impl rss_reconcile::Timer for Timer {
 }
 fn failure(error: Error) -> rss_reconcile::Error {
     rss_reconcile::Error::new(match error {
+        Error::CommitUnknown => rss_reconcile::ErrorKind::CommitUnknown,
+        Error::RollbackFailed => rss_reconcile::ErrorKind::RollbackFailed,
         Error::Unavailable(Failure::CommandInvariant) => rss_reconcile::ErrorKind::Permanent,
         Error::CommitUnknown => rss_reconcile::ErrorKind::CommitUnknown,
         Error::Conflict => rss_reconcile::ErrorKind::Fenced,
@@ -95,8 +97,9 @@ impl ExecutionService {
         self: Arc<Self>,
         signals: Arc<crate::worker_wake::Signals>,
     ) -> rss_runtime::ManagedTaskRegistration {
-        let (task, _) =
+        let (task, status) =
             rss_runtime::ManagedTask::prepare("mdm-command-recovery", Duration::from_secs(20));
+        self.readiness.bind(status);
         task.into_registration(
             move |cancel| async move { self.run_worker(&cancel, &signals).await },
         )
@@ -136,8 +139,9 @@ impl ExecutionService {
         // Stop new claims when either branch exits, then let the other owner settle.
         // Claim, gateway transaction and outbox settlement each have a six-second limit.
         let (first, remaining) = tokio::select! {
-            result = &mut recovery => { stopped.cancel(); (result, relay.await) },
-            result = &mut relay => { stopped.cancel(); (result, recovery.await) },
+            result = &mut recovery => { self.readiness.stop(); stopped.cancel(); (result, relay.await) },
+            result = &mut relay => { self.readiness.stop(); stopped.cancel(); (result, recovery.await) },
+            () = cancel.cancelled() => { self.readiness.stop(); stopped.cancel(); (recovery.await, relay.await) },
         };
         first.and(remaining)
     }
@@ -150,7 +154,7 @@ impl ExecutionService {
         notify: &tokio::sync::Notify,
     ) -> std::result::Result<rss_reconcile::Report, rss_reconcile::Error> {
         let result = Box::pin(rss_reconcile::run_with_notify(
-            &self.reconcile,
+            &health::ObservedStore(self),
             self,
             scope,
             policy,
@@ -177,7 +181,14 @@ impl ExecutionService {
             if cancel.is_cancelled() {
                 return Ok(());
             }
-            match self.relay_once().await {
+            let result = self.relay_once().await;
+            self.readiness.relay(
+                result
+                    .as_ref()
+                    .map(|_| ())
+                    .map_err(|e| failure(e.clone()).kind()),
+            );
+            match result {
                 Ok(count) => {
                     delay = 1;
                     if count == 0 {

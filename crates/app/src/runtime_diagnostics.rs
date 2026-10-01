@@ -9,6 +9,7 @@ pub(crate) struct RuntimeDiagnostics {
     pub identity_audit: Arc<crate::identity_audit::Readiness>,
     pub apple: Option<Arc<crate::apple::Apple>>,
     pub planning: Arc<rss_mdm_flow_service::planning::Planning>,
+    pub execution: Arc<rss_mdm_flow_service::execution::ExecutionService>,
     pub clock: Arc<dyn crate::clock::Clock>,
     pub tenant: rss_request_context::TenantId,
     pub instance: String,
@@ -80,11 +81,7 @@ impl RuntimeDiagnostics {
         if detailed {
             self.enrich(cutoff, &mut inventory, &mut automation).await;
         }
-        let mut execution = component(ComponentName::ExecutionRecovery, false);
-        execution.readiness = Readiness::NotApplicable;
-        execution.health = Health::Unknown;
-        execution.task = Some(Task::Unknown);
-        execution.reasons.push(Reason::Unobserved);
+        let execution = execution_component(self.execution.readiness.health());
         let components = vec![inventory, audit, apple, automation, execution];
         Snapshot {
             alive: true,
@@ -286,6 +283,50 @@ impl RuntimeDiagnostics {
                 result
             }
         }
+    }
+}
+fn execution_component(state: rss_mdm_flow_service::execution::health::Health) -> Component {
+    use rss_mdm_flow_service::execution::health::Phase;
+    let mut result = component(ComponentName::ExecutionRecovery, state.is_ready());
+    result.task = Some(task(state.task));
+    if matches!(state.task, None | Some(rss_runtime::TaskState::Pending)) {
+        result.health = Health::Unknown;
+    }
+    if state.task != Some(rss_runtime::TaskState::Running) {
+        result.reasons.push(Reason::WorkerNotRunning);
+    }
+    if state.stopping {
+        result.reasons.push(Reason::Stopping);
+    }
+    for phase in [state.recovery, state.relay] {
+        match phase {
+            Phase::Initializing => {
+                if state.task == Some(rss_runtime::TaskState::Running) && !state.stopping {
+                    result.health = Health::Unknown;
+                }
+                result.reasons.push(Reason::Initializing);
+            }
+            Phase::Failed(kind) => {
+                result.health = Health::Degraded;
+                result.reasons.push(execution_failure(kind));
+            }
+            Phase::Healthy => (),
+        }
+    }
+    result
+}
+fn execution_failure(kind: rss_reconcile::ErrorKind) -> Reason {
+    use rss_reconcile::ErrorKind;
+    match kind {
+        ErrorKind::Transient => Reason::DependencyUnavailable,
+        ErrorKind::Deadline => Reason::Deadline,
+        ErrorKind::CommitUnknown | ErrorKind::RollbackFailed => Reason::SettlementUnknown,
+        ErrorKind::Fenced => Reason::OwnershipLost,
+        ErrorKind::Cancelled => Reason::Stopping,
+        ErrorKind::InvalidInput
+        | ErrorKind::StorageContract
+        | ErrorKind::Permanent
+        | ErrorKind::Invariant => Reason::WorkRejected,
     }
 }
 fn component(name: ComponentName, ready: bool) -> Component {

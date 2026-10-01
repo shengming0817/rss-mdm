@@ -292,6 +292,7 @@ pub(crate) fn from_state(
         windows: state.windows.as_ref().map(|w| w.channel.clone()),
     });
     let diagnostics = Arc::new(crate::runtime_diagnostics::RuntimeDiagnostics {
+        execution: state.execution.clone(),
         inventory: state.inventory.clone(),
         identity_audit: state.identity.audit_readiness.clone(),
         apple: state.apple.clone(),

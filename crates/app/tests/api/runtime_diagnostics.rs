@@ -57,7 +57,15 @@ impl Fixture {
                 |r| resources.push(r),
             )
             .await?;
+        let execution = crate::flow::execution::open(
+            &config,
+            authority.audit.clone(),
+            None,
+            Default::default(),
+        )
+        .await?;
         let source = Arc::new(crate::runtime_diagnostics::RuntimeDiagnostics {
+            execution,
             inventory,
             planning: flow.planning.clone(),
             identity_audit: authority.identity.audit_readiness.clone(),
@@ -83,6 +91,9 @@ impl Fixture {
     async fn close(self) -> Result<()> {
         use rss_runtime::ManagedResource;
         self.source.inventory.close_fixture().await?;
+        crate::execution::Resource(self.source.execution.clone())
+            .shutdown()
+            .await?;
         for resource in self.resources {
             resource.shutdown().await?;
         }
@@ -97,6 +108,75 @@ fn component(value: &Value, name: &str) -> Value {
         .find(|c| c["name"] == name)
         .unwrap()
         .clone()
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=diagnostics.http: isolated execution connection failure and recovery"]
+async fn execution_first_scan_failure_recovers_only_after_real_success() -> Result<()> {
+    let fixture = Fixture::open().await?;
+    let initial = component(&fixture.query().await?, "execution_recovery");
+    ensure!(initial["readiness"] == "not_ready" && initial["task"] == "unknown");
+    let signals = Arc::new(rss_mdm_flow_service::worker_wake::Signals::default());
+    let mut stack = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(20))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    // This case has an exclusive fault instance, so connection capacity can be restricted without disturbing other cases.
+    pg(
+        "ALTER ROLE mdm_command_runtime CONNECTION LIMIT 0; SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename='mdm_command_runtime'",
+    )?;
+    let result = async {
+        let mut launch = stack.startup()?.commit();
+        launch.stage_deferred_task_with_token(
+            fixture
+                .source
+                .execution
+                .clone()
+                .registration(signals.clone()),
+        );
+        launch.finish();
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                let state = fixture.source.execution.readiness.health();
+                if matches!(
+                    state.recovery,
+                    rss_mdm_flow_service::execution::health::Phase::Failed(_)
+                ) {
+                    ensure!(
+                        state.task == Some(rss_runtime::TaskState::Running) && !state.is_ready()
+                    );
+                    let failed = component(&fixture.query().await?, "execution_recovery");
+                    ensure!(failed["readiness"] == "not_ready" && failed["health"] == "degraded");
+                    break Ok::<(), anyhow::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await??;
+        pg("ALTER ROLE mdm_command_runtime CONNECTION LIMIT -1")?;
+        signals.command_recovery().notify_one();
+        signals.command_relay().notify_one();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let state = component(&fixture.query().await?, "execution_recovery");
+                if state["readiness"] == "ready" {
+                    ensure!(state["task"] == "running" && state["health"] == "healthy");
+                    break Ok::<(), anyhow::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await??;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    pg("ALTER ROLE mdm_command_runtime CONNECTION LIMIT -1")?;
+    let clean = stack.shutdown().join().await?.is_clean();
+    ensure!(!fixture.source.execution.readiness.health().is_ready());
+    fixture.close().await?;
+    result?;
+    ensure!(clean);
+    Ok(())
 }
 
 #[tokio::test]
@@ -401,7 +481,17 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
     let signals = Arc::new(rss_mdm_flow_service::worker_wake::Signals::default());
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(audit.registration().critical());
-    launch.stage_deferred_task_with_token(automation.clone().registration(signals).critical());
+    launch.stage_deferred_task_with_token(
+        automation.clone().registration(signals.clone()).critical(),
+    );
+    launch.stage_deferred_task_with_token(
+        fixture
+            .source
+            .execution
+            .clone()
+            .registration(signals)
+            .critical(),
+    );
     launch.stage_deferred_task_with_token(
         fixture
             .source
