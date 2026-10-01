@@ -1,6 +1,6 @@
 # 企业脚本、采集模板与任务
 
-Resource.Script 和 Resource.Software 分别持有不可变执行定义。管理入口为 `/api/v3/resources/{id}`，Agent 使用 `/api/agent/v4` 的签名任务协议。本页描述服务端接线；生产 Agent 消费归 #2564，受控 PG/HTTP 测试不构成真机证明。
+Resource.Script 和 Resource.Software 分别持有不可变执行定义。管理入口为 `/api/v3/resources/{id}`，Agent 使用 `/api/agent/v5` 的签名任务协议。本页描述服务端接线；生产 Agent 消费归 #2564，受控 PG/HTTP 测试不构成真机证明。
 
 ## 配置与内容
 
@@ -34,11 +34,11 @@ Resource.Script 和 Resource.Software 分别持有不可变执行定义。管理
 
 密钥为 Ed25519 PKCS#8，按其他 secret 文件的权限要求部署；活动私钥必须匹配配置中的可信公钥。Agent 公钥集合通过受信任部署提供，不能信任任务自行携带的 keyId 或公钥。签名覆盖 keyId、tenant/device/registration/generation、task/attempt、平台与架构、用途、期限及精确资源输入；脚本包含解释器、参数和预算，软件包含定义、批准身份、安装意图与全部产物摘要。消费方调用 `SignedTask::verify` 时提供本地身份及预期 task/attempt/permit。
 
-Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery_info_v1）、`runAs`（system、logged_in_user）、`encoding: utf8`、参数 Schema 与 `bindings`、输出 Schema、`purpose`、timeoutSeconds/outputBytes/maxRows。参数仅支持字符串、整数、布尔，必须全部显式绑定；不拼接 shell 命令。Schema 采用有界闭合子集，拒绝引用、组合器、正则与未知关键字。
+Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）、`runAs`（system、logged_in_user）、`encoding: utf8`、参数 Schema 与 `bindings`、输出 Schema、`purpose`、timeoutSeconds/outputBytes/maxRows。参数仅支持字符串、整数、布尔，必须显式提供。脚本使用 bindings，SQL 模板使用 sql 中声明的命名参数并保持 bindings 为空；参数作为字面量绑定，不拼接 shell 命令或 SQL 语法。Schema 采用有界闭合子集，拒绝引用、组合器、正则与未知关键字。
 
 先创建 Resource、加入完整 version，再使用固定 operation UUID 通过
 `POST /api/v3/resources/{id}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation=<UUID>`
-上传原始字节，最后 activate。上传需 ResourceWrite，精确长度与 SHA-256 必须匹配声明，同一摘要不可覆盖。osquery_info_v1 的唯一内容为 `SELECT version FROM osquery_info;` 加一个 LF，且 system、无参数、单行输出。
+上传原始字节，最后 activate。上传需 ResourceWrite，精确长度与 SHA-256 必须匹配声明，同一摘要不可覆盖。osquery 模板的内容是与声明 sql 完全一致的 UTF-8 SQL 字节，固定版本、摘要和合法参数；仅允许受控 SELECT、表/列/函数及平台，必须使用 system 和 collection purpose。`SELECT version FROM osquery_info` 是普通模板示例，可通过 `/0/version` 映射字段；输出为空与失败分别表达。服务端和 Agent 共同消费 SQL 校验与参数绑定规则，周期采集和按需刷新只引用已发布版本，不接受临时 SQL。
 
 ## Policy 分配与权限
 
@@ -63,7 +63,7 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery_in
 
 `POST /api/v2/policies/{id}/reruns` 使用 `operationId`、当前 `expectedRevision`、`input:{"deadline":...}` 请求显式重执行；只保存一个有期限触发，设备签入时才受理。已启动而结果未知的脚本不自动重跑。关闭分配阻止新执行并请求取消既有任务，取消不证明副作用回滚。
 
-`GET /api/v2/policies` 按 `after` UUID 分页；`/{id}` 返回定义、编辑 revision 和执行 version；`/{id}/devices` 按设备 `after` 分页返回当前分配资格、诊断及原生 Operation 关联。执行历史 `/{id}/runs` 用 afterAt/afterId 分页，摘要不含输出；`/{id}/runs/{taskId}` 返回完整执行证据并检查 OperationRead。
+`GET /api/v2/policies` 按 `after` UUID 分页；`/{id}` 返回定义、编辑 revision 和执行 version；`/{id}/devices` 按设备 `after` 分页返回当前分配资格、诊断及原生 Operation 关联。执行历史 `/{id}/runs` 用 afterAt/afterId 分页，摘要不含输出；`/{id}/runs/{taskId}` 返回完整执行证据并检查 OperationRead；采集结果另需 InventoryRead，冻结映射含敏感字段时还需 InventorySensitiveRead。
 
 ## 一次性远程操作
 
@@ -75,21 +75,21 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery_in
 
 ## Agent 状态与结果
 
-1. `POST /api/agent/v5/tasks/claim`：wireVersion=4、operationId，返回至多一个签名 offer 及有界取消页。领取候选与取消页独立选择，每个 registration 的取消游标持久化并循环遍历。task=null 的轮询不写永久执行回执，重试可看到新状态；实际 offer 在有效且仍获授权期间精确重放。
+1. `POST /api/agent/v5/tasks/claim`：wireVersion=5、operationId、当前 profiles 和 executionContext，返回至多一个签名 offer 及有界取消页。领取候选与取消页独立选择，每个 registration 的取消游标持久化并循环遍历。task=null 的轮询不写永久执行回执，重试可看到新状态；实际 offer 在有效且仍获授权期间精确重放。
 2. 验签后按 task/attempt 下载脚本 `/tasks/{taskId}/content?attempt={attemptId}`；软件按签名产物 key 下载 `/tasks/{taskId}/content?attempt={attemptId}&artifact={urlEncodedKey}`。支持单段 Range、ETag 和 If-Range；每次都检查当前凭据、企业批准及任务权限。客户端最终核对长度/hash。
-3. 向 `/tasks/{taskId}/events` 提交 received，再提交 start。事件包含 wireVersion、operationId、attemptId、event。只有独立签名的短期 Start permit 可以授权启动，offer 本身不能启动。
+3. 向 `/tasks/{taskId}/events` 提交 received，再提交 start。事件包含 wireVersion=5、operationId、attemptId、event、executionContext。只有独立签名的短期 Start permit 可以授权启动，offer 本身不能启动。
 4. 返回 result（exitCode、quality、output、diagnostics）或 cancelled。diagnostics 的完整字段、闭合分类和预算见 [wire schema](../../crates/agent-wire/schema)。每次重试保留相同 operationId 与内容。已开始而结果未知的任务不自动重新领取；迟到的同 attempt 证据可以解释 Unknown。
 
-交付、执行和取消分别保存；脚本运行退出成功只记录执行证据，脚本 effect 始终 unverified，不产生设备状态命令的 Applied 或虚构 StateDigest。脚本持久结果包含 exitCode、quality、schemaValid、output、diagnostics 和 trusted；单 run 详情按 OperationRead 返回完整结果，列表摘要删除 output 以及 diagnostics.stdout/stderr，只保留受限状态和时间/失败分类。结构化 output 同时遵守 wire 与资源版本预算。
+交付、执行和取消分别保存；脚本运行退出成功只记录执行证据，脚本 effect 始终 unverified，不产生设备状态命令的 Applied 或虚构 StateDigest。脚本持久结果包含 exitCode、quality、schemaValid、output、diagnostics 和 trusted；单 run 详情检查设备 OperationRead；采集结果另查 InventoryRead，含敏感字段再查 InventorySensitiveRead，随后才返回原始 output 与 stdout/stderr。列表摘要删除 output 以及 diagnostics.stdout/stderr，只保留受限状态和时间/失败分类。结构化 output 同时遵守 wire 与资源版本预算。
 
-采集模板是 collection purpose 加固定字段 JSON Pointer 映射，不另建模板版本体系。只允许 corporate_agent.version（字符串）、corporate_agent.healthy（布尔）、osquery.version（字符串），完整键名均以 `custom.` 开头。前两项来源 agent.script，第三项来源 agent.osquery。完整、exitCode=0、schema 与字段类型均有效且权限仍有效、未超过任务或运行超时且未取消时，通过 CollectionRun → Observation → Inventory 发布。部分、截断、失败和非法输出只增加质量证据，保留可信事实及 lastKnown 的原始来源时间。没有 TTL。
+采集模板使用 collection purpose 和字段键→JSON Pointer 映射，不另建版本体系。映射引用统一版本化目录中的内置或自定义字段，按字段类型、平台、来源与敏感级别冻结；不再限制为三个固定字段。脚本与 SQL 分别使用 agent.script 与 agent.osquery。预算合法、exitCode=0、输出完整且执行仍可信时，字段独立校验后经 CollectionRun→Observation→Inventory 发布；缺失或无效字段可形成部分结果，合法字段仍可更新。失败、截断、超预算和不可信结果不清空历史可信事实；来源冲突与完整快照/tombstone 删除按统一选值规则处理，不引入 TTL。
 
 
 归档只能通过管理端 Resource 入口，任务、策略和软件发布的历史引用统一阻止归档。发布、取消和执行事件的审计保留策略或执行版本关联；执行事件 target 为 task，registrationId 可反查设备，同一 operationId 可关联执行回执。
 
 ### 一次性结果与恢复阶段
 
-`GET /api/v2/remote-operations/{id}` 的结果摘要省略 output/stdout/stderr；`GET /api/v2/remote-operations/{id}/runs/{task}` 按设备 OperationRead 权限读取完整、已有预算约束的结果与诊断。Policy 与 Remote 使用同一 Run 结果过滤与详情投影。
+`GET /api/v2/remote-operations/{id}` 的结果摘要省略 output/stdout/stderr；`GET /api/v2/remote-operations/{id}/runs/{task}` 先检查设备 OperationRead；采集结果另需 InventoryRead，冻结字段含敏感项还需 InventorySensitiveRead，才读取完整结果和诊断。Policy 与 Remote 使用同一 Run 结果过滤与详情投影。
 
 `cancellationRequested` 与 `deadlineElapsed` 是意图/时间事实。仍有工作时，phase 为 preparing、dispatched、cancelling 或 expiring；全部工作收敛后为 completed，存在无法确认的执行则为 unknown。completed 表示处理收敛，不表示每个设备执行成功，更不证明脚本效果回滚；各设备结果仍独立展示。取消返回 cancellationRequested，不把写入取消意图称为设备取消完成。
 

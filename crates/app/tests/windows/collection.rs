@@ -224,6 +224,24 @@ async fn native_template_policy_uses_correlated_get_and_collection_run() -> anyh
     let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2")
         .bind(case_tenant()).bind(policy).fetch_one(&mut pg).await?;
     ensure!(count == 2, "completed run blocked the next occurrence");
+    // History is retained, but it cannot occupy the entire check-in recovery page.
+    sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,policy_version,device,registration,generation,occurrence,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint) SELECT tenant_id,gen_random_uuid(),policy_version,device,registration,generation,'blocked-history:'||n,created_at-1000,available_at,deadline,jsonb_set(jsonb_set(state,'{execution}',to_jsonb(CASE WHEN n<=65 THEN 'unknown' ELSE 'not_started' END::text)),'{cancellation}',to_jsonb(CASE WHEN n<=65 THEN 'none' ELSE 'confirmed' END::text)),gateway_accepted,dispatch_fingerprint FROM mdm_commands.action_runs CROSS JOIN generate_series(1,130) n WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(runs[0]).execute(&mut pg).await?;
+    let next:Uuid=sqlx::query_scalar("UPDATE mdm_commands.action_runs SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id<>$2 AND occurrence NOT LIKE 'blocked-history:%' RETURNING id")
+        .bind(case_tenant()).bind(runs[0]).fetch_one(&mut pg).await?;
+    host.app
+        .execution
+        .settle_native_fixture(case_device())
+        .await?;
+    let initialized:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2)")
+        .bind(case_tenant()).bind(next).fetch_one(&mut pg).await?;
+    ensure!(
+        initialized,
+        "historical Unknown/cancelled runs starved native check-in recovery"
+    );
+    let unknown:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND occurrence LIKE 'blocked-history:%' AND state->>'execution'='unknown'")
+        .bind(case_tenant()).fetch_one(&mut pg).await?;
+    ensure!(unknown == 65, "unknown history was retried or rewritten");
     pg.close().await?;
     host.close().await
 }

@@ -137,6 +137,37 @@ impl ExecutionService {
 
 #[cfg(feature = "integration")]
 impl ExecutionService {
+    /// Exercise the native check-in recovery funnel against persisted runs.
+    pub async fn settle_native_fixture(
+        &self,
+        device: &str,
+    ) -> std::result::Result<(), crate::Error> {
+        let audit = rss_mdm_audit_integration::RequestAudit::new(
+            self.tenant.to_string(),
+            "command_reconcile",
+        );
+        let result = crate::transaction::run(
+            &self.audit_store,
+            &self.runtime,
+            self.tenant,
+            &audit,
+            (self, device),
+            |ctx, tx| {
+                Box::pin(
+                    async move { super::native_collection::settle_device(ctx.0, tx, ctx.1).await },
+                )
+            },
+            crate::transaction::TransactionOwner::Execution,
+        )
+        .await;
+        audit.finalize(
+            result
+                .as_ref()
+                .err()
+                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+        );
+        result
+    }
     /// Exercise the production recovery transaction through the same action funnel as the worker.
     pub async fn recover_action_fixture(&self, id: Uuid) -> std::result::Result<(), crate::Error> {
         let audit = rss_mdm_audit_integration::RequestAudit::new(

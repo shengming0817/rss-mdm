@@ -213,7 +213,27 @@ pub async fn settle_device(
     }
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
-    let ids:Vec<Uuid>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT r.id FROM mdm_commands.action_runs r LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) LEFT JOIN mdm_planning.remote_operations o ON(o.tenant_id,o.id)=(r.tenant_id,r.remote_operation) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND coalesce(v.frozen,o.frozen)->>'kind'='native_collection' AND r.state->>'execution' IN('not_started','running','unknown') ORDER BY r.created_at,r.id LIMIT 64").bind(tenant).bind(device).fetch_all(c).await})).await?;
+    let now = storage::now(tx).await?;
+    // Completed/cancelled evidence and not-yet-admitted reads can make progress now.
+    // Waiting/Unknown history must not consume their bounded check-in page.
+    let ids:Vec<Uuid>=tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query_scalar(r#"SELECT r.id FROM mdm_commands.action_runs r
+        LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version)
+        LEFT JOIN mdm_planning.remote_operations o ON(o.tenant_id,o.id)=(r.tenant_id,r.remote_operation)
+        LEFT JOIN mdm_access.collection_runs c ON(c.tenant_id,c.id)=(r.tenant_id,r.id)
+        WHERE r.tenant_id=$1::uuid AND r.device=$2
+          AND coalesce(v.frozen,o.frozen)->>'kind'='native_collection'
+          AND r.state->>'execution' IN('not_started','running','unknown')
+          AND r.state->>'cancellation'<>'confirmed'
+        ORDER BY CASE
+          WHEN r.state->>'cancellation'='requested' THEN 0
+          WHEN r.state->>'execution'='unknown' THEN 4
+          WHEN c.sealed_at IS NOT NULL OR r.deadline<=$3 THEN 0
+          WHEN r.gateway_accepted AND c.id IS NULL AND r.available_at<=$3 THEN 1
+          WHEN c.id IS NOT NULL THEN 2
+          ELSE 3 END, r.created_at,r.id LIMIT 64"#)
+            .bind(tenant).bind(device).bind(now).fetch_all(c).await
+    })).await?;
     for id in ids {
         super::recovery::recover_one(service, tx, id).await?;
     }

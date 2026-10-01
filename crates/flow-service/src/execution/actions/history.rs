@@ -116,6 +116,13 @@ impl ExecutionService {
                 _=>return Err(Error::Execution(crate::execution::error::ExecutionError::MissingTask).into()),
             };
             storage::authorized(tx,proof,&run.target.device,Permission::OperationRead).await?;
+            if let db::ScheduledPolicy::Script(script)=&plan && let Some(collection)=&script.frozen.collection {
+                storage::authorized(tx,proof,&run.target.device,Permission::InventoryRead).await?;
+                if collection.fields().iter().any(|f|f.sensitivity==rss_mdm_inventory::Sensitivity::Sensitive) {
+                    proof.manage(Permission::InventorySensitiveRead)?;
+                }
+            }
+
             store.append_request_in(tx,audit,200,"success").await?;
             let effect=run.result.as_ref().and_then(|r|r["effect"].as_str()).unwrap_or("unverified").to_owned();
             let user_action=if matches!(plan,db::ScheduledPolicy::Software(ref software) if matches!(software.intent(),rss_mdm_policy::SoftwareIntent::AvailableInstall)) && run.state.awaits_user(storage::now(tx).await?) {Some("waiting_user")}else{None};

@@ -86,10 +86,12 @@ snapshot、partial、failed 分别表达完整快照、部分结果和失败。�
 
 ## #2534 的 V3 → V4 无兼容退出决定
 
-本次基线为 `1261f13`，V3 schema 指纹 `e4930817fec8a3032d9b3d144a4992c67bb45a89ffdecb0f08ca24e0ffbbc4c5`，V4 指纹 `925c5a7438f2a483fa280b5d5f8e26bcd451afa7d9a09c7a6129f37a155e40e0`。用户对 #2534 明确要求不向后兼容：V3 路由、schema、签名域和 capability 退出，所有 Agent 消费者须切换到 V4；不提供代理重写、双解码或旧执行许可。管理 HTTP API 的版本不随 Agent wire 一起变化。
+以下记录仅描述 #2534 当时的 V3→V4 退出决定；当前接入使用上文 V5 合同。该次基线为 `1261f13`，V3 schema 指纹 `e4930817fec8a3032d9b3d144a4992c67bb45a89ffdecb0f08ca24e0ffbbc4c5`，V4 指纹 `925c5a7438f2a483fa280b5d5f8e26bcd451afa7d9a09c7a6129f37a155e40e0`。用户对 #2534 明确要求不向后兼容：V3 路由、schema、签名域和 capability 退出，所有 Agent 消费者须切换到 V4；不提供代理重写、双解码或旧执行许可。管理 HTTP API 的版本不随 Agent wire 一起变化。
 
 V4 共 13 个网络 shape，新增 ManagedRegistrationRequest，并扩展通道观察和标准注册入口任务。当前数据库安装准入只接受空库或完整当前账本，不提供旧 Agent 注册数据的在线转换。固定签名 MSI/公证 PKG 及真实系统证书使用分别由 #2535/#2536 和 #2480/#2481 验证；本次受控协议样本不证明生产安装包或真机已可用。
 
+## 当前 V5 软件执行上下文与结果
+
 全部 Agent 注册（包括仅库存注册、托管安装注册）以及软件任务请求都必须包含完整 executionContext：递增 revision、OS 数字版本、systemBroker、明确 interactiveUser（没有会话时为 null）、来源范围只读凭据引用，以及 MSIX sideload/unsigned 能力。用户绑定包括精确 SID/UID 与 sessionId；上下文变化须使用更高 revision，旧 Offer 不能启动。每个依赖步骤分别检查 profile、执行上下文和材料；没有通用软件能力兜底。
 
-软件结果是绑定 definitionDigest 的逐步骤证据：index/stepDigest、target、package、native identity、独立 before/after 检测、process、重启及诊断。MSIX 注册与 provisioning 使用不同 identity 变体，错误步骤、用户会话、包身份或作用域拒绝投影。退出码不能代替独立检测；Unknown 保留原任务恢复身份。wire 保持 v4，只维护当前软件 shape 与指纹，消费方须更新精确依赖。
+软件结果是绑定 definitionDigest 的逐步骤证据：index/stepDigest、target、package、native identity、独立 before/after 检测、process、重启及诊断。MSIX 注册与 provisioning 使用不同 identity 变体，错误步骤、用户会话、包身份或作用域拒绝投影。退出码不能代替独立检测；Unknown 保留原任务恢复身份。当前 wire 为 V5，只维护当前软件 shape 与指纹，消费方须更新精确依赖。

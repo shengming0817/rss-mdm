@@ -1078,3 +1078,7 @@ MODULES['execution.commands.windows'] = replace(MODULES['execution.commands.wind
 
 MODULES['windows.management'] = replace(MODULES['windows.management'], test_inputs=(*MODULES['windows.management'].test_inputs, 'crates/app/tests/windows/collection.rs'), production_inputs=(*MODULES['windows.management'].production_inputs, 'crates/windows-channel/src/template_collection.rs'))
 consume(("crates/software-service/tests/support/imports.rs",), "software.catalog")
+
+consume(('crates/flow-service/src/execution/actions/output.rs',), 'execution.agent.delivery')
+consume(('crates/flow-service/src/execution/actions/native_collection.rs',
+         'crates/flow-service/src/execution/actions/recovery.rs'), 'windows.management apple.collection')

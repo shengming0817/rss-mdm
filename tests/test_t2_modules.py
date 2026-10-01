@@ -8,6 +8,17 @@ from t2_registry import MODULES, select_paths
 
 
 class ModuleImpactTests(unittest.TestCase):
+    def test_collection_inputs_select_their_actual_protocol_consumers(self):
+        cases={
+            'crates/flow-service/src/execution/actions/output.rs': {'execution.agent.delivery'},
+            'crates/flow-service/src/execution/actions/native_collection.rs': {'windows.management','apple.collection'},
+            'crates/flow-service/src/execution/actions/recovery.rs': {'windows.management','apple.collection'},
+        }
+        for path,expected in cases.items():
+            selected=select_paths([path])
+            self.assertFalse(selected.full)
+            self.assertTrue(expected <= set(selected.modules),(path,selected.modules))
+
     def test_console_projection_inputs_select_their_http_consumers(self):
         for path in ('crates/resource-postgres/src/codec.rs',
                      'crates/inventory-postgres/src/lib.rs',
