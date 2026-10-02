@@ -4,11 +4,15 @@ use crate::{
     xml::{Input, Output},
 };
 use std::collections::BTreeSet;
+mod status;
+pub use status::{rejected_status, successful_status, terminal_status};
 mod correlation;
+mod fragment;
 pub use correlation::{
     Correlated, CorrelatedItem, CorrelatedStatus, Expected, Reference, SentMessage, correlate,
     encode_request,
 };
+pub use fragment::{Fragment, fragment};
 /// Exact namespace URI for the supported SyncML 1.2 XML profile.
 pub const NS: &str = "SYNCML:SYNCML1.2";
 const META: &str = "syncml:metinf";
@@ -48,6 +52,8 @@ pub struct Meta {
     pub max_message_size: Option<u32>,
     /// Optional positive advertised maximum object size in bytes; not a local budget override.
     pub max_object_size: Option<u32>,
+    /// Total object Data bytes; for XML/b64 this counts encoded characters, before decoding.
+    pub size: Option<u32>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// One in-memory SyncML document, validated at encoding/decoding boundaries.
@@ -145,10 +151,17 @@ pub enum Command {
 pub enum Alert {
     /// Client-initiated management-session alert (1201).
     ClientInitiated,
+    /// Request continuation of the peer's unfinished native package (1222).
+    MoreMessages,
+    /// End a native session without inferring the effects of incomplete commands (1223).
+    SessionAbort,
+    /// An object transfer ended without its final data chunk (1225).
+    EndOfData {
+        /// Native source/target references for the interrupted object.
+        items: Vec<Item>,
+    },
     /// Asynchronous CSP result or management event (1226), independently correlated by its owner.
     Generic {
-        /// Optional originating operation correlation token.
-        correlator: Option<String>,
         /// Native source, type and result data; never proof of authentication or effect.
         items: Vec<Item>,
     },
@@ -184,6 +197,8 @@ impl LoginStatus {
 /// Get requires only a target; Results/DevInfo require source and data. Status
 /// details permit a source, target or data. Message validation enforces these roles.
 pub struct Item {
+    /// More object Data follows in the next message; this item cannot establish a complete value.
+    pub more_data: bool,
     /// Optional source LocURI, required for Results/DevInfo and forbidden for Get.
     pub source: Option<String>,
     /// Optional target LocURI, required for Get and forbidden for Results/DevInfo.
@@ -370,6 +385,14 @@ fn meta(p: &mut Input<'_>) -> Result<Option<Meta>> {
             if m.max_message_size.replace(value).is_some() {
                 return Err(E::Duplicate);
             }
+        } else if p.is(META, "Size")? {
+            let value = number(
+                &p.scalar(META, "Size", p.limits.identifier_bytes, false)?,
+                true,
+            )?;
+            if m.size.replace(value).is_some() {
+                return Err(E::Duplicate);
+            }
         } else if p.is(META, "MaxObjSize")? {
             let value = number(
                 &p.scalar(META, "MaxObjSize", p.limits.identifier_bytes, false)?,
@@ -390,16 +413,22 @@ fn items(p: &mut Input<'_>) -> Result<Vec<Item>> {
     while p.is(NS, "Item")? {
         p.item()?;
         p.open(NS, "Item")?;
-        let i = Item {
+        let mut i = Item {
+            more_data: false,
             target: optional_location(p, "Target")?,
             source: optional_location(p, "Source")?,
             meta: meta(p)?,
             data: if p.is(NS, "Data")? {
-                Some(Secret(p.scalar(NS, "Data", p.limits.field_bytes, true)?))
+                Some(Secret(p.scalar(NS, "Data", p.limits.object_bytes, true)?))
             } else {
                 None
             },
         };
+        if p.is(NS, "MoreData")? {
+            p.open(NS, "MoreData")?;
+            p.end(NS, "MoreData")?;
+            i.more_data = true;
+        }
         p.end(NS, "Item")?;
         out.push(i);
     }
@@ -566,11 +595,16 @@ fn read_commands(p: &mut Input<'_>, l: &CodecLimits, depth: usize) -> Result<Vec
             let id = num(p, "CmdID", false)?;
             let alert = match num(p, "Data", false)? {
                 1201 => Alert::ClientInitiated,
+                1222 => Alert::MoreMessages,
+                1223 => Alert::SessionAbort,
+                1225 => Alert::EndOfData { items: items(p)? },
                 1224 => read_login_status(p)?,
-                1226 => Alert::Generic {
-                    correlator: p.optional(NS, "Correlator", l.identifier_bytes)?,
-                    items: items(p)?,
-                },
+                1226 => {
+                    if p.is(NS, "Correlator")? {
+                        return Err(E::Unsupported);
+                    }
+                    Alert::Generic { items: items(p)? }
+                }
                 _ => return Err(E::Unsupported),
             };
             p.end(NS, "Alert")?;
@@ -650,6 +684,9 @@ fn validate_meta(m: Option<&Meta>, l: &CodecLimits, credential: bool) -> Result<
                 return Err(E::Unsupported);
             }
         }
+        if m.size.is_some_and(|size| size as usize > l.object_bytes) {
+            return Err(E::LimitExceeded);
+        }
         if m.max_message_size == Some(0) || m.max_object_size == Some(0) {
             return Err(E::InvalidValue);
         }
@@ -663,6 +700,9 @@ fn validate_items(items: &[Item], l: &CodecLimits, get: bool, devinfo: bool) -> 
     bound(items.len(), l.items)?;
     let mut seen = BTreeSet::new();
     for i in items {
+        if i.more_data && (get || devinfo || i.data.is_none()) {
+            return Err(E::Structure);
+        }
         let uri = if get {
             if i.source.is_some() || i.data.is_some() {
                 return Err(E::Structure);
@@ -681,7 +721,11 @@ fn validate_items(items: &[Item], l: &CodecLimits, get: bool, devinfo: bool) -> 
         }
         validate_meta(i.meta.as_ref(), l, false)?;
         if !get {
-            text(&i.data.as_ref().ok_or(E::Structure)?.0, l.field_bytes, true)?;
+            text(
+                &i.data.as_ref().ok_or(E::Structure)?.0,
+                l.object_bytes,
+                true,
+            )?;
         }
         if devinfo
             && !matches!(
@@ -728,13 +772,16 @@ fn validate_mutation(command: &Command, items: &[Item], l: &CodecLimits) -> Resu
             return Err(E::Duplicate);
         }
         validate_meta(item.meta.as_ref(), l, false)?;
+        if item.more_data && (item.data.is_none() || matches!(command, Command::Delete { .. })) {
+            return Err(E::Structure);
+        }
         if matches!(command, Command::Delete { .. }) && item.data.is_some()
             || matches!(command, Command::Replace { .. }) && item.data.is_none()
         {
             return Err(E::Structure);
         }
         if let Some(data) = &item.data {
-            text(&data.0, l.field_bytes, true)?;
+            text(&data.0, l.object_bytes, true)?;
         }
     }
     Ok(())
@@ -785,6 +832,9 @@ fn validate_status(s: &Status, l: &CodecLimits) -> Result<usize> {
     }
     bound(s.items.len(), l.items)?;
     for item in &s.items {
+        if item.more_data {
+            return Err(E::Structure);
+        }
         for uri in [&item.source, &item.target].into_iter().flatten() {
             text(uri, l.uri_bytes, false)?;
         }
@@ -814,6 +864,17 @@ pub(crate) fn validate(m: &Message, l: &CodecLimits) -> Result<()> {
         validate_meta(Some(&c.meta), l, true)?;
         text(&c.data.0, l.field_bytes, false)?;
     }
+    if m.final_message
+        && flattened(&m.commands, l)?.iter().any(|c| match c {
+            Command::Add { items, .. }
+            | Command::Replace { items, .. }
+            | Command::Exec { items, .. } => items.iter().any(|i| i.more_data),
+            Command::Results(r) => r.items.iter().any(|i| i.more_data),
+            _ => false,
+        })
+    {
+        return Err(E::Structure);
+    }
     validate_body(&m.commands, m.final_message, l)
 }
 
@@ -837,7 +898,16 @@ pub(crate) fn validate_body(
             return Err(E::Duplicate);
         }
         match c {
-            Command::Atomic { .. } | Command::Sequence { .. } => {}
+            Command::Atomic { commands, .. } | Command::Sequence { commands, .. } => {
+                if flattened(commands, l)?.iter().any(|c| match c {
+                    Command::Add { items, .. }
+                    | Command::Replace { items, .. }
+                    | Command::Exec { items, .. } => items.iter().any(|i| i.more_data),
+                    _ => false,
+                }) {
+                    return Err(E::Structure);
+                }
+            }
             Command::Add { meta, items, .. }
             | Command::Replace { meta, items, .. }
             | Command::Delete { meta, items, .. }
@@ -857,11 +927,26 @@ pub(crate) fn validate_body(
                 count = count.checked_add(items.len()).ok_or(E::LimitExceeded)?;
             }
             Command::Alert { alert, .. } => {
-                initialization |= !matches!(alert, Alert::Generic { .. });
-                if let Alert::Generic { correlator, items } = alert {
-                    if let Some(value) = correlator {
-                        text(value, l.identifier_bytes, false)?;
+                initialization |=
+                    matches!(alert, Alert::ClientInitiated | Alert::LoginStatus { .. });
+                if let Alert::EndOfData { items } = alert {
+                    if items.is_empty() {
+                        return Err(E::Structure);
                     }
+                    for item in items {
+                        if item.more_data
+                            || item.data.is_some()
+                            || (item.source.is_none() && item.target.is_none())
+                        {
+                            return Err(E::Structure);
+                        }
+                        for uri in [&item.source, &item.target].into_iter().flatten() {
+                            text(uri, l.uri_bytes, false)?;
+                        }
+                    }
+                    count = count.checked_add(items.len()).ok_or(E::LimitExceeded)?;
+                }
+                if let Alert::Generic { items } = alert {
                     validate_items(items, l, false, false)?;
                     if items.iter().any(|item| {
                         item.meta
@@ -950,6 +1035,7 @@ fn write_meta(w: &mut Output<'_>, m: Option<&Meta>, l: &CodecLimits) -> Result<(
         for (name, v) in [
             ("MaxMsgSize", m.max_message_size),
             ("MaxObjSize", m.max_object_size),
+            ("Size", m.size),
         ] {
             if let Some(v) = v {
                 w.start(name, &[("xmlns", META)])?;
@@ -978,7 +1064,10 @@ fn write_items(w: &mut Output<'_>, items: &[Item], l: &CodecLimits) -> Result<()
         }
         write_meta(w, i.meta.as_ref(), l)?;
         if let Some(v) = &i.data {
-            w.scalar("Data", &v.0, l.field_bytes, true)?;
+            w.scalar("Data", &v.0, l.object_bytes, true)?;
+        }
+        if i.more_data {
+            w.empty("MoreData")?;
         }
         w.end("Item")?;
     }
@@ -1117,15 +1206,18 @@ fn write_commands(w: &mut Output<'_>, commands: &[Command], l: &CodecLimits) -> 
                     "Data",
                     match alert {
                         Alert::ClientInitiated => 1201,
+                        Alert::MoreMessages => 1222,
+                        Alert::SessionAbort => 1223,
+                        Alert::EndOfData { .. } => 1225,
                         Alert::LoginStatus { .. } => 1224,
                         Alert::Generic { .. } => 1226,
                     },
                     l,
                 )?;
-                if let Alert::Generic { correlator, items } = alert {
-                    if let Some(value) = correlator {
-                        w.scalar("Correlator", value, l.identifier_bytes, false)?;
-                    }
+                if let Alert::EndOfData { items } = alert {
+                    write_items(w, items, l)?;
+                }
+                if let Alert::Generic { items } = alert {
                     write_items(w, items, l)?;
                 }
                 if let Alert::LoginStatus {

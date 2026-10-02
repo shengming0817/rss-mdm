@@ -97,6 +97,7 @@ impl Installer {
     }
     fn item(&self, data: Option<Secret<String>>) -> Item {
         Item {
+            more_data: false,
             target: Some(format!(
                 "{}%7B{}%7D/DownloadInstall",
                 root(self.0.scope),

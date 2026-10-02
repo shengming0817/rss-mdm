@@ -64,6 +64,7 @@ pub fn encode_request(message: &Message, l: &CodecLimits) -> Result<(Vec<u8>, Se
             Command::Atomic { .. } => (CommandName::Atomic, Vec::new()),
             Command::Sequence { .. } => (CommandName::Sequence, Vec::new()),
             Command::Status(_) => (CommandName::Status, Vec::new()),
+            Command::Alert { .. } => (CommandName::Alert, Vec::new()),
             _ => return Err(E::Unsupported),
         };
         commands.push(SentCommand {
@@ -84,6 +85,31 @@ pub fn encode_request(message: &Message, l: &CodecLimits) -> Result<(Vec<u8>, Se
     ))
 }
 impl Expected {
+    /// Resolve an exact original Get item from successfully encoded outbound messages.
+    /// This establishes protocol correlation only; the channel still authenticates the sender.
+    pub fn get_reference(
+        &self,
+        message_id: u32,
+        command_id: u32,
+        uri: &str,
+    ) -> CorrelationResult<Reference> {
+        if self.messages.iter().any(|m| {
+            m.id == message_id
+                && m.commands.iter().any(|c| {
+                    c.id == command_id
+                        && c.kind == CommandName::Get
+                        && c.targets.iter().any(|t| t == uri)
+                })
+        }) {
+            Ok(Reference {
+                message_id,
+                command_id,
+                uri: uri.into(),
+            })
+        } else {
+            Err(C::Mismatch)
+        }
+    }
     /// Bind an encoded sent snapshot to a positive expected response message ID.
     /// Validates retained-message/command/item/URI budgets under the supplied limits;
     /// failures return [`crate::CorrelationError::InvalidExpected`]. Does not send bytes,
@@ -103,7 +129,8 @@ impl Expected {
     /// Add a successfully sent snapshot from this same session and endpoint pair.
     /// Failure leaves the prior expectation intact.
     pub fn record_sent(&mut self, sent: SentMessage, l: &CodecLimits) -> CorrelationResult<()> {
-        bound(self.messages.len().saturating_add(1), l.commands).map_err(C::InvalidExpected)?;
+        bound(self.messages.len().saturating_add(1), l.session_messages)
+            .map_err(C::InvalidExpected)?;
         self.validate(l).map_err(C::InvalidExpected)?;
         let mut candidate = self.clone();
         candidate.messages.push(sent);
@@ -115,7 +142,7 @@ impl Expected {
         if self.response_message_id == 0 {
             return Err(E::InvalidValue);
         }
-        bound(self.messages.len(), l.commands)?;
+        bound(self.messages.len(), l.session_messages)?;
         let first = self.messages.first().ok_or(E::Structure)?;
         let mut ids = BTreeSet::new();
         let mut commands = 0usize;
@@ -135,10 +162,10 @@ impl Expected {
             commands = commands
                 .checked_add(m.commands.len())
                 .ok_or(E::LimitExceeded)?;
-            bound(commands, l.commands)?;
+            bound(commands, l.session_commands)?;
             for c in &m.commands {
                 items = items.checked_add(c.targets.len()).ok_or(E::LimitExceeded)?;
-                bound(items, l.items)?;
+                bound(items, l.session_items)?;
                 for uri in &c.targets {
                     text(uri, l.uri_bytes, false)?;
                 }
@@ -254,6 +281,9 @@ pub fn correlate(
                     return Err(C::Mismatch);
                 }
                 for i in &r.items {
+                    if i.more_data {
+                        return Err(C::InvalidResponse(E::Structure));
+                    }
                     let reference = Reference {
                         message_id: key.0,
                         command_id: key.1,

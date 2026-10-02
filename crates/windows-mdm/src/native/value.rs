@@ -33,7 +33,7 @@ pub(super) fn compile(
         (Format::Integer, Value::Integer(v)) => v.to_string(),
         (Format::Boolean, Value::Boolean(v)) => v.to_string(),
         (Format::Base64, Value::Bytes(v)) => {
-            if v.len() > 48 * 1024 {
+            if v.len() > crate::CodecLimits::default().decoded_object_bytes {
                 return Err(Error::Limit);
             }
             base64::engine::general_purpose::STANDARD.encode(v)
@@ -46,7 +46,7 @@ pub(super) fn compile(
         (Format::Binary, _) => return Err(Error::UnresolvedConstraint),
         _ => return Err(Error::Value),
     };
-    if value.len() > 64 * 1024 {
+    if value.len() > crate::CodecLimits::default().object_bytes {
         return Err(Error::Limit);
     }
     if node.format == Format::Xml {
@@ -185,8 +185,11 @@ fn range(raw: &str) -> Result<(i64, i64), Error> {
 }
 
 fn validate_xml(value: &str) -> Result<(), Error> {
-    let limits = crate::CodecLimits::default();
-    crate::xml::document(value.as_bytes(), limits.field_bytes, &limits).map_err(|error| {
+    let limits = crate::CodecLimits {
+        field_bytes: crate::CodecLimits::default().object_bytes,
+        ..Default::default()
+    };
+    crate::xml::document(value.as_bytes(), limits.object_bytes, &limits).map_err(|error| {
         if error == crate::CodecError::LimitExceeded {
             Error::Limit
         } else {

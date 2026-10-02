@@ -9,7 +9,7 @@
 //! let message = Message {
 //!     header: Header { session_id: 1, message_id: 1, target: "claimed-device".into(),
 //!         source: "https://mdm.example.com/manage".into(), credential: None, meta: None },
-//!     commands: vec![Command::Get { id: 1, meta: None, items: vec![Item {
+//!     commands: vec![Command::Get { id: 1, meta: None, items: vec![Item { more_data: false,
 //!         target: Some("./DevDetail/SwV".into()), source: None, meta: None, data: None,
 //!     }] }], final_message: true,
 //! };
@@ -100,7 +100,7 @@ impl std::error::Error for CorrelationError {
 /// Association result distinguishing bad local inputs, bad responses and mismatches.
 pub type CorrelationResult<T> = std::result::Result<T, CorrelationError>;
 
-/// Per-message limits. All limits are enforced; zero means no capacity, not unlimited.
+/// Per-message and retained-session limits. All limits are enforced; zero means no capacity, not unlimited.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodecLimits {
     /// Maximum discovery message bytes and direct SOAP Fault encoding/decoding; default 64 KiB.
@@ -126,9 +126,15 @@ pub struct CodecLimits {
     pub attributes: usize,
     /// Maximum active namespace bindings; default 32.
     pub namespace_bindings: usize,
-    /// Maximum SyncML commands; also bounds retained correlation messages/commands; default 256.
+    /// Maximum messages retained within one native session; default 128.
+    pub session_messages: usize,
+    /// Maximum commands retained for session correlation; default 32768.
+    pub session_commands: usize,
+    /// Maximum target references retained for session correlation; default 131072.
+    pub session_items: usize,
+    /// Maximum SyncML commands in one message; default 256.
     pub commands: usize,
-    /// Maximum accumulated protocol items; also bounds correlation target references; default 1024.
+    /// Maximum protocol items in one message; default 1024.
     pub items: usize,
     /// Maximum UTF-8 bytes in identifier-class text; default 128.
     pub identifier_bytes: usize,
@@ -136,6 +142,10 @@ pub struct CodecLimits {
     pub uri_bytes: usize,
     /// Maximum UTF-8 bytes in general text fields; default 64 KiB.
     pub field_bytes: usize,
+    /// Maximum reassembled native object Data bytes, before any base64 decoding; default 16 MiB.
+    pub object_bytes: usize,
+    /// Maximum decoded bytes of a base64 native object; default 12 MiB.
+    pub decoded_object_bytes: usize,
     /// Maximum decoded binary field or generated provisioning document bytes; default 256 KiB.
     pub binary_bytes: usize,
 }
@@ -152,11 +162,16 @@ impl Default for CodecLimits {
             attributes_per_element: 32,
             attributes: 2048,
             namespace_bindings: 32,
+            session_messages: 128,
+            session_commands: 32768,
+            session_items: 131072,
             commands: 256,
             items: 1024,
             identifier_bytes: 128,
             uri_bytes: 2048,
             field_bytes: 64 * 1024,
+            object_bytes: 16 * 1024 * 1024,
+            decoded_object_bytes: 12 * 1024 * 1024,
             binary_bytes: 256 * 1024,
         }
     }

@@ -91,16 +91,21 @@ fn grouped_operations_preserve_child_identity_and_windows_atomic_rules() {
 }
 
 #[test]
-fn asynchronous_alert_retains_native_type_and_correlation() {
+fn asynchronous_alert_retains_native_type_and_rejects_correlator() {
     let body = "<Alert><CmdID>1</CmdID><Data>1226</Data><Correlator>job-7</Correlator><Item><Source><LocURI>./Vendor/MSFT/HealthAttestation/VerifyHealth</LocURI></Source><Meta><Type xmlns=\"syncml:metinf\">com.microsoft.mdm:HealthAttestation.Result</Type><Format xmlns=\"syncml:metinf\">int</Format></Meta><Data>3</Data></Item></Alert>";
     let limits = CodecLimits::default();
-    let message = syncml::decode(wire(body).as_bytes(), &limits).unwrap();
+    assert_eq!(
+        syncml::decode(wire(body).as_bytes(), &limits),
+        Err(CodecError::Unsupported)
+    );
+    let body = body.replace("<Correlator>job-7</Correlator>", "");
+    let message = syncml::decode(wire(&body).as_bytes(), &limits).unwrap();
     let encoded = syncml::encode(&message, &limits).unwrap();
     assert_eq!(syncml::decode(&encoded, &limits).unwrap(), message);
     assert!(
         String::from_utf8(encoded)
             .unwrap()
-            .contains("<Correlator>job-7</Correlator>")
+            .contains("com.microsoft.mdm:HealthAttestation.Result")
     );
     let duplicate = body.replace(
         "</Meta>",
