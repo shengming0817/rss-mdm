@@ -296,7 +296,7 @@ async fn settle_one(
         .into_iter()
         .map(|row| {
             Ok(crate::native_rules::ItemEvidence {
-                prepare: row.try_get::<String, _>("phase")? == "prepare",
+                phase: AttemptPhase::parse(&row.try_get::<String, _>("phase")?)?,
                 kind: row.try_get("kind")?,
                 status: row.try_get("status")?,
                 receipt_accepted: row.try_get::<Option<bool>, _>("receipt_accepted")? == Some(true),
@@ -304,7 +304,7 @@ async fn settle_one(
                 result_accepted: row.try_get::<Option<bool>, _>("result_accepted")? == Some(true),
             })
         })
-        .collect::<std::result::Result<Vec<_>, sqlx::Error>>()?;
+        .collect::<Result<Vec<_>>>()?;
     let decision =
         crate::native_rules::settle(&evidence, package == channels::PackageState::Complete);
     let (event, query_complete, values_complete) = match decision {

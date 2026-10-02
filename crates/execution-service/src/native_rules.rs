@@ -1,4 +1,5 @@
 //! Decisions over native evidence; storage and current authority are adapter inputs.
+use crate::AttemptPhase;
 use rss_mdm_windows_mdm::syncml::{rejected_status, successful_status, terminal_status};
 
 pub(crate) struct Eligibility {
@@ -34,7 +35,7 @@ pub(crate) fn accepts_frame(code: i32, accepted: bool, end: i32, total: i32) -> 
 }
 
 pub(crate) struct ItemEvidence {
-    pub prepare: bool,
+    pub phase: AttemptPhase,
     pub kind: String,
     pub status: Option<i32>,
     pub receipt_accepted: bool,
@@ -51,13 +52,17 @@ pub(crate) enum Settlement {
     },
 }
 pub(crate) fn settle(items: &[ItemEvidence], package_complete: bool) -> Settlement {
-    if items
-        .iter()
-        .any(|i| i.receipt_accepted && i.status.is_some_and(rejected_status))
-    {
+    if items.iter().any(|i| {
+        i.phase != AttemptPhase::Observe
+            && i.receipt_accepted
+            && i.status.is_some_and(rejected_status)
+    }) {
         return Settlement::Reject;
     }
-    let execution: Vec<_> = items.iter().filter(|i| !i.prepare).collect();
+    let execution: Vec<_> = items
+        .iter()
+        .filter(|i| i.phase == AttemptPhase::Execute)
+        .collect();
     if !package_complete
         || execution.is_empty()
         || !execution.iter().all(|i| {
@@ -88,7 +93,7 @@ mod tests {
     use super::*;
     fn get() -> ItemEvidence {
         ItemEvidence {
-            prepare: false,
+            phase: AttemptPhase::Execute,
             kind: "get".into(),
             status: Some(200),
             receipt_accepted: true,
@@ -119,7 +124,7 @@ mod tests {
     #[test]
     fn prepare_success_is_not_execution_and_rejection_requires_authority() {
         let mut item = get();
-        item.prepare = true;
+        item.phase = AttemptPhase::Prepare;
         assert_eq!(settle(&[item], true), Settlement::Wait);
         let mut item = get();
         item.status = Some(500);
@@ -128,6 +133,25 @@ mod tests {
         let mut item = get();
         item.status = Some(500);
         assert_eq!(settle(&[item], false), Settlement::Reject);
+    }
+    #[test]
+    fn effect_observation_does_not_block_or_reject_an_execution_receipt() {
+        for status in [None, Some(200), Some(500)] {
+            let mut execution = get();
+            execution.kind = "replace".into();
+            execution.has_value = false;
+            execution.result_accepted = false;
+            let mut observation = get();
+            observation.phase = AttemptPhase::Observe;
+            observation.status = status;
+            assert_eq!(
+                settle(&[execution, observation], true),
+                Settlement::Receive {
+                    query_complete: false,
+                    values_complete: true,
+                }
+            );
+        }
     }
     #[test]
     fn early_frame_success_cannot_become_success_after_later_frames_are_sent() {

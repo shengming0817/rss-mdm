@@ -32,13 +32,10 @@ impl Client {
         router: Router,
         app: Arc<crate::api::Assembly>,
     ) -> anyhow::Result<Self> {
-        let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
-            "127.0.0.1".parse()?,
-        )));
-        let mut browser = Browser::default();
-        let login = browser
+        let mut client = Self::with_browser(router, app, Browser::default());
+        let login = client.browser
             .call(
-                &router,
+                &client.router,
                 Method::POST,
                 &format!("/api/v2/tenants/{TENANT}/login", TENANT = case_tenant()),
                 Some(json!({"login":crate::test_support::case::login("admin"),"password":crate::test_support::identity::PASSWORD})),
@@ -49,14 +46,24 @@ impl Client {
             "real planning login: {:?}",
             login
         );
-        Ok(Self {
+        Ok(client)
+    }
+    pub(crate) fn with_browser(
+        router: Router,
+        app: Arc<crate::api::Assembly>,
+        browser: Browser,
+    ) -> Self {
+        let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
+            "127.0.0.1".parse().expect("fixture address"),
+        )));
+        Self {
             browser,
             router,
             app,
             operation: Uuid::new_v4(),
             rule: Uuid::new_v4(),
             rule_revision: 0,
-        })
+        }
     }
     pub(crate) async fn call(
         &mut self,

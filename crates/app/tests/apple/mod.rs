@@ -104,13 +104,17 @@ impl Fixture {
                 |_| {},
             )
             .await?;
+        let content = {
+            let _guard = crate::test_support::software::content_setup_guard().await?;
+            crate::execution_assembly::open_content(config, config.native_protector()?)?
+        };
         let execution = crate::execution_assembly::open(
             config,
             config.native_protector()?,
             access
                 .audit_store(&crate::config::AuditConfig::Plain)
                 .await?,
-            crate::execution_assembly::open_content(config, config.native_protector()?)?,
+            content,
             std::collections::BTreeMap::new(),
             rss_device_command_postgres::CommandClock::Postgres,
         )

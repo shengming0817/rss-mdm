@@ -980,11 +980,28 @@ async fn native_response_package_waits_for_final_and_outlives_eight_messages() -
         }
         ensure!(
             !response.final_message
-                && response.commands.len() == 2
                 && matches!(&response.commands[0], s::Command::Status(v) if v.command == s::CommandName::SyncHdr)
-                && matches!(&response.commands[1], s::Command::Alert { .. }),
-            "interim package response contained new work"
+                && response.commands.iter().all(|c| matches!(
+                    c,
+                    s::Command::Status(_)
+                        | s::Command::Alert {
+                            alert: s::Alert::MoreMessages,
+                            ..
+                        }
+                )),
+            "interim package response contained new work: {response:?}"
         );
+        let alert = response
+            .commands
+            .iter()
+            .find_map(|c| match c {
+                s::Command::Alert {
+                    id,
+                    alert: s::Alert::MoreMessages,
+                } => Some(*id),
+                _ => None,
+            })
+            .ok_or_else(|| anyhow::anyhow!("missing MoreMessages control"))?;
         ensure!(String::from_utf8_lossy(&bytes).contains("1222"));
         ensure!(
             operation(&mut client).await?["commandStatus"] == "published",
@@ -1014,7 +1031,7 @@ async fn native_response_package_waits_for_final_and_outlives_eight_messages() -
             s::Command::Status(s::Status {
                 id: 2,
                 message_ref: message,
-                command_ref: response.commands[1].id(),
+                command_ref: alert,
                 command: s::CommandName::Alert,
                 target_refs: vec![],
                 source_refs: vec![],
@@ -1050,10 +1067,11 @@ async fn native_large_results_reassemble_once_and_size_errors_keep_result_unknow
             == StatusCode::OK
     );
     let data = "native-object-".repeat(6000);
+    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
     for (session, wrong_size, cancel) in
         [(971, false, false), (972, true, false), (973, false, true)]
     {
-        let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+        client.operation = Uuid::new_v4();
         client.accept_approved().await?;
         client.publish_operation(client.operation).await?;
         let exchange = begin(
@@ -1094,11 +1112,22 @@ async fn native_large_results_reassemble_once_and_size_errors_keep_result_unknow
         .bind(client.operation)
         .fetch_one(&mut observer)
         .await?;
-        let audit_before: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM mdm_audit.receipts WHERE tenant_id=$1::uuid")
-                .bind(case_tenant())
-                .fetch_one(&mut observer)
-                .await?;
+        let count_management = |records: Vec<crate::audit_test_support::Record>| {
+            records
+                .iter()
+                .filter(|r| {
+                    r.source() == "mdm.request"
+                        && r.action() == "windows_management"
+                        && r.target() == case_device()
+                })
+                .fold((0, 0), |(success, replay), r| {
+                    (
+                        success + usize::from(r.result() == "success"),
+                        replay + usize::from(r.result() == "replay"),
+                    )
+                })
+        };
+        let audit_before = count_management(crate::audit_test_support::read(&mut observer).await?);
         let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
             .fetch_one(&mut blocker)
             .await?;
@@ -1152,14 +1181,10 @@ async fn native_large_results_reassemble_once_and_size_errors_keep_result_unknow
             persisted == 1 && attempts == 1,
             "competing fragment duplicated transcript or logical attempt"
         );
-        let audit_after: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM mdm_audit.receipts WHERE tenant_id=$1::uuid")
-                .bind(case_tenant())
-                .fetch_one(&mut observer)
-                .await?;
+        let audit_after = count_management(crate::audit_test_support::read(&mut observer).await?);
         ensure!(
-            audit_after == audit_before + 1,
-            "competing fragment duplicated the transactional audit fact"
+            audit_after == (audit_before.0 + 1, audit_before.1 + 1),
+            "competing fragment audit facts: before={audit_before:?}, after={audit_after:?}"
         );
         drop(blocker);
         drop(observer);
@@ -1170,9 +1195,10 @@ async fn native_large_results_reassemble_once_and_size_errors_keep_result_unknow
             "fragment replay changed response"
         );
         let operation_id = client.operation;
+        let browser = client.browser.clone();
         drop(client);
         host = host.restart().await?;
-        let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+        client = Client::with_browser(host.browser.clone(), host.app.clone(), browser);
         client.operation = operation_id;
         let buffered = operation(&mut client).await?;
         ensure!(
@@ -1305,8 +1331,9 @@ async fn native_outgoing_chunks_wait_for_buffer_receipts_and_never_accept_early_
         "<AssessmentsRoot><Assessments><Assessment><TestName>{}</TestName><TestUri>https://example.test</TestUri></Assessment></Assessments></AssessmentsRoot>",
         "chunk-value-".repeat(1200)
     );
+    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
     for (session, early) in [(981, false), (982, true)] {
-        let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+        client.operation = Uuid::new_v4();
         let grants: Vec<_> = ["configuration_write", "operation_read", "operation_cancel"]
             .iter()
             .map(|p| json!({"operation":p,"scope":{"kind":"device","id":case_device()}}))
@@ -1437,9 +1464,10 @@ async fn native_outgoing_chunks_wait_for_buffer_receipts_and_never_accept_early_
             ensure!(sent.commands.iter().any(|c|matches!(c,s::Command::Status(status) if status.command==s::CommandName::Alert && status.command_ref==notification && status.code==200)),"notification ACK was lost during outgoing transfer");
             if frames == 1 && !early {
                 let operation_id = client.operation;
+                let browser = client.browser.clone();
                 drop(client);
                 host = host.restart().await?;
-                client = Client::start(host.browser.clone(), host.app.clone()).await?;
+                client = Client::with_browser(host.browser.clone(), host.app.clone(), browser);
                 client.operation = operation_id;
                 ensure!(
                     post(&peer.mutual, &peer.url, &packet)
