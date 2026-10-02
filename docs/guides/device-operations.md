@@ -38,43 +38,23 @@
 503 `operation_unknown` 表示提交可能完成。保留原请求及 UUID，先 GET 查询并以完全相同的请求重试；暂时 404 也不构成回滚证明。不要生成替代 operation。后台恢复由 RSS reconcile 的持久唤醒/租约和 device-command 的有界恢复提供，组件状态没有产品副本。worker 生命周期可无限等待并由运行时取消；每次存储操作仍使用有限预算，不能把无限预算直接转换为平台无法表示的 Instant。
 
 命令连接配置是必填 `execution.database`，使用 `mdm_command_runtime`，与产品其他连接指向同一数据库。完整配置见 `fixtures/mdm-config.example.json`。命令 store 与 Outbox 共享精确同一 messaging runtime；Windows 会话、命令回执和成功审计借用同一事务。Observation 接收与 Inventory 投影仍有各自事务，任务核实不宣称投影或合规已经完成。
-## Windows 防火墙
+## Windows 原生操作
 
-### 能力与证据
+Windows 使用固定 DDF/CSP/ADMX 来源和 Node/Atomic/Sequence 类型化操作树，通过现有 Resource/Policy/Scope 和受保护执行路径管理对象。动态身份、设备/用户 scope、build/edition 和实际操作权限分别校验；客户端不提供可信平台或权限事实。
 
-唯一写节点为 `./Vendor/MSFT/Firewall/MdmStore/DomainProfile/EnableFirewall`，输入 `enabled: bool`，编译器固定产生 Replace/bool/true 或 false。所选微软 DDF 仅支持 Replace，不支持该 leaf 的 Get/Delete；取消不回滚，也不恢复猜测的原值。
+Resource 元数据入口为 `/api/v4/resources/{id}`，配置内容通过既有 `/api/v3/resources/{id}/content` 上传并保护。Policy、远程操作及设备 operation 使用 `/api/v3`。配置内容示例：
 
-独立 Get 读取 `./Vendor/MSFT/DeviceStatus/Firewall/Status`：0 开启并监控，1 禁用，2 部分网络或规则未监控，3 暂时未完整监控，4 不适用。这个值属于设备整体，不能证明 DomainProfile 值或本次策略效果。写入回执与观察分开记录；写入成功后配置 `effect` 始终为 `unknown`，cleanup 为 `unsupported`，不能升级为 Applied、VerifiedPresent 或合规。命令传输进度与可证明的设备效果分别展示。
+```json
+{"target":{"kind":"device"},"apply":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/Policy/Config/Experience/AllowCortana","instance":[],"operation":"replace","value":{"type":"integer","value":"1"}}}},"remove":null}
+```
 
-固定来源为 [Microsoft DDF v2 February 2026](https://download.microsoft.com/download/015bd9f5-9cca-4821-8a85-a4c5f9a5d0f2/DDFv2Feb2026.zip)。来源文件、摘要和裁剪目录位于 `crates/windows-mdm/ddf/`；`tests/test_ddf.py` 从已校验原始节点及祖先适用性独立重建目录。生产不联网解析 DTD，不接收 XML/URI/操作上传。WinMDM 历史 `application/provider/windows_firewall.go` 仅作 Replace bool 来源对照，不继承 warning-mode 验证或其他 profile/rule。
+Policy 引用精确资源版本/variant；它消费完整操作权限和多对象 claims。软件原生 MSI 输入保持通用，但产品安装准入只允许既有固定 Agent。安全 Policy、证书及凭据载体要求对应 SecurityOperate/Credentials，不能以 configuration_write 或 inventory_collect 绕过。
 
-平台预检要求设备级 Windows 管理、版本至少 10.0.16299，edition 属于固定 DDF allow-list。OS version 与 edition 从当前注册世代的认证 SyncML Get 获取；派发前要求本次会话再次提供一致事实。报告有设备来源，但不等同于硬件证明。未知、不适用及世代变化拒绝写入。真实 OS 行为须由设备 T3 验收，受控协议 T2 不代表真机效果。
-### 产品接口
+查询分别返回原生 receipts、执行进度、effect 和 effectReason。ACK 不证明效果；效果为 verified、diverged、waiting 或 unverifiable。DomainProfile/EnableFirewall 仍只有原生 Replace，DeviceStatus 的设备整体状态不能证明该叶效果。Policy Delete 可能恢复默认值；缺少固定检测条件时保留 unverifiable 和 guards，超时/取消不重发已派发未知变更。
 
-管理接口沿用 Identity 会话、Origin/CSRF 与产品授权。Resource 使用 `/api/v3`；Scope、Policy、远程操作和设备 operation 使用 `/api/v2`。
+机器来源、逐文件摘要和归档摘要分别固定；生成/更新命令见[本地开发](local-development.md)。原始请求、回执和关联绑定租户、设备、注册世代及操作身份并加密保存。用户/linked 身份维护、持续配置、会话增强与诊断制品由对应生命周期 owner 提供；必要前提缺失只拒绝相关操作。受控协议验证不代表真机效果或合规。
 
-1. `POST /api/v3/resources/{id}` 创建 configuration resource，再提交 `input: {action:"firewall_version", version:"v1", enabled:true}` 并 activate 资源版本。外层为 `operationId/expectedRevision/input`；版本内容不可变。
-2. `POST /api/v2/policies/{id}` 发布 `action: put`，绑定 resource 的平台与 variant、持续 Scope（显式设备由 Scope 直接来源表达），定义中的 `action: {kind:"configuration",resource:{...},exit:"retain"}`。Windows 防火墙不支持 remove；macOS profile 可使用受支持的 remove。
-3. 相关成员、版本、注册或能力变化自动触发差分核对；没有保存 Plan 或人工 execute 步骤。`GET /api/v2/policies/{id}/devices` 分页返回当前资格、阻断诊断和必要的 operation 引用。
-4. 使用 `/api/v2/devices/{device}/operations/{operation}` 查询原生命令及观察。Policy 子命令不能通过重新批准脱离分配约束。修改或停用 Policy 使用配置 CAS，设备回执不推进该 CAS。
-
-发布需要租户级 `policy_write` 和目标的 `firewall_write`；Scope 分配还需要 `scope_read` 与全设备写权限。发布后的分配归组织持有，发布者岗位、会话和授权规则变化不撤销分配。设备世代、资源、能力和当前 Scope 仍在交付时验证。
-
-同效果的配置分配共享必要命令，退出一个分配不会移除其他分配仍需要的效果。相反效果报告 `configuration_conflict`；缺少注册、能力或新鲜 Scope 时分别保留 `waiting_registration`、`waiting_capability`、`waiting_scope`，相关输入更新后自动重试。固定 DDF 不适用时报告 `not_applicable`。分配状态与某次命令的失败、期限、回执及观察分开。
-
-一次性操作使用 `POST /api/v2/remote-operations`，绑定不可变资源、设备或当前 Scope、`action: {kind:"apply_configuration"}` 和 deadline。受理时固定本次目标，后台分页创建必要的原生子命令；逐设备阻断不使其他设备丢失执行机会。它不创建长期 Policy，也不参与持续分配的自动退出。请求恢复和取消见 [Group、Scope 与 Policy](groups-scopes-policies.md)。
-
-命令、执行授权、审计和 Outbox 共用事务。Policy core/adapter 持有唯一分配模型与存储；应用组合资源、Scope 和通道，运行角色通过精确只读合同读取分配与目标证据，并继续使用原生命令 owner 的写入路径。
-
-### 原生生命周期
-
-Inventory 与任务各自产生请求，由同一管理响应 owner 分配不冲突的 CmdID 并最终编码、缓存。任务在编码前持久化关联；没有事后认领普通 Inventory Get 的路径。写入最终成功回执停止 Replace，下一条独立 Get 获取粗粒度观察。缺失写入回执保留未知，不盲目重发。观察结束或达到期限后不持续轮询。
-
-能力查询记录通过延迟校验外键绑定管理 session；retention 删除过期 session 时同事务级联清理查询。清理失败整体回滚并沿用 session retention 失败诊断；持久能力事实与命令回执保留。尝试阶段仅允许 `execute` / `observe`，未知存储值拒绝解释。
-
-原生关联绑定 tenant/device/registration generation/credential/session/message/command/attempt。回执、观察和底层命令终态分别保存；旧尝试和迟到消息不推进新版本命令。底层命令到期不能覆盖已有写入回执。只有当时有效的原生成功回执（`receiptAccepted: true`）产生 `progress: succeeded`；迟到回执单独留存。观察缺失到期为 `quality: missing`，不改变既有写入成功或 unknown 效果。取消返回实际命令状态；历史终态不会被改写成 cancelled。
-
-安装、升级和后台诊断见 [运维](../deployment/operations.md)。ActionRun 与状态型任务分离，脚本退出码不能转成 Applied；见 [企业任务](enterprise-tasks.md)。
+安装、升级和后台诊断见[运维](../deployment/operations.md)。ActionRun 与状态型任务分离，脚本退出码不转成变更效果；见[企业任务](enterprise-tasks.md)。
 
 ## 设备时间线
 

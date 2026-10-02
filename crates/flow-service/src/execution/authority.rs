@@ -199,7 +199,7 @@ impl ExecutionAuthority {
                         if !other
                             .objects()?
                             .iter()
-                            .any(|o| expected_objects.contains(o))
+                            .any(|o| expected_objects.iter().any(|expected| o.overlaps(expected)))
                         {
                             continue;
                         }

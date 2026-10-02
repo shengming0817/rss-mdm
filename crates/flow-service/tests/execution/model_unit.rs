@@ -187,3 +187,52 @@ fn retired_native_task_shapes_are_not_decoded_or_converted() {
         assert!(serde_json::from_value::<Task>(value).is_err());
     }
 }
+
+#[test]
+fn native_parent_and_child_claims_overlap_only_on_same_scope_and_segment_boundaries() {
+    use crate::planning::configuration::Object;
+    let object = |key: &str, user: &str| Object {
+        platform: "windows".into(),
+        kind: "csp".into(),
+        key: key.into(),
+        user: user.into(),
+    };
+    let parent = object("./Vendor/MSFT/WiFi/Profile/one", "");
+    let child = object("./Vendor/MSFT/WiFi/Profile/one/Proxy", "");
+    assert!(parent.overlaps(&child));
+    assert!(child.overlaps(&parent));
+    assert!(!parent.overlaps(&object("./Vendor/MSFT/WiFi/Profile/one-two/Proxy", "")));
+    assert!(!parent.overlaps(&object(
+        "./Vendor/MSFT/WiFi/Profile/one/Proxy",
+        "different-user"
+    )));
+}
+#[test]
+fn frozen_windows_collection_permissions_match_real_query_authorization() {
+    use rss_mdm_windows_mdm::native::{Request, Scope, Verb};
+    let request = |uri: &str| Request::from_uri(uri, Verb::Get, None, Scope::Device).unwrap();
+    let task = |query| Task::Windows {
+        request: rss_mdm_windows_mdm::native::Execution::SyncMl { request: query },
+    };
+    assert!(
+        task(request(
+            "./Vendor/MSFT/Policy/Config/DeviceLock/DevicePasswordEnabled"
+        ))
+        .permissions()
+        .unwrap()
+        .contains(&crate::authorization::Permission::SecurityOperate)
+    );
+    let wifi = task(request("./Vendor/MSFT/WiFi/Profile/one/WlanXml"))
+        .permissions()
+        .unwrap();
+    assert!(wifi.contains(&crate::authorization::Permission::Credentials));
+    assert!(
+        Request::from_uri(
+            "./Vendor/MSFT/Invented/Value",
+            Verb::Get,
+            None,
+            Scope::Device
+        )
+        .is_err()
+    );
+}

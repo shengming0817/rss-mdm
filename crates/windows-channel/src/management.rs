@@ -234,7 +234,8 @@ pub async fn management_on(
         false
     };
     let template_pending = if authenticated_session {
-        crate::template_collection::send(tx, protection, principal, &mut response).await?
+        crate::template_collection::send(tx, protection, principal, &mut response, &mut facts)
+            .await?
     } else {
         false
     };

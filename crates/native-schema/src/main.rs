@@ -14,14 +14,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         return admx::import(std::path::Path::new(manifest), std::path::Path::new(output));
     }
-    if let [mode, manifest] = args.as_slice()
-        && mode == "--import-admx"
-    {
-        return admx::import(
-            std::path::Path::new(manifest),
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../windows-mdm/schema/upstream/admx"),
-        );
+    if args.first().is_some_and(|a| a == "--import-admx") {
+        return Err("usage: native_schema --import-admx <manifest> <explicit-staging-directory>; pack the verified staged sources before generation".into());
     }
     if args == ["--check"] || args == ["--write"] || args == ["--check-windows-sources"] {
         let status = std::process::Command::new("python3")

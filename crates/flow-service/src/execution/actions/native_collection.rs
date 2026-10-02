@@ -280,3 +280,73 @@ pub async fn sent(
     }
     Ok(())
 }
+
+/// Check current frozen operation grants on the same connection used by the protocol owner.
+/// Called before native dispatch and before accepting a report into Inventory.
+pub async fn eligible_on(
+    c: &mut sqlx::PgConnection,
+    p: &crate::device::DevicePrincipal,
+    id: Uuid,
+) -> std::result::Result<bool, crate::Error> {
+    let row=sqlx::query("SELECT coalesce(v.frozen,o.frozen) AS frozen,r.device,r.deadline,r.state FROM mdm_commands.action_runs r LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) LEFT JOIN mdm_policy.policies policy ON(policy.tenant_id,policy.id)=(v.tenant_id,v.policy) LEFT JOIN mdm_planning.remote_operations o ON(o.tenant_id,o.id)=(r.tenant_id,r.remote_operation) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.device=$3 AND r.registration=$4 AND r.generation=$5 AND r.deadline>floor(extract(epoch FROM clock_timestamp())) AND ((policy.enabled AND policy.current_version=r.policy_version AND mdm_planning.scope_admission((policy.definition->>'scope')::uuid,r.device)->>'state'='eligible') OR (o.deadline>floor(extract(epoch FROM clock_timestamp())) AND NOT o.cancelled))")
+        .bind(p.tenant().to_string()).bind(id).bind(p.device()).bind(p.registration()).bind(p.generation()).fetch_optional(&mut *c).await.map_err(crate::database::db)?;
+    let Some(row) = row else {
+        return Ok(false);
+    };
+    let state: super::state::RunState =
+        serde_json::from_value(row.try_get("state").map_err(crate::database::db)?)
+            .map_err(|_| Error::Malformed)?;
+    if state.cancellation != Cancellation::None
+        || !matches!(state.execution, Execution::NotStarted | Execution::Running)
+    {
+        return Ok(false);
+    }
+    let frozen: policies::Frozen =
+        serde_json::from_value(row.try_get("frozen").map_err(crate::database::db)?)
+            .map_err(|_| Error::Malformed)?;
+    let policies::Frozen::NativeCollection { action, .. } = frozen else {
+        return Err(Error::Malformed);
+    };
+    let Some(grants) = action
+        .grants
+        .get(p.device())
+        .or_else(|| action.grants.get("*"))
+    else {
+        return Ok(false);
+    };
+    let now: i64 =
+        sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
+            .fetch_one(&mut *c)
+            .await
+            .map_err(crate::database::db)?;
+    for permission in action.permissions()? {
+        let mut allowed = false;
+        for grant in grants {
+            if grant.valid(c, permission, now).await? {
+                allowed = true;
+                break;
+            }
+        }
+        if !allowed {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+pub async fn queries_on(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    id: Uuid,
+) -> std::result::Result<Vec<rss_mdm_windows_mdm::native::Request>, crate::Error> {
+    let frozen:serde_json::Value=sqlx::query_scalar("SELECT coalesce(v.frozen,o.frozen) FROM mdm_commands.action_runs r LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) LEFT JOIN mdm_planning.remote_operations o ON(o.tenant_id,o.id)=(r.tenant_id,r.remote_operation) WHERE r.tenant_id=$1::uuid AND r.id=$2")
+        .bind(tenant).bind(id).fetch_one(c).await.map_err(crate::database::db)?;
+    let frozen: policies::Frozen = serde_json::from_value(frozen).map_err(|_| Error::Malformed)?;
+    let policies::Frozen::NativeCollection { action, .. } = frozen else {
+        return Err(Error::Malformed);
+    };
+    if action.windows_queries.is_empty() {
+        return Err(Error::Malformed);
+    }
+    Ok(action.windows_queries)
+}

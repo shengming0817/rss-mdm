@@ -592,6 +592,74 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
                 == "delete_restores_default_without_frozen_detector"
         );
     }
+    for id in &removed {
+        let read = client.call(Method::GET, &format!("/{id}"), None).await?;
+        let cancelled = client
+            .call(
+                Method::POST,
+                &format!("/{id}/cancel"),
+                Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":read.1["revision"]})),
+            )
+            .await?;
+        ensure!(cancelled.0 == StatusCode::OK);
+    }
+    // Reconstruct the execution adapter and drive the same policy reconciliation on persisted facts.
+    let config = crate::test_support::identity::config(case_tenant())?;
+    let restarted = Box::pin(crate::flow::execution::open(
+        &config,
+        config.native_protector()?,
+        crate::test_support::identity::audit_store(&config).await?,
+        crate::flow::execution::open_content(&config, config.native_protector()?)?,
+        std::collections::BTreeMap::new(),
+        rss_device_command_postgres::CommandClock::Postgres,
+    ))
+    .await?;
+    let timer = recovery::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(2), &cancel);
+    let recovery_policy = rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
+        concurrency: 1,
+        lease_ttl: Duration::from_secs(10),
+        attempt_timeout: Duration::from_secs(1),
+        scan_interval: Duration::from_millis(100),
+        idle_scan_interval: Duration::from_millis(100),
+        initial_backoff: Duration::from_millis(100),
+        max_backoff: Duration::from_secs(1),
+        max_attempts: 3,
+    })?;
+    restarted
+        .run_recovery(
+            &recovery_scope(restarted.tenant),
+            recovery_policy,
+            &control,
+            &tokio::sync::Notify::new(),
+        )
+        .await?;
+    let policy_read = client
+        .browser
+        .call(
+            &client.router,
+            Method::GET,
+            &format!("/api/v3/policies/{shared}/devices"),
+            None,
+        )
+        .await?;
+    let current: Vec<Uuid> = policy_read.1["items"][0]["operationIds"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("operation IDs missing"))?
+        .iter()
+        .map(|v| Uuid::parse_str(v.as_str().unwrap()))
+        .collect::<std::result::Result<_, _>>()?;
+    ensure!(
+        current == removed,
+        "cancel/restart reissued an uncertain Delete"
+    );
+    ensure!(
+        exchange(&peer, 976, &mut values).await?.is_empty(),
+        "unknown deletion replayed after recovery"
+    );
+    use rss_runtime::ManagedResource;
+    restarted.close().await?;
     let other:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND policy=$2").bind(case_tenant()).bind(second).fetch_one(&mut pg).await?;
     ensure!(other == 1);
     let remote = Uuid::new_v4();

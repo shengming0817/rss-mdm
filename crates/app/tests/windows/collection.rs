@@ -159,7 +159,42 @@ async fn native_template_policy_uses_correlated_get_and_collection_run() -> anyh
         "Get admission: {}",
         response.status()
     );
-    let wire = s::decode(&response.bytes().await?, &CodecLimits::default())?;
+    let capabilities = s::decode(&response.bytes().await?, &CodecLimits::default())?;
+    let gets: Vec<_> = capabilities
+        .commands
+        .iter()
+        .filter_map(|c| {
+            if let s::Command::Get { id, items, .. } = c {
+                Some((*id, items[0].target.clone().unwrap()))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let mut report = native::report(&peer.message, &gets, "10.0.22621.0", 200);
+    for command in &mut report.commands {
+        match command {
+            s::Command::Status(status) if status.command_ref != 0 => {
+                status.message_ref = capabilities.header.message_id
+            }
+            s::Command::Results(result) => {
+                result.message_ref = Some(capabilities.header.message_id)
+            }
+            _ => {}
+        }
+    }
+    for command in &mut report.commands {
+        if let s::Command::Results(result) = command {
+            for item in &mut result.items {
+                if item.source.as_deref() == Some("./Vendor/MSFT/DeviceStatus/OS/Edition") {
+                    item.data = Some(rss_mdm_windows_mdm::Secret("48".into()));
+                }
+            }
+        }
+    }
+    let ready = native::post(&peer.mutual, &peer.url, &report).await?;
+    ensure!(ready.status() == StatusCode::OK);
+    let wire = s::decode(&ready.bytes().await?, &CodecLimits::default())?;
     let gets: Vec<_> = wire
         .commands
         .iter()
@@ -175,7 +210,17 @@ async fn native_template_policy_uses_correlated_get_and_collection_run() -> anyh
             == 1,
         "template Get missing: {gets:?}"
     );
-    let packet = native::report(&peer.message, &gets, "template-workstation", 200);
+    let mut packet = native::report(&peer.message, &gets, "template-workstation", 200);
+    packet.header.message_id = report.header.message_id + 1;
+    for command in &mut packet.commands {
+        match command {
+            s::Command::Status(status) if status.command_ref != 0 => {
+                status.message_ref = wire.header.message_id
+            }
+            s::Command::Results(result) => result.message_ref = Some(wire.header.message_id),
+            _ => {}
+        }
+    }
     ensure!(
         native::post(&peer.mutual, &peer.url, &packet)
             .await?

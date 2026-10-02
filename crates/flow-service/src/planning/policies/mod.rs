@@ -433,6 +433,27 @@ impl Policies {
                             run_lifetime_seconds: *run_lifetime_seconds,
                         },
                         definition: definition.clone(),
+                        windows_queries: if definition.spec().adapter
+                            == resource::NativeAdapter::WindowsCsp
+                        {
+                            definition
+                                .spec()
+                                .mappings
+                                .values()
+                                .map(|mapping| {
+                                    rss_mdm_windows_mdm::native::Request::from_uri(
+                                        &mapping.query,
+                                        rss_mdm_windows_mdm::native::Verb::Get,
+                                        None,
+                                        rss_mdm_windows_mdm::native::Scope::Device,
+                                    )
+                                    .map_err(|_| Error::Unsupported)
+                                })
+                                .collect::<std::result::Result<_, _>>()?
+                        } else {
+                            Vec::new()
+                        },
+                        grants: Default::default(),
                         collection,
                         resource_digest: version.digest().bytes(),
                     }),
@@ -667,14 +688,18 @@ impl Frozen {
         tenant: rss_request_context::TenantId,
         owner: Option<super::configuration::Owner>,
     ) -> std::result::Result<(), Error> {
-        let Self::Configuration { native, grants, .. } = self else {
-            return Ok(());
+        let (mut permissions, grants) = match self {
+            Self::Configuration { native, grants, .. } => {
+                let native = native.open(key, tenant, owner.ok_or(Error::Malformed)?)?;
+                let mut permissions = native.apply.permissions()?;
+                if let Some(remove) = &native.remove {
+                    permissions.extend(remove.permissions()?);
+                }
+                (permissions, grants)
+            }
+            Self::NativeCollection { action, .. } => (action.permissions()?, &mut action.grants),
+            _ => return Ok(()),
         };
-        let native = native.open(key, tenant, owner.ok_or(Error::Malformed)?)?;
-        let mut permissions = native.apply.permissions()?;
-        if let Some(remove) = &native.remove {
-            permissions.extend(remove.permissions()?);
-        }
         permissions.sort();
         permissions.dedup();
         if let Some(devices) = devices {

@@ -5,7 +5,7 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 
 /// Native evidence expected after a mutation, separate from its receipt.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Expected {
     /// Exact compiled native scalar or XML value.
     Value(String),
@@ -13,6 +13,11 @@ pub enum Expected {
     Present,
     /// A native 404 for this exact object after its Delete.
     Absent,
+}
+impl std::fmt::Debug for Expected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("NativeExpected([REDACTED])")
+    }
 }
 /// A bounded native query and the object evidence it is intended to observe.
 pub struct Verification {

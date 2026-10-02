@@ -85,22 +85,29 @@ fn desired<'a>(
 fn claim_diagnosis(
     index: usize,
     inputs: &[Desired<'_>],
-    owners: &BTreeMap<Object, Vec<usize>>,
+    _owners: &BTreeMap<Object, Vec<usize>>,
 ) -> Option<Diagnosis> {
     let input = &inputs[index];
-    if input.objects.iter().any(|o| {
-        owners[o]
+    for other in inputs {
+        if input
+            .objects
             .iter()
-            .any(|&i| inputs[i].object_digests.get(o) != input.object_digests.get(o))
-    }) {
-        Some(Diagnosis::Conflict)
-    } else if input
-        .objects
-        .iter()
-        .any(|o| owners[o].iter().any(|&i| inputs[i].digest != input.digest))
-    {
-        Some(Diagnosis::GroupConflict)
-    } else if !inputs.iter().any(|d| d.digest == input.digest && d.ready) {
+            .any(|o| other.objects.iter().any(|p| o.overlaps(p)))
+        {
+            if input.objects.iter().any(|o| {
+                other.objects.iter().any(|p| {
+                    o.overlaps(p)
+                        && (o != p || input.object_digests.get(o) != other.object_digests.get(p))
+                })
+            }) {
+                return Some(Diagnosis::Conflict);
+            }
+            if input.digest != other.digest {
+                return Some(Diagnosis::GroupConflict);
+            }
+        }
+    }
+    if !inputs.iter().any(|d| d.digest == input.digest && d.ready) {
         Some(Diagnosis::WaitingScope)
     } else {
         None
@@ -217,7 +224,7 @@ impl ExecutionService {
             let unowned = old
                 .objects
                 .iter()
-                .filter(|o| !owners.contains_key(*o))
+                .filter(|o| !owners.keys().any(|current| o.overlaps(current)))
                 .cloned()
                 .collect::<Vec<_>>();
             if unowned.is_empty() {
@@ -227,7 +234,33 @@ impl ExecutionService {
                 return Err(Error::Malformed.into());
             };
             let state = object_state(tx, device, &old.objects).await?;
-            if !matches!(exit, Exit::Remove) || old.native.remove.is_none() {
+            let mut removal_contracts = BTreeSet::new();
+            let mut retain = !matches!(exit, Exit::Remove);
+            for (co_policy, co_frozen) in &prior {
+                let co = desired(self, device, co_policy, co_frozen, false)?;
+                if co.digest == old.digest {
+                    let Frozen::Configuration { exit, .. } = co_frozen else {
+                        return Err(Error::Malformed.into());
+                    };
+                    retain |= !matches!(exit, Exit::Remove);
+                    removal_contracts.insert(
+                        serde_json::to_vec(&co.native.remove).map_err(|_| Error::Malformed)?,
+                    );
+                }
+            }
+            if !retain && removal_contracts.len() > 1 {
+                save_objects(
+                    tx,
+                    device,
+                    &old.objects,
+                    state,
+                    Some(&old.object_digests),
+                    Some(Diagnosis::RemovalBlocked),
+                )
+                .await?;
+                continue;
+            }
+            if retain || old.native.remove.is_none() {
                 replace_claims(tx, device, &unowned, &[], None).await?;
                 save_objects(
                     tx,
@@ -275,7 +308,7 @@ impl ExecutionService {
                     .await?;
                     continue;
                 }
-                if is_remove && !command.status().is_terminal() {
+                if is_remove && (!command.status().is_terminal() || dispatched_in(tx, id).await?) {
                     operation = Some(id);
                 }
             }
@@ -329,17 +362,15 @@ impl ExecutionService {
         )?;
         let command = self.required_command(tx, &old).await?;
         let now = storage::now(tx).await?;
-        if previous == digest
-            && (matches!(
-                command.status(),
-                dc::Status::TimedOut
-                    | dc::Status::Cancelled
-                    | dc::Status::Rejected
-                    | dc::Status::Superseded
-            ) || (foreign && !command.status().is_terminal()))
+        if matches!(
+            command.status(),
+            dc::Status::TimedOut
+                | dc::Status::Cancelled
+                | dc::Status::Rejected
+                | dc::Status::Superseded
+        ) || (foreign && !command.status().is_terminal())
         {
-            let tenant = tx.tenant_id().to_string();
-            let sent=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute' AND state<>'pending')").bind(tenant).bind(id).fetch_one(c).await})).await?;
+            let sent = dispatched_in(tx, id).await?;
             if sent {
                 return Ok(true);
             }
@@ -589,4 +620,9 @@ async fn desired_claims(
         replace_claims(tx, device, std::slice::from_ref(o), &policies, operation).await?;
     }
     Ok(())
+}
+
+async fn dispatched_in(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool> {
+    let tenant = tx.tenant_id().to_string();
+    Ok(tx.with_connection(move|c|Box::pin(async move { sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute' AND state<>'pending')").bind(tenant).bind(id).fetch_one(c).await })).await?)
 }

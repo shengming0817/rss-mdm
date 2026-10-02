@@ -19,6 +19,10 @@ class ModuleImpactTests(unittest.TestCase):
             self.assertFalse(selected.full)
             self.assertTrue(expected <= set(selected.modules),(path,selected.modules))
 
+    def test_native_rules_select_configuration_consumer(self):
+        for path in ('crates/windows-mdm/src/native/request.rs', 'crates/windows-mdm/src/native/verification.rs'):
+            self.assertIn('execution.commands.configuration', self.selected(path), path)
+
     def test_console_projection_inputs_select_their_http_consumers(self):
         for path in ('crates/resource-postgres/src/codec.rs',
                      'crates/inventory-postgres/src/lib.rs',

@@ -71,7 +71,7 @@ schema 检查也不替代操作语义、真实 HTTP/DB 接缝或独立真机验�
 
 来源更新须固定官方 revision 或归档摘要，再重新生成并验证受影响行为。结构化 Learn 事实保留
 实际消费的适用性及可追溯 URL/摘要；ADMX 归档保存模板及可取得的许可文本。只有需要重新导入官方 MSI
-时才使用 `--import-admx <来源清单> [输出目录]`；该操作只读取已下载且摘要匹配的归档，
+时才使用 `--import-admx <来源清单> <显式暂存目录>`；该操作只读取已下载且摘要匹配的归档，
 不安装或执行其中程序。临时归档和提取目录放在被忽略的 `artifacts/` 下。
 
 ## Inventory 调试
@@ -149,3 +149,5 @@ T2 的模块职责、选择边界、并发与结果格式见[测试模块](test-
 原生输入使用 Windows 的类型化 Node/Atomic/Sequence 或通用 MSI 合同；旧 Firewall、AgentInstall、StateVerify 输入和旧原生派发格式不再解码或转换。产品软件准入仍只允许已有固定 Agent，原生 MSI 编码不持有品牌限制。
 
 操作查询分别展示执行进度、原生回执、`effect` 和 `effectReason`。效果可为 verified、diverged、waiting 或 unverifiable；查询本身不证明变更效果。永久节点 Delete 若恢复默认值但缺少固定检测条件，明确保持 unverifiable 和对象 guards。设备控制、敏感操作及受限诊断没有通用效果查询时记录族专属证据需求；没有实际脚本原生映射时拒绝，不自动转 Agent/安装包。诊断制品、用户身份维护与持续配置由对应生命周期 owner 持有。
+
+ADMX 更新先运行 `python3 hack/native_sources.py prepare` 还原现有机器来源，再导入到新的 `artifacts/` 暂存目录；核对暂存清单、字节和许可证后替换展开的 ADMX 来源目录，运行 `python3 hack/native_sources.py pack` 更新确定性 ZIP/lock，最后运行生成器 `--write`。生成和检查会用固定 ZIP 重建缓存，不能把未经打包的缓存改动当成新来源。来源更新提交包含 ZIP、lock 和实际生成结果。

@@ -253,3 +253,62 @@ impl Request {
         Ok(result)
     }
 }
+
+impl Request {
+    /// Resolve a concrete query URI to the frozen schema without inventing platform evidence.
+    pub fn from_uri(
+        uri: &str,
+        operation: Verb,
+        value: Option<Value>,
+        scope: Scope,
+    ) -> Result<Self, Error> {
+        let mut candidates = vec![uri.to_owned()];
+        if uri.starts_with("./Vendor/MSFT/") {
+            candidates.push(uri.replacen("./Vendor/", "./Device/Vendor/", 1));
+        }
+        let mut selected = None;
+        let mut specificity = 0;
+        let mut ambiguous = false;
+        for concrete in candidates {
+            let parts = concrete.split('/').collect::<Vec<_>>();
+            for node in super::generated::NODES {
+                if node.path.starts_with("./User/") != (scope == Scope::User) {
+                    continue;
+                }
+                let template = node.path.split('/').collect::<Vec<_>>();
+                if template.len() != parts.len()
+                    || !template
+                        .iter()
+                        .zip(&parts)
+                        .all(|(t, v)| *t == "*" || t == v)
+                {
+                    continue;
+                }
+                let score = template.iter().filter(|t| **t != "*").count();
+                let instance = template
+                    .iter()
+                    .zip(&parts)
+                    .filter_map(|(t, v)| (*t == "*").then_some((*v).to_owned()))
+                    .collect();
+                let candidate = Self::Node {
+                    node: node.path.into(),
+                    instance,
+                    operation,
+                    value: value.clone(),
+                };
+                candidate.authorization_nodes()?;
+                if selected.is_none() || score > specificity {
+                    selected = Some(candidate);
+                    specificity = score;
+                    ambiguous = false;
+                } else if score == specificity {
+                    ambiguous = true;
+                }
+            }
+        }
+        if ambiguous {
+            return Err(Error::Identity);
+        }
+        selected.ok_or(Error::UnknownObject)
+    }
+}

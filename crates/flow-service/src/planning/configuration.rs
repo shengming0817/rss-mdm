@@ -114,6 +114,26 @@ pub struct Object {
     pub key: String,
     pub user: String,
 }
+impl Object {
+    /// Windows native object ownership includes ancestor/descendant scopes, on URI segment boundaries.
+    /// Other platforms retain their own exact native object identities.
+    pub fn overlaps(&self, other: &Self) -> bool {
+        if self.platform != other.platform || self.kind != other.kind || self.user != other.user {
+            return false;
+        }
+        self.key == other.key
+            || (self.platform == "windows"
+                && self.kind == "csp"
+                && (self
+                    .key
+                    .strip_prefix(&other.key)
+                    .is_some_and(|rest| rest.starts_with('/'))
+                    || other
+                        .key
+                        .strip_prefix(&self.key)
+                        .is_some_and(|rest| rest.starts_with('/'))))
+    }
+}
 impl Configuration {
     pub fn objects(&self) -> Result<Vec<Object>, Error> {
         use rss_mdm_apple_mdm::native::request::Request as A;

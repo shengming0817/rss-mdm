@@ -53,6 +53,8 @@ pub struct FrozenSoftwareAction {
 pub struct FrozenNativeCollection {
     pub input: ExecutionInput,
     pub definition: r::NativeCollectionDefinition,
+    pub windows_queries: Vec<rss_mdm_windows_mdm::native::Request>,
+    pub grants: BTreeMap<String, Vec<crate::authorization::UserGrant>>,
     pub collection: rss_mdm_inventory::CollectionDefinition,
     pub resource_digest: [u8; 32],
 }
@@ -67,5 +69,30 @@ impl ScheduledInput for FrozenAction {
 impl ScheduledInput for FrozenNativeCollection {
     fn execution_input(&self) -> &ExecutionInput {
         &self.input
+    }
+}
+
+impl FrozenNativeCollection {
+    pub fn permissions(&self) -> Result<Vec<crate::authorization::Permission>, Error> {
+        let mut permissions = vec![crate::authorization::Permission::InventoryCollect];
+        if !self.windows_queries.is_empty() {
+            permissions.extend(
+                crate::execution::Task::Windows {
+                    request: rss_mdm_windows_mdm::native::Execution::SyncMl {
+                        request: rss_mdm_windows_mdm::native::Request::Sequence {
+                            operations: self.windows_queries.clone(),
+                        },
+                    },
+                }
+                .permissions()?,
+            );
+        }
+        // Collection facts flow to Inventory; credential-bearing carriers are not asset fields.
+        if permissions.contains(&crate::authorization::Permission::Credentials) {
+            return Err(Error::Unsupported);
+        }
+        permissions.sort();
+        permissions.dedup();
+        Ok(permissions)
     }
 }

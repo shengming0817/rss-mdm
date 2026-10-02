@@ -715,7 +715,7 @@ consume(('crates/windows-channel/src/management.rs','crates/windows-channel/src/
 consume(('crates/apple-channel/src/checkin.rs','crates/apple-channel/src/boundary.rs'),
         'apple.onboarding')
 consume(('crates/windows-mdm/src/*',),
-        'windows.enrollment windows.management windows.commands execution.commands.windows')
+        'windows.enrollment windows.management windows.commands execution.commands.windows execution.commands.configuration')
 consume(('crates/apple-channel/src/push.rs',), 'apple.push apple.host')
 consume(('crates/certificate/src/apple.rs',), 'apple.scep apple.renewal apple.identity')
 consume(('crates/software-service/src/lib.rs', 'crates/software-service/src/publication/mod.rs'),

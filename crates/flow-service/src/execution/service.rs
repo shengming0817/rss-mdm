@@ -150,6 +150,13 @@ impl ExecutionService {
     ) -> Result<Value> {
         let now = self.store.now(tx).await? / 1_000_000;
         input.validate(now)?;
+        // Windows user scope requires a channel-owned authenticated user binding; the
+        // current registration seam supplies only device identity. Never infer it from userId.
+        if matches!(input.task, Task::Windows { .. })
+            && !matches!(input.target, NativeTarget::Device)
+        {
+            return Err(Error::Unsupported.into());
+        }
         if input
             .task
             .permissions()?
