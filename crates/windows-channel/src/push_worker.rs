@@ -107,8 +107,9 @@ pub async fn cycle(
             let receipt = push.send(&wake.uri).await.unwrap_or(crate::push::Receipt {
                 status: 0,
                 outcome: PushOutcome::Unknown,
+                retry_after: None,
             });
-            settle(store, tenant, &wake, receipt.status, receipt.outcome).await?;
+            settle(store, tenant, &wake, receipt).await?;
             return Ok(true);
         }
         if count < 32 {
@@ -120,15 +121,18 @@ async fn settle(
     store: &AuditStore,
     tenant: &str,
     wake: &Wake,
-    status: u16,
-    outcome: PushOutcome,
+    receipt: crate::push::Receipt,
 ) -> Result<(), Error> {
+    let status = receipt.status;
+    let outcome = receipt.outcome;
+    let retry_after = i64::try_from(receipt.retry_after.map_or(0, |wait| wait.as_secs()))
+        .map_err(|_| Error::Malformed)?;
     let audit = audit(tenant, wake.id, wake.registration);
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(3));
     let control = budget.control();
-    let result=store.write(TenantId::parse(tenant).map_err(|_| Error::Malformed)?,&control,(store,&audit,tenant,wake,status,outcome),|inputs,tx|Box::pin(async move {
-        let (store,audit,tenant,wake,status,outcome)=*inputs;
-        let changed=tx.with_connection_context(&mut (tenant,wake,status,outcome),|(tenant,wake,status,outcome),c|Box::pin(async move {
+    let result=store.write(TenantId::parse(tenant).map_err(|_| Error::Malformed)?,&control,(store,&audit,tenant,wake,status,outcome,retry_after),|inputs,tx|Box::pin(async move {
+        let (store,audit,tenant,wake,status,outcome,retry_after)=*inputs;
+        let changed=tx.with_connection_context(&mut (tenant,wake,status,outcome,retry_after),|(tenant,wake,status,outcome,retry_after),c|Box::pin(async move {
             let row=sqlx::query("SELECT lease_id,settled_id,failures,status,outcome FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND revision=$4 FOR UPDATE")
                 .bind(*tenant).bind(wake.registration).bind(wake.generation).bind(wake.revision).fetch_optional(&mut *c).await.map_err(db)?;
             let Some(row)=row else {return Ok::<_,Error>(None)};
@@ -138,14 +142,14 @@ async fn settle(
             }
             if row.try_get::<Option<Uuid>,_>("lease_id").map_err(db)?!=Some(wake.id) {return Ok(None)}
             let failures=if matches!(*outcome, PushOutcome::Retryable | PushOutcome::Unknown) {(row.try_get::<i32,_>("failures").map_err(db)?+1).min(6)} else {0};
-            let delay=if matches!(*outcome, PushOutcome::Retryable | PushOutcome::Unknown) {15i64*(1<<failures)} else {120};
+            let delay=if matches!(*outcome, PushOutcome::Retryable | PushOutcome::Unknown) {(15i64*(1<<failures)).max(*retry_after)} else {120};
             sqlx::query("UPDATE mdm_windows.push_channels SET lease_id=NULL,lease_until=NULL,settled_id=$5,status=$6,outcome=$7,failures=$8,next_push=clock_timestamp()+make_interval(secs=>$9::double precision) WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND revision=$4")
                 .bind(*tenant).bind(wake.registration).bind(wake.generation).bind(wake.revision).bind(wake.id).bind(i32::from(*status)).bind(outcome.as_str()).bind(failures).bind(delay as f64).execute(c).await.map_err(db)?;
             Ok(Some(true))
         })).await?;
         if let Some(changed)=changed {
-            let input=serde_json::to_vec(&(wake.registration,wake.revision,wake.id,status,outcome)).map_err(|_|Error::Malformed)?;
-            let fact=Fact::business(audit,&format!("windows-push:{}:settle",wake.id),&input,200,"success",None).and_then(|f|f.with_details(serde_json::json!({"status":status,"outcome":outcome,"channelRevision":wake.revision}))).map_err(Error::from)?;
+            let input=serde_json::to_vec(&(wake.registration,wake.revision,wake.id,status,outcome,retry_after)).map_err(|_|Error::Malformed)?;
+            let fact=Fact::business(audit,&format!("windows-push:{}:settle",wake.id),&input,200,"success",None).and_then(|f|f.with_details(serde_json::json!({"status":status,"outcome":outcome,"channelRevision":wake.revision,"retryAfterSeconds":retry_after}))).map_err(Error::from)?;
             store.append(tx,&fact,!changed).await.map_err(Error::from)?;audit.mark_commit_started();
         }
         Ok(())

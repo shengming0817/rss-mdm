@@ -24,7 +24,7 @@ impl PushOutcome {
         }
     }
 }
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use zeroize::Zeroizing;
 
 pub struct Push {
@@ -42,6 +42,27 @@ pub struct Push {
 pub struct Receipt {
     pub status: u16,
     pub outcome: PushOutcome,
+    /// Validated server minimum wait; persistence applies at least the local backoff too.
+    pub retry_after: Option<Duration>,
+}
+fn retry_after(headers: &reqwest::header::HeaderMap, now: SystemTime) -> Option<Duration> {
+    let mut values = headers.get_all(reqwest::header::RETRY_AFTER).iter();
+    let value = values.next()?.to_str().ok()?.trim();
+    if values.next().is_some() || value.is_empty() || value.len() > 128 {
+        return None;
+    }
+    let seconds = if value.bytes().all(|b| b.is_ascii_digit()) {
+        value.parse::<u64>().ok()?
+    } else {
+        let wait = httpdate::parse_http_date(value)
+            .ok()?
+            .duration_since(now)
+            .unwrap_or_default();
+        wait.as_secs()
+            .checked_add(u64::from(wait.subsec_nanos() != 0))?
+    };
+    // Bound the untrusted interval to a representable scheduling value; never truncate a valid wait.
+    (seconds <= i32::MAX as u64).then(|| Duration::from_secs(seconds))
 }
 fn unavailable(_: impl std::fmt::Debug) -> Error {
     Error::Unavailable(Failure::Protocol)
@@ -174,6 +195,7 @@ impl Push {
                 return Ok(Receipt {
                     status: 0,
                     outcome: PushOutcome::Retryable,
+                    retry_after: None,
                 });
             }
         };
@@ -199,6 +221,7 @@ impl Push {
                     } else {
                         PushOutcome::Unknown
                     },
+                    retry_after: None,
                 });
             }
         };
@@ -211,7 +234,7 @@ impl Push {
             {
                 PushOutcome::Accepted
             }
-            200 | 429 | 500..=599 => PushOutcome::Retryable,
+            200 | 406 | 429 | 500..=599 => PushOutcome::Retryable,
             401 => {
                 *self.token.lock().await = None;
                 PushOutcome::Retryable
@@ -219,7 +242,14 @@ impl Push {
             404 | 410 => PushOutcome::Unregistered,
             _ => PushOutcome::Rejected,
         };
-        Ok(Receipt { status, outcome })
+        let retry_after = (outcome == PushOutcome::Retryable)
+            .then(|| retry_after(response.headers(), SystemTime::now()))
+            .flatten();
+        Ok(Receipt {
+            status,
+            outcome,
+            retry_after,
+        })
     }
 }
 
@@ -252,6 +282,35 @@ impl Push {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn provider_wait_handles_seconds_dates_and_rejects_ambiguous_or_invalid_values() {
+        use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(86400) + Duration::from_millis(500);
+        let mut headers = HeaderMap::new();
+        assert_eq!(retry_after(&headers, now), None);
+        for (value, seconds) in [
+            ("180", Some(180)),
+            ("0", Some(0)),
+            ("Fri, 02 Jan 1970 00:02:00 GMT", Some(120)),
+            ("Thu, 01 Jan 1970 00:00:00 GMT", Some(0)),
+            ("-1", None),
+            ("+1", None),
+            ("1.5", None),
+            ("2147483648", None),
+            ("18446744073709551616", None),
+            ("later", None),
+        ] {
+            headers.insert(RETRY_AFTER, HeaderValue::from_static(value));
+            assert_eq!(
+                retry_after(&headers, now),
+                seconds.map(Duration::from_secs),
+                "{value}"
+            );
+        }
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("120"));
+        headers.append(RETRY_AFTER, HeaderValue::from_static("180"));
+        assert_eq!(retry_after(&headers, now), None);
+    }
     #[test]
     fn device_channel_is_limited_to_the_native_notification_service() {
         assert!(channel_uri("https://db5.notify.windows.com/?token=opaque").is_ok());

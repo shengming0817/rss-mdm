@@ -24,14 +24,15 @@ async fn native_push_transport_refreshes_tokens_without_claiming_command_deliver
         let mut connection = h2::server::handshake(io).await?;
         let mut handlers = tokio::task::JoinSet::new();
         // 401 invalidates the cached token, so precisely two OAuth requests occur.
-        for (token, status) in [
-            (true, 200),
-            (false, 200),
-            (false, 401),
-            (true, 200),
-            (false, 429),
-            (false, 410),
-            (false, 403),
+        for (token, status, retry_after) in [
+            (true, 200, None),
+            (false, 200, None),
+            (false, 401, None),
+            (true, 200, None),
+            (false, 406, Some("180")),
+            (false, 429, None),
+            (false, 410, None),
+            (false, 403, None),
         ] {
             let (request, mut send) = connection
                 .accept()
@@ -62,7 +63,9 @@ async fn native_push_transport_refreshes_tokens_without_claiming_command_deliver
                 if token {
                     ensure!(body == b"grant_type=client_credentials&client_id=fixture-sid&client_secret=fixture-secret&scope=notify.windows.com");
                 } else { ensure!(body.is_empty()); }
-                let response = axum::http::Response::builder().status(status).header("x-wns-notificationstatus","received").body(())?;
+                let mut response = axum::http::Response::builder().status(status).header("x-wns-notificationstatus","received");
+                if let Some(wait) = retry_after { response = response.header("retry-after",wait); }
+                let response = response.body(())?;
                 let mut response = send.send_response(response, false)?;
                 response.send_data(axum::body::Bytes::from_static(if token {
                     br#"{"token_type":"bearer","access_token":"fixture-token","expires_in":3600}"#
@@ -101,12 +104,14 @@ async fn native_push_transport_refreshes_tokens_without_claiming_command_deliver
     for (status, outcome) in [
         (200, PushOutcome::Accepted),
         (401, PushOutcome::Retryable),
+        (406, PushOutcome::Retryable),
         (429, PushOutcome::Retryable),
         (410, PushOutcome::Unregistered),
         (403, PushOutcome::Rejected),
     ] {
         let receipt = push.send("https://db5.notify.windows.com/wake").await?;
         ensure!(receipt.status == status && receipt.outcome == outcome);
+        ensure!(receipt.retry_after == (status == 406).then_some(Duration::from_secs(180)));
     }
     stop.cancel();
     drop(push);
@@ -312,6 +317,10 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
             .await?;
     command.accept_approved().await?;
     command.publish_operation(command.operation).await?;
+    let before: i64 =
+        sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
+            .fetch_one(&pool)
+            .await?;
     ensure!(
         rss_mdm_windows_channel::push::wake_once(
             &windows.channel,
@@ -323,9 +332,11 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
         )
         .await?
     );
-    let row = sqlx::query("SELECT outcome,lease_id,settled_id,next_push>clock_timestamp() AS delayed FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(registration).fetch_one(&pool).await?;
+    let row = sqlx::query("SELECT outcome,status,failures,lease_id,settled_id,next_push>=to_timestamp($3+300) AS delayed FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(registration).bind(before as f64).fetch_one(&pool).await?;
     ensure!(
-        row.try_get::<String, _>("outcome")? == "accepted"
+        row.try_get::<String, _>("outcome")? == "retryable"
+            && row.try_get::<i32, _>("status")? == 406
+            && row.try_get::<i32, _>("failures")? == 1
             && row.try_get::<Option<uuid::Uuid>, _>("lease_id")?.is_none()
             && row
                 .try_get::<Option<uuid::Uuid>, _>("settled_id")?
@@ -355,6 +366,38 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
         )
         .await?
     );
+    // Expire only the persisted due time; the same URI/revision must recover without re-enrollment.
+    sqlx::query("UPDATE mdm_windows.push_channels SET next_push=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(registration).execute(&pool).await?;
+    ensure!(
+        rss_mdm_windows_channel::push::wake_once(
+            &windows.channel,
+            &eligibility,
+            &host.app.protection,
+            &database,
+            &host.app.audit_store,
+            case_tenant()
+        )
+        .await?
+    );
+    let row = sqlx::query("SELECT outcome,status,failures,revision,next_push>clock_timestamp() AS delayed FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(registration).fetch_one(&pool).await?;
+    ensure!(
+        row.try_get::<String, _>("outcome")? == "accepted"
+            && row.try_get::<i32, _>("status")? == 200
+            && row.try_get::<i32, _>("failures")? == 0
+            && row.try_get::<i64, _>("revision")? == 2
+            && row.try_get::<bool, _>("delayed")?
+    );
+    ensure!(
+        command
+            .call(
+                axum::http::Method::GET,
+                &format!("/{}", command.operation),
+                None
+            )
+            .await?
+            .1["commandStatus"]
+            == "published"
+    );
     stop.cancel();
     tokio::time::timeout(Duration::from_secs(5), server).await???;
     pool.close().await;
@@ -381,7 +424,11 @@ async fn worker_transport() -> Result<(
         let (io, _) = listener.accept().await?;
         let mut connection = h2::server::handshake(acceptor.accept(io).await?).await?;
         let mut handlers = tokio::task::JoinSet::new();
-        for token in [true, false] {
+        for (token, status, retry_after) in [
+            (true, 200, None),
+            (false, 406, Some("300")),
+            (false, 200, None),
+        ] {
             let (request, mut send) = connection
                 .accept()
                 .await
@@ -404,7 +451,9 @@ async fn worker_transport() -> Result<(
             handlers.spawn(async move {
                 let mut body = request.into_body();
                 while let Some(chunk) = body.data().await { let chunk = chunk?; body.flow_control().release_capacity(chunk.len())?; if !token { ensure!(chunk.is_empty()); } }
-                let response = axum::http::Response::builder().status(200).header("x-wns-notificationstatus", "received").body(())?;
+                let mut response = axum::http::Response::builder().status(status).header("x-wns-notificationstatus", "received");
+                if let Some(wait) = retry_after { response = response.header("retry-after",wait); }
+                let response = response.body(())?;
                 let mut response = send.send_response(response,false)?;
                 response.send_data(axum::body::Bytes::from_static(if token {br#"{"token_type":"bearer","access_token":"fixture-token","expires_in":3600}"#} else {b""}),true)?;
                 Ok::<(),anyhow::Error>(())
