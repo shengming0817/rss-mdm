@@ -348,7 +348,7 @@ for name in ('planning.assets', 'planning.scope', 'planning.group_scope', 'plann
                             ('crates/app/tests/planning/support.rs',))
 for name in ('planning.assets', 'planning.scope', 'planning.group_scope', 'planning.recovery', 'planning.resource_archive'):
     MODULES[name] = replace(MODULES[name], fixtures=())
-MODULES['planning.resource_archive'] = replace(MODULES['planning.resource_archive'], fixtures=('tls',))
+MODULES['planning.resource_archive'] = replace(MODULES['planning.resource_archive'], fixtures=('identity', 'tls'))
 MODULES['audit.integrity'] = replace(MODULES['audit.integrity'],
     test_inputs=MODULES['audit.integrity'].test_inputs + ('crates/app/tests/audit/owner_admission.rs',))
 for name in ('policy', 'resource', 'software_release'):
