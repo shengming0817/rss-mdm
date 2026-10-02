@@ -363,6 +363,7 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
     let automation = crate::automation::Automation::connect(
         client.app.flow.planning.clone(),
         client.app.flow.assets.clone(),
+        client.app.flow.compliance.clone(),
         crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
     )
     .await?;

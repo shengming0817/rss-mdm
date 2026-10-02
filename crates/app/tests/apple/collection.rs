@@ -207,6 +207,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     let automation = crate::automation::Automation::connect(
         f.app.flow.planning.clone(),
         f.app.flow.assets.clone(),
+        f.app.flow.compliance.clone(),
         crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
     )
     .await?;

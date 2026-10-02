@@ -201,7 +201,6 @@ pub async fn serve(
                             .config
                             .flow
                             .open(
-                                protection.clone(),
                                 audit_store.clone(),
                                 rss_request_context::TenantId::parse(
                                     &compiled.config.identity.tenant_id,
@@ -235,6 +234,7 @@ pub async fn serve(
                         let automation = crate::automation::Automation::connect(
                             planning.planning.clone(),
                             planning.assets.clone(),
+                            planning.compliance.clone(),
                             compiled
                                 .config
                                 .flow

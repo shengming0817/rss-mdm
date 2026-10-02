@@ -58,3 +58,26 @@ pub fn asset_target(tenant: rss_request_context::TenantId) -> rss_reconcile::Tar
     )
     .expect("constant target")
 }
+
+/// Stable task result shape consumed by Inventory and its scheduling participant.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all(serialize = "camelCase"), deny_unknown_fields)]
+pub struct JobAccepted {
+    pub task: Uuid,
+    pub kind: String,
+    pub target: String,
+    pub status_url: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all(serialize = "camelCase"), deny_unknown_fields)]
+pub struct TaskRead {
+    pub task: Uuid,
+    pub kind: String,
+    pub target: String,
+    pub status: String,
+    pub processed: u64,
+    pub members: u64,
+    pub failure: Option<String>,
+    pub failure_detail: Option<serde_json::Value>,
+    pub replacement_task: Option<Uuid>,
+}

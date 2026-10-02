@@ -4,7 +4,6 @@ use uuid::Uuid;
 
 pub use super::assets::Criteria;
 pub use rss_mdm_authorization_service::Permission;
-pub use rss_mdm_inventory_service::groups::GroupChange;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EmptyInput {}

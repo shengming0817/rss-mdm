@@ -247,6 +247,7 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
     let automation = crate::automation::Automation::connect(
         fixture.flow.planning.clone(),
         fixture.flow.assets.clone(),
+        fixture.flow.compliance.clone(),
         config
             .flow
             .storage
@@ -529,6 +530,7 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
     let automation = crate::automation::Automation::connect(
         fixture.flow.planning.clone(),
         fixture.flow.assets.clone(),
+        fixture.flow.compliance.clone(),
         config.flow.storage.database.options()?,
     )
     .await?;

@@ -66,5 +66,3 @@ mod scope;
 #[path = "../../tests/planning/pages_unit.rs"]
 mod tests;
 pub use scope::ScopePage;
-
-pub use rss_mdm_inventory_service::groups::pages::{GroupPage, GroupPageKind};

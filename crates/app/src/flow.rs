@@ -55,7 +55,6 @@ impl Config {
     }
     pub(crate) async fn open(
         &self,
-        protection: Arc<rss_mdm_native_protection::Protector>,
         audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         tenant: TenantId,
         clock: Arc<dyn crate::clock::Clock>,
@@ -107,7 +106,6 @@ impl Config {
             .map_err(|_| invalid())?,
         );
         match Planning::new(
-            protection,
             audit_store.clone(),
             runtime.clone(),
             tenant,
@@ -126,7 +124,26 @@ impl Config {
                     &key,
                     Arc::new(crate::automation::inventory_tasks::InventoryTasks),
                 ));
-                let mut service = Flow {
+                let groups = Arc::new(rss_mdm_inventory_service::groups::Groups {
+                    tenant,
+                    groups: service.groups.clone(),
+                    cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),
+                    audit_store: audit_store.clone(),
+                    runtime: runtime.clone(),
+                    clock: Arc::new(crate::clock::InventoryClock(clock.clone())),
+                });
+                let compliance = Arc::new(rss_mdm_inventory_service::compliance::Compliance::new(
+                    rss_mdm_inventory_service::compliance::Dependencies {
+                        audit_store: audit_store.clone(),
+                        runtime: runtime.clone(),
+                        tenant,
+                        clock: Arc::new(crate::clock::InventoryClock(clock.clone())),
+                        groups: service.groups.clone(),
+                        tasks: Arc::new(crate::automation::inventory_tasks::InventoryTasks),
+                        cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),
+                    },
+                ));
+                let mut service = Flow { groups, compliance,
                     cursor_key: key,
                     runtime: runtime.clone(),
                     planning: Arc::new(service),
@@ -280,6 +297,8 @@ pub(crate) struct Flow {
     pub(crate) software_resources: Arc<rss_mdm_resource_postgres::ResourceStore>,
     pub(crate) planning: Arc<Planning>,
     pub(crate) assets: Arc<crate::assets::AssetService>,
+    pub(crate) groups: Arc<rss_mdm_inventory_service::groups::Groups>,
+    pub(crate) compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
     pub(crate) publications:
         Arc<rss_mdm_software_service::management::publication::service::PublicationDirectory>,
     publication_runtime: Option<Arc<PgRuntime>>,

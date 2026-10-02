@@ -13,6 +13,7 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
     let automation = crate::automation::Automation::connect(
         f.app.flow.planning.clone(),
         f.app.flow.assets.clone(),
+        f.app.flow.compliance.clone(),
         crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
     )
     .await?;

@@ -7,12 +7,14 @@ mod completion;
 pub struct Automation {
     service: Arc<Planning>,
     assets: Arc<assets::AssetService>,
+    compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
     store: rss_reconcile_postgres::PgStore,
 }
 impl Automation {
     pub async fn connect(
         service: Arc<Planning>,
         assets: Arc<assets::AssetService>,
+        compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
         options: sqlx::postgres::PgConnectOptions,
     ) -> std::result::Result<Arc<Self>, Error> {
         let pool = sqlx::postgres::PgPoolOptions::new()
@@ -42,6 +44,7 @@ impl Automation {
         Ok(Arc::new(Self {
             service,
             assets,
+            compliance,
             store,
         }))
     }
@@ -215,6 +218,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                             claim.target().entity(),
                             &failure,
                             &self.assets,
+                            &self.compliance,
                         ),
                     ),
                     |(service, claim, context), tx| {
@@ -232,8 +236,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                                     Box::pin(async move {
                                         let result: Result<()> = async {
                                             if ctx.1 == "changes" {
-                                                let compliance = ctx.0.compliance();
-                                                ctx.0.dispatch_assets_in(tx, &compliance).await?;
+                                                ctx.0.dispatch_assets_in(tx, ctx.4).await?;
                                                 return ctx.0.clear_ingress_failure_in(tx).await;
                                             }
                                             let id = checked_input(
@@ -252,8 +255,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                                             }
                                             match job {
                                                 JobInput::Compliance { ref input } => ctx
-                                                    .0
-                                                    .compliance()
+                                                    .4
                                                     .advance(tx, id, input, cursor)
                                                     .await
                                                     .map_err(Into::into),

@@ -27,7 +27,6 @@ use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 
 pub struct Planning {
-    pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     automation_observation: std::sync::Mutex<automation::health::AutomationObservation>,
     pub automation_task: std::sync::OnceLock<rss_runtime::TaskStatus>,
@@ -45,7 +44,6 @@ use crate::operation::Operation;
 use crate::transaction::*;
 impl Planning {
     pub async fn new(
-        protection: Arc<rss_mdm_native_protection::Protector>,
         audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         runtime: Arc<PgRuntime>,
         tenant: TenantId,
@@ -61,7 +59,6 @@ impl Planning {
                 .await
                 .map_err(|_| Error::Unavailable(Failure::PlanningAdmission))?;
         Ok(Self {
-            protection,
             audit_store: audit_store.clone(),
             automation_observation: std::sync::Mutex::new(Default::default()),
             automation_task: std::sync::OnceLock::new(),
@@ -84,71 +81,6 @@ impl Planning {
         audit: &RequestAudit,
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
     ) -> std::result::Result<Value, Error> {
-        let group = match command {
-            Command::Group {
-                id,
-                change,
-                sensitive,
-            } => Some(rss_mdm_inventory_service::groups::Command::Group {
-                id: *id,
-                sensitive: *sensitive,
-                change: Box::new(rss_mdm_inventory_service::operation::Operation {
-                    operation_id: change.operation_id,
-                    expected_revision: change.expected_revision,
-                    input: change.input.clone(),
-                }),
-            }),
-            Command::GroupRead { id } => {
-                Some(rss_mdm_inventory_service::groups::Command::GroupRead { id: *id })
-            }
-            Command::GroupPreview {
-                id,
-                operation,
-                expected_revision,
-            } => Some(rss_mdm_inventory_service::groups::Command::GroupPreview {
-                id: *id,
-                operation: *operation,
-                expected_revision: *expected_revision,
-            }),
-            Command::GroupPage {
-                group,
-                result,
-                projection,
-                query,
-            } => Some(rss_mdm_inventory_service::groups::Command::GroupPage {
-                group: *group,
-                result: *result,
-                projection: *projection,
-                query: rss_mdm_inventory_service::groups::pages::PageQuery {
-                    limit: query.limit,
-                    cursor: query.cursor.clone(),
-                },
-            }),
-            Command::TaskRead {
-                id,
-                target,
-                family: crate::automation::TaskKind::Group,
-            } => Some(rss_mdm_inventory_service::groups::Command::TaskRead {
-                id: *id,
-                target: target.clone(),
-            }),
-            _ => None,
-        };
-        if let Some(group) = group {
-            return self
-                .inventory_groups()
-                .execute(
-                    &group,
-                    audit,
-                    &|| {
-                        authorize()
-                            .map_err(|e| crate::automation::inventory_tasks::failure(e.into()))
-                    },
-                    self,
-                )
-                .await
-                .map_err(Error::from);
-        }
         authorize()?;
         crate::transaction::run(
             &self.audit_store,
@@ -159,11 +91,6 @@ impl Planning {
             |ctx, tx| {
                 Box::pin(async move {
                     let (s, command, audit, authorize) = *ctx;
-                    let partitions = match command {
-                        Command::Group { id, .. } => vec![s.groups.partition(&id.to_string())?],
-                        _ => Vec::new(),
-                    };
-                    tx.prepare_outbox_partitions(&partitions).await?;
                     s.execute_in(tx, command, audit, authorize).await
                 })
             },
@@ -240,60 +167,8 @@ impl Planning {
         at: Timepoint,
     ) -> Result<Value> {
         match command {
-            Command::Group {
-                id,
-                change,
-                sensitive,
-            } => self
-                .inventory_groups()
-                .group_change(
-                    tx,
-                    *id,
-                    &rss_mdm_inventory_service::operation::Operation {
-                        operation_id: change.operation_id,
-                        expected_revision: change.expected_revision,
-                        input: change.input.clone(),
-                    },
-                    (at, *sensitive),
-                    self,
-                )
-                .await
-                .map_err(Into::into),
-            Command::GroupRead { id } => self
-                .inventory_groups()
-                .group_read(tx, *id)
-                .await
-                .map_err(Into::into),
-            Command::GroupPreview {
-                id,
-                operation,
-                expected_revision,
-            } => self
-                .inventory_groups()
-                .group_preview(tx, *id, *operation, *expected_revision, at, self)
-                .await
-                .map_err(Into::into),
             Command::Scope { id, change } => self.scope_change(tx, *id, change, at).await,
             Command::ScopeRead { id } => self.scope_read(tx, *id).await,
-            Command::GroupPage {
-                group,
-                result,
-                projection,
-                query,
-            } => self
-                .inventory_groups()
-                .group_page_in(
-                    tx,
-                    *group,
-                    *result,
-                    *projection,
-                    &rss_mdm_inventory_service::groups::pages::PageQuery {
-                        limit: query.limit,
-                        cursor: query.cursor.clone(),
-                    },
-                )
-                .await
-                .map_err(Into::into),
             Command::ScopePage {
                 scope,
                 result,
@@ -312,31 +187,12 @@ impl Planning {
 #[derive(serde::Serialize)]
 #[serde(tag = "kind")]
 pub enum Command {
-    Group {
-        id: Uuid,
-        change: Operation<GroupChange>,
-        sensitive: bool,
-    },
-    GroupRead {
-        id: Uuid,
-    },
-    GroupPreview {
-        id: Uuid,
-        operation: Uuid,
-        expected_revision: u64,
-    },
     Scope {
         id: Uuid,
         change: Operation<ScopeChange>,
     },
     ScopeRead {
         id: Uuid,
-    },
-    GroupPage {
-        group: Uuid,
-        result: Uuid,
-        projection: pages::GroupPageKind,
-        query: pages::PageQuery,
     },
     ScopePage {
         scope: Uuid,
@@ -374,34 +230,6 @@ mod receipts;
 
 pub mod error;
 
-impl Planning {
-    pub fn compliance(&self) -> rss_mdm_inventory_service::compliance::Compliance {
-        rss_mdm_inventory_service::compliance::Compliance::new(
-            rss_mdm_inventory_service::compliance::Dependencies {
-                audit_store: self.audit_store.clone(),
-                runtime: self.runtime.clone(),
-                tenant: self.tenant,
-                clock: Arc::new(crate::clock::InventoryClock(self.clock.clone())),
-                groups: self.groups.clone(),
-                tasks: Arc::new(crate::automation::inventory_tasks::InventoryTasks),
-                cursor_key: self.cursor_key.clone(),
-            },
-        )
-    }
-}
-
-impl Planning {
-    fn inventory_groups(&self) -> rss_mdm_inventory_service::groups::Groups {
-        rss_mdm_inventory_service::groups::Groups {
-            tenant: self.tenant,
-            groups: self.groups.clone(),
-            cursor_key: self.cursor_key.clone(),
-            audit_store: self.audit_store.clone(),
-            runtime: self.runtime.clone(),
-            clock: Arc::new(crate::clock::InventoryClock(self.clock.clone())),
-        }
-    }
-}
 impl rss_mdm_inventory_service::groups::Flow for Planning {
     fn task<'a, 'tx>(
         &'a self,

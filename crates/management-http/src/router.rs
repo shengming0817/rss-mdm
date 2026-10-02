@@ -20,6 +20,8 @@ pub struct Services {
     pub requests: Arc<tokio::sync::Semaphore>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub planning: Arc<rss_mdm_flow_service::planning::Planning>,
+    pub groups: Arc<rss_mdm_inventory_service::groups::Groups>,
+    pub compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
     pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
     pub queries: Arc<rss_mdm_execution_service::queries::Queries>,
     pub policies: Arc<rss_mdm_flow_service::planning::policies::Policies>,
@@ -55,6 +57,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
     });
     let planning = Arc::new(crate::planning::http::HttpState {
         planning: state.planning.clone(),
+        groups: state.groups.clone(),
     });
     let policies = state.policies;
     let assets = Arc::new(crate::assets::http::HttpState {
@@ -111,7 +114,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         .merge(crate::planning::routes_v2().with_state(planning.clone()))
         .merge(crate::execution::actions::http::routes().with_state(state.queries.clone()))
         .merge(crate::assets::routes().with_state(assets))
-        .merge(crate::compliance::http::routes().with_state(Arc::new(state.planning.compliance())))
+        .merge(crate::compliance::http::routes().with_state(state.compliance))
         .route_layer(middleware::from_fn_with_state(
             authentication_state.clone(),
             crate::authorization::http::protect,

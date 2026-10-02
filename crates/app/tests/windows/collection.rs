@@ -50,6 +50,7 @@ async fn native_template_policy_uses_correlated_get_and_collection_run() -> anyh
     let automation = crate::automation::Automation::connect(
         host.app.flow.planning.clone(),
         host.app.flow.assets.clone(),
+        host.app.flow.compliance.clone(),
         crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
     )
     .await?;

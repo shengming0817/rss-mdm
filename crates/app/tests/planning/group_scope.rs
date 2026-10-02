@@ -21,10 +21,14 @@ async fn durable_asset_group_scope_pipeline() {
             .password("access-fixture"),
         service.tenant,
     );
-    let automation =
-        crate::automation::Automation::connect(service.clone(), assets(&service).await, options)
-            .await
-            .unwrap();
+    let automation = crate::automation::Automation::connect(
+        service.clone(),
+        assets(&service).await,
+        compliance(&service).await,
+        options,
+    )
+    .await
+    .unwrap();
     let device = format!("automation-{}", Uuid::new_v4());
     seed_device(&device);
     let owner = assets::Owner {
@@ -50,10 +54,10 @@ async fn durable_asset_group_scope_pipeline() {
     let group = Uuid::new_v4();
     let created = execute(
         &service,
-        &Command::Group {
+        &GroupCommand::Group {
             sensitive: true,
             id: group,
-            change: operation(
+            change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
                     name: "automation".into(),
@@ -65,7 +69,7 @@ async fn durable_asset_group_scope_pipeline() {
                         values: None,
                     }),
                 },
-            ),
+            )),
         },
     )
     .await
@@ -99,10 +103,10 @@ async fn durable_asset_group_scope_pipeline() {
         .await["members"],
         1
     );
-    let page_command = Command::GroupPage {
+    let page_command = GroupCommand::GroupPage {
         group,
         result: task,
-        projection: pages::GroupPageKind::Members,
+        projection: rss_mdm_inventory_service::groups::pages::GroupPageKind::Members,
         query: pages::PageQuery {
             limit: 1,
             cursor: None,
@@ -111,13 +115,13 @@ async fn durable_asset_group_scope_pipeline() {
     let page = execute(&service, &page_command).await.unwrap();
     assert_eq!(page["page"]["items"], serde_json::json!([device]));
     assert_eq!(page["current"], true);
-    assert!(wire::Response::decode(page.clone()).is_ok());
+    assert!(rss_mdm_inventory_service::groups::response::Response::decode(page.clone()).is_ok());
     let continuation = execute(
         &service,
-        &Command::GroupPage {
+        &GroupCommand::GroupPage {
             group,
             result: task,
-            projection: pages::GroupPageKind::Members,
+            projection: rss_mdm_inventory_service::groups::pages::GroupPageKind::Members,
             query: pages::PageQuery {
                 limit: 1,
                 cursor: Some(page["nextCursor"].as_str().unwrap().into()),
@@ -129,12 +133,16 @@ async fn durable_asset_group_scope_pipeline() {
     assert_eq!(continuation["page"]["items"], serde_json::json!([]));
     let denied_audit = RequestAudit::new(tenant().to_string(), "management_read");
     assert!(matches!(
-        service
-            .execute(&page_command, &denied_audit, &|| Err(
-                rss_mdm_flow_service::Error::Forbidden
-            ))
+        groups(&service)
+            .await
+            .execute(
+                &page_command,
+                &denied_audit,
+                &|| Err(rss_mdm_inventory_service::Error::Forbidden),
+                service.as_ref()
+            )
             .await,
-        Err(rss_mdm_flow_service::Error::Forbidden)
+        Err(rss_mdm_inventory_service::Error::Forbidden)
     ));
     denied_audit.finalize(None);
     let query_scope = assets::ReadScope {
@@ -295,33 +303,33 @@ async fn group_scope_replay_and_audit_atomicity() {
     let device = format!("设备-{}", Uuid::new_v4());
     seed_device(&device);
     let group = Uuid::new_v4();
-    let create = Command::Group {
+    let create = GroupCommand::Group {
         sensitive: true,
         id: group,
-        change: operation(
+        change: Box::new(group_operation(
             0,
             GroupChange::Create {
                 name: "fleet".into(),
                 description: String::new(),
                 criteria: None,
             },
-        ),
+        )),
     };
     let first = execute(&m, &create).await.unwrap();
     assert_eq!(first, execute(&m, &create).await.unwrap());
     let running = RunningAutomation::start(m.clone()).await;
     let members = execute(
         &m,
-        &Command::Group {
+        &GroupCommand::Group {
             sensitive: true,
             id: group,
-            change: operation(
+            change: Box::new(group_operation(
                 1,
                 GroupChange::Members {
                     add: vec![device.clone()],
                     remove: vec![],
                 },
-            ),
+            )),
         },
     )
     .await
@@ -353,17 +361,17 @@ async fn group_scope_replay_and_audit_atomicity() {
     sql("REVOKE INSERT ON mdm_audit.receipts FROM mdm_flow_runtime");
     let result = execute(
         &m,
-        &Command::Group {
+        &GroupCommand::Group {
             sensitive: true,
             id: denied,
-            change: operation(
+            change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
                     name: "denied".into(),
                     description: String::new(),
                     criteria: None,
                 },
-            ),
+            )),
         },
     )
     .await;
@@ -397,17 +405,17 @@ async fn initial_empty_group_scope_and_revision_competition() {
     let g = Uuid::new_v4();
     execute(
         &m,
-        &Command::Group {
+        &GroupCommand::Group {
             sensitive: true,
             id: g,
-            change: operation(
+            change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
                     name: "empty".into(),
                     description: "".into(),
                     criteria: None,
                 },
-            ),
+            )),
         },
     )
     .await
@@ -459,33 +467,33 @@ async fn registration_replacement_invalidates_direct_and_group_admission() {
     let group = Uuid::new_v4();
     execute(
         &m,
-        &Command::Group {
+        &GroupCommand::Group {
             sensitive: true,
             id: group,
-            change: operation(
+            change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
                     name: "registration".into(),
                     description: "".into(),
                     criteria: None,
                 },
-            ),
+            )),
         },
     )
     .await
     .unwrap();
     let membership = execute(
         &m,
-        &Command::Group {
+        &GroupCommand::Group {
             sensitive: true,
             id: group,
-            change: operation(
+            change: Box::new(group_operation(
                 1,
                 GroupChange::Members {
                     add: vec![device.clone()],
                     remove: vec![],
                 },
-            ),
+            )),
         },
     )
     .await
@@ -556,25 +564,25 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
         let scope_id = Uuid::new_v4();
         execute(
             &first,
-            &Command::Group {
+            &GroupCommand::Group {
                 sensitive: true,
                 id: group,
-                change: operation(
+                change: Box::new(group_operation(
                     0,
                     GroupChange::Create {
                         name: "reference-race".into(),
                         description: "".into(),
                         criteria: None,
                     },
-                ),
+                )),
             },
         )
         .await
         .unwrap();
-        let delete = Command::Group {
+        let delete = GroupCommand::Group {
             sensitive: true,
             id: group,
-            change: operation(1, GroupChange::Delete),
+            change: Box::new(group_operation(1, GroupChange::Delete)),
         };
         let reference = Command::Scope {
             id: scope_id,
@@ -607,10 +615,14 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
 async fn ingress_batches_reuse_published_group_coverage() {
     use rss_reconcile::{DurableStore, Reconciler};
     let service = Arc::new(planning(tenant()).await);
-    let worker =
-        crate::automation::Automation::connect(service.clone(), assets(&service).await, options())
-            .await
-            .unwrap();
+    let worker = crate::automation::Automation::connect(
+        service.clone(),
+        assets(&service).await,
+        compliance(&service).await,
+        options(),
+    )
+    .await
+    .unwrap();
     sql(&format!(
         "INSERT INTO mdm_access.devices SELECT '{}','batch-'||lpad(n::text,4,'0') FROM generate_series(1,1001) n",
         tenant()
@@ -618,10 +630,10 @@ async fn ingress_batches_reuse_published_group_coverage() {
     let group = Uuid::new_v4();
     let accepted = execute(
         &service,
-        &Command::Group {
+        &GroupCommand::Group {
             sensitive: true,
             id: group,
-            change: operation(
+            change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
                     name: "bounded-ingress".into(),
@@ -633,7 +645,7 @@ async fn ingress_batches_reuse_published_group_coverage() {
                         values: None,
                     }),
                 },
-            ),
+            )),
         },
     )
     .await
@@ -726,10 +738,10 @@ async fn superseded_group_links_reused_successor() {
     seed_device(&format!("successor-{group}"));
     let created = execute(
         &service,
-        &Command::Group {
+        &GroupCommand::Group {
             sensitive: true,
             id: group,
-            change: operation(
+            change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
                     name: "successor".into(),
@@ -741,7 +753,7 @@ async fn superseded_group_links_reused_successor() {
                         values: None,
                     }),
                 },
-            ),
+            )),
         },
     )
     .await
@@ -750,10 +762,10 @@ async fn superseded_group_links_reused_successor() {
     seed_device(&format!("successor-new-input-{group}"));
     let next = execute(
         &service,
-        &Command::Group {
+        &GroupCommand::Group {
             sensitive: true,
             id: group,
-            change: operation(1, GroupChange::Recompute {}),
+            change: Box::new(group_operation(1, GroupChange::Recompute {})),
         },
     )
     .await
