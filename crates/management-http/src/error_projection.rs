@@ -440,7 +440,6 @@ impl From<rss_mdm_flow_service::Error> for Error {
                     Self::Unavailable(Failure::AssetBytesLimit)
                 }
                 rss_mdm_flow_service::Failure::Clock => Self::Unavailable(Failure::Clock),
-                rss_mdm_flow_service::Failure::Capacity => Self::Unavailable(Failure::Capacity),
                 rss_mdm_flow_service::Failure::Runtime => Self::Unavailable(Failure::Runtime),
             },
         }

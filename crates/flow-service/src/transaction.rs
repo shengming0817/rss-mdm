@@ -177,11 +177,6 @@ impl TransactionOwner {
         self.failure()
     }
 }
-impl From<crate::device::DeviceError> for Fault {
-    fn from(error: crate::device::DeviceError) -> Self {
-        Error::from(error).into()
-    }
-}
 pub async fn lock(tx: &mut PgTransaction<'_>) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move |c| {
@@ -273,12 +268,6 @@ impl From<rss_mdm_policy::Error> for Fault {
 impl From<rss_mdm_authorization_service::Error> for Fault {
     fn from(error: rss_mdm_authorization_service::Error) -> Self {
         Self::Request(error.into())
-    }
-}
-
-impl From<rss_mdm_registration_service::Error> for Fault {
-    fn from(e: rss_mdm_registration_service::Error) -> Self {
-        Self::from(Error::from(e))
     }
 }
 

@@ -1,6 +1,6 @@
 //! ref: axum 0.8.9 axum/src/routing/mod.rs (protected tree composition).
 use super::*;
-use crate::authorization::context::RequestAuth;
+use crate::authorization::{Permission, context::RequestAuth};
 use axum::{
     Extension, Json, Router,
     extract::{Path, Query, State},

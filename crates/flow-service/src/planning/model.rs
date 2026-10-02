@@ -2,8 +2,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
-pub use super::assets::Criteria;
-pub use rss_mdm_authorization_service::Permission;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EmptyInput {}

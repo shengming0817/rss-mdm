@@ -226,7 +226,9 @@ async fn durable_asset_group_scope_pipeline() {
             }
         )
         .await,
-        Err(Error::Flow(rss_mdm_flow_service::Error::Forbidden))
+        Err(Error::Inventory(
+            rss_mdm_inventory_service::Error::Forbidden
+        ))
     ));
     let facets = execute_asset(
         &service,
@@ -378,9 +380,8 @@ async fn group_scope_replay_and_audit_atomicity() {
     sql("GRANT INSERT ON mdm_audit.receipts TO mdm_flow_runtime");
     assert!(matches!(
         result,
-        Err(Error::Flow(rss_mdm_flow_service::Error::Unavailable(
-            rss_mdm_flow_service::Failure::AuditAdmission
-        )))
+        Err(Error::Inventory(rss_mdm_inventory_service::Error::Audit(e)))
+            if matches!(e.class(), rss_mdm_audit_integration::ErrorClass::AuditAdmission)
     ));
     assert_eq!(
         sql(&format!(

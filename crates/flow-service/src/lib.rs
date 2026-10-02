@@ -1,4 +1,4 @@
-//! Product planning, execution and automation. Protocol transports borrow Flow-owned transactions.
+//! Policy/Scope coordination, resource management and durable planning automation.
 pub mod action_admission;
 pub mod automation;
 pub mod clock;

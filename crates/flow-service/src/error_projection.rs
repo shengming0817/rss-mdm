@@ -12,14 +12,6 @@ impl From<crate::authorization::error::AuthorizationError> for Error {
     }
 }
 
-impl From<crate::device::DeviceError> for Error {
-    fn from(error: crate::device::DeviceError) -> Self {
-        match error {
-            crate::device::DeviceError::InvalidSource => Self::Malformed,
-        }
-    }
-}
-
 impl From<rss_mdm_audit_integration::InvalidFact> for Error {
     fn from(error: rss_mdm_audit_integration::InvalidFact) -> Self {
         Self::from(rss_mdm_audit_integration::Error::Fact(error))
@@ -63,27 +55,6 @@ impl From<rss_mdm_authorization_service::Error> for Error {
             Authorization::RollbackFailed => Self::RollbackFailed,
             Authorization::Configuration => Self::Unavailable(Failure::Database),
             Authorization::Audit(error) => Self::from(error.as_ref()),
-        }
-    }
-}
-
-impl From<rss_mdm_registration_service::Error> for Error {
-    fn from(error: rss_mdm_registration_service::Error) -> Self {
-        use rss_mdm_registration_service::Error as R;
-        match error {
-            R::Malformed => Self::Malformed,
-            R::Unauthorized => Self::Unauthorized,
-            R::Forbidden => Self::Forbidden,
-            R::Corrupt | R::Storage | R::Retirement => Self::Unavailable(crate::Failure::Database),
-            R::Deadline => Self::Unavailable(crate::Failure::RequestDeadline),
-            R::Conflict => Self::Conflict,
-            R::CommitUnknown => Self::CommitUnknown,
-            R::RollbackFailed => Self::RollbackFailed,
-            R::NotFound => Self::NotFound,
-            R::Capacity => Self::Unavailable(crate::Failure::Capacity),
-            R::Runtime => Self::Unavailable(crate::Failure::Runtime),
-            R::Configuration => Self::Unavailable(Failure::Database),
-            R::Audit(e) => Self::from(e.as_ref()),
         }
     }
 }

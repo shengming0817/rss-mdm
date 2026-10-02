@@ -1,5 +1,6 @@
 use super::*;
 use crate::authorization::context::AuthorizedPrincipal;
+use rss_mdm_authorization_service::Permission;
 use serde::Deserialize;
 use serde_json::json;
 #[derive(Clone, Debug, Deserialize)]

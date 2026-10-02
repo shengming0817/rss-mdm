@@ -17,7 +17,6 @@ pub mod storage;
 pub mod wire;
 use crate::{Error, Failure};
 
-pub use model::Permission;
 pub use model::*;
 use rss_contract::Timepoint;
 use rss_request_context::TenantId;

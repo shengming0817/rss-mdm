@@ -29,6 +29,5 @@ pub enum Failure {
     AssetSourceLimit,
     AssetBytesLimit,
     Clock,
-    Capacity,
     Runtime,
 }
