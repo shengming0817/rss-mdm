@@ -137,11 +137,6 @@ pub(crate) async fn open(
         config.enrollment_entries.validate()?;
         Ok(Arc::new(ExecutionService {
             source: Arc::new(rss_mdm_flow_service::planning::execution_source::ExecutionSource),
-            resources: Arc::new(
-                rss_mdm_resource_postgres::ResourceStore::new(runtime.clone(), tenant, deadline())
-                    .await
-                    .map_err(|_| bad())?,
-            ),
             protection: protection.clone(),
             readiness: Default::default(),
             software: Arc::new(rss_mdm_software_service::preparation::Preparation::new(

@@ -250,14 +250,16 @@ impl Inputs {
         resource: &str,
         version: &str,
     ) -> Result<r::Version> {
-        let (version, state, _) = checked(
-            self.resources
-                .lock_version_in(
-                    tx,
-                    &checked_input(r::Id::new(resource))?,
-                    &checked_input(r::Id::new(version))?,
-                )
-                .await?,
+        if tx.tenant_id() != self.tenant {
+            return Err(Error::Conflict.into());
+        }
+        let (version, state) = checked(
+            rss_mdm_resource_postgres::lock_reference_in(
+                tx,
+                &checked_input(r::Id::new(resource))?,
+                &checked_input(r::Id::new(version))?,
+            )
+            .await?,
         )?;
         if state != r::State::Active {
             return Err(Error::Conflict.into());

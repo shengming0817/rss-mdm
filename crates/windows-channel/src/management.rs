@@ -80,6 +80,8 @@ pub async fn manage(
 
 /// Response provenance belongs to the native adapter, independently of audit formatting.
 use rss_mdm_execution_service::channels::Reply as ManagementReply;
+// The exchange borrows authority, connection and protocol inputs together.
+#[allow(clippy::too_many_arguments)]
 pub async fn management_on(
     source: &dyn rss_mdm_execution_service::source_authority::SourceAuthority,
     conn: &mut sqlx::PgConnection,

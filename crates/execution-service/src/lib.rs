@@ -68,7 +68,6 @@ pub fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
 
 pub struct ExecutionService {
     pub source: Arc<dyn source_authority::SourceAuthority>,
-    pub resources: Arc<rss_mdm_resource_postgres::ResourceStore>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub readiness: health::Readiness,
     pub software: Arc<rss_mdm_software_service::preparation::Preparation>,
@@ -138,7 +137,6 @@ pub mod queries;
 
 /// Policy publication receives immutable input preparation, never execution readers or workers.
 pub struct Inputs {
-    pub resources: Arc<rss_mdm_resource_postgres::ResourceStore>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub software: Arc<rss_mdm_software_service::preparation::Preparation>,
     pub agent_installation: crate::agent_install::Config,
@@ -151,7 +149,6 @@ pub struct Inputs {
 impl ExecutionService {
     pub fn inputs(&self) -> Arc<Inputs> {
         Arc::new(Inputs {
-            resources: self.resources.clone(),
             protection: self.protection.clone(),
             software: self.software.clone(),
             agent_installation: self.agent_installation.clone(),

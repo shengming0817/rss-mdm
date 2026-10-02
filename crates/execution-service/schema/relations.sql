@@ -205,11 +205,11 @@ GRANT SELECT,INSERT ON TABLE mdm_planning.remote_operation_targets TO mdm_comman
 
 GRANT SELECT ON TABLE mdm_planning.remote_operation_targets TO mdm_flow_runtime;
 
-GRANT SELECT,INSERT ON TABLE mdm_planning.remote_operations TO mdm_flow_runtime;
+GRANT SELECT ON TABLE mdm_planning.remote_operations TO mdm_flow_runtime;
 
-GRANT SELECT ON TABLE mdm_planning.remote_operations TO mdm_command_runtime;
+GRANT SELECT,INSERT ON TABLE mdm_planning.remote_operations TO mdm_command_runtime;
 
-GRANT UPDATE(cancelled) ON TABLE mdm_planning.remote_operations TO mdm_flow_runtime;
+GRANT UPDATE(cancelled) ON TABLE mdm_planning.remote_operations TO mdm_command_runtime;
 
 GRANT UPDATE(staged) ON TABLE mdm_planning.remote_operations TO mdm_command_runtime;
 
