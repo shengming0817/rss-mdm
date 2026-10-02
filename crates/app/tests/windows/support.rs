@@ -26,7 +26,7 @@ pub(crate) fn case_tenant() -> &'static str {
 pub(super) fn root() -> anyhow::Result<PathBuf> {
     Ok(std::env::var("MDM_WINDOWS_FIXTURES")?.into())
 }
-pub(super) fn now() -> i64 {
+pub(crate) fn now() -> i64 {
     crate::clock::SystemClock.unix_seconds().unwrap()
 }
 pub(super) fn windows() -> anyhow::Result<Windows> {
@@ -118,6 +118,7 @@ pub(crate) struct Host {
     listeners: Vec<(crate::native::NativeListenerKind, crate::native::TlsRouter)>,
     enroll: Option<tokio::net::TcpListener>,
     manage: Option<tokio::net::TcpListener>,
+    additional_manage: Option<tokio::net::TcpListener>,
     running: Option<rss_runtime::ShutdownStack>,
 }
 impl Host {
@@ -129,13 +130,52 @@ impl Host {
         agent: Option<serde_json::Value>,
         command_clock: rss_device_command_postgres::CommandClock,
     ) -> anyhow::Result<Self> {
-        Self::bind(agent, command_clock, None, None).await
+        Self::bind(agent, command_clock, None, None, None, false, false).await
+    }
+    pub(super) async fn renewal_window() -> anyhow::Result<Self> {
+        Self::bind(
+            None,
+            rss_device_command_postgres::CommandClock::Postgres,
+            None,
+            None,
+            Some("renewal-ca.pem"),
+            false,
+            false,
+        )
+        .await
+    }
+    pub(super) async fn with_push() -> anyhow::Result<Self> {
+        Self::bind(
+            None,
+            rss_device_command_postgres::CommandClock::Postgres,
+            None,
+            None,
+            None,
+            true,
+            false,
+        )
+        .await
+    }
+    pub(crate) async fn with_management_addresses() -> anyhow::Result<Self> {
+        Self::bind(
+            None,
+            rss_device_command_postgres::CommandClock::Postgres,
+            None,
+            None,
+            None,
+            false,
+            true,
+        )
+        .await
     }
     async fn bind(
         agent: Option<serde_json::Value>,
         command_clock: rss_device_command_postgres::CommandClock,
         addresses: Option<(std::net::SocketAddr, std::net::SocketAddr)>,
         credential: Option<rss_identity_core::session::SessionSecret>,
+        ca: Option<&str>,
+        push: bool,
+        additional_address: bool,
     ) -> anyhow::Result<Self> {
         let root = root()?;
         let enroll =
@@ -144,10 +184,19 @@ impl Host {
         let manage =
             tokio::net::TcpListener::bind(addresses.map(|a| a.1).unwrap_or("127.0.0.1:0".parse()?))
                 .await?;
+        let additional_manage = if additional_address {
+            Some(tokio::net::TcpListener::bind("127.0.0.1:0").await?)
+        } else {
+            None
+        };
         let mut value: serde_json::Value =
             serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json"))?;
         value["native_protocols"]["windows"] =
             serde_json::from_slice(&std::fs::read(root.join("windows.json"))?)?;
+        if let Some(ca) = ca {
+            value["native_protocols"]["windows"]["ca_certificate_file"] =
+                serde_json::json!(root.join(ca));
+        }
         value["native_protocols"]["windows"]["enrollment"]["origin"] =
             serde_json::json!(format!("https://localhost:{}", enroll.local_addr()?.port()));
         value["native_protocols"]["windows"]["enrollment"]["listen"] =
@@ -175,6 +224,22 @@ impl Host {
         value["native_protection_key_file"] = original["native_protection_key_file"].clone();
         if let Some(agent) = agent {
             value["agent_installation"] = agent;
+        }
+        if push {
+            let secret = root.join(format!("wns-{}-secret", Uuid::new_v4()));
+            std::fs::write(&secret, "fixture-secret")?;
+            std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600))?;
+            value["native_protocols"]["windows"]["push"] = serde_json::json!({"package_family_name":"fixture.pfn","sid":"fixture-sid","client_secret_file":secret});
+        }
+        if let Some(listener) = &additional_manage {
+            let mut endpoint = value["native_protocols"]["windows"]["management"].clone();
+            endpoint["listen"] = serde_json::json!(listener.local_addr()?.to_string());
+            endpoint["origin"] = serde_json::json!(format!(
+                "https://localhost:{}",
+                listener.local_addr()?.port()
+            ));
+            value["native_protocols"]["windows"]["additional_management"] =
+                serde_json::json!([endpoint]);
         }
         let config: crate::config::Config = serde_json::from_value(value)?;
         let clock = Arc::new(crate::clock::SystemClock);
@@ -300,12 +365,13 @@ impl Host {
             listeners,
             enroll: Some(enroll),
             manage: Some(manage),
+            additional_manage,
             running: None,
         })
     }
     pub(crate) async fn listen(&mut self) -> anyhow::Result<()> {
-        let (_, management) = self.listeners.pop().expect("management listener");
-        let (_, mut enrollment) = self.listeners.pop().expect("enrollment listener");
+        let (_, management) = self.listeners.remove(1);
+        let (_, mut enrollment) = self.listeners.remove(0);
         enrollment.router = enrollment.router.route(
             "/accepted-peer",
             axum::routing::get(
@@ -330,6 +396,22 @@ impl Host {
         ));
         let mut launch = startup.commit();
         launch.stage_task_with_token(notifications.registration().critical());
+        if let Some(listener) = self.additional_manage.take() {
+            let (kind, router) = self
+                .listeners
+                .pop()
+                .expect("additional management listener");
+            launch.stage_task_with_token(
+                tls::registration(
+                    listener,
+                    router,
+                    self.app.audit_store.clone(),
+                    case_tenant().into(),
+                    kind,
+                )
+                .critical(),
+            );
+        }
         for (listener, router, kind) in [
             (
                 self.enroll.take().unwrap(),
@@ -380,6 +462,9 @@ impl Host {
             rss_device_command_postgres::CommandClock::Postgres,
             Some(addresses),
             Some(credential),
+            None,
+            false,
+            false,
         )
         .await?;
         next.listen().await?;
@@ -394,6 +479,13 @@ impl Host {
         Ok(())
     }
     pub(crate) async fn peer(&self) -> anyhow::Result<Peer> {
+        self.peer_profile(rss_mdm_registration_service::enrollment::WindowsProfile::Device)
+            .await
+    }
+    pub(crate) async fn peer_profile(
+        &self,
+        profile: rss_mdm_registration_service::enrollment::WindowsProfile,
+    ) -> anyhow::Result<Peer> {
         use x509_cert::der::{EncodePem, pem::LineEnding};
         let root = &self.root;
         let app = &self.app;
@@ -404,13 +496,14 @@ impl Host {
         let proof = admin(case_tenant(), "admin-a").await?;
         let plain = crate::enrollment::random();
         let password = Password::new(plain.clone())?;
-        let receipt = create(
+        let receipt = crate::enrollment::test_support::create_windows(
             store,
             &proof,
             crate::test_support::case::name("tls-device"),
             &password,
             reference,
             Uuid::new_v4(),
+            profile,
         )
         .await?;
         let path = format!(
@@ -436,8 +529,12 @@ impl Host {
         let Body::Issue(body) = &mut issue.body else {
             panic!()
         };
-        body.csr = Secret(std::fs::read(root.join("device.csr"))?);
+        body.request =
+            soap::CertificateRequest::Pkcs10(Secret(std::fs::read(root.join("device.csr"))?));
         for (key, value) in &mut body.additional_context.0 {
+            if key == "EnrollmentType" {
+                *value = profile.as_str().to_owned();
+            }
             if key == "DeviceID" {
                 *value = crate::test_support::case::name("tls-device").into();
             }
@@ -475,7 +572,14 @@ impl Host {
             &proof,
             (
                 &csr,
-                rss_mdm_windows_mdm::provisioning::EnrollmentType::Device,
+                match profile {
+                    rss_mdm_registration_service::enrollment::WindowsProfile::Full => {
+                        rss_mdm_windows_mdm::provisioning::EnrollmentType::Full
+                    }
+                    rss_mdm_registration_service::enrollment::WindowsProfile::Device => {
+                        rss_mdm_windows_mdm::provisioning::EnrollmentType::Device
+                    }
+                },
             ),
             now(),
         )
@@ -579,7 +683,7 @@ impl Host {
 pub(crate) struct Peer {
     pub(super) proof: AuthorizedPrincipal,
     pub(super) receipt: crate::enrollment::Receipt,
-    pub(super) intent: issuance::Intent,
+    pub(crate) intent: issuance::Intent,
     pub(super) secrets: rss_mdm_windows_channel::test_support::Secrets,
     pub(super) issue: soap::Message,
     pub(super) path: String,
@@ -661,4 +765,69 @@ async fn management(
     )?;
     timeline.initialize().await?;
     Ok((flow, timeline))
+}
+
+/// Exercise HTTP absolute-form over the actual old mutual TLS socket, bypassing client URL normalization.
+pub(crate) async fn absolute_form_post(
+    host: &Host,
+    peer: &Peer,
+    target: &str,
+    message: &syncml::Message,
+) -> anyhow::Result<u16> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio_rustls::rustls::{
+        self,
+        pki_types::{
+            CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, pem::PemObject,
+        },
+    };
+    let ca = &host.app.windows()?.channel.ca;
+    let cert = ca.sign(&ca.restore_intent(
+        &peer.intent.tbs,
+        &certificate::Csr::verify(&peer.intent.csr)?,
+        peer.intent.registration,
+    )?)?;
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(CertificateDer::from_pem_slice(&std::fs::read(
+        host.root.join("ca.crt"),
+    )?)?)?;
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()?
+    .with_root_certificates(roots)
+    .with_client_auth_cert(
+        vec![cert.into()],
+        PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(std::fs::read(
+            host.root.join("device.pk8"),
+        )?)),
+    )?;
+    let endpoint = reqwest::Url::parse(&peer.url)?;
+    let socket =
+        tokio::net::TcpStream::connect(("127.0.0.1", endpoint.port_or_known_default().unwrap()))
+            .await?;
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+    let mut tls = connector
+        .connect(ServerName::try_from("localhost")?, socket)
+        .await?;
+    let body = syncml::encode(message, &CodecLimits::default())?;
+    let wire = format!(
+        "POST {target} HTTP/1.1\r\nHost: localhost:{}\r\nContent-Type: application/vnd.syncml.dm+xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        endpoint.port_or_known_default().unwrap(),
+        body.len()
+    );
+    tls.write_all(wire.as_bytes()).await?;
+    tls.write_all(&body).await?;
+    tls.flush().await?;
+    let mut response = Vec::new();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        tls.take(1024 * 1024).read_to_end(&mut response),
+    )
+    .await??;
+    Ok(std::str::from_utf8(&response)?
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| anyhow::anyhow!("missing HTTP status"))?
+        .parse()?)
 }

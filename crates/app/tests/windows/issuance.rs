@@ -744,3 +744,196 @@ async fn startup_failures_keep_windows_input_categories() -> anyhow::Result<()> 
     }
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=windows.issuance"]
+async fn native_renewal_preserves_registration_and_activates_only_after_new_tls_proof()
+-> anyhow::Result<()> {
+    use base64::Engine;
+    use rss_mdm_windows_mdm::{
+        CodecLimits, Secret,
+        soap::{self, Body},
+    };
+    use x509_cert::der::{EncodePem, pem::LineEnding};
+    let mut host = Host::renewal_window().await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    let ca = &host.app.windows()?.channel.ca;
+    let certificate = ca.sign(&ca.restore_intent(
+        &peer.intent.tbs,
+        &certificate::Csr::verify(&peer.intent.csr)?,
+        peer.intent.registration,
+    )?)?;
+    let temporary = tempfile::tempdir()?;
+    let signer = temporary.path().join("signer.pem");
+    std::fs::write(
+        &signer,
+        x509_cert::Certificate::from_der(&certificate)?.to_pem(LineEnding::LF)?,
+    )?;
+    let signed = temporary.path().join("renew.p7");
+    let mut child = tokio::process::Command::new("openssl")
+        .args([
+            "cms",
+            "-sign",
+            "-binary",
+            "-nodetach",
+            "-nosmimecap",
+            "-md",
+            "sha256",
+            "-outform",
+            "DER",
+        ])
+        .arg("-in")
+        .arg(host.root.join("renew-device.csr"))
+        .arg("-signer")
+        .arg(&signer)
+        .arg("-inkey")
+        .arg(host.root.join("device.key"))
+        .arg("-out")
+        .arg(&signed)
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    let status = match tokio::time::timeout(Duration::from_secs(30), child.wait()).await {
+        Ok(status) => status?,
+        Err(error) => {
+            child.kill().await?;
+            child.wait().await?;
+            return Err(error.into());
+        }
+    };
+    ensure!(status.success(), "CMS fixture signing failed");
+    let cms = std::fs::read(signed)?;
+    let verified = ca.renewal(&cms, &certificate, now())?;
+    ensure!(verified.csr() == std::fs::read(host.root.join("renew-device.csr"))?);
+    let mut bad = cms.clone();
+    *bad.last_mut().unwrap() ^= 1;
+    ensure!(ca.renewal(&bad, &certificate, now()).is_err());
+    let mut request = peer.issue.clone();
+    request.header.security = None;
+    request.header.message_id = Some(format!("urn:uuid:{}", Uuid::new_v4()));
+    let Body::Issue(input) = &mut request.body else {
+        unreachable!()
+    };
+    input.request = soap::CertificateRequest::RenewalPkcs7(Secret(cms));
+    input.additional_context.0.clear();
+    let wire = soap::encode(&request, &CodecLimits::default())?;
+    ensure!(
+        host.client
+            .post(&peer.path)
+            .header("content-type", "application/soap+xml")
+            .body(wire.clone())
+            .send()
+            .await?
+            .status()
+            != axum::http::StatusCode::OK,
+        "renewal without TLS identity"
+    );
+    let send = || {
+        peer.mutual
+            .post(&peer.path)
+            .header("content-type", "application/soap+xml")
+            .body(wire.clone())
+            .send()
+    };
+    let first = send().await?;
+    ensure!(
+        first.status() == axum::http::StatusCode::OK,
+        "renewal issuance {}",
+        first.status()
+    );
+    let first = soap::decode_response(&request, &first.bytes().await?, &CodecLimits::default())?;
+    let replay = soap::decode_response(
+        &request,
+        &send().await?.bytes().await?,
+        &CodecLimits::default(),
+    )?;
+    let (Body::IssueResponse(first), Body::IssueResponse(replay)) = (first.body, replay.body)
+    else {
+        anyhow::bail!("renewal response")
+    };
+    ensure!(
+        first.provisioning == replay.provisioning,
+        "renewal replay minted another certificate"
+    );
+    let document = String::from_utf8(first.provisioning.0)?;
+    ensure!(!document.contains("AAUTHSECRET") && !document.contains("EntDMID"));
+    let encoded = document
+        .split("name=\"EncodedCertificate\" value=\"")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .ok_or_else(|| anyhow::anyhow!("renewal certificate missing"))?;
+    let der = base64::engine::general_purpose::STANDARD.decode(encoded)?;
+    let new_certificate = x509_cert::Certificate::from_der(&der)?;
+    ensure!(der != certificate);
+    let identity = reqwest::Identity::from_pem(
+        &[
+            new_certificate.to_pem(LineEnding::LF)?.as_bytes(),
+            &std::fs::read(host.root.join("renew-device.key"))?,
+        ]
+        .concat(),
+    )?;
+    let renewed = reqwest::Client::builder()
+        .no_proxy()
+        .add_root_certificate(host.root_cert.clone())
+        .identity(identity)
+        .timeout(Duration::from_secs(12))
+        .build()?;
+    let initial = rss_mdm_windows_mdm::syncml::encode(&peer.message, &CodecLimits::default())?;
+    ensure!(
+        peer.mutual
+            .post(&peer.url)
+            .header("content-type", "application/vnd.syncml.dm+xml")
+            .body(initial.clone())
+            .send()
+            .await?
+            .status()
+            == axum::http::StatusCode::OK,
+        "old credential disabled before new proof"
+    );
+    let mut message = peer.message.clone();
+    message.header.session_id = 1502;
+    let active = renewed
+        .post(&peer.url)
+        .header("content-type", "application/vnd.syncml.dm+xml")
+        .body(rss_mdm_windows_mdm::syncml::encode(
+            &message,
+            &CodecLimits::default(),
+        )?)
+        .send()
+        .await?;
+    ensure!(
+        active.status() == axum::http::StatusCode::OK,
+        "new identity activation {}",
+        active.status()
+    );
+    ensure!(
+        peer.mutual
+            .post(&peer.url)
+            .header("content-type", "application/vnd.syncml.dm+xml")
+            .body(initial)
+            .send()
+            .await?
+            .status()
+            == axum::http::StatusCode::UNAUTHORIZED,
+        "old credential survived activation"
+    );
+    let scope = host
+        .app
+        .devices
+        .current_scope(
+            &peer.proof,
+            crate::test_support::case::name("tls-device"),
+            crate::device::coordinates::Coordinates {
+                source: rss_mdm_inventory::ReportSource::MdmWindows,
+            },
+        )
+        .await?;
+    ensure!(
+        scope.registration().as_str() == peer.intent.registration.to_string(),
+        "renewal created a new registration"
+    );
+    host.close().await?;
+    Ok(())
+}

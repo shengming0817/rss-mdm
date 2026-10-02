@@ -100,7 +100,7 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
     identity::set_grants(case_tenant(), &subject, grants).await?;
     let operation = Uuid::new_v4();
     f.admin.operation = Some(operation);
-    let (status,issued)=f.admin.call(&f.router,Method::POST,"/api/v3/enrollments",Some(json!({"deviceId":device,"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows"}))).await?;
+    let (status,issued)=f.admin.call(&f.router,Method::POST,"/api/v3/enrollments",Some(json!({"deviceId":device,"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows","windowsProfile":"Device"}))).await?;
     ensure!(status == StatusCode::OK);
     let enrollment = issued["enrollmentId"].as_str().unwrap();
     ensure!(

@@ -89,6 +89,8 @@ pub(crate) async fn request(
             Channel::Agent => ReportSource::AgentBuiltin,
             Channel::Mdm => ReportSource::MdmWindows,
         },
+        (channel == Channel::Mdm)
+            .then_some(rss_mdm_registration_service::enrollment::WindowsProfile::Device),
         Uuid::new_v4(),
         key,
         &audit,

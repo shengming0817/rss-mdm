@@ -1153,3 +1153,10 @@ consume(('crates/windows-channel/src/transcript.rs', 'crates/windows-channel/src
         'windows.management windows.commands windows.retention execution.commands.windows execution.commands.configuration execution.commands.onboarding inventory.runtime')
 consume(('crates/execution-service/src/native/*', 'crates/execution-service/src/native_rules.rs'),
         'execution.commands.windows execution.commands.configuration execution.commands.onboarding windows.management windows.commands')
+
+# Native Windows channel maintenance and retirement consumers.
+MODULES['windows.management'] = replace(MODULES['windows.management'], test_inputs=(*MODULES['windows.management'].test_inputs, 'crates/app/tests/windows/wns.rs'))
+consume(('crates/windows-channel/src/push*', 'crates/windows-channel/src/unenrollment.rs', 'crates/execution-service/src/windows_wake.rs'), 'windows.management device.revocation')
+consume(('crates/windows-channel/src/renewal.rs', 'crates/certificate/src/windows/*'), 'windows.issuance windows.management')
+consume(('crates/execution-service/src/retirement*',), 'device.revocation windows.management apple.identity')
+consume(('crates/windows-mdm/src/provisioning/*',), 'windows.issuance windows.enrollment execution.commands.windows')

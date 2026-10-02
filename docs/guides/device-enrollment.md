@@ -13,10 +13,10 @@ python3 hack/enrollment-password.py
 把生成的随机口令安全交给设备。管理员 cookie/token 不能传给设备。创建请求为 `POST /api/v3/enrollments`，例如：
 
 ```json
-{"deviceId":"device-1","password":"调用端生成并保存的口令","source":"mdm.windows"}
+{"deviceId":"device-1","password":"调用端生成并保存的口令","source":"mdm.windows","windowsProfile":"Full"}
 ```
 
-source 显式选择 mdm.windows、mdm.apple 或 agent.builtin，不能由服务猜测。查询 `/api/v3/enrollments/{id}` 获取当前状态；注册列表使用 `/api/v3/devices/{device}/registrations`，依 nextCursor 续页，再按 registrationId 撤销。
+source 显式选择 mdm.windows、mdm.apple 或 agent.builtin，不能由服务猜测。mdm.windows 必须显式提供 `windowsProfile: "Full" | "Device"`，其它来源不得提供此字段。此选择进入幂等输入并在授权后保持不变；设备 EnrollmentType 必须与授权一致。Full 注册的用户上下文标识为该注册的 UUID，可在有权查询的注册列表中读取 `userContextId`；Device 注册不提供用户上下文。查询 `/api/v3/enrollments/{id}` 获取当前状态；注册列表使用 `/api/v3/devices/{device}/registrations`，依 nextCursor 续页，再按 registrationId 撤销。
 
 原管理员重新登录后可向 `/enrollments/{id}/resume` 提交新口令与新操作键；同一请求重试保持原键和参数。恢复保留原注册意图与预期世代，不复活撤销、取消或过期证书。未绑定授权可 cancel；已绑定设备走独立 revoke，撤销同时停用注册、凭据及来源。
 

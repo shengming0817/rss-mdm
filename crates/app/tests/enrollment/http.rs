@@ -22,20 +22,34 @@ pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) ->
                 &enrollment_router,
                 Method::POST,
                 issue,
-                Some(json!({"deviceId":crate::test_support::case::name("device-1"),"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows"}))
+                Some(json!({"deviceId":crate::test_support::case::name("device-1"),"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows","windowsProfile":"Device"}))
             )
             .await?
             .0
             == StatusCode::OK
     );
 
+    for profile in [json!(null), json!("full"), json!("Unknown")] {
+        browser.operation = Some(uuid::Uuid::new_v4());
+        let mut body = json!({"deviceId":crate::test_support::case::name("device-1"),"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows"});
+        if !profile.is_null() {
+            body["windowsProfile"] = profile;
+        }
+        ensure!(
+            browser
+                .call(router, Method::POST, issue, Some(body))
+                .await?
+                .0
+                == StatusCode::BAD_REQUEST
+        );
+    }
     browser.operation = Some(uuid::Uuid::new_v4());
     let (status, grant) = browser
         .call(
             router,
             Method::POST,
             issue,
-            Some(json!({"deviceId":crate::test_support::case::name("device-1"),"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows"})),
+            Some(json!({"deviceId":crate::test_support::case::name("device-1"),"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows","windowsProfile":"Device"})),
         )
         .await?;
     ensure!(
@@ -48,13 +62,14 @@ pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) ->
                 router,
                 Method::POST,
                 issue,
-                Some(json!({"deviceId":crate::test_support::case::name("device-1"),"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows"}))
+                Some(json!({"deviceId":crate::test_support::case::name("device-1"),"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows","windowsProfile":"Device"}))
             )
             .await?
             .1
             == grant,
         "issue replay changed result"
     );
+    ensure!(browser.call(router, Method::POST, issue, Some(json!({"deviceId":crate::test_support::case::name("device-1"),"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows","windowsProfile":"Full"}))).await?.0 == StatusCode::CONFLICT, "changing the authorized Windows profile reused an operation");
     let enrollment = grant["enrollmentId"].as_str().unwrap();
     let status_path = format!("/api/v3/enrollments/{enrollment}");
     let current = browser
@@ -89,7 +104,7 @@ pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) ->
             == resumed
     );
     browser.operation = Some(uuid::Uuid::new_v4());
-    ensure!(browser.call(router, Method::POST, issue, Some(json!({"deviceId":"outside","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows"}))).await?.0 == StatusCode::FORBIDDEN);
+    ensure!(browser.call(router, Method::POST, issue, Some(json!({"deviceId":"outside","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows","windowsProfile":"Device"}))).await?.0 == StatusCode::FORBIDDEN);
     set_device_grants(
         browser,
         router,
@@ -153,7 +168,7 @@ pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) ->
                 router,
                 Method::POST,
                 issue,
-                Some(json!({"deviceId":crate::test_support::case::name("device-1"),"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows"}))
+                Some(json!({"deviceId":crate::test_support::case::name("device-1"),"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows","windowsProfile":"Device"}))
             )
             .await?
             .0

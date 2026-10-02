@@ -612,3 +612,72 @@ async fn abort_and_nonfinal_message_budget_cannot_publish_a_collection_snapshot(
     }
     host.close().await
 }
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=windows.management"]
+async fn native_unenrollment_notification_retires_only_its_authenticated_registration()
+-> anyhow::Result<()> {
+    let mut host = Host::open().await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    let mut notification = peer.message.clone();
+    notification.header.session_id = 1300;
+    notification.header.credential = None;
+    notification.commands = vec![Command::Alert {
+        id: 2,
+        alert: syncml::Alert::UnenrollmentRequested,
+    }];
+    let mut other = notification.clone();
+    other.header.source = "other-native-device".into();
+    let post = |message: syncml::Message| {
+        peer.mutual
+            .post(&peer.url)
+            .header("content-type", "application/vnd.syncml.dm+xml")
+            .body(syncml::encode(&message, &CodecLimits::default()).unwrap())
+            .send()
+    };
+    ensure!(post(other).await?.status() == StatusCode::FORBIDDEN);
+    let (response, duplicate) =
+        tokio::join!(post(notification.clone()), post(notification.clone()));
+    let response = response?;
+    let duplicate = duplicate?;
+    ensure!(
+        response.status() == StatusCode::OK,
+        "native disconnection: {}",
+        response.status()
+    );
+    let original = response.bytes().await?;
+    ensure!(duplicate.status() == StatusCode::OK);
+    ensure!(duplicate.bytes().await? == original);
+    // Retired response recovery survives temporary transcript pruning.
+    let pool = sqlx::PgPool::connect_with(options("postgres")?).await?;
+    sqlx::query(
+        "DELETE FROM mdm_windows.management_sessions WHERE tenant_id=$1::uuid AND registration=$2",
+    )
+    .bind(case_tenant())
+    .bind(peer.intent.registration)
+    .execute(&pool)
+    .await?;
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_windows.unenrollment_receipts WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(peer.intent.registration).fetch_one(&pool).await?;
+    ensure!(count == 1);
+    pool.close().await;
+    let response = syncml::decode(&original, &CodecLimits::default())?;
+    ensure!(
+        response
+            .commands
+            .iter()
+            .all(|c| matches!(c, Command::Status(_))),
+        "new work after disconnection"
+    );
+    let replay = post(notification.clone()).await?;
+    ensure!(replay.status() == StatusCode::OK);
+    ensure!(replay.bytes().await? == original);
+    notification.header.session_id += 1;
+    ensure!(post(notification).await?.status() == StatusCode::CONFLICT);
+    ensure!(post(peer.message.clone()).await?.status() == StatusCode::UNAUTHORIZED);
+    host.close().await?;
+    Ok(())
+}
+
+#[path = "wns.rs"]
+mod wns;

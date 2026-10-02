@@ -126,8 +126,8 @@ CREATE TEMP TABLE task_targets ON COMMIT DROP AS
 INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at)
  SELECT '{TENANT}',grant_id,'bulk-fixture','{INSTANCE}',device,'enrollment','consumed',
         clock_timestamp()+interval '200 seconds' FROM task_targets;
-INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source)
- SELECT '{TENANT}',request,grant_id,'agent.builtin' FROM task_targets;
+INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source,windows_profile)
+ SELECT '{TENANT}',request,grant_id,'agent.builtin',NULL FROM task_targets;
 INSERT INTO mdm_access.devices(tenant_id,id) SELECT '{TENANT}',device FROM task_targets;
 INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state)
  SELECT '{TENANT}',registration,device,'agent',1,request,'active' FROM task_targets;

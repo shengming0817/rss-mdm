@@ -1529,3 +1529,371 @@ async fn native_outgoing_chunks_wait_for_buffer_receipts_and_never_accept_early_
     host.close().await?;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=execution.commands.windows"]
+async fn management_address_effect_requires_a_new_session_on_the_actual_tls_endpoint()
+-> anyhow::Result<()> {
+    let mut host = crate::windows::test_support::Host::with_management_addresses().await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    let alternate = format!(
+        "{}/ManagementServer/MDM.svc",
+        host.app.windows()?.channel.additional_management_origins[0]
+    );
+    let warm = begin(
+        &peer.mutual,
+        &peer.url,
+        &peer.message,
+        &peer.ack,
+        1800,
+        None,
+    )
+    .await?;
+    ensure!(
+        post(
+            &peer.mutual,
+            &peer.url,
+            &report(&warm.first, &warm.gets, "10.0.26100.0", 200)
+        )
+        .await?
+        .status()
+            == StatusCode::OK
+    );
+    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    let grants: Vec<_> = ["enrollment", "operation_read", "operation_cancel"]
+        .into_iter()
+        .map(|p| json!({"operation":p,"scope":{"kind":"device","id":case_device()}}))
+        .collect();
+    let grant=client.browser.call(&client.router,Method::PUT,&format!("/api/v1/authorization/rules/{}",Uuid::new_v4()),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"value":{"subject":{"kind":"user","user":crate::test_support::identity::user(case_tenant(),crate::test_support::case::admin())},"grants":grants}}))).await?;
+    ensure!(grant.0 == StatusCode::OK);
+    let node = "./Device/Vendor/MSFT/DMClient/Provider/*/ManagementServerAddressList";
+    let uri = "./Device/Vendor/MSFT/DMClient/Provider/RSS-MDM/ManagementServerAddressList";
+    let create=client.call(Method::POST,"",Some(json!({"operationId":client.operation,"inputVersion":"1","target":{"kind":"device"},"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":node,"instance":["RSS-MDM"],"operation":"replace","value":{"type":"text","value":alternate}}}},"deadline":client.app.clock.unix_seconds()?+300}))).await?;
+    ensure!(
+        create.0 == StatusCode::ACCEPTED,
+        "address create {create:?}"
+    );
+    ensure!(
+        client
+            .call(
+                Method::POST,
+                &format!("/{}/approve", client.operation),
+                Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":1}))
+            )
+            .await?
+            .0
+            == StatusCode::OK
+    );
+    client.publish_operation(client.operation).await?;
+    let exchange = begin(
+        &peer.mutual,
+        &peer.url,
+        &peer.message,
+        &peer.ack,
+        1801,
+        None,
+    )
+    .await?;
+    let id = exchange
+        .response
+        .commands
+        .iter()
+        .find_map(|c| match c {
+            s::Command::Replace { id, items, .. }
+                if items.iter().any(|i| i.target.as_deref() == Some(uri)) =>
+            {
+                Some(*id)
+            }
+            _ => None,
+        })
+        .ok_or_else(|| anyhow::anyhow!("missing address change"))?;
+    let mut ack = report(&exchange.first, &exchange.gets, "10.0.26100.0", 200);
+    ack.commands.push(s::Command::Status(s::Status {
+        id: 100,
+        message_ref: exchange.response.header.message_id,
+        command_ref: id,
+        command: s::CommandName::Replace,
+        target_refs: vec![uri.into()],
+        source_refs: vec![],
+        code: 200,
+        items: vec![],
+        challenge: None,
+        credential: None,
+    }));
+    ensure!(post(&peer.mutual, &peer.url, &ack).await?.status() == StatusCode::OK);
+    ensure!(operation(&mut client).await?["commandStatus"] != "applied");
+    let mut next = peer.message.clone();
+    next.header.target = alternate.clone();
+    next.header.session_id = 1802;
+    ensure!(
+        post(&peer.mutual, &peer.url, &next).await?.status() == StatusCode::FORBIDDEN,
+        "claimed target was accepted on old endpoint"
+    );
+    ensure!(
+        crate::windows::test_support::absolute_form_post(&host, &peer, &alternate, &next).await?
+            == 403,
+        "absolute-form URI forged the endpoint identity"
+    );
+    let mut peer_ack = peer.ack.clone();
+    peer_ack.header.target = alternate.clone();
+    let observed = begin(&peer.mutual, &alternate, &next, &peer_ack, 1802, Some(uri)).await?;
+    let mut packet = report(&observed.first, &observed.gets, "10.0.26100.0", 200);
+    for command in &mut packet.commands {
+        if let s::Command::Results(result) = command {
+            for item in &mut result.items {
+                if item.source.as_deref() == Some(uri) {
+                    item.data = Some(Secret(alternate.clone()));
+                }
+            }
+        }
+    }
+    ensure!(post(&peer.mutual, &alternate, &packet).await?.status() == StatusCode::OK);
+    let result = operation(&mut client).await?;
+    ensure!(result["commandStatus"] == "applied", "{result}");
+    host.close().await
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=execution.commands.windows"]
+async fn dmacc_prepare_proves_provider_before_any_account_operation() -> anyhow::Result<()> {
+    let mut host = crate::windows::test_support::Host::open().await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    let warm = begin(
+        &peer.mutual,
+        &peer.url,
+        &peer.message,
+        &peer.ack,
+        1700,
+        None,
+    )
+    .await?;
+    ensure!(
+        post(
+            &peer.mutual,
+            &peer.url,
+            &report(&warm.first, &warm.gets, "10.0.26100.0", 200)
+        )
+        .await?
+        .status()
+            == StatusCode::OK
+    );
+    for (session, provider) in [(1701, "other-provider"), (1702, "RSS-MDM")] {
+        let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+        let grants: Vec<_> = ["enrollment", "operation_read", "operation_cancel"]
+            .into_iter()
+            .map(|p| json!({"operation":p,"scope":{"kind":"device","id":case_device()}}))
+            .collect();
+        let grant=client.browser.call(&client.router,Method::PUT,&format!("/api/v1/authorization/rules/{}",Uuid::new_v4()),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"value":{"subject":{"kind":"user","user":crate::test_support::identity::user(case_tenant(),crate::test_support::case::admin())},"grants":grants}}))).await?;
+        ensure!(grant.0 == StatusCode::OK, "DMAcc grant {grant:?}");
+        let create=client.call(Method::POST,"",Some(json!({"operationId":client.operation,"inputVersion":"1","target":{"kind":"device"},"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./SyncML/DMAcc/*/Name","instance":["native-account"],"operation":"get","value":null}}},"deadline":client.app.clock.unix_seconds()?+300}))).await?;
+        ensure!(create.0 == StatusCode::ACCEPTED, "DMAcc create {create:?}");
+        ensure!(
+            client
+                .call(
+                    Method::POST,
+                    &format!("/{}/approve", client.operation),
+                    Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":1}))
+                )
+                .await?
+                .0
+                == StatusCode::OK
+        );
+        client.publish_operation(client.operation).await?;
+        let exchange = begin(
+            &peer.mutual,
+            &peer.url,
+            &peer.message,
+            &peer.ack,
+            session,
+            Some("./SyncML/DMAcc/native-account/ServerID"),
+        )
+        .await?;
+        ensure!(!exchange.gets.iter().any(|(_, uri)| uri.ends_with("/Name")));
+        let mut packet = report(&exchange.first, &exchange.gets, "10.0.26100.0", 200);
+        for command in &mut packet.commands {
+            if let s::Command::Results(result) = command {
+                for item in &mut result.items {
+                    if item.source.as_deref() == Some("./SyncML/DMAcc/native-account/ServerID") {
+                        item.data = Some(rss_mdm_windows_mdm::Secret(provider.into()));
+                    }
+                }
+            }
+        }
+        let response = post(&peer.mutual, &peer.url, &packet).await?;
+        ensure!(response.status() == StatusCode::OK);
+        let wire = response.bytes().await?;
+        ensure!(
+            post(&peer.mutual, &peer.url, &packet)
+                .await?
+                .bytes()
+                .await?
+                == wire
+        );
+        let response = s::decode(&wire, &rss_mdm_windows_mdm::CodecLimits::default())?;
+        let name=response.commands.iter().any(|c|matches!(c,s::Command::Get{items,..} if items.iter().any(|i|i.target.as_deref()==Some("./SyncML/DMAcc/native-account/Name"))));
+        ensure!(name == (provider == "RSS-MDM"));
+        let read = client
+            .call(Method::GET, &format!("/{}", client.operation), None)
+            .await?;
+        if provider != "RSS-MDM" {
+            ensure!(
+                read.1["dispatchFailure"]["reason"] == "enrollment_account_scope",
+                "{read:?}"
+            );
+        } else {
+            ensure!(read.1["commandStatus"] != "applied");
+        }
+        if provider == "RSS-MDM" {
+            client
+                .call(
+                    Method::POST,
+                    &format!("/{}/cancel", client.operation),
+                    Some(json!({"requestId":Uuid::new_v4()})),
+                )
+                .await?;
+        }
+    }
+    host.close().await
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=execution.commands.windows"]
+async fn full_user_context_is_exact_and_login_availability_is_session_local() -> anyhow::Result<()>
+{
+    use rss_mdm_registration_service::enrollment::WindowsProfile;
+    let mut host = crate::windows::test_support::Host::open().await?;
+    host.listen().await?;
+    let peer = host.peer_profile(WindowsProfile::Full).await?;
+    let user = peer.intent.registration.to_string();
+    let credential = host.app.windows()?.channel.ca.verify(
+        &[host
+            .app
+            .windows()?
+            .channel
+            .ca
+            .sign(&host.app.windows()?.channel.ca.restore_intent(
+                &peer.intent.tbs,
+                &rss_mdm_certificate::windows::Csr::verify(&peer.intent.csr)?,
+                peer.intent.registration,
+            )?)?
+            .into()],
+        crate::windows::test_support::now(),
+    )?;
+    let principal = host
+        .app
+        .devices
+        .management_principal(
+            &crate::device::ChannelMount::new(
+                host.app.identity.tenant,
+                rss_mdm_inventory::ReportSource::MdmWindows,
+            )
+            .credential(credential.fingerprint()),
+        )
+        .await?;
+    ensure!(principal.user_context() == Some(peer.intent.registration));
+    let mut initial = peer.message.clone();
+    initial.commands[0] = s::Command::Alert {
+        id: initial.commands[0].id(),
+        alert: s::Alert::LoginStatus {
+            status: s::LoginStatus::User,
+            explicit_format: false,
+        },
+    };
+    let warm = begin(&peer.mutual, &peer.url, &initial, &peer.ack, 2100, None).await?;
+    ensure!(
+        post(
+            &peer.mutual,
+            &peer.url,
+            &report(&warm.first, &warm.gets, "10.0.26100.0", 200)
+        )
+        .await?
+        .status()
+            == StatusCode::OK
+    );
+    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    client.set_authorized(true).await?;
+    let uri = "./User/Vendor/MSFT/Policy/Config/Experience/AllowWindowsSpotlight";
+    let request = |id, user: &str| json!({"operationId":id,"inputVersion":"user-context-v1","target":{"kind":"user","userId":user},"deadline":crate::windows::test_support::now()+300,"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":uri,"instance":[],"operation":"get","value":null}}}});
+    let wrong = client
+        .call(
+            Method::POST,
+            "",
+            Some(request(Uuid::new_v4(), &Uuid::new_v4().to_string())),
+        )
+        .await?;
+    ensure!(
+        wrong.0 == StatusCode::FORBIDDEN,
+        "wrong user admitted: {wrong:?}"
+    );
+    let id = client.operation;
+    let accepted = client
+        .call(Method::POST, "", Some(request(id, &user)))
+        .await?;
+    ensure!(
+        accepted.0 == StatusCode::ACCEPTED,
+        "Full user admission: {accepted:?}"
+    );
+    client.publish_operation(id).await?;
+    // A fresh device session lacks LoginStatus.User, even after an earlier user session.
+    let absent = begin(
+        &peer.mutual,
+        &peer.url,
+        &peer.message,
+        &peer.ack,
+        2101,
+        None,
+    )
+    .await?;
+    ensure!(!absent.gets.iter().any(|(_, u)| u == uri));
+    let available = begin(
+        &peer.mutual,
+        &peer.url,
+        &initial,
+        &peer.ack,
+        2102,
+        Some(uri),
+    )
+    .await?;
+    ensure!(available.gets.iter().any(|(_, u)| u == uri));
+    let mut packet = report(&available.first, &available.gets, "10.0.26100.0", 200);
+    for command in &mut packet.commands {
+        if let s::Command::Results(result) = command {
+            for item in &mut result.items {
+                if item.source.as_deref() == Some(uri) {
+                    item.data = Some(Secret("1".into()));
+                }
+            }
+        }
+    }
+    ensure!(post(&peer.mutual, &peer.url, &packet).await?.status() == StatusCode::OK);
+    let row = operation(&mut client).await?;
+    ensure!(row["target"]["userId"] == user, "{row}");
+    host.close().await
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=execution.commands.windows"]
+async fn device_profile_never_grants_an_enrolled_user_scope() -> anyhow::Result<()> {
+    let mut host = crate::windows::test_support::Host::open().await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    client.set_authorized(true).await?;
+    let body = json!({"operationId":client.operation,"inputVersion":"device-profile-v1","target":{"kind":"user","userId":peer.intent.registration},"deadline":crate::windows::test_support::now()+300,"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./User/Vendor/MSFT/Policy/Config/Experience/AllowWindowsSpotlight","instance":[],"operation":"get","value":null}}}});
+    ensure!(client.call(Method::POST, "", Some(body)).await?.0 == StatusCode::FORBIDDEN);
+    client.accept_approved().await?;
+    client.publish_operation(client.operation).await?;
+    let device = begin(
+        &peer.mutual,
+        &peer.url,
+        &peer.message,
+        &peer.ack,
+        2200,
+        Some("./DevInfo/Mod"),
+    )
+    .await?;
+    ensure!(device.gets.iter().any(|(_, u)| u == "./DevInfo/Mod"));
+    host.close().await
+}
