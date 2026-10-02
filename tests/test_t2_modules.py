@@ -12,12 +12,21 @@ class ModuleImpactTests(unittest.TestCase):
         cases={
             'crates/execution-service/src/actions/output.rs': {'execution.agent.delivery'},
             'crates/execution-service/src/actions/native_collection.rs': {'windows.management','apple.collection'},
-            'crates/execution-service/src/actions/recovery.rs': {'windows.management','apple.collection'},
+            'crates/execution-service/src/actions/recovery.rs': {'windows.management','apple.collection','execution.agent.recovery','execution.software.recovery'},
         }
         for path,expected in cases.items():
             selected=select_paths([path])
             self.assertFalse(selected.full)
-            self.assertTrue(expected <= set(selected.modules),(path,selected.modules))
+            self.assertEqual(expected, set(selected.modules),(path,selected.modules))
+
+    def test_execution_queries_select_read_consumers_without_unrelated_protocols(self):
+        for path in ('crates/execution-service/src/queries/records.rs',
+                     'crates/execution-service/src/queries/error.rs'):
+            selected = select_paths([path])
+            self.assertFalse(selected.full)
+            self.assertEqual(set(selected.modules), {
+                'execution.agent.history', 'execution.commands.windows', 'planning.http',
+                'planning.agent_policy', 'planning.remote', 'planning.software'})
 
     def test_script_preparation_selects_all_script_entrances(self):
         for path in ('crates/resource/src/script.rs',
@@ -226,7 +235,7 @@ class ModuleImpactTests(unittest.TestCase):
                     'execution.software.recovery'}
         for path in ('crates/agent-wire/src/tasks.rs',
                      'crates/agent-wire/schema/signed-task-v5.schema.json',
-                     'crates/flow-service/src/task_signing.rs'):
+                     'crates/execution-service/src/task_signing.rs'):
             selected = self.selected(path)
             self.assertTrue(expected <= selected, expected - selected)
             self.assertTrue(selected.isdisjoint({'agent.registration','agent.reports','windows.management',

@@ -19,6 +19,7 @@ fn refs(command: &Command) -> Option<(u32, u32)> {
     }
 }
 pub async fn send(
+    source: &dyn rss_mdm_execution_service::source_authority::SourceAuthority,
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
@@ -32,7 +33,9 @@ pub async fn send(
         .bind(p.tenant().to_string()).bind(p.registration()).fetch_optional(&mut *c).await.map_err(db)?;
     if let Some(row) = row {
         let id: Uuid = row.try_get("id").map_err(db)?;
-        if !rss_mdm_execution_service::actions::native_collection::eligible_on(c, p, id).await? {
+        if !rss_mdm_execution_service::actions::native_collection::eligible_on(source, c, p, id)
+            .await?
+        {
             return Ok(false);
         }
         let template = native::template(c, &p.tenant().to_string(), id)
@@ -103,6 +106,7 @@ pub async fn send(
         .bind(p.tenant().to_string()).bind(p.registration()).bind(response.header.session_id.to_string()).fetch_one(c).await.map_err(db)
 }
 pub async fn receive(
+    source: &dyn rss_mdm_execution_service::source_authority::SourceAuthority,
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
@@ -144,7 +148,8 @@ pub async fn receive(
         consumed.extend(commands.iter().filter_map(refs));
         let mut run = store::load_on(c, &tenant, id).await?;
         if run.sealed_at.is_some()
-            || !rss_mdm_execution_service::actions::native_collection::eligible_on(c, p, id).await?
+            || !rss_mdm_execution_service::actions::native_collection::eligible_on(source, c, p, id)
+                .await?
         {
             continue;
         }

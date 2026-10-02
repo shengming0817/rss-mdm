@@ -498,7 +498,12 @@ impl Planning {
         let more = devices.len() > 64;
         devices.truncate(64);
         for device in &devices {
-            rss_mdm_execution_service::wake::wake_native_in(tx, device).await?;
+            rss_mdm_execution_service::wake::wake_native_in(
+                std::sync::Arc::new(crate::planning::execution_source::ExecutionSource),
+                tx,
+                device,
+            )
+            .await?;
         }
         if !more {
             return crate::automation::jobs::finish_job_in(tx, &self.audit_store, task, None).await;

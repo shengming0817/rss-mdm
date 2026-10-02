@@ -20,6 +20,12 @@ pub struct ScopeSnapshot {
     pub definition_revision: i64,
     pub resolution_revision: i64,
 }
+/// Existing immutable resolution, including unmatched rows used to explain a draft.
+#[derive(Clone, Debug)]
+pub struct ScopePreview {
+    pub result: Uuid,
+    pub devices: Vec<String>,
+}
 #[derive(Clone, Copy, Debug)]
 pub enum CandidateKind {
     Configuration,
@@ -53,6 +59,27 @@ pub enum SourceError {
 }
 /// Implementations use this connection's snapshot and locks; they never settle a transaction.
 pub trait SourceAuthority: Send + Sync {
+    fn preview_scope_on<'a>(
+        &'a self,
+        connection: &'a mut PgConnection,
+        tenant: TenantId,
+        scope: Uuid,
+        after: Option<&'a str>,
+    ) -> Pending<'a, ScopePreview>;
+    /// Locks the current resolution until the caller settles; returns its first 65 rows.
+    fn assignment_devices_on<'a>(
+        &'a self,
+        connection: &'a mut PgConnection,
+        tenant: TenantId,
+        scope: Uuid,
+        after: Option<&'a str>,
+    ) -> Pending<'a, Vec<String>>;
+    fn native_interest_on<'a>(
+        &'a self,
+        connection: &'a mut PgConnection,
+        tenant: TenantId,
+        device: &'a str,
+    ) -> Pending<'a, bool>;
     fn admission_on<'a>(
         &'a self,
         connection: &'a mut PgConnection,

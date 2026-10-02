@@ -401,7 +401,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                     let operation=storage::load(tx,&service.protection,stored(Uuid::parse_str(&id))?).await?;
                     let command=service.required_command(tx,&operation).await?;
                     if command.version()!=version {
-                        if command.status().is_terminal() {crate::wake::wake_native_in(tx,&operation.device).await?;}
+                        if command.status().is_terminal() {crate::wake::wake_native_in(service.source.clone(), tx,&operation.device).await?;}
                         let fact_audit=audit.transaction_copy();fact_audit.identify_service("command-recovery");fact_audit.operation(operation.id,"command_reconcile");fact_audit.target(&operation.device);fact_audit.registration(operation.registration);
                         let details=serde_json::json!({"before":status,"after":service::status(command.status()),"version":command.version()});
                         let fingerprint=checked_input(serde_json::to_vec(&details))?;

@@ -315,7 +315,7 @@ async fn receive(
         return Err(Error::Conflict.into());
     }
     if transition.command.status().is_terminal() {
-        crate::wake::wake_native_in(tx, &op.device).await?;
+        crate::wake::wake_native_in(service.source.clone(), tx, &op.device).await?;
     }
     Ok(())
 }

@@ -175,7 +175,7 @@ async fn settle_one(s: &ExecutionService, tx: &mut PgTransaction<'_>, id: Uuid) 
             return Err(Error::Conflict.into());
         }
     }
-    crate::wake::wake_native_in(tx, &op.device).await?;
+    crate::wake::wake_native_in(s.source.clone(), tx, &op.device).await?;
     Ok(())
 }
 pub async fn observation(
@@ -339,7 +339,7 @@ pub(super) async fn settle_dispatch_failures(
         )?
         .with_details(json!({"operation":id,"failure":op.dispatch_failure}))?;
         service.audit_store.append_in(tx, &fact, false).await?;
-        crate::wake::wake_native_in(tx, &op.device).await?;
+        crate::wake::wake_native_in(service.source.clone(), tx, &op.device).await?;
     }
     Ok(())
 }

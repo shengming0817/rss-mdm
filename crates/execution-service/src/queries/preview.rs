@@ -80,11 +80,11 @@ pub async fn preview(
         } else {None};
         let onboarding=agent.map(|action|Frozen::AgentInstall{action:Box::new(action)}).or(enrollment);
         authorization.require_all_devices(proof,Permission::InventoryRead)?;
-        let tenant=tx.tenant_id().to_string();let id=input.definition.scope;
-        let result=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Option<Uuid>>("SELECT resolution FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted FOR SHARE").bind(tenant).bind(id).fetch_optional(c).await})).await?.ok_or(Error::NotFound)?.ok_or(Error::Conflict)?;
+        let source=s.source.clone();let tenant=tx.tenant_id();let scope=input.definition.scope;let after=input.after.clone();
+        let page=tx.with_connection(move|c|Box::pin(async move {Ok(source.preview_scope_on(c,tenant,scope,after.as_deref()).await)})).await??;
+        let result=page.result;
         if input.scope_result.is_some_and(|v|v!=result){return Err(Error::Conflict.into());}
-        let tenant=tx.tenant_id().to_string();let after=input.after.clone();
-        let mut devices=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,String>("SELECT device FROM mdm_planning.scope_results WHERE tenant_id=$1::uuid AND run=$2 AND device>coalesce($3,'') COLLATE \"C\" ORDER BY device COLLATE \"C\" LIMIT 65").bind(tenant).bind(result).bind(after).fetch_all(c).await})).await?;
+        let mut devices=page.devices;
         let more=devices.len()>64;devices.truncate(64);let next=if more{devices.last().cloned()}else{None};let mut items=Vec::new();
         for device in devices {
             let eligibility=crate::sources::storage::admission_in(&s.source,tx,input.definition.scope,&device).await?;

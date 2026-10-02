@@ -162,7 +162,7 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
                     'crates/inventory-service/src/collection/read.rs'),
  'assets.group_input': ('crates/inventory-service/src/assets/planning.rs',
                         'crates/inventory-service/src/assets/quality.rs'),
- 'planning.onboarding': ('crates/execution-service/src/enrollment_preparation.rs', 'crates/execution-service/src/sources/onboarding.rs', 'crates/inventory-service/src/collection/channel.rs', 'crates/execution-service/src/actions/*', 'crates/inventory-service/src/assets/channel.rs', 'crates/agent-channel/src/lib.rs'),
+ 'planning.onboarding': ('crates/execution-service/src/enrollment_preparation.rs', 'crates/execution-service/src/sources/onboarding.rs', 'crates/inventory-service/src/collection/channel.rs', 'crates/execution-service/src/actions/production.rs', 'crates/execution-service/src/actions/poll.rs', 'crates/execution-service/src/actions/storage.rs', 'crates/inventory-service/src/assets/channel.rs', 'crates/agent-channel/src/lib.rs'),
  'planning.assets': ('crates/flow-service/src/planning/sources.rs',
                      'crates/flow-service/src/planning/automation/dispatch.rs',
                      'crates/inventory-service/src/assets/planning.rs'),
@@ -1033,9 +1033,6 @@ T1_INPUTS = ('crates/authorization-service/tests/unit.rs','crates/inventory-serv
     'crates/brew-source/tests/templates.rs', 'crates/winget-source/tests/protocol.rs',
     'crates/winget-source/tests/publication_schema.rs', 'crates/winget-source/tests/version.rs',
     'crates/app/tests/apple/health_unit.rs',
-    'crates/app/tests/execution/model_phase_unit.rs',
-    'crates/execution-service/tests/remote_phase_unit.rs',
-    'crates/execution-service/tests/actions/state_schedule_unit.rs',
     'crates/app/tests/planning/automation/scopes_unit.rs',
     'crates/app/tests/publication.rs',
 )
@@ -1118,4 +1115,29 @@ consume(('crates/execution-service/src/configuration.rs', 'crates/execution-serv
 consume(('crates/execution-service/src/target.rs','crates/execution-service/src/payload.rs'), TASK_CONSUMERS)
 consume(('crates/execution-service/src/lib.rs','crates/execution-service/src/error.rs'), TASK_CONSUMERS + ' execution.commands.admission execution.commands.windows execution.commands.configuration execution.commands.onboarding windows.management apple.profile')
 
-consume(("crates/execution-service/src/*",), " ".join(name for name in MODULES if name.startswith(("execution.","planning.","windows.","apple.","device.","timeline.","agent."))))
+# Execution owner inputs follow their real read, write and channel consumers.
+QUERY_CONSUMERS = 'execution.agent.history execution.commands.windows planning.http planning.agent_policy planning.remote planning.software'
+COMMAND_CONSUMERS = 'execution.commands.admission execution.commands.dispatch execution.commands.recovery execution.commands.windows execution.commands.configuration execution.commands.onboarding windows.management windows.commands apple.profile apple.onboarding'
+consume(('crates/execution-service/src/queries.rs',
+         'crates/execution-service/src/queries/records.rs',
+         'crates/execution-service/src/queries/error.rs'), QUERY_CONSUMERS)
+consume(('crates/execution-service/src/queries/assignments.rs',), 'planning.http planning.agent_policy')
+consume(('crates/execution-service/src/queries/preview.rs',), 'planning.agent_policy planning.software planning.policy')
+consume(('crates/execution-service/src/service.rs', 'crates/execution-service/src/dispatch-v3.json'), COMMAND_CONSUMERS)
+consume(('crates/execution-service/src/apple.rs',), 'apple.profile apple.onboarding execution.commands.admission')
+consume(('crates/execution-service/src/apple_push.rs',), 'apple.push apple.fairness apple.host')
+consume(('crates/execution-service/src/protocol.rs',), 'windows.management windows.commands execution.commands.windows execution.commands.configuration execution.commands.onboarding')
+consume(('crates/execution-service/src/channels.rs',), TASK_CONSUMERS + ' ' + COMMAND_CONSUMERS + ' apple.collection apple.push apple.fairness')
+consume(('crates/execution-service/src/authority.rs', 'crates/execution-service/src/source_authority.rs',
+         'crates/flow-service/src/planning/execution_source.rs'), TASK_CONSUMERS + ' ' + COMMAND_CONSUMERS)
+consume(('crates/execution-service/src/sources/mod.rs', 'crates/execution-service/src/sources/storage.rs'), TASK_CONSUMERS)
+consume(('crates/execution-service/src/sources/enrollment.rs',), 'planning.onboarding execution.agent.delivery execution.agent.poll execution.agent.recovery')
+consume(('crates/execution-service/src/wake.rs',), 'planning.policy planning.agent_policy planning.frequency planning.scope planning.group_scope execution.commands.configuration execution.commands.onboarding')
+consume(('crates/execution-service/src/worker_wake.rs',), 'execution.commands.dispatch execution.commands.recovery apple.push apple.fairness')
+consume(('crates/execution-service/src/action_admission.rs', 'crates/execution-service/src/transaction.rs',
+         'crates/execution-service/src/database.rs', 'crates/execution-service/src/error_projection.rs',
+         'crates/execution-service/src/diagnostic.rs', 'crates/execution-service/src/missing.rs'),
+        TASK_CONSUMERS + ' ' + COMMAND_CONSUMERS + ' ' + QUERY_CONSUMERS)
+consume(('crates/execution-service/src/catalog.sql', 'crates/execution-service/src/catalog.json',
+         'crates/execution-service/src/dependencies.sql', 'crates/execution-service/src/dependencies.json'),
+        'catalog.contract execution.commands.admission execution.commands.recovery')

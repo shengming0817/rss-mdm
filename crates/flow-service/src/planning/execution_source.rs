@@ -20,6 +20,52 @@ fn admission(value: Value) -> Result<ScopeAdmission, SourceError> {
     }
 }
 impl SourceAuthority for ExecutionSource {
+    fn preview_scope_on<'a>(
+        &'a self,
+        connection: &'a mut PgConnection,
+        tenant: TenantId,
+        scope: Uuid,
+        after: Option<&'a str>,
+    ) -> Pending<'a, ScopePreview> {
+        Box::pin(async move {
+            let result = sqlx::query_scalar::<_, Option<Uuid>>("SELECT resolution FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted FOR SHARE")
+                .bind(tenant.to_string()).bind(scope).fetch_optional(&mut *connection).await?
+                .ok_or(SourceError::Missing)?.ok_or(SourceError::Conflict)?;
+            let devices = sqlx::query_scalar("SELECT device FROM mdm_planning.scope_results WHERE tenant_id=$1::uuid AND run=$2 AND device>coalesce($3,'') COLLATE \"C\" ORDER BY device COLLATE \"C\" LIMIT 65")
+                .bind(tenant.to_string()).bind(result).bind(after).fetch_all(connection).await?;
+            Ok(ScopePreview { result, devices })
+        })
+    }
+    fn assignment_devices_on<'a>(
+        &'a self,
+        connection: &'a mut PgConnection,
+        tenant: TenantId,
+        scope: Uuid,
+        after: Option<&'a str>,
+    ) -> Pending<'a, Vec<String>> {
+        Box::pin(async move {
+            // A locked immutable resolution lets Execution merge this bounded source page
+            // with its own claims without observing a different Scope resolution.
+            let result = sqlx::query_scalar::<_, Option<Uuid>>("SELECT resolution FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2 FOR SHARE")
+                .bind(tenant.to_string()).bind(scope).fetch_optional(&mut *connection).await?.flatten();
+            let Some(result) = result else {
+                return Ok(Vec::new());
+            };
+            Ok(sqlx::query_scalar("SELECT device FROM mdm_planning.scope_results WHERE tenant_id=$1::uuid AND run=$2 AND device>coalesce($3,'') COLLATE \"C\" ORDER BY device COLLATE \"C\" LIMIT 65")
+                .bind(tenant.to_string()).bind(result).bind(after).fetch_all(connection).await?)
+        })
+    }
+    fn native_interest_on<'a>(
+        &'a self,
+        connection: &'a mut PgConnection,
+        tenant: TenantId,
+        device: &'a str,
+    ) -> Pending<'a, bool> {
+        Box::pin(async move {
+            Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.enabled AND p.definition->'action'->>'kind' IN('configuration','ensure_agent_installed') AND mdm_planning.scope_admission((p.definition->>'scope')::uuid,$2)->>'state'<>'excluded')")
+                .bind(tenant.to_string()).bind(device).fetch_one(connection).await?)
+        })
+    }
     fn admission_on<'a>(
         &'a self,
         connection: &'a mut PgConnection,

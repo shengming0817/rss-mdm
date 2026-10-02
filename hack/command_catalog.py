@@ -14,7 +14,7 @@ COMPONENT_CATALOGS = {"resource_core": ("mdm_resource", "resource-postgres/src/c
 NAMES = tuple(CATALOGS)
 
 def capture(container, mode, database):
-    directory = ROOT / "crates/flow-service/src/execution"
+    directory = ROOT / "crates/execution-service/src"
     query = "BEGIN; SET LOCAL ROLE mdm_command_runtime; SET LOCAL search_path=pg_catalog;\n"
     paths = {name: ROOT / "crates" / (relative + ".sql") for name, relative in CATALOGS.items()}
     query += "\n".join(paths[name].read_text() + ";" for name in NAMES)

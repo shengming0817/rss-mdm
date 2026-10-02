@@ -7,7 +7,6 @@ use crate::{
 };
 use rss_mdm_inventory::ReportSource;
 use rss_mdm_policy::{Architecture, Platform, SoftwareTarget, schedule::Trigger};
-use sqlx::Row;
 
 impl ExecutionService {
     pub async fn reconcile_agent_install_in(
@@ -164,16 +163,31 @@ impl ExecutionService {
         let mut digest = None;
         let mut after = Uuid::nil();
         loop {
-            let tenant = tx.tenant_id().to_string();
+            let tenant = tx.tenant_id();
             let name = device.to_owned();
-            let rows=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT p.id,p.current_version,mdm_planning.scope_admission((p.definition->>'scope')::uuid,$2)->>'state' AS admission FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.enabled AND p.id>$3 AND p.definition->'action'->>'kind'='ensure_agent_installed' AND mdm_planning.scope_admission((p.definition->>'scope')::uuid,$2)->>'state'<>'excluded' ORDER BY p.id LIMIT 64").bind(tenant).bind(name).bind(after).fetch_all(c).await})).await?;
+            let source = self.source.clone();
+            let rows = tx
+                .with_connection(move |c| {
+                    Box::pin(async move {
+                        Ok(source
+                            .candidates_on(
+                                c,
+                                tenant,
+                                &name,
+                                crate::source_authority::CandidateKind::AgentInstall,
+                                after,
+                            )
+                            .await)
+                    })
+                })
+                .await??;
             if rows.is_empty() {
                 break;
             }
             for row in rows {
-                let id: Uuid = row.try_get("id")?;
+                let id = row.policy;
                 after = id;
-                let version: Uuid = row.try_get("current_version")?;
+                let version = row.version;
                 let (_, Frozen::AgentInstall { action }) =
                     policies::storage::version_in(&self.policy_reader, tx, version).await?
                 else {
@@ -193,7 +207,10 @@ impl ExecutionService {
                     return Ok(None);
                 }
                 digest = Some(fingerprint);
-                if row.try_get::<String, _>("admission")? != "eligible" {
+                if !matches!(
+                    row.admission,
+                    crate::source_authority::ScopeAdmission::Eligible { .. }
+                ) {
                     return Ok(None);
                 }
                 if now < action.schedule.not_before || now >= action.schedule.ends_at() {

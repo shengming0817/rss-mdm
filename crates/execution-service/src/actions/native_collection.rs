@@ -287,15 +287,30 @@ pub async fn sent(
 /// Check current frozen operation grants on the same connection used by the protocol owner.
 /// Called before native dispatch and before accepting a report into Inventory.
 pub async fn eligible_on(
+    source: &dyn crate::source_authority::SourceAuthority,
     c: &mut sqlx::PgConnection,
     p: &crate::device::DevicePrincipal,
     id: Uuid,
 ) -> std::result::Result<bool, crate::Error> {
-    let row=sqlx::query("SELECT coalesce(v.frozen,o.frozen) AS frozen,r.device,r.deadline,r.state FROM mdm_commands.action_runs r LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) LEFT JOIN mdm_policy.policies policy ON(policy.tenant_id,policy.id)=(v.tenant_id,v.policy) LEFT JOIN mdm_planning.remote_operations o ON(o.tenant_id,o.id)=(r.tenant_id,r.remote_operation) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.device=$3 AND r.registration=$4 AND r.generation=$5 AND r.deadline>floor(extract(epoch FROM clock_timestamp())) AND ((policy.enabled AND policy.current_version=r.policy_version AND mdm_planning.scope_admission((policy.definition->>'scope')::uuid,r.device)->>'state'='eligible') OR (o.deadline>floor(extract(epoch FROM clock_timestamp())) AND NOT o.cancelled))")
+    let row=sqlx::query("SELECT coalesce(v.frozen,o.frozen) AS frozen,r.device,r.deadline,r.state,(policy.definition->>'scope')::uuid AS scope FROM mdm_commands.action_runs r LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) LEFT JOIN mdm_policy.policies policy ON(policy.tenant_id,policy.id)=(v.tenant_id,v.policy) LEFT JOIN mdm_planning.remote_operations o ON(o.tenant_id,o.id)=(r.tenant_id,r.remote_operation) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.device=$3 AND r.registration=$4 AND r.generation=$5 AND r.deadline>floor(extract(epoch FROM clock_timestamp())) AND ((policy.enabled AND policy.current_version=r.policy_version) OR (o.deadline>floor(extract(epoch FROM clock_timestamp())) AND NOT o.cancelled))")
         .bind(p.tenant().to_string()).bind(id).bind(p.device()).bind(p.registration()).bind(p.generation()).fetch_optional(&mut *c).await.map_err(crate::database::db)?;
     let Some(row) = row else {
         return Ok(false);
     };
+    if let Some(scope) = row
+        .try_get::<Option<Uuid>, _>("scope")
+        .map_err(crate::database::db)?
+    {
+        if !matches!(
+            source
+                .admission_on(c, p.tenant(), scope, p.device())
+                .await
+                .map_err(crate::Error::from)?,
+            crate::source_authority::ScopeAdmission::Eligible { .. }
+        ) {
+            return Ok(false);
+        }
+    }
     let state: super::state::RunState =
         serde_json::from_value(row.try_get("state").map_err(crate::database::db)?)
             .map_err(|_| Error::Malformed)?;
