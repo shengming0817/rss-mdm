@@ -58,7 +58,7 @@ fn correlate(
     s::correlate(expected, &response, &limits).map_err(|_| Error::Conflict)
 }
 /// A large-object continuation is a further data request and needs current operation authority.
-/// Non-operation Get requests retain their existing collection/prerequisite owner authority.
+/// Resolve the exact producer before applying its current collection/prerequisite authority.
 pub async fn result_eligible_on(
     source: &dyn crate::source_authority::SourceAuthority,
     c: &mut PgConnection,
@@ -70,7 +70,7 @@ pub async fn result_eligible_on(
     let row=sqlx::query("SELECT o.id,o.device,o.registration,o.registration_generation,o.input_context,o.request,o.approval::text,d.status AS command_status,(o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AS within_deadline,a.ordinal=(SELECT max(b.ordinal) FROM mdm_commands.attempts b WHERE b.tenant_id=a.tenant_id AND b.operation=a.operation AND b.phase=a.phase) AS latest FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON (i.tenant_id,i.attempt)=(a.tenant_id,a.id) JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND a.credential=$4 AND a.session=$5 AND a.message=$6 AND i.command=$7 AND i.uri=$8")
         .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(i64::from(session)).bind(i64::from(reference.message_id)).bind(i64::from(reference.command_id)).bind(&reference.uri).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else {
-        return Ok(true);
+        return collection_result_eligible(source, c, p, session, reference).await;
     };
     let input = super::input_storage::open_row(
         protection,
@@ -80,6 +80,35 @@ pub async fn result_eligible_on(
         "request",
     )?;
     Ok(receipt_acceptance(source, c, protection, &input, &row, true, None).await? == Some(true))
+}
+async fn collection_result_eligible(
+    source: &dyn crate::source_authority::SourceAuthority,
+    c: &mut PgConnection,
+    p: &DevicePrincipal,
+    session: u32,
+    reference: &s::Reference,
+) -> std::result::Result<bool, Error> {
+    let row=sqlx::query("SELECT w.id,coalesce(r.evidence ? 'nativeTemplate',false) AS template,r.sealed_at IS NULL AND (r.deadline IS NULL OR r.deadline>clock_timestamp()) AS live FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND w.session_id=$3 AND w.request_message=$4 AND $5 BETWEEN w.first_command AND w.first_command+(CASE WHEN w.channel_state IS NOT NULL THEN 4 ELSE jsonb_array_length(r.attempts::jsonb->'definition'->'fields') END)-1")
+        .bind(p.tenant().to_string()).bind(p.registration()).bind(session.to_string()).bind(i64::from(reference.message_id)).bind(i64::from(reference.command_id)).fetch_optional(&mut *c).await.map_err(db)?;
+    if let Some(row) = row {
+        if !row.try_get::<bool, _>("live").map_err(db)? {
+            return Ok(false);
+        }
+        return if row.try_get::<bool, _>("template").map_err(db)? {
+            crate::actions::native_collection::eligible_on(
+                source,
+                c,
+                p,
+                row.try_get("id").map_err(db)?,
+            )
+            .await
+        } else {
+            Ok(true)
+        };
+    }
+    // Capability prerequisites are bounded, registration-owned reads, never user operations.
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.capability_queries WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND session=$4 AND ((version_command=$5 AND $6='./DevDetail/SwV') OR (edition_command=$5 AND $6='./Vendor/MSFT/DeviceStatus/OS/Edition')))" )
+        .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(i64::from(session)).bind(i64::from(reference.command_id)).bind(&reference.uri).fetch_one(c).await.map_err(db)
 }
 /// Consume exact native references under the authenticated registration generation.
 pub async fn receive_on(

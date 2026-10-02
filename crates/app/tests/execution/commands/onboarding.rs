@@ -504,7 +504,24 @@ async fn native_enforcement_failure_is_separate_from_delivery_and_never_reinstal
             }
         }
     }
-    post(&peer, &response).await?;
+    response.final_message = false;
+    let interim = post(&peer, &response).await?;
+    let mut end = response.clone();
+    end.header.message_id += 1;
+    end.commands = vec![s::Command::Status(s::Status {
+        id: 1,
+        message_ref: interim.header.message_id,
+        command_ref: 0,
+        command: s::CommandName::SyncHdr,
+        target_refs: vec![],
+        source_refs: vec![],
+        code: 200,
+        items: vec![],
+        challenge: None,
+        credential: None,
+    })];
+    end.final_message = true;
+    post(&peer, &end).await?;
     let mut state = client
         .call(Method::GET, &format!("/{operation}"), None)
         .await?;

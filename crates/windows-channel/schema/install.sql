@@ -134,7 +134,7 @@ CREATE TABLE mdm_windows.collections (
  id uuid NOT NULL,
  registration uuid NOT NULL,
  session_id text NOT NULL,
- request_message bigint NOT NULL CHECK(request_message BETWEEN 1 AND 8),
+ request_message bigint NOT NULL CHECK(request_message BETWEEN 1 AND 127),
  first_command bigint NOT NULL CHECK(first_command BETWEEN 1024 AND 4294967294),
  request bytea NOT NULL CHECK(octet_length(request) BETWEEN 68 AND 32836),
  channel_state jsonb CHECK(octet_length(channel_state::text)<=8192),

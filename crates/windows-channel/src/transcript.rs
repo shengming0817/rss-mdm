@@ -86,12 +86,59 @@ pub(crate) async fn load(
     Ok(history)
 }
 fn negotiate(limits: &mut CodecLimits, message: &s::Message) {
+    let bounds = CodecLimits::default();
     if let Some(meta) = &message.header.meta {
         if let Some(size) = meta.max_message_size {
-            limits.syncml_bytes = limits.syncml_bytes.min(size as usize);
+            limits.syncml_bytes = bounds.syncml_bytes.min(size as usize);
         }
         if let Some(size) = meta.max_object_size {
-            limits.object_bytes = limits.object_bytes.min(size as usize);
+            limits.object_bytes = bounds.object_bytes.min(size as usize);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn latest_peer_limits_replace_previous_limits_within_server_bounds() {
+        let mut limits = CodecLimits::default();
+        let mut message = s::Message {
+            header: s::Header {
+                session_id: 1,
+                message_id: 1,
+                source: "device".into(),
+                target: "server".into(),
+                credential: None,
+                meta: None,
+            },
+            commands: vec![],
+            final_message: false,
+        };
+        let declare = |message: &mut s::Message, size| {
+            message.header.meta = Some(s::Meta {
+                max_message_size: Some(size),
+                max_object_size: Some(size),
+                ..Default::default()
+            })
+        };
+        for size in [8192, 1024, 16384] {
+            declare(&mut message, size);
+            negotiate(&mut limits, &message);
+            assert_eq!(
+                (limits.syncml_bytes, limits.object_bytes),
+                (size as usize, size as usize)
+            );
+        }
+        message.header.meta = None;
+        negotiate(&mut limits, &message);
+        assert_eq!((limits.syncml_bytes, limits.object_bytes), (16384, 16384));
+        declare(&mut message, u32::MAX);
+        negotiate(&mut limits, &message);
+        let hard = CodecLimits::default();
+        assert_eq!(
+            (limits.syncml_bytes, limits.object_bytes),
+            (hard.syncml_bytes, hard.object_bytes)
+        );
     }
 }

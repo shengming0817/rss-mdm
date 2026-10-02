@@ -45,7 +45,7 @@
   "mdm_software.materials": "b2aa403af36707761f2549cdf0ccfa7e1811f2c19e9eb8199e06ca629ae254a6",
   "mdm_software.operations": "43c162de51e2880ad46dd3f45137632987b08bbb0f0c0a3645ef883e6ca87314",
   "mdm_software.sources": "954b917bbee00fdb039f68447986bf4accc1a6688d7af729d5bf41091bc9589d",
-  "mdm_windows.collections": "efd99095e9af2e7a3db3ffaa44194759a26a6f602e9d378983a2dd29350a105f",
+  "mdm_windows.collections": "3de0b6f5850aa9fcb2e7d8dab4ef3a9e2e7035c73d367c71adfcd51ac7cf9ed8",
   "mdm_windows.operations": "075bf852d85352c26d024a2b5128d7295d199bea2e037ecbc7959dcb3e9d090e",
   "rss_audit.append(p_tenant uuid, p_source text, p_event text, p_recorded bigint, p_canonical bytea, p_ledger bigint)": "bf58f8efad82f1bff521fa8de3bf4175a2eea1494e62b8eab3d10c3f034fccc6",
   "rss_audit.heads": "edcfbb609847ecafc5c814611192882296956dd7bf646d9311fb1a1ed659dcdb",

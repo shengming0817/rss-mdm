@@ -142,9 +142,6 @@ pub async fn receive(
             })
             .cloned()
             .collect();
-        if commands.is_empty() {
-            continue;
-        }
         consumed.extend(commands.iter().filter_map(refs));
         let mut run = store::load_on(c, &tenant, id).await?;
         if run.sealed_at.is_some()

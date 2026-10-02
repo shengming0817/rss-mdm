@@ -50,14 +50,14 @@ pub async fn receive(
             .filter(|v| refs(v).is_some_and(|(m, i)| m == msg && (first..first + 4).contains(&i)))
             .cloned()
             .collect();
-        if commands.is_empty() {
-            continue;
-        }
         if row
             .try_get::<Option<i64>, _>("sealed_at")
             .map_err(db)?
             .is_some()
         {
+            if commands.is_empty() {
+                continue;
+            }
             return Err(Error::Conflict);
         }
         let report = s::correlate(
