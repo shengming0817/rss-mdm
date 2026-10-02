@@ -137,11 +137,17 @@ impl Fixture {
             json!({"action":"disable"}),
         )
         .await?;
-        let (remove, _) = peer.next("RemoveProfile").await?;
+        let (remove, _) = peer
+            .next("RemoveProfile")
+            .await
+            .map_err(|e| e.context("initial shared-owner removal"))?;
         // A real native rejection must retain cleanup intent and admit another
         // bounded command through the same existing queue, without administrator action.
         peer.manage("Error", Some(remove), None).await?;
-        let (retry, _) = peer.next("RemoveProfile").await?;
+        let (retry, _) = peer
+            .next("RemoveProfile")
+            .await
+            .map_err(|e| e.context("retry after explicit negative removal receipt"))?;
         ensure!(retry != remove);
         let bytes = peer.manage("Acknowledged", Some(retry), None).await?;
         let (observe, _) = lifecycle::command(&bytes, "ProfileList")?;

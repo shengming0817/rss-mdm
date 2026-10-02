@@ -368,7 +368,7 @@ fn context(version: &str, edition: u32, scope: Scope) -> std::result::Result<Con
 fn admit_response(
     response: &Message,
     commands: &[Command],
-) -> Result<Option<Vec<u8>>, &'static str> {
+) -> std::result::Result<Option<Vec<u8>>, &'static str> {
     let mut candidate = response.clone();
     candidate.commands.extend_from_slice(commands);
     candidate.final_message = true;

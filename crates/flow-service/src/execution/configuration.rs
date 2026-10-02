@@ -113,6 +113,16 @@ fn claim_diagnosis(
         None
     }
 }
+fn requires_sent_guard(task: &Task, status: dc::Status) -> bool {
+    status != dc::Status::Applied
+        && !(status == dc::Status::Rejected
+            && matches!(
+                task,
+                Task::Macos {
+                    request: rss_mdm_apple_mdm::native::request::Request::RemoveProfile { .. }
+                }
+            ))
+}
 impl ExecutionService {
     pub async fn reconcile_configuration(
         &self,
@@ -151,8 +161,10 @@ impl ExecutionService {
             let uncertain = if let Some(id) = object_state(tx, device, &prior_input.objects).await?
             {
                 let operation = storage::load(tx, &self.protection, id).await?;
-                self.required_command(tx, &operation).await?.status() != dc::Status::Applied
-                    && dispatched_in(tx, id).await?
+                requires_sent_guard(
+                    &operation.request.task,
+                    self.required_command(tx, &operation).await?.status(),
+                ) && dispatched_in(tx, id).await?
             } else {
                 false
             };
@@ -319,7 +331,12 @@ impl ExecutionService {
                     .await?;
                     continue;
                 }
-                if is_remove && (!command.status().is_terminal() || dispatched_in(tx, id).await?) {
+                // Use the same outcome rule for retired owners and removal reuse.
+                if is_remove
+                    && (!command.status().is_terminal()
+                        || (requires_sent_guard(&op.request.task, command.status())
+                            && dispatched_in(tx, id).await?))
+                {
                     operation = Some(id);
                 }
             }

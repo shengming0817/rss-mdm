@@ -70,7 +70,10 @@ fn apple_profile(schema: &str) -> Result<P, Error> {
         | "mdm/profiles/com.apple.finder.yaml"
         | "mdm/profiles/com.apple.screensaver.yaml"
         | "mdm/profiles/com.apple.security.firewall.yaml" => P::ConfigurationWrite,
-        "mdm/profiles/com.apple.MCX(Accounts).yaml"
+        "mdm/profiles/com.apple.MCX(FileVault2).yaml"
+        | "mdm/profiles/com.apple.MCX(WiFi).yaml"
+        | "mdm/profiles/com.apple.ManagedClient.preferences.yaml"
+        | "mdm/profiles/com.apple.MCX(Accounts).yaml"
         | "mdm/profiles/com.apple.ADCertificate.managed.yaml"
         | "mdm/profiles/com.apple.AIM.account.yaml"
         | "mdm/profiles/com.apple.AssetCache.managed.yaml"

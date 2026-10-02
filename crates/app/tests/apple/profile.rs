@@ -182,8 +182,12 @@ async fn profile_lifecycle() -> Result<()> {
 #[tokio::test]
 #[ignore = "MODULE=apple.profile: profile target authorization"]
 async fn security_profile_replacement_and_removal_keep_target_permissions() -> Result<()> {
-    let mut f = Fixture::start().await?;
-    let (peer, device) = f.ready_local_peer().await?;
+    use anyhow::Context;
+    let mut f = Fixture::start().await.context("security fixture startup")?;
+    let (peer, device) = f
+        .ready_local_peer()
+        .await
+        .context("security fixture enrollment")?;
     let grant = |security: bool| {
         let mut operations = vec![
             "enrollment",
@@ -224,7 +228,7 @@ async fn security_profile_replacement_and_removal_keep_target_permissions() -> R
     crate::test_support::identity::set_grants(
         case_tenant(),
         crate::test_support::case::admin(),
-        grant(true)?,
+        grant(true).context("security device grants")?,
     )
     .await?;
     let installed = f.create_operation(security_task).await?;
@@ -273,14 +277,14 @@ async fn security_profile_replacement_and_removal_keep_target_permissions() -> R
     crate::test_support::identity::set_grants(
         case_tenant(),
         crate::test_support::case::admin(),
-        grant(true)?,
+        grant(true).context("security device grants")?,
     )
     .await?;
     let replacement = f.create_operation(|id| profile_task(id, false)).await?;
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
-    let required: Value=sqlx::query_scalar("SELECT approval->'required' FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(replacement).fetch_one(&mut pg).await?;
+    let required: serde_json::Value=sqlx::query_scalar("SELECT approval->'required' FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(replacement).fetch_one(&mut pg).await?;
     ensure!(
         required
             .as_array()

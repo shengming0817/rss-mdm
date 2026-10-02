@@ -203,15 +203,17 @@ impl ExecutionService {
         )?;
         let required = apple::required(tx, &self.protection, device, input).await?;
         approval.bind_required(required.clone());
-        let check = approval.clone();
-        let key = self.protection.clone();
-        if !tx
-            .with_connection(move |c| {
-                Box::pin(async move { Ok(check.valid(c, &key, &required, now).await) })
-            })
-            .await??
-        {
-            return Err(Error::Forbidden.into());
+        if required != input.task.permissions()? {
+            let check = approval.clone();
+            let key = self.protection.clone();
+            if !tx
+                .with_connection(move |c| {
+                    Box::pin(async move { Ok(check.valid(c, &key, &required, now).await) })
+                })
+                .await??
+            {
+                return Err(Error::Forbidden.into());
+            }
         }
         let (source, policy_version, remote_operation) = match &approval {
             ExecutionAuthority::User { .. } => ("direct", None, None),
