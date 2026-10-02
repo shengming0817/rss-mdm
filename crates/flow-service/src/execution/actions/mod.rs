@@ -15,7 +15,4 @@ mod poll;
 
 pub mod history;
 
-mod payload;
 mod software;
-
-pub mod model;

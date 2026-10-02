@@ -14,9 +14,9 @@ mod managed_registration;
 pub use configuration::Diagnosis as ConfigurationDiagnosis;
 pub mod health;
 mod lifecycle;
-pub mod model;
+use rss_mdm_execution_service::{AttemptPhase, Change, Create, DispatchV3, NativeTarget, Task};
 pub mod native;
-mod permissions;
+
 mod protocol;
 pub mod recovery;
 mod remote;
@@ -24,7 +24,7 @@ mod service;
 pub mod storage;
 use crate::{Error, Failure};
 pub use lifecycle::Resource;
-pub use model::*;
+
 use rss_device_command as dc;
 use rss_device_command::Store;
 use rss_request_context::TenantId;
@@ -47,12 +47,12 @@ pub struct ExecutionService {
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub readiness: health::Readiness,
     pub software: rss_mdm_software_service::preparation::Preparation,
-    pub agent_installation: crate::planning::policies::agent_install::Config,
-    pub enrollment_entries: crate::planning::policies::enrollment::Entries,
+    pub agent_installation: rss_mdm_execution_service::agent_install::Config,
+    pub enrollment_entries: rss_mdm_execution_service::enrollment::Entries,
     pub agent_store: Arc<dyn channels::Agent>,
     pub apple_store: Arc<dyn channels::AppleStore>,
     pub policy_reader: rss_mdm_policy_postgres::PolicyReader,
-    pub signer: Option<Arc<crate::task_signing::Signer>>,
+    pub signer: Option<Arc<rss_mdm_execution_service::task_signing::Signer>>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub runtime: Arc<PgRuntime>,
     pub outbox: Arc<PgOutboxStore<()>>,

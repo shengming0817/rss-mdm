@@ -1,6 +1,6 @@
 //! Read-only bridge from a published Policy version to Agent execution.
 use super::*;
-use crate::planning::action_contract::ScheduledInput;
+use rss_mdm_execution_service::action_contract::ScheduledInput;
 enum Authority {
     Policy(Box<Policy>),
     Remote(crate::planning::remote_operations::Remote),

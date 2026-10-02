@@ -1,9 +1,9 @@
-use super::model::Target;
 use super::state::RunState;
 use crate::Error;
 use crate::execution::{Result, checked_input, storage, stored};
 use crate::planning::policies::admission::ExecutionPolicy;
 use crate::planning::policies::software::SoftwareExecutionPolicy;
+use rss_mdm_execution_service::Target;
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde_json::Value;
 use sqlx::Row;
@@ -117,7 +117,7 @@ pub async fn audit_details(
 
 pub enum ScheduledPolicy {
     Script(ExecutionPolicy),
-    Native(ExecutionPolicy<crate::planning::action_contract::FrozenNativeCollection>),
+    Native(ExecutionPolicy<rss_mdm_execution_service::action_contract::FrozenNativeCollection>),
     Software(SoftwareExecutionPolicy),
     Enrollment(crate::planning::policies::enrollment::EnrollmentPolicy),
 }
@@ -314,7 +314,7 @@ pub async fn load_policy_version(
 ) -> Result<ScheduledPolicy> {
     let (policy, frozen) = crate::planning::policies::storage::version_in(reader, tx, id).await?;
     match frozen {
-        crate::planning::policies::Frozen::MdmEnrollment { action } => Ok(
+        rss_mdm_execution_service::frozen::Frozen::MdmEnrollment { action } => Ok(
             ScheduledPolicy::Enrollment(crate::planning::policies::enrollment::EnrollmentPolicy {
                 id,
                 owner: policy.id,
@@ -322,15 +322,19 @@ pub async fn load_policy_version(
                 frozen: *action,
             }),
         ),
-        crate::planning::policies::Frozen::NativeCollection { .. } => Ok(ScheduledPolicy::Native(
-            crate::planning::policies::admission::native_in(reader, tx, id).await?,
-        )),
-        crate::planning::policies::Frozen::Execution { .. } => Ok(ScheduledPolicy::Script(
+        rss_mdm_execution_service::frozen::Frozen::NativeCollection { .. } => {
+            Ok(ScheduledPolicy::Native(
+                crate::planning::policies::admission::native_in(reader, tx, id).await?,
+            ))
+        }
+        rss_mdm_execution_service::frozen::Frozen::Execution { .. } => Ok(ScheduledPolicy::Script(
             crate::planning::policies::admission::read_in(reader, tx, id).await?,
         )),
-        crate::planning::policies::Frozen::Software { .. } => Ok(ScheduledPolicy::Software(
-            crate::planning::policies::software::read_in(reader, tx, id).await?,
-        )),
+        rss_mdm_execution_service::frozen::Frozen::Software { .. } => {
+            Ok(ScheduledPolicy::Software(
+                crate::planning::policies::software::read_in(reader, tx, id).await?,
+            ))
+        }
         _ => Err(Error::Unsupported.into()),
     }
 }
@@ -347,7 +351,7 @@ pub async fn load_source(
                 crate::planning::remote_operations::storage::read_in(tx, operation).await?;
             if matches!(
                 remote.frozen,
-                crate::planning::policies::Frozen::NativeCollection { .. }
+                rss_mdm_execution_service::frozen::Frozen::NativeCollection { .. }
             ) {
                 Ok(ScheduledPolicy::Native(
                     crate::planning::policies::admission::remote_native_in(tx, operation).await?,

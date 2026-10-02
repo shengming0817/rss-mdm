@@ -8,11 +8,11 @@ fn cancellation_deadline_and_unknown_do_not_claim_early_completion() {
     let mut operation = Remote {
         id,
         frozen: Frozen::Configuration {
-            native: crate::planning::configuration::Protected::seal(
+            native: rss_mdm_execution_service::configuration::Protected::seal(
                 &key,
                 tenant,
-                crate::planning::configuration::Owner::Remote { operation: id },
-                &crate::planning::configuration::Configuration {
+                rss_mdm_execution_service::configuration::Owner::Remote { operation: id },
+                &rss_mdm_execution_service::configuration::Configuration {
                     target: NativeTarget::Device,
                     remove: None,
                     apply: Task::Macos {

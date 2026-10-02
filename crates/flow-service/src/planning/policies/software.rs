@@ -1,6 +1,6 @@
 //! Read-only software assignment bridge from authored Policy to the shared Agent Run.
-use super::super::action_contract::FrozenSoftwareAction;
 use super::*;
+use rss_mdm_execution_service::action_contract::FrozenSoftwareAction;
 use rss_mdm_policy::{SoftwareIntent, SoftwareRollout, SoftwareTarget};
 use rss_mdm_software_service::{
     catalog::FrozenSoftware,

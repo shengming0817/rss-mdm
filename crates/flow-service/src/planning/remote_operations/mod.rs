@@ -1,11 +1,12 @@
 //! One accepted operation owns one immutable target snapshot, without creating a Policy.
-use super::policies::{Frozen, Policies};
+use super::policies::Policies;
 use crate::{
     Error,
     authorization::{Permission, context::AuthorizedPrincipal},
     transaction::*,
 };
 use rss_mdm_audit_integration::{Fact, RequestAudit};
+use rss_mdm_execution_service::frozen::Frozen;
 use rss_mdm_policy::{Action as PolicyAction, Exit, Frequency, ResourceBinding};
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde::{Deserialize, Serialize};
@@ -236,14 +237,14 @@ impl Policies {
             if let Some(receipt)=super::receipts::replay(tx,audit,input.operation_id,&hash).await? {return Ok(receipt);}
             let at=crate::action_admission::now(tx).await?;
             input.validate(at)?;
-            let owner=Some(super::configuration::Owner::Remote { operation: input.operation_id });
+            let owner=Some(rss_mdm_execution_service::configuration::Owner::Remote { operation: input.operation_id });
             let mut frozen=match &input.action {
                 Action::Execute { parameters } => {
                     if s.execution.signer.is_none() { return Err(Error::Conflict.into()); }
                     let version=s.planning.catalog.active_version_in(tx,input.resource.id(),input.resource.version()).await?;
                     let prepared=crate::resource_catalog::scripts::prepare(&version,&input.resource,parameters,verified.ok_or(Error::Conflict)?)?;
                     Frozen::Execution {
-                        action:Box::new(super::action_contract::freeze_script_in(tx,s.planning.tenant,&prepared,
+                        action:Box::new(super::freeze_inputs::freeze_script_in(tx,s.planning.tenant,&prepared,
                             input.schedule(at),(input.deadline-at) as u32,
                         ).await?),
                         frequency:Frequency::OncePerVersion,

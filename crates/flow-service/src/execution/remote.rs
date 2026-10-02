@@ -1,10 +1,8 @@
 //! One-shot fanout owns a single bounded cursor; protocol owners retain their state machines.
 use super::*;
-use crate::planning::{
-    action_contract::Platform,
-    policies::Frozen,
-    remote_operations::{self as remote, Remote},
-};
+use crate::planning::remote_operations::{self as remote, Remote};
+use rss_mdm_execution_service::action_contract::Platform;
+use rss_mdm_execution_service::frozen::Frozen;
 use sqlx::Row;
 pub fn operation_id(entity: &str) -> Option<Uuid> {
     entity
@@ -265,7 +263,7 @@ impl ExecutionService {
             tx,
             actions::production::RunInput {
                 source: actions::storage::Source::RemoteOperation { operation: id },
-                target: &actions::model::Target {
+                target: &rss_mdm_execution_service::Target {
                     device: device.into(),
                     registration,
                     generation,
@@ -317,7 +315,7 @@ impl ExecutionService {
         let native = native.open(
             &self.protection,
             self.tenant,
-            crate::planning::configuration::Owner::Remote { operation: id },
+            rss_mdm_execution_service::configuration::Owner::Remote { operation: id },
         )?;
         let input = native.request(delivery, id.to_string(), operation.deadline, false)?;
         record_target(tx, id, device, Some(delivery), None).await?;
@@ -327,7 +325,7 @@ impl ExecutionService {
             operation: id,
             device: device.into(),
         };
-        let fingerprint = crate::protection::fingerprint(
+        let fingerprint = rss_mdm_execution_service::protection::fingerprint(
             &self.protection,
             self.tenant,
             device,

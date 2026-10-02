@@ -2807,6 +2807,7 @@ dependencies = [
  "rss-mdm-compliance",
  "rss-mdm-compliance-postgres",
  "rss-mdm-content-service",
+ "rss-mdm-execution-service",
  "rss-mdm-flow-service",
  "rss-mdm-group-postgres",
  "rss-mdm-inventory",
@@ -2876,6 +2877,7 @@ dependencies = [
  "rss-mdm-audit-integration",
  "rss-mdm-authorization-service",
  "rss-mdm-certificate",
+ "rss-mdm-execution-service",
  "rss-mdm-flow-service",
  "rss-mdm-inventory",
  "rss-mdm-inventory-service",
@@ -3081,6 +3083,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "rss-mdm-execution-service"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "plist",
+ "ring",
+ "rss-audit-postgres",
+ "rss-device-command",
+ "rss-ledger-postgres",
+ "rss-mdm-agent-wire",
+ "rss-mdm-apple-mdm",
+ "rss-mdm-audit-integration",
+ "rss-mdm-authorization-service",
+ "rss-mdm-content-service",
+ "rss-mdm-inventory",
+ "rss-mdm-native-protection",
+ "rss-mdm-policy",
+ "rss-mdm-resource",
+ "rss-mdm-windows-mdm",
+ "rss-request-context",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "url",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "rss-mdm-flow-service"
 version = "0.1.0"
 dependencies = [
@@ -3100,6 +3131,7 @@ dependencies = [
  "rss-mdm-audit-integration",
  "rss-mdm-authorization-service",
  "rss-mdm-content-service",
+ "rss-mdm-execution-service",
  "rss-mdm-group-postgres",
  "rss-mdm-inventory",
  "rss-mdm-inventory-postgres",
@@ -3254,6 +3286,7 @@ dependencies = [
  "rss-mdm-audit-integration",
  "rss-mdm-authorization-service",
  "rss-mdm-content-service",
+ "rss-mdm-execution-service",
  "rss-mdm-flow-service",
  "rss-mdm-inventory",
  "rss-mdm-inventory-service",
@@ -3433,16 +3466,16 @@ dependencies = [
 name = "rss-mdm-software-service"
 version = "0.1.0"
 dependencies = [
- "rss-ledger-postgres",
- "rss-mdm-agent-wire",
- "rss-mdm-authorization-service",
  "anyhow",
  "futures",
  "reqwest",
  "rss-audit-core",
  "rss-audit-postgres",
  "rss-contract",
+ "rss-ledger-postgres",
+ "rss-mdm-agent-wire",
  "rss-mdm-audit-integration",
+ "rss-mdm-authorization-service",
  "rss-mdm-brew-source",
  "rss-mdm-content-service",
  "rss-mdm-native-protection",
@@ -3509,6 +3542,7 @@ dependencies = [
  "rss-mdm-audit-integration",
  "rss-mdm-authorization-service",
  "rss-mdm-certificate",
+ "rss-mdm-execution-service",
  "rss-mdm-flow-service",
  "rss-mdm-inventory",
  "rss-mdm-inventory-service",

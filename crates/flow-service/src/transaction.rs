@@ -347,3 +347,9 @@ impl From<rss_mdm_content_service::bindings::Error> for Fault {
         }
     }
 }
+
+impl From<rss_mdm_execution_service::Error> for Fault {
+    fn from(error: rss_mdm_execution_service::Error) -> Self {
+        Error::from(error).into()
+    }
+}

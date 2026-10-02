@@ -34,7 +34,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 pub struct Windows {
-    pub agent_identity: Option<rss_mdm_flow_service::planning::policies::agent_install::Identity>,
+    pub agent_identity: Option<rss_mdm_execution_service::agent_install::Identity>,
     pub enrollment_origin: String,
     pub management_origin: String,
     pub provider_id: String,

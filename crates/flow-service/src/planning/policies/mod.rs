@@ -1,14 +1,15 @@
 //! Authored Policy is the durable authority; execution progress never edits it.
-use super::action_contract::{
-    Architecture, ExecutionInput, FrozenAction, FrozenNativeCollection, FrozenSoftwareAction,
-    Platform, freeze_collection, freeze_script_in,
-};
+use super::freeze_inputs::{freeze_collection, freeze_script_in};
 use crate::{
     Error,
     authorization::{Permission, context::AuthorizedPrincipal},
     transaction::*,
 };
 use rss_mdm_audit_integration::{Fact, RequestAudit};
+use rss_mdm_execution_service::action_contract::{
+    Architecture, ExecutionInput, FrozenAction, FrozenNativeCollection, FrozenSoftwareAction,
+    Platform,
+};
 use rss_mdm_policy::{Action, Definition, Exit, Frequency, ResourceBinding, SoftwareIntent};
 use rss_mdm_resource as resource;
 use rss_transactional_messaging_postgres::PgTransaction;
@@ -27,36 +28,8 @@ pub mod rerun;
 pub mod software;
 pub mod storage;
 
+use rss_mdm_execution_service::frozen::Frozen;
 pub use rss_mdm_policy::{Change, Policy};
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Frozen {
-    NativeCollection {
-        action: Box<FrozenNativeCollection>,
-        frequency: Frequency,
-    },
-    Execution {
-        action: Box<FrozenAction>,
-        frequency: Frequency,
-    },
-    Configuration {
-        #[serde(rename = "native_sealed")]
-        native: super::configuration::Protected,
-        grants: std::collections::BTreeMap<String, Vec<crate::authorization::UserGrant>>,
-        platform: Platform,
-        exit: Exit,
-        resource_digest: [u8; 32],
-    },
-    Software {
-        action: Box<FrozenSoftwareAction>,
-    },
-    AgentInstall {
-        action: Box<agent_install::FrozenInstall>,
-    },
-    MdmEnrollment {
-        action: Box<enrollment::FrozenEnrollment>,
-    },
-}
 pub struct Policies {
     pub planning: std::sync::Arc<super::Planning>,
     pub execution: std::sync::Arc<crate::execution::ExecutionService>,
@@ -211,10 +184,10 @@ impl Policies {
                                 tx,
                                 &policy.definition.action,
                                 verified,
-                                Some(super::configuration::Owner::Policy { policy: policy.id, version: policy.version }),
+                                Some(rss_mdm_execution_service::configuration::Owner::Policy { policy: policy.id, version: policy.version }),
                             )
                             .await? };
-                        frozen.authorize_native(p,&authorization,None,&s.execution.protection,tx.tenant_id(),Some(super::configuration::Owner::Policy { policy: policy.id, version: policy.version }))?;
+                        frozen.authorize_native(p,&authorization,None,&s.execution.protection,tx.tenant_id(),Some(rss_mdm_execution_service::configuration::Owner::Policy { policy: policy.id, version: policy.version }))?;
                         storage::write_in(
                             &s.planning.policy_store,
                             tx,
@@ -259,7 +232,7 @@ impl Policies {
         tx: &mut PgTransaction<'_>,
         action: &Action,
         verified: Option<&rss_mdm_content_service::Verified>,
-        owner: Option<super::configuration::Owner>,
+        owner: Option<rss_mdm_execution_service::configuration::Owner>,
     ) -> Result<Frozen> {
         let binding = action.resource().ok_or(Error::Unsupported)?;
         let version = self
@@ -425,7 +398,8 @@ impl Policies {
                 let verified = verified
                     .filter(|v| v.matches(artifact))
                     .ok_or(Error::Conflict)?;
-                let native = super::configuration::Configuration::read(verified)?;
+                let native =
+                    rss_mdm_execution_service::configuration::Configuration::read(verified)?;
                 if matches!(exit, Exit::Remove) && native.remove.is_none() {
                     return Err(Error::Unsupported.into());
                 }
@@ -437,7 +411,7 @@ impl Policies {
                     return Err(Error::Malformed.into());
                 }
                 Ok(Frozen::Configuration {
-                    native: super::configuration::Protected::seal(
+                    native: rss_mdm_execution_service::configuration::Protected::seal(
                         &self.execution.protection,
                         tx.tenant_id(),
                         owner.ok_or(Error::Malformed)?,
@@ -509,56 +483,3 @@ pub fn variant<'a>(
 }
 
 pub mod read;
-
-impl Frozen {
-    pub fn authorize_native(
-        &mut self,
-        proof: &AuthorizedPrincipal,
-        snapshot: &crate::authorization::Snapshot,
-        devices: Option<&std::collections::BTreeSet<String>>,
-        key: &rss_mdm_native_protection::Protector,
-        tenant: rss_request_context::TenantId,
-        owner: Option<super::configuration::Owner>,
-    ) -> std::result::Result<(), Error> {
-        let (mut permissions, grants) = match self {
-            Self::Configuration { native, grants, .. } => {
-                let native = native.open(key, tenant, owner.ok_or(Error::Malformed)?)?;
-                let mut permissions = native.apply.permissions()?;
-                if let Some(remove) = &native.remove {
-                    permissions.extend(remove.permissions()?);
-                }
-                (permissions, grants)
-            }
-            Self::NativeCollection { action, .. } => (action.permissions()?, &mut action.grants),
-            _ => return Ok(()),
-        };
-        permissions.sort();
-        permissions.dedup();
-        if let Some(devices) = devices {
-            for device in devices {
-                grants.insert(
-                    device.clone(),
-                    permissions
-                        .iter()
-                        .map(|&permission| {
-                            crate::authorization::UserGrant::from_proof(
-                                snapshot, proof, device, permission,
-                            )
-                        })
-                        .collect::<std::result::Result<_, _>>()?,
-                );
-            }
-        } else {
-            grants.insert(
-                "*".into(),
-                permissions
-                    .iter()
-                    .map(|&permission| {
-                        crate::authorization::UserGrant::all_devices(snapshot, proof, permission)
-                    })
-                    .collect::<std::result::Result<_, _>>()?,
-            );
-        }
-        Ok(())
-    }
-}

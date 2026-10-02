@@ -5,8 +5,8 @@ use super::{
 };
 use crate::Error;
 use crate::execution::{ExecutionService, Result, storage};
-use crate::planning::action_contract::FrozenNativeCollection;
 use crate::planning::policies::{self, admission::ExecutionPolicy};
+use rss_mdm_execution_service::action_contract::FrozenNativeCollection;
 use rss_transactional_messaging_postgres::PgTransaction;
 use sqlx::Row;
 use uuid::Uuid;
@@ -48,7 +48,7 @@ pub async fn admit_policy(
     let mut last = None;
     let count = rows.len();
     for row in rows {
-        let target = super::model::Target {
+        let target = rss_mdm_execution_service::Target {
             device: row.try_get("device")?,
             registration: row.try_get("id")?,
             generation: row.try_get("generation")?,
@@ -194,7 +194,7 @@ pub async fn settle_device(
             }
             {
                 let now = storage::now(tx).await?;
-                let target = super::model::Target {
+                let target = rss_mdm_execution_service::Target {
                     device: device.into(),
                     registration,
                     generation,
@@ -301,10 +301,10 @@ pub async fn eligible_on(
     {
         return Ok(false);
     }
-    let frozen: policies::Frozen =
+    let frozen: rss_mdm_execution_service::frozen::Frozen =
         serde_json::from_value(row.try_get("frozen").map_err(crate::database::db)?)
             .map_err(|_| Error::Malformed)?;
-    let policies::Frozen::NativeCollection { action, .. } = frozen else {
+    let rss_mdm_execution_service::frozen::Frozen::NativeCollection { action, .. } = frozen else {
         return Err(Error::Malformed);
     };
     let Some(grants) = action
@@ -341,8 +341,9 @@ pub async fn queries_on(
 ) -> std::result::Result<Vec<rss_mdm_windows_mdm::native::Request>, crate::Error> {
     let frozen:serde_json::Value=sqlx::query_scalar("SELECT coalesce(v.frozen,o.frozen) FROM mdm_commands.action_runs r LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) LEFT JOIN mdm_planning.remote_operations o ON(o.tenant_id,o.id)=(r.tenant_id,r.remote_operation) WHERE r.tenant_id=$1::uuid AND r.id=$2")
         .bind(tenant).bind(id).fetch_one(c).await.map_err(crate::database::db)?;
-    let frozen: policies::Frozen = serde_json::from_value(frozen).map_err(|_| Error::Malformed)?;
-    let policies::Frozen::NativeCollection { action, .. } = frozen else {
+    let frozen: rss_mdm_execution_service::frozen::Frozen =
+        serde_json::from_value(frozen).map_err(|_| Error::Malformed)?;
+    let rss_mdm_execution_service::frozen::Frozen::NativeCollection { action, .. } = frozen else {
         return Err(Error::Malformed);
     };
     if action.windows_queries.is_empty() {

@@ -9,7 +9,7 @@ use sqlx::PgConnection;
 pub enum ExecutionAuthority {
     AgentInstall {
         required: Vec<Permission>,
-        package: Box<crate::planning::policies::agent_install::Package>,
+        package: Box<rss_mdm_execution_service::agent_install::Package>,
         tenant: String,
         policy: uuid::Uuid,
         version: uuid::Uuid,
@@ -83,7 +83,7 @@ impl ExecutionAuthority {
             | Self::Policy { required, .. } => *required = permissions,
         }
     }
-    pub fn agent_package(&self) -> Option<&crate::planning::policies::agent_install::Package> {
+    pub fn agent_package(&self) -> Option<&rss_mdm_execution_service::agent_install::Package> {
         match self {
             Self::AgentInstall { package, .. } => Some(package),
             _ => None,
@@ -169,10 +169,11 @@ impl ExecutionAuthority {
                 if *remove && !native_grant(conn, frozen.clone(), device, permission, now).await? {
                     return Ok(false);
                 }
-                let expected: crate::planning::policies::Frozen =
+                let expected: rss_mdm_execution_service::frozen::Frozen =
                     serde_json::from_value(frozen).map_err(|_| Error::Malformed)?;
-                let crate::planning::policies::Frozen::Configuration { native, exit, .. } =
-                    expected
+                let rss_mdm_execution_service::frozen::Frozen::Configuration {
+                    native, exit, ..
+                } = expected
                 else {
                     return Ok(false);
                 };
@@ -181,7 +182,7 @@ impl ExecutionAuthority {
                 let native = native.open(
                     key,
                     tenant_id,
-                    crate::planning::configuration::Owner::Policy {
+                    rss_mdm_execution_service::configuration::Owner::Policy {
                         policy: *policy,
                         version: *version,
                     },
@@ -206,11 +207,12 @@ impl ExecutionAuthority {
                         after = row.try_get("id").map_err(db)?;
                         let current_frozen: serde_json::Value =
                             row.try_get("frozen").map_err(db)?;
-                        let current: crate::planning::policies::Frozen =
+                        let current: rss_mdm_execution_service::frozen::Frozen =
                             serde_json::from_value(current_frozen.clone())
                                 .map_err(|_| Error::Malformed)?;
-                        let crate::planning::policies::Frozen::Configuration {
-                            native: other, ..
+                        let rss_mdm_execution_service::frozen::Frozen::Configuration {
+                            native: other,
+                            ..
                         } = current
                         else {
                             return Ok(false);
@@ -218,7 +220,7 @@ impl ExecutionAuthority {
                         let other = other.open(
                             key,
                             tenant_id,
-                            crate::planning::configuration::Owner::Policy {
+                            rss_mdm_execution_service::configuration::Owner::Policy {
                                 policy: after,
                                 version: row.try_get("version").map_err(db)?,
                             },
@@ -260,9 +262,9 @@ async fn native_grant(
     permission: Permission,
     now: i64,
 ) -> Result<bool, Error> {
-    let frozen: crate::planning::policies::Frozen =
+    let frozen: rss_mdm_execution_service::frozen::Frozen =
         serde_json::from_value(frozen).map_err(|_| Error::Malformed)?;
-    let crate::planning::policies::Frozen::Configuration { grants, .. } = frozen else {
+    let rss_mdm_execution_service::frozen::Frozen::Configuration { grants, .. } = frozen else {
         return Ok(false);
     };
     let Some(grants) = grants.get(device).or_else(|| grants.get("*")) else {

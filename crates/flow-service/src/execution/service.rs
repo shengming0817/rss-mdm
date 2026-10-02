@@ -409,7 +409,7 @@ fn create_fingerprint(
     device: &str,
     input: &Create,
 ) -> Result<Vec<u8>> {
-    Ok(crate::protection::fingerprint(
+    Ok(rss_mdm_execution_service::protection::fingerprint(
         &service.protection,
         service.tenant,
         device,

@@ -201,7 +201,7 @@ impl ExecutionService {
 
 async fn stale_registration(
     tx: &mut PgTransaction<'_>,
-    target: &super::model::Target,
+    target: &rss_mdm_execution_service::Target,
 ) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
     let target = target.clone();

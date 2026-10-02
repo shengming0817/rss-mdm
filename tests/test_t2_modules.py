@@ -22,7 +22,7 @@ class ModuleImpactTests(unittest.TestCase):
     def test_script_preparation_selects_all_script_entrances(self):
         for path in ('crates/resource/src/script.rs',
                      'crates/flow-service/src/resource_catalog/scripts.rs',
-                     'crates/flow-service/src/planning/action_contract.rs',
+                     'crates/flow-service/src/planning/freeze_inputs.rs',
                      'crates/flow-service/src/resource_catalog/mod.rs'):
             selected = select_paths([path])
             self.assertFalse(selected.full, path)

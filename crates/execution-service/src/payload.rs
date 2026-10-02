@@ -1,6 +1,6 @@
-use super::model::Target;
 use crate::Error;
-use crate::planning::action_contract::*;
+use crate::Target;
+use crate::action_contract::*;
 use rss_mdm_agent_wire as wire;
 use rss_mdm_resource as r;
 use serde_json::Value;

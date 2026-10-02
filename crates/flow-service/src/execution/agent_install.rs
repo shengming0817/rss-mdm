@@ -1,8 +1,9 @@
 //! Fixed Agent installation shares native reconciliation and command authority.
 use super::*;
-use crate::planning::policies::{
-    self, Frozen,
+use crate::planning::policies;
+use rss_mdm_execution_service::{
     agent_install::{Identity, Package},
+    frozen::Frozen,
 };
 use rss_mdm_inventory::ReportSource;
 use rss_mdm_policy::{Architecture, Platform, SoftwareTarget, schedule::Trigger};
@@ -68,7 +69,7 @@ impl ExecutionService {
                 device,
                 &input,
                 approval,
-                crate::protection::fingerprint(
+                rss_mdm_execution_service::protection::fingerprint(
                     &self.protection,
                     self.tenant,
                     device,

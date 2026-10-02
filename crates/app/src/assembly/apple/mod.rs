@@ -18,7 +18,7 @@ impl Apple {
         protection: Arc<rss_mdm_native_protection::Protector>,
         config: config::Config,
         now: i64,
-        agent_identity: Option<rss_mdm_flow_service::planning::policies::agent_install::Identity>,
+        agent_identity: Option<rss_mdm_execution_service::agent_install::Identity>,
     ) -> Result<Self, Error> {
         let authority = certificate::AppleDeviceTrust::from_bytes(
             &crate::config::read(&config.issuer_certificate_file, 32768, false)

@@ -4,7 +4,7 @@ use rss_mdm_native_protection::{ProtectionContext, Protector};
 use rss_request_context::TenantId;
 use serde::Serialize;
 use zeroize::Zeroizing;
-pub(crate) fn fingerprint(
+pub fn fingerprint(
     protector: &Protector,
     tenant: TenantId,
     owner: &str,
@@ -21,7 +21,7 @@ pub(crate) fn fingerprint(
         .map_err(|_| Error::Unavailable(Failure::NativeProtection))
 }
 
-pub(crate) fn aad(
+pub fn aad(
     tenant: TenantId,
     purpose: &str,
     identity: &impl Serialize,

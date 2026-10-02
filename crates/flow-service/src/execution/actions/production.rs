@@ -17,7 +17,7 @@ fn dispatch(
     tenant: rss_request_context::TenantId,
     source: db::Source,
     id: Uuid,
-    target: &super::model::Target,
+    target: &rss_mdm_execution_service::Target,
     now: i64,
 ) -> Result<PendingMessage<Vec<u8>>> {
     let payload = checked_input(serde_json::to_vec(
@@ -51,7 +51,7 @@ pub async fn accept_for_device(
     service: &ExecutionService,
     tx: &mut PgTransaction<'_>,
     policy: &db::ScheduledPolicy,
-    target: &super::model::Target,
+    target: &rss_mdm_execution_service::Target,
     request: Uuid,
     now: i64,
 ) -> Result<()> {
@@ -201,7 +201,7 @@ pub async fn accept_for_device(
 }
 pub struct RunInput<'a> {
     pub source: db::Source,
-    pub target: &'a super::model::Target,
+    pub target: &'a rss_mdm_execution_service::Target,
     pub id: Uuid,
     pub occurrence: String,
     pub available: i64,

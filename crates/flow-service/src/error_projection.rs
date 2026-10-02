@@ -318,3 +318,32 @@ impl From<rss_mdm_software_service::management::Error> for Error {
         }
     }
 }
+
+impl From<rss_mdm_execution_service::Error> for Error {
+    fn from(error: rss_mdm_execution_service::Error) -> Self {
+        use rss_mdm_execution_service::{ConfigIssue as C, Error as E, Failure as F};
+        match error {
+            E::Configuration(C::TaskSigning) => Self::Configuration(ConfigIssue::TaskSigning),
+            E::Malformed => Self::Malformed,
+            E::Conflict => Self::Conflict,
+            E::CommitUnknown => Self::CommitUnknown,
+            E::RollbackFailed => Self::RollbackFailed,
+            E::Configuration(C::IdentityConfiguration) => {
+                Self::Configuration(ConfigIssue::IdentityConfiguration)
+            }
+            E::Unauthorized => Self::Unauthorized,
+            E::Forbidden => Self::Forbidden,
+            E::Unavailable(F::Database) => Self::Unavailable(Failure::Database),
+            E::Unavailable(F::RequestDeadline) => Self::Unavailable(Failure::RequestDeadline),
+            E::Unavailable(F::Audit) => Self::Unavailable(Failure::Audit),
+            E::Unavailable(F::AuditIntegrity) => Self::Unavailable(Failure::AuditIntegrity),
+            E::Unavailable(F::AuditAdmission) => Self::Unavailable(Failure::AuditAdmission),
+            E::Unavailable(F::AuditIsolation) => Self::Unavailable(Failure::AuditIsolation),
+            E::Unavailable(F::AuditContract) => Self::Unavailable(Failure::AuditContract),
+
+            E::Unsupported => Self::Unsupported,
+            E::Unavailable(F::NativeProtection) => Self::Unavailable(Failure::NativeProtection),
+            E::Unavailable(F::CommandInvariant) => Self::Unavailable(Failure::CommandInvariant),
+        }
+    }
+}

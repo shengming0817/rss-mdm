@@ -1,9 +1,10 @@
 //! Native peer proof, frozen Policy authority, Enrollment and Agent binding share one audit commit.
 use super::*;
 use crate::device::DevicePrincipal;
-use crate::planning::policies::{Frozen, agent_install};
+use crate::planning::policies::agent_install;
 use rss_mdm_agent_wire as wire;
 use rss_mdm_audit_integration::Fact;
+use rss_mdm_execution_service::frozen::Frozen;
 use sqlx::{PgConnection, Row};
 impl ExecutionService {
     pub async fn managed_registration(

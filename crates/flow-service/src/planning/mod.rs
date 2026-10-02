@@ -2,7 +2,7 @@
 use crate::assets;
 pub mod automation;
 
-pub mod configuration;
+mod freeze_inputs;
 
 pub mod directory;
 pub mod model;
@@ -364,8 +364,6 @@ fn group_checked<T>(r: std::result::Result<T, rss_mdm_group_postgres::Rejection>
 
 use rss_mdm_audit_integration::RequestAudit;
 mod receipts;
-
-pub mod action_contract;
 
 pub mod error;
 

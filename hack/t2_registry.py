@@ -180,7 +180,7 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
  'planning.http': ('crates/management-http/src/planning/http.rs',
                    'crates/flow-service/src/planning/pages.rs',
                    'crates/management-http/src/planning/policies/http.rs'),
- 'planning.agent_policy': ('crates/flow-service/src/planning/action_contract.rs',
+ 'planning.agent_policy': ('crates/flow-service/src/planning/freeze_inputs.rs',
                            'crates/flow-service/src/planning/policies/mod.rs',
                            'crates/management-http/src/planning/policies/http.rs',
                            'crates/management-http/src/planning/policies/preview.rs',
@@ -687,11 +687,11 @@ consume(('crates/compliance/src/*', 'crates/compliance-postgres/src/*', 'crates/
         'compliance.storage compliance.http compliance.evaluation compliance.recovery compliance.group_input')
 consume(('crates/resource/src/script.rs', 'crates/flow-service/src/resource_catalog/scripts.rs'),
         'planning.agent_policy planning.remote planning.frequency execution.agent.delivery execution.agent.content execution.agent.recovery')
-consume(('crates/flow-service/src/planning/action_contract.rs', 'crates/flow-service/src/resource_catalog/mod.rs'),
+consume(('crates/flow-service/src/planning/freeze_inputs.rs', 'crates/flow-service/src/resource_catalog/mod.rs'),
         'planning.agent_policy planning.remote planning.onboarding')
 TASK_CONSUMERS = 'planning.onboarding planning.policy planning.agent_policy planning.frequency planning.remote planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
 consume(('crates/agent-wire/src/tasks.rs', 'crates/agent-wire/schema/task-*.json',
-         'crates/agent-wire/schema/signed-task-v5.schema.json', 'crates/flow-service/src/task_signing.rs'), TASK_CONSUMERS)
+         'crates/agent-wire/schema/signed-task-v5.schema.json', 'crates/execution-service/src/task_signing.rs'), TASK_CONSUMERS)
 # lib.rs owns shared identities, capability, errors, registration and report shapes.
 consume(('crates/agent-wire/src/lib.rs','crates/agent-wire/schema/error-body-v5.schema.json',
          'crates/agent-wire/schema/agent-v5.schema-manifest.json'), TASK_CONSUMERS + ' agent.registration agent.reports execution.commands.onboarding apple.onboarding')
@@ -1015,7 +1015,9 @@ T1_INPUTS = ('crates/authorization-service/tests/unit.rs','crates/inventory-serv
     'crates/app/tests/enrollment/unit.rs',
     'crates/app/tests/error_projection/unit.rs',
     'crates/app/tests/execution/actions/state_unit.rs',
-    'crates/app/tests/execution/model_unit.rs',
+    'crates/execution-service/tests/model_unit.rs',
+    'crates/execution-service/tests/model_phase_unit.rs',
+    'crates/execution-service/tests/agent_install_unit.rs',
     'crates/app/tests/execution/recovery_unit.rs',
     'crates/app/tests/flow/unit.rs',
     'crates/app/tests/config/publication_unit.rs',
@@ -1098,10 +1100,17 @@ consume(('crates/flow-service/src/execution/actions/output.rs',), 'execution.age
 consume(('crates/flow-service/src/execution/actions/native_collection.rs',
          'crates/flow-service/src/execution/actions/recovery.rs'), 'windows.management apple.collection')
 
-consume(('crates/native-protection/*', 'crates/flow-service/src/execution/input_storage.rs', 'crates/flow-service/src/protection.rs'), 'windows.enrollment windows.management execution.commands.admission execution.commands.windows execution.commands.configuration execution.commands.onboarding apple.profile')
+consume(('crates/native-protection/*', 'crates/flow-service/src/execution/input_storage.rs', 'crates/execution-service/src/protection.rs'), 'windows.enrollment windows.management execution.commands.admission execution.commands.windows execution.commands.configuration execution.commands.onboarding apple.profile')
 
 consume(('crates/content-service/src/protected.rs',), 'content.http content.gc execution.commands.configuration planning.remote')
 
 # Native Configuration consumers upload immutable content through the same HTTP fixture.
 for name in ('apple.policy', 'planning.policy', 'planning.http'):
     MODULES[name] = replace(MODULES[name], support_inputs=tuple(dict.fromkeys((*MODULES[name].support_inputs, 'crates/app/tests/support/planning_http.rs', 'crates/app/tests/support/agent_execution.rs', 'crates/app/tests/support/software.rs'))))
+
+consume(('crates/execution-service/src/action_contract.rs', 'crates/execution-service/src/frozen.rs'), TASK_CONSUMERS + ' windows.management apple.collection execution.commands.configuration execution.commands.onboarding')
+consume(('crates/execution-service/src/agent_install.rs',), 'execution.commands.onboarding apple.onboarding planning.policy planning.agent_policy')
+consume(('crates/execution-service/src/enrollment.rs',), 'planning.onboarding planning.policy execution.agent.delivery execution.agent.poll execution.agent.recovery')
+consume(('crates/execution-service/src/configuration.rs', 'crates/execution-service/src/model.rs', 'crates/execution-service/src/permissions.rs'), 'execution.commands.admission execution.commands.windows execution.commands.configuration execution.commands.onboarding windows.management apple.profile planning.policy planning.remote')
+consume(('crates/execution-service/src/target.rs','crates/execution-service/src/payload.rs'), TASK_CONSUMERS)
+consume(('crates/execution-service/src/lib.rs','crates/execution-service/src/error.rs'), TASK_CONSUMERS + ' execution.commands.admission execution.commands.windows execution.commands.configuration execution.commands.onboarding windows.management apple.profile')

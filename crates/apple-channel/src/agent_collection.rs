@@ -1,7 +1,7 @@
 //! Bounded built-in Agent queries use the existing native attempts and collection owner.
 use crate::{Error, database::db, device::DevicePrincipal};
 use rss_mdm_apple_mdm::{protocol, software as wire};
-use rss_mdm_flow_service::planning::policies::agent_install::Identity;
+use rss_mdm_execution_service::agent_install::Identity;
 use rss_mdm_inventory::{AgentInstallation, ReportSource};
 use rss_mdm_inventory_service::collection::channel::{self, AgentEvidence};
 use sqlx::{PgConnection, Row};

@@ -1,7 +1,7 @@
 //! One accepted template execution produces one CollectionRun, including partial field quality.
 use super::storage::Run;
 use crate::execution::{Result, stored};
-use crate::planning::action_contract::FrozenAction;
+use rss_mdm_execution_service::action_contract::FrozenAction;
 use rss_mdm_inventory::{CollectedValue, CollectionProgress, FieldKey, NativeValue};
 use rss_mdm_resource::ScriptPurpose;
 use rss_transactional_messaging_postgres::PgTransaction;

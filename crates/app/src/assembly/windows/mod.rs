@@ -52,7 +52,7 @@ impl Windows {
     pub(crate) fn load(
         config: WindowsConfig,
         now: i64,
-        agent: Option<rss_mdm_flow_service::planning::policies::agent_install::Identity>,
+        agent: Option<rss_mdm_execution_service::agent_install::Identity>,
     ) -> Result<Self, Error> {
         let ca = certificate::WindowsEnrollmentAuthority::from_bytes(
             &crate::config::read(&config.ca_certificate_file, 32768, false)

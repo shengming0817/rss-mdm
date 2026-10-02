@@ -1,8 +1,5 @@
 //! Resource content owns immutable native desired inputs; no parallel Boolean configuration store.
-use crate::{
-    Error,
-    execution::{Create, NativeTarget, Task},
-};
+use crate::{Create, Error, NativeTarget, Task};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -26,7 +23,7 @@ impl Configuration {
         use rss_mdm_windows_mdm::native::Execution as W;
         self.target.validate()?;
         if matches!(self.apply, Task::Windows { .. })
-            && !matches!(self.target, crate::execution::NativeTarget::Device)
+            && !matches!(self.target, crate::NativeTarget::Device)
         {
             // No current Windows user binding is supplied by the registration/channel owner.
             // Reject at publication rather than poisoning device-wide reconciliation.

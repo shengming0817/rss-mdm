@@ -1,56 +1,11 @@
 //! Independent Agent policy for the standard MDM enrollment entry.
 use super::*;
-use crate::execution::actions::{
-    model::Target,
-    storage::{TaskIssue, agent_profile_in},
-};
+use crate::execution::actions::storage::{TaskIssue, agent_profile_in};
 use rss_mdm_agent_wire as wire;
 use rss_mdm_authorization_service::UserGrant;
-use rss_mdm_policy::schedule::Schedule;
+use rss_mdm_execution_service::Target;
 
-/// Deployment-owned organization entries. Policies cannot redirect enrollment elsewhere.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Entries {
-    pub windows: Option<String>,
-    pub macos: Option<String>,
-}
-impl Entries {
-    pub fn validate(&self) -> std::result::Result<(), Error> {
-        for platform in [Platform::Windows, Platform::Macos] {
-            if let Some(entry) = self.for_platform(platform) {
-                entry
-                    .validate(match platform {
-                        Platform::Windows => wire::TaskPlatform::Windows,
-                        Platform::Macos => wire::TaskPlatform::Macos,
-                    })
-                    .map_err(|_| Error::Malformed)?;
-            }
-        }
-        Ok(())
-    }
-    fn for_platform(&self, platform: Platform) -> Option<wire::EnrollmentEntry> {
-        match platform {
-            Platform::Windows => self
-                .windows
-                .clone()
-                .map(|server| wire::EnrollmentEntry::Windows { server }),
-            Platform::Macos => self
-                .macos
-                .clone()
-                .map(|url| wire::EnrollmentEntry::Macos { url }),
-        }
-    }
-}
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct FrozenEnrollment {
-    pub organization: Uuid,
-    pub schedule: Schedule,
-    pub run_lifetime_seconds: u32,
-    pub entries: Entries,
-    pub grant: UserGrant,
-}
+use rss_mdm_execution_service::enrollment::{Entries, FrozenEnrollment};
 pub struct EnrollmentPolicy {
     pub id: Uuid,
     pub owner: Uuid,

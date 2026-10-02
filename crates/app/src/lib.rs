@@ -112,6 +112,9 @@ pub enum Error {
     #[error(transparent)]
     #[serde(untagged)]
     Service(#[from] rss_mdm_flow_service::Error),
+    #[error(transparent)]
+    #[serde(untagged)]
+    Execution(#[from] rss_mdm_execution_service::Error),
 }
 #[cfg(test)]
 #[path = "../tests/fixtures/error.rs"]

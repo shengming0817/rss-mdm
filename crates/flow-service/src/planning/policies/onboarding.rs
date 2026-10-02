@@ -109,8 +109,12 @@ pub async fn state_in(
                 return status(State::MissingVariant);
             };
             let identity = match &package.identity {
-                agent_install::Identity::Windows { product, .. } => product.to_string(),
-                agent_install::Identity::Macos { bundle, .. } => bundle.clone(),
+                rss_mdm_execution_service::agent_install::Identity::Windows { product, .. } => {
+                    product.to_string()
+                }
+                rss_mdm_execution_service::agent_install::Identity::Macos { bundle, .. } => {
+                    bundle.clone()
+                }
             };
             if identity != evidence.identity
                 || package.identity != pin.identity

@@ -1,9 +1,8 @@
 //! Native configuration claims are isolated by target and native object, not one slot per device.
 use super::*;
-use crate::planning::{
-    configuration::{Configuration, Object},
-    policies::{self, Frozen, Policy},
-};
+use crate::planning::policies::{self, Policy};
+use rss_mdm_execution_service::configuration::{Configuration, Object};
+use rss_mdm_execution_service::frozen::Frozen;
 use rss_mdm_policy::Exit;
 use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Copy)]
@@ -59,7 +58,7 @@ fn desired<'a>(
     let native = native.open(
         &service.protection,
         service.tenant,
-        crate::planning::configuration::Owner::Policy {
+        rss_mdm_execution_service::configuration::Owner::Policy {
             policy: policy.id,
             version: policy.version,
         },
@@ -68,7 +67,7 @@ fn desired<'a>(
     let object_digests = native.object_digests(&service.protection, service.tenant, device)?;
     Ok(Desired {
         policy,
-        digest: crate::protection::fingerprint(
+        digest: rss_mdm_execution_service::protection::fingerprint(
             &service.protection,
             service.tenant,
             device,
@@ -381,7 +380,7 @@ impl ExecutionService {
         let old = storage::load(tx, &self.protection, id).await?;
         let current = storage::current_registration(tx, &old.device).await?;
         let foreign = current != (old.registration, old.registration_generation);
-        let previous = crate::protection::fingerprint(
+        let previous = rss_mdm_execution_service::protection::fingerprint(
             &self.protection,
             self.tenant,
             &old.device,
@@ -450,7 +449,7 @@ impl ExecutionService {
             device: device.into(),
             remove,
         };
-        let fingerprint = crate::protection::fingerprint(
+        let fingerprint = rss_mdm_execution_service::protection::fingerprint(
             &self.protection,
             self.tenant,
             device,

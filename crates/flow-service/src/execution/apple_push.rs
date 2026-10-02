@@ -206,7 +206,7 @@ async fn pending(
                 Box::pin(async move {
                     Ok(match request.task.permissions() {
                         Ok(permissions) => approval.valid(c, &protection, &permissions, now).await,
-                        Err(error) => Err(error),
+                        Err(error) => Err(error.into()),
                     })
                 })
             })

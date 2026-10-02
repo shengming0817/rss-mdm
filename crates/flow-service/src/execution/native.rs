@@ -103,7 +103,7 @@ pub async fn receive_on(
         let stored_request = protection
             .open_bytes(
                 &row.try_get::<Vec<u8>, _>("request").map_err(db)?,
-                &crate::protection::aad(
+                &rss_mdm_execution_service::protection::aad(
                     p.tenant(),
                     "windows.attempt.request",
                     &(p.registration(), p.generation(), attempt),
@@ -270,7 +270,7 @@ async fn receive_capabilities(
             let plain = protection
                 .open_bytes(
                     &sealed,
-                    &crate::protection::aad(
+                    &rss_mdm_execution_service::protection::aad(
                         p.tenant(),
                         "windows.capability.request",
                         &(p.registration(), p.generation(), session),
@@ -422,7 +422,7 @@ pub async fn send_on(
         let wire = protection
             .seal_bytes(
                 &wire,
-                &crate::protection::aad(
+                &rss_mdm_execution_service::protection::aad(
                     p.tenant(),
                     "windows.capability.request",
                     &(p.registration(), p.generation(), session),
@@ -629,7 +629,7 @@ pub async fn send_on(
         let wire = protection
             .seal_bytes(
                 &wire,
-                &crate::protection::aad(
+                &rss_mdm_execution_service::protection::aad(
                     p.tenant(),
                     "windows.attempt.request",
                     &(p.registration(), p.generation(), attempt),
@@ -814,11 +814,11 @@ pub(super) fn result_aad(
     command: i64,
     ordinal: i32,
 ) -> std::result::Result<rss_mdm_native_protection::DerivedAad, Error> {
-    crate::protection::aad(
+    Ok(rss_mdm_execution_service::protection::aad(
         tenant,
         "windows.attempt.result",
         &(registration, generation, attempt, command, ordinal),
-    )
+    )?)
 }
 
 #[cfg(test)]

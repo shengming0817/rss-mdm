@@ -6,6 +6,7 @@ rust-version.workspace=true
 publish.workspace=true
 autotests=false
 [dependencies]
+rss-mdm-execution-service.workspace = true
 base64.workspace = true
 url.workspace = true
 rss-mdm-software-release.workspace = true

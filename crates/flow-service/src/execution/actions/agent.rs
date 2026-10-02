@@ -80,7 +80,7 @@ impl ExecutionService {
             let versions=crate::planning::policies::admission::agent_versions_in(tx,p.registration()).await?;
             for id in versions {
                 let policy=db::load_policy_version(&service.policy_reader,tx,id).await?;
-                let target=super::model::Target {device:p.device().into(),registration:p.registration(),generation:p.generation()};
+                let target=rss_mdm_execution_service::Target {device:p.device().into(),registration:p.registration(),generation:p.generation()};
                 match &policy {
                     db::ScheduledPolicy::Enrollment(_) if enrollment_capable => super::production::accept_for_device(service,tx,&policy,&target,input.operation_id(),now).await?,
                     db::ScheduledPolicy::Script(script) if script_capable && input.profiles().contains(&script.frozen.executor_profile()) => super::production::accept_for_device(service,tx,&policy,&target,input.operation_id(),now).await?,

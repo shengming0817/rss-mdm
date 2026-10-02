@@ -1,6 +1,5 @@
 //! Software-specific admission and task material; shared Run owns delivery and recovery.
 use super::{
-    model::Target,
     production::{RunInput, queue_run_in},
     storage as db,
 };
@@ -8,6 +7,7 @@ use crate::{
     Error,
     execution::{ExecutionService, Result},
 };
+use rss_mdm_execution_service::Target;
 use rss_mdm_policy::schedule::Trigger;
 use rss_transactional_messaging_postgres::PgTransaction;
 use uuid::Uuid;

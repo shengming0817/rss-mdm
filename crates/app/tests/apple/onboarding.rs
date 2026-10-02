@@ -209,7 +209,7 @@ async fn enabling_agent_installation_preserves_existing_native_identity_and_righ
         serde_json::from_slice(&std::fs::read(f.root.join("apple.json"))?)?;
     config.management.origin = f.app.apple()?.config.management.origin.clone();
     config.management.listen = f.app.apple()?.config.management.listen;
-    let pin: rss_mdm_flow_service::planning::policies::agent_install::Config =
+    let pin: rss_mdm_execution_service::agent_install::Config =
         serde_json::from_value(setup::pin(false))?;
     let original_rights: i32 = pg(&format!(
         "SELECT access_rights FROM mdm_apple.devices WHERE tenant_id='{}' AND state='active'",

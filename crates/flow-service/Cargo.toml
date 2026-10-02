@@ -7,6 +7,7 @@ publish.workspace = true
 autotests = false
 
 [dependencies]
+rss-mdm-execution-service.workspace = true
 zeroize.workspace = true
 rss-mdm-native-protection.workspace = true
 rss-mdm-inventory-postgres.workspace = true

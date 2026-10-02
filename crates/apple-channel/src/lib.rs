@@ -40,8 +40,7 @@ pub struct Webhook {
 }
 pub struct Apple {
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
-    pub(crate) agent_identity:
-        Option<rss_mdm_flow_service::planning::policies::agent_install::Identity>,
+    pub(crate) agent_identity: Option<rss_mdm_execution_service::agent_install::Identity>,
     pub(crate) config: Config,
     pub(crate) authority: certificate::AppleDeviceTrust,
     pub(crate) signer: certificate::ProfileSigner,
@@ -78,7 +77,7 @@ impl Apple {
         push: push::Push,
         challenge_key: ring::hmac::Key,
         notify_key: ring::hmac::Key,
-        agent_identity: Option<rss_mdm_flow_service::planning::policies::agent_install::Identity>,
+        agent_identity: Option<rss_mdm_execution_service::agent_install::Identity>,
     ) -> Self {
         let configuration = Sha256::digest(
             serde_json::to_vec(&(

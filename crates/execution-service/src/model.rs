@@ -150,7 +150,7 @@ pub struct Change {
     pub expected_revision: i64,
 }
 #[cfg(test)]
-#[path = "../../tests/execution/model_unit.rs"]
+#[path = "../tests/model_unit.rs"]
 mod tests;
 
 /// Native exchange phases; database values are decoded fail-closed.
@@ -178,7 +178,7 @@ impl AttemptPhase {
     }
 }
 #[cfg(test)]
-#[path = "../../tests/execution/model_phase_unit.rs"]
+#[path = "../tests/model_phase_unit.rs"]
 mod phase_tests;
 
 impl Task {
