@@ -149,7 +149,11 @@ async fn bounded_initialization_recovery() -> Result<()> {
         )
         .await;
         audit.finalize(Some(rss_mdm_audit_integration::FailureReason::Transaction));
-        ensure!(matches!(outcome, Err(crate::Error::CommitUnknown)));
+        ensure!(matches!(
+            outcome,
+            Err(crate::Error::CommitUnknown
+                | crate::Error::Authorization(rss_mdm_authorization_service::Error::CommitUnknown))
+        ));
         let durable = pg(&format!(
             "SELECT count(*) FROM mdm_access.authorization_initializations WHERE tenant_id='{TENANT}' AND instance='{}'",
             user.instance_id,
