@@ -137,13 +137,6 @@ impl ExecutionService {
     ) -> Result<Value> {
         let now = self.store.now(tx).await? / 1_000_000;
         input.validate(now)?;
-        // Windows user scope requires a channel-owned authenticated user binding; the
-        // current registration seam supplies only device identity. Never infer it from userId.
-        if matches!(input.task, Task::Windows { .. })
-            && !matches!(input.target, NativeTarget::Device)
-        {
-            return Err(Error::Unsupported.into());
-        }
         if input
             .task
             .permissions()?
@@ -162,6 +155,20 @@ impl ExecutionService {
         let (registration, registration_generation) =
             storage::current_registration(tx, device).await?;
         storage::require_source(tx, registration, input.task.source()).await?;
+        if matches!(input.task, Task::Windows { .. })
+            && matches!(input.target, NativeTarget::User { .. })
+        {
+            let tenant = self.tenant.to_string();
+            let target = input.target.clone();
+            let allowed = tx.with_connection(move |c| Box::pin(async move {
+                let profile: Option<String> = sqlx::query_scalar("SELECT q.windows_profile FROM mdm_access.registrations r JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.generation=$3 AND r.state='active'")
+                    .bind(tenant).bind(registration).bind(registration_generation).fetch_one(c).await?;
+                Ok(target.matches_windows_context((profile.as_deref()==Some("Full")).then_some(registration)))
+            })).await?;
+            if !allowed {
+                return Err(Error::Forbidden.into());
+            }
+        }
         let (scope, coordinate) =
             storage::authority(self, tx, device, registration, registration_generation).await?;
         let spec = dc::CommandSpec::new(

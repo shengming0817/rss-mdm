@@ -236,6 +236,11 @@ GRANT SELECT,INSERT ON TABLE mdm_flow.native_protection TO mdm_flow_runtime;
 GRANT USAGE ON SCHEMA mdm_flow TO mdm_command_runtime;
 
 GRANT SELECT, INSERT ON mdm_flow.native_protection TO mdm_command_runtime;
+GRANT USAGE ON SCHEMA rss_device_command TO mdm_access;
+GRANT SELECT ON rss_device_command.commands TO mdm_access;
+GRANT EXECUTE ON FUNCTION rss_device_command.save(uuid,uuid,text,bigint,text,bigint,bigint,bigint) TO mdm_access;
+GRANT SELECT ON mdm_commands.action_runs TO mdm_access;
+GRANT UPDATE(state,revision) ON mdm_commands.action_runs TO mdm_access;
 COMMIT;
 
 ALTER TABLE mdm_commands.attempt_frames ADD CONSTRAINT attempt_frames_attempt_fkey FOREIGN KEY(tenant_id,attempt) REFERENCES mdm_commands.attempts(tenant_id,id);

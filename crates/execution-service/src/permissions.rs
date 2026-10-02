@@ -14,6 +14,7 @@ pub(super) fn required(task: &Task) -> Result<Vec<P>, Error> {
             }
             rss_mdm_windows_mdm::native::Execution::SyncMl { request } => {
                 request.command_count().map_err(|_| Error::Malformed)?;
+                request.validate_poll().map_err(|_| Error::Malformed)?;
                 windows(request, &mut permissions)?;
             }
         },

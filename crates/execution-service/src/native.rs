@@ -79,7 +79,7 @@ pub async fn result_eligible_on(
         &row,
         "request",
     )?;
-    Ok(receipt_acceptance(source, c, protection, &input, &row, true, None).await? == Some(true))
+    Ok(receipt_acceptance(source, c, protection, p, &input, &row, true, None).await? == Some(true))
 }
 async fn collection_result_eligible(
     source: &dyn crate::source_authority::SourceAuthority,
@@ -237,14 +237,23 @@ pub async fn receive_on(
             // Atomic rollback is a new receipt, not a replay of a child's earlier success.
             // Recheck current permission/deadline/generation instead of inheriting its acceptance.
             let old = if status == old_status { old } else { None };
-            let accepted =
-                receipt_acceptance(source, c, protection, &task_request, &row, new_status, old)
-                    .await?;
+            let accepted = receipt_acceptance(
+                source,
+                c,
+                protection,
+                p,
+                &task_request,
+                &row,
+                new_status,
+                old,
+            )
+            .await?;
             let old_result: Option<bool> = item.try_get("result_accepted").map_err(db)?;
             let result_accepted = receipt_acceptance(
                 source,
                 c,
                 protection,
+                p,
                 &task_request,
                 &row,
                 new_result,
@@ -431,6 +440,9 @@ pub async fn send_on(
     p: &DevicePrincipal,
     response: &mut Message,
     authenticated: bool,
+    user_available: bool,
+    provider_id: &str,
+    management_urls: &[String],
     limits: &CodecLimits,
 ) -> std::result::Result<bool, Error> {
     if !authenticated {
@@ -492,13 +504,35 @@ pub async fn send_on(
         {
             continue;
         }
-        // A user request must be served by its independently authenticated user context.
-        if !matches!(op.target, NativeTarget::Device) {
+        if !op.target.matches_windows_context(p.user_context())
+            || (matches!(op.target, NativeTarget::User { .. }) && !user_available)
+        {
             continue;
         }
         let Task::Windows { request } = &op.task else {
             return Err(protocol());
         };
+        if let W::SyncMl { request } = request {
+            let reason = if request
+                .requires_linked_enrollment()
+                .map_err(|_| Error::Malformed)?
+            {
+                Some("linked_enrollment_required")
+            } else if request.validate_provider(provider_id).is_err() {
+                Some("enrollment_provider_scope")
+            } else if request.management_addresses().map_or(true, |urls| {
+                urls.iter().any(|u| !management_urls.contains(u))
+            }) {
+                Some("management_address_not_configured")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
+                    .bind(&tenant).bind(op.operation_id).bind(serde_json::json!({"platform":"windows","reason":reason})).execute(&mut *c).await.map_err(db)?;
+                continue;
+            }
+        }
         let old=sqlx::query("SELECT a.id,a.ordinal,a.phase,a.session,a.platform FROM mdm_commands.attempts a WHERE a.tenant_id=$1::uuid AND a.operation=$2 ORDER BY a.ordinal DESC LIMIT 1").bind(&tenant).bind(op.operation_id).fetch_optional(&mut *c).await.map_err(db)?;
         let accepted = if let Some(old) = &old {
             let items = sqlx::query("SELECT kind,status,receipt_accepted,value,result_accepted FROM mdm_commands.attempt_items WHERE tenant_id=$1::uuid AND attempt=$2")
@@ -530,7 +564,17 @@ pub async fn send_on(
         };
         let fresh = cap
             .as_ref()
-            .map(|(v, e)| context(v, *e as u32, Scope::Device))
+            .map(|(v, e)| {
+                context(
+                    v,
+                    *e as u32,
+                    if matches!(op.target, NativeTarget::User { .. }) {
+                        Scope::User
+                    } else {
+                        Scope::Device
+                    },
+                )
+            })
             .transpose()?;
         let frozen = old
             .as_ref()
@@ -541,7 +585,74 @@ pub async fn send_on(
             .map(|v| serde_json::from_value::<Context>(v).map_err(|_| protocol()))
             .transpose()?;
         let platform = frozen.or(fresh);
+        let binding = match (request, platform) {
+            (W::SyncMl { request }, Some(platform)) => request
+                .enrollment_binding(provider_id, platform)
+                .map_err(|_| Error::Unsupported)?,
+            _ => None,
+        };
+        if let (Some(old), Some(binding)) = (&old, &binding) {
+            if old.try_get::<String, _>("phase").map_err(db)? == "prepare" && accepted {
+                let attempt: Uuid = old.try_get("id").map_err(db)?;
+                let items=sqlx::query("SELECT command,item_ordinal,uri,value FROM mdm_commands.attempt_items WHERE tenant_id=$1::uuid AND attempt=$2 AND kind='get'")
+                    .bind(&tenant).bind(attempt).fetch_all(&mut *c).await.map_err(db)?;
+                let mut matches = items.len() == binding.expected.len();
+                for item in items {
+                    let uri: String = item.try_get("uri").map_err(db)?;
+                    let sealed: Option<Vec<u8>> = item.try_get("value").map_err(db)?;
+                    let value = if let Some(sealed) = sealed {
+                        let aad = result_aad(
+                            p.tenant(),
+                            p.registration(),
+                            p.generation(),
+                            attempt,
+                            item.try_get("command").map_err(db)?,
+                            item.try_get("item_ordinal").map_err(db)?,
+                        )?;
+                        Some(
+                            protection
+                                .open_bytes(&sealed, &aad)
+                                .map_err(|_| protocol())?,
+                        )
+                    } else {
+                        None
+                    };
+                    matches &= binding.expected.get(&uri).is_some_and(|expected| {
+                        expected.matches(
+                            Some(200),
+                            value
+                                .as_ref()
+                                .and_then(|v| std::str::from_utf8(v.expose()).ok()),
+                        )
+                    });
+                }
+                if !matches {
+                    sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
+                        .bind(&tenant).bind(op.operation_id).bind(serde_json::json!({"platform":"windows","reason":"enrollment_account_scope"})).execute(&mut *c).await.map_err(db)?;
+                    continue;
+                }
+            }
+        }
         let (ordinal, phase) = match (&old, request) {
+            (None, W::SyncMl { .. }) if binding.is_some() => (1, AttemptPhase::Prepare),
+            (Some(old), W::SyncMl { .. })
+                if binding.is_some()
+                    && old.try_get::<String, _>("phase").map_err(db)? == "prepare" =>
+            {
+                if accepted {
+                    (
+                        old.try_get::<i64, _>("ordinal").map_err(db)? + 1,
+                        AttemptPhase::Execute,
+                    )
+                } else if old.try_get::<i64, _>("session").map_err(db)? != session {
+                    (
+                        old.try_get::<i64, _>("ordinal").map_err(db)? + 1,
+                        AttemptPhase::Prepare,
+                    )
+                } else {
+                    continue;
+                }
+            }
             (None, W::Msi { .. }) => (1, AttemptPhase::Prepare),
             (None, _) => (1, AttemptPhase::Execute),
             (Some(old), W::Msi { .. })
@@ -576,6 +687,14 @@ pub async fn send_on(
                 let Some(platform) = platform else {
                     continue;
                 };
+                if !request
+                    .management_addresses()
+                    .map_err(|_| Error::Malformed)?
+                    .is_empty()
+                    && old.try_get::<i64, _>("session").map_err(db)? == session
+                {
+                    continue;
+                }
                 if request
                     .effect_plan(platform)
                     .map_err(|_| Error::Unsupported)?
@@ -597,7 +716,9 @@ pub async fn send_on(
         if ordinal > 32 {
             continue;
         }
-        let readback = if phase == AttemptPhase::Observe {
+        let readback = if phase == AttemptPhase::Prepare && binding.is_some() {
+            binding
+        } else if phase == AttemptPhase::Observe {
             let W::SyncMl { request } = request else {
                 return Err(protocol());
             };
@@ -790,7 +911,8 @@ pub async fn replay_on(
         let approval: ExecutionAuthority =
             serde_json::from_str(&row.try_get::<String, _>("approval").map_err(db)?)
                 .map_err(|_| protocol())?;
-        if request.deadline <= now
+        if !request.target.matches_windows_context(p.user_context())
+            || request.deadline <= now
             || !matches!(
                 row.try_get::<String, _>("status").map_err(db)?.as_str(),
                 "published" | "received"
@@ -809,11 +931,15 @@ async fn receipt_acceptance(
     source: &dyn crate::source_authority::SourceAuthority,
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
+    p: &DevicePrincipal,
     request: &Create,
     row: &sqlx::postgres::PgRow,
     received: bool,
     old: Option<bool>,
 ) -> std::result::Result<Option<bool>, Error> {
+    if !request.target.matches_windows_context(p.user_context()) {
+        return Ok(Some(false));
+    }
     if old.is_some() || !received {
         return Ok(old);
     }

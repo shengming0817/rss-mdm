@@ -53,6 +53,9 @@ pub enum WindowsReception {
 }
 /// Protocol preparation retains adapter-private session state without transferring its owner.
 pub struct PreparedWindows {
+    pub provider_id: String,
+    pub management_urls: Vec<String>,
+    pub user_available: bool,
     pub input: rss_mdm_windows_mdm::syncml::Message,
     pub history: Option<rss_mdm_windows_mdm::syncml::Expected>,
     pub response: rss_mdm_windows_mdm::syncml::Message,
@@ -64,6 +67,18 @@ pub struct PreparedWindows {
 }
 /// One request's channel participant. Every method borrows the original transaction.
 pub trait WindowsSession: Send {
+    /// Channel-owned prerequisite reads can authorize a further bounded data fragment.
+    fn result_eligible<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        key: &'a rss_mdm_native_protection::Protector,
+        p: &'a DevicePrincipal,
+        session: u32,
+        reference: &'a rss_mdm_windows_mdm::syncml::Reference,
+    ) -> Pending<'a, Option<bool>> {
+        let _ = (c, key, p, session, reference);
+        Box::pin(async { Ok(None) })
+    }
     #[allow(clippy::too_many_arguments)]
     fn collect<'a>(
         &'a mut self,

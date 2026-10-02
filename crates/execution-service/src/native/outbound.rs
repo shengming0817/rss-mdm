@@ -88,7 +88,7 @@ pub(super) async fn receive(
         } else {
             None
         };
-        let accepted = receipt_acceptance(source, c, key, &input, row, true, old_accept).await?;
+        let accepted = receipt_acceptance(source, c, key, p, &input, row, true, old_accept).await?;
         sqlx::query("UPDATE mdm_commands.attempt_frames SET status=$5,accepted=$6,received_at=coalesce(received_at,floor(extract(epoch FROM clock_timestamp()))::bigint) WHERE tenant_id=$1::uuid AND attempt=$2 AND message=$3 AND command=$4")
             .bind(p.tenant().to_string()).bind(attempt).bind(msg).bind(command).bind(code).bind(accepted).execute(&mut *c).await.map_err(db)?;
         if terminal_status(code) {
@@ -129,7 +129,7 @@ pub async fn continue_on(
         &row,
         "request",
     )?;
-    if receipt_acceptance(source, c, key, &input, &row, true, None).await? != Some(true) {
+    if receipt_acceptance(source, c, key, p, &input, &row, true, None).await? != Some(true) {
         return Ok(Continuation::Abort);
     };
     let status: Option<i32> = row.try_get("status").map_err(db)?;
