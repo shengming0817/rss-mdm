@@ -1,16 +1,12 @@
 //! Authored Policy is the durable authority; execution progress never edits it.
-use super::freeze_inputs::{freeze_collection, freeze_script_in};
 use crate::{
     Error,
     authorization::{Permission, context::AuthorizedPrincipal},
     transaction::*,
 };
 use rss_mdm_audit_integration::{Fact, RequestAudit};
-use rss_mdm_execution_service::action_contract::{
-    Architecture, ExecutionInput, FrozenAction, FrozenNativeCollection, FrozenSoftwareAction,
-    Platform,
-};
-use rss_mdm_policy::{Action, Definition, Exit, Frequency, ResourceBinding, SoftwareIntent};
+use rss_mdm_execution_service::action_contract::{Architecture, Platform};
+use rss_mdm_policy::{Action, Definition};
 use rss_mdm_resource as resource;
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde::{Deserialize, Serialize};
@@ -18,21 +14,18 @@ use serde_json::{Value, json};
 use sqlx::Row;
 use uuid::Uuid;
 
-pub mod admission;
 pub mod agent_install;
 pub mod enrollment;
-pub mod onboarding;
 pub mod preview;
 pub mod reconcile;
 pub mod rerun;
-pub mod software;
 pub mod storage;
 
 use rss_mdm_execution_service::frozen::Frozen;
 pub use rss_mdm_policy::{Change, Policy};
 pub struct Policies {
     pub planning: std::sync::Arc<super::Planning>,
-    pub execution: std::sync::Arc<crate::execution::ExecutionService>,
+    pub execution: std::sync::Arc<rss_mdm_execution_service::ExecutionService>,
 }
 impl Policies {
     pub async fn change(
@@ -115,8 +108,7 @@ impl Policies {
             } = &definition.action
         {
             Some(
-                self.planning
-                    .catalog
+                self.execution
                     .verify_script(resource, parameters, self.execution.content.as_ref())
                     .await?,
             )
@@ -179,7 +171,7 @@ impl Policies {
                         } else if matches!(policy.definition.action, Action::RequestMdmEnrollment { .. }) {
                             if s.execution.signer.is_none() { return Err(Error::Unsupported.into()); }
                             Frozen::MdmEnrollment { action: Box::new(enrollment::freeze(p, &authorization, &policy.definition.action, &s.execution.enrollment_entries)?) }
-                        } else { s
+                        } else { s.execution
                             .freeze_in(
                                 tx,
                                 &policy.definition.action,
@@ -227,206 +219,8 @@ impl Policies {
         )
         .await
     }
-    pub async fn freeze_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        action: &Action,
-        verified: Option<&rss_mdm_content_service::Verified>,
-        owner: Option<rss_mdm_execution_service::configuration::Owner>,
-    ) -> Result<Frozen> {
-        let binding = action.resource().ok_or(Error::Unsupported)?;
-        let version = self
-            .planning
-            .catalog
-            .active_version_in(tx, binding.id(), binding.version())
-            .await?;
-        if let (
-            ResourceBinding::Software(selection),
-            Action::Software {
-                delivery,
-                intent,
-                admission_operation,
-                schedule,
-                run_lifetime_seconds,
-                ..
-            },
-        ) = (binding, action)
-        {
-            if version.kind() != resource::Kind::Software {
-                return Err(Error::Malformed.into());
-            }
-            let targets = selection
-                .variants
-                .iter()
-                .map(|(target, key)| {
-                    let (platform, architecture) = target.parts();
-                    (software::target(platform, architecture), key.clone())
-                })
-                .collect::<Vec<_>>();
-            self.execution
-                .software
-                .freeze_in(
-                    tx,
-                    rss_mdm_software_service::preparation::FreezeRequest {
-                        resource: binding.id(),
-                        version: binding.version(),
-                        digest: version.digest().bytes(),
-                        admission: *admission_operation,
-                        uninstall: matches!(intent, SoftwareIntent::ExplicitUninstall),
-                        targets: &targets,
-                    },
-                )
-                .await?;
-            let action = FrozenSoftwareAction {
-                delivery: delivery.clone(),
-                resource_digest: version.digest().bytes(),
-                resource: binding.id().to_owned(),
-                version: binding.version().to_owned(),
-                variants: selection.variants.clone(),
-                admission_operation: *admission_operation,
-                intent: *intent,
-                schedule: schedule.clone(),
-                run_lifetime_seconds: *run_lifetime_seconds,
-            };
-            return Ok(Frozen::Software {
-                action: Box::new(action),
-            });
-        }
-        if let Action::Execution {
-            parameters,
-            schedule,
-            frequency,
-            run_lifetime_seconds,
-            ..
-        } = action
-        {
-            if self.execution.signer.is_none() {
-                return Err(Error::Conflict.into());
-            }
-            let prepared = crate::resource_catalog::scripts::prepare(
-                &version,
-                binding,
-                parameters,
-                verified.ok_or(Error::Conflict)?,
-            )?;
-            return Ok(Frozen::Execution {
-                action: Box::new(
-                    freeze_script_in(
-                        tx,
-                        self.planning.tenant,
-                        &prepared,
-                        schedule.clone(),
-                        *run_lifetime_seconds,
-                    )
-                    .await?,
-                ),
-                frequency: *frequency,
-            });
-        }
-        let v = variant(&version, binding)?;
-        let exact = binding.exact().ok_or(Error::Malformed)?;
-        match (action, v.declaration()) {
-            (
-                Action::NativeCollection {
-                    schedule,
-                    frequency,
-                    run_lifetime_seconds,
-                    ..
-                },
-                resource::Declaration::NativeCollection {
-                    artifact,
-                    definition,
-                },
-            ) => {
-                if !verified.is_some_and(|v| v.matches(artifact)) {
-                    return Err(Error::Conflict.into());
-                }
-                let source = match definition.spec().adapter {
-                    resource::NativeAdapter::WindowsCsp => rss_mdm_inventory::Source::MdmWindows,
-                    _ => rss_mdm_inventory::Source::MdmApple,
-                };
-                let collection = freeze_collection(
-                    tx,
-                    self.planning.tenant,
-                    &version,
-                    v,
-                    source,
-                    definition.spec().mappings.keys(),
-                )
-                .await?;
-                Ok(Frozen::NativeCollection {
-                    frequency: *frequency,
-                    action: Box::new(FrozenNativeCollection {
-                        input: ExecutionInput {
-                            platform: exact.platform,
-                            architecture: exact.architecture,
-                            parameters: json!({}),
-                            schedule: schedule.clone(),
-                            run_lifetime_seconds: *run_lifetime_seconds,
-                        },
-                        definition: definition.clone(),
-                        windows_queries: if definition.spec().adapter
-                            == resource::NativeAdapter::WindowsCsp
-                        {
-                            definition
-                                .spec()
-                                .mappings
-                                .values()
-                                .map(|mapping| {
-                                    rss_mdm_windows_mdm::native::Request::from_uri(
-                                        &mapping.query,
-                                        rss_mdm_windows_mdm::native::Verb::Get,
-                                        None,
-                                        rss_mdm_windows_mdm::native::Scope::Device,
-                                    )
-                                    .map_err(|_| Error::Unsupported)
-                                })
-                                .collect::<std::result::Result<_, _>>()?
-                        } else {
-                            Vec::new()
-                        },
-                        grants: Default::default(),
-                        collection,
-                        resource_digest: version.digest().bytes(),
-                    }),
-                })
-            }
-            (
-                Action::Configuration { exit, .. },
-                resource::Declaration::Configuration { artifact },
-            ) => {
-                let verified = verified
-                    .filter(|v| v.matches(artifact))
-                    .ok_or(Error::Conflict)?;
-                let native =
-                    rss_mdm_execution_service::configuration::Configuration::read(verified)?;
-                if matches!(exit, Exit::Remove) && native.remove.is_none() {
-                    return Err(Error::Unsupported.into());
-                }
-                let expected = match exact.platform {
-                    Platform::Windows => rss_mdm_inventory::ReportSource::MdmWindows,
-                    Platform::Macos => rss_mdm_inventory::ReportSource::MdmApple,
-                };
-                if native.apply.source() != expected {
-                    return Err(Error::Malformed.into());
-                }
-                Ok(Frozen::Configuration {
-                    native: rss_mdm_execution_service::configuration::Protected::seal(
-                        &self.execution.protection,
-                        tx.tenant_id(),
-                        owner.ok_or(Error::Malformed)?,
-                        &native,
-                    )?,
-                    grants: std::collections::BTreeMap::new(),
-                    platform: exact.platform,
-                    exit: *exit,
-                    resource_digest: version.digest().bytes(),
-                })
-            }
-            _ => Err(Error::Malformed.into()),
-        }
-    }
 }
+
 pub fn authorize_snapshot(
     snapshot: &crate::authorization::Snapshot,
     proof: &AuthorizedPrincipal,

@@ -172,11 +172,11 @@ pub(crate) async fn ordinary(
 async fn relay_crash_child() -> anyhow::Result<()> {
     use rss_transactional_messaging::{outbox::OutboxRelayStore, policy::DeliveryBudget};
     let config = crate::test_support::identity::config(case_tenant())?;
-    let service = Box::pin(crate::flow::execution::open(
+    let service = Box::pin(crate::execution_assembly::open(
         &config,
         config.native_protector()?,
         crate::test_support::identity::audit_store(&config).await?,
-        crate::flow::execution::open_content(&config, config.native_protector()?)?,
+        crate::execution_assembly::open_content(&config, config.native_protector()?)?,
         std::collections::BTreeMap::new(),
         rss_device_command_postgres::CommandClock::Postgres,
     ))

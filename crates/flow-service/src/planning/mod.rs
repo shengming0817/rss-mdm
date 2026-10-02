@@ -2,14 +2,13 @@
 use crate::assets;
 pub mod automation;
 
-mod freeze_inputs;
+pub mod execution_source;
 
 pub mod directory;
 pub mod model;
 pub mod pages;
 pub mod policies;
 pub mod references;
-pub mod remote_operations;
 
 mod scopes;
 pub mod sources;

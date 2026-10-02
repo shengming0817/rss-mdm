@@ -493,12 +493,12 @@ impl Planning {
         let tenant = self.tenant.to_string();
         let mut devices=tx.with_connection(move|c|Box::pin(async move {
             sqlx::query_scalar::<_,String>("WITH source AS (SELECT previous_resolution FROM mdm_planning.scope_runs WHERE tenant_id=$1::uuid AND id=$2 AND semantic_changed), old AS (SELECT device,matched,explanation->'reasons' AS reasons,explanation->'identityRevision' AS identity FROM mdm_planning.scope_results WHERE tenant_id=$1::uuid AND run=(SELECT previous_resolution FROM source)), new AS (SELECT device,matched,explanation->'reasons' AS reasons,explanation->'identityRevision' AS identity FROM mdm_planning.scope_results WHERE tenant_id=$1::uuid AND run=$2 AND EXISTS(SELECT 1 FROM source)) SELECT device FROM (SELECT coalesce(n.device,o.device) COLLATE \"C\" AS device FROM new n FULL JOIN old o USING(device) WHERE (n.matched,n.reasons,n.identity) IS DISTINCT FROM (o.matched,o.reasons,o.identity) UNION SELECT c.device COLLATE \"C\" FROM mdm_planning.configuration_claims c JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(c.tenant_id,c.policy) JOIN mdm_planning.configuration_objects d ON(d.tenant_id,d.device,d.user_key,d.platform,d.object_kind,d.object_key)=(c.tenant_id,c.device,c.user_key,c.platform,c.object_kind,c.object_key) WHERE c.tenant_id=$1::uuid AND p.definition->>'scope'=$4 AND d.diagnosis=$5) changes WHERE device>coalesce($3,'') COLLATE \"C\" ORDER BY device LIMIT 65")
-                .bind(tenant).bind(task).bind(after).bind(scope.to_string()).bind(crate::execution::ConfigurationDiagnosis::WaitingScope.as_str()).fetch_all(c).await
+                .bind(tenant).bind(task).bind(after).bind(scope.to_string()).bind(rss_mdm_execution_service::ConfigurationDiagnosis::WaitingScope.as_str()).fetch_all(c).await
         })).await?;
         let more = devices.len() > 64;
         devices.truncate(64);
         for device in &devices {
-            crate::planning::policies::reconcile::wake_native_in(tx, device).await?;
+            rss_mdm_execution_service::wake::wake_native_in(tx, device).await?;
         }
         if !more {
             return crate::automation::jobs::finish_job_in(tx, &self.audit_store, task, None).await;

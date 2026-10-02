@@ -1,5 +1,6 @@
 //! A draft preview reads an immutable Scope result and never publishes or creates execution work.
 use super::*;
+use rss_mdm_execution_service::sources::{onboarding, software};
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Preview {
@@ -27,8 +28,7 @@ pub async fn preview(
     } = &input.definition.action
     {
         Some(
-            s.planning
-                .catalog
+            s.execution
                 .verify_script(resource, parameters, s.execution.content.as_ref())
                 .await?,
         )
@@ -44,11 +44,11 @@ pub async fn preview(
         let binding=input.definition.action.resource();
         let version=if let Some(binding)=binding {Some(s.planning.catalog.active_version_in(tx,binding.id(),binding.version()).await?)}else{None};
         let software=if matches!(input.definition.action, Action::Software { .. }) {
-            let Frozen::Software { action }=s.freeze_in(tx, &input.definition.action, None, None).await? else {return Err(Error::Malformed.into());};
+            let Frozen::Software { action }=s.execution.freeze_in(tx, &input.definition.action, None, None).await? else {return Err(Error::Malformed.into());};
             Some(software::SoftwareExecutionPolicy::draft(input.definition.clone(),*action))
         } else if agent.is_some() {None} else if let Some(version)=version {
             if let Action::Execution {parameters,..}=&input.definition.action {
-                crate::resource_catalog::scripts::prepare(&version,binding.ok_or(Error::Malformed)?,parameters,verified.ok_or(Error::Conflict)?)?;
+                rss_mdm_execution_service::input_preparation::script(&version,binding.ok_or(Error::Malformed)?,parameters,verified.ok_or(Error::Conflict)?)?;
             } else {
                 let selected=variant(&version,binding.ok_or(Error::Malformed)?)?;
                 match (&input.definition.action,selected.declaration()) {
@@ -71,7 +71,7 @@ pub async fn preview(
             let name=device.clone();let id=input.definition.scope;
             let eligibility=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Value>("SELECT mdm_planning.scope_admission($1,$2)").bind(id).bind(name).fetch_one(c).await})).await?;
             let task_admission=if let Some(software)=&software {
-                let now=crate::execution::storage::now(tx).await?;
+                let now=rss_mdm_execution_service::storage::now(tx).await?;
                 Some(software.management_state_in(&s.execution,tx,&device,now).await?)
             }else if let Some(frozen)=&onboarding{Some(onboarding::state_in(&s.execution,tx,&device,frozen).await?)}else{None};
             items.push(json!({"device":device,"eligibility":eligibility,"taskAdmission":task_admission}));

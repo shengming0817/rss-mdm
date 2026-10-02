@@ -79,8 +79,9 @@ pub async fn manage(
 }
 
 /// Response provenance belongs to the native adapter, independently of audit formatting.
-use crate::execution::channels::Reply as ManagementReply;
+use rss_mdm_execution_service::channels::Reply as ManagementReply;
 pub async fn management_on(
+    source: &dyn rss_mdm_execution_service::source_authority::SourceAuthority,
     conn: &mut sqlx::PgConnection,
     windows: &Windows,
     protection: &rss_mdm_native_protection::Protector,
@@ -117,12 +118,13 @@ pub async fn management_on(
     let tx = conn;
     let scope = crate::device::store::revalidate(tx, principal).await?;
     lock_sessions(tx, &tenant, &registration).await?;
-    let stored = match session_decision(tx, protection, principal, message, &digest, audit).await? {
-        SessionDecision::Replay(bytes) => {
-            return Ok(ManagementReply { bytes, facts });
-        }
-        SessionDecision::Continue(stored) => stored,
-    };
+    let stored =
+        match session_decision(source, tx, protection, principal, message, &digest, audit).await? {
+            SessionDecision::Replay(bytes) => {
+                return Ok(ManagementReply { bytes, facts });
+            }
+            SessionDecision::Continue(stored) => stored,
+        };
     let registration_data = crate::enrollment_store::registration(&mut *tx, &tenant, &registration)
         .await
         .map_err(db)?;
@@ -188,7 +190,8 @@ pub async fn management_on(
         &server.nonce,
         initial,
     )?;
-    let filtered = crate::execution::native::receive_on(
+    let filtered = rss_mdm_execution_service::native::receive_on(
+        source,
         tx,
         protection,
         principal,
@@ -239,7 +242,8 @@ pub async fn management_on(
     } else {
         false
     };
-    let pending = crate::execution::native::send_on(
+    let pending = rss_mdm_execution_service::native::send_on(
+        source,
         tx,
         protection,
         principal,
@@ -642,6 +646,7 @@ enum SessionDecision {
     Continue(Option<sqlx::postgres::PgRow>),
 }
 async fn session_decision(
+    source: &dyn rss_mdm_execution_service::source_authority::SourceAuthority,
     tx: &mut sqlx::PgConnection,
     protection: &rss_mdm_native_protection::Protector,
     principal: &DevicePrincipal,
@@ -660,7 +665,7 @@ async fn session_decision(
         if let Some(old)=sqlx::query("SELECT digest,response FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3 AND message_id=$4")
             .bind(&tenant).bind(&registration).bind(&session).bind(message_id).fetch_optional(&mut *tx).await.map_err(db)? {
             if old.try_get::<String,_>("digest").map_err(db)?!=digest { return Err(Error::Conflict); }
-            crate::execution::native::replay_on(tx,protection,principal,message).await?;
+            rss_mdm_execution_service::native::replay_on(source,tx,protection,principal,message).await?;
             audit.operation(Uuid::from_bytes(Sha256::digest(format!("{registration}:{session}:{message_id}")).as_slice()[..16].try_into().expect("digest width")),"windows_management");
             audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
             let sealed: Vec<u8> = old.try_get("response").map_err(db)?;
@@ -687,19 +692,21 @@ async fn session_decision(
     Ok(SessionDecision::Continue(stored))
 }
 
-impl crate::execution::channels::Windows for super::Windows {
+impl rss_mdm_execution_service::channels::Windows for super::Windows {
     fn exchange<'a>(
         &'a self,
+        source: &'a dyn rss_mdm_execution_service::source_authority::SourceAuthority,
         connection: &'a mut sqlx::PgConnection,
         protection: &'a rss_mdm_native_protection::Protector,
         principal: &'a crate::device::DevicePrincipal,
         message: &'a rss_mdm_windows_mdm::syncml::Message,
         bytes: &'a [u8],
         audit: &'a RequestAudit,
-    ) -> crate::execution::channels::Pending<'a, crate::execution::channels::Reply> {
+    ) -> rss_mdm_execution_service::channels::Pending<'a, rss_mdm_execution_service::channels::Reply>
+    {
         Box::pin(async move {
             management_on(
-                connection, self, protection, principal, message, bytes, audit,
+                source, connection, self, protection, principal, message, bytes, audit,
             )
             .await
             .map_err(Into::into)

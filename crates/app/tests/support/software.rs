@@ -34,7 +34,7 @@ impl Drop for HttpServer {
 pub(crate) struct Fixture {
     pub(crate) directory: std::path::PathBuf,
     pub(crate) router: Router,
-    pub(crate) execution: Arc<crate::execution::ExecutionService>,
+    pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
     pub(crate) runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     pub(crate) user: Browser,
     pub(crate) client: Client,

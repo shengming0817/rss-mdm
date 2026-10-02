@@ -1,4 +1,4 @@
-use crate::{ConfigIssue, Failure, execution, planning, resource_catalog};
+use crate::{ConfigIssue, Failure, planning, resource_catalog};
 #[derive(Clone, Debug, thiserror::Error, serde::Serialize)]
 #[serde(tag = "kind", content = "reason", rename_all = "snake_case")]
 pub enum Error {
@@ -11,7 +11,7 @@ pub enum Error {
     #[error(transparent)]
     Resource(#[from] resource_catalog::error::ResourceError),
     #[error(transparent)]
-    Execution(#[from] execution::error::ExecutionError),
+    Execution(#[from] rss_mdm_execution_service::missing::ExecutionError),
     #[error(transparent)]
     Publication(#[from] rss_mdm_software_service::management::publication::error::PublicationError),
     #[error("certificate request rejected")]

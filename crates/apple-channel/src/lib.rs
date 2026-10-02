@@ -18,7 +18,7 @@ pub use error::Error;
 use rss_mdm_apple_mdm::{profile, protocol};
 use rss_mdm_authorization_service as authorization;
 use rss_mdm_certificate::apple as certificate;
-use rss_mdm_flow_service::execution;
+use rss_mdm_execution_service as execution;
 mod diagnostic;
 pub use diagnostic::{ConfigIssue, Failure};
 use rss_mdm_registration_service::{device, enrollment as registration_enrollment};
@@ -210,7 +210,7 @@ pub struct HttpState {
     pub access: std::sync::Arc<crate::Store>,
     pub apple: Option<std::sync::Arc<crate::Apple>>,
     pub clock: std::sync::Arc<dyn rss_mdm_flow_service::clock::Clock>,
-    pub execution: std::sync::Arc<crate::execution::ExecutionService>,
+    pub execution: std::sync::Arc<rss_mdm_execution_service::ExecutionService>,
     pub credentials:
         std::sync::Arc<rss_mdm_registration_service::enrollment::credentials::Credentials>,
     pub devices: std::sync::Arc<crate::device::DeviceService>,

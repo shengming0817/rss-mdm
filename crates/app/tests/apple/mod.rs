@@ -105,13 +105,13 @@ impl Fixture {
                 |_| {},
             )
             .await?;
-        let execution = crate::flow::execution::open(
+        let execution = crate::execution_assembly::open(
             config,
             config.native_protector()?,
             access
                 .audit_store(&crate::config::AuditConfig::Plain)
                 .await?,
-            crate::flow::execution::open_content(config, config.native_protector()?)?,
+            crate::execution_assembly::open_content(config, config.native_protector()?)?,
             std::collections::BTreeMap::new(),
             rss_device_command_postgres::CommandClock::Postgres,
         )

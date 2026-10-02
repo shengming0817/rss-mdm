@@ -120,7 +120,7 @@ pub(crate) struct Fixture {
     pub(crate) base: Value,
     pub(crate) builtin_collections: Vec<Value>,
     pub(crate) router: Router,
-    pub(crate) execution: Arc<crate::execution::ExecutionService>,
+    pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
     pub(crate) plan_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     pub(crate) author: Browser,
     pub(crate) author_id: String,
@@ -295,11 +295,11 @@ pub(crate) async fn worker(base: &Value) -> Result<Option<rss_runtime::ShutdownS
         return Ok(None);
     }
     let config: Config = serde_json::from_value(base.clone())?;
-    let service = crate::flow::execution::open(
+    let service = crate::execution_assembly::open(
         &config,
         config.native_protector()?,
         crate::test_support::identity::audit_store(&config).await?,
-        crate::flow::execution::open_content(&config, config.native_protector()?)?,
+        crate::execution_assembly::open_content(&config, config.native_protector()?)?,
         std::collections::BTreeMap::new(),
         rss_device_command_postgres::CommandClock::Postgres,
     )
@@ -310,7 +310,7 @@ pub(crate) async fn worker(base: &Value) -> Result<Option<rss_runtime::ShutdownS
     )?;
     let mut startup = owner.startup()?;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-        crate::execution::Resource(service.clone()),
+        rss_mdm_execution_service::Resource(service.clone()),
     ));
     let notifications = crate::worker_wake::Listener::new(
         config.access_database.options()?,

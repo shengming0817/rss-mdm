@@ -2,11 +2,9 @@
 pub mod action_admission;
 pub mod automation;
 pub mod clock;
-mod database;
 mod diagnostic;
 mod error;
 mod error_projection;
-pub mod execution;
 pub mod operation;
 pub mod planning;
 pub mod resource_catalog;

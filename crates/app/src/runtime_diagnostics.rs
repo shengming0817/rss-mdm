@@ -9,7 +9,7 @@ pub(crate) struct RuntimeDiagnostics {
     pub identity_audit: Arc<crate::identity_audit::Readiness>,
     pub apple: Option<Arc<crate::apple::Apple>>,
     pub planning: Arc<rss_mdm_flow_service::planning::Planning>,
-    pub execution: Arc<rss_mdm_flow_service::execution::ExecutionService>,
+    pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
     pub clock: Arc<dyn crate::clock::Clock>,
     pub tenant: rss_request_context::TenantId,
     pub instance: String,
@@ -285,8 +285,8 @@ impl RuntimeDiagnostics {
         }
     }
 }
-fn execution_component(state: rss_mdm_flow_service::execution::health::Health) -> Component {
-    use rss_mdm_flow_service::execution::health::Phase;
+fn execution_component(state: rss_mdm_execution_service::health::Health) -> Component {
+    use rss_mdm_execution_service::health::Phase;
     let mut result = component(ComponentName::ExecutionRecovery, state.is_ready());
     result.task = Some(task(state.task));
     if matches!(state.task, None | Some(rss_runtime::TaskState::Pending)) {

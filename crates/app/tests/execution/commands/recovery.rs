@@ -3,9 +3,9 @@
     reason = "test scenarios retain distinct authorization, failure and recovery assertions"
 )]
 use crate::execution::test_support::*;
-use crate::execution::*;
 use anyhow::ensure;
 use axum::http::{Method, StatusCode};
+use rss_mdm_execution_service::*;
 use serde_json::{Value, json};
 use sqlx::Connection;
 #[cfg(feature = "integration")]
@@ -58,11 +58,11 @@ impl Client {
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
         let config = crate::test_support::identity::config(case_tenant())?;
-        let restarted = Box::pin(crate::flow::execution::open(
+        let restarted = Box::pin(crate::execution_assembly::open(
             &config,
             config.native_protector()?,
             crate::test_support::identity::audit_store(&config).await?,
-            crate::flow::execution::open_content(&config, config.native_protector()?)?,
+            crate::execution_assembly::open_content(&config, config.native_protector()?)?,
             std::collections::BTreeMap::new(),
             rss_device_command_postgres::CommandClock::Controlled(clock.clone()),
         ))
@@ -110,7 +110,7 @@ impl Client {
             rss_reconcile::Control::new(&wake_timer, Duration::from_secs(2), &cancel);
         rss_reconcile::DurableStore::wake(
             &restarted.reconcile,
-            &rss_mdm_flow_service::execution::target(restarted.tenant, case_device()),
+            &rss_mdm_execution_service::target(restarted.tenant, case_device()),
             &wake_control,
         )
         .await?;
@@ -164,7 +164,9 @@ impl Client {
                 == "timed_out"
         );
         use rss_runtime::ManagedResource;
-        crate::execution::Resource(restarted).shutdown().await?;
+        rss_mdm_execution_service::Resource(restarted)
+            .shutdown()
+            .await?;
         pg.close().await?;
         Ok(())
     }

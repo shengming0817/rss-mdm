@@ -344,7 +344,7 @@ mod protected_tests {
             serde_json::from_value::<Protected>(serde_json::to_value(&native).unwrap()).is_err()
         );
         let old = serde_json::json!({"kind":"configuration","native":native,"grants":{},"platform":"windows","exit":"retain","resource_digest":vec![0;32]});
-        assert!(serde_json::from_value::<crate::planning::policies::Frozen>(old).is_err());
+        assert!(serde_json::from_value::<crate::frozen::Frozen>(old).is_err());
         let mut tampered = recovered.0.into_bytes();
         tampered[100] = if tampered[100] == b'A' { b'B' } else { b'A' };
         assert!(

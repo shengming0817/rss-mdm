@@ -17,7 +17,7 @@ pub struct Push {
     topic: String,
     pub expires: u64,
 }
-pub use crate::execution::channels::PushOutcome as Outcome;
+pub use rss_mdm_execution_service::channels::PushOutcome as Outcome;
 pub struct Receipt {
     pub id: Uuid,
     pub status: u16,
@@ -270,7 +270,7 @@ impl Health {
 }
 pub fn registration(
     apple: std::sync::Arc<super::Apple>,
-    execution: std::sync::Arc<crate::execution::ExecutionService>,
+    execution: std::sync::Arc<rss_mdm_execution_service::ExecutionService>,
     access: std::sync::Arc<crate::Store>,
     audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
     tenant: String,
@@ -299,7 +299,7 @@ pub fn registration(
 }
 pub async fn wake(
     push: &Push,
-    execution: &crate::execution::ExecutionService,
+    execution: &rss_mdm_execution_service::ExecutionService,
 ) -> Result<WakeHealth, Error> {
     let Some(wake) = execution.apple_wake(&push.configuration).await? else {
         return Ok(WakeHealth::Idle);
@@ -339,7 +339,7 @@ pub async fn wake(
 
 pub async fn cycle(
     apple: &super::Apple,
-    execution: &crate::execution::ExecutionService,
+    execution: &rss_mdm_execution_service::ExecutionService,
     access: &crate::Store,
     audit_store: &rss_mdm_audit_integration::AuditStore,
     tenant: &str,

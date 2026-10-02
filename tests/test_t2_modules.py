@@ -10,9 +10,9 @@ from t2_registry import MODULES, select_paths
 class ModuleImpactTests(unittest.TestCase):
     def test_collection_inputs_select_their_actual_protocol_consumers(self):
         cases={
-            'crates/flow-service/src/execution/actions/output.rs': {'execution.agent.delivery'},
-            'crates/flow-service/src/execution/actions/native_collection.rs': {'windows.management','apple.collection'},
-            'crates/flow-service/src/execution/actions/recovery.rs': {'windows.management','apple.collection'},
+            'crates/execution-service/src/actions/output.rs': {'execution.agent.delivery'},
+            'crates/execution-service/src/actions/native_collection.rs': {'windows.management','apple.collection'},
+            'crates/execution-service/src/actions/recovery.rs': {'windows.management','apple.collection'},
         }
         for path,expected in cases.items():
             selected=select_paths([path])
@@ -22,7 +22,7 @@ class ModuleImpactTests(unittest.TestCase):
     def test_script_preparation_selects_all_script_entrances(self):
         for path in ('crates/resource/src/script.rs',
                      'crates/flow-service/src/resource_catalog/scripts.rs',
-                     'crates/flow-service/src/planning/freeze_inputs.rs',
+                     'crates/execution-service/src/freeze_inputs.rs',
                      'crates/flow-service/src/resource_catalog/mod.rs'):
             selected = select_paths([path])
             self.assertFalse(selected.full, path)
@@ -36,9 +36,9 @@ class ModuleImpactTests(unittest.TestCase):
     def test_console_projection_inputs_select_their_http_consumers(self):
         for path in ('crates/resource-postgres/src/codec.rs',
                      'crates/inventory-postgres/src/lib.rs',
-                     'crates/flow-service/src/execution/directory.rs'):
+                     'crates/execution-service/src/directory.rs'):
             self.assertIn('planning.http', self.selected(path), path)
-        self.assertIn('execution.agent.history', self.selected('crates/flow-service/src/execution/directory.rs'))
+        self.assertIn('execution.agent.history', self.selected('crates/execution-service/src/directory.rs'))
         self.assertIn('planning.http', self.selected('crates/app/tests/support/agent_execution.rs'))
     def selected(self, path):
         return set(select_paths([path]).modules)
@@ -251,8 +251,8 @@ class ModuleImpactTests(unittest.TestCase):
 
     def test_shared_onboarding_paths_reach_both_native_protocols(self):
         for path in ('crates/agent-wire/src/lib.rs',
-                     'crates/flow-service/src/execution/managed_registration.rs',
-                     'crates/flow-service/src/execution/agent_install.rs',
+                     'crates/execution-service/src/managed_registration.rs',
+                     'crates/execution-service/src/native_installation.rs',
                      'crates/inventory-service/src/collection/channel.rs'):
             selection = select_paths([path])
             self.assertFalse(selection.full, path)

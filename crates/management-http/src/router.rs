@@ -20,7 +20,7 @@ pub struct Services {
     pub requests: Arc<tokio::sync::Semaphore>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub planning: Arc<rss_mdm_flow_service::planning::Planning>,
-    pub execution: Arc<rss_mdm_flow_service::execution::ExecutionService>,
+    pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
     pub policies: Arc<rss_mdm_flow_service::planning::policies::Policies>,
     pub assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
     pub catalog: Arc<rss_mdm_flow_service::resource_catalog::ResourceCatalog>,
@@ -48,7 +48,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         apple: state.apple,
     });
     let execution = Arc::new(crate::execution::http::HttpState {
-        execution: state.execution,
+        execution: state.execution.clone(),
         windows: state.windows,
         apple: state.apple,
     });
@@ -126,7 +126,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
     let protected_v3 = Router::new()
         .merge(crate::execution::routes().with_state(execution))
         .merge(crate::planning::policies::http::routes().with_state(policies.clone()))
-        .merge(crate::planning::remote_operations::routes().with_state(policies))
+        .merge(crate::remote_operations::routes().with_state(state.execution.clone()))
         .merge(crate::software_catalog::routes().with_state(state.software_catalog))
         .merge(crate::content::http::routes().with_state(state.content))
         .merge(crate::enrollment::http::routes().with_state(enrollment))

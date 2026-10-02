@@ -58,14 +58,14 @@ pub async fn admit_in(tx: &mut PgTransaction<'_>) -> Result<()> {
         ),
         (
             "execution handoff",
-            include_str!("execution/catalog.sql"),
-            include_str!("execution/catalog.json"),
+            rss_mdm_execution_service::CATALOG_SQL,
+            rss_mdm_execution_service::CATALOG_JSON,
             include_str!("storage/handoff-admission.sql"),
         ),
         (
             "authorization and execution dependencies",
-            include_str!("execution/dependencies.sql"),
-            include_str!("execution/dependencies.json"),
+            rss_mdm_execution_service::DEPENDENCIES_SQL,
+            rss_mdm_execution_service::DEPENDENCIES_JSON,
             include_str!("storage/handoff-admission.sql"),
         ),
         (

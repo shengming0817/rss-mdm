@@ -167,7 +167,7 @@ pub(crate) struct Fixture {
     pub(crate) dependency: Uuid,
     pub(crate) dependency_digest: Value,
     pub(crate) base: Value,
-    pub(crate) execution: Arc<crate::execution::ExecutionService>,
+    pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
     pub(crate) router: Router,
     pub(crate) author: Browser,
     pub(crate) resource: Uuid,
@@ -461,7 +461,7 @@ pub(crate) async fn worker(
         return Ok(None);
     }
     let config: Config = serde_json::from_value(base.clone())?;
-    let worker = crate::flow::execution::open(
+    let worker = crate::execution_assembly::open(
         &config,
         config.native_protector()?,
         crate::test_support::identity::audit_store(&config).await?,
@@ -474,7 +474,7 @@ pub(crate) async fn worker(
 }
 pub(crate) async fn worker_for(
     config: &Config,
-    worker: Arc<crate::execution::ExecutionService>,
+    worker: Arc<rss_mdm_execution_service::ExecutionService>,
 ) -> Result<Option<rss_runtime::ShutdownStack>> {
     if !crate::test_support::case::owns_worker() {
         return Ok(None);
@@ -485,7 +485,7 @@ pub(crate) async fn worker_for(
     )?;
     let mut startup = stack.startup()?;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-        crate::execution::Resource(worker.clone()),
+        rss_mdm_execution_service::Resource(worker.clone()),
     ));
     let notifications = crate::worker_wake::Listener::new(
         config.access_database.options()?,

@@ -58,7 +58,7 @@ impl Fixture {
                 |r| resources.push(r),
             )
             .await?;
-        let execution = crate::flow::execution::open(
+        let execution = crate::execution_assembly::open(
             &config,
             config.native_protector()?,
             authority.audit.clone(),
@@ -94,7 +94,7 @@ impl Fixture {
     async fn close(self) -> Result<()> {
         use rss_runtime::ManagedResource;
         self.source.inventory.close_fixture().await?;
-        crate::execution::Resource(self.source.execution.clone())
+        rss_mdm_execution_service::Resource(self.source.execution.clone())
             .shutdown()
             .await?;
         for resource in self.resources {
@@ -143,7 +143,7 @@ async fn execution_first_scan_failure_recovers_only_after_real_success() -> Resu
                 let state = fixture.source.execution.readiness.health();
                 if matches!(
                     state.recovery,
-                    rss_mdm_flow_service::execution::health::Phase::Failed(_)
+                    rss_mdm_execution_service::health::Phase::Failed(_)
                 ) {
                     ensure!(
                         state.task == Some(rss_runtime::TaskState::Running) && !state.is_ready()
@@ -183,7 +183,7 @@ async fn execution_first_scan_failure_recovers_only_after_real_success() -> Resu
             loop {
                 let state = fixture.source.execution.readiness.health();
                 if state.recovery
-                    == rss_mdm_flow_service::execution::health::Phase::Failed(
+                    == rss_mdm_execution_service::health::Phase::Failed(
                         rss_reconcile::ErrorKind::Deadline,
                     )
                 {

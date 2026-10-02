@@ -27,29 +27,29 @@ pub fn wrap(router: Router, envelope: Envelope) -> Router {
 fn classify(error: Option<&Error>) -> Option<ResponseFailure> {
     match error {
         Some(Error::Service(e)) => {
-            match rss_mdm_flow_service::execution::channels::Rejection::from(e.clone()) {
-                rss_mdm_flow_service::execution::channels::Rejection::CommitUnknown => {
+            match rss_mdm_execution_service::channels::Rejection::from(e.clone()) {
+                rss_mdm_execution_service::channels::Rejection::CommitUnknown => {
                     Some(ResponseFailure::CommitUnknown)
                 }
-                rss_mdm_flow_service::execution::channels::Rejection::RollbackFailed => {
+                rss_mdm_execution_service::channels::Rejection::RollbackFailed => {
                     Some(ResponseFailure::RollbackFailed)
                 }
-                rss_mdm_flow_service::execution::channels::Rejection::Unauthorized
-                | rss_mdm_flow_service::execution::channels::Rejection::Forbidden => {
+                rss_mdm_execution_service::channels::Rejection::Unauthorized
+                | rss_mdm_execution_service::channels::Rejection::Forbidden => {
                     Some(ResponseFailure::Denied)
                 }
-                rss_mdm_flow_service::execution::channels::Rejection::Deadline => {
+                rss_mdm_execution_service::channels::Rejection::Deadline => {
                     Some(ResponseFailure::Deadline)
                 }
-                rss_mdm_flow_service::execution::channels::Rejection::AuditIntegrity => {
+                rss_mdm_execution_service::channels::Rejection::AuditIntegrity => {
                     Some(ResponseFailure::AuditIntegrity)
                 }
-                rss_mdm_flow_service::execution::channels::Rejection::AuditContract
-                | rss_mdm_flow_service::execution::channels::Rejection::AuditIsolation
-                | rss_mdm_flow_service::execution::channels::Rejection::AuditAdmission => {
+                rss_mdm_execution_service::channels::Rejection::AuditContract
+                | rss_mdm_execution_service::channels::Rejection::AuditIsolation
+                | rss_mdm_execution_service::channels::Rejection::AuditAdmission => {
                     Some(ResponseFailure::AuditContract)
                 }
-                rss_mdm_flow_service::execution::channels::Rejection::Audit => {
+                rss_mdm_execution_service::channels::Rejection::Audit => {
                     Some(ResponseFailure::AuditUnavailable)
                 }
                 _ => None,
@@ -196,7 +196,7 @@ fn agent_response(response: Response) -> Response {
     if response.status().is_success() {
         return response;
     }
-    use rss_mdm_flow_service::execution::channels::Rejection as R;
+    use rss_mdm_execution_service::channels::Rejection as R;
     let rejection = response
         .extensions()
         .get::<Error>()

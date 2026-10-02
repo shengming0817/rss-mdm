@@ -24,7 +24,7 @@ async fn directory(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     query: std::result::Result<
-        Query<rss_mdm_flow_service::execution::directory::Query>,
+        Query<rss_mdm_execution_service::directory::Query>,
         axum::extract::rejection::QueryRejection,
     >,
 ) -> std::result::Result<Json<Value>, Error> {
@@ -111,7 +111,7 @@ async fn approve(
 }
 
 pub struct HttpState {
-    pub execution: std::sync::Arc<crate::execution::ExecutionService>,
+    pub execution: std::sync::Arc<rss_mdm_execution_service::ExecutionService>,
     pub apple: bool,
     pub windows: bool,
 }

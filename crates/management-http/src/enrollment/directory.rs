@@ -10,7 +10,7 @@ use std::sync::Arc;
 pub struct HttpState {
     pub devices: Arc<rss_mdm_registration_service::DeviceService>,
     pub assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
-    pub execution: Arc<rss_mdm_flow_service::execution::ExecutionService>,
+    pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
     pub windows: bool,
     pub apple: bool,
 }

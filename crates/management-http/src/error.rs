@@ -8,3 +8,9 @@ impl Error {
         self.0.is_not_found()
     }
 }
+
+impl From<rss_mdm_execution_service::Error> for Error {
+    fn from(e: rss_mdm_execution_service::Error) -> Self {
+        Self(e.into())
+    }
+}

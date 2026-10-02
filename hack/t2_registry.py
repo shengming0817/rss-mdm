@@ -162,7 +162,7 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
                     'crates/inventory-service/src/collection/read.rs'),
  'assets.group_input': ('crates/inventory-service/src/assets/planning.rs',
                         'crates/inventory-service/src/assets/quality.rs'),
- 'planning.onboarding': ('crates/flow-service/src/planning/policies/enrollment.rs', 'crates/flow-service/src/planning/policies/onboarding.rs', 'crates/inventory-service/src/collection/channel.rs', 'crates/flow-service/src/execution/actions/*', 'crates/inventory-service/src/assets/channel.rs', 'crates/agent-channel/src/lib.rs'),
+ 'planning.onboarding': ('crates/flow-service/src/planning/policies/enrollment.rs', 'crates/execution-service/src/sources/onboarding.rs', 'crates/inventory-service/src/collection/channel.rs', 'crates/execution-service/src/actions/*', 'crates/inventory-service/src/assets/channel.rs', 'crates/agent-channel/src/lib.rs'),
  'planning.assets': ('crates/flow-service/src/planning/sources.rs',
                      'crates/flow-service/src/planning/automation/dispatch.rs',
                      'crates/inventory-service/src/assets/planning.rs'),
@@ -180,18 +180,18 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
  'planning.http': ('crates/management-http/src/planning/http.rs',
                    'crates/flow-service/src/planning/pages.rs',
                    'crates/management-http/src/planning/policies/http.rs'),
- 'planning.agent_policy': ('crates/flow-service/src/planning/freeze_inputs.rs',
+ 'planning.agent_policy': ('crates/execution-service/src/freeze_inputs.rs',
                            'crates/flow-service/src/planning/policies/mod.rs',
                            'crates/management-http/src/planning/policies/http.rs',
                            'crates/management-http/src/planning/policies/preview.rs',
                            'crates/flow-service/src/planning/policies/rerun.rs',
-                           'crates/flow-service/src/planning/policies/admission.rs',
+                           'crates/execution-service/src/sources/admission.rs',
                            'crates/flow-service/src/planning/policies/storage.rs'),
- 'planning.frequency': ('crates/flow-service/src/planning/policies/admission.rs',
+ 'planning.frequency': ('crates/execution-service/src/sources/admission.rs',
                         'crates/flow-service/src/planning/policies/reconcile.rs'),
- 'planning.remote': ('crates/flow-service/src/planning/remote_operations/*.rs',
-                     'crates/flow-service/src/execution/remote.rs'),
- 'planning.software': ('crates/flow-service/src/planning/policies/software.rs',
+ 'planning.remote': ('crates/execution-service/src/remote_operations/*.rs',
+                     'crates/execution-service/src/remote_execution.rs'),
+ 'planning.software': ('crates/execution-service/src/sources/software.rs',
                        'crates/flow-service/src/planning/policies/mod.rs'),
  'planning.resource_archive': ('crates/flow-service/src/resource_catalog/mod.rs',
                                'crates/flow-service/src/planning/references.rs'),
@@ -202,30 +202,30 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
                          'crates/inventory-service/src/compliance/freshness.rs'),
  'compliance.group_input': ('crates/inventory-service/src/compliance/evaluation.rs',
                             'crates/inventory-service/src/compliance/freshness.rs'),
- 'execution.agent.delivery': ('crates/flow-service/src/execution/actions/agent.rs',
-                              'crates/flow-service/src/execution/actions/production.rs',
-                              'crates/flow-service/src/execution/actions/collection.rs'),
+ 'execution.agent.delivery': ('crates/execution-service/src/actions/agent.rs',
+                              'crates/execution-service/src/actions/production.rs',
+                              'crates/execution-service/src/actions/collection.rs'),
  'execution.agent.content': ('crates/agent-channel/src/tasks.rs',
                              'crates/management-http/src/content/http.rs'),
- 'execution.agent.history': ('crates/flow-service/src/execution/actions/history.rs',),
- 'execution.agent.poll': ('crates/flow-service/src/execution/actions/poll.rs',),
- 'execution.agent.recovery': ('crates/flow-service/src/execution/actions/recovery.rs',),
+ 'execution.agent.history': ('crates/execution-service/src/actions/history.rs',),
+ 'execution.agent.poll': ('crates/execution-service/src/actions/poll.rs',),
+ 'execution.agent.recovery': ('crates/execution-service/src/actions/recovery.rs',),
  'execution.commands.admission': ('crates/management-http/src/execution/http.rs',
-                                  'crates/flow-service/src/execution/storage.rs',
-                                  'crates/flow-service/src/execution/admission.sql'),
- 'execution.commands.dispatch': ('crates/flow-service/src/execution/recovery.rs',),
- 'execution.commands.recovery': ('crates/flow-service/src/execution/recovery.rs',
-                                 'crates/flow-service/src/execution/lifecycle.rs'),
- 'execution.commands.windows': ('crates/flow-service/src/execution/native.rs',),
- 'execution.commands.onboarding': ('crates/flow-service/src/planning/policies/agent_install.rs','crates/windows-mdm/src/software.rs','crates/flow-service/src/execution/agent_install.rs','crates/flow-service/src/execution/managed_registration.rs','crates/windows-channel/src/agent_collection.rs','crates/agent-channel/src/managed.rs','crates/registration-service/src/enrollment/managed.rs'),
- 'execution.commands.configuration': ('crates/flow-service/src/execution/configuration.rs',
-                                 'crates/flow-service/src/execution/native.rs'),
- 'execution.software.offer': ('crates/flow-service/src/execution/actions/software.rs',
-                              'crates/flow-service/src/execution/actions/payload.rs'),
+                                  'crates/execution-service/src/storage.rs',
+                                  'crates/execution-service/src/admission.sql'),
+ 'execution.commands.dispatch': ('crates/execution-service/src/recovery.rs',),
+ 'execution.commands.recovery': ('crates/execution-service/src/recovery.rs',
+                                 'crates/execution-service/src/lifecycle.rs'),
+ 'execution.commands.windows': ('crates/execution-service/src/native.rs',),
+ 'execution.commands.onboarding': ('crates/flow-service/src/planning/policies/agent_install.rs','crates/windows-mdm/src/software.rs','crates/execution-service/src/native_installation.rs','crates/execution-service/src/managed_registration.rs','crates/windows-channel/src/agent_collection.rs','crates/agent-channel/src/managed.rs','crates/registration-service/src/enrollment/managed.rs'),
+ 'execution.commands.configuration': ('crates/execution-service/src/native_configuration.rs',
+                                 'crates/execution-service/src/native.rs'),
+ 'execution.software.offer': ('crates/execution-service/src/actions/software.rs',
+                              'crates/execution-service/src/actions/payload.rs'),
  'execution.software.content': ('crates/agent-channel/src/tasks.rs',
                                 'crates/management-http/src/content/http.rs'),
- 'execution.software.recovery': ('crates/flow-service/src/execution/actions/software.rs',
-                                 'crates/flow-service/src/execution/actions/recovery.rs'),
+ 'execution.software.recovery': ('crates/execution-service/src/actions/software.rs',
+                                 'crates/execution-service/src/actions/recovery.rs'),
  'software.http': ('crates/management-http/src/software_catalog.rs',),
  'content.http': ('crates/management-http/src/content/http.rs', 'crates/content-service/src/upload.rs'),
  'content.mirror': ('crates/management-http/src/content/http.rs', 'crates/content-service/src/upload.rs'),
@@ -235,7 +235,7 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
  'windows.management': ('crates/windows-channel/src/management.rs',
                         'crates/windows-channel/src/protection.rs'),
  'windows.commands': ('crates/windows-channel/src/management.rs',
-                      'crates/flow-service/src/execution/native.rs'),
+                      'crates/execution-service/src/native.rs'),
  'windows.retention': ('crates/windows-channel/src/retention.rs',),
  'windows.limits': ('crates/app/src/native/admission.rs',)}
 
@@ -261,7 +261,7 @@ add('installation.migration', selectors=('migration::tests::',), profile='empty'
     sources=('crates/app/src/migration.rs',),
     tests=('crates/app/tests/migration/mod.rs',),
     python='installation', support=('hack/t2_modules/installation.py',))
-add('timeline.http',fixtures=('identity',),selectors=('timeline_tests::',),sources=('crates/timeline-service/src/*','crates/timeline-service/schema/*','crates/management-http/src/timeline.rs','crates/registration-service/src/device/read.rs','crates/inventory-service/src/assets/mod.rs','crates/flow-service/src/execution/timeline.rs'),tests=('crates/app/tests/timeline/mod.rs',),support=('crates/app/tests/support/authority.rs','crates/app/tests/support/planning_http.rs','crates/app/tests/device/support.rs'))
+add('timeline.http',fixtures=('identity',),selectors=('timeline_tests::',),sources=('crates/timeline-service/src/*','crates/timeline-service/schema/*','crates/management-http/src/timeline.rs','crates/registration-service/src/device/read.rs','crates/inventory-service/src/assets/mod.rs','crates/execution-service/src/timeline.rs'),tests=('crates/app/tests/timeline/mod.rs',),support=('crates/app/tests/support/authority.rs','crates/app/tests/support/planning_http.rs','crates/app/tests/device/support.rs'))
 MODULES['timeline.http']=replace(MODULES['timeline.http'],db_mode='fresh',policies=(
     CasePolicy('timeline_tests::existing_business_facts_are_queryable_over_real_http','fresh','objects',('identity','windows')),
     CasePolicy('timeline_tests::administrators_use_existing_access_and_tenant_isolation_is_preserved','fresh','pair',('identity',)),
@@ -322,7 +322,7 @@ add('api.identity_context', selectors=('api::t2::identity_context::',), fixtures
     tests=('crates/app/tests/api/identity_context.rs',))
 add('diagnostics.http', selectors=('api::t2::runtime_diagnostics::',), fixtures=('identity','local_worker'),
     sources=('crates/app/src/runtime_diagnostics.rs', 'crates/management-http/src/runtime_diagnostics.rs',
-             'crates/flow-service/src/execution/health.rs', 'crates/flow-service/src/execution/recovery.rs',
+             'crates/execution-service/src/health.rs', 'crates/execution-service/src/recovery.rs',
              'crates/inventory-service/src/inventory_runtime/diagnostics.rs',
              'crates/flow-service/src/planning/automation/health.rs'),
     tests=('crates/app/tests/api/runtime_diagnostics.rs','crates/app/tests/api/execution_health.rs',))
@@ -687,7 +687,7 @@ consume(('crates/compliance/src/*', 'crates/compliance-postgres/src/*', 'crates/
         'compliance.storage compliance.http compliance.evaluation compliance.recovery compliance.group_input')
 consume(('crates/resource/src/script.rs', 'crates/flow-service/src/resource_catalog/scripts.rs'),
         'planning.agent_policy planning.remote planning.frequency execution.agent.delivery execution.agent.content execution.agent.recovery')
-consume(('crates/flow-service/src/planning/freeze_inputs.rs', 'crates/flow-service/src/resource_catalog/mod.rs'),
+consume(('crates/execution-service/src/freeze_inputs.rs', 'crates/flow-service/src/resource_catalog/mod.rs'),
         'planning.agent_policy planning.remote planning.onboarding')
 TASK_CONSUMERS = 'planning.onboarding planning.policy planning.agent_policy planning.frequency planning.remote planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
 consume(('crates/agent-wire/src/tasks.rs', 'crates/agent-wire/schema/task-*.json',
@@ -702,13 +702,13 @@ consume(('crates/agent-wire/src/onboarding.rs',),
 consume(('crates/agent-wire/schema/managed-registration-request-v5.schema.json',),
         'execution.commands.onboarding apple.onboarding')
 # Native onboarding shares one durable installation and managed-registration owner.
-consume(('crates/flow-service/src/execution/agent_install.rs',
-         'crates/flow-service/src/execution/managed_registration.rs',
+consume(('crates/execution-service/src/native_installation.rs',
+         'crates/execution-service/src/managed_registration.rs',
          'crates/flow-service/src/planning/policies/agent_install.rs',
          'crates/agent-channel/src/managed.rs',
          'crates/registration-service/src/enrollment/managed.rs'),
         'execution.commands.onboarding apple.onboarding')
-consume(('crates/flow-service/src/planning/policies/onboarding.rs',
+consume(('crates/execution-service/src/sources/onboarding.rs',
          'crates/inventory-service/src/collection/channel.rs',
          'crates/inventory-service/src/assets/channel.rs',
          'crates/flow-service/src/planning/automation/scopes.rs'),
@@ -733,17 +733,17 @@ consume(('crates/registration-service/src/device/*', 'crates/registration-servic
         'device.binding device.revocation device.recovery device.admission agent.registration agent.reports windows.issuance windows.management apple.identity inventory.runtime execution.agent.delivery')
 consume(('crates/registration-service/src/enrollment.rs', 'crates/registration-service/src/enrollment/*'),
         'enrollment.http enrollment.recovery agent.registration windows.enrollment apple.scep')
-consume(('crates/flow-service/src/planning/remote_operations/*',), 'planning.remote')
-consume(('crates/flow-service/src/planning/policies/software.rs',),
+consume(('crates/execution-service/src/remote_operations/*',), 'planning.remote')
+consume(('crates/execution-service/src/sources/software.rs',),
         'planning.software execution.software.offer execution.software.recovery')
 consume(('crates/flow-service/src/planning/policies/*',), 'planning.policy planning.agent_policy planning.frequency')
 consume(('crates/flow-service/src/planning/automation/groups.rs',), 'planning.group_scope assets.group_input compliance.group_input')
 consume(('crates/flow-service/src/planning/automation/scopes.rs',), 'planning.scope planning.group_scope planning.frequency planning.remote planning.software')
-consume(('crates/flow-service/src/execution/actions/poll.rs',), 'execution.agent.poll execution.agent.delivery')
-consume(('crates/flow-service/src/execution/actions/history.rs',), 'execution.agent.history')
-consume(('crates/flow-service/src/execution/actions/software.rs',), 'execution.software.offer execution.software.content execution.software.recovery')
-consume(('crates/flow-service/src/execution/actions/agent.rs',), 'execution.agent.delivery execution.agent.content execution.agent.recovery')
-consume(('crates/flow-service/src/execution/actions/recovery.rs',), 'execution.agent.recovery execution.software.recovery')
+consume(('crates/execution-service/src/actions/poll.rs',), 'execution.agent.poll execution.agent.delivery')
+consume(('crates/execution-service/src/actions/history.rs',), 'execution.agent.history')
+consume(('crates/execution-service/src/actions/software.rs',), 'execution.software.offer execution.software.content execution.software.recovery')
+consume(('crates/execution-service/src/actions/agent.rs',), 'execution.agent.delivery execution.agent.content execution.agent.recovery')
+consume(('crates/execution-service/src/actions/recovery.rs',), 'execution.agent.recovery execution.software.recovery')
 AUDITED_MODULES = 'diagnostics.http audit.receipts audit.integrity audit.recovery audit.budget authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission identity.audit enrollment.http enrollment.recovery device.binding device.revocation device.recovery device.admission agent.registration agent.reports assets.http planning.http planning.policy planning.agent_policy planning.frequency planning.remote planning.software planning.onboarding planning.group_scope planning.recovery planning.resource_archive compliance.http compliance.recovery software.catalog software.http content.http content.mirror content.gc execution.agent.delivery execution.agent.content execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery execution.commands.admission execution.commands.dispatch execution.commands.recovery execution.commands.windows execution.commands.configuration execution.commands.onboarding windows.issuance windows.management windows.commands apple.scep apple.collection apple.profile apple.policy apple.onboarding apple.renewal apple.identity apple.push publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery'
 consume(('crates/audit-integration/src/*',), AUDITED_MODULES)
 consume(('crates/flow-service/src/transaction.rs',), ' '.join(name for name in AUDITED_MODULES.split() if MODULES[name].build == APP))
@@ -947,7 +947,7 @@ for name, module in list(MODULES.items()):
 MODULES['planning.http'] = replace(MODULES['planning.http'], production_inputs=(*MODULES['planning.http'].production_inputs,
     'crates/resource-postgres/src/codec.rs',
     'crates/inventory-postgres/src/lib.rs',
-    'crates/flow-service/src/execution/directory.rs',
+    'crates/execution-service/src/directory.rs',
     'crates/registration-service/src/device/directory.rs',
     'crates/inventory-service/src/assets/directory.rs',
     'crates/inventory-service/src/groups/directory.rs',
@@ -958,7 +958,7 @@ MODULES['planning.http'] = replace(MODULES['planning.http'], production_inputs=(
     'crates/management-http/src/enrollment/directory.rs',
     'crates/management-http/src/resource_catalog/http.rs'), support_inputs=(*MODULES['planning.http'].support_inputs, 'crates/app/tests/support/agent_execution.rs'))
 MODULES['execution.agent.history'] = replace(MODULES['execution.agent.history'], production_inputs=(*MODULES['execution.agent.history'].production_inputs,
-    'crates/flow-service/src/execution/directory.rs', 'crates/management-http/src/execution/http.rs'))
+    'crates/execution-service/src/directory.rs', 'crates/management-http/src/execution/http.rs'))
 
 TOOL_INPUTS = {
     'hack/t2_context.py': ('test_t2_context', 'test_t2_fixtures'),
@@ -1091,16 +1091,16 @@ def select_paths(paths):
         tools.update(all_tools())
     return Impact(full, tuple(sorted(modules)), tuple(sorted(tools)), tuple(sorted(reasons)))
 
-MODULES['execution.commands.windows'] = replace(MODULES['execution.commands.windows'], production_inputs=(*MODULES['execution.commands.windows'].production_inputs, 'crates/flow-service/src/execution/directory.rs', 'crates/management-http/src/execution/http.rs'), support_inputs=(*MODULES['execution.commands.windows'].support_inputs, 'crates/app/tests/support/agent_execution.rs'))
+MODULES['execution.commands.windows'] = replace(MODULES['execution.commands.windows'], production_inputs=(*MODULES['execution.commands.windows'].production_inputs, 'crates/execution-service/src/directory.rs', 'crates/management-http/src/execution/http.rs'), support_inputs=(*MODULES['execution.commands.windows'].support_inputs, 'crates/app/tests/support/agent_execution.rs'))
 
 MODULES['windows.management'] = replace(MODULES['windows.management'], test_inputs=(*MODULES['windows.management'].test_inputs, 'crates/app/tests/windows/collection.rs'), production_inputs=(*MODULES['windows.management'].production_inputs, 'crates/windows-channel/src/template_collection.rs'))
 consume(("crates/software-service/tests/support/imports.rs",), "software.catalog")
 
-consume(('crates/flow-service/src/execution/actions/output.rs',), 'execution.agent.delivery')
-consume(('crates/flow-service/src/execution/actions/native_collection.rs',
-         'crates/flow-service/src/execution/actions/recovery.rs'), 'windows.management apple.collection')
+consume(('crates/execution-service/src/actions/output.rs',), 'execution.agent.delivery')
+consume(('crates/execution-service/src/actions/native_collection.rs',
+         'crates/execution-service/src/actions/recovery.rs'), 'windows.management apple.collection')
 
-consume(('crates/native-protection/*', 'crates/flow-service/src/execution/input_storage.rs', 'crates/execution-service/src/protection.rs'), 'windows.enrollment windows.management execution.commands.admission execution.commands.windows execution.commands.configuration execution.commands.onboarding apple.profile')
+consume(('crates/native-protection/*', 'crates/execution-service/src/input_storage.rs', 'crates/execution-service/src/protection.rs'), 'windows.enrollment windows.management execution.commands.admission execution.commands.windows execution.commands.configuration execution.commands.onboarding apple.profile')
 
 consume(('crates/content-service/src/protected.rs',), 'content.http content.gc execution.commands.configuration planning.remote')
 

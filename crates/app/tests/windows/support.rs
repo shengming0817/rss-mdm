@@ -189,13 +189,13 @@ impl Host {
         )
         .await?;
         let (management, timeline) = management(&config, &store).await?;
-        let execution = crate::flow::execution::open(
+        let execution = crate::execution_assembly::open(
             &config,
             config.native_protector()?,
             store
                 .audit_store(&crate::config::AuditConfig::Plain)
                 .await?,
-            crate::flow::execution::open_content(&config, config.native_protector()?)?,
+            crate::execution_assembly::open_content(&config, config.native_protector()?)?,
             std::collections::BTreeMap::new(),
             command_clock,
         )

@@ -1,4 +1,5 @@
 use super::*;
+use rss_mdm_execution_service::sources::{onboarding, software};
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DirectoryQuery {
@@ -108,7 +109,7 @@ pub async fn devices(
     run(&service.planning.audit_store,&service.planning.runtime,service.planning.tenant,audit,(&service,&auth,audit,after),|ctx,tx|Box::pin(async move {
         let (s,a,audit,after)=ctx;a.manage(Permission::PolicyRead)?;a.require_all_devices(Permission::InventoryRead)?;
         let p=storage::read_in(s.planning.policy_store.reader(),tx,id).await?.ok_or(Error::Planning(crate::planning::error::PlanningError::Missing(crate::planning::error::Missing::Policy)))?;
-        let onboarding=if matches!(p.definition.action,Action::EnsureAgentInstalled{..}|Action::RequestMdmEnrollment{..}){Some(storage::version_in(s.planning.policy_store.reader(),tx,p.version).await?.1)}else{None};
+        let onboarding=if matches!(p.definition.action,Action::EnsureAgentInstalled{..}|Action::RequestMdmEnrollment{..}){Some(rss_mdm_execution_service::sources::storage::version_in(s.planning.policy_store.reader(),tx,p.version).await?.1)}else{None};
         let software=if matches!(p.definition.action,Action::Software {..}) {Some(software::read_in(s.planning.policy_store.reader(),tx,p.version).await?)}else{None};
         let tenant=tx.tenant_id().to_string();let after=after.clone();
         let mut rows=tx.with_connection(move|c|Box::pin(async move {
@@ -117,9 +118,9 @@ pub async fn devices(
         let more=rows.len()>64;rows.truncate(64);let next=if more {rows.last().map(|r|r.try_get::<String,_>("device")).transpose()?}else{None};
         let mut items=Vec::new();for row in rows {
             let device:String=row.try_get("device")?;
-            let eligible=storage::eligible_in(tx,&p,&device).await?.is_some();
-            let withdrawn=storage::withdrawn_in(tx,&p,&device).await?;
-            let task_admission=if let Some(software)=&software {let now=crate::execution::storage::now(tx).await?;Some(software.management_state_in(&s.execution,tx,&device,now).await?)}else if let Some(frozen)=&onboarding {Some(onboarding::state_in(&s.execution,tx,&device,frozen).await?)}else{None};
+            let eligible=rss_mdm_execution_service::sources::storage::eligible_in(&s.execution.source, tx,&p,&device).await?.is_some();
+            let withdrawn=rss_mdm_execution_service::sources::storage::withdrawn_in(&s.execution.source, tx,&p,&device).await?;
+            let task_admission=if let Some(software)=&software {let now=rss_mdm_execution_service::storage::now(tx).await?;Some(software.management_state_in(&s.execution,tx,&device,now).await?)}else if let Some(frozen)=&onboarding {Some(onboarding::state_in(&s.execution,tx,&device,frozen).await?)}else{None};
             let runnable=task_admission.as_ref().is_none_or(software::TaskAdmission::is_eligible);
             items.push(json!({"device":device,"assignment":if eligible && runnable{"eligible"}else if withdrawn{"excluded"}else{"pending"},"taskAdmission":task_admission,"operationIds":row.try_get::<Vec<Uuid>,_>("operations")?,"diagnoses":row.try_get::<Vec<String>,_>("diagnoses")?}));
         }

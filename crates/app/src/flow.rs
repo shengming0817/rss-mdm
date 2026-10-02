@@ -304,8 +304,6 @@ pub(crate) async fn catalog(
     ))
 }
 
-pub(crate) mod execution;
-
 use rss_mdm_flow_service::storage;
 
 async fn admit_audit_runtime(
