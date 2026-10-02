@@ -259,13 +259,13 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
             rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(), "command_read");
         let task_id = Uuid::parse_str(task["payload"]["taskId"].as_str().unwrap())?;
         let denied = if remote {
-            f.execution
-                .queries()
+            f.queries
+                .clone()
                 .remote_action_run(&stale, parent, task_id, &audit)
                 .await
         } else {
-            f.execution
-                .queries()
+            f.queries
+                .clone()
                 .action_run(&stale, parent, task_id, &audit)
                 .await
         };
@@ -293,7 +293,7 @@ async fn device_capabilities_use_current_permissions_after_proof_capture() -> Re
             .require(Permission::ScriptExecute, Some(case_device_id()))
             .is_ok()
     );
-    let queries = f.execution.queries();
+    let queries = f.queries.clone();
     let initial = serde_json::to_value(
         queries
             .directory_capabilities(&stale, case_device_id(), true, true)
@@ -351,8 +351,8 @@ async fn capability_product_support_requires_signer_and_content_independently() 
         let f = Fixture::from_config(config).await?;
         let proof = crate::device::test_support::admin(case_tenant(), "other-a").await?;
         let capabilities = serde_json::to_value(
-            f.execution
-                .queries()
+            f.queries
+                .clone()
                 .directory_capabilities(&proof, case_device_id(), true, true)
                 .await?,
         )?;

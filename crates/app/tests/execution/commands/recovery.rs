@@ -86,8 +86,9 @@ impl Client {
             max_backoff: Duration::from_secs(1),
             max_attempts: 3,
         })?;
-        let scope = recovery_scope(restarted.tenant);
+        let scope = recovery_scope(self.app.identity.tenant);
         let report = restarted
+            .service
             .run_recovery(&scope, policy, &control, &tokio::sync::Notify::new())
             .await?;
         ensure!(
@@ -105,15 +106,24 @@ impl Client {
         );
         // Empty discovery defers structural checks. Make an actual operation due
         // before corrupting the catalog, so the worker must reject its claim.
-        let wake_timer = recovery::Timer::new();
-        let wake_control =
-            rss_reconcile::Control::new(&wake_timer, Duration::from_secs(2), &cancel);
-        rss_reconcile::DurableStore::wake(
-            &restarted.reconcile,
-            &rss_mdm_execution_service::target(restarted.tenant, case_device()),
-            &wake_control,
-        )
-        .await?;
+        let target = rss_mdm_execution_service::target(self.app.identity.tenant, case_device());
+        restarted
+            .runtime
+            .local_tx_with_context(
+                self.app.identity.tenant,
+                deadline(),
+                target,
+                |target, tx| {
+                    Box::pin(async move {
+                        rss_reconcile_postgres::messaging::wake_in(tx, target, (), |_, _| {
+                            Box::pin(async { Ok(()) })
+                        })
+                        .await
+                    })
+                },
+            )
+            .await
+            .fold(Ok, Err, Err, Err, Err, Err)?;
         sqlx::raw_sql("COMMENT ON SCHEMA rss_reconcile IS 'damaged'")
             .execute(&mut pg)
             .await?;
@@ -121,6 +131,7 @@ impl Client {
         let fatal_control =
             rss_reconcile::Control::new(&fatal_timer, Duration::from_secs(2), &cancel);
         let fatal = restarted
+            .service
             .run_recovery(&scope, policy, &fatal_control, &tokio::sync::Notify::new())
             .await;
         sqlx::raw_sql("COMMENT ON SCHEMA rss_reconcile IS 'rss-reconcile-postgres:1'")
@@ -144,7 +155,11 @@ impl Client {
         let worker_cancel = tokio_util::sync::CancellationToken::new();
         let signals = crate::worker_wake::Signals::default();
         let execution_signals = signals.execution();
-        let mut worker = Box::pin(restarted.run_worker(&worker_cancel, &execution_signals));
+        let mut worker = Box::pin(
+            restarted
+                .service
+                .run_worker(&worker_cancel, &execution_signals),
+        );
         tokio::select! {
             outcome=&mut worker => anyhow::bail!("production worker exited before publication: {outcome:?}"),
             observed=tokio::time::timeout(Duration::from_secs(5),async {
@@ -164,7 +179,7 @@ impl Client {
                 == "timed_out"
         );
         use rss_runtime::ManagedResource;
-        rss_mdm_execution_service::Resource(restarted)
+        rss_mdm_execution_service::Resource(restarted.service)
             .shutdown()
             .await?;
         pg.close().await?;

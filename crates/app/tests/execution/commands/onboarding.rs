@@ -187,9 +187,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
     // Stop producers before fault injection, then restart the existing command runtime.
     ensure!(commands.shutdown().join().await?.is_clean());
     ensure!(owner.shutdown().join().await?.is_clean());
-    host.app
-        .execution
-        .audit_store
+    host.command_audit
         .inject_next_fault(rss_audit_postgres::PgFault::BeforeCommitPending);
     let unknown = peer.mutual.post(&url).json(&input).send().await?;
     ensure!(
@@ -197,9 +195,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
             && unknown.json::<Value>().await?["code"] == "operation_unknown"
     );
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id='{}' AND channel='agent'",case_tenant()))?.trim()=="0");
-    host.app
-        .execution
-        .audit_store
+    host.command_audit
         .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
     let unknown = peer.mutual.post(&url).json(&input).send().await?;
     ensure!(
@@ -386,6 +382,7 @@ async fn start_fixture_until(
     let automation = crate::automation::Automation::connect(
         host.app.flow.planning.clone(),
         host.app.flow.assets.clone(),
+        host.app.flow.compliance.clone(),
         crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
     )
     .await?;

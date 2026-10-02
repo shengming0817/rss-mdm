@@ -84,6 +84,7 @@ impl Fixture {
             Box::pin(async move {
                 context
                     .0
+                    .reader()
                     .source_admitted_in(tx, &context.1)
                     .await
                     .map(|_| ())
@@ -128,6 +129,7 @@ impl Fixture {
             Box::pin(async move {
                 context
                     .0
+                    .reader()
                     .resolve_admitted_in(
                         tx,
                         context.1.resource().as_str(),
@@ -346,18 +348,7 @@ async fn dependency_admission_uses_exact_current_approval() -> Result<()> {
         .resolve(&dependent)
         .await
         .context("resolve approved dependency")?;
-    let preparation = Preparation::new(
-        Catalog::new(
-            fixture.runtime.clone(),
-            pg::tenant(),
-            materials::host(
-                fixture.runtime.clone(),
-                pg::audit_store_for("mdm_flow_runtime").await,
-            )
-            .audit,
-        ),
-        Default::default(),
-    );
+    let preparation = Preparation::new(catalog::Reader::new(pg::tenant()), Default::default());
     let target = Target {
         platform: r::Platform::Windows,
         architecture: r::Architecture::X86_64,

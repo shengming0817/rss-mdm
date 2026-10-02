@@ -9,15 +9,6 @@ macro_rules! view {
         pub struct $name { $(pub $field: $ty),* }
     };
 }
-view!(Group { id: Uuid, kind: rss_mdm_group_postgres::GroupKind, name: String, description: String, revision: i64, calculation_revision: i64, member_version: i64, member_count: usize, rule_version: Option<String>, deleted: bool });
-view!(GroupRead { group: Group, criteria: Option<Criteria>, member_set: Option<Uuid> });
-view!(GroupReceipt {
-    operation: Uuid,
-    group: Group,
-    added: usize,
-    removed: usize,
-    task: Option<Uuid>
-});
 view!(ScopeRead {
     id: Uuid,
     revision: u64,
@@ -30,22 +21,13 @@ view!(ScopeReceipt {
     revision: u64,
     task:Option<Uuid>
 });
-view!(JobAccepted {
-    task: Uuid,
-    kind: String,
-    target: String,
-    status_url: String
-});
-view!(TaskRead {task:Uuid,kind:String,target:String,status:String,processed:u64,members:u64,failure:Option<String>,failure_detail:Option<Value>,replacement_task:Option<Uuid>});
+use rss_mdm_inventory_service::tasks::{JobAccepted, TaskRead};
 #[derive(Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum Response {
     JobAccepted(JobAccepted),
     TaskRead(Box<TaskRead>),
-    GroupRead(GroupRead),
-    GroupPage(pages::GroupPage),
     ScopePage(pages::ScopePage),
-    GroupReceipt(GroupReceipt),
     ScopeRead(ScopeRead),
     ScopeReceipt(ScopeReceipt),
 }

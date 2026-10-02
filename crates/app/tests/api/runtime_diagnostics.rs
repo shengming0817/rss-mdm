@@ -51,7 +51,6 @@ impl Fixture {
         let flow = config
             .flow
             .open(
-                config.native_protector()?,
                 authority.audit.clone(),
                 authority.identity.tenant,
                 Arc::new(crate::clock::SystemClock),
@@ -69,7 +68,7 @@ impl Fixture {
         )
         .await?;
         let source = Arc::new(crate::runtime_diagnostics::RuntimeDiagnostics {
-            execution,
+            execution: execution.service,
             inventory,
             planning: flow.planning.clone(),
             identity_audit: authority.identity.audit_readiness.clone(),
@@ -141,7 +140,7 @@ async fn execution_first_scan_failure_recovers_only_after_real_success() -> Resu
         launch.finish();
         tokio::time::timeout(Duration::from_secs(15), async {
             loop {
-                let state = fixture.source.execution.readiness.health();
+                let state = fixture.source.execution.health();
                 if matches!(
                     state.recovery,
                     rss_mdm_execution_service::health::Phase::Failed(_)
@@ -184,7 +183,7 @@ async fn execution_first_scan_failure_recovers_only_after_real_success() -> Resu
         signals.command_recovery().notify_one();
         let failed = tokio::time::timeout(Duration::from_secs(15), async {
             loop {
-                let state = fixture.source.execution.readiness.health();
+                let state = fixture.source.execution.health();
                 if state.recovery
                     == rss_mdm_execution_service::health::Phase::Failed(
                         rss_reconcile::ErrorKind::Deadline,
@@ -214,7 +213,7 @@ async fn execution_first_scan_failure_recovers_only_after_real_success() -> Resu
         signals.command_recovery().notify_one();
         tokio::time::timeout(Duration::from_secs(15), async {
             loop {
-                if fixture.source.execution.readiness.health().is_ready() {
+                if fixture.source.execution.health().is_ready() {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -226,7 +225,7 @@ async fn execution_first_scan_failure_recovers_only_after_real_success() -> Resu
     .await;
     pg("ALTER ROLE mdm_command_runtime CONNECTION LIMIT -1")?;
     let clean = stack.shutdown().join().await?.is_clean();
-    ensure!(!fixture.source.execution.readiness.health().is_ready());
+    ensure!(!fixture.source.execution.health().is_ready());
     fixture.close().await?;
     result?;
     ensure!(clean);
@@ -247,6 +246,7 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
     let automation = crate::automation::Automation::connect(
         fixture.flow.planning.clone(),
         fixture.flow.assets.clone(),
+        fixture.flow.compliance.clone(),
         config
             .flow
             .storage
@@ -529,6 +529,7 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
     let automation = crate::automation::Automation::connect(
         fixture.flow.planning.clone(),
         fixture.flow.assets.clone(),
+        fixture.flow.compliance.clone(),
         config.flow.storage.database.options()?,
     )
     .await?;

@@ -48,44 +48,16 @@ impl From<rss_mdm_audit_integration::Error> for Error {
 }
 impl From<&rss_mdm_audit_integration::Error> for Error {
     fn from(error: &rss_mdm_audit_integration::Error) -> Self {
-        match error {
-            rss_mdm_audit_integration::Error::CommitUnknown => Self::CommitUnknown,
-            rss_mdm_audit_integration::Error::RollbackFailed => Self::RollbackFailed,
-            rss_mdm_audit_integration::Error::Audit(error) if error.is_interrupted() => {
-                Self::Unavailable(crate::Failure::RequestDeadline)
-            }
-            rss_mdm_audit_integration::Error::Receipt => {
-                Self::Unavailable(crate::Failure::AuditIntegrity)
-            }
-            rss_mdm_audit_integration::Error::Admission => {
-                Self::Unavailable(crate::Failure::AuditAdmission)
-            }
-            rss_mdm_audit_integration::Error::Isolation => {
-                Self::Unavailable(crate::Failure::AuditIsolation)
-            }
-            rss_mdm_audit_integration::Error::Fact(_) => {
-                Self::Unavailable(crate::Failure::AuditContract)
-            }
-            rss_mdm_audit_integration::Error::Audit(error) => {
-                use rss_audit_postgres::Error as Audit;
-                Self::Unavailable(match error {
-                    Audit::Admission(_) => crate::Failure::AuditAdmission,
-                    Audit::Conflict | Audit::StorageContract | Audit::IntegrityRequired => {
-                        crate::Failure::AuditIntegrity
-                    }
-                    Audit::Ledger(error) => match error {
-                        rss_ledger_postgres::Error::Storage(_)
-                        | rss_ledger_postgres::Error::Messaging(_) => crate::Failure::Audit,
-                        rss_ledger_postgres::Error::Admission(_) => crate::Failure::AuditAdmission,
-                        _ => crate::Failure::AuditIntegrity,
-                    },
-                    Audit::InvalidBound
-                    | Audit::ScopeMismatch
-                    | Audit::Protocol(_)
-                    | Audit::ReadBudgetExceeded => crate::Failure::AuditContract,
-                    _ => crate::Failure::Audit,
-                })
-            }
+        use rss_mdm_audit_integration::ErrorClass as C;
+        match error.class() {
+            C::CommitUnknown => Self::CommitUnknown,
+            C::RollbackFailed => Self::RollbackFailed,
+            C::RequestDeadline => Self::Unavailable(Failure::RequestDeadline),
+            C::AuditIntegrity => Self::Unavailable(Failure::AuditIntegrity),
+            C::AuditAdmission => Self::Unavailable(Failure::AuditAdmission),
+            C::AuditIsolation => Self::Unavailable(Failure::AuditIsolation),
+            C::AuditContract => Self::Unavailable(Failure::AuditContract),
+            C::Audit => Self::Unavailable(Failure::Audit),
         }
     }
 }

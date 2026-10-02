@@ -40,7 +40,7 @@ pub(crate) async fn open(
         Arc<rss_mdm_software_service::publication::PublicationService>,
     >,
     command_clock: rss_device_command_postgres::CommandClock,
-) -> std::result::Result<Arc<ExecutionService>, Error> {
+) -> std::result::Result<Assembly, Error> {
     let bad = || Error::Configuration(crate::ConfigIssue::Execution);
     let database = &config.execution.database;
     let tenant = TenantId::parse(&config.identity.tenant_id).map_err(|_| bad())?;
@@ -109,8 +109,8 @@ pub(crate) async fn open(
                     eprintln!("command startup: transaction failed");
                     Err(bad())
                 },
-                |_| Err(Error::Service(rss_mdm_flow_service::Error::CommitUnknown)),
-                |_| Err(Error::Service(rss_mdm_flow_service::Error::CommitUnknown)),
+                |_| Err(Error::CommitUnknown),
+                |_| Err(Error::CommitUnknown),
                 |_| {
                     eprintln!("command startup: transaction failed");
                     Err(bad())
@@ -135,44 +135,95 @@ pub(crate) async fn open(
         };
         config.agent_installation.validate()?;
         config.enrollment_entries.validate()?;
-        Ok(Arc::new(ExecutionService {
-            source: Arc::new(rss_mdm_flow_service::planning::execution_source::ExecutionSource),
-            protection: protection.clone(),
-            readiness: Default::default(),
-            software: Arc::new(rss_mdm_software_service::preparation::Preparation::new(
-                rss_mdm_software_service::catalog::Catalog::new(
-                    runtime.clone(),
-                    tenant,
-                    audit_store.clone(),
-                ),
-                exports,
-            )),
-            agent_installation: config.agent_installation.clone(),
-            enrollment_entries: config.enrollment_entries.clone(),
-            agent_store: Arc::new(rss_mdm_agent_channel::Bindings),
-            apple_store: Arc::new(rss_mdm_apple_channel::flow_store::Store {
+        let source: Arc<dyn rss_mdm_execution_service::source_authority::SourceAuthority> =
+            Arc::new(rss_mdm_flow_service::planning::execution_source::ExecutionSource);
+        let agent_store: Arc<dyn rss_mdm_execution_service::channels::Agent> =
+            Arc::new(rss_mdm_agent_channel::Bindings);
+        let apple_store: Arc<dyn rss_mdm_execution_service::channels::AppleStore> =
+            Arc::new(rss_mdm_apple_channel::flow_store::Store {
                 protection: protection.clone(),
-            }),
-            policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
-            audit_store,
-            runtime: runtime.clone(),
-            outbox,
-            store,
-            reconcile,
-            tenant,
-            instance: config.identity.instance_id.clone(),
+            });
+        let signer = config
+            .task_signing
+            .as_ref()
+            .map(crate::task_signing::open)
+            .transpose()?
+            .map(Arc::new);
+        let software = Arc::new(rss_mdm_software_service::preparation::Preparation::new(
+            rss_mdm_software_service::catalog::Reader::new(tenant),
+            exports
+                .into_iter()
+                .map(|(name, service)| (name, Arc::new(service.exports())))
+                .collect(),
+        ));
+        let inputs = Arc::new(rss_mdm_execution_service::Inputs::new(
+            rss_mdm_execution_service::InputDependencies {
+                protection: protection.clone(),
+                software,
+                agent_installation: config.agent_installation.clone(),
+                enrollment_entries: config.enrollment_entries.clone(),
+                runtime: runtime.clone(),
+                tenant,
+                content: content.clone(),
+                signing_enabled: signer.is_some(),
+            },
+        ));
+        let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(
+            rss_mdm_execution_service::queries::Dependencies {
+                source: source.clone(),
+                protection: protection.clone(),
+                agent_store: agent_store.clone(),
+                apple_store: apple_store.clone(),
+                policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
+                audit_store: audit_store.clone(),
+                runtime: runtime.clone(),
+                tenant,
+                inputs: inputs.clone(),
+                signed: signer.is_some(),
+                content_available: content.is_some(),
+            },
+        ));
+        let service = Arc::new(ExecutionService::new(
+            rss_mdm_execution_service::Dependencies {
+                source,
+                protection: protection.clone(),
+                inputs: inputs.clone(),
+                agent_store,
+                apple_store,
+                policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
+                audit_store,
+                runtime: runtime.clone(),
+                outbox,
+                store,
+                reconcile,
+                tenant,
+                instance: config.identity.instance_id.clone(),
+                content: content.clone(),
+                signer,
+            },
+        ));
+        Ok(Assembly {
+            service,
+            inputs,
+            queries,
+            protection,
             content,
-            signer: config
-                .task_signing
-                .as_ref()
-                .map(crate::task_signing::open)
-                .transpose()?
-                .map(Arc::new),
-        }))
+            runtime: runtime.clone(),
+        })
     }
     .await;
     if result.is_err() {
         runtime.close().await;
     }
     result
+}
+
+#[derive(Clone)]
+pub(crate) struct Assembly {
+    pub(crate) service: Arc<ExecutionService>,
+    pub(crate) inputs: Arc<rss_mdm_execution_service::Inputs>,
+    pub(crate) queries: Arc<rss_mdm_execution_service::queries::Queries>,
+    pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
+    pub(crate) content: Option<Arc<rss_mdm_content_service::Store>>,
+    pub(crate) runtime: Arc<PgRuntime>,
 }

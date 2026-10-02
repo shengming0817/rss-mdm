@@ -1,5 +1,6 @@
 use super::*;
 use crate::authorization::context::AuthorizedPrincipal;
+use rss_mdm_authorization_service::Permission;
 use serde::Deserialize;
 use serde_json::json;
 #[derive(Clone, Debug, Deserialize)]
@@ -18,17 +19,6 @@ fn limit() -> usize {
     64
 }
 impl Planning {
-    pub async fn group_directory(
-        &self,
-        proof: &AuthorizedPrincipal,
-        q: &rss_mdm_inventory_service::groups::directory::DirectoryQuery,
-        audit: &RequestAudit,
-    ) -> std::result::Result<Value, Error> {
-        self.inventory_groups()
-            .directory(proof, q, audit)
-            .await
-            .map_err(Into::into)
-    }
     pub async fn scope_directory(
         &self,
         proof: &AuthorizedPrincipal,

@@ -150,33 +150,40 @@ async fn gc_reference_race(
     let ready = checked.clone();
     let release = resume.clone();
     let gc = tokio::spawn(async move {
-        rss_mdm_flow_service::transaction::inspect(
-            &gc_runtime,
-            tenant,
-            (Some(candidate), ready, release),
-            |ctx, tx| {
-                Box::pin(async move {
-                    let (candidate, ready, release) = ctx;
-                    let digest = r::Digest::from_bytes(candidate.as_ref().unwrap().digest);
-                    let referenced = rp::artifact_referenced_in(tx, digest).await?;
-                    assert!(!referenced);
-                    ready.notify_one();
-                    release.notified().await;
-                    assert!(
-                        rss_mdm_content_service::service::reclaim_in(
-                            tx,
-                            candidate.take().unwrap(),
-                            || Ok(())
-                        )
-                        .await
-                        .map_err(rss_mdm_flow_service::Error::from)?
-                    );
-                    Ok(())
-                })
-            },
-            rss_mdm_flow_service::transaction::TransactionOwner::ResourceCatalog,
-        )
-        .await
+        gc_runtime
+            .local_tx_with_context(
+                tenant,
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                    std::time::Duration::from_secs(6),
+                ),
+                (Some(candidate), ready, release),
+                |ctx, tx| {
+                    Box::pin(async move {
+                        let (candidate, ready, release) = ctx;
+                        let digest = r::Digest::from_bytes(candidate.as_ref().unwrap().digest);
+                        let referenced = rp::artifact_referenced_in(tx, digest).await?;
+                        assert!(!referenced);
+                        ready.notify_one();
+                        release.notified().await;
+                        assert!(
+                            rss_mdm_content_service::service::reclaim_in(
+                                tx,
+                                candidate.take().unwrap(),
+                                || Ok(())
+                            )
+                            .await
+                            .map_err(|_| {
+                                rss_transactional_messaging_postgres::PgError::from(
+                                    sqlx::Error::Protocol("fixture content reclaim".into()),
+                                )
+                            })?
+                        );
+                        Ok(())
+                    })
+                },
+            )
+            .await
+            .fold(Ok, Err, Err, Err, Err, Err)
     });
     tokio::time::timeout(Duration::from_secs(5), checked.notified()).await?;
     let mut writer = tokio::spawn(async move {
@@ -210,7 +217,7 @@ async fn reference_and_gc_are_serialized() -> Result<()> {
     let retained = fixture
         .seed_content(case::name("retained resource").as_bytes())
         .await?;
-    let store = fixture.execution.content.as_ref().unwrap();
+    let store = fixture.content.as_ref().unwrap();
     gc_reference_race(&fixture.runtime, store).await?;
     cleanup_preserves_resource_references(
         &mut fixture.user.clone(),
@@ -234,11 +241,11 @@ async fn inherited_delete_privilege_fails_admission() -> Result<()> {
     pg(
         "CREATE ROLE mdm_content_drift; GRANT USAGE ON SCHEMA mdm_content TO mdm_content_drift; GRANT DELETE ON mdm_content.bindings TO mdm_content_drift; GRANT mdm_content_drift TO mdm_flow_runtime WITH INHERIT FALSE, SET TRUE",
     )?;
-    let rejected = rss_mdm_flow_service::storage::admit(&fixture.runtime, tenant).await;
+    let rejected = crate::flow::admit_storage(&fixture.runtime, tenant).await;
     pg(
         "REVOKE mdm_content_drift FROM mdm_flow_runtime; DROP OWNED BY mdm_content_drift; DROP ROLE mdm_content_drift",
     )?;
     ensure!(rejected.is_err());
-    rss_mdm_flow_service::storage::admit(&fixture.runtime, tenant).await?;
+    crate::flow::admit_storage(&fixture.runtime, tenant).await?;
     Ok(())
 }

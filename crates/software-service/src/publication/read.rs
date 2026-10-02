@@ -4,7 +4,6 @@ use super::{
     service::PublicationService,
     storage as db, *,
 };
-use rss_mdm_resource as r;
 use rss_mdm_software_release as rel;
 use rss_request_context::Deadline;
 use sqlx::Row;
@@ -42,72 +41,7 @@ impl PublicationService {
     pub fn native_winget(&self, ring: rel::Ring) -> bool {
         matches!(self.sources.binding(ring).driver, Driver::Winget { .. })
     }
-    pub(super) async fn published_in(
-        &self,
-        tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
-        ring: rel::Ring,
-        publication: [u8; 32],
-    ) -> InTransaction<(r::Version, db::Subject, db::Target)> {
-        input!(self.catalog.lock_in(tx).await.map_err(|_| Error::Content));
-        let tenant = self.tenant().to_string();
-        let prefix = format!("p:{}:%", hex(&publication));
-        let keys:Vec<String>=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT id FROM mdm_software_composition.targets WHERE tenant_id=$1::uuid AND id LIKE $2 ORDER BY length(id) DESC,id COLLATE \"C\" DESC LIMIT 2").bind(tenant).bind(prefix).fetch_all(c).await})).await?;
-        let mut selected = None;
-        for key in keys {
-            let call = db::call(tx, db::Table::Publish, &key)
-                .await?
-                .ok_or_else(db::fault)?;
-            let target = call.target;
-            if (
-                target.publication,
-                target.binding.as_slice(),
-                input!(target.ring()),
-            ) != (
-                publication,
-                self.sources.binding(ring).identity.as_slice(),
-                ring,
-            ) {
-                continue;
-            }
-            db::lock(
-                tx,
-                "source",
-                &format!("{}:{}", hex(&target.binding), target.slot),
-            )
-            .await?;
-            if db::projection(tx, &target).await?.as_deref() != Some(publication.as_slice()) {
-                continue;
-            }
-            let id = input!(
-                rel::CandidateId::new(self.tenant(), &target.candidate)
-                    .map_err(|_| Error::Identity)
-            );
-            let candidate = input!(
-                rss_mdm_software_release_postgres::lock_candidate_reference_in(tx, &id)
-                    .await?
-                    .map_err(|_| Error::Content)
-            );
-            if !current_published(&candidate, ring, &target) {
-                continue;
-            }
-            let subject = db::subject(tx, &target.candidate)
-                .await?
-                .ok_or_else(db::fault)?;
-            input!(self.resource_usable(tx, &subject).await?);
-            let (version, _) = input!(
-                rss_mdm_resource_postgres::lock_reference_in(
-                    tx,
-                    &input!(r::Id::new(&subject.resource).map_err(|_| Error::Content)),
-                    &input!(r::Id::new(&subject.version).map_err(|_| Error::Content))
-                )
-                .await?
-                .map_err(|_| Error::Content)
-            );
-            selected = Some((version, subject, target));
-            break;
-        }
-        Ok(selected.ok_or(Error::CandidateNotFound))
-    }
+
     /// A frozen read does not adopt a newer source approval, target or release identity.
     pub async fn published(
         &self,
@@ -122,13 +56,13 @@ impl PublicationService {
                     budget(cutoff),
                     (self, ring, publication),
                     |(s, ring, id), tx| {
-                        Box::pin(async move { s.published_in(tx, *ring, *id).await })
+                        Box::pin(async move { s.exports().published_in(tx, *ring, *id).await })
                     },
                 )
                 .await,
         )?;
         let dependencies = self.export_dependencies(&version, cutoff).await?;
-        let prepared = spec::prepare(&self.sources, &version, &dependencies)?;
+        let prepared = spec::prepare(&self.sources.exports(), &version, &dependencies)?;
         if serde_json::to_vec(&prepared.document).map_err(|_| Error::Content)?
             != serde_json::to_vec(&subject.document).map_err(|_| Error::Content)?
         {
@@ -143,7 +77,10 @@ impl PublicationService {
                     (self, ring, publication),
                     |(s, ring, id), tx| {
                         Box::pin(async move {
-                            s.published_in(tx, *ring, *id).await.map(|v| v.map(|_| ()))
+                            s.exports()
+                                .published_in(tx, *ring, *id)
+                                .await
+                                .map(|v| v.map(|_| ()))
                         })
                     },
                 )
@@ -261,7 +198,8 @@ impl PublicationService {
                     (self, ring, publication, repo, input),
                     |(s, ring, id, repo, input), tx| {
                         Box::pin(async move {
-                            let (_, _, target) = input!(s.published_in(tx, *ring, *id).await?);
+                            let (_, _, target) =
+                                input!(s.exports().published_in(tx, *ring, *id).await?);
                             let snapshot = input!(
                                 rss_mdm_brew_source::CommitId::parse(
                                     target.snapshot.as_deref().ok_or_else(db::fault)?
@@ -280,7 +218,11 @@ impl PublicationService {
     }
 }
 
-fn current_published(candidate: &rel::Candidate, ring: rel::Ring, target: &db::Target) -> bool {
+pub(super) fn current_published(
+    candidate: &rel::Candidate,
+    ring: rel::Ring,
+    target: &db::Target,
+) -> bool {
     let rel::RingState::Publication(current) = candidate.snapshot().ring_state(ring) else {
         return false;
     };

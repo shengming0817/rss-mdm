@@ -124,7 +124,7 @@ impl ExecutionService {
             })).await?.ok_or(crate::Error::Unavailable(crate::Failure::CommandInvariant))?;
             if old{audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
             service.audit_store.append_in(tx,&fact,old).await?;Ok(())
-        }),crate::transaction::TransactionOwner::Execution).await;
+        })).await;
         audit.finalize(
             result
                 .as_ref()
@@ -157,7 +157,6 @@ impl ExecutionService {
                     async move { super::native_collection::settle_device(ctx.0, tx, ctx.1).await },
                 )
             },
-            crate::transaction::TransactionOwner::Execution,
         )
         .await;
         audit.finalize(
@@ -186,7 +185,6 @@ impl ExecutionService {
                     recover(service, tx, id).await
                 })
             },
-            crate::transaction::TransactionOwner::Execution,
         )
         .await;
         audit.finalize(

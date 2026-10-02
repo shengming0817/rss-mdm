@@ -10,41 +10,40 @@ fn audit_and_ledger_interruptions_share_the_host_deadline_projection() {
     ] {
         assert!(matches!(
             Error::from(rss_mdm_audit_integration::Error::Audit(cause)),
-            Error::Service(rss_mdm_flow_service::Error::Unavailable(
-                rss_mdm_flow_service::Failure::RequestDeadline
-            ))
+            Error::Unavailable(Failure::RequestDeadline)
         ));
     }
     assert!(matches!(
         Error::from(rss_mdm_audit_integration::Error::Audit(
             rss_audit_postgres::Error::Ledger(rss_ledger_postgres::Error::StorageContract)
         )),
-        Error::Service(rss_mdm_flow_service::Error::Unavailable(
-            rss_mdm_flow_service::Failure::AuditIntegrity
-        ))
+        Error::Unavailable(Failure::AuditIntegrity)
     ));
 }
 #[tokio::test]
 async fn durable_corruption_is_distinct_from_interruption() {
     use axum::response::IntoResponse;
-    for (cause, reason) in [
+    for (cause, reason, category) in [
         (
             rss_mdm_audit_integration::Error::Receipt,
             "audit_integrity_error",
+            Failure::AuditIntegrity,
         ),
         (
             rss_mdm_audit_integration::Error::Isolation,
             "audit_contract_error",
+            Failure::AuditIsolation,
         ),
         (
             rss_mdm_audit_integration::Error::Fact(rss_mdm_audit_integration::InvalidFact::Actor),
             "audit_contract_error",
+            Failure::AuditContract,
         ),
     ] {
-        let projected = Error::from(cause);
+        let projected = Error::from(&cause);
         let diagnostic =
-            crate::diagnostic::ProcessError::at("startup.audit", projected.clone()).to_string();
-        assert!(diagnostic.contains("Audit"));
+            crate::diagnostic::ProcessError::at("startup.audit", Error::from(&cause)).to_string();
+        assert_eq!(diagnostic, format!("startup.audit: {category:?}"));
         let response = projected.into_response();
         assert_eq!(
             response.status(),
@@ -54,9 +53,7 @@ async fn durable_corruption_is_distinct_from_interruption() {
             response
                 .extensions()
                 .get::<rss_mdm_management_http::Error>(),
-            Some(rss_mdm_management_http::Error(
-                rss_mdm_flow_service::Error::Unavailable(_)
-            ))
+            Some(rss_mdm_management_http::Error::Unavailable(_))
         ));
         let body = axum::body::to_bytes(response.into_body(), 1024)
             .await

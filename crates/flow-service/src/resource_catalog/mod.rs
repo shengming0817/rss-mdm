@@ -156,24 +156,6 @@ fn variant(v: &Variant) -> Result<r::Variant> {
     ))
 }
 impl ResourceCatalog {
-    pub(crate) async fn active_version_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        resource: &str,
-        version: &str,
-    ) -> Result<r::Version> {
-        let (version, state, _) = self
-            .lock_version_in(
-                tx,
-                &checked_input(r::Id::new(resource))?,
-                &checked_input(r::Id::new(version))?,
-            )
-            .await?;
-        if state != r::State::Active {
-            return Err(Error::Conflict.into());
-        }
-        Ok(version)
-    }
     pub async fn resource_change(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -276,11 +258,7 @@ impl ResourceCatalog {
         if let pg::Command::Insert(version) = &command
             && version.kind() == r::Kind::Software
         {
-            let catalog = rss_mdm_software_service::catalog::Catalog::new(
-                self.runtime.clone(),
-                self.tenant,
-                self.audit_store.clone(),
-            );
+            let catalog = rss_mdm_software_service::catalog::Reader::new(self.tenant);
             catalog.private_authoring_in(tx, version).await?;
         }
         json(&checked(
@@ -446,6 +424,7 @@ impl ResourceCatalog {
             |ctx, tx| {
                 Box::pin(async move {
                     let (s, command, audit, authorize) = *ctx;
+                    admit_in(tx).await?;
                     if let Command::Resource { id, .. } = command {
                         tx.prepare_outbox_partitions(&[s.resources.partition(id)?])
                             .await?;
@@ -557,4 +536,53 @@ impl References for StoredReferences {
                 .ok_or_else(|| crate::Error::Unavailable(crate::Failure::FlowStorage).into())
         })
     }
+}
+
+/// Locked resource version access for Policy preparation; owns no management service.
+pub struct VersionReader {
+    tenant: TenantId,
+}
+impl VersionReader {
+    pub fn new(tenant: TenantId) -> Self {
+        Self { tenant }
+    }
+    pub async fn active_version_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        resource: &str,
+        version: &str,
+    ) -> Result<r::Version> {
+        if tx.tenant_id() != self.tenant {
+            return Err(Error::Forbidden.into());
+        }
+        let (version, state) = checked(
+            rss_mdm_resource_postgres::lock_reference_in(
+                tx,
+                &checked_input(r::Id::new(resource))?,
+                &checked_input(r::Id::new(version))?,
+            )
+            .await?,
+        )?;
+        if state != r::State::Active {
+            return Err(Error::Conflict.into());
+        }
+        Ok(version)
+    }
+}
+
+pub const CATALOG_SQL: &str = include_str!("catalog.sql");
+
+pub const CATALOG_JSON: &str = include_str!("catalog.json");
+
+pub const ADMISSION_SQL: &str = include_str!("admission.sql");
+
+async fn admit_in(tx: &mut PgTransaction<'_>) -> Result<()> {
+    crate::storage::verify_contract(
+        tx,
+        CATALOG_SQL,
+        CATALOG_JSON,
+        ADMISSION_SQL,
+        Failure::ResourceAdmission,
+    )
+    .await
 }

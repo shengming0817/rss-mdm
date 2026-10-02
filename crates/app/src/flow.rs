@@ -55,7 +55,6 @@ impl Config {
     }
     pub(crate) async fn open(
         &self,
-        protection: Arc<rss_mdm_native_protection::Protector>,
         audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         tenant: TenantId,
         clock: Arc<dyn crate::clock::Clock>,
@@ -94,7 +93,7 @@ impl Config {
             role: Role::Storage,
         });
         admit_audit_runtime(&runtime, &audit_store, tenant).await?;
-        storage::admit(&runtime, tenant).await?;
+        admit_storage(&runtime, tenant).await?;
         let key = storage::cursor_key(&runtime, tenant).await?;
         let catalog = catalog(audit_store.clone(), runtime.clone(), tenant, clock.clone()).await?;
         let software_resources = Arc::new(
@@ -107,12 +106,10 @@ impl Config {
             .map_err(|_| invalid())?,
         );
         match Planning::new(
-            protection,
             audit_store.clone(),
             runtime.clone(),
             tenant,
             Arc::new(crate::clock::FlowClock(clock.clone())),
-            catalog.clone(),
             &key,
         )
         .await
@@ -126,7 +123,26 @@ impl Config {
                     &key,
                     Arc::new(crate::automation::inventory_tasks::InventoryTasks),
                 ));
-                let mut service = Flow {
+                let groups = Arc::new(rss_mdm_inventory_service::groups::Groups {
+                    tenant,
+                    groups: service.groups.clone(),
+                    cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),
+                    audit_store: audit_store.clone(),
+                    runtime: runtime.clone(),
+                    clock: Arc::new(crate::clock::InventoryClock(clock.clone())),
+                });
+                let compliance = Arc::new(rss_mdm_inventory_service::compliance::Compliance::new(
+                    rss_mdm_inventory_service::compliance::Dependencies {
+                        audit_store: audit_store.clone(),
+                        runtime: runtime.clone(),
+                        tenant,
+                        clock: Arc::new(crate::clock::InventoryClock(clock.clone())),
+                        groups: service.groups.clone(),
+                        tasks: Arc::new(crate::automation::inventory_tasks::InventoryTasks),
+                        cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),
+                    },
+                ));
+                let mut service = Flow { groups, compliance,
                     cursor_key: key,
                     runtime: runtime.clone(),
                     planning: Arc::new(service),
@@ -280,6 +296,8 @@ pub(crate) struct Flow {
     pub(crate) software_resources: Arc<rss_mdm_resource_postgres::ResourceStore>,
     pub(crate) planning: Arc<Planning>,
     pub(crate) assets: Arc<crate::assets::AssetService>,
+    pub(crate) groups: Arc<rss_mdm_inventory_service::groups::Groups>,
+    pub(crate) compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
     pub(crate) publications:
         Arc<rss_mdm_software_service::management::publication::service::PublicationDirectory>,
     publication_runtime: Option<Arc<PgRuntime>>,
@@ -313,6 +331,145 @@ async fn admit_audit_runtime(
     if let Err(error) = crate::database::admit_audit_runtime(runtime, audit, tenant).await {
         runtime.close().await;
         return Err(error);
+    }
+    Ok(())
+}
+
+use rss_mdm_flow_service::transaction::deadline;
+use rss_transactional_messaging_postgres::PgTransaction;
+use serde_json::Value;
+pub(crate) async fn admit_storage(
+    runtime: &PgRuntime,
+    tenant: TenantId,
+) -> std::result::Result<(), Error> {
+    runtime
+        .local_tx(tenant, deadline(), |tx| {
+            Box::pin(async move {
+                admit_storage_in(tx).await.map_err(|error| {
+                    #[cfg(feature = "integration")]
+                    eprintln!("host storage admission: {error:?}");
+                    let _ = error;
+                    sqlx::Error::Protocol("host storage admission".into()).into()
+                })
+            })
+        })
+        .await
+        .fold(
+            |_| Ok(()),
+            |_| Err(Error::Unavailable(Failure::FlowAdmission)),
+            |_| Err(Error::Unavailable(Failure::FlowAdmission)),
+            |_| Err(Error::CommitUnknown),
+            |_| Err(Error::CommitUnknown),
+            |_| Err(Error::Unavailable(Failure::FlowAdmission)),
+        )
+}
+async fn admit_storage_in(
+    tx: &mut PgTransaction<'_>,
+) -> std::result::Result<(), rss_transactional_messaging_postgres::PgError> {
+    let tenant = tx.tenant_id();
+    tx.with_connection(move |c| {
+        Box::pin(async move { rss_mdm_inventory_service::admit_storage_in(c, tenant).await })
+    })
+    .await?;
+    let valid = tx
+        .with_connection(|c| {
+            Box::pin(async move {
+                sqlx::query_scalar::<_, bool>(include_str!("flow/admission.sql"))
+                    .fetch_one(c)
+                    .await
+            })
+        })
+        .await?;
+    if !valid {
+        return Err(sqlx::Error::Protocol("host capability admission".into()).into());
+    }
+    let contracts = [
+        (
+            "software",
+            rss_mdm_software_service::catalog::CATALOG_SQL,
+            rss_mdm_software_service::catalog::CATALOG_JSON,
+            rss_mdm_software_service::catalog::ADMISSION_SQL,
+        ),
+        (
+            "content",
+            rss_mdm_content_service::CATALOG_SQL,
+            rss_mdm_content_service::CATALOG_JSON,
+            rss_mdm_content_service::ADMISSION_SQL,
+        ),
+        (
+            "execution handoff",
+            rss_mdm_execution_service::CATALOG_SQL,
+            rss_mdm_execution_service::CATALOG_JSON,
+            include_str!("flow/handoff-admission.sql"),
+        ),
+        (
+            "authorization and execution dependencies",
+            rss_mdm_execution_service::DEPENDENCIES_SQL,
+            rss_mdm_execution_service::DEPENDENCIES_JSON,
+            include_str!("flow/handoff-admission.sql"),
+        ),
+        (
+            "planning",
+            rss_mdm_flow_service::planning::CATALOG_SQL,
+            rss_mdm_flow_service::planning::CATALOG_JSON,
+            rss_mdm_flow_service::planning::ADMISSION_SQL,
+        ),
+        (
+            "assets",
+            rss_mdm_inventory_service::assets::CATALOG_SQL,
+            rss_mdm_inventory_service::assets::CATALOG_JSON,
+            rss_mdm_inventory_service::assets::ADMISSION_SQL,
+        ),
+        (
+            "automation",
+            rss_mdm_flow_service::automation::CATALOG_SQL,
+            rss_mdm_flow_service::automation::CATALOG_JSON,
+            rss_mdm_flow_service::automation::ADMISSION_SQL,
+        ),
+        (
+            "resource_catalog",
+            rss_mdm_flow_service::resource_catalog::CATALOG_SQL,
+            rss_mdm_flow_service::resource_catalog::CATALOG_JSON,
+            rss_mdm_flow_service::resource_catalog::ADMISSION_SQL,
+        ),
+        (
+            "flow",
+            rss_mdm_flow_service::storage::CATALOG_SQL,
+            rss_mdm_flow_service::storage::CATALOG_JSON,
+            include_str!("flow/admission.sql"),
+        ),
+        (
+            "publication",
+            rss_mdm_software_service::management::publication::HTTP_CATALOG_SQL,
+            rss_mdm_software_service::management::publication::HTTP_CATALOG_JSON,
+            rss_mdm_software_service::management::publication::HTTP_ADMISSION_SQL,
+        ),
+    ];
+    for (owner, query, expected, admission) in contracts {
+        let valid = tx
+            .with_connection(move |c| {
+                Box::pin(async move { sqlx::query_scalar::<_, bool>(admission).fetch_one(c).await })
+            })
+            .await?;
+        if !valid {
+            eprintln!("capability authority rejected: {owner}");
+            return Err(sqlx::Error::Protocol("host capability admission".into()).into());
+        }
+        let raw = tx
+            .with_connection(move |c| {
+                Box::pin(async move { sqlx::query_scalar::<_, String>(query).fetch_one(c).await })
+            })
+            .await?;
+        let actual: Value = serde_json::from_str(&raw)
+            .map_err(|_| sqlx::Error::Protocol("host catalog decode".into()))?;
+        let expected: Value = serde_json::from_str(expected).expect("checked owner contract");
+        if actual != expected {
+            eprintln!(
+                "{}",
+                serde_json::json!({"event":"capability_admission_rejected","owner":owner})
+            );
+            return Err(sqlx::Error::Protocol("host capability admission".into()).into());
+        }
     }
     Ok(())
 }

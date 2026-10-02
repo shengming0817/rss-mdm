@@ -867,7 +867,7 @@ async fn admit_private_source(source: &str) -> resource::SoftwareSource {
                 (&catalog, &request, &op, source),
                 |(catalog, request, op, source), tx| {
                     Box::pin(async move {
-                        if let Ok(value) = catalog.source_read_in(tx, source, "1").await
+                        if let Ok(value) = catalog.reader().source_read_in(tx, source, "1").await
                             && value["admission"]["state"] == "approved"
                         {
                             return Ok(Ok(()));

@@ -164,26 +164,17 @@ use serde_json::Value;
 #[derive(Clone, Copy)]
 pub enum TransactionOwner {
     Planning,
-    Assets,
-    Compliance,
     ResourceCatalog,
 }
 impl TransactionOwner {
     fn failure(self) -> Failure {
         match self {
             Self::Planning => Failure::PlanningStorage,
-            Self::Assets => Failure::AssetsStorage,
-            Self::Compliance => Failure::ComplianceStorage,
             Self::ResourceCatalog => Failure::ResourceStorage,
         }
     }
     fn invariant(self) -> Failure {
         self.failure()
-    }
-}
-impl From<crate::device::DeviceError> for Fault {
-    fn from(error: crate::device::DeviceError) -> Self {
-        Error::from(error).into()
     }
 }
 pub async fn lock(tx: &mut PgTransaction<'_>) -> Result<()> {
@@ -280,12 +271,6 @@ impl From<rss_mdm_authorization_service::Error> for Fault {
     }
 }
 
-impl From<rss_mdm_registration_service::Error> for Fault {
-    fn from(e: rss_mdm_registration_service::Error) -> Self {
-        Self::from(Error::from(e))
-    }
-}
-
 impl From<rss_mdm_inventory_service::Error> for Fault {
     fn from(e: rss_mdm_inventory_service::Error) -> Self {
         Self::from(Error::from(e))
@@ -320,9 +305,11 @@ impl From<catalog::Error> for Fault {
                 Error::Resource(crate::resource_catalog::error::ResourceError::Missing).into()
             }
             catalog::Error::Integrity => {
-                Error::Unavailable(crate::Failure::SoftwareCatalogInvariant).into()
+                Error::Unavailable(crate::Failure::ResourceSoftwareIntegrity).into()
             }
-            catalog::Error::Content => Error::Unavailable(crate::Failure::ContentInvariant).into(),
+            catalog::Error::Content => {
+                Error::Unavailable(crate::Failure::ResourceSoftwareIntegrity).into()
+            }
         }
     }
 }

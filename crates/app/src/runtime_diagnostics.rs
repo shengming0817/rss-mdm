@@ -23,9 +23,7 @@ impl Source for RuntimeDiagnostics {
     ) -> futures::future::BoxFuture<'a, Result<Snapshot, rss_mdm_management_http::Error>> {
         Box::pin(async move {
             if tenant != self.tenant || instance != self.instance {
-                return Err(rss_mdm_management_http::Error(
-                    rss_mdm_flow_service::Error::Forbidden,
-                ));
+                return Err(rss_mdm_management_http::Error::Forbidden);
             }
             Ok(self.collect(deadline, true).await)
         })
@@ -36,11 +34,7 @@ impl RuntimeDiagnostics {
         let mut inventory = self.inventory_health();
         let audit = self.audit_health();
         let apple = self.apple_health();
-        let status = self
-            .planning
-            .automation_task
-            .get()
-            .map(rss_runtime::TaskStatus::current);
+        let status = self.planning.automation_state();
         let mut automation = component(
             ComponentName::Automation,
             status == Some(rss_runtime::TaskState::Running),
@@ -81,7 +75,7 @@ impl RuntimeDiagnostics {
         if detailed {
             self.enrich(cutoff, &mut inventory, &mut automation).await;
         }
-        let execution = execution_component(self.execution.readiness.health());
+        let execution = execution_component(self.execution.health());
         let components = vec![inventory, audit, apple, automation, execution];
         Snapshot {
             alive: true,

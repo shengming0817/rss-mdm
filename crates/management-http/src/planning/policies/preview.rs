@@ -8,7 +8,7 @@ pub async fn preview(
     Extension(audit): Extension<RequestAudit>,
     body: std::result::Result<Json<Preview>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<serde_json::Value>, Error> {
-    let Json(input) = body.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
+    let Json(input) = body.map_err(|_| Error::Malformed)?;
     rss_mdm_execution_service::queries::preview::preview(&s, &a.proof, &audit, &input)
         .await
         .map(|v| Json(serde_json::to_value(v).expect("execution preview serializes")))

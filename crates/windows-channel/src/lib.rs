@@ -173,21 +173,10 @@ fn response(request: Option<&soap::Message>, body: Body, now: i64) -> Result<Res
 }
 pub fn fault(request: Option<&soap::Message>, error: Error) -> Response {
     let kind = match error {
-        Error::Malformed | Error::Service(rss_mdm_flow_service::Error::Malformed) => {
-            soap::FaultKind::MessageFormat
-        }
-        Error::CertificateRequest
-        | Error::Service(rss_mdm_flow_service::Error::CertificateRequest) => {
-            soap::FaultKind::CertificateRequest
-        }
-        Error::Unauthorized | Error::Service(rss_mdm_flow_service::Error::Unauthorized) => {
-            soap::FaultKind::Authentication
-        }
-        Error::Forbidden
-        | Error::Conflict
-        | Error::Service(
-            rss_mdm_flow_service::Error::Forbidden | rss_mdm_flow_service::Error::Conflict,
-        ) => soap::FaultKind::Authorization,
+        Error::Malformed => soap::FaultKind::MessageFormat,
+        Error::CertificateRequest => soap::FaultKind::CertificateRequest,
+        Error::Unauthorized => soap::FaultKind::Authentication,
+        Error::Forbidden | Error::Conflict => soap::FaultKind::Authorization,
         _ => soap::FaultKind::EnrollmentServer,
     };
     let mut r = response(request, Body::Fault(kind), 0)
@@ -292,7 +281,10 @@ async fn enrollment(
         let _permission = proof.enrollment(&auth.device)?;
         proof.bind_audit(&audit)?;
         audit.target(&auth.device);
-        let now = app.clock.unix_seconds()?;
+        let now = app
+            .clock
+            .unix_seconds()
+            .ok_or(Error::Unavailable(Failure::Clock))?;
         if let Some(t) = &security.timestamp {
             let parse = |v: &str| {
                 time::OffsetDateTime::parse(v, &time::format_description::well_known::Rfc3339)
@@ -387,7 +379,9 @@ async fn enrollment(
             &intent,
             &certificate,
             &audit,
-            app.clock.unix_seconds()?,
+            app.clock
+                .unix_seconds()
+                .ok_or(Error::Unavailable(Failure::Clock))?,
             &app.mount,
             app.devices.retirement(),
         )
@@ -411,7 +405,7 @@ pub struct HttpState {
     pub mount: crate::device::ChannelMount,
     pub audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
     pub access: std::sync::Arc<crate::Store>,
-    pub clock: std::sync::Arc<dyn rss_mdm_flow_service::clock::Clock>,
+    pub clock: std::sync::Arc<dyn rss_mdm_inventory_service::clock::Clock>,
     pub execution: std::sync::Arc<rss_mdm_execution_service::ExecutionService>,
     pub credentials: std::sync::Arc<crate::enrollment::credentials::Credentials>,
     pub devices: std::sync::Arc<crate::device::DeviceService>,

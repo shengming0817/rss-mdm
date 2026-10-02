@@ -1,7 +1,7 @@
 //! Product mappings own Resource ↔ platform ↔ release correspondence.
 use super::{
     Error, Result,
-    config::{Driver, Sources},
+    config::{ExportProtocol, ExportSources},
 };
 use rss_mdm_brew_source as brew;
 use rss_mdm_resource as resource;
@@ -92,23 +92,19 @@ fn architecture(a: resource::Architecture) -> &'static str {
     }
 }
 pub(super) fn prepare(
-    sources: &Sources,
+    sources: &ExportSources,
     version: &resource::Version,
     dependencies: &[resource::Version],
 ) -> Result<PreparedContent> {
     if version.tenant() != sources.tenant || version.kind() != resource::Kind::Software {
         return Err(Error::Content);
     }
-    let artifact_base = match &sources.bindings[0].driver {
-        Driver::Winget { artifacts_base, .. } | Driver::Brew { artifacts_base, .. } => {
-            artifacts_base
-        }
-    };
+    let artifact_base = &sources.artifacts_base;
     let document = super::derive_document(version, dependencies, artifact_base)?;
     let exported = super::derive::exported_materials(version, dependencies, artifact_base)?;
     let (platform, package, package_version, manifest, coordinate) = match &document {
         ExportDocument::Winget { manifest } => {
-            if !matches!(sources.bindings[0].driver, Driver::Winget { .. }) {
+            if !matches!(sources.bindings[0].protocol, ExportProtocol::Winget { .. }) {
                 return Err(Error::Unsupported);
             }
             let m = winget::VersionManifest::parse(
@@ -126,12 +122,12 @@ pub(super) fn prepare(
             )
         }
         ExportDocument::Brew { recipe } => {
-            let Driver::Brew { tap, .. } = &sources.bindings[0].driver else {
+            let ExportProtocol::Brew { tap, .. } = &sources.bindings[0].protocol else {
                 return Err(Error::Unsupported);
             };
             let rendered = recipe.render(sources.tenant, tap)?;
             for binding in &sources.bindings {
-                let Driver::Brew { tap, .. } = &binding.driver else {
+                let ExportProtocol::Brew { tap, .. } = &binding.protocol else {
                     return Err(Error::Unsupported);
                 };
                 if recipe.render(sources.tenant, tap)?.bytes() != rendered.bytes() {

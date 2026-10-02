@@ -1,6 +1,6 @@
 //! ref: axum 0.8.9 axum/src/routing/mod.rs (protected tree composition).
 use super::*;
-use crate::authorization::context::RequestAuth;
+use crate::authorization::{Permission, context::RequestAuth};
 use axum::{
     Extension, Json, Router,
     extract::{Path, Query, State},
@@ -8,12 +8,13 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use rss_mdm_inventory_service::groups::{
+    Command as GroupCommand, GroupChange, response as group_response,
+};
 use serde_json::Value;
 type BodyInput<T> = std::result::Result<Json<T>, axum::extract::rejection::JsonRejection>;
 fn body<T>(value: BodyInput<T>) -> std::result::Result<T, Error> {
-    value
-        .map(|v| v.0)
-        .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))
+    value.map(|v| v.0).map_err(|_| Error::Malformed)
 }
 pub fn routes_v2() -> Router<Arc<HttpState>> {
     Router::new()
@@ -30,17 +31,7 @@ pub fn routes_v2() -> Router<Arc<HttpState>> {
 // Group receipts/read models include derived membership counts. Every result
 // projection and task summary uses the full tenant input, so grant changes must
 // be checked again even when reading an immutable result with an old cursor.
-fn exposes_inventory(command: &Command) -> bool {
-    matches!(
-        command,
-        Command::Group { .. }
-            | Command::GroupRead { .. }
-            | Command::GroupPreview { .. }
-            | Command::GroupPage { .. }
-            | Command::ScopePage { .. }
-            | Command::TaskRead { .. }
-    )
-}
+
 async fn run(
     app: &HttpState,
     auth: &RequestAuth,
@@ -49,33 +40,25 @@ async fn run(
     command: Command,
 ) -> std::result::Result<Response, Error> {
     match &command {
-        Command::Group { id, .. }
-        | Command::GroupRead { id }
-        | Command::GroupPreview { id, .. }
-        | Command::Scope { id, .. }
-        | Command::ScopeRead { id } => audit.target(&id.to_string()),
+        Command::Scope { id, .. } | Command::ScopeRead { id } => audit.target(&id.to_string()),
         Command::TaskRead { id, .. } => audit.target(&id.to_string()),
-        Command::GroupPage { group, .. } => audit.target(&group.to_string()),
         Command::ScopePage { scope, .. } => audit.target(&scope.to_string()),
     }
-
-    audit.set_action(match command {
-        Command::ScopePage { .. }
-        | Command::GroupPage { .. }
-        | Command::TaskRead { .. }
-        | Command::GroupRead { .. }
-        | Command::ScopeRead { .. }
-        | Command::GroupPreview { .. } => "management_read",
-        _ => "management_write",
+    audit.set_action(if matches!(command, Command::Scope { .. }) {
+        "management_write"
+    } else {
+        "management_read"
     });
-    let (operation, _) = storage::identity(&command, audit)
-        .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
+    let (operation, _) = storage::identity(&command, audit).map_err(|_| Error::Malformed)?;
     if let Some(id) = operation {
         audit.operation(id, audit.snapshot().action);
     }
     let authorize = || {
         auth.proof.manage(permission)?;
-        if exposes_inventory(&command) {
+        if matches!(
+            command,
+            Command::ScopePage { .. } | Command::TaskRead { .. }
+        ) {
             assets::ReadScope::from_proof(&auth.proof)?
                 .full()
                 .map_err(rss_mdm_inventory_service::Error::from)?;
@@ -122,10 +105,8 @@ async fn group_directory(
     >,
 ) -> Result<Json<Value>, Error> {
     audit.set_action("management_read");
-    let Query(q) = query.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
-    Ok(Json(
-        s.planning.group_directory(&auth.proof, &q, &audit).await?,
-    ))
+    let Query(q) = query.map_err(|_| Error::Malformed)?;
+    Ok(Json(s.groups.directory(&auth.proof, &q, &audit).await?))
 }
 async fn scope_directory(
     State(s): State<Arc<HttpState>>,
@@ -137,12 +118,26 @@ async fn scope_directory(
     >,
 ) -> Result<Json<Value>, Error> {
     audit.set_action("management_read");
-    let Query(q) = query.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
+    let Query(q) = query.map_err(|_| Error::Malformed)?;
     Ok(Json(
         s.planning.scope_directory(&auth.proof, &q, &audit).await?,
     ))
 }
-read!(group_read, Uuid, GroupRead, GroupRead);
+async fn group_read(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, Error> {
+    run_group(
+        &app,
+        &auth,
+        &audit,
+        Permission::GroupRead,
+        GroupCommand::GroupRead { id },
+    )
+    .await
+}
 read!(scope_read, Uuid, ScopeRead, ScopeRead);
 async fn group_write(
     State(app): State<Arc<HttpState>>,
@@ -157,14 +152,18 @@ async fn group_write(
     } else {
         Permission::GroupWrite
     };
-    run(
+    run_group(
         &app,
         &auth,
         &audit,
         permission,
-        Command::Group {
+        GroupCommand::Group {
             id,
-            change,
+            change: Box::new(rss_mdm_inventory_service::operation::Operation {
+                operation_id: change.operation_id,
+                expected_revision: change.expected_revision,
+                input: change.input,
+            }),
             sensitive: assets::ReadScope::from_proof(&auth.proof)?.sensitive,
         },
     )
@@ -195,12 +194,12 @@ async fn group_preview(
     payload: BodyInput<Operation<EmptyInput>>,
 ) -> std::result::Result<Response, Error> {
     let request = body(payload)?;
-    run(
+    run_group(
         &app,
         &auth,
         &audit,
         Permission::GroupRead,
-        Command::GroupPreview {
+        GroupCommand::GroupPreview {
             id,
             operation: request.operation_id,
             expected_revision: request.expected_revision,
@@ -215,15 +214,14 @@ async fn group_task(
     Extension(audit): Extension<RequestAudit>,
     Path((group, task)): Path<(Uuid, Uuid)>,
 ) -> std::result::Result<Response, Error> {
-    run(
+    run_group(
         &app,
         &auth,
         &audit,
         Permission::GroupRead,
-        Command::TaskRead {
+        GroupCommand::TaskRead {
             id: task,
             target: group.to_string(),
-            family: crate::automation::TaskKind::Group,
         },
     )
     .await
@@ -252,19 +250,26 @@ async fn group_page(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Path((group, result, kind)): Path<(Uuid, Uuid, pages::GroupPageKind)>,
+    Path((group, result, kind)): Path<(
+        Uuid,
+        Uuid,
+        rss_mdm_inventory_service::groups::pages::GroupPageKind,
+    )>,
     Query(query): Query<pages::PageQuery>,
 ) -> std::result::Result<Response, Error> {
-    run(
+    run_group(
         &app,
         &auth,
         &audit,
         Permission::GroupRead,
-        Command::GroupPage {
+        GroupCommand::GroupPage {
             group,
             result,
             projection: kind,
-            query,
+            query: rss_mdm_inventory_service::groups::pages::PageQuery {
+                limit: query.limit,
+                cursor: query.cursor,
+            },
         },
     )
     .await
@@ -294,4 +299,51 @@ async fn scope_page(
 
 pub struct HttpState {
     pub planning: std::sync::Arc<crate::planning::Planning>,
+    pub groups: Arc<rss_mdm_inventory_service::groups::Groups>,
+}
+
+async fn run_group(
+    app: &HttpState,
+    auth: &RequestAuth,
+    audit: &RequestAudit,
+    permission: Permission,
+    command: GroupCommand,
+) -> Result<Response, Error> {
+    match &command {
+        GroupCommand::Group { id, change, .. } => {
+            audit.target(&id.to_string());
+            audit.operation(change.operation_id, "management_write");
+        }
+        GroupCommand::GroupPreview { id, operation, .. } => {
+            audit.target(&id.to_string());
+            audit.operation(*operation, "management_read");
+        }
+        GroupCommand::GroupRead { id } | GroupCommand::TaskRead { id, .. } => {
+            audit.target(&id.to_string())
+        }
+        GroupCommand::GroupPage { group, .. } => audit.target(&group.to_string()),
+    }
+    audit.set_action(if matches!(command, GroupCommand::Group { .. }) {
+        "management_write"
+    } else {
+        "management_read"
+    });
+    let authorize = || {
+        auth.proof.manage(permission)?;
+        assets::ReadScope::from_proof(&auth.proof)?
+            .full()
+            .map_err(rss_mdm_inventory_service::Error::from)?;
+        Ok(())
+    };
+    let response = group_response::Response::decode(
+        app.groups
+            .execute(&command, audit, &authorize, app.planning.as_ref())
+            .await?,
+    )?;
+    let status = if matches!(response, group_response::Response::JobAccepted(_)) {
+        StatusCode::ACCEPTED
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(response)).into_response())
 }

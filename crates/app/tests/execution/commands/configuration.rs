@@ -87,8 +87,7 @@ async fn resource(client: &mut Client, nodes: &[&str]) -> anyhow::Result<String>
     );
     let content_root = client
         .app
-        .execution
-        .content
+        .content_writer
         .as_ref()
         .unwrap()
         .config
@@ -363,6 +362,7 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
     let automation = crate::automation::Automation::connect(
         client.app.flow.planning.clone(),
         client.app.flow.assets.clone(),
+        client.app.flow.compliance.clone(),
         crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
     )
     .await?;
@@ -628,8 +628,9 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
         max_attempts: 3,
     })?;
     restarted
+        .service
         .run_recovery(
-            &recovery_scope(restarted.tenant),
+            &recovery_scope(client.app.identity.tenant),
             recovery_policy,
             &control,
             &tokio::sync::Notify::new(),

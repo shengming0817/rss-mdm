@@ -99,7 +99,7 @@ impl ExecutionService {
         tx: &mut PgTransaction<'_>,
         device: &str,
     ) -> Result<Option<(Uuid, Uuid, Package, i64)>> {
-        if self.agent_installation.packages.is_empty() {
+        if self.inputs.agent_installation.packages.is_empty() {
             return Ok(None);
         }
         let (registration, generation) = match storage::current_registration(tx, device).await {
@@ -141,7 +141,7 @@ impl ExecutionService {
             _ => return Ok(None),
         };
         let target = SoftwareTarget::new(platform, architecture);
-        let Some(pin) = self.agent_installation.packages.get(&target) else {
+        let Some(pin) = self.inputs.agent_installation.packages.get(&target) else {
             return Ok(None);
         };
         let identity = match &pin.identity {
@@ -283,59 +283,53 @@ impl ExecutionService {
         audit.require_request_settlement();
         audit.identify_service("native-package-download");
         audit.operation(id, "agent_content");
-        crate::transaction::inspect(
-            &self.runtime,
-            self.tenant,
-            (self, id),
-            |ctx, tx| {
-                Box::pin(async move {
-                    let (s, id) = *ctx;
-                    let tenant = s.tenant.to_string();
-                    let instance = s.instance.clone();
-                    tx.with_connection(move |c| {
+        crate::transaction::inspect(&self.runtime, self.tenant, (self, id), |ctx, tx| {
+            Box::pin(async move {
+                let (s, id) = *ctx;
+                let tenant = s.tenant.to_string();
+                let instance = s.instance.clone();
+                tx.with_connection(move |c| {
+                    Box::pin(async move {
+                        Ok(crate::authorization::lock_on(c, &tenant, &instance).await)
+                    })
+                })
+                .await??;
+                crate::transaction::lock(tx).await?;
+                let op = storage::load(tx, &s.protection, id).await?;
+                storage::lock(tx, &op.device).await?;
+                let Some(package) = op.approval.agent_package() else {
+                    return Err(Error::NotFound.into());
+                };
+                let now = storage::now(tx).await?;
+                let status = s.required_command(tx, &op).await?.status();
+                if now >= op.request.deadline
+                    || !matches!(
+                        status,
+                        dc::Status::Published | dc::Status::Received | dc::Status::Applied
+                    )
+                    || storage::current_registration(tx, &op.device).await?
+                        != (op.registration, op.registration_generation)
+                    || !storage::approval_valid(&s.source, &s.protection, tx, &op, now).await?
+                {
+                    return Err(Error::Forbidden.into());
+                }
+                let tenant = s.tenant.to_string();
+                if !tx
+                    .with_connection(move |c| {
                         Box::pin(async move {
-                            Ok(crate::authorization::lock_on(c, &tenant, &instance).await)
+                            Ok(crate::agent_install::dispatched_on(c, &tenant, id).await)
                         })
                     })
-                    .await??;
-                    crate::transaction::lock(tx).await?;
-                    let op = storage::load(tx, &s.protection, id).await?;
-                    storage::lock(tx, &op.device).await?;
-                    let Some(package) = op.approval.agent_package() else {
-                        return Err(Error::NotFound.into());
-                    };
-                    let now = storage::now(tx).await?;
-                    let status = s.required_command(tx, &op).await?.status();
-                    if now >= op.request.deadline
-                        || !matches!(
-                            status,
-                            dc::Status::Published | dc::Status::Received | dc::Status::Applied
-                        )
-                        || storage::current_registration(tx, &op.device).await?
-                            != (op.registration, op.registration_generation)
-                        || !storage::approval_valid(&s.source, &s.protection, tx, &op, now).await?
-                    {
-                        return Err(Error::Forbidden.into());
-                    }
-                    let tenant = s.tenant.to_string();
-                    if !tx
-                        .with_connection(move |c| {
-                            Box::pin(async move {
-                                Ok(crate::agent_install::dispatched_on(c, &tenant, id).await)
-                            })
-                        })
-                        .await??
-                    {
-                        return Err(Error::Forbidden.into());
-                    }
-                    package
-                        .artifact
-                        .artifact()
-                        .map_err(|_| Error::Malformed.into())
-                })
-            },
-            crate::transaction::TransactionOwner::Execution,
-        )
+                    .await??
+                {
+                    return Err(Error::Forbidden.into());
+                }
+                package
+                    .artifact
+                    .artifact()
+                    .map_err(|_| Error::Malformed.into())
+            })
+        })
         .await
     }
 }

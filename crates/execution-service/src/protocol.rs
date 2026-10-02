@@ -87,7 +87,6 @@ impl ExecutionService {
                     Ok(bytes)
                 })
             },
-            crate::transaction::TransactionOwner::Execution,
         )
         .await
     }

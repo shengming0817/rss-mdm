@@ -231,3 +231,69 @@ async fn compile(
         driver,
     })
 }
+
+/// Frozen non-secret projection of an already validated source binding.
+#[derive(Clone)]
+pub(super) enum ExportProtocol {
+    Winget {
+        base: String,
+    },
+    Brew {
+        base: String,
+        tap: String,
+        credential_reference: String,
+    },
+}
+#[derive(Clone)]
+pub(super) struct ExportBinding {
+    pub identity: Vec<u8>,
+    pub protocol: ExportProtocol,
+}
+#[derive(Clone)]
+pub(super) struct ExportSources {
+    pub tenant: TenantId,
+    pub logical: String,
+    pub digest: [u8; 32],
+    pub bindings: [ExportBinding; 3],
+    pub artifacts_base: String,
+}
+impl Sources {
+    pub(super) fn exports(&self) -> ExportSources {
+        ExportSources {
+            tenant: self.tenant,
+            logical: self.logical.clone(),
+            digest: self.digest,
+            artifacts_base: match &self.bindings[0].driver {
+                Driver::Winget { artifacts_base, .. } | Driver::Brew { artifacts_base, .. } => {
+                    artifacts_base.clone()
+                }
+            },
+            bindings: std::array::from_fn(|i| {
+                let binding = &self.bindings[i];
+                ExportBinding {
+                    identity: binding.identity.clone(),
+                    protocol: match &binding.driver {
+                        Driver::Winget { base, .. } => {
+                            ExportProtocol::Winget { base: base.clone() }
+                        }
+                        Driver::Brew {
+                            base,
+                            tap,
+                            credential_reference,
+                            ..
+                        } => ExportProtocol::Brew {
+                            base: base.clone(),
+                            tap: tap.clone(),
+                            credential_reference: credential_reference.clone(),
+                        },
+                    },
+                }
+            }),
+        }
+    }
+}
+impl ExportSources {
+    pub(super) fn binding(&self, ring: rel::Ring) -> &ExportBinding {
+        &self.bindings[index(ring)]
+    }
+}

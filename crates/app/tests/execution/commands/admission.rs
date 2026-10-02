@@ -111,7 +111,7 @@ impl Client {
         ensure!(
             rss_mdm_execution_service::storage::bind_native_key(
                 &self.app.flow.planning.runtime,
-                self.app.execution.tenant,
+                self.app.identity.tenant,
                 other_key.id()
             )
             .await
@@ -120,8 +120,8 @@ impl Client {
         );
         rss_mdm_execution_service::storage::bind_native_key(
             &self.app.flow.planning.runtime,
-            self.app.execution.tenant,
-            self.app.execution.protection.id(),
+            self.app.identity.tenant,
+            self.app.protection.id(),
         )
         .await?;
         persisted.close().await?;

@@ -95,6 +95,7 @@ impl IngressClock {
 pub(crate) struct Host {
     pub(crate) root: PathBuf,
     pub(crate) app: Arc<Assembly>,
+    pub(crate) command_audit: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) notifications: crate::worker_wake::Listener,
     pub(crate) browser: Router,
     pub(crate) store: Arc<Database>,
@@ -189,12 +190,13 @@ impl Host {
         )
         .await?;
         let (management, timeline) = management(&config, &store).await?;
+        let command_audit = store
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?;
         let execution = crate::execution_assembly::open(
             &config,
             config.native_protector()?,
-            store
-                .audit_store(&crate::config::AuditConfig::Plain)
-                .await?,
+            command_audit.clone(),
             crate::execution_assembly::open_content(&config, config.native_protector()?)?,
             std::collections::BTreeMap::new(),
             command_clock,
@@ -204,11 +206,15 @@ impl Host {
         let app = Arc::new(Assembly {
             timeline,
             content_writer: execution.content.clone(),
+            queries: execution.queries.clone(),
+            inputs: execution.inputs.clone(),
+            protection: execution.protection.clone(),
+            execution_runtime: execution.runtime.clone(),
             audit_store: store
                 .audit_store(&crate::config::AuditConfig::Plain)
                 .await?,
             apple: None,
-            execution,
+            execution: execution.service.clone(),
             flow: management,
             identity: Arc::new(identity),
             credentials: Arc::new(credentials),
@@ -252,6 +258,7 @@ impl Host {
         Ok(Self {
             root,
             app,
+            command_audit,
             notifications: crate::worker_wake::Listener::new(
                 crate::device::test_support::options("mdm_access")?,
                 rss_request_context::TenantId::parse(case_tenant())?,
@@ -590,7 +597,6 @@ async fn management(
     let flow = config
         .flow
         .open(
-            config.native_protector()?,
             access
                 .audit_store(&crate::config::AuditConfig::Plain)
                 .await?,

@@ -5,6 +5,7 @@ pub(crate) use crate::{Error, assets};
 pub(crate) use rss_mdm_audit_integration::RequestAudit;
 pub(crate) use rss_mdm_flow_service::operation::Operation;
 pub(crate) use rss_mdm_flow_service::transaction::deadline;
+pub(crate) use rss_mdm_inventory_service::groups::{Command as GroupCommand, GroupChange};
 pub(crate) use rss_request_context::{Deadline, TenantId};
 pub(crate) use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};
 pub(crate) use rss_transactional_messaging_postgres::{
@@ -101,30 +102,80 @@ pub(crate) async fn planning(t: TenantId) -> Planning {
     let audit = audit_store().await;
     let runtime = runtime(t).await;
     let clock = Arc::new(crate::clock::SystemClock);
-    let catalog = crate::flow::catalog(audit.clone(), runtime.clone(), t, clock.clone())
-        .await
-        .unwrap();
-    rss_mdm_flow_service::storage::admit(&runtime, t)
-        .await
-        .unwrap();
+    crate::flow::admit_storage(&runtime, t).await.unwrap();
     let key = rss_mdm_flow_service::storage::cursor_key(&runtime, t)
         .await
         .unwrap();
-    let protection = crate::test_support::identity::config(&t.to_string())
-        .unwrap()
-        .native_protector()
-        .unwrap();
-    Planning::new(protection, audit, runtime, t, clock, catalog, &key)
-        .await
-        .unwrap()
+    Planning::new(audit, runtime, t, clock, &key).await.unwrap()
 }
 
-pub(super) async fn execute(m: &Planning, c: &Command) -> std::result::Result<Value, Error> {
+pub(super) trait FixtureCommand {
+    async fn run(&self, m: &Planning, audit: &RequestAudit) -> std::result::Result<Value, Error>;
+}
+impl FixtureCommand for Command {
+    async fn run(&self, m: &Planning, audit: &RequestAudit) -> std::result::Result<Value, Error> {
+        m.execute(self, audit, &|| Ok(())).await.map_err(Into::into)
+    }
+}
+impl FixtureCommand for GroupCommand {
+    async fn run(&self, m: &Planning, audit: &RequestAudit) -> std::result::Result<Value, Error> {
+        groups(m)
+            .await
+            .execute(self, audit, &|| Ok(()), m)
+            .await
+            .map_err(Into::into)
+    }
+}
+pub(super) async fn execute(
+    m: &Planning,
+    c: &impl FixtureCommand,
+) -> std::result::Result<Value, Error> {
     let audit = RequestAudit::new(m.tenant.to_string(), "management_write");
     audit.set_principal("operator", crate::test_support::INSTANCE);
-    let result = m.execute(c, &audit, &|| Ok(())).await;
+    let result = c.run(m, &audit).await;
     audit.finalize(None);
-    result.map_err(Into::into)
+    result
+}
+pub(crate) async fn groups(m: &Planning) -> rss_mdm_inventory_service::groups::Groups {
+    let key = rss_mdm_flow_service::storage::cursor_key(&m.runtime, m.tenant)
+        .await
+        .unwrap();
+    rss_mdm_inventory_service::groups::Groups {
+        tenant: m.tenant,
+        groups: m.groups.clone(),
+        runtime: m.runtime.clone(),
+        audit_store: m.audit_store.clone(),
+        clock: Arc::new(rss_mdm_flow_service::clock::InventoryClock(m.clock.clone())),
+        cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),
+    }
+}
+pub(crate) async fn compliance(
+    m: &Planning,
+) -> Arc<rss_mdm_inventory_service::compliance::Compliance> {
+    let key = rss_mdm_flow_service::storage::cursor_key(&m.runtime, m.tenant)
+        .await
+        .unwrap();
+    Arc::new(rss_mdm_inventory_service::compliance::Compliance::new(
+        rss_mdm_inventory_service::compliance::Dependencies {
+            tenant: m.tenant,
+            groups: m.groups.clone(),
+            runtime: m.runtime.clone(),
+            audit_store: m.audit_store.clone(),
+            clock: Arc::new(rss_mdm_flow_service::clock::InventoryClock(m.clock.clone())),
+            tasks: Arc::new(crate::automation::inventory_tasks::InventoryTasks),
+            cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),
+        },
+    ))
+}
+pub(crate) fn group_operation(
+    expected_revision: u64,
+    input: GroupChange,
+) -> rss_mdm_inventory_service::operation::Operation<GroupChange> {
+    rss_mdm_inventory_service::operation::Operation {
+        operation_id: Uuid::new_v4(),
+        expected_revision,
+        input,
+    }
 }
 
 pub(crate) async fn execute_asset(
@@ -198,10 +249,10 @@ pub(crate) async fn wait_task(
             let value = match result {
                 Ok(value) => value,
                 Err(
-                    Error::Service(rss_mdm_flow_service::Error::Unavailable(
+                    Error::Flow(rss_mdm_flow_service::Error::Unavailable(
                         rss_mdm_flow_service::Failure::PlanningStorage,
                     ))
-                    | Error::Service(rss_mdm_flow_service::Error::CommitUnknown),
+                    | Error::Flow(rss_mdm_flow_service::Error::CommitUnknown),
                 ) => {
                     tokio::time::sleep(Duration::from_millis(20)).await;
                     continue;
@@ -397,6 +448,7 @@ impl RunningAutomation {
         let automation = crate::automation::Automation::connect(
             service.clone(),
             assets(&service).await,
+            compliance(&service).await,
             options,
         )
         .await

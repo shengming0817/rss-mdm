@@ -82,6 +82,7 @@ pub enum ConfigIssue {
 pub enum Failure {
     FlowSource,
     FlowConnection,
+    FlowAdmission,
     ContentStorage,
     ContentMetadata,
     ContentInvariant,
@@ -100,6 +101,7 @@ pub enum Failure {
     AuditIntegrity,
     AuditIsolation,
     AuditAdmission,
+    AuditContract,
     InventoryQuery,
     ManualQuery,
     CollectionQuery,
@@ -134,6 +136,12 @@ pub enum ProcessError {
         stage: &'static str,
         error: rss_mdm_flow_service::Error,
     },
+    #[error("{stage}: owner={owner} {kind}")]
+    Owner {
+        stage: &'static str,
+        owner: &'static str,
+        kind: OwnerDiagnostic,
+    },
     #[error("configuration file unavailable or unsafe: {0:?}")]
     ConfigFile(PathBuf),
     #[error("configuration JSON rejected at line {line}, column {column}: {path:?}")]
@@ -160,23 +168,66 @@ impl ProcessError {
         match error {
             Error::Configuration(issue) => Self::Configuration { stage, issue },
             Error::Unavailable(reason) => Self::Dependency { stage, reason },
-            Error::Service(
-                error @ (rss_mdm_flow_service::Error::Configuration(_)
-                | rss_mdm_flow_service::Error::Unavailable(_)),
-            ) => Self::Service { stage, error },
+            Error::Flow(error @ rss_mdm_flow_service::Error::Unavailable(_)) => {
+                Self::Service { stage, error }
+            }
+            Error::Execution(e) => Self::Owner {
+                stage,
+                owner: "execution",
+                kind: e.into(),
+            },
+            Error::Authorization(e) => Self::Owner {
+                stage,
+                owner: "authorization",
+                kind: e.into(),
+            },
+            Error::Registration(e) => Self::Owner {
+                stage,
+                owner: "registration",
+                kind: e.into(),
+            },
+            Error::Inventory(e) => Self::Owner {
+                stage,
+                owner: "inventory",
+                kind: e.into(),
+            },
+            Error::Software(e) => Self::Owner {
+                stage,
+                owner: "software",
+                kind: e.into(),
+            },
+            Error::Content(e) => Self::Owner {
+                stage,
+                owner: "content",
+                kind: OwnerDiagnostic::Content(e),
+            },
+            Error::ContentRequest(e) => Self::Owner {
+                stage,
+                owner: "content",
+                kind: e.into(),
+            },
             error => Self::Stage {
                 stage,
                 kind: match error {
-                    Error::Service(rss_mdm_flow_service::Error::CommitUnknown) => {
+                    Error::CommitUnknown
+                    | Error::Flow(rss_mdm_flow_service::Error::CommitUnknown) => {
                         "commit_unknown; retry_same_operation"
                     }
-                    Error::Service(rss_mdm_flow_service::Error::RollbackFailed) => {
+                    Error::RollbackFailed
+                    | Error::Flow(rss_mdm_flow_service::Error::RollbackFailed) => {
                         "rollback_unconfirmed; retry_same_operation"
                     }
-                    Error::Service(rss_mdm_flow_service::Error::Conflict) => "conflict",
-                    Error::Service(rss_mdm_flow_service::Error::Malformed) => "malformed_input",
-                    Error::Service(rss_mdm_flow_service::Error::Unauthorized) => "unauthorized",
-                    Error::Service(rss_mdm_flow_service::Error::Forbidden) => "forbidden",
+                    Error::Conflict | Error::Flow(rss_mdm_flow_service::Error::Conflict) => {
+                        "conflict"
+                    }
+                    Error::Malformed | Error::Flow(rss_mdm_flow_service::Error::Malformed) => {
+                        "malformed_input"
+                    }
+                    Error::Unauthorized
+                    | Error::Flow(rss_mdm_flow_service::Error::Unauthorized) => "unauthorized",
+                    Error::Forbidden | Error::Flow(rss_mdm_flow_service::Error::Forbidden) => {
+                        "forbidden"
+                    }
                     _ => "operation rejected",
                 },
             },
@@ -187,3 +238,147 @@ impl ProcessError {
 #[cfg(test)]
 #[path = "../tests/diagnostic/unit.rs"]
 mod tests;
+
+/// Only closed owner categories; never retains provider errors or request values.
+#[derive(Clone, Debug)]
+pub enum OwnerDiagnostic {
+    Malformed,
+    Unauthorized,
+    Forbidden,
+    Conflict,
+    Missing,
+    Unsupported,
+    Corrupt,
+    Storage,
+    Configuration,
+    Deadline,
+    Capacity,
+    Runtime,
+    Retirement,
+    CommitUnknown,
+    RollbackFailed,
+    Audit(rss_mdm_audit_integration::ErrorClass),
+    ExecutionConfiguration(rss_mdm_execution_service::ConfigIssue),
+    ExecutionDependency(rss_mdm_execution_service::Failure),
+    Inventory(rss_mdm_inventory_service::Failure),
+    Software(rss_mdm_software_service::management::Failure),
+    Content(rss_mdm_content_service::Error),
+}
+impl std::fmt::Display for OwnerDiagnostic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CommitUnknown => f.write_str("commit_unknown; retry_same_operation"),
+            Self::RollbackFailed => f.write_str("rollback_unconfirmed; retry_same_operation"),
+            _ => write!(f, "{self:?}"),
+        }
+    }
+}
+impl From<rss_mdm_execution_service::Error> for OwnerDiagnostic {
+    fn from(e: rss_mdm_execution_service::Error) -> Self {
+        use rss_mdm_execution_service::Error as E;
+        match e {
+            E::Malformed | E::CertificateRequest => Self::Malformed,
+            E::Conflict => Self::Conflict,
+            E::Unauthorized => Self::Unauthorized,
+            E::Forbidden => Self::Forbidden,
+            E::CommitUnknown => Self::CommitUnknown,
+            E::RollbackFailed => Self::RollbackFailed,
+            E::Unsupported => Self::Unsupported,
+            E::NotFound | E::Execution(_) | E::Resource(_) | E::Publication(_) => Self::Missing,
+            E::Configuration(c) => Self::ExecutionConfiguration(c),
+            E::Unavailable(f) => Self::ExecutionDependency(f),
+        }
+    }
+}
+impl From<rss_mdm_authorization_service::Error> for OwnerDiagnostic {
+    fn from(e: rss_mdm_authorization_service::Error) -> Self {
+        use rss_mdm_authorization_service::Error as E;
+        match e {
+            E::Malformed => Self::Malformed,
+            E::Unauthorized => Self::Unauthorized,
+            E::Forbidden => Self::Forbidden,
+            E::Conflict => Self::Conflict,
+            E::CommitUnknown => Self::CommitUnknown,
+            E::RollbackFailed => Self::RollbackFailed,
+            E::Deadline => Self::Deadline,
+            E::Configuration => Self::Configuration,
+            E::Corrupt => Self::Corrupt,
+            E::Storage => Self::Storage,
+            E::Audit(e) => Self::Audit(e.class()),
+        }
+    }
+}
+impl From<rss_mdm_registration_service::Error> for OwnerDiagnostic {
+    fn from(e: rss_mdm_registration_service::Error) -> Self {
+        use rss_mdm_registration_service::Error as E;
+        match e {
+            E::Malformed => Self::Malformed,
+            E::Unauthorized => Self::Unauthorized,
+            E::Forbidden => Self::Forbidden,
+            E::Conflict => Self::Conflict,
+            E::CommitUnknown => Self::CommitUnknown,
+            E::RollbackFailed => Self::RollbackFailed,
+            E::Deadline => Self::Deadline,
+            E::Configuration => Self::Configuration,
+            E::Corrupt => Self::Corrupt,
+            E::Storage => Self::Storage,
+            E::Audit(e) => Self::Audit(e.class()),
+            E::Capacity => Self::Capacity,
+            E::Runtime => Self::Runtime,
+            E::Retirement => Self::Retirement,
+            E::NotFound => Self::Missing,
+        }
+    }
+}
+impl From<rss_mdm_inventory_service::Error> for OwnerDiagnostic {
+    fn from(e: rss_mdm_inventory_service::Error) -> Self {
+        use rss_mdm_inventory_service::Error as E;
+        match e {
+            E::Malformed => Self::Malformed,
+            E::Unauthorized => Self::Unauthorized,
+            E::Forbidden => Self::Forbidden,
+            E::Conflict => Self::Conflict,
+            E::CommitUnknown => Self::CommitUnknown,
+            E::RollbackFailed => Self::RollbackFailed,
+            E::Group(_) | E::NotFound => Self::Missing,
+            E::Unavailable(f) => Self::Inventory(f),
+            E::Audit(e) => Self::Audit(e.class()),
+        }
+    }
+}
+impl From<rss_mdm_software_service::management::Error> for OwnerDiagnostic {
+    fn from(e: rss_mdm_software_service::management::Error) -> Self {
+        use rss_mdm_software_service::management::Error as E;
+        match e {
+            E::Malformed => Self::Malformed,
+            E::Forbidden => Self::Forbidden,
+            E::Conflict => Self::Conflict,
+            E::Unsupported => Self::Unsupported,
+            E::CommitUnknown => Self::CommitUnknown,
+            E::RollbackFailed => Self::RollbackFailed,
+            E::ResourceMissing | E::Publication(_) => Self::Missing,
+            E::Unavailable(f) => Self::Software(f),
+            E::Authorization(e) => e.into(),
+            E::Audit(e) => Self::Audit(e.class()),
+        }
+    }
+}
+impl From<rss_mdm_content_service::service::Error> for OwnerDiagnostic {
+    fn from(e: rss_mdm_content_service::service::Error) -> Self {
+        use rss_mdm_content_service::service::Error as E;
+        match e {
+            E::Content(e) => Self::Content(e),
+            E::Authorization(e) => e.into(),
+            E::Audit(e) => Self::Audit(e.class()),
+            E::Malformed => Self::Malformed,
+            E::Conflict => Self::Conflict,
+            E::Forbidden => Self::Forbidden,
+            E::Missing => Self::Missing,
+            E::Unsupported => Self::Unsupported,
+            E::Clock | E::Import | E::Storage => Self::Storage,
+            E::Invariant => Self::Corrupt,
+            E::CommitUnknown => Self::CommitUnknown,
+            E::RollbackFailed => Self::RollbackFailed,
+        }
+    }
+}

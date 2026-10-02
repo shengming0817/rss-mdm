@@ -25,16 +25,16 @@ pub async fn read(
     audit.target(&id.to_string());
     auth.manage(Permission::PolicyRead)?;
     run(
-        &service.planning.audit_store,
-        &service.planning.runtime,
-        service.planning.tenant,
+        &service.audit_store,
+        &service.runtime,
+        service.tenant,
         audit,
         (&service, &auth, &audit),
         |ctx, tx| {
             Box::pin(async move {
                 let (s, a, audit) = *ctx;
                 a.manage(Permission::PolicyRead)?;
-                let policy = storage::read_in(s.planning.policy_store.reader(), tx, id)
+                let policy = storage::read_in(s.policy_store.reader(), tx, id)
                     .await?
                     .ok_or(Error::Planning(
                         crate::planning::error::PlanningError::Missing(
@@ -42,8 +42,7 @@ pub async fn read(
                         ),
                     ))?;
                 let value = storage::view(&policy)?;
-                s.planning
-                    .audit_store
+                s.audit_store
                     .append_request_in(tx, audit, 200, "success")
                     .await?;
                 Ok(value)
@@ -81,7 +80,7 @@ pub async fn list(
     }
     audit.set_action("management_read");
     auth.manage(Permission::PolicyRead)?;
-    run(&service.planning.audit_store,&service.planning.runtime,service.planning.tenant,audit,(&service,&auth,audit,query),|ctx,tx|Box::pin(async move {
+    run(&service.audit_store,&service.runtime,service.tenant,audit,(&service,&auth,audit,query),|ctx,tx|Box::pin(async move {
         let (s,a,audit,q)=*ctx;a.manage(Permission::PolicyRead)?;
         let tenant=tx.tenant_id().to_string();let query=q.clone();
         let mut ids=tx.with_connection(move|c|Box::pin(async move {
@@ -89,8 +88,8 @@ pub async fn list(
                 .bind(tenant).bind(query.after).bind(query.descending).bind(query.enabled).bind(query.action).bind(query.scope).bind(query.resource).bind((query.limit+1) as i64).fetch_all(c).await
         })).await?;
         let more=ids.len()>q.limit;ids.truncate(q.limit);
-        let mut items=Vec::new();for id in &ids {items.push(storage::view(&storage::read_in(s.planning.policy_store.reader(),tx,stored(Uuid::parse_str(id))?).await?.ok_or(Error::Planning(crate::planning::error::PlanningError::Missing(crate::planning::error::Missing::Policy)))?)?);}
-        s.planning.audit_store.append_request_in(tx,audit,200,"success").await?;
+        let mut items=Vec::new();for id in &ids {items.push(storage::view(&storage::read_in(s.policy_store.reader(),tx,stored(Uuid::parse_str(id))?).await?.ok_or(Error::Planning(crate::planning::error::PlanningError::Missing(crate::planning::error::Missing::Policy)))?)?);}
+        s.audit_store.append_request_in(tx,audit,200,"success").await?;
         Ok(json!({"items":items,"nextCursor":if more {ids.last()} else {None}}))
     }),TransactionOwner::Planning).await
 }

@@ -9,7 +9,8 @@ mod model;
 
 mod scopes;
 use crate::automation::{JobInput, TaskKind};
-pub use model::{GroupStart, ScopeInput, SourceSet};
+pub use model::{ScopeInput, SourceSet};
+use rss_mdm_inventory_service::groups::GroupStart;
 
 fn device_reference(id: &str) -> String {
     use sha2::Digest;

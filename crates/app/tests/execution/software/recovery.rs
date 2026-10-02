@@ -7,7 +7,7 @@ use sqlx::Connection;
 #[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn known_failure_has_bounded_retries() -> Result<()> {
     let fixture = Fixture::approved(Platform::MacOs).await?;
-    let stack = worker(&fixture.base, fixture.execution.content.clone()).await?;
+    let stack = worker(&fixture.base, fixture.content.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
     let first_operation = fixture.first_operation;
@@ -108,7 +108,7 @@ async fn known_failure_has_bounded_retries() -> Result<()> {
 #[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn reboot_waits_for_detection() -> Result<()> {
     let fixture = Fixture::approved(Platform::MacOs).await?;
-    let stack = worker(&fixture.base, fixture.execution.content.clone()).await?;
+    let stack = worker(&fixture.base, fixture.content.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
     let first_operation = fixture.first_operation;
@@ -189,7 +189,7 @@ async fn reboot_waits_for_detection() -> Result<()> {
 #[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn unknown_effect_survives_registration_replacement() -> Result<()> {
     let fixture = Fixture::approved(Platform::MacOs).await?;
-    let stack = worker(&fixture.base, fixture.execution.content.clone()).await?;
+    let stack = worker(&fixture.base, fixture.content.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
     let first_operation = fixture.first_operation;
@@ -262,7 +262,7 @@ async fn unknown_effect_survives_registration_replacement() -> Result<()> {
 #[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn unknown_result_replay_and_late_detection() -> Result<()> {
     let fixture = Fixture::approved(Platform::MacOs).await?;
-    let stack = worker(&fixture.base, fixture.execution.content.clone()).await?;
+    let stack = worker(&fixture.base, fixture.content.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
     let first_operation = fixture.first_operation;
@@ -386,7 +386,7 @@ async fn withdrawn_software_does_not_poison_claims_for_other_policies_or_outside
         json!({"action":"withdraw","evidence":["withdraw only the root"]}),
     )
     .await?;
-    let stack = worker(&f.base, f.execution.content.clone()).await?;
+    let stack = worker(&f.base, f.content.clone()).await?;
     let task = claim(&f.router).await?;
     ensure!(
         task["payload"]["steps"].as_array().is_some_and(

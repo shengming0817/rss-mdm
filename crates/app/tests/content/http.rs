@@ -5,7 +5,6 @@ use crate::test_support::*;
 async fn upload_recovery_download_range_and_authorization() -> Result<()> {
     let fixture = Fixture::open(false).await?;
     let router = &fixture.router;
-    let execution = &fixture.execution;
     let runtime = &fixture.runtime;
     let client = &fixture.client;
     let origin = &fixture.origin;
@@ -146,7 +145,7 @@ async fn upload_recovery_download_range_and_authorization() -> Result<()> {
     let download = format!(
         "{origin}{admission_path}/content?platform=windows&architecture=x86_64&variant=default"
     );
-    let store = execution.content.as_ref().expect("configured content");
+    let store = fixture.content.as_ref().expect("configured content");
     let artifact = rss_mdm_resource::Artifact::new(
         rss_mdm_resource::Id::new("installer")?,
         bytes.len() as u64,

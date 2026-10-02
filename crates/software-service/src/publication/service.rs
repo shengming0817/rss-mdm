@@ -53,6 +53,10 @@ pub struct PublicationService {
     pub(super) actors: ServiceIdentity,
 }
 impl PublicationService {
+    pub fn exports(&self) -> super::ExportReader {
+        super::ExportReader::new(self.sources.exports())
+    }
+
     pub async fn connect(
         host: crate::Host,
         tenant: TenantId,
@@ -156,7 +160,7 @@ impl PublicationService {
             return Err(Error::Content);
         }
         let dependencies = self.export_dependencies(&version, cutoff).await?;
-        let prepared = spec::prepare(&self.sources, &version, &dependencies)?;
+        let prepared = spec::prepare(&self.sources.exports(), &version, &dependencies)?;
         if self
             .releases
             .operation(&input.request, budget(cutoff))
@@ -191,7 +195,13 @@ impl PublicationService {
                                 .lock_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                            input!(s.catalog.lock_in(tx).await.map_err(|_| Error::Content));
+                            input!(
+                                s.catalog
+                                    .reader()
+                                    .lock_in(tx)
+                                    .await
+                                    .map_err(|_| Error::Content)
+                            );
                             tx.prepare_outbox_partitions(&[s
                                 .releases
                                 .partition(c.snapshot().id.value())?])
@@ -280,6 +290,7 @@ impl PublicationService {
     ) -> InTransaction<resource::Version> {
         input!(
             self.catalog
+                .reader()
                 .lock_in(tx)
                 .await
                 .map_err(|cause| Error::Content.context("service::admission_lock", cause))
@@ -297,6 +308,7 @@ impl PublicationService {
         }
         input!(
             self.catalog
+                .reader()
                 .publication_admitted_in(tx, &v)
                 .await
                 .map_err(|cause| Error::Content.context("service::create_in", cause))
@@ -531,7 +543,13 @@ impl PublicationService {
                                 .lock_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                            input!(s.catalog.lock_in(tx).await.map_err(|_| Error::Content));
+                            input!(
+                                s.catalog
+                                    .reader()
+                                    .lock_in(tx)
+                                    .await
+                                    .map_err(|_| Error::Content)
+                            );
                             tx.prepare_outbox_partitions(&[s
                                 .releases
                                 .partition(c.snapshot().id.value())?])
@@ -570,7 +588,7 @@ impl PublicationService {
                             if slot.operation.is_some() || slot.cursor != target.base {
                                 return Ok(Err(Error::Blocked));
                             }
-                            input!(s.resource_usable(tx, subject).await?);
+                            input!(s.exports().resource_usable(tx, subject).await?);
                             let current = input!(
                                 s.releases
                                     .lock_candidate_in(tx, &c.snapshot().id)
@@ -749,7 +767,13 @@ impl PublicationService {
                                 .lock_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                            input!(s.catalog.lock_in(tx).await.map_err(|_| Error::Content));
+                            input!(
+                                s.catalog
+                                    .reader()
+                                    .lock_in(tx)
+                                    .await
+                                    .map_err(|_| Error::Content)
+                            );
                             tx.prepare_outbox_partitions(&[s.releases.partition(id.value())?])
                                 .await?;
                             let transition = input!(
@@ -794,7 +818,13 @@ impl PublicationService {
                             .lock_in(tx)
                             .await
                             .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                        input!(s.catalog.lock_in(tx).await.map_err(|_| Error::Content));
+                        input!(
+                            s.catalog
+                                .reader()
+                                .lock_in(tx)
+                                .await
+                                .map_err(|_| Error::Content)
+                        );
                         let Some(c) = input!(s.releases.get_in(tx, id).await?.map_err(|cause| {
                             Error::Conflict.context("service::context", cause)
                         })) else {
@@ -820,7 +850,7 @@ impl PublicationService {
                 .await,
         )?;
         let dependencies = self.export_dependencies(&version, cutoff).await?;
-        let prepared = spec::prepare(&self.sources, &version, &dependencies)?;
+        let prepared = spec::prepare(&self.sources.exports(), &version, &dependencies)?;
         if serde_json::to_vec(&prepared.document).map_err(|_| Error::Content)?
             != serde_json::to_vec(&subject.document).map_err(|_| Error::Content)?
         {
@@ -888,43 +918,7 @@ impl PublicationService {
         .await
         .map_err(|cause| Error::ArtifactTimeout.context("service::verify", cause))?
     }
-    pub(super) async fn resource_usable(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        subject: &Subject,
-    ) -> InTransaction<()> {
-        let id = db::required(
-            "service::resource_usable",
-            resource::Id::new(&subject.resource),
-        )?;
-        let version = db::required(
-            "service::resource_usable",
-            resource::Id::new(&subject.version),
-        )?;
-        input!(
-            self.catalog
-                .lock_in(tx)
-                .await
-                .map_err(|cause| Error::Content.context("service::admission_lock", cause))
-        );
-        let (v, state) = input!(
-            rss_mdm_resource_postgres::lock_reference_in(tx, &id, &version)
-                .await?
-                .map_err(|cause| Error::Content.context("service::resource_usable", cause))
-        );
-        if v.digest().bytes() != subject.resource_digest
-            || !matches!(state, resource::State::Frozen | resource::State::Active)
-        {
-            return Ok(Err(Error::Content));
-        }
-        input!(
-            self.catalog
-                .publication_admitted_in(tx, &v)
-                .await
-                .map_err(|cause| Error::Content.context("service::resource_usable", cause))
-        );
-        Ok(Ok(()))
-    }
+
     pub(super) async fn transition_audited(
         &self,
         c: &rel::Candidate,
@@ -945,7 +939,13 @@ impl PublicationService {
                                 .lock_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                            input!(s.catalog.lock_in(tx).await.map_err(|_| Error::Content));
+                            input!(
+                                s.catalog
+                                    .reader()
+                                    .lock_in(tx)
+                                    .await
+                                    .map_err(|_| Error::Content)
+                            );
                             tx.prepare_outbox_partitions(&[s
                                 .releases
                                 .partition(c.snapshot().id.value())?])
@@ -956,7 +956,7 @@ impl PublicationService {
                             )?
                             .is_some();
                             if !replay {
-                                input!(s.resource_usable(tx, subject).await?);
+                                input!(s.exports().resource_usable(tx, subject).await?);
                             }
                             let result = input!(
                                 s.releases

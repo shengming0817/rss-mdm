@@ -6,7 +6,7 @@ use sqlx::Connection;
 #[ignore = "make t2 MODULE=execution.software.content"]
 async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
     let fixture = Fixture::approved(Platform::MacOs).await?;
-    let stack = worker(&fixture.base, fixture.execution.content.clone()).await?;
+    let stack = worker(&fixture.base, fixture.content.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
     let resource = fixture.resource;
@@ -117,7 +117,7 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
 #[ignore = "make t2 MODULE=execution.software.content"]
 async fn uninstall_content_permission() -> Result<()> {
     let fixture = Fixture::approved(Platform::MacOs).await?;
-    let stack = worker(&fixture.base, fixture.execution.content.clone()).await?;
+    let stack = worker(&fixture.base, fixture.content.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
     let removal = fixture.removal;
@@ -167,7 +167,7 @@ async fn uninstall_content_permission() -> Result<()> {
 #[ignore = "make t2 MODULE=execution.software.content"]
 async fn windows_variant_content() -> Result<()> {
     let fixture = Fixture::approved(Platform::Windows).await?;
-    let stack = worker(&fixture.base, fixture.execution.content.clone()).await?;
+    let stack = worker(&fixture.base, fixture.content.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
     let resource = fixture.resource;

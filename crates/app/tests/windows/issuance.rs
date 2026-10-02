@@ -515,8 +515,8 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     ensure!(rejected);
     ensure!(matches!(
         failed,
-        Err(Error::Windows(rss_mdm_windows_channel::Error::Service(
-            rss_mdm_flow_service::Error::Unavailable(rss_mdm_flow_service::Failure::AuditAdmission)
+        Err(Error::Windows(rss_mdm_windows_channel::Error::Unavailable(
+            rss_mdm_windows_channel::Failure::AuditAdmission
         )))
     ));
     complete(&audit_store, &w, &a, &proof, &i, &c).await?;

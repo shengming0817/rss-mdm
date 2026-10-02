@@ -16,5 +16,3 @@ pub struct ScopeInput {
     pub sources: Vec<SourceSet>,
     pub as_of: i64,
 }
-
-pub use rss_mdm_inventory_service::groups::GroupStart;

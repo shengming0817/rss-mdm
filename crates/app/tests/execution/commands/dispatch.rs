@@ -1,7 +1,6 @@
 use crate::execution::test_support::*;
 use anyhow::ensure;
 use axum::http::{Method, StatusCode};
-use rss_device_command::{self as dc, Store};
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_execution_service::*;
 use rss_transactional_messaging_postgres::PgOutboxStore;
@@ -90,26 +89,7 @@ impl Client {
         // Drive the public bounded recovery seam without a competing fault consumer.
         let s = self.app.execution.clone();
         let id = self.operation;
-        rss_mdm_execution_service::transaction::run(
-            &s.audit_store,
-            &s.runtime,
-            s.tenant,
-            &audit,
-            (s.as_ref(), id),
-            |ctx, tx| {
-                Box::pin(async move {
-                    let op = storage::load(tx, &ctx.0.protection, ctx.1).await?;
-                    let _page = ctx
-                        .0
-                        .store
-                        .recover(tx, op.scope, dc::BatchLimit::new(64).unwrap(), None)
-                        .await?;
-                    Ok(())
-                })
-            },
-            rss_mdm_execution_service::transaction::TransactionOwner::Execution,
-        )
-        .await?;
+        s.recover_operation(id, &audit).await?;
         audit.finalize(None);
         let read = self
             .call(Method::GET, &format!("/{}", self.operation), None)
@@ -160,6 +140,16 @@ impl Client {
         use rss_transactional_messaging::outbox::OutboxRelayStore;
         use rss_transactional_messaging_postgres::PgTransactionFault;
         let service = &self.app.execution;
+        let outbox = PgOutboxStore::<()>::new(
+            self.app.execution_runtime.clone(),
+            messaging_domain(),
+            rss_transactional_messaging::policy::DeliveryBudget::new(
+                Duration::from_secs(60),
+                Duration::from_secs(6),
+                Duration::from_secs(6),
+                Duration::from_secs(6),
+            )?,
+        )?;
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
@@ -171,8 +161,7 @@ impl Client {
         .into_iter()
         .enumerate()
         {
-            let claims = service
-                .outbox
+            let claims = outbox
                 .claim_partition_heads(std::num::NonZeroUsize::MIN, deadline())
                 .await?;
             ensure!(claims.len() == 1);

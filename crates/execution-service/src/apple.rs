@@ -174,7 +174,6 @@ impl ExecutionService {
                     Ok(response)
                 })
             },
-            crate::transaction::TransactionOwner::Execution,
         )
         .await
     }

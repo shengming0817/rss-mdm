@@ -29,7 +29,7 @@ pub async fn read(
         let phase=crate::remote_execution::remote_phase_in(tx,&remote,now).await?;
         s.audit_store.append_request_in(tx,audit,200,"success").await?;
         crate::queries::records::decode(json!({"operationId":id,"deadline":remote.deadline,"snapshot":remote.snapshot,"phase":phase,"cancellationRequested":remote.cancelled,"deadlineElapsed":now>=remote.deadline,"items":items,"nextCursor":next}))
-    }),TransactionOwner::Execution).await.map_err(Into::into)
+    })).await.map_err(Into::into)
 }
 pub async fn cancel(
     s: &ExecutionService,
@@ -54,5 +54,5 @@ pub async fn cancel(
         super::receipts::receipt(tx,audit,input.operation_id,&hash,&value).await?;
         s.audit_store.append_in(tx,&Fact::business(audit,&format!("remote:{id}:cancel:{}",input.operation_id),&hash,200,"success",None)?,false).await?;
         a.check_live()?;Ok(value)
-    }),TransactionOwner::Execution).await
+    })).await
 }

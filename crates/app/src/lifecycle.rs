@@ -119,7 +119,7 @@ pub async fn serve(
                             .map_err(|_| {
                                 ProcessError::at(
                                     "startup.notification_tenant",
-                                    crate::Error::Service(rss_mdm_flow_service::Error::Malformed),
+                                    crate::Error::Malformed,
                                 )
                             })?,
                         );
@@ -201,13 +201,12 @@ pub async fn serve(
                             .config
                             .flow
                             .open(
-                                protection.clone(),
                                 audit_store.clone(),
                                 rss_request_context::TenantId::parse(
                                     &compiled.config.identity.tenant_id,
                                 )
                                 .map_err(|_| {
-                                    assembly_error(Error::Service(
+                                    assembly_error(Error::Flow(
                                         rss_mdm_flow_service::Error::Malformed,
                                     ))
                                 })?,
@@ -230,11 +229,12 @@ pub async fn serve(
                         .await
                         .map_err(|e| ProcessError::at("startup.execution", e))?;
                         startup.stage_resource(DynManagedResource::new_box(
-                            rss_mdm_execution_service::Resource(execution.clone()),
+                            rss_mdm_execution_service::Resource(execution.service.clone()),
                         ));
                         let automation = crate::automation::Automation::connect(
                             planning.planning.clone(),
                             planning.assets.clone(),
+                            planning.compliance.clone(),
                             compiled
                                 .config
                                 .flow
@@ -344,7 +344,7 @@ pub async fn serve(
                         launch.stage_task_with_token(
                             rss_mdm_apple_channel::push::registration(
                                 apple.channel.clone(),
-                                execution.clone(),
+                                execution.service.clone(),
                                 access.apple_store(),
                                 audit_store.clone(),
                                 tenant.clone(),
@@ -357,7 +357,10 @@ pub async fn serve(
                     launch.stage_deferred_task_with_token(identity_audit.registration().critical());
                     launch.stage_deferred_task_with_token(timeline.registration().critical());
                     launch.stage_deferred_task_with_token(
-                        execution.registration(signals.execution()).critical(),
+                        execution
+                            .service
+                            .registration(signals.execution())
+                            .critical(),
                     );
                     launch.stage_deferred_task_with_token(
                         automation.registration(signals.flow()).critical(),

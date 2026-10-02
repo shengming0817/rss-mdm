@@ -147,14 +147,11 @@ pub async fn response(
     let etag = content.etag();
     let length = content.artifact.length();
     if headers.get_all(header::RANGE).iter().count() > 1 {
-        return Err(Error(rss_mdm_flow_service::Error::Malformed));
+        return Err(Error::Malformed);
     }
     let requested = headers
         .get(header::RANGE)
-        .map(|h| {
-            h.to_str()
-                .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))
-        })
+        .map(|h| h.to_str().map_err(|_| Error::Malformed))
         .transpose()?;
     let requested = if headers
         .get(header::IF_RANGE)
@@ -176,7 +173,7 @@ pub async fn response(
                 header::CONTENT_RANGE,
                 format!("bytes */{}", length)
                     .parse()
-                    .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?,
+                    .map_err(|_| Error::Malformed)?,
             );
             return Ok(response);
         }
@@ -195,17 +192,15 @@ pub async fn response(
         (end - start)
             .to_string()
             .parse()
-            .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?,
+            .map_err(|_| Error::Malformed)?,
     );
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         "application/octet-stream".parse().expect("constant"),
     );
-    response.headers_mut().insert(
-        header::ETAG,
-        etag.parse()
-            .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?,
-    );
+    response
+        .headers_mut()
+        .insert(header::ETAG, etag.parse().map_err(|_| Error::Malformed)?);
     response
         .headers_mut()
         .insert(header::ACCEPT_RANGES, "bytes".parse().expect("constant"));
@@ -218,7 +213,7 @@ pub async fn response(
             header::CONTENT_RANGE,
             format!("bytes {start}-{}/{}", end - 1, length)
                 .parse()
-                .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?,
+                .map_err(|_| Error::Malformed)?,
         );
     }
     Ok(response)

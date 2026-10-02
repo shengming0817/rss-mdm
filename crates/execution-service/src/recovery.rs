@@ -298,7 +298,7 @@ impl ExecutionService {
             service.audit_store.append_in(tx,&fact,old).await?;
             if !old { crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Apple).await?; }
             Ok(())
-        }),crate::transaction::TransactionOwner::Execution).await;
+        })).await;
         audit.finalize(
             result
                 .as_ref()
@@ -342,7 +342,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                     return Ok(true);
                 }
             }
-        }),crate::transaction::TransactionOwner::Execution).await;
+        })).await;
             audit.finalize(
                 active
                     .as_ref()
@@ -367,7 +367,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
             let error = Mutex::new(None);
             control.check()?;
             let attempt=self.runtime.local_tx_with_context(self.tenant,rss_transactional_messaging::policy::OperationDeadline::from_remaining(control.remaining()),(self,claim,(self,claim.target().entity(),&audit,&error)),|(service,claim,context),tx|Box::pin(async move {
-                if let Err(e)=service.audit_store.lock_in(tx).await {return Err(rejection(Fault::Request(e.into()),context.3,crate::transaction::TransactionOwner::Execution));}
+                if let Err(e)=service.audit_store.lock_in(tx).await {return Err(rejection(Fault::Request(e.into()),context.3));}
                 rss_reconcile_postgres::messaging::protect_in(tx,claim,context,|ctx,tx|Box::pin(async move {
             let (service,entity,audit,failure) = *ctx;
             let result:Result<()>=async {
@@ -414,15 +414,10 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                 tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_commands.devices SET recovery_after=$3 WHERE tenant_id=$1::uuid AND device=$2").bind(tenant).bind(name).bind(cursor).execute(c).await?;Ok(())})).await?;
                 Ok(())
             }.await;
-            match result {Ok(())=>{audit.mark_commit_started();Ok(())},Err(e)=>Err(rejection(e,failure,crate::transaction::TransactionOwner::Execution))}
+            match result {Ok(())=>{audit.mark_commit_started();Ok(())},Err(e)=>Err(rejection(e,failure))}
         })).await
             })).await;
-            let result = settle(
-                attempt,
-                &audit,
-                error,
-                crate::transaction::TransactionOwner::Execution,
-            );
+            let result = settle(attempt, &audit, error);
             audit.finalize(
                 result
                     .as_ref()

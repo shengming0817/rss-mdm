@@ -19,6 +19,23 @@ class ModuleImpactTests(unittest.TestCase):
             self.assertFalse(selected.full)
             self.assertEqual(expected, set(selected.modules),(path,selected.modules))
 
+    def test_flow_settlement_selects_its_actual_owners(self):
+        selected = select_paths(['crates/flow-service/src/transaction.rs'])
+        self.assertFalse(selected.full)
+        self.assertTrue({'planning.http', 'planning.recovery', 'planning.resource_archive', 'planning.software', 'planning.onboarding'} <= set(selected.modules))
+        self.assertFalse({'enrollment.http', 'agent.registration', 'audit.recovery'} & set(selected.modules))
+
+    def test_export_reader_selects_publication_read_and_withdrawal_consumers(self):
+        selected = select_paths(['crates/software-service/src/publication/execution.rs'])
+        self.assertFalse(selected.full)
+        self.assertTrue({'publication.winget', 'publication.brew', 'publication.withdrawal', 'execution.software.offer'} <= set(selected.modules))
+
+    def test_http_projection_selects_diagnostic_and_management_consumers(self):
+        for path in ('crates/management-http/src/response.rs', 'crates/management-http/src/diagnostic.rs'):
+            selected = select_paths([path])
+            self.assertFalse(selected.full, path)
+            self.assertTrue({'api.diagnostics', 'planning.http', 'software.http', 'content.http'} <= set(selected.modules), path)
+
     def test_execution_queries_select_read_consumers_without_unrelated_protocols(self):
         for path in ('crates/execution-service/src/queries/records.rs',
                      'crates/execution-service/src/queries/error.rs'):

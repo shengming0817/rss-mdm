@@ -29,9 +29,7 @@ async fn audit_startup_rejects_each_borrowed_owner_snapshot_isolation() {
         assert!(
             matches!(
                 result,
-                Err(Error::Service(rss_mdm_flow_service::Error::Unavailable(
-                    rss_mdm_flow_service::Failure::AuditIsolation
-                )))
+                Err(Error::Unavailable(crate::Failure::AuditIsolation))
             ),
             "{role}: {result:?}"
         );

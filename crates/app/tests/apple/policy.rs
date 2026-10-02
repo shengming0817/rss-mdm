@@ -70,6 +70,7 @@ impl Fixture {
         let automation = crate::automation::Automation::connect(
             self.app.flow.planning.clone(),
             self.app.flow.assets.clone(),
+            self.app.flow.compliance.clone(),
             crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
         )
         .await?;

@@ -268,8 +268,7 @@ MODULES['timeline.http']=replace(MODULES['timeline.http'],db_mode='fresh',polici
 ))
 for part in ('receipts', 'integrity', 'recovery', 'budget'):
     add('audit.' + part, selectors=(f'audit_integration_tests::{part}::',),
-        sources=('crates/audit-integration/src/*', 'crates/audit-integration/src/budget.rs',
-                 'crates/flow-service/src/transaction.rs'),
+        sources=('crates/audit-integration/src/*', 'crates/audit-integration/src/budget.rs'),
         tests=(f'crates/app/tests/audit/{part}.rs',),
         support=('crates/app/tests/audit/mod.rs',))
 MODULES['audit.recovery'] = replace(MODULES['audit.recovery'], children=('audit_integration_tests::test_support::',))
@@ -747,7 +746,7 @@ consume(('crates/execution-service/src/actions/agent.rs',), 'execution.agent.del
 consume(('crates/execution-service/src/actions/recovery.rs',), 'execution.agent.recovery execution.software.recovery')
 AUDITED_MODULES = 'diagnostics.http audit.receipts audit.integrity audit.recovery audit.budget authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission identity.audit enrollment.http enrollment.recovery device.binding device.revocation device.recovery device.admission agent.registration agent.reports assets.http planning.http planning.policy planning.agent_policy planning.frequency planning.remote planning.software planning.onboarding planning.group_scope planning.recovery planning.resource_archive compliance.http compliance.recovery software.catalog software.http content.http content.mirror content.gc execution.agent.delivery execution.agent.content execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery execution.commands.admission execution.commands.dispatch execution.commands.recovery execution.commands.windows execution.commands.configuration execution.commands.onboarding windows.issuance windows.management windows.commands apple.scep apple.collection apple.profile apple.policy apple.onboarding apple.renewal apple.identity apple.push publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery'
 consume(('crates/audit-integration/src/*',), AUDITED_MODULES)
-consume(('crates/flow-service/src/transaction.rs',), ' '.join(name for name in AUDITED_MODULES.split() if MODULES[name].build == APP))
+consume(('crates/flow-service/src/transaction.rs',), 'planning.http planning.policy planning.agent_policy planning.frequency planning.group_scope planning.recovery planning.resource_archive planning.scope planning.assets planning.software planning.onboarding')
 consume(('crates/audit-integration/src/budget.rs',), 'audit.budget enrollment.http enrollment.recovery device.binding device.revocation device.recovery agent.registration windows.issuance windows.management apple.scep apple.profile apple.renewal content.http content.mirror content.gc')
 consume(('crates/software-service/src/publication/references.rs',), 'planning.resource_archive')
 consume(('crates/software-service/src/publication/*.sql', 'crates/software-service/src/publication/*catalog.json'),
@@ -1142,3 +1141,9 @@ consume(('crates/execution-service/src/action_admission.rs', 'crates/execution-s
 consume(('crates/execution-service/src/catalog.sql', 'crates/execution-service/src/catalog.json',
          'crates/execution-service/src/dependencies.sql', 'crates/execution-service/src/dependencies.json'),
         'catalog.contract execution.commands.admission execution.commands.recovery')
+
+consume(('crates/management-http/src/response.rs', 'crates/management-http/src/diagnostic.rs'), AUTH_CONSUMERS + ' api.diagnostics planning.http software.http content.http')
+consume(('crates/flow-service/src/error.rs', 'crates/flow-service/src/error_projection.rs', 'crates/flow-service/src/diagnostic.rs', 'crates/flow-service/src/lib.rs', 'crates/flow-service/src/operation.rs'), 'planning.http planning.policy planning.agent_policy planning.frequency planning.group_scope planning.recovery planning.resource_archive planning.scope planning.assets planning.software planning.onboarding')
+consume(('crates/app/src/flow/*',), 'planning.recovery planning.http planning.policy planning.resource_archive software.http content.http audit.integrity')
+consume(('crates/software-service/src/publication/execution.rs',), 'planning.software execution.software.offer execution.software.content execution.software.recovery publication.mapping publication.winget publication.brew publication.withdrawal')
+consume(('crates/agent-channel/src/error.rs', 'crates/agent-channel/src/diagnostic.rs'), 'agent.registration agent.reports execution.agent.delivery execution.agent.content execution.agent.recovery execution.software.content api.diagnostics')

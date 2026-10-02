@@ -18,7 +18,7 @@ pub struct Access {
     pub tenant: TenantId,
     pub content: Option<Arc<Store>>,
     pub clock: Arc<dyn Clock>,
-    pub catalog: Arc<rss_mdm_software_service::catalog::Catalog>,
+    pub catalog: Arc<rss_mdm_software_service::catalog::Reader>,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -220,7 +220,7 @@ pub async fn record(
     proof: &AuthorizedPrincipal,
     audit: &RequestAudit,
     upload: &Upload,
-    source_catalog: Option<&rss_mdm_software_service::catalog::Catalog>,
+    source_catalog: Option<&rss_mdm_software_service::catalog::Reader>,
 ) -> Result<(), Error> {
     audit.operation(upload.id, "management_write");
     let verified = store(app)?

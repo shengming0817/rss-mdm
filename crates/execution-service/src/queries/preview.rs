@@ -46,11 +46,7 @@ pub async fn preview(
         ..
     } = &input.definition.action
     {
-        Some(
-            s.inputs
-                .verify_script(resource, parameters, s.inputs.content.as_ref())
-                .await?,
-        )
+        Some(s.inputs.verify_script(resource, parameters).await?)
     } else {
         None
     };
@@ -96,5 +92,5 @@ pub async fn preview(
         }
         s.audit_store.append_request_in(tx,audit,200,"success").await?;
         super::records::decode(json!({"action":input.definition.action,"scopeResult":result,"items":items,"nextCursor":next}))
-    }),TransactionOwner::Execution).await.map_err(Into::into)
+    })).await.map_err(Into::into)
 }

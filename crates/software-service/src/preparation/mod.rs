@@ -3,8 +3,8 @@ mod exports;
 mod wire;
 pub use crate::catalog::{Error, Result};
 use crate::{
-    catalog::{Catalog, FrozenSoftware},
-    publication::PublicationService,
+    catalog::{FrozenSoftware, Reader},
+    publication::ExportReader,
 };
 use rss_mdm_agent_wire as w;
 use rss_mdm_resource as r;
@@ -45,11 +45,11 @@ pub struct FreezeRequest<'a> {
     pub targets: &'a [(Target, String)],
 }
 pub struct Preparation {
-    catalog: Catalog,
-    exports: BTreeMap<String, Arc<PublicationService>>,
+    catalog: Reader,
+    exports: BTreeMap<String, Arc<ExportReader>>,
 }
 impl Preparation {
-    pub fn new(catalog: Catalog, exports: BTreeMap<String, Arc<PublicationService>>) -> Self {
+    pub fn new(catalog: Reader, exports: BTreeMap<String, Arc<ExportReader>>) -> Self {
         Self { catalog, exports }
     }
     /// Validate every explicitly selected variant against one original approval and budget.

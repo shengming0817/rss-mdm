@@ -43,7 +43,7 @@ pub trait Flow: Send + Sync {
         revision: u64,
     ) -> crate::tasks::Pending<'a, ()>;
 }
-#[derive(Clone, Copy, Debug, thiserror::Error)]
+#[derive(Clone, Copy, Debug, thiserror::Error, serde::Serialize)]
 pub enum GroupMissing {
     #[error("group not found")]
     Group,
@@ -85,3 +85,5 @@ pub mod directory;
 mod receipts;
 mod service;
 pub use service::Command;
+
+pub mod response;

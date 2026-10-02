@@ -3,8 +3,6 @@ use sha2::{Digest, Sha256};
 
 pub fn identity(command: &Command, audit: &RequestAudit) -> Result<(Option<Uuid>, Vec<u8>)> {
     let id = match command {
-        Command::Group { change, .. } => Some(change.operation_id),
-        Command::GroupPreview { operation, .. } => Some(*operation),
         Command::Scope { change, .. } => Some(change.operation_id),
         _ => None,
     };

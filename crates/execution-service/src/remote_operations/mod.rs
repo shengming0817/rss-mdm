@@ -171,48 +171,39 @@ impl ExecutionService {
         let artifact = if matches!(input.action, Action::Execute { .. }) {
             None
         } else {
-            inspect(
-                &self.runtime,
-                self.tenant,
-                (self, input),
-                |ctx, tx| {
-                    Box::pin(async move {
-                        let version = ctx
-                            .0
-                            .inputs()
-                            .active_version_in(tx, ctx.1.resource.id(), ctx.1.resource.version())
-                            .await?;
-                        Ok(
-                            match crate::input_preparation::variant(&version, &ctx.1.resource)?
-                                .declaration()
-                            {
-                                rss_mdm_resource::Declaration::Configuration { artifact } => {
-                                    Some((
-                                        artifact.clone(),
-                                        rss_mdm_content_service::StorageClass::NativeConfiguration,
-                                    ))
-                                }
-                                rss_mdm_resource::Declaration::Script { artifact, .. }
-                                | rss_mdm_resource::Declaration::NativeCollection {
-                                    artifact,
-                                    ..
-                                } => Some((
-                                    artifact.clone(),
-                                    rss_mdm_content_service::StorageClass::Artifact,
-                                )),
-                                _ => None,
-                            },
-                        )
-                    })
-                },
-                TransactionOwner::Execution,
-            )
+            inspect(&self.runtime, self.tenant, (self, input), |ctx, tx| {
+                Box::pin(async move {
+                    let version = ctx
+                        .0
+                        .inputs
+                        .active_version_in(tx, ctx.1.resource.id(), ctx.1.resource.version())
+                        .await?;
+                    Ok(
+                        match crate::input_preparation::variant(&version, &ctx.1.resource)?
+                            .declaration()
+                        {
+                            rss_mdm_resource::Declaration::Configuration { artifact } => Some((
+                                artifact.clone(),
+                                rss_mdm_content_service::StorageClass::NativeConfiguration,
+                            )),
+                            rss_mdm_resource::Declaration::Script { artifact, .. }
+                            | rss_mdm_resource::Declaration::NativeCollection {
+                                artifact, ..
+                            } => Some((
+                                artifact.clone(),
+                                rss_mdm_content_service::StorageClass::Artifact,
+                            )),
+                            _ => None,
+                        },
+                    )
+                })
+            })
             .await?
         };
         let verified = if let Action::Execute { parameters } = &input.action {
             Some(
-                self.inputs()
-                    .verify_script(&input.resource, parameters, self.content.as_ref())
+                self.inputs
+                    .verify_script(&input.resource, parameters)
                     .await?,
             )
         } else if let Some((a, class)) = &artifact {
@@ -240,7 +231,7 @@ impl ExecutionService {
             let mut frozen=match &input.action {
                 Action::Execute { parameters } => {
                     if s.signer.is_none() { return Err(Error::Conflict.into()); }
-                    let version=s.inputs().active_version_in(tx,input.resource.id(),input.resource.version()).await?;
+                    let version=s.inputs.active_version_in(tx,input.resource.id(),input.resource.version()).await?;
                     let prepared=crate::input_preparation::script(&version,&input.resource,parameters,verified.ok_or(Error::Conflict)?)?;
                     Frozen::Execution {
                         action:Box::new(crate::freeze_inputs::freeze_script_in(tx,s.tenant,&prepared,
@@ -249,11 +240,11 @@ impl ExecutionService {
                         frequency:Frequency::OncePerVersion,
                     }
                 },
-                Action::CollectNative => s.inputs().freeze_in(tx,&PolicyAction::NativeCollection {
+                Action::CollectNative => s.inputs.freeze_in(tx,&PolicyAction::NativeCollection {
                     resource:input.resource.clone(),schedule:input.schedule(at),
                     frequency:Frequency::OncePerVersion,run_lifetime_seconds:(input.deadline-at) as u32,
                 },verified,owner).await?,
-                Action::ApplyConfiguration => s.inputs().freeze_in(tx,&PolicyAction::Configuration {
+                Action::ApplyConfiguration => s.inputs.freeze_in(tx,&PolicyAction::Configuration {
                     resource:input.resource.clone(),exit:Exit::Retain,
                 },verified,owner).await?,
             };
@@ -268,7 +259,7 @@ impl ExecutionService {
             receipts::receipt(tx,audit,input.operation_id,&hash,&value).await?;
             s.audit_store.append_in(tx,&Fact::business(audit,&format!("remote:{}:accept",input.operation_id),&hash,202,"success",None)?,false).await?;
             proof.check_live()?;Ok(value)
-        }),TransactionOwner::Execution).await
+        })).await
     }
 }
 
