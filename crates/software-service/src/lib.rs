@@ -1,6 +1,7 @@
 //! Product software authority and external publication over existing RSS transactions.
 //! Resource owns definitions; the host owns authenticated actors, secrets and composition.
 #![deny(clippy::cognitive_complexity)]
+pub mod preparation;
 pub mod publication;
 use rss_mdm_audit_integration::{Fact, RequestAudit};
 use rss_request_context::TenantId;
@@ -75,3 +76,26 @@ pub struct Host {
 }
 pub mod catalog;
 pub mod imports;
+
+impl AuditPort for rss_mdm_audit_integration::AuditStore {
+    fn lock_in<'a>(&'a self, tx: &'a mut PgTransaction<'_>) -> AuditFuture<'a> {
+        Box::pin(async move { self.lock_in(tx).await })
+    }
+    fn append_in<'a>(
+        &'a self,
+        tx: &'a mut PgTransaction<'_>,
+        fact: &'a Fact,
+        replayed: bool,
+    ) -> AuditFuture<'a> {
+        Box::pin(async move { self.append_in(tx, fact, replayed).await })
+    }
+    fn append_request_in<'a>(
+        &'a self,
+        tx: &'a mut PgTransaction<'_>,
+        request: &'a RequestAudit,
+        status: u16,
+        result: &'a str,
+    ) -> AuditFuture<'a> {
+        Box::pin(async move { self.append_request_in(tx, request, status, result).await })
+    }
+}

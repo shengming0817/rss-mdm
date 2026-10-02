@@ -3433,6 +3433,7 @@ dependencies = [
 name = "rss-mdm-software-service"
 version = "0.1.0"
 dependencies = [
+ "rss-mdm-agent-wire",
  "anyhow",
  "futures",
  "reqwest",

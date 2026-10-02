@@ -280,9 +280,7 @@ impl ResourceCatalog {
             let catalog = rss_mdm_software_service::catalog::Catalog::new(
                 self.runtime.clone(),
                 self.tenant,
-                Arc::new(crate::software_publication::host::Audit(
-                    self.audit_store.clone(),
-                )),
+                self.audit_store.clone(),
             );
             catalog.private_authoring_in(tx, version).await?;
         }

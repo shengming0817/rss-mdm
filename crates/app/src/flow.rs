@@ -206,9 +206,7 @@ impl Config {
                 rss_mdm_software_service::Host {
                     content: content.clone().ok_or_else(invalid)?,
                     runtime: runtime.clone(),
-                    audit: Arc::new(crate::software_publication::host::Audit(
-                        planning.publications.audit_store.clone(),
-                    )),
+                    audit: planning.publications.audit_store.clone(),
                     credentials: Arc::new(crate::source_credentials::SourceCredentials::load(
                         tenant,
                         &source.name,

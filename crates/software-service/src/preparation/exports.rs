@@ -1,50 +1,41 @@
-//! Explicit publication-owner to current wire mapping; no independently authored native manifest.
+//! Exact native source selection and wire projection belong to the software owner.
+use super::{Delivery, Error, Preparation, Result};
 use crate::{
-    Error,
-    execution::{ExecutionService, Result},
-};
-use rss_mdm_agent_wire as w;
-use rss_mdm_policy::{SoftwareDelivery, SoftwareDeliveryRing};
-use rss_mdm_software_service::{
     catalog::FrozenSoftware,
     publication::{NativeExport, NativeExportProtocol},
 };
+use rss_mdm_agent_wire as w;
 use rss_transactional_messaging_postgres::PgTransaction;
-
-pub(crate) async fn for_step_in(
-    service: &ExecutionService,
-    tx: &mut PgTransaction<'_>,
-    delivery: &SoftwareDelivery,
-    selected: &FrozenSoftware,
-    action: &w::SoftwareTaskAction,
-) -> Result<w::SoftwareTaskExport> {
-    if !matches!(
-        &action.behavior,
-        w::SoftwareTaskBehavior::Winget(_) | w::SoftwareTaskBehavior::Brew(_)
-    ) {
-        return Ok(w::SoftwareTaskExport::Direct);
+impl Preparation {
+    pub(super) async fn export_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        delivery: &Delivery<'_>,
+        selected: &FrozenSoftware,
+        action: &w::SoftwareTaskAction,
+    ) -> Result<w::SoftwareTaskExport> {
+        if !matches!(
+            &action.behavior,
+            w::SoftwareTaskBehavior::Winget(_) | w::SoftwareTaskBehavior::Brew(_)
+        ) {
+            return Ok(w::SoftwareTaskExport::Direct);
+        }
+        let Delivery::Native { source, ring } = delivery else {
+            return Err(Error::Unsupported);
+        };
+        let owner = self.exports.get(*source).ok_or(Error::Unsupported)?;
+        let exported = owner
+            .native_export_in(tx, *ring, selected.version())
+            .await?
+            .map_err(|_| Error::Unsupported)?
+            .ok_or(Error::Unsupported)?;
+        map(exported)
     }
-    let SoftwareDelivery::Native { source, ring } = delivery else {
-        return Err(Error::Unsupported.into());
-    };
-    let owner = service.exports.get(source).ok_or(Error::Unsupported)?;
-    let ring = match ring {
-        SoftwareDeliveryRing::Test => rss_mdm_software_release::Ring::Test,
-        SoftwareDeliveryRing::Pilot => rss_mdm_software_release::Ring::Pilot,
-        SoftwareDeliveryRing::Production => rss_mdm_software_release::Ring::Production,
-    };
-    let exported = owner
-        .native_export_in(tx, ring, selected.version())
-        .await?
-        .map_err(|_| Error::Unsupported)?
-        .ok_or(Error::Unsupported)?;
-    map(exported)
 }
 fn map(input: NativeExport) -> Result<w::SoftwareTaskExport> {
     let binding = w::SoftwareExportBinding {
         source: input.source,
-        tenant_id: uuid::Uuid::parse_str(&input.tenant.to_string())
-            .map_err(|_| Error::Malformed)?,
+        tenant_id: uuid::Uuid::parse_str(&input.tenant.to_string()).map_err(|_| Error::Input)?,
         ring: match input.ring {
             rss_mdm_software_release::Ring::Test => w::SoftwareExportRing::Test,
             rss_mdm_software_release::Ring::Pilot => w::SoftwareExportRing::Pilot,

@@ -361,9 +361,7 @@ pub(crate) fn from_state(
                 catalog: rss_mdm_software_service::catalog::Catalog::new(
                     state.flow.runtime.clone(),
                     state.execution.tenant,
-                    Arc::new(rss_mdm_flow_service::software_publication::host::Audit(
-                        state.audit_store.clone(),
-                    )),
+                    state.audit_store.clone(),
                 ),
                 content: state.content_writer.clone(),
             }),
@@ -371,9 +369,7 @@ pub(crate) fn from_state(
                 catalog: Arc::new(rss_mdm_software_service::catalog::Catalog::new(
                     state.flow.runtime.clone(),
                     state.execution.tenant,
-                    Arc::new(rss_mdm_flow_service::software_publication::host::Audit(
-                        state.audit_store.clone(),
-                    )),
+                    state.audit_store.clone(),
                 )),
                 runtime: state.flow.runtime.clone(),
                 audit_store: state.audit_store.clone(),
