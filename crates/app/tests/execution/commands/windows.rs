@@ -674,3 +674,191 @@ async fn atomic_rollback_replaces_tentative_child_success_with_fresh_authority()
     host.close().await?;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=execution.commands.windows"]
+async fn update_security_and_control_share_native_dispatch_but_not_effect_success()
+-> anyhow::Result<()> {
+    let mut host = crate::windows::test_support::Host::open().await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    let warm = begin(
+        &peer.mutual,
+        &peer.url,
+        &peer.message,
+        &peer.ack,
+        1200,
+        None,
+    )
+    .await?;
+    ensure!(
+        post(
+            &peer.mutual,
+            &peer.url,
+            &report(&warm.first, &warm.gets, "10.0.26100.0", 200)
+        )
+        .await?
+        .status()
+            == StatusCode::OK
+    );
+    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    let grants = crate::test_support::identity::device_grants(
+        None,
+        &[
+            "operation_read",
+            "operation_cancel",
+            "device_update",
+            "security_operate",
+            "device_control",
+        ],
+    )?;
+    crate::test_support::identity::set_grants(
+        case_tenant(),
+        crate::test_support::case::admin(),
+        grants,
+    )
+    .await?;
+    let requests = [
+        (
+            "./Device/Vendor/MSFT/Policy/Config/Update/AllowAutoUpdate",
+            "replace",
+            json!({"type":"integer","value":"1"}),
+        ),
+        (
+            "./Device/Vendor/MSFT/Policy/Config/Defender/AllowRealtimeMonitoring",
+            "replace",
+            json!({"type":"integer","value":"1"}),
+        ),
+        ("./Device/Vendor/MSFT/Reboot/RebootNow", "exec", Value::Null),
+    ];
+    let mut ids = Vec::new();
+    for (uri, verb, value) in &requests {
+        let id = Uuid::new_v4();
+        let body = json!({"operationId":id,"inputVersion":"family-v1","target":{"kind":"device"},"deadline":client.app.clock.unix_seconds()?+300,"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":uri,"instance":[],"operation":verb,"value":value}}}});
+        let accepted = client.call(Method::POST, "", Some(body)).await?;
+        ensure!(
+            accepted.0 == StatusCode::ACCEPTED,
+            "family {uri}: {accepted:?}"
+        );
+        client.publish_operation(id).await?;
+        ids.push(id);
+    }
+    let exchange = begin(
+        &peer.mutual,
+        &peer.url,
+        &peer.message,
+        &peer.ack,
+        1201,
+        None,
+    )
+    .await?;
+    let mut response = exchange.response.clone();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut readbacks = std::collections::BTreeSet::new();
+    // The existing exchange deliberately dispatches one operation per response.
+    // Follow its bounded sequence rather than weakening protocol scheduling.
+    for _ in 0..6 {
+        let gets = response
+            .commands
+            .iter()
+            .filter_map(|c| {
+                if let s::Command::Get { id, items, .. } = c {
+                    Some((*id, items[0].target.clone().unwrap()))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut packet = report(&exchange.first, &gets, "10.0.26100.0", 200);
+        packet.header.message_id = response.header.message_id + 1;
+        for command in &mut packet.commands {
+            match command {
+                s::Command::Status(status) => status.message_ref = response.header.message_id,
+                s::Command::Results(result) => {
+                    result.message_ref = Some(response.header.message_id);
+                    for item in &mut result.items {
+                        if requests[..2]
+                            .iter()
+                            .any(|(uri, _, _)| item.source.as_deref() == Some(*uri))
+                        {
+                            readbacks.insert(item.source.clone().unwrap());
+                            item.data = Some(Secret("1".into()));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut mutations = 0;
+        for command in &response.commands {
+            let (kind, items) = match command {
+                s::Command::Replace { items, .. } => (s::CommandName::Replace, items),
+                s::Command::Exec { items, .. } => (s::CommandName::Exec, items),
+                _ => continue,
+            };
+            seen.insert(items[0].target.clone().unwrap());
+            mutations += 1;
+            packet.commands.push(s::Command::Status(s::Status {
+                id: 100 + mutations,
+                message_ref: response.header.message_id,
+                command_ref: command.id(),
+                command: kind,
+                target_refs: vec![items[0].target.clone().unwrap()],
+                source_refs: vec![],
+                code: 200,
+                items: vec![],
+                challenge: None,
+                credential: None,
+            }));
+        }
+        let reply = post(&peer.mutual, &peer.url, &packet).await?;
+        ensure!(reply.status() == StatusCode::OK);
+        response = s::decode(
+            &reply.bytes().await?,
+            &rss_mdm_windows_mdm::CodecLimits::default(),
+        )?;
+        if seen.len() == 3 && readbacks.len() == 2 {
+            break;
+        }
+    }
+    ensure!(
+        seen == requests
+            .iter()
+            .map(|(uri, _, _)| (*uri).to_owned())
+            .collect(),
+        "native families missing: {seen:?}"
+    );
+    ensure!(
+        readbacks.len() == 2,
+        "readback did not cover the queryable mutations: {readbacks:?}"
+    );
+    for (i, id) in ids.iter().enumerate() {
+        let read = client.call(Method::GET, &format!("/{id}"), None).await?;
+        ensure!(read.0 == StatusCode::OK);
+        if i < 2 {
+            ensure!(
+                read.1["commandStatus"] == "applied"
+                    && read.1["observation"]["effect"] == "verified",
+                "family effect {read:?}"
+            );
+        } else {
+            ensure!(
+                read.1["commandStatus"] == "received"
+                    && read.1["observation"]["effect"] == "unverifiable",
+                "reboot ACK became effect: {read:?}"
+            );
+        }
+        if i == 1 {
+            ensure!(
+                read.1["observation"]["receipts"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|r| r["value"].is_null()),
+                "sensitive native values escaped redaction"
+            );
+        }
+    }
+    host.close().await?;
+    Ok(())
+}
