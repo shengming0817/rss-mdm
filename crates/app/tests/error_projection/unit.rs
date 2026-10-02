@@ -23,27 +23,27 @@ fn audit_and_ledger_interruptions_share_the_host_deadline_projection() {
 #[tokio::test]
 async fn durable_corruption_is_distinct_from_interruption() {
     use axum::response::IntoResponse;
-    for (cause, reason) in [
+    for (cause, reason, category) in [
         (
             rss_mdm_audit_integration::Error::Receipt,
             "audit_integrity_error",
+            Failure::AuditIntegrity,
         ),
         (
             rss_mdm_audit_integration::Error::Isolation,
             "audit_contract_error",
+            Failure::AuditIsolation,
         ),
         (
             rss_mdm_audit_integration::Error::Fact(rss_mdm_audit_integration::InvalidFact::Actor),
             "audit_contract_error",
+            Failure::AuditContract,
         ),
     ] {
-        let projected = Error::from(cause);
-        let diagnostic = crate::diagnostic::ProcessError::at(
-            "startup.audit",
-            Error::Unavailable(Failure::AuditIntegrity),
-        )
-        .to_string();
-        assert!(diagnostic.contains("Audit"));
+        let projected = Error::from(&cause);
+        let diagnostic =
+            crate::diagnostic::ProcessError::at("startup.audit", Error::from(&cause)).to_string();
+        assert_eq!(diagnostic, format!("startup.audit: {category:?}"));
         let response = projected.into_response();
         assert_eq!(
             response.status(),
