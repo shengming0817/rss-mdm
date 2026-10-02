@@ -5,7 +5,12 @@ pub mod issuance;
 pub mod management;
 mod operations;
 mod protection;
+pub mod push;
+mod push_channel;
+mod push_worker;
+mod renewal;
 pub mod retention;
+mod unenrollment;
 pub use database::Store;
 mod diagnostic;
 pub use diagnostic::{ConfigIssue, Failure};
@@ -36,6 +41,9 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 pub struct Windows {
+    pub poll: rss_mdm_windows_mdm::provisioning::Poll,
+    pub push: Option<push::Push>,
+    pub additional_management_origins: Vec<String>,
     pub agent_identity: Option<rss_mdm_execution_service::agent_install::Identity>,
     pub enrollment_origin: String,
     pub management_origin: String,
@@ -51,10 +59,13 @@ impl Windows {
         provider_id: String,
         ca: certificate::WindowsEnrollmentAuthority,
         protocol_key: &[u8],
+        poll: rss_mdm_windows_mdm::provisioning::Poll,
     ) -> Result<Self, Error> {
+        poll.validate().map_err(|_| Error::Malformed)?;
         let protection = protection::Protection::from_bytes(protocol_key)?;
         let configuration = enrollment::digest(&(
-            "mdm.windows.profile.v1",
+            "mdm.windows.profile.v2",
+            &poll,
             &enrollment_origin,
             &management_origin,
             &provider_id,
@@ -62,6 +73,9 @@ impl Windows {
             &protection.id,
         ));
         Ok(Self {
+            poll,
+            push: None,
+            additional_management_origins: Vec::new(),
             agent_identity: None,
             enrollment_origin,
             management_origin,
@@ -71,10 +85,19 @@ impl Windows {
             configuration,
         })
     }
+    pub fn management_urls(&self) -> Vec<String> {
+        std::iter::once(&self.management_origin)
+            .chain(&self.additional_management_origins)
+            .map(|origin| format!("{origin}/ManagementServer/MDM.svc"))
+            .collect()
+    }
     pub fn management_url(&self) -> String {
         format!("{}/ManagementServer/MDM.svc", self.management_origin)
     }
 }
+#[derive(Clone)]
+pub(crate) struct ManagementEndpoint(String);
+
 pub fn routers(
     app: Arc<HttpState>,
     enrollment_boundary: boundary::Envelope,
@@ -100,6 +123,10 @@ pub fn routers(
         boundary::wrap(
             management
                 .with_state(app)
+                .layer(Extension(ManagementEndpoint(format!(
+                    "https://{}/ManagementServer/MDM.svc",
+                    management_boundary.host
+                ))))
                 .layer(DefaultBodyLimit::max(512 * 1024)),
             management_boundary,
         ),
@@ -223,15 +250,16 @@ async fn policy(
     Extension(audit): Extension<RequestAudit>,
     bytes: Bytes,
 ) -> Response {
-    enrollment(app, headers, audit, bytes, false).await
+    enrollment(app, headers, audit, bytes, false, None).await
 }
 async fn issue(
     State(app): State<Arc<HttpState>>,
     headers: HeaderMap,
     Extension(audit): Extension<RequestAudit>,
+    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
     bytes: Bytes,
 ) -> Response {
-    enrollment(app, headers, audit, bytes, true).await
+    enrollment(app, headers, audit, bytes, true, peer.map(|Extension(p)| p)).await
 }
 async fn enrollment(
     app: Arc<HttpState>,
@@ -239,6 +267,7 @@ async fn enrollment(
     audit: RequestAudit,
     bytes: Bytes,
     issuing: bool,
+    peer: Option<rss_mdm_certificate::HandshakePeer>,
 ) -> Response {
     let (op, path) = if issuing {
         (Operation::Issue, "/EnrollmentServer/Enrollment.svc")
@@ -250,6 +279,44 @@ async fn enrollment(
         Err(e) => return fault(None, e),
     };
     let result = async {
+        validate_timestamp(
+            message.header.security.as_ref(),
+            app.clock
+                .unix_seconds()
+                .ok_or(Error::Unavailable(Failure::Clock))?,
+        )?;
+        if let Body::Issue(soap::Issue {
+            request: soap::CertificateRequest::RenewalPkcs7(cms),
+            context,
+            request_id,
+            ..
+        }) = &message.body
+        {
+            let _permit = app
+                .requests
+                .clone()
+                .try_acquire_owned()
+                .map_err(|_| Error::Unavailable(Failure::Capacity))?;
+            let provisioning = renewal::issue(
+                &app,
+                peer.as_ref().ok_or(Error::Unauthorized)?,
+                &cms.0,
+                &audit,
+            )
+            .await?;
+            return response(
+                Some(&message),
+                Body::IssueResponse(soap::IssueResponse {
+                    context: context.clone(),
+                    provisioning: Secret(provisioning),
+                    request_id: request_id.clone(),
+                    disposition: None,
+                }),
+                app.clock
+                    .unix_seconds()
+                    .ok_or(Error::Unavailable(Failure::Clock))?,
+            );
+        }
         let security = message
             .header
             .security
@@ -322,6 +389,9 @@ async fn enrollment(
         let Body::Issue(input) = &message.body else {
             return Err(Error::Malformed);
         };
+        let soap::CertificateRequest::Pkcs10(csr) = &input.request else {
+            return Err(Error::Unsupported);
+        };
         for (key, value) in &input.additional_context.0 {
             if key == "DeviceID" && value != &auth.device {
                 return Err(Error::Forbidden);
@@ -344,7 +414,7 @@ async fn enrollment(
             app.windows()?,
             &auth,
             &proof,
-            (&input.csr.0, enrollment_type),
+            (&csr.0, enrollment_type),
             now,
         )
         .await?;
@@ -405,6 +475,7 @@ async fn enrollment(
 }
 
 pub struct HttpState {
+    pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub mount: crate::device::ChannelMount,
     pub audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
     pub access: std::sync::Arc<crate::Store>,
@@ -456,3 +527,36 @@ pub mod boundary;
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 
 mod template_collection;
+
+fn validate_timestamp(security: Option<&soap::Security>, now: i64) -> Result<(), Error> {
+    if let Some(t) = security.and_then(|s| s.timestamp.as_ref()) {
+        let parse = |v: &str| {
+            time::OffsetDateTime::parse(v, &time::format_description::well_known::Rfc3339)
+                .map(|t| t.unix_timestamp())
+                .map_err(|_| Error::Malformed)
+        };
+        let (created, expires) = (parse(&t.created)?, parse(&t.expires)?);
+        if created > now + 30
+            || created < now - 300
+            || expires <= now
+            || expires <= created
+            || expires - created > 300
+        {
+            return Err(Error::Unauthorized);
+        }
+    }
+    Ok(())
+}
+
+/// Participate in retirement without committing or deleting historical receipts.
+pub async fn retire_in(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    registration: Uuid,
+) -> Result<(), Error> {
+    sqlx::query("UPDATE mdm_windows.push_channels SET lease_id=NULL,lease_until=NULL,outcome='unregistered' WHERE tenant_id=$1::uuid AND registration=$2")
+        .bind(tenant).bind(registration).execute(&mut *c).await.map_err(database::db)?;
+    sqlx::query("UPDATE mdm_access.management_sessions SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2 AND state IN ('challenge','collecting')")
+        .bind(tenant).bind(registration).execute(c).await.map_err(database::db)?;
+    Ok(())
+}

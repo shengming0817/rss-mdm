@@ -51,6 +51,50 @@
         "channel_state"
       ],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_windows",
+      "table": "renewals",
+      "read_write": true,
+      "updates": [
+        "activated_at"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_windows",
+      "table": "push_channels",
+      "read_write": true,
+      "updates": [
+        "generation",
+        "revision",
+        "configuration",
+        "uri",
+        "digest",
+        "expires_at",
+        "next_push",
+        "lease_id",
+        "lease_until",
+        "settled_id",
+        "failures",
+        "status",
+        "outcome"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_windows",
+      "table": "push_queries",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": "existsselect1frommdm_access.management_sessionsswheres.tenant_id=push_queries.tenant_idands.registration=push_queries.registrationands.session_id=push_queries.sessionands.expires_at<clock_timestamp"
+    },
+    {
+      "schema": "mdm_windows",
+      "table": "unenrollment_receipts",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
     }
   ],
   "functions": [],

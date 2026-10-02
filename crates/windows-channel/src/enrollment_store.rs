@@ -4,7 +4,7 @@ pub async fn intent(
     tenant: &str,
     request: String,
 ) -> Result<Option<sqlx::postgres::PgRow>, sqlx::Error> {
-    sqlx::query("SELECT enrollment_type,csr,tbs,issuer,configuration,registration::text,credential::text,epoch::text,secrets FROM mdm_access.enrollment_intents WHERE tenant_id=$1::uuid AND request_id=$2::uuid")
+    sqlx::query("SELECT q.windows_profile AS enrollment_type,i.csr,i.tbs,i.issuer,i.configuration,i.registration::text,i.credential::text,i.epoch::text,i.secrets FROM mdm_access.enrollment_intents i JOIN mdm_access.requests q ON (q.tenant_id,q.id)=(i.tenant_id,i.request_id) WHERE i.tenant_id=$1::uuid AND i.request_id=$2::uuid")
             .bind(tenant).bind(request).fetch_optional(c).await
 }
 pub struct NewIntent<'a> {
@@ -17,7 +17,6 @@ pub struct NewIntent<'a> {
     pub credential: String,
     pub epoch: String,
     pub secrets: &'a [u8],
-    pub enrollment_type: &'a str,
 }
 pub async fn insert_intent(
     c: &mut sqlx::PgConnection,
@@ -34,10 +33,9 @@ pub async fn insert_intent(
         credential,
         epoch,
         secrets,
-        enrollment_type,
     } = intent;
-    sqlx::query("INSERT INTO mdm_access.enrollment_intents(tenant_id,request_id,csr,tbs,issuer,configuration,registration,credential,epoch,secrets,enrollment_type) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,$7::uuid,$8::uuid,$9::uuid,$10,$11)")
-            .bind(tenant).bind(request).bind(csr).bind(tbs).bind(issuer).bind(configuration).bind(registration).bind(credential).bind(epoch).bind(secrets).bind(enrollment_type)
+    sqlx::query("INSERT INTO mdm_access.enrollment_intents(tenant_id,request_id,csr,tbs,issuer,configuration,registration,credential,epoch,secrets) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,$7::uuid,$8::uuid,$9::uuid,$10)")
+            .bind(tenant).bind(request).bind(csr).bind(tbs).bind(issuer).bind(configuration).bind(registration).bind(credential).bind(epoch).bind(secrets)
             .execute(c).await
 }
 pub async fn certificate(

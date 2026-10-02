@@ -9,11 +9,12 @@ use rss_mdm_windows_mdm::syncml::{
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use zeroize::Zeroizing;
-pub async fn manage(
+pub(crate) async fn manage(
     State(app): State<Arc<HttpState>>,
     Extension(peer): Extension<rss_mdm_certificate::HandshakePeer>,
     Extension(audit): Extension<RequestAudit>,
     headers: HeaderMap,
+    Extension(endpoint): Extension<ManagementEndpoint>,
     bytes: Bytes,
 ) -> Result<Response, Error> {
     if headers.keys().any(|k| {
@@ -43,14 +44,48 @@ pub async fn manage(
             .unix_seconds()
             .ok_or(Error::Unavailable(Failure::Clock))?,
     )?;
+    let message = syncml::decode(&bytes, &CodecLimits::default()).map_err(|_| Error::Malformed)?;
+    if message.header.target != endpoint.0
+        || !app
+            .windows()?
+            .management_urls()
+            .contains(&message.header.target)
+    {
+        return Err(Error::Forbidden);
+    }
+    if message.commands.iter().any(|c| {
+        matches!(
+            c,
+            Command::Alert {
+                alert: syncml::Alert::UnenrollmentRequested,
+                ..
+            }
+        )
+    }) {
+        if let Some(response) =
+            crate::unenrollment::replay(&app, &checked, &message, &bytes, &audit).await?
+        {
+            return Ok((
+                [(
+                    axum::http::header::CONTENT_TYPE,
+                    "application/vnd.syncml.dm+xml; charset=utf-8",
+                )],
+                response,
+            )
+                .into_response());
+        }
+    }
+    crate::renewal::activate(&app, &checked, &message.header.source).await?;
     let credential = app.mount.credential(checked.fingerprint());
     let principal = app.devices.management_principal(&credential).await?;
     audit.identify_device(principal.registration());
     audit.registration(principal.registration());
     audit.target(principal.device());
-    let message = syncml::decode(&bytes, &CodecLimits::default()).map_err(|_| Error::Malformed)?;
     if message.header.source != principal.device()
-        || message.header.target != app.windows()?.management_url()
+        || !app
+            .windows()?
+            .management_urls()
+            .contains(&message.header.target)
     {
         return Err(Error::Forbidden);
     }
@@ -65,10 +100,21 @@ pub async fn manage(
             }
         }
     }
-    let response = app
-        .execution
-        .management(app.windows()?.clone(), &principal, &message, &bytes, &audit)
-        .await?;
+    let response = if message.commands.iter().any(|c| {
+        matches!(
+            c,
+            Command::Alert {
+                alert: syncml::Alert::UnenrollmentRequested,
+                ..
+            }
+        )
+    }) {
+        crate::unenrollment::requested(&app, &principal, &message, &bytes, &audit).await?
+    } else {
+        app.execution
+            .management(app.windows()?.clone(), &principal, &message, &bytes, &audit)
+            .await?
+    };
     Ok((
         [(
             axum::http::header::CONTENT_TYPE,
@@ -409,7 +455,7 @@ fn management_response(
             session_id: message.header.session_id,
             message_id: message.header.message_id,
             target: principal.device().into(),
-            source: windows.management_url(),
+            source: message.header.target.clone(),
             credential: Some(Credential {
                 meta: Meta {
                     format: Some("b64".into()),
@@ -459,7 +505,7 @@ async fn session_decision(
     let registration = principal.registration().to_string();
     let session = message.header.session_id.to_string();
     let message_id = i64::from(message.header.message_id);
-    let stored=sqlx::query("SELECT generation,credential::text,run_id::text,state,last_message,client_authenticated,nonce,expires_at>clock_timestamp() AS live FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3 FOR UPDATE")
+    let stored=sqlx::query("SELECT generation,credential::text,run_id::text,state,last_message,client_authenticated,login_user,nonce,expires_at>clock_timestamp() AS live FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3 FOR UPDATE")
         .bind(&tenant).bind(&registration).bind(&session).fetch_optional(&mut *tx).await.map_err(db)?;
     if let Some(row) = &stored {
         verify_session_identity(row, principal)?;
@@ -496,7 +542,7 @@ async fn session_decision(
     Ok(SessionDecision::Continue(stored))
 }
 
-async fn notify(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {
+pub(crate) async fn notify(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {
     sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'windows')").execute(c).await?;
     Ok(())
 }

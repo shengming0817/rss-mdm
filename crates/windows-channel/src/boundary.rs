@@ -64,6 +64,11 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
     let mut response = if request.headers().get_all(header::HOST).iter().count() != 1
         || request.uri().to_string().len() > 8192
         || request
+            .uri()
+            .authority()
+            .is_some_and(|a| a.as_str() != envelope.host)
+        || request.uri().scheme_str().is_some_and(|s| s != "https")
+        || request
             .headers()
             .get(header::HOST)
             .and_then(|v| v.to_str().ok())
