@@ -34,10 +34,18 @@ impl rss_reconcile::Timer for Timer {
     }
 }
 fn failure(error: Error) -> rss_reconcile::Error {
+    if matches!(error, Error::Unavailable(Failure::NativeInputIntegrity)) {
+        eprintln!(
+            "{}",
+            serde_json::json!({"event":"mdm_command_recovery_integrity_failure","reason":"native_input_integrity"})
+        );
+    }
     rss_reconcile::Error::new(match error {
         Error::CommitUnknown => rss_reconcile::ErrorKind::CommitUnknown,
         Error::RollbackFailed => rss_reconcile::ErrorKind::RollbackFailed,
-        Error::Unavailable(Failure::CommandInvariant) => rss_reconcile::ErrorKind::Permanent,
+        Error::Unavailable(Failure::CommandInvariant | Failure::NativeInputIntegrity) => {
+            rss_reconcile::ErrorKind::Permanent
+        }
         Error::Conflict => rss_reconcile::ErrorKind::Fenced,
         Error::Malformed | Error::Forbidden | Error::Unauthorized => {
             rss_reconcile::ErrorKind::Permanent
@@ -66,7 +74,7 @@ fn diagnostic(event: rss_reconcile::Observation) {
 fn permanent(error: &Error) -> bool {
     matches!(
         error,
-        Error::Unavailable(Failure::CommandInvariant)
+        Error::Unavailable(Failure::CommandInvariant | Failure::NativeInputIntegrity)
             | Error::Malformed
             | Error::Forbidden
             | Error::Unauthorized
@@ -423,5 +431,22 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
             );
             result.map_err(failure)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn protected_input_corruption_is_terminal_but_storage_outage_can_retry() {
+        let integrity = Error::Unavailable(Failure::NativeInputIntegrity);
+        assert!(permanent(&integrity));
+        assert_eq!(
+            failure(integrity).kind(),
+            rss_reconcile::ErrorKind::Permanent
+        );
+        let outage = Error::Unavailable(Failure::CommandStorage);
+        assert!(!permanent(&outage));
+        assert_eq!(failure(outage).kind(), rss_reconcile::ErrorKind::Transient);
     }
 }

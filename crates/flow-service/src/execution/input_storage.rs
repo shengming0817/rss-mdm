@@ -37,7 +37,7 @@ impl Metadata {
     }
 }
 fn invalid() -> Error {
-    Error::Unavailable(Failure::NativeProtection)
+    Error::Unavailable(Failure::NativeInputIntegrity)
 }
 fn aad(
     tenant: TenantId,

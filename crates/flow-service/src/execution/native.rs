@@ -364,6 +364,29 @@ fn context(version: &str, edition: u32, scope: Scope) -> std::result::Result<Con
     })
 }
 /// Persist the exact native request and expected item set before exposing outbound bytes.
+/// Admission uses the complete response; a valid tree must not poison every check-in.
+fn admit_response(
+    response: &Message,
+    commands: &[Command],
+) -> Result<Option<Vec<u8>>, &'static str> {
+    let mut candidate = response.clone();
+    candidate.commands.extend_from_slice(commands);
+    candidate.final_message = true;
+    if let Ok(bytes) = s::encode(&candidate, &CodecLimits::default()) {
+        return Ok(Some(bytes));
+    }
+    let mut minimum = response.clone();
+    minimum
+        .commands
+        .retain(|c| matches!(c, Command::Status(status) if status.command_ref == 0));
+    minimum.commands.extend_from_slice(commands);
+    minimum.final_message = true;
+    if s::encode(&minimum, &CodecLimits::default()).is_ok() {
+        Ok(None)
+    } else {
+        Err("native_response_budget_exceeded")
+    }
+}
 pub async fn send_on(
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
@@ -392,6 +415,9 @@ pub async fn send_on(
         let id = crate::collection::store::allocate_commands_in(c, p, 2).await?;
         let mut request = response.clone();
         request.commands = vec![get(id, VERSION), get(id + 1, EDITION)];
+        let Some(_) = admit_response(response, &request.commands).map_err(|_| protocol())? else {
+            return Ok(true);
+        };
         let wire = s::encode(&request, &CodecLimits::default()).map_err(|_| protocol())?;
         let wire = protection
             .seal_bytes(
@@ -580,6 +606,19 @@ pub async fn send_on(
                 } else {
                     installer.install(id).map_err(|_| protocol())?
                 }
+            }
+        };
+        match admit_response(response, std::slice::from_ref(&command)) {
+            Ok(Some(_)) => (),
+            Ok(None) => {
+                pending = true;
+                continue;
+            }
+            Err(reason) => {
+                let failure = serde_json::json!({"platform":"windows","phase":phase.as_str(),"reason":reason});
+                sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
+                    .bind(&tenant).bind(op.operation_id).bind(failure).execute(&mut *c).await.map_err(db)?;
+                continue;
             }
         };
         let mut request = response.clone();
@@ -811,5 +850,60 @@ mod status_tests {
             assert!(!super::terminal_status(code), "provisional status {code}");
         }
         assert!(super::terminal_status(200));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn response() -> Message {
+        Message {
+            header: s::Header {
+                session_id: 1,
+                message_id: 2,
+                target: "device".into(),
+                source: "https://mdm.example.test".into(),
+                credential: None,
+                meta: None,
+            },
+            commands: vec![Command::Status(s::Status {
+                id: 1,
+                message_ref: 1,
+                command_ref: 0,
+                command: s::CommandName::SyncHdr,
+                target_refs: vec![],
+                source_refs: vec![],
+                code: 212,
+                items: vec![],
+                challenge: None,
+                credential: None,
+            })],
+            final_message: true,
+        }
+    }
+    fn tree(children: u32) -> Command {
+        Command::Sequence {
+            id: 10,
+            commands: (0..children)
+                .map(|n| get(11 + n, "./DevInfo/Mod"))
+                .collect(),
+        }
+    }
+    #[test]
+    fn response_admission_accounts_for_header_and_collection_without_splitting_groups() {
+        let response = response();
+        assert!(admit_response(&response, &[tree(254)]).unwrap().is_some());
+        assert_eq!(
+            admit_response(&response, &[tree(255)]).unwrap_err(),
+            "native_response_budget_exceeded"
+        );
+        let mut with_collection = response.clone();
+        with_collection.commands.push(get(2, "./DevInfo/Man"));
+        assert!(
+            admit_response(&with_collection, &[tree(254)])
+                .unwrap()
+                .is_none()
+        );
+        assert!(admit_response(&response, &[tree(254)]).unwrap().is_some());
     }
 }

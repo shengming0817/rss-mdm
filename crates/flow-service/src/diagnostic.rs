@@ -13,6 +13,7 @@ pub enum ConfigIssue {
 #[serde(rename_all = "snake_case")]
 pub enum Failure {
     NativeProtection,
+    NativeInputIntegrity,
     Timeline,
     IdentityStorage,
     ResourceAdmission,

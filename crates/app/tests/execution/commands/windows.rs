@@ -862,3 +862,60 @@ async fn update_security_and_control_share_native_dispatch_but_not_effect_succes
     host.close().await?;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=execution.commands.windows"]
+async fn native_tree_that_cannot_fit_header_fails_without_poisoning_checkin() -> anyhow::Result<()>
+{
+    let mut host = crate::windows::test_support::Host::open().await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    let warm = begin(&peer.mutual, &peer.url, &peer.message, &peer.ack, 890, None).await?;
+    ensure!(
+        post(
+            &peer.mutual,
+            &peer.url,
+            &report(&warm.first, &warm.gets, "10.0.26100.0", 200)
+        )
+        .await?
+        .status()
+            == StatusCode::OK
+    );
+    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    client.set_authorized(true).await?;
+    let nodes=(0..255).map(|_|json!({"kind":"node","node":"./DevInfo/Mod","instance":[],"operation":"get","value":null})).collect::<Vec<_>>();
+    let body = json!({"operationId":client.operation,"inputVersion":"1","target":{"kind":"device"},"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"sequence","operations":nodes}}},"deadline":client.app.clock.unix_seconds()?+300});
+    let accepted = client.call(Method::POST, "", Some(body)).await?;
+    ensure!(
+        accepted.0 == StatusCode::ACCEPTED,
+        "boundary tree acceptance: {accepted:?}"
+    );
+    client.publish_operation(client.operation).await?;
+    let exchange = begin(&peer.mutual, &peer.url, &peer.message, &peer.ack, 891, None).await?;
+    ensure!(
+        !exchange
+            .first
+            .commands
+            .iter()
+            .any(|c| matches!(c, s::Command::Sequence { .. })),
+        "oversized group escaped admission"
+    );
+    let actual = operation(&mut client).await?;
+    ensure!(
+        actual["commandStatus"] == "cancelled"
+            && actual["dispatchFailure"]["reason"] == "native_response_budget_exceeded",
+        "oversized tree poisoned management instead of failing: {actual}"
+    );
+    ensure!(
+        post(
+            &peer.mutual,
+            &peer.url,
+            &report(&exchange.first, &exchange.gets, "10.0.26100.0", 200)
+        )
+        .await?
+        .status()
+            == StatusCode::OK
+    );
+    host.close().await?;
+    Ok(())
+}
