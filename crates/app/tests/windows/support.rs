@@ -119,9 +119,20 @@ impl Host {
         agent: Option<serde_json::Value>,
         command_clock: rss_device_command_postgres::CommandClock,
     ) -> anyhow::Result<Self> {
+        Self::bind(agent, command_clock, None).await
+    }
+    async fn bind(
+        agent: Option<serde_json::Value>,
+        command_clock: rss_device_command_postgres::CommandClock,
+        addresses: Option<(std::net::SocketAddr, std::net::SocketAddr)>,
+    ) -> anyhow::Result<Self> {
         let root = root()?;
-        let enroll = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let manage = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let enroll =
+            tokio::net::TcpListener::bind(addresses.map(|a| a.0).unwrap_or("127.0.0.1:0".parse()?))
+                .await?;
+        let manage =
+            tokio::net::TcpListener::bind(addresses.map(|a| a.1).unwrap_or("127.0.0.1:0".parse()?))
+                .await?;
         let mut value: serde_json::Value =
             serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json"))?;
         value["native_protocols"]["windows"] =
@@ -338,6 +349,23 @@ impl Host {
         launch.finish();
         self.running = Some(owner);
         Ok(())
+    }
+    /// Drop listener/runtime ownership and reconstruct all product services against committed state.
+    pub(crate) async fn restart(self) -> anyhow::Result<Self> {
+        let windows = self.app.windows()?;
+        let addresses = (
+            windows.config.enrollment.listen,
+            windows.config.management.listen,
+        );
+        self.close().await?;
+        let mut next = Self::bind(
+            None,
+            rss_device_command_postgres::CommandClock::Postgres,
+            Some(addresses),
+        )
+        .await?;
+        next.listen().await?;
+        Ok(next)
     }
     pub(crate) async fn close(mut self) -> anyhow::Result<()> {
         if let Some(owner) = self.running.take() {

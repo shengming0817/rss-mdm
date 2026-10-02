@@ -147,7 +147,8 @@ async fn report_on(
         .native_protector()?;
     let id = rss_mdm_windows_channel::test_support::create(tx, &protection, &scope, &mut request)
         .await?;
-    let previous = String::from_utf8(syncml::encode(&request, &CodecLimits::default())?)?;
+    let (_, sent) = syncml::encode_request(&request, &CodecLimits::default())?;
+    let previous = syncml::Expected::new(sent, 2, &CodecLimits::default())?;
     let mut response = Message {
         header: Header {
             message_id: 2,
@@ -176,6 +177,7 @@ async fn report_on(
                 command: Some(CommandName::Get),
                 meta: None,
                 items: vec![syncml::Item {
+                    more_data: false,
                     source: items[0].target.clone(),
                     target: None,
                     meta: None,

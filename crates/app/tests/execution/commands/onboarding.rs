@@ -101,6 +101,7 @@ fn reply(initial: &s::Message, response: &s::Message, installed: bool) -> s::Mes
                         command: Some(s::CommandName::Get),
                         meta: None,
                         items: vec![s::Item {
+                            more_data: false,
                             target: None,
                             source: Some(uri.into()),
                             meta: None,

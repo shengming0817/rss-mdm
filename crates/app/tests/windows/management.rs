@@ -175,6 +175,7 @@ async fn session_replay_nonce_collection_and_revoke() -> anyhow::Result<()> {
                 command: Some(CommandName::Get),
                 meta: None,
                 items: vec![syncml::Item {
+                    more_data: false,
                     source: Some(gets[index].1.clone()),
                     target: None,
                     meta: None,
@@ -383,3 +384,131 @@ async fn session_replay_nonce_collection_and_revoke() -> anyhow::Result<()> {
 #[cfg(feature = "integration")]
 #[path = "collection.rs"]
 mod collection;
+
+#[cfg(feature = "integration")]
+#[tokio::test]
+#[ignore = "make t2 MODULE=windows.management"]
+async fn native_notifications_are_acked_and_replayed_without_finishing_pending_queries()
+-> anyhow::Result<()> {
+    use crate::execution::test_support::native;
+    let mut host = Host::open().await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    let exchange = native::begin(
+        &peer.mutual,
+        &peer.url,
+        &peer.message,
+        &peer.ack,
+        1900,
+        None,
+    )
+    .await?;
+    let mut message = syncml::Message {
+        header: syncml::Header {
+            message_id: 3,
+            credential: None,
+            ..exchange.first.header.clone()
+        },
+        commands: vec![
+            Command::Status(syncml::Status {
+                id: 1,
+                message_ref: exchange.response.header.message_id,
+                command_ref: 0,
+                command: CommandName::SyncHdr,
+                target_refs: vec![],
+                source_refs: vec![],
+                code: 200,
+                items: vec![],
+                challenge: None,
+                credential: None,
+            }),
+            Command::Alert {
+                id: 2,
+                alert: syncml::Alert::Generic {
+                    items: vec![syncml::Item {
+                        source: Some("./Vendor/MSFT/HealthAttestation/VerifyHealth".into()),
+                        target: None,
+                        meta: Some(syncml::Meta {
+                            media_type: Some("com.microsoft.mdm:HealthAttestation.Result".into()),
+                            format: Some("int".into()),
+                            ..Default::default()
+                        }),
+                        data: Some(Secret("3".into())),
+                        more_data: false,
+                    }],
+                },
+            },
+        ],
+        final_message: true,
+    };
+    let response = native::post(&peer.mutual, &peer.url, &message).await?;
+    ensure!(
+        response.status() == StatusCode::OK,
+        "native notification {}",
+        response.status()
+    );
+    let original = response.bytes().await?;
+    ensure!(
+        native::post(&peer.mutual, &peer.url, &message)
+            .await?
+            .bytes()
+            .await?
+            == original
+    );
+    let reply = syncml::decode(&original, &CodecLimits::default())?;
+    ensure!(reply.commands.iter().any(|c|matches!(c,Command::Status(status) if status.command==CommandName::Alert && status.command_ref==2 && status.code==200)));
+    // The notification carries no values for the still-outstanding Get operations.
+    let gets = exchange.gets.clone();
+    message = native::report(&exchange.first, &gets, "10.0.26100.0", 200);
+    message.header.message_id = 4;
+    if let Command::Status(status) = &mut message.commands[0] {
+        status.message_ref = reply.header.message_id;
+    }
+    let result = native::post(&peer.mutual, &peer.url, &message).await?;
+    ensure!(
+        result.status() == StatusCode::OK,
+        "pending native reads lost after alert {}",
+        result.status()
+    );
+    host.close().await
+}
+
+#[cfg(feature = "integration")]
+#[tokio::test]
+#[ignore = "make t2 MODULE=windows.management"]
+async fn damaged_committed_transcript_fails_closed_without_rewriting_evidence() -> anyhow::Result<()>
+{
+    use crate::execution::test_support::native;
+    let mut host = Host::open().await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    let exchange = native::begin(
+        &peer.mutual,
+        &peer.url,
+        &peer.message,
+        &peer.ack,
+        1901,
+        None,
+    )
+    .await?;
+    let mut pg = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
+    let changed = sqlx::query("UPDATE mdm_access.management_messages SET request=set_byte(request,0,get_byte(request,0)#1) WHERE tenant_id=$1::uuid AND registration=$2 AND session_id='1901' AND message_id=1")
+        .bind(case_tenant()).bind(peer.intent.registration).execute(&mut pg).await?;
+    ensure!(changed.rows_affected() == 1);
+    let damaged:Vec<u8>=sqlx::query_scalar("SELECT request FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND registration=$2 AND session_id='1901' AND message_id=1")
+        .bind(case_tenant()).bind(peer.intent.registration).fetch_one(&mut pg).await?;
+    let next = native::report(&exchange.first, &exchange.gets, "10.0.26100.0", 200);
+    ensure!(
+        native::post(&peer.mutual, &peer.url, &next).await?.status()
+            == StatusCode::SERVICE_UNAVAILABLE
+    );
+    let retained:Vec<u8>=sqlx::query_scalar("SELECT request FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND registration=$2 AND session_id='1901' AND message_id=1")
+        .bind(case_tenant()).bind(peer.intent.registration).fetch_one(&mut pg).await?;
+    let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND registration=$2 AND session_id='1901'")
+        .bind(case_tenant()).bind(peer.intent.registration).fetch_one(&mut pg).await?;
+    ensure!(
+        retained == damaged && count == 2,
+        "damaged history was rewritten or advanced"
+    );
+    host.close().await
+}

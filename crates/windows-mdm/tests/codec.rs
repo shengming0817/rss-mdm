@@ -142,17 +142,21 @@ fn syncml_budgets_apply_to_decode_encode_and_model_construction() {
     ] {
         assert!(syncml::encode(&m, &no).is_err());
     }
+    let data_limits = CodecLimits {
+        object_bytes: l.field_bytes,
+        ..l.clone()
+    };
     let mut value = m.clone();
     let syncml::Command::Results(r) = &mut value.commands[1] else {
         panic!()
     };
     r.items[0].data.as_mut().unwrap().0 = "x".repeat(l.field_bytes);
-    assert!(syncml::encode(&value, &l).is_ok());
+    assert!(syncml::encode(&value, &data_limits).is_ok());
     let syncml::Command::Results(r) = &mut value.commands[1] else {
         panic!()
     };
     r.items[0].data.as_mut().unwrap().0.push('x');
-    assert!(syncml::encode(&value, &l).is_err());
+    assert!(syncml::encode(&value, &data_limits).is_err());
 }
 #[test]
 fn namespaces_prefixes_bom_and_entities_preserve_semantics() {

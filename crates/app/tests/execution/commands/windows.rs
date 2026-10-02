@@ -50,6 +50,7 @@ fn task_packet(
             command: Some(s::CommandName::Get),
             meta: None,
             items: vec![s::Item {
+                more_data: false,
                 source: Some(uri.clone()),
                 target: None,
                 meta: None,
@@ -264,7 +265,7 @@ async fn native_partial_receipts_late_results_read_recovery_and_generation_fence
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
-    let persisted: Vec<Vec<u8>> = sqlx::query_scalar("SELECT request FROM mdm_commands.attempts WHERE tenant_id=$1::uuid UNION ALL SELECT request FROM mdm_commands.capability_queries WHERE tenant_id=$1::uuid UNION ALL SELECT response FROM mdm_access.management_messages WHERE tenant_id=$1::uuid UNION ALL SELECT correlation::bytea FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid UNION ALL SELECT request FROM mdm_windows.collections WHERE tenant_id=$1::uuid").bind(case_tenant()).fetch_all(&mut pg).await?;
+    let persisted: Vec<Vec<u8>> = sqlx::query_scalar("SELECT request FROM mdm_commands.attempts WHERE tenant_id=$1::uuid UNION ALL SELECT request FROM mdm_commands.capability_queries WHERE tenant_id=$1::uuid UNION ALL SELECT response FROM mdm_access.management_messages WHERE tenant_id=$1::uuid UNION ALL SELECT request FROM mdm_access.management_messages WHERE tenant_id=$1::uuid UNION ALL SELECT request FROM mdm_windows.collections WHERE tenant_id=$1::uuid").bind(case_tenant()).fetch_all(&mut pg).await?;
     ensure!(!persisted.is_empty());
     for stored in persisted {
         ensure!(
@@ -927,6 +928,472 @@ async fn native_tree_that_cannot_fit_header_fails_without_poisoning_checkin() ->
         .status()
             == StatusCode::OK
     );
+    host.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=execution.commands.windows"]
+async fn native_response_package_waits_for_final_and_outlives_eight_messages() -> anyhow::Result<()>
+{
+    let mut host = crate::windows::test_support::Host::open().await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    let warm = begin(&peer.mutual, &peer.url, &peer.message, &peer.ack, 980, None).await?;
+    ensure!(
+        post(
+            &peer.mutual,
+            &peer.url,
+            &report(&warm.first, &warm.gets, "10.0.26100.0", 200)
+        )
+        .await?
+        .status()
+            == StatusCode::OK
+    );
+    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    client.accept_approved().await?;
+    client.publish_operation(client.operation).await?;
+    let exchange = begin(
+        &peer.mutual,
+        &peer.url,
+        &peer.message,
+        &peer.ack,
+        981,
+        Some("./DevInfo/Mod"),
+    )
+    .await?;
+    let mut packet = report(&exchange.first, &exchange.gets, "10.0.26100.0", 200);
+    packet.final_message = false;
+    for message in 3..=14 {
+        packet.header.message_id = message;
+        let response = post(&peer.mutual, &peer.url, &packet).await?;
+        ensure!(
+            response.status() == StatusCode::OK,
+            "native package message {message}: {}",
+            response.status()
+        );
+        let bytes = response.bytes().await?;
+        let response = s::decode(&bytes, &rss_mdm_windows_mdm::CodecLimits::default())?;
+        if message == 14 {
+            ensure!(response.final_message);
+            break;
+        }
+        ensure!(
+            !response.final_message
+                && response.commands.len() == 2
+                && matches!(&response.commands[0], s::Command::Status(v) if v.command == s::CommandName::SyncHdr)
+                && matches!(&response.commands[1], s::Command::Alert { .. }),
+            "interim package response contained new work"
+        );
+        ensure!(String::from_utf8_lossy(&bytes).contains("1222"));
+        ensure!(
+            operation(&mut client).await?["commandStatus"] == "published",
+            "incomplete native package settled execution"
+        );
+        ensure!(
+            post(&peer.mutual, &peer.url, &packet)
+                .await?
+                .bytes()
+                .await?
+                == bytes,
+            "interim replay changed response"
+        );
+        packet.commands = vec![
+            s::Command::Status(s::Status {
+                id: 1,
+                message_ref: message,
+                command_ref: 0,
+                command: s::CommandName::SyncHdr,
+                target_refs: vec![],
+                source_refs: vec![],
+                code: 200,
+                items: vec![],
+                challenge: None,
+                credential: None,
+            }),
+            s::Command::Status(s::Status {
+                id: 2,
+                message_ref: message,
+                command_ref: response.commands[1].id(),
+                command: s::CommandName::Alert,
+                target_refs: vec![],
+                source_refs: vec![],
+                code: 200,
+                items: vec![],
+                challenge: None,
+                credential: None,
+            }),
+        ];
+        packet.final_message = message == 13;
+    }
+    ensure!(operation(&mut client).await?["commandStatus"] == "applied");
+    host.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=execution.commands.windows"]
+async fn native_large_results_reassemble_once_and_size_errors_keep_result_unknown()
+-> anyhow::Result<()> {
+    let mut host = crate::windows::test_support::Host::open().await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    let warm = begin(&peer.mutual, &peer.url, &peer.message, &peer.ack, 970, None).await?;
+    ensure!(
+        post(
+            &peer.mutual,
+            &peer.url,
+            &report(&warm.first, &warm.gets, "10.0.26100.0", 200)
+        )
+        .await?
+        .status()
+            == StatusCode::OK
+    );
+    let data = "native-object-".repeat(6000);
+    for (session, wrong_size, cancel) in
+        [(971, false, false), (972, true, false), (973, false, true)]
+    {
+        let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+        client.accept_approved().await?;
+        client.publish_operation(client.operation).await?;
+        let exchange = begin(
+            &peer.mutual,
+            &peer.url,
+            &peer.message,
+            &peer.ack,
+            session,
+            Some("./DevInfo/Mod"),
+        )
+        .await?;
+        let native = exchange.gets.last().unwrap().0;
+        let mut first = report(&exchange.first, &exchange.gets, "10.0.26100.0", 200);
+        first.final_message = false;
+        for command in &mut first.commands {
+            if let s::Command::Results(result) = command
+                && result.command_ref == Some(native)
+            {
+                result.items[0].data = Some(Secret(data[..30001].into()));
+                result.items[0].more_data = true;
+                result.items[0].meta = Some(s::Meta {
+                    format: Some("chr".into()),
+                    size: Some(data.len() as u32 + u32::from(wrong_size)),
+                    ..s::Meta::default()
+                });
+            }
+        }
+        let response = post(&peer.mutual, &peer.url, &first).await?;
+        ensure!(
+            response.status() == StatusCode::OK,
+            "first large result: {}",
+            response.status()
+        );
+        let bytes = response.bytes().await?;
+        let (left, right) = tokio::join!(
+            post(&peer.mutual, &peer.url, &first),
+            post(&peer.mutual, &peer.url, &first)
+        );
+        ensure!(
+            left?.bytes().await? == bytes && right?.bytes().await? == bytes,
+            "concurrent replay changed a fragment response"
+        );
+        let ack = s::decode(&bytes, &rss_mdm_windows_mdm::CodecLimits::default())?;
+        ensure!(!ack.final_message && ack.commands.iter().any(|c|matches!(c,s::Command::Status(s) if s.command==s::CommandName::Results && s.code==213)));
+        ensure!(
+            post(&peer.mutual, &peer.url, &first).await?.bytes().await? == bytes,
+            "fragment replay changed response"
+        );
+        host = host.restart().await?;
+        let buffered = operation(&mut client).await?;
+        ensure!(
+            buffered["commandStatus"] == "published"
+                && buffered["observation"]["receipts"][0]["value"].is_null()
+                && buffered["observation"]["receipts"][0]["resultAccepted"].is_null(),
+            "partial object became a result: {buffered}"
+        );
+        if cancel {
+            let cancelled = client
+                .call(
+                    Method::POST,
+                    &format!("/{}/cancel", client.operation),
+                    Some(
+                        json!({"requestId":Uuid::new_v4(),"expectedRevision":buffered["revision"]}),
+                    ),
+                )
+                .await?;
+            ensure!(
+                cancelled.0 == StatusCode::OK,
+                "cancel chunked result: {cancelled:?}"
+            );
+        }
+        let alert = ack
+            .commands
+            .iter()
+            .find_map(|c| match c {
+                s::Command::Alert { id, .. } => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        let mut last = task_packet(&exchange, 4, None, Some(&data[30001..]));
+        last.commands.insert(
+            1,
+            s::Command::Status(s::Status {
+                id: 2,
+                message_ref: 3,
+                command_ref: alert,
+                command: s::CommandName::Alert,
+                target_refs: vec![],
+                source_refs: vec![],
+                code: 200,
+                items: vec![],
+                challenge: None,
+                credential: None,
+            }),
+        );
+        let response = post(&peer.mutual, &peer.url, &last).await?;
+        ensure!(
+            response.status() == StatusCode::OK,
+            "last large result: {}",
+            response.status()
+        );
+        let response = s::decode(
+            &response.bytes().await?,
+            &rss_mdm_windows_mdm::CodecLimits::default(),
+        )?;
+        let value = operation(&mut client).await?;
+        ensure!(
+            post(&peer.mutual, &peer.url, &first).await?.bytes().await? == bytes,
+            "past fragment replay changed response after completion"
+        );
+        if cancel {
+            ensure!(
+                !response.final_message
+                    && response.commands.iter().any(|c| matches!(
+                        c,
+                        s::Command::Alert {
+                            alert: s::Alert::SessionAbort,
+                            ..
+                        }
+                    ))
+            );
+            ensure!(
+                value["commandStatus"] == "cancelled"
+                    && value["observation"]["receipts"][0]["value"].is_null(),
+                "cancelled continuation advanced operation: {value}"
+            );
+        } else if wrong_size {
+            ensure!(
+                !response.final_message
+                    && response
+                        .commands
+                        .iter()
+                        .any(|c| matches!(c,s::Command::Status(s) if s.code==424))
+            );
+            ensure!(
+                value["commandStatus"] != "applied"
+                    && value["observation"]["receipts"][0]["value"].is_null()
+            );
+            let cancelled = client
+                .call(
+                    Method::POST,
+                    &format!("/{}/cancel", client.operation),
+                    Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":value["revision"]})),
+                )
+                .await?;
+            ensure!(cancelled.0 == StatusCode::OK);
+        } else {
+            ensure!(
+                value["commandStatus"] == "applied"
+                    && value["observation"]["receipts"][0]["value"] == data
+                    && value["observation"]["receipts"][0]["resultAccepted"] == true
+            );
+        }
+    }
+    host.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=execution.commands.windows"]
+async fn native_outgoing_chunks_wait_for_buffer_receipts_and_never_accept_early_success()
+-> anyhow::Result<()> {
+    let mut host = crate::windows::test_support::Host::open().await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    let warm = begin(&peer.mutual, &peer.url, &peer.message, &peer.ack, 980, None).await?;
+    ensure!(
+        post(
+            &peer.mutual,
+            &peer.url,
+            &report(&warm.first, &warm.gets, "10.0.22621.521", 200)
+        )
+        .await?
+        .status()
+            == StatusCode::OK
+    );
+    let data = format!(
+        "<AssessmentsRoot><Assessments><Assessment><TestName>{}</TestName><TestUri>https://example.test</TestUri></Assessment></Assessments></AssessmentsRoot>",
+        "chunk-value-".repeat(1200)
+    );
+    for (session, early) in [(981, false), (982, true)] {
+        let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+        let grants: Vec<_> = ["configuration_write", "operation_read", "operation_cancel"]
+            .iter()
+            .map(|p| json!({"operation":p,"scope":{"kind":"device","id":case_device()}}))
+            .collect();
+        let grant=client.browser.call(&client.router,Method::PUT,&format!("/api/v1/authorization/rules/{}",Uuid::new_v4()),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"value":{"subject":{"kind":"user","user":crate::test_support::identity::user(case_tenant(),crate::test_support::case::admin())},"grants":grants}}))).await?;
+        ensure!(grant.0 == StatusCode::OK, "outgoing grant: {grant:?}");
+        let create=client.call(Method::POST,"",Some(json!({"operationId":client.operation,"inputVersion":"1","target":{"kind":"device"},"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Vendor/MSFT/SecureAssessment/Assessments","instance":[],"operation":"replace","value":{"type":"text","value":data}}}},"deadline":client.app.clock.unix_seconds()?+300}))).await?;
+        ensure!(
+            create.0 == StatusCode::ACCEPTED,
+            "outgoing create: {create:?}"
+        );
+        ensure!(
+            client
+                .call(
+                    Method::POST,
+                    &format!("/{}/approve", client.operation),
+                    Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":1}))
+                )
+                .await?
+                .0
+                == StatusCode::OK
+        );
+        client.publish_operation(client.operation).await?;
+        let mut initial = peer.message.clone();
+        initial
+            .header
+            .meta
+            .get_or_insert_with(s::Meta::default)
+            .max_message_size = Some(4096);
+        let exchange = begin(&peer.mutual, &peer.url, &initial, &peer.ack, session, None).await?;
+        let mut sent = exchange.response.clone();
+        let dispatched = operation(&mut client).await?;
+        ensure!(
+            sent.commands
+                .iter()
+                .any(|c| matches!(c, s::Command::Replace { .. })),
+            "outgoing operation not emitted: {dispatched}"
+        );
+        let mut joined = String::new();
+        let mut frames = 0;
+        loop {
+            ensure!(s::encode(&sent, &rss_mdm_windows_mdm::CodecLimits::default())?.len() <= 4096);
+            let (id, item) = sent
+                .commands
+                .iter()
+                .find_map(|c| match c {
+                    s::Command::Replace { id, items, .. } => Some((*id, &items[0])),
+                    _ => None,
+                })
+                .ok_or_else(|| anyhow::anyhow!("missing outgoing chunk"))?;
+            frames += 1;
+            ensure!(frames <= 16);
+            ensure!(
+                item.meta.as_ref().and_then(|m| m.size)
+                    == (frames == 1).then_some(data.len() as u32)
+            );
+            joined.push_str(&item.data.as_ref().unwrap().0);
+            let more = item.more_data;
+            if more {
+                ensure!(!sent.final_message);
+            }
+            let before = operation(&mut client).await?;
+            let ranges = before["observation"]["receipts"][0]["frames"]
+                .as_array()
+                .unwrap();
+            ensure!(
+                ranges.len() == frames && ranges.last().unwrap()["endByte"] == joined.len(),
+                "missing persisted native range: {before}"
+            );
+            ensure!(
+                before["commandStatus"] == "published",
+                "fragment became complete: {before}"
+            );
+            let mut packet = report(&exchange.first, &exchange.gets, "10.0.22621.521", 200);
+            packet.header.message_id = sent.header.message_id + 1;
+            if frames > 1 {
+                packet.commands.truncate(1);
+            }
+            if let s::Command::Status(header) = &mut packet.commands[0] {
+                header.message_ref = sent.header.message_id;
+            }
+            packet.final_message = !more || early;
+            packet.commands.push(s::Command::Status(s::Status {
+                id: packet.commands.iter().map(s::Command::id).max().unwrap() + 1,
+                message_ref: sent.header.message_id,
+                command_ref: id,
+                command: s::CommandName::Replace,
+                target_refs: vec![item.target.clone().unwrap()],
+                source_refs: vec![],
+                code: if more && !early { 213 } else { 200 },
+                items: vec![],
+                challenge: None,
+                credential: None,
+            }));
+            let response = post(&peer.mutual, &peer.url, &packet).await?;
+            ensure!(
+                response.status() == StatusCode::OK,
+                "outgoing response {}",
+                response.status()
+            );
+            let bytes = response.bytes().await?;
+            ensure!(
+                post(&peer.mutual, &peer.url, &packet)
+                    .await?
+                    .bytes()
+                    .await?
+                    == bytes,
+                "chunk replay changed response"
+            );
+            sent = s::decode(&bytes, &rss_mdm_windows_mdm::CodecLimits::default())?;
+            let after = operation(&mut client).await?;
+            if early {
+                ensure!(
+                    after["commandStatus"] == "published",
+                    "early success completed object: {after}"
+                );
+                ensure!(sent.commands.iter().any(|c| matches!(
+                    c,
+                    s::Command::Alert {
+                        alert: s::Alert::SessionAbort,
+                        ..
+                    }
+                )));
+                ensure!(
+                    sent.commands
+                        .iter()
+                        .all(|c| !matches!(c, s::Command::Replace { .. } | s::Command::Get { .. }))
+                );
+                break;
+            }
+            if !more {
+                ensure!(frames >= 3 && joined == data);
+                ensure!(
+                    after["commandStatus"] == "received",
+                    "full receipt not separated from effect: {after}"
+                );
+                break;
+            }
+            ensure!(
+                sent.commands
+                    .iter()
+                    .all(|c| !matches!(c, s::Command::Get { .. })),
+                "unrelated new work during transfer"
+            );
+        }
+        let value = operation(&mut client).await?;
+        ensure!(
+            client
+                .call(
+                    Method::POST,
+                    &format!("/{}/cancel", client.operation),
+                    Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":value["revision"]}))
+                )
+                .await?
+                .0
+                == StatusCode::OK
+        );
+    }
     host.close().await?;
     Ok(())
 }

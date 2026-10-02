@@ -246,6 +246,7 @@ fn respond(
                                 command: Some(s::CommandName::Get),
                                 meta: None,
                                 items: vec![s::Item {
+                                    more_data: false,
                                     source: Some(uri.into()),
                                     target: None,
                                     meta: None,
