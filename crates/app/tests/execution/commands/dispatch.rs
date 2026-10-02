@@ -1,7 +1,10 @@
 use crate::execution::test_support::*;
-use crate::execution::*;
 use anyhow::ensure;
 use axum::http::{Method, StatusCode};
+use rss_device_command::{self as dc, Store};
+use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_execution_service::*;
+use rss_transactional_messaging_postgres::PgOutboxStore;
 use sqlx::Connection;
 #[tokio::test]
 #[ignore = "make t2 MODULE=execution.commands.dispatch"]
@@ -33,8 +36,8 @@ async fn clean_shutdown_settles_a_claimed_relay_message() -> anyhow::Result<()> 
     .await?;
     let cancel = tokio_util::sync::CancellationToken::new();
     let signals = crate::worker_wake::Signals::default();
-    let flow_signals = signals.flow();
-    let mut worker = Box::pin(client.app.execution.run_worker(&cancel, &flow_signals));
+    let execution_signals = signals.execution();
+    let mut worker = Box::pin(client.app.execution.run_worker(&cancel, &execution_signals));
     let message = format!("dispatch.{}", client.operation);
     tokio::select! {
         result = &mut worker => anyhow::bail!("worker exited before claim: {result:?}"),
@@ -87,7 +90,7 @@ impl Client {
         // Drive the public bounded recovery seam without a competing fault consumer.
         let s = self.app.execution.clone();
         let id = self.operation;
-        rss_mdm_flow_service::transaction::run(
+        rss_mdm_execution_service::transaction::run(
             &s.audit_store,
             &s.runtime,
             s.tenant,
@@ -104,7 +107,7 @@ impl Client {
                     Ok(())
                 })
             },
-            rss_mdm_flow_service::transaction::TransactionOwner::Execution,
+            rss_mdm_execution_service::transaction::TransactionOwner::Execution,
         )
         .await?;
         audit.finalize(None);
@@ -113,10 +116,10 @@ impl Client {
             .await?;
         ensure!(
             read.0 == StatusCode::OK
-                && read.1["task"]["field"] == "model"
-                && read.1["task"]["expectedValue"] == "Final-Model"
+                && read.1["task"]["kind"] == "sync_ml"
+                && read.1["task"]["objects"] == serde_json::json!(["./DevInfo/Mod"])
                 && read.1["commandStatus"] == "published"
-                && read.1["observation"]["result"] == "unknown",
+                && read.1["observation"]["effect"] == "waiting",
             "published is not observed {:?}",
             read
         );
@@ -185,7 +188,7 @@ impl Client {
                 service.inject_fault(fault);
                 ensure!(matches!(
                     service.relay_claim(claim).await,
-                    Err(rss_mdm_flow_service::Error::CommitUnknown)
+                    Err(rss_mdm_execution_service::Error::CommitUnknown)
                 ));
                 let row:(String,i32,Vec<u8>)=sqlx::query_as("SELECT status,retry_count,fingerprint FROM rss_transactional_messaging.outbox WHERE message_id=$1").bind(format!("dispatch.{}",self.operation)).fetch_one(&mut pg).await?;
                 ensure!(

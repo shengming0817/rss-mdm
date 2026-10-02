@@ -120,7 +120,7 @@ pub(crate) struct Fixture {
     pub(crate) base: Value,
     pub(crate) builtin_collections: Vec<Value>,
     pub(crate) router: Router,
-    pub(crate) execution: Arc<crate::execution::ExecutionService>,
+    pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
     pub(crate) plan_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     pub(crate) author: Browser,
     pub(crate) author_id: String,
@@ -134,10 +134,13 @@ impl Fixture {
         Self::from_config(base).await
     }
     pub(crate) async fn from_config(base: Value) -> Result<Self> {
-        let key = ring::signature::Ed25519KeyPair::from_pkcs8(&std::fs::read(
-            base["task_signing"]["private_key_file"].as_str().unwrap(),
-        )?)
-        .unwrap();
+        let fixture_config: Value =
+            serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+        let key_file = base["task_signing"]["private_key_file"]
+            .as_str()
+            .or_else(|| fixture_config["task_signing"]["private_key_file"].as_str())
+            .ok_or_else(|| anyhow::anyhow!("fixture task key missing"))?;
+        let key = ring::signature::Ed25519KeyPair::from_pkcs8(&std::fs::read(key_file)?).unwrap();
         // Store startup recovery and fixture uploads share the content directory.
         let content_setup = super::software::content_setup_guard().await?;
         let (router, execution, plan_runtime) = crate::api::application_fixture(
@@ -295,11 +298,11 @@ pub(crate) async fn worker(base: &Value) -> Result<Option<rss_runtime::ShutdownS
         return Ok(None);
     }
     let config: Config = serde_json::from_value(base.clone())?;
-    let service = crate::flow::execution::open(
+    let service = crate::execution_assembly::open(
         &config,
         config.native_protector()?,
         crate::test_support::identity::audit_store(&config).await?,
-        crate::flow::execution::open_content(&config, config.native_protector()?)?,
+        crate::execution_assembly::open_content(&config, config.native_protector()?)?,
         std::collections::BTreeMap::new(),
         rss_device_command_postgres::CommandClock::Postgres,
     )
@@ -310,7 +313,7 @@ pub(crate) async fn worker(base: &Value) -> Result<Option<rss_runtime::ShutdownS
     )?;
     let mut startup = owner.startup()?;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-        crate::execution::Resource(service.clone()),
+        rss_mdm_execution_service::Resource(service.clone()),
     ));
     let notifications = crate::worker_wake::Listener::new(
         config.access_database.options()?,
@@ -322,7 +325,7 @@ pub(crate) async fn worker(base: &Value) -> Result<Option<rss_runtime::ShutdownS
     ));
     let mut launch = startup.commit();
     launch.stage_task_with_token(notifications.registration().critical());
-    launch.stage_deferred_task_with_token(service.registration(signals.flow()).critical());
+    launch.stage_deferred_task_with_token(service.registration(signals.execution()).critical());
     launch.finish();
     Ok(Some(owner))
 }

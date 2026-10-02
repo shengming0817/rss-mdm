@@ -1,2 +1,2 @@
-pub(crate) use rss_mdm_flow_service::execution::actions::*;
+pub(crate) use rss_mdm_execution_service::actions::*;
 pub mod http;

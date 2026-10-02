@@ -211,7 +211,7 @@ impl Fixture {
             .await;
         audit.finalize(None);
         ensure!(
-            matches!(stale, Err(rss_mdm_flow_service::Error::Unauthorized)),
+            matches!(stale, Err(rss_mdm_execution_service::Error::Unauthorized)),
             "pre-authenticated old principal survived credential switch"
         );
         peer.token().await?;

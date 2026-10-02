@@ -108,9 +108,9 @@ pub struct Config {
     pub listen: SocketAddr,
     pub product_origin: String,
     #[serde(default)]
-    pub agent_installation: rss_mdm_flow_service::planning::policies::agent_install::Config,
+    pub agent_installation: rss_mdm_execution_service::agent_install::Config,
     #[serde(default)]
-    pub enrollment_entries: rss_mdm_flow_service::planning::policies::enrollment::Entries,
+    pub enrollment_entries: rss_mdm_execution_service::enrollment::Entries,
     pub trusted_gateway: std::net::IpAddr,
     pub identity: Identity,
     pub access_database: Database,

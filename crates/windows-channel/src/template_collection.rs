@@ -19,6 +19,7 @@ fn refs(command: &Command) -> Option<(u32, u32)> {
     }
 }
 pub async fn send(
+    source: &dyn rss_mdm_execution_service::source_authority::SourceAuthority,
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
@@ -32,7 +33,9 @@ pub async fn send(
         .bind(p.tenant().to_string()).bind(p.registration()).fetch_optional(&mut *c).await.map_err(db)?;
     if let Some(row) = row {
         let id: Uuid = row.try_get("id").map_err(db)?;
-        if !crate::execution::actions::native_collection::eligible_on(c, p, id).await? {
+        if !rss_mdm_execution_service::actions::native_collection::eligible_on(source, c, p, id)
+            .await?
+        {
             return Ok(false);
         }
         let template = native::template(c, &p.tenant().to_string(), id)
@@ -56,7 +59,7 @@ pub async fn send(
             edition: Some(edition.try_into().map_err(|_| corrupt())?),
             scope: rss_mdm_windows_mdm::native::Scope::Device,
         };
-        let queries = crate::execution::actions::native_collection::queries_on(
+        let queries = rss_mdm_execution_service::actions::native_collection::queries_on(
             c,
             &p.tenant().to_string(),
             id,
@@ -95,13 +98,15 @@ pub async fn send(
             .map_err(|_| corrupt())?;
         sqlx::query("INSERT INTO mdm_windows.collections(tenant_id,id,registration,session_id,request_message,first_command,request) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)")
             .bind(p.tenant().to_string()).bind(id).bind(p.registration()).bind(response.header.session_id.to_string()).bind(i64::from(response.header.message_id)).bind(i64::from(first)).bind(bytes).execute(&mut *c).await.map_err(db)?;
-        crate::execution::actions::native_collection::sent(c, &p.tenant().to_string(), id).await?;
+        rss_mdm_execution_service::actions::native_collection::sent(c, &p.tenant().to_string(), id)
+            .await?;
         response.commands.extend(commands);
     }
     sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.collection_runs r JOIN mdm_windows.collections w USING(tenant_id,id) WHERE r.tenant_id=$1::uuid AND r.registration=$2 AND r.sealed_at IS NULL AND r.evidence ? 'nativeTemplate' AND w.session_id=$3)")
         .bind(p.tenant().to_string()).bind(p.registration()).bind(response.header.session_id.to_string()).fetch_one(c).await.map_err(db)
 }
 pub async fn receive(
+    source: &dyn rss_mdm_execution_service::source_authority::SourceAuthority,
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
@@ -120,7 +125,8 @@ pub async fn receive(
             .ok_or_else(corrupt)?;
         let fields: Vec<_> = template.spec().mappings.iter().collect();
         let queries =
-            crate::execution::actions::native_collection::queries_on(c, &tenant, id).await?;
+            rss_mdm_execution_service::actions::native_collection::queries_on(c, &tenant, id)
+                .await?;
         if queries.len() != fields.len() {
             return Err(corrupt());
         }
@@ -142,7 +148,8 @@ pub async fn receive(
         consumed.extend(commands.iter().filter_map(refs));
         let mut run = store::load_on(c, &tenant, id).await?;
         if run.sealed_at.is_some()
-            || !crate::execution::actions::native_collection::eligible_on(c, p, id).await?
+            || !rss_mdm_execution_service::actions::native_collection::eligible_on(source, c, p, id)
+                .await?
         {
             continue;
         }

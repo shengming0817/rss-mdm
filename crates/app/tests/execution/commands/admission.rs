@@ -3,7 +3,6 @@
     reason = "test scenarios retain distinct authorization, failure and recovery assertions"
 )]
 use crate::execution::test_support::*;
-use crate::execution::*;
 use anyhow::ensure;
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
@@ -110,7 +109,7 @@ impl Client {
         );
         let other_key = rss_mdm_native_protection::Protector::new(&[93; 32])?;
         ensure!(
-            rss_mdm_flow_service::storage::bind_native_key(
+            rss_mdm_execution_service::storage::bind_native_key(
                 &self.app.flow.planning.runtime,
                 self.app.execution.tenant,
                 other_key.id()
@@ -119,7 +118,7 @@ impl Client {
             .is_err(),
             "changed native key was silently accepted"
         );
-        rss_mdm_flow_service::storage::bind_native_key(
+        rss_mdm_execution_service::storage::bind_native_key(
             &self.app.flow.planning.runtime,
             self.app.execution.tenant,
             self.app.execution.protection.id(),
@@ -392,8 +391,8 @@ impl Client {
             .await;
         ensure!(matches!(
             poison,
-            Err(rss_mdm_flow_service::Error::Unavailable(
-                rss_mdm_flow_service::Failure::CommandInvariant
+            Err(rss_mdm_execution_service::Error::Unavailable(
+                rss_mdm_execution_service::Failure::CommandInvariant
             ))
         ));
         pg.close().await?;

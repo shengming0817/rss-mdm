@@ -1,0 +1,98 @@
+//! Frozen execution contract. It deliberately excludes authors, approval rows and Scope internals.
+use crate::Error;
+use rss_mdm_agent_wire as wire;
+use rss_mdm_policy::schedule::Schedule;
+pub use rss_mdm_policy::{Architecture, Platform};
+use rss_mdm_resource as r;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::BTreeMap;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ExecutionInput {
+    pub platform: Platform,
+    pub architecture: Architecture,
+    pub parameters: Value,
+    pub schedule: Schedule,
+    pub run_lifetime_seconds: u32,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct FrozenAction {
+    pub input: ExecutionInput,
+    pub definition: r::ScriptDefinition,
+    pub collection: Option<rss_mdm_inventory::CollectionDefinition>,
+    pub resource_digest: [u8; 32],
+    pub artifact_reference: String,
+    pub content: wire::TaskContent,
+}
+impl FrozenAction {
+    pub fn artifact(&self) -> Result<r::Artifact, Error> {
+        r::Artifact::new(
+            r::Id::new(&self.artifact_reference).map_err(|_| Error::Malformed)?,
+            self.content.length,
+            r::Digest::from_bytes(self.content.sha256),
+        )
+        .map_err(|_| Error::Malformed)
+    }
+}
+/// Enterprise software input frozen at Policy publication, before per-device admission.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct FrozenSoftwareAction {
+    pub delivery: rss_mdm_policy::SoftwareDelivery,
+    pub resource: String,
+    pub version: String,
+    pub variants: BTreeMap<rss_mdm_policy::SoftwareTarget, String>,
+    pub resource_digest: [u8; 32],
+    pub admission_operation: uuid::Uuid,
+    pub intent: rss_mdm_policy::SoftwareIntent,
+    pub schedule: Schedule,
+    pub run_lifetime_seconds: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct FrozenNativeCollection {
+    pub input: ExecutionInput,
+    pub definition: r::NativeCollectionDefinition,
+    pub windows_queries: Vec<rss_mdm_windows_mdm::native::Request>,
+    pub grants: BTreeMap<String, Vec<crate::authorization::UserGrant>>,
+    pub collection: rss_mdm_inventory::CollectionDefinition,
+    pub resource_digest: [u8; 32],
+}
+pub trait ScheduledInput {
+    fn execution_input(&self) -> &ExecutionInput;
+}
+impl ScheduledInput for FrozenAction {
+    fn execution_input(&self) -> &ExecutionInput {
+        &self.input
+    }
+}
+impl ScheduledInput for FrozenNativeCollection {
+    fn execution_input(&self) -> &ExecutionInput {
+        &self.input
+    }
+}
+
+impl FrozenNativeCollection {
+    pub fn permissions(&self) -> Result<Vec<crate::authorization::Permission>, Error> {
+        let mut permissions = vec![crate::authorization::Permission::InventoryCollect];
+        if !self.windows_queries.is_empty() {
+            permissions.extend(
+                crate::Task::Windows {
+                    request: rss_mdm_windows_mdm::native::Execution::SyncMl {
+                        request: rss_mdm_windows_mdm::native::Request::Sequence {
+                            operations: self.windows_queries.clone(),
+                        },
+                    },
+                }
+                .permissions()?,
+            );
+        }
+        // Collection facts flow to Inventory; credential-bearing carriers are not asset fields.
+        if permissions.contains(&crate::authorization::Permission::Credentials) {
+            return Err(Error::Unsupported);
+        }
+        permissions.sort();
+        permissions.dedup();
+        Ok(permissions)
+    }
+}

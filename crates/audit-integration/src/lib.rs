@@ -20,3 +20,7 @@ pub mod completion;
 
 /// This capability's closed privileges in the shared access connection.
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
+
+pub const OPERATION_RECEIPTS_SQL: &str = include_str!("operation-install.sql");
+pub const OPERATION_RECEIPT_RELATIONS_SQL: &str = include_str!("operation-relations.sql");
+pub mod operation_receipts;

@@ -1,7 +1,7 @@
 use crate::device::DevicePrincipal;
-use crate::execution::channels::{self, AppleCommand, AppleDispatch, Pending, Reception};
 use crate::{Error, database::db};
 use rss_mdm_apple_mdm::protocol as wire;
+use rss_mdm_execution_service::channels::{self, AppleCommand, AppleDispatch, Pending, Reception};
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 pub struct Store {
@@ -357,7 +357,10 @@ async fn send_command(
     command: &AppleCommand,
 ) -> Result<AppleDispatch, Error> {
     use rss_mdm_apple_mdm::native::{self, request::Request as A};
-    if !matches!(command.target, crate::execution::NativeTarget::Device) {
+    if !matches!(
+        command.target,
+        rss_mdm_execution_service::NativeTarget::Device
+    ) {
         return Err(Error::Unsupported);
     }
     let Some(context) = super::native::context(c, &apple.protection, p, command).await? else {

@@ -1,4 +1,5 @@
 use super::*;
+use rss_mdm_execution_service::channels::PushOutcome;
 #[test]
 fn provider_reasons_choose_recovery_without_logging_arbitrary_text() {
     let id = Uuid::nil();
@@ -6,46 +7,51 @@ fn provider_reasons_choose_recovery_without_logging_arbitrary_text() {
         (
             400,
             r#"{"reason":"BadDeviceToken"}"#,
-            Outcome::Unregistered,
+            PushOutcome::Unregistered,
             Reason::TokenInvalid,
         ),
         (
             400,
             r#"{"reason":"DeviceTokenNotForTopic"}"#,
-            Outcome::Unregistered,
+            PushOutcome::Unregistered,
             Reason::TokenInvalid,
         ),
         (
             400,
             r#"{"reason":"IdleTimeout"}"#,
-            Outcome::Retryable,
+            PushOutcome::Retryable,
             Reason::IdleTimeout,
         ),
         (
             403,
             r#"{"reason":"BadCertificateEnvironment"}"#,
-            Outcome::Rejected,
+            PushOutcome::Rejected,
             Reason::Certificate,
         ),
         (
             400,
             r#"{"reason":"BadTopic"}"#,
-            Outcome::Rejected,
+            PushOutcome::Rejected,
             Reason::Topic,
         ),
         (
             413,
             r#"{"reason":"PayloadTooLarge"}"#,
-            Outcome::Rejected,
+            PushOutcome::Rejected,
             Reason::Payload,
         ),
         (
             400,
             r#"{"reason":"secret-provider-text"}"#,
-            Outcome::Retryable,
+            PushOutcome::Retryable,
             Reason::InvalidResponse,
         ),
-        (400, "not json", Outcome::Retryable, Reason::InvalidResponse),
+        (
+            400,
+            "not json",
+            PushOutcome::Retryable,
+            Reason::InvalidResponse,
+        ),
     ] {
         let receipt = classify(id, status, body.as_bytes());
         assert_eq!((receipt.outcome, receipt.reason), (outcome, Some(reason)));

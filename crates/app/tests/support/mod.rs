@@ -339,7 +339,7 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
             audit_store,
             rss_request_context::TenantId::parse(case_tenant())?,
             Arc::new(crate::clock::SystemClock),
-            crate::flow::execution::open_content(&config, config.native_protector()?)?,
+            crate::execution_assembly::open_content(&config, config.native_protector()?)?,
             |resource| startup.stage_resource(rss_runtime::DynManagedResource::new_box(resource)),
         )
         .await?;

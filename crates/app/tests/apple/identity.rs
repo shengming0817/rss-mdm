@@ -1,5 +1,4 @@
 use super::*;
-use crate::apple::push;
 use lifecycle::Peer;
 use sqlx::Connection;
 impl Fixture {
@@ -231,7 +230,11 @@ impl Fixture {
         peer.token_value(44).await?;
         self.app
             .execution
-            .apple_pushed(&old, Some(410), push::Outcome::Unregistered)
+            .apple_pushed(
+                &old,
+                Some(410),
+                rss_mdm_execution_service::channels::PushOutcome::Unregistered,
+            )
             .await?;
         ensure!(
             !peer.manage("Idle", None, None).await?.is_empty(),

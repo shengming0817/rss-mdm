@@ -10,19 +10,28 @@ from t2_registry import MODULES, select_paths
 class ModuleImpactTests(unittest.TestCase):
     def test_collection_inputs_select_their_actual_protocol_consumers(self):
         cases={
-            'crates/flow-service/src/execution/actions/output.rs': {'execution.agent.delivery'},
-            'crates/flow-service/src/execution/actions/native_collection.rs': {'windows.management','apple.collection'},
-            'crates/flow-service/src/execution/actions/recovery.rs': {'windows.management','apple.collection'},
+            'crates/execution-service/src/actions/output.rs': {'execution.agent.delivery'},
+            'crates/execution-service/src/actions/native_collection.rs': {'windows.management','apple.collection'},
+            'crates/execution-service/src/actions/recovery.rs': {'windows.management','apple.collection','execution.agent.recovery','execution.software.recovery'},
         }
         for path,expected in cases.items():
             selected=select_paths([path])
             self.assertFalse(selected.full)
-            self.assertTrue(expected <= set(selected.modules),(path,selected.modules))
+            self.assertEqual(expected, set(selected.modules),(path,selected.modules))
+
+    def test_execution_queries_select_read_consumers_without_unrelated_protocols(self):
+        for path in ('crates/execution-service/src/queries/records.rs',
+                     'crates/execution-service/src/queries/error.rs'):
+            selected = select_paths([path])
+            self.assertFalse(selected.full)
+            self.assertEqual(set(selected.modules), {
+                'execution.agent.history', 'execution.commands.windows', 'planning.http',
+                'planning.agent_policy', 'planning.remote', 'planning.software'})
 
     def test_script_preparation_selects_all_script_entrances(self):
         for path in ('crates/resource/src/script.rs',
-                     'crates/flow-service/src/resource_catalog/scripts.rs',
-                     'crates/flow-service/src/planning/action_contract.rs',
+                     'crates/execution-service/src/input_preparation.rs',
+                     'crates/execution-service/src/freeze_inputs.rs',
                      'crates/flow-service/src/resource_catalog/mod.rs'):
             selected = select_paths([path])
             self.assertFalse(selected.full, path)
@@ -36,9 +45,9 @@ class ModuleImpactTests(unittest.TestCase):
     def test_console_projection_inputs_select_their_http_consumers(self):
         for path in ('crates/resource-postgres/src/codec.rs',
                      'crates/inventory-postgres/src/lib.rs',
-                     'crates/flow-service/src/execution/directory.rs'):
+                     'crates/execution-service/src/directory.rs'):
             self.assertIn('planning.http', self.selected(path), path)
-        self.assertIn('execution.agent.history', self.selected('crates/flow-service/src/execution/directory.rs'))
+        self.assertIn('execution.agent.history', self.selected('crates/execution-service/src/directory.rs'))
         self.assertIn('planning.http', self.selected('crates/app/tests/support/agent_execution.rs'))
     def selected(self, path):
         return set(select_paths([path]).modules)
@@ -226,7 +235,7 @@ class ModuleImpactTests(unittest.TestCase):
                     'execution.software.recovery'}
         for path in ('crates/agent-wire/src/tasks.rs',
                      'crates/agent-wire/schema/signed-task-v5.schema.json',
-                     'crates/flow-service/src/task_signing.rs'):
+                     'crates/execution-service/src/task_signing.rs'):
             selected = self.selected(path)
             self.assertTrue(expected <= selected, expected - selected)
             self.assertTrue(selected.isdisjoint({'agent.registration','agent.reports','windows.management',
@@ -251,8 +260,8 @@ class ModuleImpactTests(unittest.TestCase):
 
     def test_shared_onboarding_paths_reach_both_native_protocols(self):
         for path in ('crates/agent-wire/src/lib.rs',
-                     'crates/flow-service/src/execution/managed_registration.rs',
-                     'crates/flow-service/src/execution/agent_install.rs',
+                     'crates/execution-service/src/managed_registration.rs',
+                     'crates/execution-service/src/native_installation.rs',
                      'crates/inventory-service/src/collection/channel.rs'):
             selection = select_paths([path])
             self.assertFalse(selection.full, path)

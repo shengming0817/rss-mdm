@@ -8,20 +8,20 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"hack"))
 from rust_test_layout import is_test_path
 
 ROOT = Path(__file__).resolve().parents[1]
-PRODUCERS = ('app','software-service','authorization-service','registration-service','inventory-service','flow-service','content-service','management-http','agent-channel','windows-channel','apple-channel')
+PRODUCERS = ('app','software-service','authorization-service','registration-service','inventory-service','flow-service','execution-service','content-service','management-http','agent-channel','windows-channel','apple-channel')
 def production_paths():
     return [path for owner in PRODUCERS for path in (ROOT/'crates'/owner/'src').rglob('*.rs')]
 
 # Each entry binds an action to its declaration or dispatch entry in the production call path.
 OWNERS = {
  'timeline_read': 'crates/management-http/src/boundary.rs',
- 'audit_search': 'crates/management-http/src/boundary.rs','agent_content':'crates/flow-service/src/execution/agent_install.rs','authentication':'crates/management-http/src/boundary.rs','agent_registration': 'crates/agent-channel/src/lib.rs',
+ 'audit_search': 'crates/management-http/src/boundary.rs','agent_content':'crates/execution-service/src/native_installation.rs','authentication':'crates/management-http/src/boundary.rs','agent_registration': 'crates/agent-channel/src/lib.rs',
  'agent_report': 'crates/agent-channel/src/lib.rs',
  'agent_report_read': 'crates/agent-channel/src/lib.rs',
  'apple_checkin': 'crates/apple-channel/src/boundary.rs',
  'apple_management': 'crates/app/src/native/mod.rs',
  'apple_profile': 'crates/apple-channel/src/boundary.rs',
- 'apple_push': 'crates/flow-service/src/execution/apple_push.rs',
+ 'apple_push': 'crates/execution-service/src/apple_push.rs',
  'apple_renewal': 'crates/apple-channel/src/renewal.rs',
  'apple_scep': 'crates/app/src/native/mod.rs',
  'authorization_departments_read': 'crates/management-http/src/boundary.rs',
@@ -39,9 +39,9 @@ OWNERS = {
  'command_accept': 'crates/agent-channel/src/tasks.rs',
  'command_approve': 'crates/management-http/src/execution/http.rs',
  'command_cancel': 'crates/management-http/src/execution/http.rs',
- 'command_dispatch': 'crates/flow-service/src/execution/actions/recovery.rs',
+ 'command_dispatch': 'crates/execution-service/src/actions/recovery.rs',
  'command_read': 'crates/agent-channel/src/tasks.rs',
- 'command_reconcile': 'crates/flow-service/src/execution/actions/recovery.rs',
+ 'command_reconcile': 'crates/execution-service/src/actions/recovery.rs',
  'compliance_read': 'crates/management-http/src/compliance/http.rs',
  'compliance_write': 'crates/management-http/src/compliance/http.rs',
  'credential_revoke': 'crates/registration-service/src/device.rs',
@@ -73,17 +73,17 @@ OWNERS = {
 
 DECLARATIONS = {
  ('management_read','crates/management-http/src/enrollment/directory.rs'),
- ('management_read','crates/management-http/src/planning/remote_operations/http.rs'),
+ ('management_read','crates/management-http/src/remote_operations/http.rs'),
  ('timeline_read','crates/management-http/src/boundary.rs'),
  ('audit_search','crates/management-http/src/boundary.rs'),
  ('runtime_diagnostics_read','crates/management-http/src/runtime_diagnostics.rs'),
  ('runtime_diagnostics_read','crates/management-http/src/boundary.rs'),
  ('agent_registration','crates/windows-channel/src/boundary.rs'),
  ('agent_registration','crates/apple-channel/src/boundary.rs'),
- ('agent_registration','crates/flow-service/src/execution/managed_registration.rs'),
+ ('agent_registration','crates/execution-service/src/managed_registration.rs'),
  ('collection_finish','crates/inventory-service/src/collection/channel.rs'),
- ('command_accept','crates/flow-service/src/execution/agent_install.rs'),
- ('agent_content','crates/flow-service/src/execution/agent_install.rs'),
+ ('command_accept','crates/execution-service/src/native_installation.rs'),
+ ('agent_content','crates/execution-service/src/native_installation.rs'),
  ('authentication','crates/management-http/src/boundary.rs'),('agent_registration', 'crates/agent-channel/src/boundary.rs'),
  ('agent_registration', 'crates/agent-channel/src/lib.rs'),
  ('agent_report', 'crates/agent-channel/src/boundary.rs'),
@@ -94,7 +94,7 @@ DECLARATIONS = {
  ('apple_management', 'crates/app/src/native/mod.rs'),
  ('apple_management', 'crates/apple-channel/src/boundary.rs'),
  ('apple_profile', 'crates/apple-channel/src/boundary.rs'),
- ('apple_push', 'crates/flow-service/src/execution/apple_push.rs'),
+ ('apple_push', 'crates/execution-service/src/apple_push.rs'),
  ('apple_renewal', 'crates/apple-channel/src/renewal.rs'),
  ('apple_scep', 'crates/app/src/native/mod.rs'),
  ('apple_scep', 'crates/apple-channel/src/boundary.rs'),
@@ -117,20 +117,20 @@ DECLARATIONS = {
  ('collection_start', 'crates/inventory-service/src/apple_collection.rs'),
  ('collection_start', 'crates/management-http/src/boundary.rs'),
  ('command_accept', 'crates/agent-channel/src/tasks.rs'),
- ('command_accept', 'crates/flow-service/src/execution/actions/production.rs'),
- ('command_accept', 'crates/flow-service/src/execution/configuration.rs'),
- ('command_accept', 'crates/flow-service/src/execution/remote.rs'),
+ ('command_accept', 'crates/execution-service/src/actions/production.rs'),
+ ('command_accept', 'crates/execution-service/src/native_configuration.rs'),
+ ('command_accept', 'crates/execution-service/src/remote_execution.rs'),
  ('command_accept', 'crates/management-http/src/execution/http.rs'),
  ('command_approve', 'crates/management-http/src/execution/http.rs'),
  ('command_cancel', 'crates/management-http/src/execution/http.rs'),
- ('command_dispatch', 'crates/flow-service/src/execution/actions/recovery.rs'),
- ('command_dispatch', 'crates/flow-service/src/execution/recovery.rs'),
+ ('command_dispatch', 'crates/execution-service/src/actions/recovery.rs'),
+ ('command_dispatch', 'crates/execution-service/src/recovery.rs'),
  ('command_read', 'crates/agent-channel/src/tasks.rs'),
  ('command_read', 'crates/management-http/src/execution/actions/http.rs'),
  ('command_read', 'crates/management-http/src/execution/http.rs'),
- ('command_read', 'crates/management-http/src/planning/remote_operations/http.rs'),
- ('command_reconcile', 'crates/flow-service/src/execution/actions/recovery.rs'),
- ('command_reconcile', 'crates/flow-service/src/execution/recovery.rs'),
+ ('command_read', 'crates/management-http/src/remote_operations/http.rs'),
+ ('command_reconcile', 'crates/execution-service/src/actions/recovery.rs'),
+ ('command_reconcile', 'crates/execution-service/src/recovery.rs'),
  ('compliance_read', 'crates/management-http/src/compliance/http.rs'),
  ('compliance_write', 'crates/management-http/src/compliance/http.rs'),
  ('credential_revoke', 'crates/management-http/src/boundary.rs'),
@@ -147,24 +147,25 @@ DECLARATIONS = {
  ('inventory_read', 'crates/management-http/src/assets/http.rs'),
  ('inventory_read', 'crates/management-http/src/boundary.rs'),
  ('management_read', 'crates/content-service/src/service.rs'),
- ('management_read', 'crates/flow-service/src/execution/recovery.rs'),
- ('management_read', 'crates/flow-service/src/planning/policies/preview.rs'),
+ ('management_read', 'crates/execution-service/src/recovery.rs'),
+ ('management_read', 'crates/execution-service/src/queries/preview.rs'),
+ ('management_read', 'crates/execution-service/src/queries/assignments.rs'),
  ('management_read', 'crates/flow-service/src/planning/policies/read.rs'),
- ('management_read', 'crates/flow-service/src/planning/remote_operations/read.rs'),
+ ('management_read', 'crates/execution-service/src/remote_operations/read.rs'),
  ('management_read', 'crates/software-service/src/management/catalog.rs'),
  ('management_read', 'crates/software-service/src/management/publication/service.rs'),
  ('management_read', 'crates/management-http/src/planning/http.rs'),
  ('management_read', 'crates/management-http/src/resource_catalog/http.rs'),
  ('management_write', 'crates/content-service/src/service.rs'),
- ('management_write', 'crates/flow-service/src/execution/actions/recovery.rs'),
- ('management_write', 'crates/flow-service/src/execution/recovery.rs'),
- ('management_write', 'crates/flow-service/src/planning/remote_operations/read.rs'),
+ ('management_write', 'crates/execution-service/src/actions/recovery.rs'),
+ ('management_write', 'crates/execution-service/src/recovery.rs'),
+ ('management_write', 'crates/execution-service/src/remote_operations/read.rs'),
  ('management_write', 'crates/software-service/src/management/catalog.rs'),
  ('management_write', 'crates/software-service/src/management/publication/service.rs'),
  ('management_write', 'crates/management-http/src/assets/http.rs'),
  ('management_write', 'crates/management-http/src/planning/http.rs'),
  ('management_write', 'crates/management-http/src/planning/policies/http.rs'),
- ('management_write', 'crates/management-http/src/planning/remote_operations/http.rs'),
+ ('management_write', 'crates/management-http/src/remote_operations/http.rs'),
  ('management_write', 'crates/management-http/src/resource_catalog/http.rs'),
  ('protected_request', 'crates/agent-channel/src/boundary.rs'),
  ('protected_request', 'crates/app/src/native/mod.rs'),
@@ -252,7 +253,7 @@ class AuditSurface(unittest.TestCase):
 
     def test_retired_audit_writes_and_transaction_forwarders_do_not_exist(self):
         self.assertFalse((ROOT / "crates/app/src/audit.rs").exists())
-        self.assertNotIn("'audit'", (ROOT / "crates/flow-service/src/execution/dependencies.sql").read_text())
+        self.assertNotIn("'audit'", (ROOT / "crates/execution-service/src/dependencies.sql").read_text())
         for path in production_paths():
             source = path.read_text()
             self.assertNotIn("mdm_access.audit", source, str(path))

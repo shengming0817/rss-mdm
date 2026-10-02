@@ -192,7 +192,7 @@ pub async fn serve(
                             .config
                             .native_protector()
                             .map_err(|e| ProcessError::at("startup.native_protection", e))?;
-                        let content = crate::flow::execution::open_content(
+                        let content = crate::execution_assembly::open_content(
                             &compiled.config,
                             protection.clone(),
                         )
@@ -219,7 +219,7 @@ pub async fn serve(
                             )
                             .await
                             .map_err(|e| ProcessError::at("startup.flow", e))?;
-                        let execution = crate::flow::execution::open(
+                        let execution = crate::execution_assembly::open(
                             &compiled.config,
                             protection,
                             audit_store.clone(),
@@ -230,7 +230,7 @@ pub async fn serve(
                         .await
                         .map_err(|e| ProcessError::at("startup.execution", e))?;
                         startup.stage_resource(DynManagedResource::new_box(
-                            crate::execution::Resource(execution.clone()),
+                            rss_mdm_execution_service::Resource(execution.clone()),
                         ));
                         let automation = crate::automation::Automation::connect(
                             planning.planning.clone(),
@@ -357,7 +357,7 @@ pub async fn serve(
                     launch.stage_deferred_task_with_token(identity_audit.registration().critical());
                     launch.stage_deferred_task_with_token(timeline.registration().critical());
                     launch.stage_deferred_task_with_token(
-                        execution.registration(signals.flow()).critical(),
+                        execution.registration(signals.execution()).critical(),
                     );
                     launch.stage_deferred_task_with_token(
                         automation.registration(signals.flow()).critical(),

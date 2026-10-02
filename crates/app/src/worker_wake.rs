@@ -187,8 +187,17 @@ impl Signals {
         Arc::new(rss_mdm_flow_service::worker_wake::Signals::from_handles([
             self.handle(Work::AutomationInput),
             self.handle(Work::Automation),
-            self.handle(Work::CommandRelay),
-            self.handle(Work::CommandRecovery),
         ]))
+    }
+}
+
+impl Signals {
+    pub(crate) fn execution(&self) -> Arc<rss_mdm_execution_service::worker_wake::Signals> {
+        Arc::new(
+            rss_mdm_execution_service::worker_wake::Signals::from_handles([
+                self.handle(Work::CommandRelay),
+                self.handle(Work::CommandRecovery),
+            ]),
+        )
     }
 }

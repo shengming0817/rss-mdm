@@ -197,9 +197,9 @@ impl From<rss_mdm_inventory_service::transaction::Fault> for Error {
     }
 }
 
-impl From<crate::execution::channels::Rejection> for Error {
-    fn from(e: crate::execution::channels::Rejection) -> Self {
-        use crate::execution::channels::Rejection as R;
+impl From<rss_mdm_execution_service::channels::Rejection> for Error {
+    fn from(e: rss_mdm_execution_service::channels::Rejection) -> Self {
+        use rss_mdm_execution_service::channels::Rejection as R;
         match e {
             R::CommitUnknown => Self::CommitUnknown,
             R::RollbackFailed => Self::RollbackFailed,
@@ -218,7 +218,7 @@ impl From<crate::execution::channels::Rejection> for Error {
         }
     }
 }
-impl From<Error> for crate::execution::channels::Rejection {
+impl From<Error> for rss_mdm_execution_service::channels::Rejection {
     fn from(e: Error) -> Self {
         match e {
             Error::CommitUnknown => Self::CommitUnknown,
@@ -315,6 +315,98 @@ impl From<rss_mdm_software_service::management::Error> for Error {
                 F::ContentCleanup => Self::Unavailable(Failure::ContentCleanup),
                 F::ContentConfiguration => Self::Configuration(ConfigIssue::Content),
             },
+        }
+    }
+}
+
+impl From<rss_mdm_execution_service::Error> for Error {
+    fn from(e: rss_mdm_execution_service::Error) -> Self {
+        use rss_mdm_execution_service::Error as E;
+        match e {
+            E::Malformed => Self::Malformed,
+            E::CertificateRequest => Self::CertificateRequest,
+            E::Conflict => Self::Conflict,
+            E::CommitUnknown => Self::CommitUnknown,
+            E::RollbackFailed => Self::RollbackFailed,
+            E::Unauthorized => Self::Unauthorized,
+            E::Forbidden => Self::Forbidden,
+            E::NotFound => Self::NotFound,
+            E::Unsupported => Self::Unsupported,
+            E::Execution(e) => Self::Execution(e),
+            E::Resource(_) => {
+                Self::Resource(crate::resource_catalog::error::ResourceError::Missing)
+            }
+            E::Publication(e) => Self::Publication(e),
+            E::Configuration(c) => Self::Configuration(match c {
+                rss_mdm_execution_service::ConfigIssue::Audit => ConfigIssue::Audit,
+                rss_mdm_execution_service::ConfigIssue::Execution => ConfigIssue::Execution,
+                rss_mdm_execution_service::ConfigIssue::Content => ConfigIssue::Content,
+                rss_mdm_execution_service::ConfigIssue::TaskSigning => ConfigIssue::TaskSigning,
+                rss_mdm_execution_service::ConfigIssue::Publication => ConfigIssue::Publication,
+                rss_mdm_execution_service::ConfigIssue::IdentityConfiguration => {
+                    ConfigIssue::IdentityConfiguration
+                }
+            }),
+            E::Unavailable(f) => Self::Unavailable(match f {
+                rss_mdm_execution_service::Failure::NativeProtection => Failure::NativeProtection,
+                rss_mdm_execution_service::Failure::NativeInputIntegrity => {
+                    Failure::NativeInputIntegrity
+                }
+                rss_mdm_execution_service::Failure::Timeline => Failure::Timeline,
+                rss_mdm_execution_service::Failure::IdentityStorage => Failure::IdentityStorage,
+                rss_mdm_execution_service::Failure::ResourceAdmission => Failure::ResourceAdmission,
+                rss_mdm_execution_service::Failure::PlanningAdmission => Failure::PlanningAdmission,
+                rss_mdm_execution_service::Failure::FlowAdmission => Failure::FlowAdmission,
+                rss_mdm_execution_service::Failure::AutomationConnection => {
+                    Failure::AutomationConnection
+                }
+                rss_mdm_execution_service::Failure::AutomationAdmission => {
+                    Failure::AutomationAdmission
+                }
+                rss_mdm_execution_service::Failure::ContentStorage => Failure::ContentStorage,
+                rss_mdm_execution_service::Failure::ContentMetadata => Failure::ContentMetadata,
+                rss_mdm_execution_service::Failure::ContentInvariant => Failure::ContentInvariant,
+                rss_mdm_execution_service::Failure::ContentDeadline => Failure::ContentDeadline,
+                rss_mdm_execution_service::Failure::ContentCleanup => Failure::ContentCleanup,
+                rss_mdm_execution_service::Failure::ContentImport => Failure::ContentImport,
+                rss_mdm_execution_service::Failure::SoftwareCatalogStorage => {
+                    Failure::SoftwareCatalogStorage
+                }
+                rss_mdm_execution_service::Failure::SoftwareCatalogInvariant => {
+                    Failure::SoftwareCatalogInvariant
+                }
+                rss_mdm_execution_service::Failure::CommandStorage => Failure::CommandStorage,
+                rss_mdm_execution_service::Failure::CommandInvariant => Failure::CommandInvariant,
+                rss_mdm_execution_service::Failure::PlanningStorage => Failure::PlanningStorage,
+                rss_mdm_execution_service::Failure::AssetsStorage => Failure::AssetsStorage,
+                rss_mdm_execution_service::Failure::ComplianceStorage => Failure::ComplianceStorage,
+                rss_mdm_execution_service::Failure::ResourceStorage => Failure::ResourceStorage,
+                rss_mdm_execution_service::Failure::PublicationStorage => {
+                    Failure::PublicationStorage
+                }
+                rss_mdm_execution_service::Failure::AutomationStorage => Failure::AutomationStorage,
+                rss_mdm_execution_service::Failure::FlowStorage => Failure::FlowStorage,
+                rss_mdm_execution_service::Failure::RequestDeadline => Failure::RequestDeadline,
+                rss_mdm_execution_service::Failure::Database => Failure::Database,
+                rss_mdm_execution_service::Failure::Audit => Failure::Audit,
+                rss_mdm_execution_service::Failure::AuditIntegrity => Failure::AuditIntegrity,
+                rss_mdm_execution_service::Failure::AuditIsolation => Failure::AuditIsolation,
+                rss_mdm_execution_service::Failure::AuditContract => Failure::AuditContract,
+                rss_mdm_execution_service::Failure::AuditAdmission => Failure::AuditAdmission,
+                rss_mdm_execution_service::Failure::InventoryQuery => Failure::InventoryQuery,
+                rss_mdm_execution_service::Failure::AssetCandidates => Failure::AssetCandidates,
+                rss_mdm_execution_service::Failure::AssetSources => Failure::AssetSources,
+                rss_mdm_execution_service::Failure::ManualQuery => Failure::ManualQuery,
+                rss_mdm_execution_service::Failure::CollectionQuery => Failure::CollectionQuery,
+                rss_mdm_execution_service::Failure::AssetObjectLimit => Failure::AssetObjectLimit,
+                rss_mdm_execution_service::Failure::AssetSourceLimit => Failure::AssetSourceLimit,
+                rss_mdm_execution_service::Failure::AssetBytesLimit => Failure::AssetBytesLimit,
+                rss_mdm_execution_service::Failure::InventoryRuntime => Failure::InventoryRuntime,
+                rss_mdm_execution_service::Failure::Clock => Failure::Clock,
+                rss_mdm_execution_service::Failure::Capacity => Failure::Capacity,
+                rss_mdm_execution_service::Failure::Runtime => Failure::Runtime,
+                rss_mdm_execution_service::Failure::Protocol => Failure::Protocol,
+            }),
         }
     }
 }

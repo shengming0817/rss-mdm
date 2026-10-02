@@ -76,7 +76,12 @@ impl Planning {
                 sqlx::query_scalar::<_,String>("SELECT DISTINCT coalesce(c.identity->>'device',r.device) FROM mdm.asset_changes c LEFT JOIN mdm_access.registrations r ON r.tenant_id=c.tenant_id AND r.id::text=c.identity->>'registration' WHERE c.tenant_id=$1::uuid AND c.revision>$2 AND c.revision<=$3 AND (c.kind IN('device','registration','source','credential') OR 'channel.agent.installation'=ANY(c.fields)) AND coalesce(c.identity->>'device',r.device) IS NOT NULL").bind(tenant).bind(consumed).bind(watermark).fetch_all(c).await
             })).await?;
             for device in devices {
-                crate::planning::policies::reconcile::wake_native_in(tx, &device).await?;
+                rss_mdm_execution_service::wake::wake_native_in(
+                    std::sync::Arc::new(crate::planning::execution_source::ExecutionSource),
+                    tx,
+                    &device,
+                )
+                .await?;
             }
         }
         let tenant = self.tenant.to_string();

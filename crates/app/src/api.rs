@@ -21,7 +21,7 @@ pub(crate) struct Assembly {
     pub(crate) timeline: Arc<rss_mdm_timeline_service::Timeline>,
     pub(crate) content_writer: Option<Arc<rss_mdm_content_service::Store>>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-    pub(crate) execution: Arc<crate::execution::ExecutionService>,
+    pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
     pub(crate) flow: Arc<crate::flow::Flow>,
     pub(crate) identity: Arc<Identity>,
     pub(crate) credentials: Arc<Credentials>,
@@ -61,7 +61,7 @@ pub(crate) async fn application_fixture(
 ) -> Result<
     (
         Router,
-        Arc<crate::execution::ExecutionService>,
+        Arc<rss_mdm_execution_service::ExecutionService>,
         Arc<rss_transactional_messaging_postgres::PgRuntime>,
     ),
     Error,
@@ -78,7 +78,7 @@ pub(crate) async fn application_fixture(
     )
     .await?;
     let protection = config.native_protector()?;
-    let content = crate::flow::execution::open_content(&config, protection.clone())?;
+    let content = crate::execution_assembly::open_content(&config, protection.clone())?;
     let planning = config
         .flow
         .open(
@@ -91,7 +91,7 @@ pub(crate) async fn application_fixture(
             |_| {},
         )
         .await?;
-    let execution = crate::flow::execution::open(
+    let execution = crate::execution_assembly::open(
         &config,
         protection,
         audit_store.clone(),
@@ -141,7 +141,7 @@ pub(crate) async fn application_fixture(
 pub(crate) struct AssemblyDependencies {
     pub(crate) timeline: Arc<rss_mdm_timeline_service::Timeline>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-    pub(crate) execution: Arc<crate::execution::ExecutionService>,
+    pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) monotonic: Arc<dyn rss_observation::Clock>,
     pub(crate) access: Arc<Database>,
@@ -345,9 +345,10 @@ pub(crate) fn from_state(
             audit_store: state.audit_store.clone(),
             planning: state.flow.planning.clone(),
             execution: state.execution.clone(),
+            queries: state.execution.queries(),
             policies: Arc::new(rss_mdm_flow_service::planning::policies::Policies {
                 planning: state.flow.planning.clone(),
-                execution: state.execution.clone(),
+                inputs: state.execution.inputs(),
             }),
             assets: state.flow.assets.clone(),
             catalog: state.flow.catalog.clone(),

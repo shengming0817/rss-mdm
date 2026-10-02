@@ -76,12 +76,12 @@ impl IntoResponse for AgentError {
                     }
                     Error::Unauthorized | Error::Forbidden => wire::ErrorCode::InvalidIdentity,
                     Error::Execution(
-                        rss_mdm_flow_service::execution::error::ExecutionError::MissingTask,
+                        rss_mdm_execution_service::missing::ExecutionError::MissingTask,
                     ) => wire::ErrorCode::TaskNotFound,
                     Error::NotFound
                     | Error::Resource(_)
                     | Error::Execution(
-                        rss_mdm_flow_service::execution::error::ExecutionError::MissingOperation,
+                        rss_mdm_execution_service::missing::ExecutionError::MissingOperation,
                     )
                     | Error::Publication(_)
                     | Error::Planning(
@@ -703,4 +703,10 @@ async fn builtin_collections(
         definitions.push(collection::store::freeze_in(c, &scope, 1, &keys).await?);
     }
     Ok(definitions)
+}
+
+impl From<rss_mdm_execution_service::Error> for AgentError {
+    fn from(e: rss_mdm_execution_service::Error) -> Self {
+        Self::Service(e.into())
+    }
 }

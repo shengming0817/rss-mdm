@@ -9,7 +9,6 @@ use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use serde_json::Value;
 use std::sync::Arc;
 pub mod directory;
-pub(crate) mod scripts;
 pub mod wire;
 
 use rss_mdm_resource as r;

@@ -1,4 +1,5 @@
 use crate::test_support::*;
+use anyhow::Context;
 const PATH: &str = "/api/v2/runtime/diagnostics";
 
 #[tokio::test]
@@ -58,7 +59,7 @@ impl Fixture {
                 |r| resources.push(r),
             )
             .await?;
-        let execution = crate::flow::execution::open(
+        let execution = crate::execution_assembly::open(
             &config,
             config.native_protector()?,
             authority.audit.clone(),
@@ -94,7 +95,7 @@ impl Fixture {
     async fn close(self) -> Result<()> {
         use rss_runtime::ManagedResource;
         self.source.inventory.close_fixture().await?;
-        crate::execution::Resource(self.source.execution.clone())
+        rss_mdm_execution_service::Resource(self.source.execution.clone())
             .shutdown()
             .await?;
         for resource in self.resources {
@@ -119,7 +120,7 @@ async fn execution_first_scan_failure_recovers_only_after_real_success() -> Resu
     let fixture = Fixture::open().await?;
     let initial = component(&fixture.query().await?, "execution_recovery");
     ensure!(initial["readiness"] == "not_ready" && initial["task"] == "unknown");
-    let signals = Arc::new(rss_mdm_flow_service::worker_wake::Signals::default());
+    let signals = Arc::new(rss_mdm_execution_service::worker_wake::Signals::default());
     let mut stack = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(20))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
@@ -143,7 +144,7 @@ async fn execution_first_scan_failure_recovers_only_after_real_success() -> Resu
                 let state = fixture.source.execution.readiness.health();
                 if matches!(
                     state.recovery,
-                    rss_mdm_flow_service::execution::health::Phase::Failed(_)
+                    rss_mdm_execution_service::health::Phase::Failed(_)
                 ) {
                     ensure!(
                         state.task == Some(rss_runtime::TaskState::Running) && !state.is_ready()
@@ -155,7 +156,8 @@ async fn execution_first_scan_failure_recovers_only_after_real_success() -> Resu
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
-        .await??;
+        .await
+        .context("execution recovery did not report the first failed scan")??;
         pg("ALTER ROLE mdm_command_runtime CONNECTION LIMIT -1")?;
         signals.command_recovery().notify_one();
         signals.command_relay().notify_one();
@@ -169,7 +171,8 @@ async fn execution_first_scan_failure_recovers_only_after_real_success() -> Resu
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
-        .await??;
+        .await
+        .context("execution recovery did not become ready after restoring connections")??;
         use sqlx::Connection;
         let mut administrator =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
@@ -183,7 +186,7 @@ async fn execution_first_scan_failure_recovers_only_after_real_success() -> Resu
             loop {
                 let state = fixture.source.execution.readiness.health();
                 if state.recovery
-                    == rss_mdm_flow_service::execution::health::Phase::Failed(
+                    == rss_mdm_execution_service::health::Phase::Failed(
                         rss_reconcile::ErrorKind::Deadline,
                     )
                 {
@@ -207,7 +210,7 @@ async fn execution_first_scan_failure_recovers_only_after_real_success() -> Resu
         })
         .await;
         blocked.rollback().await?;
-        failed??;
+        failed.context("execution recovery did not report the blocked scan deadline")??;
         signals.command_recovery().notify_one();
         tokio::time::timeout(Duration::from_secs(15), async {
             loop {
@@ -540,7 +543,9 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
             .source
             .execution
             .clone()
-            .registration(signals)
+            .registration(Arc::new(
+                rss_mdm_execution_service::worker_wake::Signals::default(),
+            ))
             .critical(),
     );
     launch.stage_deferred_task_with_token(

@@ -12,7 +12,8 @@
 | `authorization-service` | 当前管理主体、授权规则、授权证明及初始化 |
 | `registration-service` | 注册世代、来源授权、凭据和设备生命周期 |
 | `inventory-service` | 采集质量与持久接收、资产、分组及合规 |
-| `flow-service` | 资源、Scope、Policy、任务与命令编排、持久恢复 |
+| `flow-service` | Group、Scope、Policy 编排；资源目录等非执行余项继续按独立议题收敛 |
+| `execution-service` | 冻结执行输入、命令、Run、Attempt、一次性远程操作、执行存储与交付恢复；独立 Queries 提供类型化读事实 |
 | `content-service` | 内容授权、上传/镜像/回执用例、不可变文件与回收 |
 | `management-http` | 浏览器管理 HTTP、会话与错误投影 |
 | `agent-channel` | Agent 注册、报告、任务和内容协议 |
@@ -23,7 +24,7 @@
 
 应用服务不依赖 Axum 或入口通道。各入口返回完成状态绑定的路由，并负责自己的请求预算、审计结算和协议错误；App 不维护业务路由前缀判断。证书能力不读取宿主配置文件，也不持有注册数据库或外部 CA 生命周期。
 
-跨能力写入借用调用方的 PostgreSQL connection / transaction。发起业务的 owner 负责提交、回执与审计，参与方只修改自己持有的状态；注册及通道绑定、退休及采集终止仍在同一事务中完成。命令提交归 Flow，Windows / Apple 协议状态由通道参与写入。后台继续消费既有 RSS 持久恢复机制。
+跨能力写入借用调用方的 PostgreSQL connection / transaction。发起业务的 owner 负责提交、回执与审计，参与方只修改自己持有的状态；注册及通道绑定、退休及采集终止仍在同一事务中完成。命令提交归 Execution，Windows / Apple 协议状态由通道参与写入。后台继续消费既有 RSS 持久恢复机制。
 
 安装单元由各能力导出，App 只决定顺序。产品 schema 是当前完整定义；仅接受空库或完全一致的安装记录，不保留历史升级链、旧模块转发或双写路径。现有 App 集成测试继续验证实际装配，测试载体不构成生产 facade。
 

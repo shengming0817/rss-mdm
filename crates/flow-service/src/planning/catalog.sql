@@ -1,6 +1,5 @@
 WITH tables AS (SELECT c.oid,c.relname FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_planning' AND c.relkind='r')
 SELECT jsonb_build_object(
- 'remotePage',(SELECT pg_get_functiondef('mdm_planning.remote_target_page(uuid,text,integer)'::regprocedure)),
  'policyLock',(SELECT pg_get_functiondef('mdm_planning.policy_lock(uuid)'::regprocedure)),
  'scopeAdmission',(SELECT pg_get_functiondef('mdm_planning.scope_admission(uuid,text)'::regprocedure)),
  'columns', (SELECT jsonb_agg(jsonb_build_array(t.relname,a.attname,

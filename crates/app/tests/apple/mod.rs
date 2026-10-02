@@ -105,13 +105,13 @@ impl Fixture {
                 |_| {},
             )
             .await?;
-        let execution = crate::flow::execution::open(
+        let execution = crate::execution_assembly::open(
             config,
             config.native_protector()?,
             access
                 .audit_store(&crate::config::AuditConfig::Plain)
                 .await?,
-            crate::flow::execution::open_content(config, config.native_protector()?)?,
+            crate::execution_assembly::open_content(config, config.native_protector()?)?,
             std::collections::BTreeMap::new(),
             rss_device_command_postgres::CommandClock::Postgres,
         )
@@ -252,8 +252,9 @@ impl Fixture {
                 )
                 .critical(),
             );
-            launch
-                .stage_deferred_task_with_token(execution.registration(signals.flow()).critical());
+            launch.stage_deferred_task_with_token(
+                execution.registration(signals.execution()).critical(),
+            );
             launch.stage_deferred_task_with_token(
                 runtime
                     .registration(signals.handle(crate::worker_wake::Work::Inventory))
@@ -583,10 +584,12 @@ impl Fixture {
     }
 }
 
-const NATIVE_PROFILE: &str = "org.example.native-profile";
+fn native_profile() -> &'static str {
+    crate::test_support::case::name("org.example.native-profile")
+}
 fn profile_task(id: Uuid, enabled: bool) -> serde_json::Value {
-    json!({"platform":"macos","request":{"kind":"install_profile","profile":{"identifier":NATIVE_PROFILE,"uuid":id,"metadata":{},"payloads":[{"schema":"mdm/profiles/com.apple.security.firewall.yaml","identifier":"org.example.native-profile.settings","uuid":Uuid::new_v4(),"metadata":{},"fields":{"EnableFirewall":{"type":"boolean","value":enabled}}}]}}})
+    json!({"platform":"macos","request":{"kind":"install_profile","profile":{"identifier":native_profile(),"uuid":id,"metadata":{},"payloads":[{"schema":"mdm/profiles/com.apple.security.firewall.yaml","identifier":format!("{}.settings",native_profile()),"uuid":Uuid::new_v4(),"metadata":{},"fields":{"EnableFirewall":{"type":"boolean","value":enabled}}}]}}})
 }
 fn remove_profile_task(profile: Uuid) -> serde_json::Value {
-    json!({"platform":"macos","request":{"kind":"remove_profile","identifier":NATIVE_PROFILE,"uuid":profile}})
+    json!({"platform":"macos","request":{"kind":"remove_profile","identifier":native_profile(),"uuid":profile}})
 }

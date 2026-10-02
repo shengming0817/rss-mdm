@@ -116,7 +116,7 @@ pub async fn send(
         sqlx::query("UPDATE mdm_apple.attempts SET state='sent',next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid")
             .bind(&tenant).bind(id.to_string()).execute(&mut *c).await.map_err(db)?;
         crate::notify(c, "apple").await.map_err(db)?;
-        crate::execution::actions::native_collection::sent(c, &tenant, id).await?;
+        rss_mdm_execution_service::actions::native_collection::sent(c, &tenant, id).await?;
         let sealed: Vec<u8> = row.try_get("request").map_err(db)?;
         return crate::protection::open(
             protection,

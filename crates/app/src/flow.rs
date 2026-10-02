@@ -95,7 +95,6 @@ impl Config {
         });
         admit_audit_runtime(&runtime, &audit_store, tenant).await?;
         storage::admit(&runtime, tenant).await?;
-        storage::bind_native_key(&runtime, tenant, protection.id()).await?;
         let key = storage::cursor_key(&runtime, tenant).await?;
         let catalog = catalog(audit_store.clone(), runtime.clone(), tenant, clock.clone()).await?;
         let software_resources = Arc::new(
@@ -303,8 +302,6 @@ pub(crate) async fn catalog(
         .await?,
     ))
 }
-
-pub(crate) mod execution;
 
 use rss_mdm_flow_service::storage;
 

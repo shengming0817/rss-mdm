@@ -1,6 +1,6 @@
 //! Fixed product inventory uses ordinary collection runs and SyncML correlation.
 use crate::{Error, Failure, database::db, device::DevicePrincipal};
-use rss_mdm_flow_service::planning::policies::agent_install::Identity;
+use rss_mdm_execution_service::agent_install::Identity;
 use rss_mdm_inventory::{AgentInstallation, ReportSource};
 use rss_mdm_inventory_service::collection::channel::{self, AgentEvidence};
 use rss_mdm_windows_mdm::{

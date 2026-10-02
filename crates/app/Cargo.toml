@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+rss-mdm-execution-service.workspace = true
 rss-mdm-native-protection.workspace = true
 rss-mdm-timeline-service.workspace = true
 rss-mdm-backend-postgres-support.workspace = true
@@ -95,6 +96,7 @@ rss-reconcile.workspace = true
 rss-reconcile-postgres.workspace = true
 
 [dev-dependencies]
+rss-mdm-execution-service = {workspace=true,features=["integration"]}
 rss-mdm-apple-channel={workspace=true,features=["integration"]}
 rss-mdm-windows-channel={workspace=true,features=["integration"]}
 rss-mdm-flow-service = {workspace=true,features=["integration"]}
@@ -113,7 +115,7 @@ tower.workspace = true
 
 [features]
 default = []
-integration = ["rss-mdm-flow-service/integration", "rss-mdm-inventory-service/integration", "rss-transactional-messaging-postgres/integration", "rss-observation-postgres/integration", "rss-projection-postgres/integration", "rss-identity-oidc/test-support"]
+integration = ["rss-mdm-execution-service/integration", "rss-mdm-flow-service/integration", "rss-mdm-inventory-service/integration", "rss-transactional-messaging-postgres/integration", "rss-observation-postgres/integration", "rss-projection-postgres/integration", "rss-identity-oidc/test-support"]
 
 [lints]
 workspace = true

@@ -1,11 +1,11 @@
 //! Real immutable configuration content, disjoint native claims and object removal.
 use crate::execution::test_support::{native, *};
-use crate::execution::*;
 use anyhow::ensure;
 use axum::{
     body::Body,
     http::{Method, Request, StatusCode},
 };
+use rss_mdm_execution_service::*;
 use rss_mdm_windows_mdm::{CodecLimits, Secret, syncml as s};
 use serde_json::{Value, json};
 use sqlx::Connection;
@@ -605,11 +605,11 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
     }
     // Reconstruct the execution adapter and drive the same policy reconciliation on persisted facts.
     let config = crate::test_support::identity::config(case_tenant())?;
-    let restarted = Box::pin(crate::flow::execution::open(
+    let restarted = Box::pin(crate::execution_assembly::open(
         &config,
         config.native_protector()?,
         crate::test_support::identity::audit_store(&config).await?,
-        crate::flow::execution::open_content(&config, config.native_protector()?)?,
+        crate::execution_assembly::open_content(&config, config.native_protector()?)?,
         std::collections::BTreeMap::new(),
         rss_device_command_postgres::CommandClock::Postgres,
     ))

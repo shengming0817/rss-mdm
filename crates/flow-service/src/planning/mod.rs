@@ -2,14 +2,13 @@
 use crate::assets;
 pub mod automation;
 
-pub mod configuration;
+pub mod execution_source;
 
 pub mod directory;
 pub mod model;
 pub mod pages;
 pub mod policies;
 pub mod references;
-pub mod remote_operations;
 
 mod scopes;
 pub mod sources;
@@ -184,7 +183,8 @@ impl Planning {
         let (operation, fingerprint) = storage::identity(command, audit)?;
         if let Some(id) = operation
             && let Some(old) =
-                crate::planning::receipts::replay(tx, audit, id, &fingerprint).await?
+                rss_mdm_audit_integration::operation_receipts::replay(tx, audit, id, &fingerprint)
+                    .await?
         {
             wire::Response::decode(old.clone())?;
             audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
@@ -209,7 +209,14 @@ impl Planning {
         // Reject a projection/schema defect before any mutation can commit.
         wire::Response::decode(value.clone())?;
         if let Some(id) = operation {
-            crate::planning::receipts::receipt(tx, audit, id, &fingerprint, &value).await?;
+            rss_mdm_audit_integration::operation_receipts::receipt(
+                tx,
+                audit,
+                id,
+                &fingerprint,
+                &value,
+            )
+            .await?;
         }
         crate::planning::receipts::audit(
             tx,
@@ -364,8 +371,6 @@ fn group_checked<T>(r: std::result::Result<T, rss_mdm_group_postgres::Rejection>
 
 use rss_mdm_audit_integration::RequestAudit;
 mod receipts;
-
-pub mod action_contract;
 
 pub mod error;
 

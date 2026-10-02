@@ -12,26 +12,19 @@ pub const RECOVERY: Duration = Duration::from_secs(5);
 pub enum Work {
     AutomationInput,
     Automation,
-    CommandRelay,
-    CommandRecovery,
-    Apple,
 }
 impl Work {
     fn payload(self) -> &'static str {
         match self {
             Self::AutomationInput => "automation_input",
             Self::Automation => "automation",
-            Self::CommandRelay => "command_relay",
-            Self::CommandRecovery => "command_recovery",
-            Self::Apple => "apple",
         }
     }
 }
-/// Only Flow workers receive these four handles. Channel wake hints have no handle here.
 #[derive(Default)]
-pub struct Signals([Arc<Notify>; 4]);
+pub struct Signals([Arc<Notify>; 2]);
 impl Signals {
-    pub fn from_handles(handles: [Arc<Notify>; 4]) -> Self {
+    pub fn from_handles(handles: [Arc<Notify>; 2]) -> Self {
         Self(handles)
     }
     pub fn automation_input(&self) -> &Notify {
@@ -39,12 +32,6 @@ impl Signals {
     }
     pub fn automation(&self) -> &Notify {
         &self.0[1]
-    }
-    pub fn command_relay(&self) -> &Notify {
-        &self.0[2]
-    }
-    pub fn command_recovery(&self) -> &Notify {
-        &self.0[3]
     }
 }
 

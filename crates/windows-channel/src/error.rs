@@ -1,5 +1,5 @@
 use crate::{ConfigIssue, Failure};
-use rss_mdm_flow_service::{execution, planning};
+use rss_mdm_flow_service::planning;
 #[derive(Clone, Debug, thiserror::Error, serde::Serialize)]
 #[serde(tag = "kind", content = "reason", rename_all = "snake_case")]
 pub enum Error {
@@ -73,9 +73,9 @@ impl From<rss_mdm_audit_integration::InvalidFact> for Error {
         rss_mdm_flow_service::Error::from(e).into()
     }
 }
-impl From<Error> for rss_mdm_flow_service::execution::channels::Rejection {
+impl From<Error> for rss_mdm_execution_service::channels::Rejection {
     fn from(e: Error) -> Self {
-        use rss_mdm_flow_service::execution::channels::Rejection as R;
+        use rss_mdm_execution_service::channels::Rejection as R;
         match e {
             Error::CommitUnknown => R::CommitUnknown,
             Error::RollbackFailed => R::RollbackFailed,
@@ -171,8 +171,12 @@ impl axum::response::IntoResponse for Error {
             Self::Service(rss_mdm_flow_service::Error::Execution(e)) => (
                 StatusCode::NOT_FOUND,
                 match e {
-                    execution::error::ExecutionError::MissingOperation => "operation_not_found",
-                    execution::error::ExecutionError::MissingTask => "task_not_found",
+                    rss_mdm_execution_service::missing::ExecutionError::MissingOperation => {
+                        "operation_not_found"
+                    }
+                    rss_mdm_execution_service::missing::ExecutionError::MissingTask => {
+                        "task_not_found"
+                    }
                 },
             ),
             Self::Service(rss_mdm_flow_service::Error::Publication(e)) => {
@@ -186,5 +190,11 @@ impl axum::response::IntoResponse for Error {
         let mut response = (status, Json(body)).into_response();
         response.extensions_mut().insert(self);
         response
+    }
+}
+
+impl From<rss_mdm_execution_service::Error> for Error {
+    fn from(e: rss_mdm_execution_service::Error) -> Self {
+        rss_mdm_flow_service::Error::from(e).into()
     }
 }

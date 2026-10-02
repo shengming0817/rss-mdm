@@ -3,6 +3,7 @@ use axum::response::{IntoResponse, Response};
 impl IntoResponse for crate::Error {
     fn into_response(self) -> Response {
         match self {
+            Self::Execution(e) => rss_mdm_management_http::Error(e.into()).into_response(),
             Self::Service(e) => rss_mdm_management_http::Error(e).into_response(),
             Self::Apple(e) => e.into_response(),
             Self::Windows(e) => e.into_response(),

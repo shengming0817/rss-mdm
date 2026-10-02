@@ -55,8 +55,8 @@ impl From<rss_mdm_inventory_service::transaction::Fault> for Error {
         Self(rss_mdm_flow_service::Error::from(e))
     }
 }
-impl From<crate::execution::channels::Rejection> for Error {
-    fn from(e: crate::execution::channels::Rejection) -> Self {
+impl From<rss_mdm_execution_service::channels::Rejection> for Error {
+    fn from(e: rss_mdm_execution_service::channels::Rejection) -> Self {
         Self(rss_mdm_flow_service::Error::from(e))
     }
 }
@@ -90,8 +90,8 @@ impl From<rss_mdm_flow_service::resource_catalog::error::ResourceError> for Erro
         Self(rss_mdm_flow_service::Error::from(e))
     }
 }
-impl From<rss_mdm_flow_service::execution::error::ExecutionError> for Error {
-    fn from(e: rss_mdm_flow_service::execution::error::ExecutionError) -> Self {
+impl From<rss_mdm_execution_service::missing::ExecutionError> for Error {
+    fn from(e: rss_mdm_execution_service::missing::ExecutionError) -> Self {
         Self(rss_mdm_flow_service::Error::from(e))
     }
 }

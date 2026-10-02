@@ -129,7 +129,7 @@ impl Timeline {
                 let mut context=(tenant,view,identity);
                 let devices=tx.with_connection_context(&mut context,|(tenant,view,identity),c|Box::pin(async move{
                     let association=match identity {
-                        Some(identity)=>rss_mdm_flow_service::execution::timeline::association_in(c,tenant,&view.actor,*identity).await?,
+                        Some(identity)=>rss_mdm_execution_service::timeline::association_in(c,tenant,&view.actor,*identity).await?,
                         None=>None,
                     };
                     if let Some((_,Some(operation)))=&association {view.related_operation_ids.push(*operation);}

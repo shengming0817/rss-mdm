@@ -35,8 +35,6 @@ use rss_mdm_registration_service::enrollment;
 #[cfg(test)]
 #[path = "../tests/fixtures/enrollment.rs"]
 mod enrollment;
-#[cfg(not(test))]
-use rss_mdm_flow_service::execution;
 #[cfg(test)]
 #[path = "../tests/fixtures/execution.rs"]
 mod execution;
@@ -44,6 +42,7 @@ mod execution;
 #[cfg(test)]
 #[path = "../tests/fixtures/content.rs"]
 mod content;
+mod execution_assembly;
 mod flow;
 #[cfg(not(test))]
 use rss_mdm_inventory_service::inventory_runtime;
@@ -112,6 +111,9 @@ pub enum Error {
     #[error(transparent)]
     #[serde(untagged)]
     Service(#[from] rss_mdm_flow_service::Error),
+    #[error(transparent)]
+    #[serde(untagged)]
+    Execution(#[from] rss_mdm_execution_service::Error),
 }
 #[cfg(test)]
 #[path = "../tests/fixtures/error.rs"]

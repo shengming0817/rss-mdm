@@ -10,7 +10,7 @@ use std::sync::Arc;
 pub struct HttpState {
     pub devices: Arc<rss_mdm_registration_service::DeviceService>,
     pub assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
-    pub execution: Arc<rss_mdm_flow_service::execution::ExecutionService>,
+    pub queries: Arc<rss_mdm_execution_service::queries::Queries>,
     pub windows: bool,
     pub apple: bool,
 }
@@ -64,9 +64,11 @@ async fn detail(
         .directory_presence(&auth.proof, std::slice::from_ref(&device), &audit)
         .await?;
     item["inventoryAvailable"] = Value::Bool(present.contains(&device));
-    item["capabilities"] = s
-        .execution
-        .directory_capabilities(&auth.proof, &device, &item["channels"], s.windows, s.apple)
-        .await?;
+    item["capabilities"] = serde_json::to_value(
+        s.queries
+            .directory_capabilities(&auth.proof, &device, s.windows, s.apple)
+            .await?,
+    )
+    .expect("capability facts serialize");
     Ok(Json(item))
 }

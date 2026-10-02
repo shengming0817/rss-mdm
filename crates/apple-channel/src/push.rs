@@ -17,11 +17,11 @@ pub struct Push {
     topic: String,
     pub expires: u64,
 }
-pub use crate::execution::channels::PushOutcome as Outcome;
+use rss_mdm_execution_service::channels::PushOutcome;
 pub struct Receipt {
     pub id: Uuid,
     pub status: u16,
-    pub outcome: Outcome,
+    pub outcome: PushOutcome,
     pub reason: Option<Reason>,
     pub timestamp: Option<u64>,
 }
@@ -157,7 +157,7 @@ impl Push {
                 return Ok(Receipt {
                     id,
                     status,
-                    outcome: Outcome::Retryable,
+                    outcome: PushOutcome::Retryable,
                     reason: Some(Reason::InvalidResponse),
                     timestamp: None,
                 });
@@ -191,7 +191,7 @@ fn classify(id: Uuid, status: u16, bytes: &[u8]) -> Receipt {
         return Receipt {
             id,
             status,
-            outcome: Outcome::Accepted,
+            outcome: PushOutcome::Accepted,
             reason: None,
             timestamp: None,
         };
@@ -200,7 +200,9 @@ fn classify(id: Uuid, status: u16, bytes: &[u8]) -> Receipt {
     let reason = body.as_ref().map(|b| b.reason.as_str()).unwrap_or("");
     let (outcome, reason) = match (status, reason) {
         (400, "BadDeviceToken" | "DeviceTokenNotForTopic")
-        | (410, "Unregistered" | "ExpiredToken") => (Outcome::Unregistered, Reason::TokenInvalid),
+        | (410, "Unregistered" | "ExpiredToken") => {
+            (PushOutcome::Unregistered, Reason::TokenInvalid)
+        }
         (
             403,
             "BadCertificate"
@@ -211,24 +213,26 @@ fn classify(id: Uuid, status: u16, bytes: &[u8]) -> Receipt {
             | "MissingProviderToken"
             | "UnrelatedKeyIdInToken"
             | "BadEnvironmentKeyIdInToken",
-        ) => (Outcome::Rejected, Reason::Certificate),
+        ) => (PushOutcome::Rejected, Reason::Certificate),
         (400, "BadTopic" | "MissingTopic" | "TopicDisallowed") => {
-            (Outcome::Rejected, Reason::Topic)
+            (PushOutcome::Rejected, Reason::Topic)
         }
-        (413, "PayloadTooLarge") | (400, "PayloadEmpty") => (Outcome::Rejected, Reason::Payload),
+        (413, "PayloadTooLarge") | (400, "PayloadEmpty") => {
+            (PushOutcome::Rejected, Reason::Payload)
+        }
         (
             400,
             "BadCollapseId" | "BadExpirationDate" | "BadMessageId" | "BadPriority"
             | "DuplicateHeaders" | "InvalidPushType" | "MissingDeviceToken",
         )
         | (404, "BadPath")
-        | (405, "MethodNotAllowed") => (Outcome::Rejected, Reason::Request),
-        (400, "IdleTimeout") => (Outcome::Retryable, Reason::IdleTimeout),
+        | (405, "MethodNotAllowed") => (PushOutcome::Rejected, Reason::Request),
+        (400, "IdleTimeout") => (PushOutcome::Retryable, Reason::IdleTimeout),
         (429, "TooManyRequests" | "TooManyProviderTokenUpdates") => {
-            (Outcome::Retryable, Reason::Throttled)
+            (PushOutcome::Retryable, Reason::Throttled)
         }
-        (500..=599, _) => (Outcome::Retryable, Reason::Server),
-        _ => (Outcome::Retryable, Reason::InvalidResponse),
+        (500..=599, _) => (PushOutcome::Retryable, Reason::Server),
+        _ => (PushOutcome::Retryable, Reason::InvalidResponse),
     };
     Receipt {
         id,
@@ -270,7 +274,7 @@ impl Health {
 }
 pub fn registration(
     apple: std::sync::Arc<super::Apple>,
-    execution: std::sync::Arc<crate::execution::ExecutionService>,
+    execution: std::sync::Arc<rss_mdm_execution_service::ExecutionService>,
     access: std::sync::Arc<crate::Store>,
     audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
     tenant: String,
@@ -299,7 +303,7 @@ pub fn registration(
 }
 pub async fn wake(
     push: &Push,
-    execution: &crate::execution::ExecutionService,
+    execution: &rss_mdm_execution_service::ExecutionService,
 ) -> Result<WakeHealth, Error> {
     let Some(wake) = execution.apple_wake(&push.configuration).await? else {
         return Ok(WakeHealth::Idle);
@@ -316,21 +320,21 @@ pub async fn wake(
             ),
             Err(Error::Unavailable(Failure::Certificate)) => (
                 None,
-                Outcome::Retryable,
+                PushOutcome::Retryable,
                 None,
                 None,
                 Some("certificate_expired"),
             ),
-            _ => (None, Outcome::Retryable, None, None, Some("transport")),
+            _ => (None, PushOutcome::Retryable, None, None, Some("transport")),
         };
     execution.apple_pushed(&wake, status, outcome).await?;
-    if outcome != Outcome::Accepted {
+    if outcome != PushOutcome::Accepted {
         eprintln!(
             "{}",
             serde_json::json!({"event":"apple_push_result","registration":wake.registration,"token_revision":wake.revision,"status":status,"outcome":outcome,"reason":reason,"timestamp":timestamp,"failure":failure})
         );
     }
-    Ok(if outcome == Outcome::Rejected {
+    Ok(if outcome == PushOutcome::Rejected {
         WakeHealth::Configuration
     } else {
         WakeHealth::Healthy
@@ -339,7 +343,7 @@ pub async fn wake(
 
 pub async fn cycle(
     apple: &super::Apple,
-    execution: &crate::execution::ExecutionService,
+    execution: &rss_mdm_execution_service::ExecutionService,
     access: &crate::Store,
     audit_store: &rss_mdm_audit_integration::AuditStore,
     tenant: &str,

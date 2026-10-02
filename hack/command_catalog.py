@@ -9,12 +9,12 @@ import tempfile
 from build_run import lease_fds
 
 ROOT = Path(__file__).resolve().parents[1]
-CATALOGS = {'compliance': 'compliance-postgres/src/catalog', 'catalog': 'flow-service/src/execution/catalog', 'dependencies': 'flow-service/src/execution/dependencies', 'planning': 'flow-service/src/planning/catalog', 'assets': 'inventory-service/src/assets/catalog', 'automation': 'flow-service/src/automation/catalog', 'resources': 'flow-service/src/resource_catalog/catalog', 'publication': 'software-service/src/management/publication/http_catalog', 'software': 'software-service/src/catalog/catalog', 'content': 'content-service/src/catalog', 'flow': 'flow-service/src/storage/catalog'}
+CATALOGS = {'compliance': 'compliance-postgres/src/catalog', 'catalog': 'execution-service/src/catalog', 'dependencies': 'execution-service/src/dependencies', 'planning': 'flow-service/src/planning/catalog', 'assets': 'inventory-service/src/assets/catalog', 'automation': 'flow-service/src/automation/catalog', 'resources': 'flow-service/src/resource_catalog/catalog', 'publication': 'software-service/src/management/publication/http_catalog', 'software': 'software-service/src/catalog/catalog', 'content': 'content-service/src/catalog', 'flow': 'flow-service/src/storage/catalog'}
 COMPONENT_CATALOGS = {"resource_core": ("mdm_resource", "resource-postgres/src/catalog.json"),"policy_core":("mdm_policy","policy-postgres/src/catalog.json")}
 NAMES = tuple(CATALOGS)
 
 def capture(container, mode, database):
-    directory = ROOT / "crates/flow-service/src/execution"
+    directory = ROOT / "crates/execution-service/src"
     query = "BEGIN; SET LOCAL ROLE mdm_command_runtime; SET LOCAL search_path=pg_catalog;\n"
     paths = {name: ROOT / "crates" / (relative + ".sql") for name, relative in CATALOGS.items()}
     query += "\n".join(paths[name].read_text() + ";" for name in NAMES)

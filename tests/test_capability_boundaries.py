@@ -5,7 +5,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVICES = {'authorization-service', 'registration-service', 'inventory-service',
-            'flow-service', 'content-service'}
+            'flow-service', 'execution-service', 'content-service'}
 INGRESS = {'management-http', 'agent-channel', 'windows-channel', 'apple-channel'}
 
 

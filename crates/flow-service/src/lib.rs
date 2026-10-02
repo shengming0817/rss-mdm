@@ -2,16 +2,12 @@
 pub mod action_admission;
 pub mod automation;
 pub mod clock;
-mod database;
 mod diagnostic;
 mod error;
 mod error_projection;
-pub mod execution;
 pub mod operation;
 pub mod planning;
-mod protection;
 pub mod resource_catalog;
-pub mod task_signing;
 pub mod transaction;
 pub mod worker_wake;
 pub use diagnostic::{ConfigIssue, Failure};

@@ -1,4 +1,4 @@
-use crate::{Error, Failure, execution, planning, software_publication};
+use crate::{Error, Failure, planning, software_publication};
 use axum::{
     Json,
     http::StatusCode,
@@ -51,8 +51,12 @@ impl IntoResponse for Error {
             rss_mdm_flow_service::Error::Execution(e) => (
                 StatusCode::NOT_FOUND,
                 match e {
-                    execution::error::ExecutionError::MissingOperation => "operation_not_found",
-                    execution::error::ExecutionError::MissingTask => "task_not_found",
+                    rss_mdm_execution_service::missing::ExecutionError::MissingOperation => {
+                        "operation_not_found"
+                    }
+                    rss_mdm_execution_service::missing::ExecutionError::MissingTask => {
+                        "task_not_found"
+                    }
                 },
             ),
             rss_mdm_flow_service::Error::Publication(e) => (

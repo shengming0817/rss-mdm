@@ -35,9 +35,9 @@ async fn authenticate(
         .devices
         .authorize_report(&credential, rss_mdm_inventory::ReportSource::AgentBuiltin)
         .await
-        .map_err(|e| task_error(e.into()))?;
+        .map_err(task_error)?;
     let mut tx = app.access.begin(&principal.tenant().to_string()).await?;
-    use rss_mdm_flow_service::execution::channels::Agent;
+    use rss_mdm_execution_service::channels::Agent;
     let binding = crate::Bindings
         .binding(
             &mut tx,
@@ -55,8 +55,8 @@ async fn authenticate(
     audit.target(principal.device());
     Ok(principal)
 }
-fn task_error(error: Error) -> crate::AgentError {
-    match error {
+fn task_error(error: impl Into<Error>) -> crate::AgentError {
+    match error.into() {
         Error::Forbidden => crate::AgentError::Wire(wire::ErrorCode::PermissionDenied),
         error if error.is_not_found() => crate::AgentError::Wire(wire::ErrorCode::TaskNotFound),
         other => other.into(),
@@ -141,7 +141,7 @@ pub struct TaskState {
     pub access: Arc<crate::Store>,
     pub mount: crate::device::ChannelMount,
     pub devices: Arc<crate::device::DeviceService>,
-    pub execution: Arc<rss_mdm_flow_service::execution::ExecutionService>,
+    pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
 }
 
 async fn installation_package(

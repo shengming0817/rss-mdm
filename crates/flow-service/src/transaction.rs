@@ -122,11 +122,6 @@ where
                     if let Err(error) = audit_store.lock_in(tx).await {
                         return Err(rejection(Error::from(error).into(), failure, owner));
                     }
-                    if matches!(owner, TransactionOwner::Execution)
-                        && let Err(e) = crate::execution::storage::admit(tx).await
-                    {
-                        return Err(rejection(e, failure, owner));
-                    }
                     let f = operation.take().expect("one callback");
                     match f(context, tx).await {
                         Ok(v) => {
@@ -172,7 +167,6 @@ pub enum TransactionOwner {
     Assets,
     Compliance,
     ResourceCatalog,
-    Execution,
 }
 impl TransactionOwner {
     fn failure(self) -> Failure {
@@ -181,14 +175,10 @@ impl TransactionOwner {
             Self::Assets => Failure::AssetsStorage,
             Self::Compliance => Failure::ComplianceStorage,
             Self::ResourceCatalog => Failure::ResourceStorage,
-            Self::Execution => Failure::CommandStorage,
         }
     }
     fn invariant(self) -> Failure {
-        match self {
-            Self::Execution => Failure::CommandInvariant,
-            _ => self.failure(),
-        }
+        self.failure()
     }
 }
 impl From<crate::device::DeviceError> for Fault {
@@ -344,6 +334,36 @@ impl From<rss_mdm_content_service::bindings::Error> for Fault {
             C::Content(e) => Self::Request(e.into()),
             C::Storage(e) => Self::Storage(e),
             C::Sql(e) => Self::Sql(e),
+        }
+    }
+}
+
+impl From<rss_mdm_execution_service::Error> for Fault {
+    fn from(error: rss_mdm_execution_service::Error) -> Self {
+        Error::from(error).into()
+    }
+}
+
+impl From<rss_mdm_execution_service::transaction::Fault> for Fault {
+    fn from(e: rss_mdm_execution_service::transaction::Fault) -> Self {
+        use rss_mdm_execution_service::transaction::Fault as F;
+        match e {
+            F::Request(e) => Self::Request(e.into()),
+            F::Storage(e) => Self::Storage(e),
+            F::Sql(e) => Self::Sql(e),
+        }
+    }
+}
+
+impl From<rss_mdm_audit_integration::operation_receipts::Error> for Fault {
+    fn from(e: rss_mdm_audit_integration::operation_receipts::Error) -> Self {
+        use rss_mdm_audit_integration::operation_receipts::Error as Receipt;
+        match e {
+            Receipt::Storage(e) => Self::Storage(e),
+            Receipt::Sql(e) => Self::Sql(e),
+            Receipt::Conflict => Error::Conflict.into(),
+            Receipt::Malformed => Error::Malformed.into(),
+            Receipt::Invariant => Error::Unavailable(Failure::FlowStorage).into(),
         }
     }
 }

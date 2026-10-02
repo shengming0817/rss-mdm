@@ -1,5 +1,5 @@
 use crate::{Error, database::db};
-use rss_mdm_flow_service::execution::channels::{self, AgentBinding, Pending};
+use rss_mdm_execution_service::channels::{self, AgentBinding, Pending};
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 pub struct Bindings;

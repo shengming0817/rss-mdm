@@ -1,7 +1,7 @@
 use super::*;
 #[test]
 fn execution_failure_dominates_missing_first_round_in_either_branch() {
-    use rss_mdm_flow_service::execution::health::{Health as ExecutionHealth, Phase};
+    use rss_mdm_execution_service::health::{Health as ExecutionHealth, Phase};
     let failure = Phase::Failed(rss_reconcile::ErrorKind::Transient);
     for (recovery, relay) in [
         (failure, Phase::Initializing),

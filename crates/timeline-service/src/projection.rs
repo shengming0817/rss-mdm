@@ -161,8 +161,8 @@ fn phase(action: &str) -> &'static str {
 pub(crate) fn execution_identity(
     event: &AuditEventV1,
     view: &FactView,
-) -> Result<Option<rss_mdm_flow_service::execution::timeline::Identity>, Error> {
-    use rss_mdm_flow_service::execution::timeline::Identity;
+) -> Result<Option<rss_mdm_execution_service::timeline::Identity>, Error> {
+    use rss_mdm_execution_service::timeline::Identity;
     if !view.supported {
         return Ok(None);
     }
@@ -197,7 +197,7 @@ pub(crate) fn execution_identity(
             {
                 Some(Identity::Operation(id))
             } else {
-                use rss_mdm_flow_service::execution::actions::state::RunState;
+                use rss_mdm_execution_service::actions::state::RunState;
                 let states = payload.get("details").and_then(|d| {
                     Some((
                         serde_json::from_value::<RunState>(d.get("before")?.clone()).ok()?,
@@ -228,7 +228,7 @@ pub(crate) fn execution_identity(
 mod identity_tests {
     use super::*;
     use rss_mdm_audit_integration::{Fact, RequestAudit};
-    use rss_mdm_flow_service::execution::timeline::Identity;
+    use rss_mdm_execution_service::timeline::Identity;
     const TENANT: &str = "11111111-1111-4111-8111-111111111111";
     fn resolve(action: &'static str, key: &str, id: Uuid, details: Value) -> Option<Identity> {
         let audit = RequestAudit::new(TENANT.into(), action);
@@ -298,7 +298,7 @@ mod identity_tests {
     }
     #[test]
     fn action_recovery_retains_its_namespace_and_request_accept_does_not_guess() {
-        use rss_mdm_flow_service::execution::actions::state::{Execution, RunState};
+        use rss_mdm_execution_service::actions::state::{Execution, RunState};
         let id = Uuid::new_v4();
         let before = RunState::new(100, 1).unwrap();
         let mut after = before.clone();
