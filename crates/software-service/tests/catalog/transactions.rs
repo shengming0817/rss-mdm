@@ -5,6 +5,9 @@ use catalog::{Catalog, Operation, SourceChange, VerifiedContent, VersionChange};
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_resource as r;
 use rss_mdm_resource_postgres as resource;
+use rss_mdm_software_service::preparation::{
+    Delivery, FreezeRequest, Preparation, Selection, Target,
+};
 use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction, PgTransactionFault};
 use serde_json::json;
 use std::{future::Future, pin::Pin, sync::Arc};
@@ -185,6 +188,9 @@ impl VerifiedContent for Content {
         self.0
     }
 }
+fn ensure_catalog(condition: bool) -> catalog::Result<()> {
+    condition.then_some(()).ok_or(catalog::Error::Input)
+}
 fn register() -> Operation<SourceChange> {
     serde_json::from_value(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"register","definition":{
         "id":pg::case::name("private-fixture"),"revision":"1","protocol":{"kind":"private"}
@@ -340,6 +346,90 @@ async fn dependency_admission_uses_exact_current_approval() -> Result<()> {
         .resolve(&dependent)
         .await
         .context("resolve approved dependency")?;
+    let preparation = Preparation::new(
+        Catalog::new(
+            fixture.runtime.clone(),
+            pg::tenant(),
+            materials::host(
+                fixture.runtime.clone(),
+                pg::audit_store_for("mdm_flow_runtime").await,
+            )
+            .audit,
+        ),
+        Default::default(),
+    );
+    let target = Target {
+        platform: r::Platform::Windows,
+        architecture: r::Architecture::X86_64,
+    };
+    let binding = Selection {
+        resource: dependent.resource().as_str(),
+        version: "v1",
+        digest: dependent.digest().bytes(),
+        admission: approval.operation_id,
+        variant: "default",
+        uninstall: false,
+    };
+    let targets = [(target, "default".to_owned())];
+    let context = rss_mdm_agent_wire::SoftwareExecutionContext {
+        revision: 1,
+        msix_sideload: false,
+        msix_unsigned: false,
+        os_version: [10, 0, 22621, 0],
+        system_broker: true,
+        interactive_user: None,
+        source_credentials: vec![],
+    };
+    transaction(
+        &fixture.runtime,
+        (&preparation, &binding, &targets, &context, &dependency),
+        |ctx, tx| {
+            Box::pin(async move {
+                let (preparation, binding, targets, context, dependency) = *ctx;
+                let request = |admission, uninstall| FreezeRequest {
+                    resource: binding.resource,
+                    version: binding.version,
+                    digest: binding.digest,
+                    admission,
+                    uninstall,
+                    targets,
+                };
+                preparation
+                    .freeze_in(tx, request(binding.admission, false))
+                    .await?;
+                ensure_catalog(matches!(
+                    preparation
+                        .freeze_in(tx, request(Uuid::new_v4(), false))
+                        .await,
+                    Err(catalog::Error::Conflict)
+                ))?;
+                ensure_catalog(matches!(
+                    preparation
+                        .freeze_in(tx, request(binding.admission, true))
+                        .await,
+                    Err(catalog::Error::Unsupported)
+                ))?;
+                let steps = preparation
+                    .prepare_in(tx, binding, target, &Delivery::Direct, context)
+                    .await?
+                    .ok_or(catalog::Error::NotAdmitted)?;
+                ensure_catalog(steps.len() == 2)?;
+                let packages: Vec<_> = steps.iter().map(|step| &step.action.package).collect();
+                ensure_catalog(
+                    *packages[0] == format!("Private.{}", dependency.resource().as_str()),
+                )?;
+                ensure_catalog(*packages[1] == format!("Private.{}", binding.resource))?;
+                let artifact = preparation
+                    .artifact_in(tx, binding, target, 0, "installer")
+                    .await?
+                    .ok_or(catalog::Error::Missing)?;
+                ensure_catalog(artifact.length() == 3)?;
+                Ok(())
+            })
+        },
+    )
+    .await
+    .context("software owner freezes and prepares exact dependency closure")?;
     let mut wrong = dependent_definition.clone();
     wrong["dependencies"][0]["sha256"] = json!(vec![0; 32]);
     let wrong = fixture.version(wrong).await?;
@@ -360,6 +450,26 @@ async fn dependency_admission_uses_exact_current_approval() -> Result<()> {
         .change(&dependency, &withdrawal, dependency.digest().bytes())
         .await?;
     ensure!(fixture.resolve(&dependent).await.is_err());
+    transaction(
+        &fixture.runtime,
+        (&preparation, &binding, &context),
+        |ctx, tx| {
+            Box::pin(async move {
+                let (preparation, binding, context) = *ctx;
+                ensure_catalog(preparation.recheck_in(tx, binding, target).await?.is_some())?;
+                ensure_catalog(
+                    preparation
+                        .prepare_in(tx, binding, target, &Delivery::Direct, context)
+                        .await?
+                        .is_none(),
+                )?;
+                Ok(())
+            })
+        },
+    )
+    .await
+    .context("withdrawn dependency makes complete execution closure ineligible")?;
+
     let after = fixture.version(dependent_definition).await?;
     ensure!(
         fixture

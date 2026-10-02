@@ -4,6 +4,10 @@
 
 `catalog::Catalog` 借用宿主 `PgTransaction`，不提交或关闭宿主 runtime；状态、原操作回执、审计及 Outbox 由同一事务结算。`ContentPort` 在事务外验证并固定完整产物，`VerifiedContent` 必须持有这些文件直到批准事务结束。`resolve_admitted_in` 返回当前准入的精确变体及来源，`recheck_admitted_in` 拒绝用新批准替换已冻结批准。
 
+`preparation::Preparation` 在调用方事务中持有固定批准、目标依赖步骤、制品/定义预算与指定原生源选择。全变体准入与目标执行投影保持各自语义；返回软件步骤，消费方仍核对当前设备注册、世代及 profiles，持有共同 Run、permit 与签名。
+
+`management` 持有目录、导入/下载和发布管理用例及恢复 worker。`ManagementContentPort` 只借用文件验证和精确导入 staging；content adapter 返回原下载句柄，导入证据持有文件 pins 并在原事务内绑定。软件服务不反向依赖 Flow、Content 或 HTTP。管理 API、原回执及持久冻结格式保持。
+
 `publication::PublicationService` 保留外部调用的持久意图、attempt、撤回和 Unknown 恢复。`AuditPort` 必须使用借入事务；`Credentials` 仅解析宿主批准的精确 tenant/source/reference。软件服务不读取宿主秘密文件，不反向依赖 App。
 
 提取参照：Axum axum-v0.8.9 流式正文、zip-rs v8.6.0 受限读取；既有 WinGet/Brew 适配及事务算法仍由原 owner 持有。

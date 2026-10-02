@@ -293,6 +293,12 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertEqual(self.selected('crates/software-service/src/publication/references.rs'),
                          {'publication.mapping','planning.resource_archive'})
         self.assertEqual(self.selected('crates/management-http/src/software_catalog.rs'), {'software.http'})
+        self.assertEqual(self.selected('crates/software-service/src/management/catalog.rs'), {'software.http'})
+        self.assertEqual(self.selected('crates/content-service/src/software.rs'), {'software.http'})
+        self.assertEqual(self.selected('crates/software-service/src/preparation/mod.rs'),
+                         {'software.catalog','planning.software','planning.onboarding','execution.commands.onboarding',
+                          'execution.software.offer','execution.software.content','execution.software.recovery'})
+
 
     def test_shared_software_helpers_follow_behavioral_consumption(self):
         self.assertEqual(self.selected('tests/support/software/ack.rs'), {'publication.recovery'})
