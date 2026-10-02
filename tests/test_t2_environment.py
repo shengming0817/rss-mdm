@@ -132,6 +132,22 @@ class EnvironmentTests(unittest.TestCase):
             self.assertNotIn(env.project,allocations)
 
 class ComposeDiagnostics(unittest.TestCase):
+    def test_binary_native_key_does_not_block_compose_and_is_redacted(self):
+        import base64, io, contextlib, subprocess
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            env=Environment(Path(tmp));env.root.mkdir(parents=True)
+            raw=b"\xff"*32
+            (env.root/'native-data.key').write_bytes(raw)
+            with patch('t2_environment.run',return_value=type('Result',(),{'stdout':'ok'})()):
+                self.assertEqual(env.compose('config'),'ok')
+            for secret in [raw.hex(),base64.b64encode(raw).decode()]:
+                output=io.StringIO()
+                with patch('t2_environment.run',side_effect=subprocess.CalledProcessError(1,['docker'],stderr=secret)),contextlib.redirect_stderr(output):
+                    with self.assertRaises(subprocess.CalledProcessError):env.compose('config')
+                self.assertIn('diagnostic-withheld',output.getvalue())
+                self.assertNotIn(secret,output.getvalue())
+
     def test_failure_keeps_safe_stderr_without_disclosing_private_input(self):
         import io,contextlib,subprocess
         from unittest.mock import patch

@@ -4,6 +4,7 @@ ref: compose-spec/compose-spec spec.md (project isolation and service network_mo
 """
 from __future__ import annotations
 import argparse
+import base64
 import contextlib
 import hashlib
 import json
@@ -68,9 +69,15 @@ class Environment:
         private_values=[]
         for path in self.root.rglob('*'):
             if path.is_file() and not path.is_symlink() and ('password' in path.name or 'secret' in path.name or path.suffix=='.key'):
-                value = path.read_text()
-                private_values.append(value)
-                private_value(value)
+                raw = path.read_bytes()
+                values = [raw.hex(), base64.b64encode(raw).decode()]
+                try:
+                    values.append(raw.decode())
+                except UnicodeDecodeError:
+                    pass
+                for value in values:
+                    private_values.append(value)
+                    private_value(value)
         try:
             return run(['docker','compose','-p',self.project,'-f',ROOT/'deployment/compose.yaml',*args],
                        env=self.variables(), capture_output=True, **kwargs).stdout.strip()
