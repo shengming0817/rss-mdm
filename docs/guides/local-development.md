@@ -10,7 +10,7 @@ make t2
 make ci-plan CI_BASE=origin/develop
 ```
 
-`make ci` 只执行快速检查并报告建议 T2。`make t2` 默认按影响范围选择，显式 `MODULE=planning.http` 运行专项，`MODULE=all` 运行全部；非法模块名及旧 SUITE 参数立即失败。选中的模块按需启动真实依赖，缺少 Docker 或必要工具必须失败。编辑循环选择受影响测试，最终检查不要求先提交源码。
+`make ci` 只执行快速检查并报告建议 T2。`make t2` 默认按影响范围选择，显式 `MODULE=planning.http` 运行专项，`MODULE=all` 运行全部；非法模块名及旧 SUITE 参数立即失败。选中的模块按需启动真实依赖，缺少 Docker 或必要工具必须失败。入口直接检查当前工作区，无需预先提交源码。
 
 ## 构建槽位与缓存
 

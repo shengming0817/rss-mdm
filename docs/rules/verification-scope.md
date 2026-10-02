@@ -1,12 +1,12 @@
 # 验证范围
 
-按行为风险选择最小有效验证：T1 验证模型与边界，T2 使用真实依赖验证持久化、权限、协议与恢复，T3 在独立产品任务中验证真实设备与支持矩阵。文档检查内容、链接、来源和 diff。缺依赖或未运行不能宣布通过。
+T1 提供模型与边界证据；T2 使用真实依赖提供持久化、权限、协议与恢复证据；T3 在独立产品任务中验证真实设备与支持矩阵。缺依赖或未运行不能宣布通过。
 
-每批次修改完成后、提交前运行受影响 package/tests 与必要 T2，通过后提交；PR 交接前，全部实施、review 修复和冲突处理完成且受影响测试通过后，代码任务运行一次 `make ci CI_BASE=origin/develop`。该命令按影响范围运行快速检查，任何模式均不启动 PostgreSQL、网关或 IdP，不隐式执行 T2。`make t2 MODULE=affected CI_BASE=origin/develop` 运行受影响测试模块（裸 `make t2` 默认 affected），`MODULE=planning.http` 等选择专项，`MODULE=all` 选择全部；旧 SUITE/--suite 明确拒绝。执行、发现、affected 共用 `hack/t2_registry.py`，Rust 测试函数通过 nextest 实际发现。`make ci-full` 在同一构建租约内组合全部快速检查和全部 T2，正式候选和浏览器 T3 独立。每次验证一次收集全部失败，集中修复后精确复验失败项及受影响范围，不反复跑完整 CI。不执行父仓 CI 代替产品验证，不新增远端 CI。
+`make ci CI_BASE=origin/develop` 按影响范围运行快速检查，任何模式均不启动 PostgreSQL、网关或 IdP，不隐式执行 T2。`make t2 MODULE=affected CI_BASE=origin/develop` 运行受影响测试模块（裸 `make t2` 默认 affected），`MODULE=planning.http` 等选择专项，`MODULE=all` 选择全部；旧 SUITE/--suite 明确拒绝。执行、发现、affected 共用 `hack/t2_registry.py`，Rust 测试函数通过 nextest 实际发现。`make ci-full` 在同一构建租约内组合全部快速检查和全部 T2，正式候选和浏览器 T3 独立。本仓结果不由父仓 CI 代替；不新增远端 CI。
 
 CI 直接验证当前工作区，不要求预先提交、clean HEAD 或冷构建。`make ci-plan` 仅预览；选择器比较基线 merge-base 与当前修改，计入未跟踪且非忽略的输入。docs/root Markdown 不贡献 Rust package seed，crate README 可参与 rustdoc。Cargo 与 T2 分别输出 `cargoFull/packages` 与 `t2Full/modules`。Cargo 使用反向依赖闭包；独立 T1 文件不选 T2，独立 T2 文件只选所属模块，helper 只选直接消费者。生产输入按模块声明的实际消费接缝选择，多个输入取并集。包级 manifest 按可确定的依赖范围选择；lock、工具链、未知路径、无法可靠识别的 rename/copy 或分析失败保守全量；存在脏文件本身不触发全量。CI 在选择前与执行后核对当前文件集合、内容及状态，运行期间输入变化则失败，避免将旧测试结果用于新源码。
 
-选中 Rust 包后检查当前 normal/all-features metadata 与依赖来源和必要 T1；持久化、SQL、权限变化必须另跑对应 PG T2，协议变化必须另跑对应协议 T2，公共鉴权、迁移和装配扩大覆盖。纯模型与文档按接缝风险选择，不以 Rust 的 App 反向依赖闭包直接代替 T2 路径映射；不克隆独立消费者、不重新打包逐 crate、不另起隔离冷构建或百万容量脚手架。功能预算边界仍用小输入或算术边界验证；规模与性能承诺须另立有场景的验证任务。
+PG T2 提供持久化、SQL、权限与事务证据；协议 T2 提供真实 HTTP/TLS、身份、回执与恢复证据。App 反向依赖闭包不能直接代替 T2 路径映射。功能预算边界使用小输入或算术边界；规模与性能承诺由有明确场景的独立验证任务提供证据。
 
 Make 的正式构建、测试与 CI 由统一启动器持有 worktree/target 独占租约；显式 target 和关闭池只改变目录选择，不关闭租约。正式 CI/T2 脚本拒绝无租约执行，ci-plan 仅预览。配置、直接 Cargo 边界及故障恢复见[本地开发](../guides/local-development.md#构建槽位与缓存)。缓存与工具链记录是诊断信息，不是通过证明。
 
