@@ -81,6 +81,17 @@ fn desired<'a>(
         ready,
     })
 }
+// Read-only planning over loaded claims; transaction code owns applying the decision.
+fn claim_diagnosis(index: usize, inputs: &[Desired<'_>], owners: &BTreeMap<Object, Vec<usize>>) -> Option<Diagnosis> {
+    let input = &inputs[index];
+    if input.objects.iter().any(|o| owners[o].iter().any(|&i| inputs[i].object_digests.get(o) != input.object_digests.get(o))) {
+        Some(Diagnosis::Conflict)
+    } else if input.objects.iter().any(|o| owners[o].iter().any(|&i| inputs[i].digest != input.digest)) {
+        Some(Diagnosis::GroupConflict)
+    } else if !inputs.iter().any(|d| d.digest == input.digest && d.ready) {
+        Some(Diagnosis::WaitingScope)
+    } else { None }
+}
 impl ExecutionService {
     pub async fn reconcile_configuration(
         &self,
@@ -132,30 +143,16 @@ impl ExecutionService {
                 .iter()
                 .filter(|d| d.digest == input.digest)
                 .collect::<Vec<_>>();
-            let conflict = input.objects.iter().any(|o| {
-                owners[o]
-                    .iter()
-                    .any(|&i| inputs[i].object_digests.get(o) != input.object_digests.get(o))
-            });
-            let group_conflict = input
-                .objects
-                .iter()
-                .any(|o| owners[o].iter().any(|&i| inputs[i].digest != input.digest));
+            let diagnosis = claim_diagnosis(index, &inputs, &owners);
             let state = object_state(tx, device, &input.objects).await?;
-            if conflict || group_conflict || !same.iter().any(|d| d.ready) {
+            if let Some(diagnosis) = diagnosis {
                 save_objects(
                     tx,
                     device,
                     &input.objects,
                     state,
                     Some(&input.object_digests),
-                    Some(if conflict {
-                        Diagnosis::Conflict
-                    } else if group_conflict {
-                        Diagnosis::GroupConflict
-                    } else {
-                        Diagnosis::WaitingScope
-                    }),
+                    Some(diagnosis),
                 )
                 .await?;
                 desired_claims(tx, device, &input.objects, &inputs, &owners, state).await?;

@@ -209,3 +209,34 @@ impl Request {
         Ok(objects.into_iter().collect())
     }
 }
+
+impl Request {
+    /// Resolve schema-owned authorization targets, including descendants of subtree reads/deletes.
+    /// This supplies native identities only; the product owns permissions and authenticated scope.
+    pub fn authorization_nodes(&self) -> Result<Vec<(String, Verb)>, Error> {
+        self.objects()?;
+        let mut pending = vec![self];
+        let mut result = Vec::new();
+        while let Some(request) = pending.pop() {
+            match request {
+                Self::Node { node, operation, .. } => {
+                    result.push((node.clone(), *operation));
+                    let selected = super::generated::NODES
+                        .binary_search_by_key(&node.as_str(), |n| n.path)
+                        .map_err(|_| Error::UnknownObject)?;
+                    if *operation == Verb::Delete
+                        || (*operation == Verb::Get && matches!(super::generated::NODES[selected].format, super::Format::Node))
+                    {
+                        let prefix = format!("{node}/");
+                        for child in &super::generated::NODES[selected + 1..] {
+                            if !child.path.starts_with(&prefix) { break; }
+                            result.push((child.path.into(), *operation));
+                        }
+                    }
+                }
+                Self::Atomic { operations } | Self::Sequence { operations } => pending.extend(operations),
+            }
+        }
+        Ok(result)
+    }
+}
