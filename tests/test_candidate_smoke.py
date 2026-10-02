@@ -116,6 +116,37 @@ class RuntimeOwnership(unittest.TestCase):
             self.assertEqual(record, {'status':'failed', 'error_class':'RuntimeError', 'containers':{}})
             self.assertFalse((root / 'smoke.json').exists())
 
+    def test_backend_constructor_skips_ui_but_browser_requires_it(self):
+        manifest = {"image":"server@sha256:fixture", "archive":{"manifest_digest":"sha256:fixture"}, "providers":{"nginx":"nginx@sha256:fixture"}}
+        with mock.patch.object(candidate, "verify_candidate", return_value=manifest), \
+             mock.patch.object(candidate, "image_identity", return_value={"id":"server-id"}) as inspect, \
+             mock.patch.object(candidate, "load_ui") as load:
+            owner = candidate.Candidate(Path("candidate"))
+            self.assertIsNone(owner.web)
+            load.assert_not_called()
+            inspect.reset_mock()
+            with self.assertRaisesRegex(RuntimeError, "requires a UI image.*--web-image"):
+                candidate.Candidate(Path("candidate"), require_ui=True)
+            inspect.assert_not_called()
+            manifest["ui"] = {"archive": "invalid"}
+            load.side_effect = RuntimeError("UI archive mismatch")
+            with self.assertRaisesRegex(RuntimeError, "UI archive mismatch"):
+                candidate.Candidate(Path("candidate"))
+
+    def test_gateway_uses_ui_when_delivered_and_nginx_for_backend_only(self):
+        for web in [None, {"id":"ui-id"}]:
+            with self.subTest(web=web):
+                owner = candidate.Candidate.__new__(candidate.Candidate)
+                owner.web, owner.providers = web, {"nginx":"pinned-nginx"}
+                owner.gateway, owner.pg, owner.gateway_inputs = "gateway", "pg", "inputs"
+                owner.created, owner.command = [], mock.Mock()
+                owner.start_gateway()
+                args = owner.command.call_args.args
+                self.assertIn("ui-id" if web else "pinned-nginx", args)
+                self.assertIn("10001:10001", args)
+                self.assertIn("daemon off;", args)
+                self.assertEqual(owner.created, ["gateway"])
+
     def test_operator_preserves_exact_stage(self):
         owner=candidate.Candidate.__new__(candidate.Candidate)
         owner.pg,owner.operator_volume,owner.image='pg','operator','image'

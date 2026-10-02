@@ -1,4 +1,5 @@
 import importlib.util
+import sys
 import hashlib
 import io
 import json
@@ -7,6 +8,8 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hack"))
 
 spec = importlib.util.spec_from_file_location("release", Path(__file__).resolve().parents[1] / "hack/release.py")
 release = importlib.util.module_from_spec(spec)
@@ -40,6 +43,44 @@ class CandidatePublication(unittest.TestCase):
                 digest, actual = release.oci_identity(path)
                 self.assertEqual(digest, descriptor["digest"])
                 self.assertEqual(release.platform(actual), "linux/" + architecture)
+
+    def test_backend_and_combined_publication_have_distinct_artifacts(self):
+        for web_image in [None, "sha256:" + "a" * 64]:
+            with self.subTest(web_image=web_image), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                header = root / "header"; header.write_text("synthetic"); header.chmod(0o600)
+                output = root / "candidate"
+                def copy_inputs(_, source, __):
+                    source.mkdir()
+                    inputs = ["deployment/providers.lock.json", "deployment/Dockerfile", "Cargo.lock", "rust-toolchain.toml"]
+                    inputs += ["fixtures/mdm-config.example.json"]
+                    inputs += ["crates/app/schema/" + Path(name).name if name.endswith("-roles.sql") else name
+                               for name in release.DEPLOYMENT_FILES if name != "mdm-config.example.json"]
+                    for name in inputs:
+                        target = source / name; target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_bytes((release.ROOT / name).read_bytes())
+                    return "source-digest"
+                def docker_command(command, **kwargs):
+                    if command[:3] == ["docker", "buildx", "build"]:
+                        (output / "server.oci.tar").write_bytes(b"synthetic-oci")
+                def snapshot(reference, archive):
+                    archive.write_bytes(b"synthetic-ui")
+                    return {"id": reference, "archive": {"file": archive.name, "sha256": release.sha(archive)}}
+                with mock.patch.object(release, "copy_source", side_effect=copy_inputs), \
+                     mock.patch.object(release.subprocess, "run", side_effect=docker_command), \
+                     mock.patch.object(release, "oci_identity", return_value=("sha256:fixture", {"os":"linux", "architecture":"arm64"})), \
+                     mock.patch.object(release, "run", side_effect=['{}', 'version']), \
+                     mock.patch.object(release, "snapshot_ui", side_effect=snapshot) as ui:
+                    release.build_staged(output, header, web_image)
+                manifest = json.loads((output / "candidate.json").read_text())
+                self.assertTrue((output / "server.oci.tar").is_file())
+                self.assertEqual("ui" in manifest, web_image is not None)
+                self.assertEqual((output / "identity-ui.image.tar").exists(), web_image is not None)
+                if web_image is None:
+                    ui.assert_not_called()
+                else:
+                    ui.assert_called_once_with(web_image, output / "identity-ui.image.tar")
+                    self.assertEqual(manifest["ui"]["id"], web_image)
 
     def test_failed_acquisition_leaves_output_available_for_retry(self):
         with tempfile.TemporaryDirectory() as temporary:
