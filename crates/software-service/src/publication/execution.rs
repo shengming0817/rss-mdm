@@ -150,48 +150,11 @@ impl PublicationService {
         tx: &mut PgTransaction<'_>,
         root: &r::Version,
     ) -> InTransaction<Vec<r::Version>> {
-        let mut pending = vec![root.clone()];
-        let mut seen = std::collections::BTreeMap::new();
-        while let Some(version) = pending.pop() {
-            for variant in version.variants() {
-                let r::Declaration::Software { definition } = variant.declaration() else {
-                    return Ok(Err(Error::Content));
-                };
-                for dependency in &definition.spec().dependencies {
-                    let key = (dependency.resource.clone(), dependency.version.clone());
-                    if let Some(previous) = seen.get(&key) {
-                        let previous: &r::Version = previous;
-                        if previous.digest().bytes() != dependency.sha256 {
-                            return Ok(Err(Error::Content));
-                        }
-                        continue;
-                    }
-                    if seen.len() >= 256
-                        || key
-                            == (
-                                root.resource().as_str().to_owned(),
-                                root.label().as_str().to_owned(),
-                            )
-                    {
-                        return Ok(Err(Error::Content));
-                    }
-                    let resource =
-                        input!(r::Id::new(&dependency.resource).map_err(|_| Error::Content));
-                    let version =
-                        input!(r::Id::new(&dependency.version).map_err(|_| Error::Content));
-                    let (child, _) = input!(
-                        rss_mdm_resource_postgres::lock_reference_in(tx, &resource, &version)
-                            .await?
-                            .map_err(|_| Error::Content)
-                    );
-                    if child.digest().bytes() != dependency.sha256 {
-                        return Ok(Err(Error::Content));
-                    }
-                    seen.insert(key, child.clone());
-                    pending.push(child);
-                }
-            }
+        match self.catalog.dependency_versions_in(tx, root).await {
+            Ok(versions) => Ok(Ok(versions)),
+            Err(crate::catalog::Error::Storage(e)) => Err(e),
+            Err(crate::catalog::Error::Sql(e)) => Err(e.into()),
+            Err(_) => Ok(Err(Error::Content)),
         }
-        Ok(Ok(seen.into_values().collect()))
     }
 }

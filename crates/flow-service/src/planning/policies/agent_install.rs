@@ -236,32 +236,29 @@ impl Policies {
             .catalog
             .active_version_in(tx, binding.id(), binding.version())
             .await?;
-        let catalog = rss_mdm_software_service::catalog::Catalog::new(
-            self.planning.runtime.clone(),
-            self.planning.tenant,
-            std::sync::Arc::new(crate::software_publication::host::Audit(
-                self.planning.audit_store.clone(),
-            )),
-        );
         let mut packages = BTreeMap::new();
         for (target, key) in &selection.variants {
             let pin = config.packages.get(target).ok_or(Error::Unsupported)?;
             let (platform, architecture) = resource_target(*target);
-            let selected = catalog
-                .resolve_admitted_in(
+            let selected = self
+                .execution
+                .software
+                .resolve_in(
                     tx,
-                    binding.id(),
-                    binding.version(),
-                    platform,
-                    architecture,
-                    &checked_input(resource::Id::new(key))?,
+                    &rss_mdm_software_service::preparation::Selection {
+                        resource: binding.id(),
+                        version: binding.version(),
+                        digest: version.digest().bytes(),
+                        admission: *admission_operation,
+                        variant: key,
+                        uninstall: false,
+                    },
+                    rss_mdm_software_service::preparation::Target {
+                        platform,
+                        architecture,
+                    },
                 )
                 .await?;
-            if selected.admission().operation != *admission_operation
-                || selected.version().digest() != version.digest()
-            {
-                return Err(Error::Conflict.into());
-            }
             let variant = selected
                 .version()
                 .resolve(

@@ -1,4 +1,4 @@
-use crate::{ConfigIssue, Failure, execution, planning, resource_catalog, software_publication};
+use crate::{ConfigIssue, Failure, execution, planning, resource_catalog};
 #[derive(Clone, Debug, thiserror::Error, serde::Serialize)]
 #[serde(tag = "kind", content = "reason", rename_all = "snake_case")]
 pub enum Error {
@@ -13,7 +13,7 @@ pub enum Error {
     #[error(transparent)]
     Execution(#[from] execution::error::ExecutionError),
     #[error(transparent)]
-    Publication(#[from] software_publication::error::PublicationError),
+    Publication(#[from] rss_mdm_software_service::management::publication::error::PublicationError),
     #[error("certificate request rejected")]
     CertificateRequest,
     #[error("operation identity or enrollment/registration state conflict")]

@@ -263,7 +263,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
         .call(
             &f.router,
             Method::GET,
-            &format!("{policy_path}/software/rollout"),
+            &format!("/api/v2/policies/{policy}/software/rollout"),
             None,
         )
         .await?;

@@ -1,4 +1,4 @@
-use crate::software_publication::model::Change;
+use crate::management::publication::model::Change;
 use serde_json::json;
 #[test]
 fn publication_request_only_refers_to_an_exact_frozen_resource() {

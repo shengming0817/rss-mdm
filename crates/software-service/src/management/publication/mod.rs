@@ -1,5 +1,4 @@
 pub mod error;
-pub mod host;
 pub mod model;
 mod receipts;
 pub mod service;

@@ -26,9 +26,14 @@ async fn exact_rest_community_and_brew_imports_preserve_evidence_and_replay() ->
         .unwrap()
         .truncate(1);
     let yaml = format!(
-        "PackageIdentifier: Acme.App\nPackageVersion: '1.2'\nPackageLocale: en-US\nPublisher: Acme\nPackageName: Acme Application\nLicense: Proprietary\nShortDescription: Controlled enterprise application\nInstallerType: msi\nScope: machine\nInstallers:\n  - Architecture: x64\n    InstallerUrl: {}artifacts/x64.msi\n    InstallerSha256: '{}'\nManifestType: singleton\nManifestVersion: 1.10.0\n",
+        "PackageIdentifier: Acme.App\nPackageVersion: '1.2'\nInstallerType: msi\nScope: machine\nInstallers:\n  - Architecture: x64\n    InstallerUrl: {}artifacts/x64.msi\n    InstallerSha256: '{}'\nManifestType: installer\nManifestVersion: 1.10.0\n",
         peer.base, sha
     );
+    let community_documents = [
+        ("Acme.App.installer.yaml", yaml.clone().into_bytes()),
+        ("Acme.App.locale.en-US.yaml", b"PackageIdentifier: Acme.App\nPackageVersion: '1.2'\nPackageLocale: en-US\nPublisher: Acme\nPackageName: Acme Application\nLicense: Proprietary\nShortDescription: Controlled enterprise application\nManifestType: defaultLocale\nManifestVersion: 1.10.0\n".to_vec()),
+        ("Acme.App.yaml", b"PackageIdentifier: Acme.App\nPackageVersion: '1.2'\nDefaultLocale: en-US\nManifestType: version\nManifestVersion: 1.10.0\n".to_vec()),
+    ];
     let cask = format!(
         "cask \"app\" do\n  version \"1.2\"\n  sha256 \"{sha}\"\n  url \"{}artifacts/app.dmg\"\n  name \"Application\"\n  desc \"Controlled application\"\n  homepage \"https://example.test/\"\n  app \"App.app\"\nend\n",
         peer.base
@@ -49,10 +54,12 @@ async fn exact_rest_community_and_brew_imports_preserve_evidence_and_replay() ->
             "/rest/packageManifests/Acme.App?Version=1.2".into(),
             serde_json::to_vec(&json!({"Data":document}))?,
         );
-        state.source_documents.insert(
-            format!("/microsoft/winget-pkgs/{commit}/manifests/a/Acme/App/1.2/Acme.App.yaml"),
-            yaml.clone().into_bytes(),
-        );
+        for (file, bytes) in &community_documents {
+            state.source_documents.insert(
+                format!("/microsoft/winget-pkgs/{commit}/manifests/a/Acme/App/1.2/{file}"),
+                bytes.clone(),
+            );
+        }
         state.source_documents.insert(
             format!("/acme/homebrew-private/{commit}/Casks/app.rb"),
             cask.clone().into_bytes(),
@@ -62,7 +69,7 @@ async fn exact_rest_community_and_brew_imports_preserve_evidence_and_replay() ->
         format!("/acme/homebrew-private/{commit}/Formula/app.rb"),
         bottle.clone().into_bytes(),
     );
-    let mut f = Fixture::with_peer(Some(peer)).await?;
+    let mut f = Fixture::with_peer_and_uploads(Some(peer), Some(1)).await?;
     let base = f.peer.as_ref().unwrap().base.clone();
     let native = json!({"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}});
     let msi = json!({"kind":"msi","installer":"installer","scope":"system","install":native,"upgradeInvocation":native,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1.2"}});
@@ -82,7 +89,7 @@ async fn exact_rest_community_and_brew_imports_preserve_evidence_and_replay() ->
         (
             "community",
             json!({"kind":"winget_community","repository":"https://github.com/microsoft/winget-pkgs.git","commit":commit}),
-            json!({"kind":"winget","installerType":"msi","scope":"machine","installerId":null,"files":["Acme.App.yaml"]}),
+            json!({"kind":"winget","installerType":"msi","scope":"machine","installerId":null,"files":["Acme.App.installer.yaml","Acme.App.locale.en-US.yaml","Acme.App.yaml"]}),
             msi,
             "windows",
             "Acme.App",
@@ -152,6 +159,14 @@ async fn exact_rest_community_and_brew_imports_preserve_evidence_and_replay() ->
             declaration["provenance"]["kind"] == "imported",
             "source evidence: {definition:?}"
         );
+        if revision == "community" {
+            ensure!(
+                declaration["provenance"]["files"]
+                    .as_array()
+                    .is_some_and(|files| files.len() == 3),
+                "complete multi-file source evidence: {declaration}"
+            );
+        }
         ensure!(
             declaration["provenance"]["files"][0]["content"]["sha256"]
                 == json!(<[u8; 32]>::from(Sha256::digest(&raw))),
@@ -231,7 +246,12 @@ async fn exact_rest_community_and_brew_imports_preserve_evidence_and_replay() ->
                 bottle.clone().into_bytes(),
             );
         let mut state = f.peer.as_ref().unwrap().state.lock().unwrap();
-        state.source_documents.insert(format!("/microsoft/winget-pkgs/{commit}/manifests/a/Acme/App/1.2/Acme.App.yaml"),format!("PackageIdentifier: Acme.App\nPackageVersion: '1.2'\nPackageLocale: en-US\nPublisher: Acme\nPackageName: Acme Application\nLicense: Proprietary\nShortDescription: Controlled enterprise application\nInstallerType: msi\nScope: machine\nInstallers:\n  - Architecture: x64\n    InstallerUrl: {base}artifacts/x64.msi\n    InstallerSha256: '{sha}'\nManifestType: singleton\nManifestVersion: 1.10.0\n").into_bytes());
+        for (file, bytes) in &community_documents {
+            state.source_documents.insert(
+                format!("/microsoft/winget-pkgs/{commit}/manifests/a/Acme/App/1.2/{file}"),
+                bytes.clone(),
+            );
+        }
         state.source_documents.insert(format!("/acme/homebrew-private/{commit}/Casks/app.rb"),format!("cask \"app\" do\n  version \"1.2\"\n  sha256 \"{sha}\"\n  url \"{base}artifacts/app.dmg\"\n  name \"Application\"\n  desc \"Controlled application\"\n  homepage \"https://example.test/\"\n  app \"App.app\"\nend\n").into_bytes());
     }
     Ok(())

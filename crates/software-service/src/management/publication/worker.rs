@@ -28,7 +28,7 @@ impl PublicationDirectory {
                     let mut completed=true;
                     for work in page.work {
                         if cancel.is_cancelled(){return Ok(());}
-                        let now=self.clock.unix_seconds().map_err(rss_runtime::ShutdownError::new)?;
+                        let now=self.clock.unix_seconds().ok_or_else(||rss_runtime::ShutdownError::new(crate::management::Error::Unavailable(crate::management::Failure::Clock)))?;
                         let at=Timepoint::try_from(now).map_err(rss_runtime::ShutdownError::new)?;
                         let outcome=tokio::select! {
                             ()=cancel.cancelled()=>return Ok(()),
@@ -49,10 +49,10 @@ impl PublicationDirectory {
 fn failure_event(
     source: &str,
     tenant: rss_request_context::TenantId,
-    error: &rss_mdm_software_service::publication::Error,
-    work: Option<&rss_mdm_software_service::publication::PublicationWork>,
+    error: &crate::publication::Error,
+    work: Option<&crate::publication::PublicationWork>,
 ) -> serde_json::Value {
-    use rss_mdm_software_service::publication::Error as E;
+    use crate::publication::Error as E;
     let mut error = error;
     let mut stage = None;
     while let E::Diagnostic {
@@ -103,5 +103,5 @@ fn failure_event(
     value
 }
 #[cfg(test)]
-#[path = "../../tests/software_publication_worker.rs"]
+#[path = "../../../tests/management/publication_worker.rs"]
 mod tests;

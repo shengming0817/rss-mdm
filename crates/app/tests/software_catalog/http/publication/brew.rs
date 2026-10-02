@@ -42,12 +42,12 @@ async fn immutable_native_tap_is_consumed_by_git_and_homebrew_and_withdrawn() ->
         .await?;
     let snapshot = frozen.snapshot.unwrap();
     let directory = Arc::new(
-        rss_mdm_flow_service::software_publication::service::PublicationDirectory {
+        rss_mdm_software_service::management::publication::service::PublicationDirectory {
             services: std::collections::BTreeMap::from([(peer.logical.clone(), service.clone())]),
             tenant: p::pg::tenant(),
             runtime: runtime.clone(),
             audit_store: p::pg::audit_store().await,
-            clock: Arc::new(rss_mdm_flow_service::clock::SystemClock),
+            clock: Arc::new(crate::clock::FlowClock(Arc::new(crate::clock::SystemClock))),
         },
     );
     let router = rss_mdm_management_http::software_native::routes().with_state(Arc::new(

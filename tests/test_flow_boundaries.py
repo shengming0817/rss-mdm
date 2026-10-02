@@ -51,7 +51,7 @@ class FlowOwnership(unittest.TestCase):
         for owner in ("planning", "assets", "resource_catalog"):
             self.assertRegex( ((INVENTORY if owner == "assets" else FLOW) / owner / "receipts.rs").read_text(), r'format!\(\s*"' + owner + r':\{\}:\{id\}"')
 
-        self.assertRegex((ROOT / "crates/flow-service/src/software_publication/receipts.rs").read_text(), r'format!\(\s*"software_publication:\{\}:\{id\}"')
+        self.assertRegex((ROOT / "crates/software-service/src/management/publication/receipts.rs").read_text(), r'format!\(\s*"software_publication:\{\}:\{id\}"')
 
     def test_task_and_planning_pages_cannot_project_inventory_errors(self):
         for name in ("execution/actions/storage.rs", "execution/actions/history.rs", "planning/pages.rs", "planning/pages/scope.rs"):

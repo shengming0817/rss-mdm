@@ -6,6 +6,11 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+rss-audit-postgres.workspace = true
+rss-ledger-postgres.workspace = true
+rss-mdm-authorization-service.workspace = true
+rss-runtime.workspace = true
+rss-mdm-agent-wire.workspace = true
 rss-mdm-resource.workspace = true
 rss-mdm-resource-postgres.workspace = true
 rss-mdm-software-release.workspace = true
@@ -27,7 +32,7 @@ thiserror.workspace = true
 url.workspace = true
 futures.workspace = true
 reqwest = { workspace = true, features = ["json", "stream"] }
-tokio = { workspace = true, features = ["time", "io-util"] }
+tokio = { workspace = true, features = ["time", "io-util", "macros"] }
 
 [lints]
 workspace = true

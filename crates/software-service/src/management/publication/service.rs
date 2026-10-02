@@ -2,16 +2,16 @@ use super::{
     model::{Change, Ring},
     wire,
 };
+use crate::publication as service;
 use crate::{
-    Error, Failure,
-    authorization::{Permission, context::AuthorizedPrincipal},
-    operation::Operation,
-    transaction::*,
+    catalog::Operation,
+    management::transaction::*,
+    management::{Error, Failure},
 };
 use rss_contract::Timepoint;
 use rss_mdm_audit_integration::{ManagementResult as Effect, RequestAudit};
+use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use rss_mdm_software_release as rel;
-use rss_mdm_software_service::publication as service;
 use rss_request_context::{Deadline, TenantId};
 use rss_transactional_messaging_postgres::PgRuntime;
 use serde_json::{Value, json};
@@ -33,7 +33,7 @@ fn failure(e: service::Error) -> Error {
         | service::Error::ArtifactBudget
         | service::Error::ArtifactDigest => Error::Malformed,
         service::Error::CandidateNotFound => Error::Publication(
-            crate::software_publication::error::PublicationError::MissingCandidate,
+            crate::management::publication::error::PublicationError::MissingCandidate,
         ),
         service::Error::Identity => Error::Forbidden,
         service::Error::Conflict | service::Error::Blocked => Error::Conflict,
@@ -44,7 +44,7 @@ fn failure(e: service::Error) -> Error {
 }
 pub async fn read(
     directory: &PublicationDirectory,
-    _authorization: &crate::authorization::Store,
+    _authorization: &rss_mdm_authorization_service::Store,
     proof: &AuthorizedPrincipal,
     audit: &RequestAudit,
     source: String,
@@ -54,7 +54,7 @@ pub async fn read(
     audit.target(&id);
     proof.manage(Permission::ReleaseRead)?;
     let service = directory.services.get(&source).ok_or(Error::Publication(
-        crate::software_publication::error::PublicationError::MissingSource,
+        crate::management::publication::error::PublicationError::MissingSource,
     ))?;
     let id = rel::CandidateId::new(directory.tenant, id).map_err(|_| Error::Malformed)?;
     let candidate = service
@@ -62,7 +62,7 @@ pub async fn read(
         .await
         .map_err(failure)?
         .ok_or(Error::Publication(
-            crate::software_publication::error::PublicationError::MissingCandidate,
+            crate::management::publication::error::PublicationError::MissingCandidate,
         ))?;
     let mut view = summary(&candidate);
     view.document = Some(service.document(&id, cutoff()).await.map_err(failure)?);
@@ -70,7 +70,7 @@ pub async fn read(
 }
 pub async fn write(
     directory: &PublicationDirectory,
-    authorization: &crate::authorization::Store,
+    authorization: &rss_mdm_authorization_service::Store,
     proof: &AuthorizedPrincipal,
     audit: &RequestAudit,
     source: String,
@@ -90,7 +90,7 @@ pub async fn write(
     audit.operation(request.operation_id, "management_write");
     proof.manage(permission)?;
     let service = directory.services.get(&source).ok_or(Error::Publication(
-        crate::software_publication::error::PublicationError::MissingSource,
+        crate::management::publication::error::PublicationError::MissingSource,
     ))?;
     let tenant = directory.tenant;
     let candidate_id = rel::CandidateId::new(tenant, &id).map_err(|_| Error::Malformed)?;
@@ -101,7 +101,7 @@ pub async fn write(
     {
         proof
             .authorization()?
-            .publisher(&crate::authorization::User {
+            .publisher(&rss_mdm_authorization_service::User {
                 instance_id: proof.instance_id().into(),
                 tenant_id: proof.tenant_id().into(),
                 principal_id: publisher_subject.clone(),
@@ -127,7 +127,7 @@ pub async fn write(
         })
         .await;
     intent_audit.finalize(intent.as_ref().err().and_then(|e| {
-        matches!(e, Error::Unavailable(Failure::Audit))
+        e.is_audit_transaction_failure()
             .then_some(rss_mdm_audit_integration::FailureReason::Transaction)
     }));
     let intent = intent?;
@@ -141,13 +141,14 @@ pub async fn write(
         expected_revision: request.expected_revision,
         as_of: at,
     };
-    let current = crate::authorization::store::authorization_snapshot(authorization, proof).await?;
+    let current =
+        rss_mdm_authorization_service::store::authorization_snapshot(authorization, proof).await?;
     current.require(proof, permission, None)?;
     if let Change::Approve {
         publisher_subject, ..
     } = &request.input
     {
-        current.publisher(&crate::authorization::User {
+        current.publisher(&rss_mdm_authorization_service::User {
             instance_id: proof.instance_id().into(),
             tenant_id: proof.tenant_id().into(),
             principal_id: publisher_subject.clone(),
@@ -177,7 +178,7 @@ pub async fn write(
                 .await
                 .map_err(failure)?
                 .ok_or(Error::Publication(
-                    crate::software_publication::error::PublicationError::MissingCandidate,
+                    crate::management::publication::error::PublicationError::MissingCandidate,
                 ))?;
             Ok(summary(&candidate))
         }
@@ -280,7 +281,7 @@ async fn perform(
                 .await
                 .map_err(failure)?
                 .ok_or(Error::Publication(
-                    crate::software_publication::error::PublicationError::MissingCandidate,
+                    crate::management::publication::error::PublicationError::MissingCandidate,
                 ))?;
             let snap = c.snapshot();
             let rel::RingState::Publication(p) = snap.ring_state(ring.core()) else {
@@ -420,7 +421,7 @@ async fn withdraw(
         .await
         .map_err(failure)?
         .ok_or(Error::Publication(
-            crate::software_publication::error::PublicationError::MissingCandidate,
+            crate::management::publication::error::PublicationError::MissingCandidate,
         ))?;
     let result = service
         .withdraw(id, ring.core(), request, cutoff)
@@ -439,7 +440,7 @@ pub struct PublicationDirectory {
     pub tenant: TenantId,
     pub runtime: Arc<PgRuntime>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-    pub clock: Arc<dyn crate::clock::Clock>,
+    pub clock: Arc<dyn crate::management::Clock>,
 }
 impl PublicationDirectory {
     async fn authorize_intent(
@@ -451,15 +452,15 @@ impl PublicationDirectory {
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
     ) -> std::result::Result<Value, Error> {
         authorize()?;
-        crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,&(self,source,id,request,audit,authorize),|ctx,tx|Box::pin(async move{
-   let (s,source,id,request,audit,authorize)=*ctx;crate::transaction::lock(tx).await?;authorize()?;
+        crate::management::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,&(self,source,id,request,audit,authorize),|ctx,tx|Box::pin(async move{
+   let (s,source,id,request,audit,authorize)=*ctx;crate::management::transaction::lock(tx).await?;authorize()?;
    if request.operation_id.is_nil(){return Err(Error::Malformed.into());}
    use sha2::Digest;
    let hash=sha2::Sha256::digest(checked_input(serde_json::to_vec(&("publication",audit.tenant(),audit.snapshot().actor,audit.snapshot().instance,source,id,request)))?).to_vec();
-   if let Some(old)=super::receipts::replay(tx,audit,request.operation_id,&hash).await?{super::receipts::audit(tx,&super::host::Audit(s.audit_store.clone()),audit,Some((request.operation_id,&hash)),true).await?;authorize()?;return Ok(old);}
-   let value=serde_json::json!({"as_of":s.clock.unix_seconds().map_err(|_|Error::Unavailable(Failure::Clock))?});
+   if let Some(old)=super::receipts::replay(tx,audit,request.operation_id,&hash).await?{super::receipts::audit(tx,&*s.audit_store,audit,Some((request.operation_id,&hash)),true).await?;authorize()?;return Ok(old);}
+   let value=serde_json::json!({"as_of":s.clock.unix_seconds().ok_or(Error::Unavailable(Failure::Clock))?});
    super::receipts::receipt(tx,audit,request.operation_id,&hash,&value).await?;
-   super::receipts::audit(tx,&super::host::Audit(s.audit_store.clone()),audit,Some((request.operation_id,&hash)),false).await?;authorize()?;Ok(value)
-  }),crate::transaction::TransactionOwner::Publication).await
+   super::receipts::audit(tx,&*s.audit_store,audit,Some((request.operation_id,&hash)),false).await?;authorize()?;Ok(value)
+  }),crate::management::transaction::TransactionOwner::Publication).await
     }
 }
