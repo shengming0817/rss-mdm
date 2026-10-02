@@ -5,9 +5,8 @@ use axum::{
     Router,
     http::{Method, StatusCode},
 };
-use rss_device_command::{self as dc, Store};
 use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_execution_service::{deadline, messaging_domain, storage};
+use rss_mdm_execution_service::{deadline, messaging_domain};
 use rss_transactional_messaging_postgres::PgOutboxStore;
 use serde_json::{Value, json};
 pub(crate) use std::{sync::Arc, time::Duration};
@@ -194,7 +193,7 @@ async fn relay_crash_child() -> anyhow::Result<()> {
         service.service.inject_fault(
             rss_transactional_messaging_postgres::PgTransactionFault::CommitAcknowledgedPending,
         );
-        service.accept_dispatch(id, digest).await?;
+        service.service.accept_dispatch(id, digest).await?;
     }
     anyhow::bail!("parent must kill before completion")
 }

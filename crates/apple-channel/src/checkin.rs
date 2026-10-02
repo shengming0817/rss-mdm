@@ -2,6 +2,7 @@ use super::{
     enrollment,
     protocol::{self, CheckIn},
 };
+use crate::Failure;
 use crate::HttpState;
 use crate::{Error, database::db};
 use axum::{Extension, body::Bytes, extract::State, http::StatusCode};

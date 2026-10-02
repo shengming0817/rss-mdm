@@ -8,6 +8,7 @@ pub enum ConfigIssue {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Failure {
+    InventoryRuntime,
     ContentCleanup,
     ContentDeadline,
     ContentMetadata,

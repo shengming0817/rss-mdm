@@ -261,7 +261,7 @@ async fn result_cursors_survive_instances_restart_and_group_deletion() {
         group,
         result,
         projection: rss_mdm_inventory_service::groups::pages::GroupPageKind::Members,
-        query: pages::PageQuery { limit: 1, cursor },
+        query: rss_mdm_inventory_service::groups::pages::PageQuery { limit: 1, cursor },
     };
     let initial = execute(&first, &page(None)).await.unwrap();
     assert_eq!(initial["page"]["items"], json!([devices[0]]));

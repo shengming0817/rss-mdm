@@ -25,6 +25,7 @@ pub(crate) struct Assembly {
     pub(crate) queries: Arc<rss_mdm_execution_service::queries::Queries>,
     pub(crate) inputs: Arc<rss_mdm_execution_service::Inputs>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
+    #[cfg(test)]
     pub(crate) execution_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     pub(crate) flow: Arc<crate::flow::Flow>,
     pub(crate) identity: Arc<Identity>,
@@ -174,7 +175,7 @@ pub(crate) fn from_compiled(
         queries,
         protection,
         content: content_writer,
-        runtime: execution_runtime,
+        runtime: _execution_runtime,
     } = execution;
     let devices = Arc::new(crate::device::DeviceService::new(
         access.registration(),
@@ -222,7 +223,8 @@ pub(crate) fn from_compiled(
         inputs,
         queries,
         protection,
-        execution_runtime,
+        #[cfg(test)]
+        execution_runtime: _execution_runtime,
         audit_store,
         apple,
         execution,
@@ -401,10 +403,8 @@ pub(crate) fn from_state(
                 },
             }),
             content: Arc::new(rss_mdm_content_service::service::Access {
-                catalog: Arc::new(rss_mdm_software_service::catalog::Catalog::new(
-                    state.flow.runtime.clone(),
+                catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(
                     state.identity.tenant,
-                    state.audit_store.clone(),
                 )),
                 runtime: state.flow.runtime.clone(),
                 audit_store: state.audit_store.clone(),

@@ -58,7 +58,11 @@ pub async fn read_source<C: ManagementContentPort>(
             Box::pin(async move {
                 let (app, proof, id, revision, audit) = *ctx;
                 authorize(tx, proof, Permission::SoftwareRead).await?;
-                let value = app.catalog.source_read_in(tx, id, revision).await?;
+                let value = app
+                    .catalog
+                    .reader()
+                    .source_read_in(tx, id, revision)
+                    .await?;
                 app.audit
                     .append_request_in(tx, audit, 200, "success")
                     .await?;
@@ -125,7 +129,11 @@ pub async fn read_version<C: ManagementContentPort>(
             Box::pin(async move {
                 let (app, proof, id, version, audit) = *ctx;
                 authorize(tx, proof, Permission::SoftwareRead).await?;
-                let value = app.catalog.version_read_in(tx, id, version).await?;
+                let value = app
+                    .catalog
+                    .reader()
+                    .version_read_in(tx, id, version)
+                    .await?;
                 app.audit
                     .append_request_in(tx, audit, 200, "success")
                     .await?;
@@ -164,12 +172,15 @@ pub async fn write_version<C: ManagementContentPort>(
                     authorize(tx, proof, permission).await?;
                     if app
                         .catalog
+                        .reader()
                         .has_version_receipt_in(tx, audit, id, version, op)
                         .await?
                     {
                         Ok(None)
                     } else {
-                        Ok(Some(app.catalog.version_in(tx, id, version).await?))
+                        Ok(Some(
+                            app.catalog.reader().version_in(tx, id, version).await?,
+                        ))
                     }
                 })
             },
@@ -236,6 +247,7 @@ pub async fn download<C: ManagementContentPort>(
                 authorize(tx, proof, Permission::SoftwareRead).await?;
                 Ok(app
                     .catalog
+                    .reader()
                     .resolve_admitted_in(
                         tx,
                         id,
@@ -280,7 +292,7 @@ pub async fn download<C: ManagementContentPort>(
             Box::pin(async move {
                 let (app, proof, frozen) = *ctx;
                 authorize(tx, proof, Permission::SoftwareRead).await?;
-                app.catalog.recheck_admitted_in(tx, frozen).await?;
+                app.catalog.reader().recheck_admitted_in(tx, frozen).await?;
                 Ok(())
             })
         },

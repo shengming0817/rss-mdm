@@ -1,6 +1,9 @@
 //! Native execution reads the same frozen publication and approval authorities as hosted clients.
+use super::read::current_published;
+use super::storage::Subject;
 use super::{self as publication, spec, storage as db, *};
 use rss_mdm_resource as r;
+use rss_mdm_resource as resource;
 use rss_mdm_software_release as rel;
 use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::PgTransaction;
@@ -144,6 +147,53 @@ impl ExportReader {
             _ => return Ok(Err(Error::Unsupported)),
         };
         let base = &self.sources.artifacts_base;
+        Ok(Ok(Some(NativeExport {
+            source: self.sources.logical.clone(),
+            tenant: self.tenant(),
+            ring,
+            publication: id,
+            source_digest: self.sources.digest,
+            resource: subject.resource,
+            resource_version: subject.version,
+            resource_digest: subject.resource_digest,
+            definition_digest: prepared.content.digest().bytes(),
+            document_sha256: Sha256::digest(document).into(),
+            dependencies: dependencies
+                .iter()
+                .map(|v| {
+                    (
+                        v.resource().as_str().to_owned(),
+                        v.label().as_str().to_owned(),
+                        v.digest().bytes(),
+                    )
+                })
+                .collect(),
+            artifacts: input!(derive::exported_materials(&version, &dependencies, base)),
+            protocol,
+        })))
+    }
+    async fn native_dependencies_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        root: &r::Version,
+    ) -> InTransaction<Vec<r::Version>> {
+        match self.catalog.dependency_versions_in(tx, root).await {
+            Ok(versions) => Ok(Ok(versions)),
+            Err(crate::catalog::Error::Storage(e)) => Err(e),
+            Err(crate::catalog::Error::Sql(e)) => Err(e.into()),
+            Err(_) => Ok(Err(Error::Content)),
+        }
+    }
+}
+
+impl ExportReader {
+    pub(super) async fn published_in(
+        &self,
+        tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+        ring: rel::Ring,
+        publication: [u8; 32],
+    ) -> InTransaction<(r::Version, db::Subject, db::Target)> {
+        input!(self.catalog.lock_in(tx).await.map_err(|_| Error::Content));
         let tenant = self.tenant().to_string();
         let prefix = format!("p:{}:%", hex(&publication));
         let keys:Vec<String>=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT id FROM mdm_software_composition.targets WHERE tenant_id=$1::uuid AND id LIKE $2 ORDER BY length(id) DESC,id COLLATE \"C\" DESC LIMIT 2").bind(tenant).bind(prefix).fetch_all(c).await})).await?;

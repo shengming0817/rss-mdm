@@ -150,33 +150,40 @@ async fn gc_reference_race(
     let ready = checked.clone();
     let release = resume.clone();
     let gc = tokio::spawn(async move {
-        rss_mdm_flow_service::transaction::inspect(
-            &gc_runtime,
-            tenant,
-            (Some(candidate), ready, release),
-            |ctx, tx| {
-                Box::pin(async move {
-                    let (candidate, ready, release) = ctx;
-                    let digest = r::Digest::from_bytes(candidate.as_ref().unwrap().digest);
-                    let referenced = rp::artifact_referenced_in(tx, digest).await?;
-                    assert!(!referenced);
-                    ready.notify_one();
-                    release.notified().await;
-                    assert!(
-                        rss_mdm_content_service::service::reclaim_in(
-                            tx,
-                            candidate.take().unwrap(),
-                            || Ok(())
-                        )
-                        .await
-                        .map_err(rss_mdm_flow_service::Error::from)?
-                    );
-                    Ok(())
-                })
-            },
-            rss_mdm_flow_service::transaction::TransactionOwner::ResourceCatalog,
-        )
-        .await
+        gc_runtime
+            .local_tx_with_context(
+                tenant,
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                    std::time::Duration::from_secs(6),
+                ),
+                (Some(candidate), ready, release),
+                |ctx, tx| {
+                    Box::pin(async move {
+                        let (candidate, ready, release) = ctx;
+                        let digest = r::Digest::from_bytes(candidate.as_ref().unwrap().digest);
+                        let referenced = rp::artifact_referenced_in(tx, digest).await?;
+                        assert!(!referenced);
+                        ready.notify_one();
+                        release.notified().await;
+                        assert!(
+                            rss_mdm_content_service::service::reclaim_in(
+                                tx,
+                                candidate.take().unwrap(),
+                                || Ok(())
+                            )
+                            .await
+                            .map_err(|_| {
+                                rss_transactional_messaging_postgres::PgError::from(
+                                    sqlx::Error::Protocol("fixture content reclaim".into()),
+                                )
+                            })?
+                        );
+                        Ok(())
+                    })
+                },
+            )
+            .await
+            .fold(Ok, Err, Err, Err, Err, Err)
     });
     tokio::time::timeout(Duration::from_secs(5), checked.notified()).await?;
     let mut writer = tokio::spawn(async move {

@@ -12,7 +12,6 @@ rss-mdm-native-protection.workspace = true
 rss-mdm-resource.workspace = true
 rss-mdm-agent-wire.workspace=true
 thiserror.workspace=true
-rss-mdm-flow-service.workspace=true
 rss-mdm-registration-service.workspace=true
 rss-mdm-authorization-service.workspace=true
 rss-mdm-inventory-service.workspace=true

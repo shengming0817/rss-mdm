@@ -9,7 +9,6 @@ autotests=false
 rss-mdm-software-service.workspace = true
 rss-mdm-execution-service.workspace = true
 rss-contract.workspace=true
-rss-mdm-flow-service.workspace=true
 rss-mdm-registration-service.workspace=true
 rss-mdm-authorization-service.workspace=true
 rss-mdm-inventory-service.workspace=true

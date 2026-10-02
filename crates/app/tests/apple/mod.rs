@@ -256,7 +256,10 @@ impl Fixture {
                 .critical(),
             );
             launch.stage_deferred_task_with_token(
-                execution.registration(signals.execution()).critical(),
+                execution
+                    .service
+                    .registration(signals.execution())
+                    .critical(),
             );
             launch.stage_deferred_task_with_token(
                 runtime

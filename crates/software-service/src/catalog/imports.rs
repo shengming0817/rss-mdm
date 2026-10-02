@@ -19,7 +19,7 @@ impl Catalog {
         audit: &RequestAudit,
         op: &Operation<ImportRequest>,
     ) -> Result<bool> {
-        self.tenant(tx)?;
+        self.reader().tenant(tx)?;
         Ok(
             storage::replay(tx, op.operation_id, &self.import_hash(audit, op)?)
                 .await?
@@ -31,7 +31,7 @@ impl Catalog {
         tx: &mut PgTransaction<'_>,
         source: &r::SoftwareSource,
     ) -> Result<SourceDefinition> {
-        self.source_admitted_in(tx, source).await?;
+        self.reader().source_admitted_in(tx, source).await?;
         storage::source(tx, &source.id, &source.revision)
             .await?
             .map(|(s, _)| s)
@@ -47,7 +47,7 @@ impl Catalog {
         op: &Operation<ImportRequest>,
         prepared: Option<&PreparedImport>,
     ) -> Result<Value> {
-        self.tenant(tx)?;
+        self.reader().tenant(tx)?;
         let hash = self.import_hash(audit, op)?;
         let key = format!(
             "resource/{}/{}",
@@ -90,9 +90,12 @@ impl Catalog {
         if checked.version.digest() != prepared.version.digest() {
             return Err(Error::Input);
         }
-        self.dependencies(tx, &checked.version).await?;
+        self.reader().dependencies(tx, &checked.version).await?;
         for dep in &op.input.dependencies {
-            let child = self.version_in(tx, &dep.resource, &dep.version).await?;
+            let child = self
+                .reader()
+                .version_in(tx, &dep.resource, &dep.version)
+                .await?;
             let selected = child
                 .variants()
                 .iter()

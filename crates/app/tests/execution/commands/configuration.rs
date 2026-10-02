@@ -87,8 +87,7 @@ async fn resource(client: &mut Client, nodes: &[&str]) -> anyhow::Result<String>
     );
     let content_root = client
         .app
-        .execution
-        .content
+        .content_writer
         .as_ref()
         .unwrap()
         .config
@@ -614,8 +613,7 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
         std::collections::BTreeMap::new(),
         rss_device_command_postgres::CommandClock::Postgres,
     ))
-    .await?
-    .service;
+    .await?;
     let timer = recovery::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(2), &cancel);
@@ -630,8 +628,9 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
         max_attempts: 3,
     })?;
     restarted
+        .service
         .run_recovery(
-            &recovery_scope(restarted.tenant),
+            &recovery_scope(client.app.identity.tenant),
             recovery_policy,
             &control,
             &tokio::sync::Notify::new(),

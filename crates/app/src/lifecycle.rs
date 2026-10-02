@@ -344,7 +344,7 @@ pub async fn serve(
                         launch.stage_task_with_token(
                             rss_mdm_apple_channel::push::registration(
                                 apple.channel.clone(),
-                                execution.clone(),
+                                execution.service.clone(),
                                 access.apple_store(),
                                 audit_store.clone(),
                                 tenant.clone(),
@@ -357,7 +357,10 @@ pub async fn serve(
                     launch.stage_deferred_task_with_token(identity_audit.registration().critical());
                     launch.stage_deferred_task_with_token(timeline.registration().critical());
                     launch.stage_deferred_task_with_token(
-                        execution.registration(signals.execution()).critical(),
+                        execution
+                            .service
+                            .registration(signals.execution())
+                            .critical(),
                     );
                     launch.stage_deferred_task_with_token(
                         automation.registration(signals.flow()).critical(),

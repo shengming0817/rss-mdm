@@ -1,7 +1,6 @@
 use crate::execution::test_support::*;
 use anyhow::ensure;
 use axum::http::{Method, StatusCode};
-use rss_device_command::{self as dc, Store};
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_execution_service::*;
 use rss_transactional_messaging_postgres::PgOutboxStore;
@@ -141,6 +140,16 @@ impl Client {
         use rss_transactional_messaging::outbox::OutboxRelayStore;
         use rss_transactional_messaging_postgres::PgTransactionFault;
         let service = &self.app.execution;
+        let outbox = PgOutboxStore::<()>::new(
+            self.app.execution_runtime.clone(),
+            messaging_domain(),
+            rss_transactional_messaging::policy::DeliveryBudget::new(
+                Duration::from_secs(60),
+                Duration::from_secs(6),
+                Duration::from_secs(6),
+                Duration::from_secs(6),
+            )?,
+        )?;
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
@@ -152,8 +161,7 @@ impl Client {
         .into_iter()
         .enumerate()
         {
-            let claims = service
-                .outbox
+            let claims = outbox
                 .claim_partition_heads(std::num::NonZeroUsize::MIN, deadline())
                 .await?;
             ensure!(claims.len() == 1);

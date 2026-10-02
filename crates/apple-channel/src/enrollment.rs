@@ -1,5 +1,6 @@
 //! A consumed challenge is never re-authorized, including identical CA transport retries.
 use super::{Apple, certificate, profile, webhook};
+use crate::Failure;
 use crate::HttpState;
 use crate::{
     Error,

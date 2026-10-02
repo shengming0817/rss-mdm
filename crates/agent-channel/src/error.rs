@@ -36,17 +36,7 @@ pub enum Missing {
     SoftwareSource,
     SoftwareCandidate,
 }
-impl Missing {
-    fn code(self) -> &'static str {
-        match self {
-            Self::Resource => "resource_not_found",
-            Self::Operation => "operation_not_found",
-            Self::Task => "task_not_found",
-            Self::SoftwareSource => "software_source_not_found",
-            Self::SoftwareCandidate => "software_candidate_not_found",
-        }
-    }
-}
+
 impl From<rss_mdm_authorization_service::error::AuthorizationError> for Error {
     fn from(e: rss_mdm_authorization_service::error::AuthorizationError) -> Self {
         rss_mdm_authorization_service::Error::from(e).into()
@@ -208,6 +198,33 @@ impl From<rss_mdm_content_service::Error> for Error {
             Content::Metadata => Self::Unavailable(Failure::ContentMetadata),
             Content::Deadline => Self::Unavailable(Failure::ContentDeadline),
             Content::Cleanup => Self::Unavailable(Failure::ContentCleanup),
+        }
+    }
+}
+
+impl Error {
+    pub(crate) fn is_not_found(&self) -> bool {
+        matches!(self, Self::NotFound | Self::Missing(_))
+    }
+}
+impl From<rss_mdm_execution_service::channels::Rejection> for Error {
+    fn from(e: rss_mdm_execution_service::channels::Rejection) -> Self {
+        use rss_mdm_execution_service::channels::Rejection as R;
+        match e {
+            R::CommitUnknown => Self::CommitUnknown,
+            R::RollbackFailed => Self::RollbackFailed,
+            R::Malformed => Self::Malformed,
+            R::Unauthorized => Self::Unauthorized,
+            R::Forbidden => Self::Forbidden,
+            R::Conflict => Self::Conflict,
+            R::Storage => Self::Unavailable(Failure::Database),
+            R::Protocol => Self::Unavailable(Failure::Protocol),
+            R::Deadline => Self::Unavailable(Failure::RequestDeadline),
+            R::Audit => Self::Unavailable(Failure::Audit),
+            R::AuditIntegrity => Self::Unavailable(Failure::AuditIntegrity),
+            R::AuditContract => Self::Unavailable(Failure::AuditContract),
+            R::AuditAdmission => Self::Unavailable(Failure::AuditAdmission),
+            R::AuditIsolation => Self::Unavailable(Failure::AuditIsolation),
         }
     }
 }

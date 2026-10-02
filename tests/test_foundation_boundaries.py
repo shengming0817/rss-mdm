@@ -56,7 +56,7 @@ class FoundationBoundaries(unittest.TestCase):
     def test_only_composition_and_fixtures_can_use_assembly(self):
         for path in SOURCE.rglob('*.rs'):
             relative = path.relative_to(SOURCE)
-            if str(relative) == 'api.rs' or is_test_path(relative):
+            if str(relative) in {'api.rs', 'execution_assembly.rs'} or is_test_path(relative):
                 continue
             self.assertFalse(re.search(r'\bAssembly\b', path.read_text()), str(relative))
 

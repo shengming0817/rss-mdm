@@ -188,7 +188,6 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
     ensure!(commands.shutdown().join().await?.is_clean());
     ensure!(owner.shutdown().join().await?.is_clean());
     host.app
-        .execution
         .audit_store
         .inject_next_fault(rss_audit_postgres::PgFault::BeforeCommitPending);
     let unknown = peer.mutual.post(&url).json(&input).send().await?;
@@ -198,7 +197,6 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
     );
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id='{}' AND channel='agent'",case_tenant()))?.trim()=="0");
     host.app
-        .execution
         .audit_store
         .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
     let unknown = peer.mutual.post(&url).json(&input).send().await?;

@@ -32,15 +32,7 @@ pub fn rejection(error: Fault, failure: &Mutex<Option<Error>>) -> PgError {
     #[cfg(any(test, feature = "integration"))]
     eprintln!("transaction rejected: {error:?}");
     let (reason, db) = match error {
-        Fault::Request(e) => {
-            let e = match e {
-                Error::Unavailable(Failure::CommandStorage) => {
-                    Error::Unavailable(Failure::CommandStorage)
-                }
-                other => other,
-            };
-            (e, sqlx::Error::Protocol("request rejected".into()).into())
-        }
+        Fault::Request(e) => (e, sqlx::Error::Protocol("request rejected".into()).into()),
         Fault::Storage(e) => {
             use rss_transactional_messaging::error::MessagingErrorKind;
             let reason = match e.kind() {

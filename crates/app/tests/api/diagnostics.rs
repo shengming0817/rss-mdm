@@ -236,7 +236,6 @@ impl DeviceProtocol {
         }
     }
     fn category(self, response: &axum::response::Response) -> &'static str {
-        use rss_mdm_management_http::Error as E;
         match self {
             DeviceProtocol::Agent => {
                 match response.extensions().get::<rss_mdm_agent_channel::Error>() {

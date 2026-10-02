@@ -440,7 +440,7 @@ impl ExecutionService {
                 Box::pin(async move {
                     let (service, id) = *ctx;
                     let operation = storage::load(tx, &service.protection, id).await?;
-                    service
+                    let _page = service
                         .store
                         .recover(
                             tx,

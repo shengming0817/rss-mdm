@@ -26,35 +26,6 @@ pub fn wrap(router: Router, envelope: Envelope) -> Router {
 }
 fn classify(error: Option<&Error>) -> Option<ResponseFailure> {
     match error {
-        Some(Error::Service(e)) => {
-            match rss_mdm_execution_service::channels::Rejection::from(e.clone()) {
-                rss_mdm_execution_service::channels::Rejection::CommitUnknown => {
-                    Some(ResponseFailure::CommitUnknown)
-                }
-                rss_mdm_execution_service::channels::Rejection::RollbackFailed => {
-                    Some(ResponseFailure::RollbackFailed)
-                }
-                rss_mdm_execution_service::channels::Rejection::Unauthorized
-                | rss_mdm_execution_service::channels::Rejection::Forbidden => {
-                    Some(ResponseFailure::Denied)
-                }
-                rss_mdm_execution_service::channels::Rejection::Deadline => {
-                    Some(ResponseFailure::Deadline)
-                }
-                rss_mdm_execution_service::channels::Rejection::AuditIntegrity => {
-                    Some(ResponseFailure::AuditIntegrity)
-                }
-                rss_mdm_execution_service::channels::Rejection::AuditContract
-                | rss_mdm_execution_service::channels::Rejection::AuditIsolation
-                | rss_mdm_execution_service::channels::Rejection::AuditAdmission => {
-                    Some(ResponseFailure::AuditContract)
-                }
-                rss_mdm_execution_service::channels::Rejection::Audit => {
-                    Some(ResponseFailure::AuditUnavailable)
-                }
-                _ => None,
-            }
-        }
         Some(Error::CommitUnknown) => Some(ResponseFailure::CommitUnknown),
         Some(Error::RollbackFailed) => Some(ResponseFailure::RollbackFailed),
         Some(Error::Unauthorized | Error::Forbidden) => Some(ResponseFailure::Denied),

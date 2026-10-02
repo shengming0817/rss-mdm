@@ -90,7 +90,7 @@ impl From<rss_mdm_registration_service::Error> for Error {
 
 impl From<rss_mdm_inventory_service::Error> for Error {
     fn from(e: rss_mdm_inventory_service::Error) -> Self {
-        use rss_mdm_inventory_service::{Error as I, Failure as F};
+        use rss_mdm_inventory_service::Error as I;
         match e {
             I::Group(m) => {
                 Self::Planning(crate::planning::error::PlanningError::Missing(match m {

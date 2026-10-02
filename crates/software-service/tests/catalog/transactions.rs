@@ -84,6 +84,7 @@ impl Fixture {
             Box::pin(async move {
                 context
                     .0
+                    .reader()
                     .source_admitted_in(tx, &context.1)
                     .await
                     .map(|_| ())
@@ -128,6 +129,7 @@ impl Fixture {
             Box::pin(async move {
                 context
                     .0
+                    .reader()
                     .resolve_admitted_in(
                         tx,
                         context.1.resource().as_str(),

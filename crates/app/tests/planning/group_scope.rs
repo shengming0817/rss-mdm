@@ -107,7 +107,7 @@ async fn durable_asset_group_scope_pipeline() {
         group,
         result: task,
         projection: rss_mdm_inventory_service::groups::pages::GroupPageKind::Members,
-        query: pages::PageQuery {
+        query: rss_mdm_inventory_service::groups::pages::PageQuery {
             limit: 1,
             cursor: None,
         },
@@ -122,7 +122,7 @@ async fn durable_asset_group_scope_pipeline() {
             group,
             result: task,
             projection: rss_mdm_inventory_service::groups::pages::GroupPageKind::Members,
-            query: pages::PageQuery {
+            query: rss_mdm_inventory_service::groups::pages::PageQuery {
                 limit: 1,
                 cursor: Some(page["nextCursor"].as_str().unwrap().into()),
             },

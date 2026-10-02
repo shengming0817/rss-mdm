@@ -369,7 +369,7 @@ impl PublicationService {
                             if matches!(table, Table::Publish) {
                                 let subject =
                                     db::subject(tx, &t.candidate).await?.ok_or_else(db::fault)?;
-                                input!(s.resource_usable(tx, &subject).await?);
+                                input!(s.exports().resource_usable(tx, &subject).await?);
                             }
                             let id = db::required(
                                 "driver::start_call",
@@ -694,7 +694,7 @@ impl PublicationService {
                                     let subject = db::subject(tx, &t.candidate)
                                         .await?
                                         .ok_or_else(db::fault)?;
-                                    input!(s.resource_usable(tx, &subject).await?);
+                                    input!(s.exports().resource_usable(tx, &subject).await?);
                                 }
                                 let slot = db::slot(tx, &t.binding, &t.slot).await?;
                                 if slot.operation.as_deref() != Some(&t.key()) {

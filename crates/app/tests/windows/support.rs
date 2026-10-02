@@ -594,7 +594,6 @@ async fn management(
     let flow = config
         .flow
         .open(
-            config.native_protector()?,
             access
                 .audit_store(&crate::config::AuditConfig::Plain)
                 .await?,

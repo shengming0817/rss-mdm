@@ -4,7 +4,6 @@ use super::{
     service::PublicationService,
     storage as db, *,
 };
-use rss_mdm_resource as r;
 use rss_mdm_software_release as rel;
 use rss_request_context::Deadline;
 use sqlx::Row;
@@ -219,7 +218,11 @@ impl PublicationService {
     }
 }
 
-fn current_published(candidate: &rel::Candidate, ring: rel::Ring, target: &db::Target) -> bool {
+pub(super) fn current_published(
+    candidate: &rel::Candidate,
+    ring: rel::Ring,
+    target: &db::Target,
+) -> bool {
     let rel::RingState::Publication(current) = candidate.snapshot().ring_state(ring) else {
         return false;
     };

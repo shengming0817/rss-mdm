@@ -162,7 +162,10 @@ mod storage {
             sql(&format!("REVOKE SELECT ON {table} FROM mdm_flow_runtime"));
             let outcome = execute_asset(&m, &command).await;
             sql(&format!("GRANT SELECT ON {table} TO mdm_flow_runtime"));
-            let error = outcome.unwrap_err();
+            let Error::Inventory(error) = outcome.unwrap_err() else {
+                panic!("wrong asset error owner");
+            };
+            let error = rss_mdm_management_http::Error::from(error);
             assert_eq!(
                 serde_json::to_value(error).unwrap(),
                 json!({"kind":"unavailable","reason":expected})
