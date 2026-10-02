@@ -478,6 +478,7 @@ async fn native_notifications_are_acked_and_replayed_without_finishing_pending_q
 #[ignore = "make t2 MODULE=windows.management"]
 async fn damaged_committed_transcript_fails_closed_without_rewriting_evidence() -> anyhow::Result<()>
 {
+    use sqlx::Connection;
     use crate::execution::test_support::native;
     let mut host = Host::open().await?;
     host.listen().await?;
