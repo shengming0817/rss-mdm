@@ -97,7 +97,17 @@ pub fn decode(bytes: &[u8]) -> Result<Dictionary, Error> {
         return Err(Error::Malformed);
     }
     let Bounded(value) = plist::from_bytes(bytes).map_err(|_| Error::Malformed)?;
-    value.into_dictionary().ok_or(Error::Malformed)
+    if !matches!(value, Value::Dictionary(_)) {
+        return Err(Error::Malformed);
+    }
+    drop(value);
+    // Serde's generic visitor presents plist dates as strings. After checking
+    // duplicate keys and bounded structure, the native Value reader preserves
+    // Date/Data without depending on plist's private Serde marker names.
+    Value::from_reader(std::io::Cursor::new(bytes))
+        .map_err(|_| Error::Malformed)?
+        .into_dictionary()
+        .ok_or(Error::Malformed)
 }
 pub fn xml(dict: Dictionary) -> Result<Vec<u8>, Error> {
     let mut bytes = Vec::new();

@@ -143,7 +143,7 @@ async fn exact_rest_community_and_brew_imports_preserve_evidence_and_replay() ->
             .call(
                 &f.router,
                 Method::GET,
-                &format!("/api/v3/resources/{resource}"),
+                &format!("/api/v4/resources/{resource}"),
                 None,
             )
             .await?;
@@ -176,7 +176,7 @@ async fn exact_rest_community_and_brew_imports_preserve_evidence_and_replay() ->
         write(
             &mut f.user,
             &f.router,
-            &format!("/api/v3/resources/{resource}"),
+            &format!("/api/v4/resources/{resource}"),
             2,
             json!({"action":"activate","version":"v1"}),
         )

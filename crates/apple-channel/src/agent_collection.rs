@@ -1,6 +1,6 @@
 //! Bounded built-in Agent queries use the existing native attempts and collection owner.
 use crate::{Error, database::db, device::DevicePrincipal};
-use rss_mdm_apple_mdm::{agent_install as wire, protocol};
+use rss_mdm_apple_mdm::{protocol, software as wire};
 use rss_mdm_flow_service::planning::policies::agent_install::Identity;
 use rss_mdm_inventory::{AgentInstallation, ReportSource};
 use rss_mdm_inventory_service::collection::channel::{self, AgentEvidence};
@@ -8,6 +8,7 @@ use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 pub async fn receive(
     c: &mut PgConnection,
+    protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     id: Uuid,
     status: protocol::Status,
@@ -20,8 +21,15 @@ pub async fn receive(
         return Ok(None);
     };
     let id_collection: Uuid = row.try_get("collection").map_err(db)?;
-    let Some(attempt) =
-        crate::attempt::lock(c, p, id, crate::attempt::Owner::Collection, bytes).await?
+    let Some(attempt) = crate::attempt::lock(
+        c,
+        protection,
+        p,
+        id,
+        crate::attempt::Owner::Collection,
+        bytes,
+    )
+    .await?
     else {
         return Err(Error::Conflict);
     };
@@ -41,7 +49,17 @@ pub async fn receive(
     {
         return Ok(Some(facts));
     }
-    let request = protocol::decode(&row.try_get::<Vec<u8>, _>("request").map_err(db)?)?;
+    let sealed: Vec<u8> = row.try_get("request").map_err(db)?;
+    let plain = crate::protection::open(
+        protection,
+        &p.tenant().to_string(),
+        p.registration(),
+        p.generation(),
+        id,
+        crate::protection::Part::Request,
+        &sealed,
+    )?;
+    let request = protocol::decode(plain.expose())?;
     let bundle = request
         .get("Command")
         .and_then(plist::Value::as_dictionary)
@@ -50,9 +68,24 @@ pub async fn receive(
         .and_then(|a| a.first())
         .and_then(plist::Value::as_string)
         .ok_or(Error::Malformed)?;
-    let platform:Option<Vec<u8>>=sqlx::query_scalar("SELECT response FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND collection=$2 AND phase='collect_agent_platform'").bind(p.tenant().to_string()).bind(id_collection).fetch_one(&mut *c).await.map_err(db)?;
+    let platform = sqlx::query("SELECT id,response FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND collection=$2 AND phase='collect_agent_platform'").bind(p.tenant().to_string()).bind(id_collection).fetch_one(&mut *c).await.map_err(db)?;
+    let platform = platform
+        .try_get::<Option<Vec<u8>>, _>("response")
+        .map_err(db)?
+        .map(|sealed| {
+            crate::protection::open(
+                protection,
+                &p.tenant().to_string(),
+                p.registration(),
+                p.generation(),
+                platform.try_get("id").map_err(db)?,
+                crate::protection::Part::Response,
+                &sealed,
+            )
+        })
+        .transpose()?;
     let architecture = platform
-        .and_then(|b| protocol::decode(&b).ok())
+        .and_then(|b| protocol::decode(b.expose()).ok())
         .and_then(|d| wire::architecture(&d).ok())
         .map(str::to_owned);
     let presence = if status == protocol::Status::Acknowledged {
@@ -87,6 +120,7 @@ pub async fn receive(
 }
 pub async fn send(
     c: &mut PgConnection,
+    protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     identity: Option<&Identity>,
 ) -> Result<(Vec<u8>, Vec<rss_mdm_audit_integration::Fact>), Error> {
@@ -133,6 +167,15 @@ pub async fn send(
         ] {
             let attempt = Uuid::new_v4();
             let request = protocol::command(attempt, payload)?;
+            let request = crate::protection::seal(
+                protection,
+                &tenant,
+                p.registration(),
+                p.generation(),
+                attempt,
+                crate::protection::Part::Request,
+                &request,
+            )?;
             sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,collection,phase,request,state,collection_sequence,deadline) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,'pending',$8,clock_timestamp()+interval '5 minutes')")
                 .bind(&tenant).bind(attempt).bind(p.registration()).bind(p.generation()).bind(id).bind(phase).bind(request).bind(sequence).execute(&mut *c).await.map_err(db)?;
         }
@@ -148,5 +191,15 @@ pub async fn send(
     }
     let id: Uuid = row.try_get("id").map_err(db)?;
     sqlx::query("UPDATE mdm_apple.attempts SET state='sent',next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2").bind(&tenant).bind(id).execute(&mut *c).await.map_err(db)?;
-    Ok((row.try_get("request").map_err(db)?, facts))
+    let sealed: Vec<u8> = row.try_get("request").map_err(db)?;
+    let plain = crate::protection::open(
+        protection,
+        &tenant,
+        p.registration(),
+        p.generation(),
+        row.try_get("id").map_err(db)?,
+        crate::protection::Part::Request,
+        &sealed,
+    )?;
+    Ok((plain.expose().to_vec(), facts))
 }

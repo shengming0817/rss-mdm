@@ -13,7 +13,7 @@ fn upload_metadata(
             continue;
         }
         let value: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
-        if value["id"] == id.to_string() {
+        if value["upload"]["id"] == id.to_string() {
             anyhow::ensure!(found.is_none(), "fixture operation must have one actor");
             found = Some(path);
         }

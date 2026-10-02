@@ -17,10 +17,10 @@
 //! assert_eq!(syncml::decode(&wire, &CodecLimits::default())?, message);
 //! # Ok(()) }
 //! ```
-pub mod agent_install;
-pub mod configuration;
+pub mod native;
 pub mod provisioning;
 pub mod soap;
+pub mod software;
 pub mod syncml;
 mod xml;
 

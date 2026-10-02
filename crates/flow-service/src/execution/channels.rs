@@ -40,9 +40,12 @@ pub struct Reply {
     pub facts: Vec<Fact>,
 }
 pub trait Windows: Send + Sync {
+    // The adapter borrows the transaction and its process-owned protection key together.
+    #[allow(clippy::too_many_arguments)]
     fn exchange<'a>(
         &'a self,
         connection: &'a mut PgConnection,
+        protection: &'a rss_mdm_native_protection::Protector,
         principal: &'a DevicePrincipal,
         message: &'a rss_mdm_windows_mdm::syncml::Message,
         bytes: &'a [u8],
@@ -130,27 +133,31 @@ pub enum Reception {
     Ready(Box<dyn AppleAttempt>),
 }
 pub trait AppleAttempt: Send {
+    fn latest(&self) -> bool;
     fn operation(&self) -> Option<Uuid>;
     fn phase(&self) -> &str;
     fn settle<'a>(self: Box<Self>, c: &'a mut PgConnection, status: Status) -> Pending<'a, ()>;
 }
-#[derive(Clone)]
-pub enum NativeTask {
-    Install {
-        enabled: bool,
-    },
-    AgentInstall {
-        bundle: String,
-        version: String,
-        url: String,
-        sha256: [u8; 32],
-    },
-    Remove,
-}
 pub struct AppleCommand {
     pub operation: Uuid,
     pub deadline: i64,
-    pub task: NativeTask,
+    pub input_version: String,
+    pub target: super::NativeTarget,
+    pub request: rss_mdm_apple_mdm::native::request::Request,
+}
+/// Native applicability failures are operation evidence, not a failed device connection.
+pub enum AppleDispatch {
+    Ready(Vec<u8>),
+    Waiting,
+    Rejected(rss_mdm_apple_mdm::native::Error),
+}
+impl From<Option<Vec<u8>>> for AppleDispatch {
+    fn from(value: Option<Vec<u8>>) -> Self {
+        match value {
+            Some(bytes) => Self::Ready(bytes),
+            None => Self::Waiting,
+        }
+    }
 }
 pub trait Apple: Send + Sync {
     fn current<'a>(
@@ -180,7 +187,7 @@ pub trait Apple: Send + Sync {
         c: &'a mut PgConnection,
         p: &'a DevicePrincipal,
         command: &'a AppleCommand,
-    ) -> Pending<'a, Option<Vec<u8>>>;
+    ) -> Pending<'a, AppleDispatch>;
     fn collection<'a>(
         &'a self,
         c: &'a mut PgConnection,

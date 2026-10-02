@@ -117,7 +117,17 @@ async fn resolve_in(
             }
             artifact.clone()
         }
-        _ => return Err(Error::Malformed.into()),
+        r::Declaration::Configuration { artifact } => {
+            if artifact.length() > 16_777_216
+                || input
+                    .artifact
+                    .as_ref()
+                    .is_some_and(|id| id != artifact.reference().as_str())
+            {
+                return Err(Error::Malformed.into());
+            }
+            artifact.clone()
+        }
     };
     let (source, origin) = match variant.declaration() {
         r::Declaration::Software { definition } => (
@@ -130,6 +140,11 @@ async fn resolve_in(
         _ => (None, None),
     };
     Ok(Binding {
+        storage_class: if matches!(variant.declaration(), r::Declaration::Configuration { .. }) {
+            crate::StorageClass::NativeConfiguration
+        } else {
+            crate::StorageClass::Artifact
+        },
         source,
         origin,
         resource: id.into(),
@@ -208,7 +223,9 @@ pub async fn record(
     source_catalog: Option<&rss_mdm_software_service::catalog::Catalog>,
 ) -> Result<(), Error> {
     audit.operation(upload.id, "management_write");
-    let verified = store(app)?.verify(&upload.binding.artifact()?).await?;
+    let verified = store(app)?
+        .verify_class(&upload.binding.artifact()?, upload.binding.storage_class)
+        .await?;
     transaction::run(
         &app.audit_store,
         &app.runtime,

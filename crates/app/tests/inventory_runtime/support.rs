@@ -143,7 +143,10 @@ async fn report_on(
         commands: vec![status(1, 0, CommandName::SyncHdr, 212)],
         final_message: true,
     };
-    let id = rss_mdm_windows_channel::test_support::create(tx, &scope, &mut request).await?;
+    let protection = crate::test_support::identity::config(&principal.tenant().to_string())?
+        .native_protector()?;
+    let id = rss_mdm_windows_channel::test_support::create(tx, &protection, &scope, &mut request)
+        .await?;
     let previous = String::from_utf8(syncml::encode(&request, &CodecLimits::default())?)?;
     let mut response = Message {
         header: Header {
@@ -184,6 +187,7 @@ async fn report_on(
     ensure!(
         rss_mdm_windows_channel::test_support::accept(
             tx,
+            &protection,
             facts,
             &principal.tenant().to_string(),
             id,

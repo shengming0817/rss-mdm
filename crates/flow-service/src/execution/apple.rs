@@ -1,32 +1,60 @@
 //! Apple tasks share the command reducer, approval, outbox and operation authority.
 use super::*;
 use crate::device::DevicePrincipal;
-use crate::planning::policies;
 use rss_mdm_apple_mdm::{profile, protocol as wire};
 use serde_json::{Value, json};
 use sqlx::Row;
 
+/// Freeze old and new object authority under the existing device/authorization locks.
+pub async fn required(
+    tx: &mut PgTransaction<'_>,
+    key: &rss_mdm_native_protection::Protector,
+    device: &str,
+    input: &Create,
+) -> Result<Vec<crate::authorization::Permission>> {
+    let mut required = input.task.permissions()?;
+    let Some((identifier, _, _)) = input.profile_target() else {
+        return Ok(required);
+    };
+    let tenant = tx.tenant_id().to_string();
+    let device = device.to_owned();
+    let user = input.target.user_key().to_owned();
+    let identifier = identifier.to_owned();
+    let old = tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query_scalar::<_, Uuid>("SELECT operation FROM mdm_commands.apple_profiles WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND identifier=$4 FOR UPDATE")
+            .bind(tenant).bind(device).bind(user).bind(identifier).fetch_optional(c).await
+    })).await?;
+    if let Some(old) = old {
+        let old = storage::load(tx, key, old).await?;
+        required.extend(old.request.task.permissions()?);
+        required.extend_from_slice(old.approval.required());
+    }
+    required.sort();
+    required.dedup();
+    Ok(required)
+}
 pub async fn own(
     tx: &mut PgTransaction<'_>,
     device: &str,
     registration: Uuid,
     input: &Create,
 ) -> Result<()> {
-    let Some((profile, present)) = input.profile_target() else {
+    let Some((identifier, profile, present)) = input.profile_target() else {
         return Ok(());
     };
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
     let operation = input.operation_id;
-    let identifier = profile::identifier(&tenant, &device);
-    let enabled = matches!(input.task, Task::ProfileInstall { enabled: true });
+    let identifier = identifier.to_owned();
+    let user = input.target.user_key().to_owned();
+    let version = input.input_version.clone();
     let result=tx.with_connection(move|c|Box::pin(async move {
-        let old=sqlx::query("SELECT p.profile::text,p.registration::text,d.terminal_at IS NOT NULL AS terminal FROM mdm_commands.apple_profiles p JOIN rss_device_command.commands d ON d.tenant_id=p.tenant_id AND d.command_id=p.operation::text WHERE p.tenant_id=$1::uuid AND p.device=$2 FOR UPDATE OF p")
-            .bind(&tenant).bind(&device).fetch_optional(&mut *c).await?;
+        let old=sqlx::query("SELECT p.profile::text,p.registration::text,d.terminal_at IS NOT NULL AS terminal FROM mdm_commands.apple_profiles p JOIN rss_device_command.commands d ON d.tenant_id=p.tenant_id AND d.command_id=p.operation::text WHERE p.tenant_id=$1::uuid AND p.device=$2 AND p.user_key=$3 AND p.identifier=$4 FOR UPDATE OF p")
+            .bind(&tenant).bind(&device).bind(&user).bind(&identifier).fetch_optional(&mut *c).await?;
         if old.as_ref().is_some_and(|r|r.try_get::<bool,_>("terminal").ok()!=Some(true)) {return Ok(Err(Error::Conflict))}
         if !present && !old.as_ref().is_some_and(|r|r.try_get::<String,_>("profile").ok()==Some(profile.to_string()) && r.try_get::<String,_>("registration").ok()==Some(registration.to_string())) {return Ok(Err(Error::Conflict))}
-        sqlx::query("INSERT INTO mdm_commands.apple_profiles(tenant_id,device,identifier,profile,operation,registration,version,enabled) VALUES($1::uuid,$2,$3,$4::uuid,$5::uuid,$6::uuid,1,$7) ON CONFLICT(tenant_id,device) DO UPDATE SET profile=excluded.profile,operation=excluded.operation,registration=excluded.registration,version=mdm_commands.apple_profiles.version+1,enabled=excluded.enabled")
-            .bind(&tenant).bind(&device).bind(identifier).bind(profile.to_string()).bind(operation.to_string()).bind(registration.to_string()).bind(enabled).execute(c).await?;
+        sqlx::query("INSERT INTO mdm_commands.apple_profiles(tenant_id,device,user_key,identifier,profile,operation,registration,version) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(tenant_id,device,user_key,identifier) DO UPDATE SET profile=excluded.profile,operation=excluded.operation,registration=excluded.registration,version=excluded.version")
+            .bind(&tenant).bind(&device).bind(user).bind(identifier).bind(profile).bind(operation).bind(registration).bind(version).execute(c).await?;
         Ok(Ok(()))
     })).await?;
     result?;
@@ -47,6 +75,11 @@ pub async fn observation(
         })
         .await?
         .map_err(Error::from)?;
+    if op.request.profile_target().is_none() {
+        return Ok(
+            json!({"protocol":"mdm.apple","observationScope":"native_command","receipts":rows.iter().map(|r|json!({"phase":r.phase,"state":r.state,"receivedAt":r.received_at})).collect::<Vec<_>>(),"progress":super::service::status(status),"effect":"unverified"}),
+        );
+    }
     let mut value = json!({"protocol":"mdm.apple","observationScope":"profile_presence","result":"unknown","effect":"unknown","progress":"unknown"});
     for row in rows {
         let phase = row.phase;
@@ -61,12 +94,9 @@ pub async fn observation(
             let response = row.response;
             if let Some(response) = response {
                 let d = wire::decode(&response).map_err(Error::from)?;
-                let (profile, present) = op.request.profile_target().ok_or(Error::Conflict)?;
-                let presence = profile::presence(
-                    &d,
-                    &profile::identifier(&tenant_name(op), &op.device),
-                    profile,
-                );
+                let (identifier, profile, present) =
+                    op.request.profile_target().ok_or(Error::Conflict)?;
+                let presence = profile::presence(&d, identifier, profile);
                 value["result"] = json!(match presence {
                     Ok(p) if p == present && status == dc::Status::Applied => "matched",
                     Ok(p) if p != present => "mismatched",
@@ -80,10 +110,6 @@ pub async fn observation(
     }
     Ok(value)
 }
-fn tenant_name(op: &storage::Operation) -> String {
-    op.scope.tenant().to_string()
-}
-
 impl ExecutionService {
     pub async fn apple_management(
         &self,
@@ -140,6 +166,7 @@ impl ExecutionService {
                         .await?;
                     actions::native_collection::settle_device(service, tx, p.device()).await?;
                     let response = send(service, tx, apple.clone(), p).await?;
+                    super::protocol::settle_dispatch_failures(service, tx, p, audit).await?;
                     service
                         .audit_store
                         .append_request_in(tx, audit, 200, "success")
@@ -160,8 +187,7 @@ async fn eligible(
 ) -> Result<bool> {
     if op.registration != p.registration()
         || op.registration_generation != p.generation()
-        || (op.request.profile_target().is_none()
-            && !matches!(op.request.task, Task::AgentInstall { .. }))
+        || !matches!(op.request.task, Task::Macos { .. })
     {
         return Err(Error::Unauthorized.into());
     }
@@ -172,7 +198,7 @@ async fn eligible(
             command.status(),
             dc::Status::Published | dc::Status::Received
         )
-        && storage::approval_valid(tx, op, now).await?)
+        && storage::approval_valid(&service.protection, tx, op, now).await?)
 }
 #[allow(
     clippy::too_many_arguments,
@@ -225,36 +251,56 @@ async fn receive(
         super::channels::Reception::Replay => return Ok(()),
         super::channels::Reception::Ready(attempt) => attempt,
     };
-    let op = storage::load(tx, attempt.operation().ok_or(Error::Conflict)?).await?;
+    let op = storage::load(
+        tx,
+        &service.protection,
+        attempt.operation().ok_or(Error::Conflict)?,
+    )
+    .await?;
     if !eligible(service, tx, p, &op).await? {
         return Err(Error::Forbidden.into());
     }
     let phase = attempt.phase().to_owned();
+    let latest = attempt.latest();
     tx.with_connection(move |c| Box::pin(async move { Ok(attempt.settle(c, status).await) }))
         .await?
         .map_err(Error::from)?;
+    if !latest {
+        return Ok(());
+    }
+    if phase.starts_with("resolve_") && status != wire::Status::Error {
+        return Ok(());
+    }
+    let software = match &op.request.task {
+        Task::Macos {
+            request: rss_mdm_apple_mdm::native::request::Request::Command { command },
+        } => rss_mdm_apple_mdm::software::observation(command)
+            .map_err(Error::from)?
+            .is_some(),
+        _ => false,
+    };
     let event = match (phase.as_str(), status) {
         (_, wire::Status::NotNow) => return Ok(()),
-        ("observe", wire::Status::Error)
-            if matches!(op.request.task, Task::AgentInstall { .. }) =>
-        {
+        ("observe", wire::Status::Error) if software => {
             return Ok(());
         }
         (_, wire::Status::Error) => dc::DeviceEvent::Rejected,
         ("execute", wire::Status::Acknowledged) => dc::DeviceEvent::Received,
-        ("observe", wire::Status::Acknowledged)
-            if matches!(op.request.task, Task::AgentInstall { .. }) =>
-        {
-            // InstalledApplicationList cannot verify the pinned team or package receipt.
+        ("observe", wire::Status::Acknowledged) if software => {
+            // Native bundle presence cannot verify a signing team or package receipt.
             return Ok(());
         }
         ("observe", wire::Status::Acknowledged) => {
-            let (profile, present) = op.request.profile_target().ok_or(Error::Conflict)?;
-            let identifier = profile::identifier(&service.tenant.to_string(), &op.device);
-            if profile::presence(d, &identifier, profile).ok() != Some(present) {
+            let (identifier, profile, present) =
+                op.request.profile_target().ok_or(Error::Conflict)?;
+            if profile::presence(d, identifier, profile).ok() != Some(present) {
                 return Ok(());
             }
-            dc::DeviceEvent::Reported(op.request.digest(&service.tenant.to_string(), &op.device)?)
+            dc::DeviceEvent::Reported(op.request.digest(
+                &service.protection,
+                service.tenant,
+                &op.device,
+            )?)
         }
         _ => return Err(Error::Conflict.into()),
     };
@@ -283,11 +329,11 @@ async fn send(
     let registration = p.registration().to_string();
     let generation = p.generation();
     let ids=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_scalar::<_,String>("SELECT o.id::text FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.registration_generation=$3 AND o.gateway_accepted AND o.request->'task'->>'kind' IN ('profile_install','profile_remove','agent_install') AND d.status IN ('published','received') ORDER BY o.id LIMIT 64")
+        sqlx::query_scalar::<_,String>("SELECT o.id::text FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.registration_generation=$3 AND o.gateway_accepted AND o.dispatch_failure IS NULL AND o.input_context->>'platform'='macos' AND d.status IN ('published','received') ORDER BY o.id LIMIT 64")
             .bind(tenant).bind(registration).bind(generation).fetch_all(c).await
     })).await?;
     for id in ids {
-        let op = storage::load(tx, stored(Uuid::parse_str(&id))?).await?;
+        let op = storage::load(tx, &service.protection, stored(Uuid::parse_str(&id))?).await?;
         if !eligible(service, tx, p, &op).await? {
             continue;
         }
@@ -298,8 +344,19 @@ async fn send(
         {
             continue;
         }
-        if let Some(bytes) = send_one(tx, apple.clone(), p, &op).await? {
-            return Ok(bytes);
+        match send_one(tx, apple.clone(), p, &op).await? {
+            channels::AppleDispatch::Ready(bytes) => return Ok(bytes),
+            channels::AppleDispatch::Waiting => {}
+            channels::AppleDispatch::Rejected(error) => {
+                let tenant = tx.tenant_id().to_string();
+                let id = op.id;
+                let failure = json!({"platform":"macos","reason":error.to_string()});
+                tx.with_connection(move |c| Box::pin(async move {
+                    sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
+                        .bind(tenant).bind(id).bind(failure).execute(c).await?;
+                    Ok(())
+                })).await?;
+            }
         }
     }
     let principal = p.clone();
@@ -319,29 +376,16 @@ async fn send_one(
     apple: Arc<dyn super::channels::Apple>,
     p: &DevicePrincipal,
     op: &storage::Operation,
-) -> Result<Option<Vec<u8>>> {
+) -> Result<channels::AppleDispatch> {
+    let Task::Macos { request } = &op.request.task else {
+        return Err(Error::Unsupported.into());
+    };
     let command = super::channels::AppleCommand {
         operation: op.id,
         deadline: op.request.deadline,
-        task: match &op.request.task {
-            Task::AgentInstall { package } => {
-                let policies::agent_install::Identity::Macos { bundle, .. } = &package.identity
-                else {
-                    return Err(Error::Unsupported.into());
-                };
-                super::channels::NativeTask::AgentInstall {
-                    bundle: bundle.clone(),
-                    version: package.version.clone(),
-                    url: package.url(op.id),
-                    sha256: package.artifact.sha256,
-                }
-            }
-            Task::ProfileInstall { enabled } => {
-                super::channels::NativeTask::Install { enabled: *enabled }
-            }
-            Task::ProfileRemove { .. } => super::channels::NativeTask::Remove,
-            _ => return Err(Error::Unsupported.into()),
-        },
+        input_version: op.request.input_version.clone(),
+        target: op.request.target.clone(),
+        request: request.clone(),
     };
     let principal = p.clone();
     Ok(tx

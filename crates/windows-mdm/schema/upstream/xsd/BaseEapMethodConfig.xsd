@@ -1,0 +1,19 @@
+<xs:schema 
+ targetNamespace="http://www.microsoft.com/provisioning/BaseEapMethodConfig"
+ elementFormDefault="qualified" 
+ xmlns="http://www.microsoft.com/provisioning/BaseEapMethodConfig"
+ xmlns:xs="http://www.w3.org/2001/XMLSchema"
+ version="1.0">
+
+   <xs:complexType name="BaseEapMethodConfig" >
+     <xs:sequence>
+      <xs:any processContents="lax" 
+       minOccurs="0" 
+       maxOccurs="unbounded" 
+       namespace="##any" />
+      <!-- One or more elements of the kind as follows should go in here. -->
+      <!-- EAP configuration settings in XML format, that the clients MUST use while performing IEEE 802.1X authentication using this EAP method. The schema for EAP configuration settings is specific to the corresponding EAP method implementation on the client machines. The schema for Microsoft's native implementation of PEAP, EAP-TLS and Ms-ChapV2 EAP methods is documented in following sections. For non-Microsoft EAP method implementations, please contact the corresponding vendors. !-->
+     </xs:sequence>
+   </xs:complexType>
+
+</xs:schema>

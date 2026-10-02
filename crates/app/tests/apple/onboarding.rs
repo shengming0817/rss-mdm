@@ -58,7 +58,7 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
     let state = setup::diagnosis(&mut f.browser, &f.router, policy, case_device()).await?;
     ensure!(
         state["taskAdmission"]["state"] == "eligible"
-            && state["operationId"] == operation.to_string(),
+            && state["operationIds"] == json!([operation]),
         "{state}"
     );
     let (install, payload) = peer.next("InstallEnterpriseApplication").await?;
@@ -68,7 +68,7 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
     );
     ensure!(!payload.contains_key("RemoveAppUponMDMProfileRemoval"));
     ensure!(peer.manage("NotNow", Some(install), None).await?.is_empty());
-    ensure!(f.operation(operation).await?["observation"]["delivery"] == "deferred");
+    ensure!(f.operation(operation).await?["agentInstallation"]["delivery"] == "deferred");
     let (retry, _) = next_after_cooldown(&peer, "InstallEnterpriseApplication").await?;
     ensure!(retry == install, "NotNow retries the same native identity");
     // The reference server receives the ACK; the product loses this transport message.
@@ -105,7 +105,7 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         )),
     )
     .await?;
-    ensure!(f.operation(operation).await?["observation"]["installation"] == "installing");
+    ensure!(f.operation(operation).await?["agentInstallation"]["installation"] == "installing");
     let (observe, _) = next_after_cooldown(&peer, "InstalledApplicationList").await?;
     // Error responses cannot claim installed even if an extraneous list is present.
     peer.manage(
@@ -125,7 +125,8 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
     .await?;
     let state = f.operation(operation).await?;
     ensure!(
-        state["observation"]["installation"] == "unknown" && state["commandStatus"] != "applied",
+        state["agentInstallation"]["installation"] == "unknown"
+            && state["commandStatus"] != "applied",
         "{state}"
     );
     let (observe, _) = next_after_cooldown(&peer, "InstalledApplicationList").await?;
@@ -147,7 +148,8 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
     .await?;
     let state = f.operation(operation).await?;
     ensure!(
-        state["observation"]["installation"] == "unknown" && state["commandStatus"] != "applied",
+        state["agentInstallation"]["installation"] == "unknown"
+            && state["commandStatus"] != "applied",
         "unverified bundle promoted to installed: {state}"
     );
     let input = json!({"wireVersion":5,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("managed-apple-agent"),"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v5","mdm.enrollment.v5"]});
@@ -187,8 +189,8 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id='{}' AND channel='agent'",case_tenant()))?.trim()=="1");
     let state = f.operation(operation).await?;
     ensure!(
-        state["observation"]["installation"] == "unknown"
-            && !state["observation"]["agentRegistration"].is_null(),
+        state["agentInstallation"]["installation"] == "unknown"
+            && !state["agentInstallation"]["agentRegistration"].is_null(),
         "{state}"
     );
     let _ = install;
@@ -209,7 +211,14 @@ async fn enabling_agent_installation_preserves_existing_native_identity_and_righ
     config.management.listen = f.app.apple()?.config.management.listen;
     let pin: rss_mdm_flow_service::planning::policies::agent_install::Config =
         serde_json::from_value(setup::pin(false))?;
+    let original_rights: i32 = pg(&format!(
+        "SELECT access_rights FROM mdm_apple.devices WHERE tenant_id='{}' AND state='active'",
+        case_tenant()
+    ))?
+    .trim()
+    .parse()?;
     let updated = Apple::load(
+        f.app.execution.protection.clone(),
         config,
         f.app.clock.unix_seconds()?,
         pin.identity(rss_mdm_policy::Platform::Macos).cloned(),
@@ -243,7 +252,7 @@ async fn enabling_agent_installation_preserves_existing_native_identity_and_righ
     .fetch_one(&mut *tx)
     .await?;
     ensure!(
-        rights == 19,
+        rights == original_rights,
         "deployment config must not invent device consent"
     );
     tx.rollback().await?;

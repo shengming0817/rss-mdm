@@ -110,7 +110,11 @@ pub(crate) async fn planning(t: TenantId) -> Planning {
     let key = rss_mdm_flow_service::storage::cursor_key(&runtime, t)
         .await
         .unwrap();
-    Planning::new(audit, runtime, t, clock, catalog, &key)
+    let protection = crate::test_support::identity::config(&t.to_string())
+        .unwrap()
+        .native_protector()
+        .unwrap();
+    Planning::new(protection, audit, runtime, t, clock, catalog, &key)
         .await
         .unwrap()
 }

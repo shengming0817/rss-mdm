@@ -53,15 +53,16 @@ impl Client {
         self.set_authorized(true).await?;
         let expiry = Uuid::new_v4();
         let expires_at = clock.now() / 1_000_000 + 1;
-        ensure!(self.call(Method::POST,"",Some(json!({"operationId":expiry,"task":{"kind":"state_verify","field":"model","expectedValue":"after-deadline"},"deadline":expires_at}))).await?.0==StatusCode::ACCEPTED);
+        ensure!(self.call(Method::POST,"",Some(json!({"operationId":expiry,"inputVersion":"1","target":{"kind":"device"},"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./DevInfo/Mod","instance":[],"operation":"get","value":null}}},"deadline":expires_at}))).await?.0==StatusCode::ACCEPTED);
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
         let config = crate::test_support::identity::config(case_tenant())?;
         let restarted = Box::pin(crate::flow::execution::open(
             &config,
+            config.native_protector()?,
             crate::test_support::identity::audit_store(&config).await?,
-            crate::flow::execution::open_content(&config)?,
+            crate::flow::execution::open_content(&config, config.native_protector()?)?,
             std::collections::BTreeMap::new(),
             rss_device_command_postgres::CommandClock::Controlled(clock.clone()),
         ))

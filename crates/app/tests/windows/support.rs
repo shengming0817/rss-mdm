@@ -149,6 +149,7 @@ impl Host {
         let original: serde_json::Value =
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
         value["content"] = original["content"].clone();
+        value["native_protection_key_file"] = original["native_protection_key_file"].clone();
         if let Some(agent) = agent {
             value["agent_installation"] = agent;
         }
@@ -190,10 +191,11 @@ impl Host {
         let (management, timeline) = management(&config, &store).await?;
         let execution = crate::flow::execution::open(
             &config,
+            config.native_protector()?,
             store
                 .audit_store(&crate::config::AuditConfig::Plain)
                 .await?,
-            crate::flow::execution::open_content(&config)?,
+            crate::flow::execution::open_content(&config, config.native_protector()?)?,
             std::collections::BTreeMap::new(),
             command_clock,
         )
@@ -588,6 +590,7 @@ async fn management(
     let flow = config
         .flow
         .open(
+            config.native_protector()?,
             access
                 .audit_store(&crate::config::AuditConfig::Plain)
                 .await?,

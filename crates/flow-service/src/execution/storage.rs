@@ -9,6 +9,7 @@ pub struct Operation {
     pub request: Create,
     pub approval: ExecutionAuthority,
     pub revision: i64,
+    pub dispatch_failure: Option<serde_json::Value>,
     pub scope: dc::Scope,
     pub coordinate: dc::Coordinate,
     pub registration: Uuid,
@@ -20,15 +21,20 @@ impl Operation {
     }
 }
 
-pub async fn load(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Operation> {
+pub async fn load(
+    tx: &mut PgTransaction<'_>,
+    protection: &rss_mdm_native_protection::Protector,
+    id: Uuid,
+) -> Result<Operation> {
     let tenant = tx.tenant_id();
-    let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT o.device,o.request::text,o.approval::text,o.revision,o.generation,o.epoch,o.registration::text,o.registration_generation,o.gateway_accepted,d.command_device::text FROM mdm_commands.operations o JOIN mdm_commands.devices d USING(tenant_id,device) WHERE o.tenant_id=$1::uuid AND o.id=$2::uuid").bind(tenant.to_string()).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::execution::error::ExecutionError::MissingOperation))?;
+    let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT o.device,o.dispatch_failure,o.request,o.input_context,o.approval::text,o.revision,o.generation,o.epoch,o.registration,o.registration_generation,o.gateway_accepted,d.command_device::text FROM mdm_commands.operations o JOIN mdm_commands.devices d USING(tenant_id,device) WHERE o.tenant_id=$1::uuid AND o.id=$2::uuid").bind(tenant.to_string()).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::execution::error::ExecutionError::MissingOperation))?;
     Ok(Operation {
         id,
         device: row.try_get("device")?,
-        request: stored(serde_json::from_str(&row.try_get::<String, _>("request")?))?,
+        request: super::input_storage::open_row(protection, tenant, id, &row, "request")?,
         approval: stored(serde_json::from_str(&row.try_get::<String, _>("approval")?))?,
         revision: row.try_get("revision")?,
+        dispatch_failure: row.try_get("dispatch_failure")?,
         scope: dc::Scope::new(
             tenant,
             stored(dc::DeviceId::parse(
@@ -39,21 +45,23 @@ pub async fn load(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Operation> {
             row.try_get("generation")?,
             row.try_get("epoch")?,
         ))?,
-        registration: stored(Uuid::parse_str(&row.try_get::<String, _>("registration")?))?,
+        registration: row.try_get("registration")?,
         registration_generation: row.try_get("registration_generation")?,
     })
 }
 
 pub async fn approval_valid(
+    key: &Arc<rss_mdm_native_protection::Protector>,
     tx: &mut PgTransaction<'_>,
     operation: &Operation,
     now: i64,
 ) -> Result<bool> {
+    let key = key.clone();
     let approval = operation.approval.clone();
-    let permission = operation.request.task.permission();
+    let permission = operation.request.task.permissions()?;
     Ok(tx
         .with_connection(move |c| {
-            Box::pin(async move { Ok(approval.valid(c, permission, now).await) })
+            Box::pin(async move { Ok(approval.valid(c, &key, &permission, now).await) })
         })
         .await??)
 }
@@ -212,4 +220,20 @@ pub async fn require_source(
         return Err(Error::Conflict.into());
     }
     Ok(())
+}
+
+pub async fn authorized_native(
+    tx: &mut PgTransaction<'_>,
+    proof: &crate::authorization::context::AuthorizedPrincipal,
+    device: &str,
+    permissions: &[crate::authorization::Permission],
+) -> Result<crate::authorization::Snapshot> {
+    if permissions.is_empty() {
+        return Err(Error::Forbidden.into());
+    }
+    let snapshot = crate::action_admission::current(tx, proof).await?;
+    for &permission in permissions {
+        snapshot.require(proof, permission, Some(device))?;
+    }
+    Ok(snapshot)
 }

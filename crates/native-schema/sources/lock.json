@@ -1,0 +1,14 @@
+{
+  "windows-ddf": {
+    "sha256": "47899beddbf55fb99e99c395f93e25af64ceda6901549fc925c0e1bd752accc5",
+    "files": 314
+  },
+  "windows-admx": {
+    "sha256": "0a46432cdb30a9e690360c4948e11d2754fa568c5c1cf5607347b6c0a822f67e",
+    "files": 333
+  },
+  "apple-schema": {
+    "sha256": "bab8964679907ddcb02fc0ecda6703a9c12e538a25165976db9773dc991f2d74",
+    "files": 1167
+  }
+}

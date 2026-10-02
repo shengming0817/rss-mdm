@@ -13,7 +13,7 @@ CREATE TABLE mdm_policy.versions (
  resource text,resource_version text,
  CHECK((resource IS NULL) = (resource_version IS NULL)),
  CHECK((action_kind='request_mdm_enrollment') = (resource IS NULL)),
- frozen jsonb NOT NULL CHECK(octet_length(frozen::text)<=1048576),
+ frozen jsonb NOT NULL CHECK(octet_length(frozen::text)<=25165824),
  fingerprint bytea NOT NULL CHECK(octet_length(fingerprint)=32),
  PRIMARY KEY(tenant_id,id),UNIQUE(tenant_id,policy,number),
  FOREIGN KEY(tenant_id,policy) REFERENCES mdm_policy.policies(tenant_id,id)

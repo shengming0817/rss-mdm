@@ -368,6 +368,7 @@ pub async fn import(
                 .unix_seconds()
                 .ok_or(Error::Unavailable(crate::Failure::Clock))?;
             let binding = Binding {
+                storage_class: rss_mdm_content_service::StorageClass::Artifact,
                 resource: op.input.resource.clone(),
                 version: op.input.resource_version.clone(),
                 variant: op.input.variant.clone(),

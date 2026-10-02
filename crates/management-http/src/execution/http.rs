@@ -10,7 +10,10 @@ use serde_json::Value;
 pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route("/operations", get(directory))
-        .route("/devices/{device}/operations", post(create))
+        .route(
+            "/devices/{device}/operations",
+            post(create).layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024)),
+        )
         .route("/devices/{device}/operations/{id}", get(read))
         .route("/devices/{device}/operations/{id}/cancel", post(cancel))
         .route("/devices/{device}/operations/{id}/approve", post(approve))
@@ -38,9 +41,6 @@ async fn create(
     let input = input
         .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?
         .0;
-    if matches!(input.task, Task::Firewall { .. }) {
-        return Err(Error(rss_mdm_flow_service::Error::Malformed));
-    }
     match input.task.source() {
         rss_mdm_inventory::ReportSource::MdmApple => {
             app.apple()?;

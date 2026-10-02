@@ -142,7 +142,7 @@ impl ExecutionService {
             } else if operation.cancelled || operation.deadline <= now {
                 let device: String = row.try_get("device")?;
                 storage::lock(tx, &device).await?;
-                let op = storage::load(tx, delivery).await?;
+                let op = storage::load(tx, &self.protection, delivery).await?;
                 if !self.required_command(tx, &op).await?.status().is_terminal()
                     && self
                         .store
@@ -290,13 +290,13 @@ impl ExecutionService {
     ) -> Result<()> {
         let id = operation.id;
         let Frozen::Configuration {
-            enabled, platform, ..
+            native, platform, ..
         } = &operation.frozen
         else {
             return Err(Error::Malformed.into());
         };
 
-        let (registration, generation) = match storage::current_registration(tx, device).await {
+        let (registration, _generation) = match storage::current_registration(tx, device).await {
             Ok(v) => v,
             Err(Fault::Request(Error::Conflict)) => {
                 return record_target(tx, id, device, None, Some("mdm_unavailable")).await;
@@ -314,49 +314,26 @@ impl ExecutionService {
             }
             Err(e) => return Err(e),
         };
-        let task = match platform {
-            Platform::Windows => {
-                let tenant = tx.tenant_id().to_string();
-                let cap=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(String,i32)>("SELECT os_version,edition FROM mdm_commands.capabilities WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3").bind(tenant).bind(registration).bind(generation).fetch_optional(c).await})).await?;
-                let Some((os_version, edition)) = cap else {
-                    return record_target(tx, id, device, None, Some("capability_unknown")).await;
-                };
-                if rss_mdm_windows_mdm::configuration::Platform::new(&os_version, edition as u32)
-                    .and_then(|p| {
-                        rss_mdm_windows_mdm::configuration::Firewall::compile(*enabled, &p)
-                    })
-                    .is_err()
-                {
-                    return record_target(tx, id, device, None, Some("platform_unsupported")).await;
-                }
-                Task::Firewall {
-                    enabled: *enabled,
-                    os_version,
-                    edition: edition as u32,
-                }
-            }
-            Platform::Macos => {
-                let tenant = tx.tenant_id().to_string();
-                let name = device.to_owned();
-                let busy=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_commands.apple_profiles p JOIN rss_device_command.commands d ON d.tenant_id=p.tenant_id AND d.command_id=p.operation::text WHERE p.tenant_id=$1::uuid AND p.device=$2 AND d.terminal_at IS NULL)").bind(tenant).bind(name).fetch_one(c).await})).await?;
-                if busy {
-                    return record_target(tx, id, device, None, Some("configuration_busy")).await;
-                }
-                Task::ProfileInstall { enabled: *enabled }
-            }
-        };
+        let native = native.open(
+            &self.protection,
+            self.tenant,
+            crate::planning::configuration::Owner::Remote { operation: id },
+        )?;
+        let input = native.request(delivery, id.to_string(), operation.deadline, false)?;
         record_target(tx, id, device, Some(delivery), None).await?;
-        let input = Create {
-            operation_id: delivery,
-            task,
-            deadline: operation.deadline,
-        };
         let authority = crate::execution::authority::ExecutionAuthority::RemoteOperation {
+            required: input.task.permissions()?,
             tenant: tx.tenant_id().to_string(),
             operation: id,
             device: device.into(),
         };
-        let fingerprint = crate::transaction::fingerprint(&(id, device, &input))?;
+        let fingerprint = crate::protection::fingerprint(
+            &self.protection,
+            self.tenant,
+            device,
+            "remote-command/v3",
+            &(id, &input),
+        )?;
         let fact_audit = audit.transaction_copy();
         fact_audit.identify_service("remote-operation");
         fact_audit.operation(delivery, "command_accept");

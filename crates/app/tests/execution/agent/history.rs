@@ -95,7 +95,7 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
             ensure!(directory_ids.len()<=26,"directory repeated pages");
         }
         ensure!(directory_ids.len()==26 && directory_ids.windows(2).all(|pair|pair[0]>pair[1]));
-        let filtered=author.call(router,Method::GET,&format!("/api/v2/policies?action=execution&resource={resource}&limit=1"),None).await?;
+        let filtered=author.call(router,Method::GET,&format!("/api/v3/policies?action=execution&resource={resource}&limit=1"),None).await?;
         ensure!(filtered.0==StatusCode::OK && filtered.1["items"][0]["id"]==plan.to_string());
         let grants_without_read=fixture.grants.iter().filter(|g|g.operation!=crate::authorization::Permission::OperationRead).cloned().collect();
         crate::test_support::identity::set_grants(case_tenant(),&fixture.author_id,grants_without_read).await?;
@@ -213,7 +213,7 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
         let parent = if remote {
             let parent = Uuid::new_v4();
             let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-            post(&mut f.author,&f.router,"/api/v2/remote-operations",json!({"operationId":parent,"resource":policy_definition(id,case_task_scope())["action"]["resource"],"targets":{"kind":"devices","devices":[case_device_id()]},"action":{"kind":"execute","parameters":{}},"deadline":now+600})).await?;
+            post(&mut f.author,&f.router,"/api/v3/remote-operations",json!({"operationId":parent,"resource":policy_definition(id,case_task_scope())["action"]["resource"],"targets":{"kind":"devices","devices":[case_device_id()]},"action":{"kind":"execute","parameters":{}},"deadline":now+600})).await?;
             parent
         } else {
             publish(&mut f.author, &f.router, id).await?

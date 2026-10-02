@@ -4,7 +4,7 @@ use rss_mdm_inventory::{FieldKey, NativeValue};
 use rss_mdm_inventory_service::collection::{native, store};
 use rss_mdm_windows_mdm::{
     CodecLimits,
-    syncml::{self as s, Command, Item},
+    syncml::{self as s, Command},
 };
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;
@@ -20,8 +20,10 @@ fn refs(command: &Command) -> Option<(u32, u32)> {
 }
 pub async fn send(
     c: &mut PgConnection,
+    protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     response: &mut s::Message,
+    facts: &mut Vec<rss_mdm_audit_integration::Fact>,
 ) -> Result<bool, Error> {
     if response.header.message_id >= 8 {
         return Ok(false);
@@ -30,33 +32,67 @@ pub async fn send(
         .bind(p.tenant().to_string()).bind(p.registration()).fetch_optional(&mut *c).await.map_err(db)?;
     if let Some(row) = row {
         let id: Uuid = row.try_get("id").map_err(db)?;
+        if !crate::execution::actions::native_collection::eligible_on(c, p, id).await? {
+            return Ok(false);
+        }
         let template = native::template(c, &p.tenant().to_string(), id)
             .await?
             .ok_or_else(corrupt)?;
         let first =
             store::allocate_commands_in(c, p, template.spec().mappings.len() as i64).await?;
-        let commands = template
-            .spec()
-            .mappings
-            .values()
+        let capabilities=sqlx::query_as::<_,(String,i32)>("SELECT os_version,edition FROM mdm_commands.capabilities WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND session=$4").bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(i64::from(response.header.session_id)).fetch_optional(&mut *c).await.map_err(db)?;
+        let Some((version, edition)) = capabilities else {
+            return Ok(false);
+        };
+        let build = version
+            .split('.')
+            .map(str::parse::<u32>)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|_| corrupt())?
+            .try_into()
+            .map_err(|_| corrupt())?;
+        let context = rss_mdm_windows_mdm::native::Context {
+            build: Some(build),
+            edition: Some(edition.try_into().map_err(|_| corrupt())?),
+            scope: rss_mdm_windows_mdm::native::Scope::Device,
+        };
+        let queries = crate::execution::actions::native_collection::queries_on(
+            c,
+            &p.tenant().to_string(),
+            id,
+        )
+        .await?;
+        if queries.len() != template.spec().mappings.len() {
+            return Err(corrupt());
+        }
+        let commands = queries
+            .iter()
             .enumerate()
-            .map(|(i, m)| Command::Get {
-                id: first + i as u32,
-                meta: None,
-                items: vec![Item {
-                    source: None,
-                    target: Some(m.query.clone()),
-                    meta: None,
-                    data: None,
-                }],
+            .map(|(i, q)| {
+                q.compile(context, first + i as u32)
+                    .map(|v| v.command)
+                    .map_err(|_| Error::Unsupported)
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>();
+        let commands = match commands {
+            Ok(commands) => commands,
+            Err(Error::Unsupported) => {
+                let mut run = store::load_on(c, &p.tenant().to_string(), id).await?;
+                facts.extend(store::seal(c, &mut run, "native_not_applicable").await?);
+                return Ok(false);
+            }
+            Err(error) => return Err(error),
+        };
         let request = s::Message {
             header: response.header.clone(),
             commands: commands.clone(),
             final_message: true,
         };
         let bytes = s::encode(&request, &CodecLimits::default()).map_err(|_| corrupt())?;
+        let run = store::load_on(c, &p.tenant().to_string(), id).await?;
+        let bytes = protection
+            .seal_bytes(&bytes, &crate::protection::collection_aad(&run.scope, id)?)
+            .map_err(|_| corrupt())?;
         sqlx::query("INSERT INTO mdm_windows.collections(tenant_id,id,registration,session_id,request_message,first_command,request) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)")
             .bind(p.tenant().to_string()).bind(id).bind(p.registration()).bind(response.header.session_id.to_string()).bind(i64::from(response.header.message_id)).bind(i64::from(first)).bind(bytes).execute(&mut *c).await.map_err(db)?;
         crate::execution::actions::native_collection::sent(c, &p.tenant().to_string(), id).await?;
@@ -67,6 +103,7 @@ pub async fn send(
 }
 pub async fn receive(
     c: &mut PgConnection,
+    protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     message: &s::Message,
     previous: &str,
@@ -82,6 +119,11 @@ pub async fn receive(
             .await?
             .ok_or_else(corrupt)?;
         let fields: Vec<_> = template.spec().mappings.iter().collect();
+        let queries =
+            crate::execution::actions::native_collection::queries_on(c, &tenant, id).await?;
+        if queries.len() != fields.len() {
+            return Err(corrupt());
+        }
         let first = row.try_get::<i64, _>("first_command").map_err(db)? as u32;
         let msg = row.try_get::<i64, _>("request_message").map_err(db)? as u32;
         let commands: Vec<_> = message
@@ -99,12 +141,17 @@ pub async fn receive(
         }
         consumed.extend(commands.iter().filter_map(refs));
         let mut run = store::load_on(c, &tenant, id).await?;
-        if run.sealed_at.is_some() {
+        if run.sealed_at.is_some()
+            || !crate::execution::actions::native_collection::eligible_on(c, p, id).await?
+        {
             continue;
         }
         let limits = CodecLimits::default();
-        let original = s::decode(&row.try_get::<Vec<u8>, _>("request").map_err(db)?, &limits)
+        let sealed: Vec<u8> = row.try_get("request").map_err(db)?;
+        let plain = protection
+            .open_bytes(&sealed, &crate::protection::collection_aad(&run.scope, id)?)
             .map_err(|_| corrupt())?;
+        let original = s::decode(plain.expose(), &limits).map_err(|_| corrupt())?;
         let (_, sent) = s::encode_request(&original, &limits).map_err(|_| corrupt())?;
         let mut expected =
             s::Expected::new(sent, message.header.message_id, &limits).map_err(|_| corrupt())?;
@@ -160,7 +207,14 @@ pub async fn receive(
                 return Err(Error::Conflict);
             }
             let (key, mapping) = fields[(result.reference.command_id - first) as usize];
-            if result.reference.uri != mapping.query {
+            let expected_uri = queries[(result.reference.command_id - first) as usize]
+                .objects()
+                .map_err(|_| corrupt())?
+                .into_iter()
+                .next()
+                .ok_or_else(corrupt)?
+                .uri;
+            if result.reference.uri != expected_uri {
                 return Err(Error::Conflict);
             }
             let key = FieldKey::parse(key).map_err(|_| corrupt())?;

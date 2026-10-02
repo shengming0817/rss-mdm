@@ -15,6 +15,7 @@ pub(crate) struct Apple {
 }
 impl Apple {
     pub(crate) fn load(
+        protection: Arc<rss_mdm_native_protection::Protector>,
         config: config::Config,
         now: i64,
         agent_identity: Option<rss_mdm_flow_service::planning::policies::agent_install::Identity>,
@@ -55,6 +56,7 @@ impl Apple {
             },
         };
         let channel = Arc::new(rss_mdm_apple_channel::Apple::new(
+            protection,
             options,
             authority,
             signer,

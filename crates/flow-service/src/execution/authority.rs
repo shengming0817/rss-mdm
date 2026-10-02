@@ -8,6 +8,8 @@ use sqlx::PgConnection;
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExecutionAuthority {
     AgentInstall {
+        required: Vec<Permission>,
+        package: Box<crate::planning::policies::agent_install::Package>,
         tenant: String,
         policy: uuid::Uuid,
         version: uuid::Uuid,
@@ -15,14 +17,17 @@ pub enum ExecutionAuthority {
         operation: uuid::Uuid,
     },
     User {
-        evidence: UserGrant,
+        required: Vec<Permission>,
+        evidence: Vec<UserGrant>,
     },
     RemoteOperation {
+        required: Vec<Permission>,
         tenant: String,
         operation: uuid::Uuid,
         device: String,
     },
     Policy {
+        required: Vec<Permission>,
         tenant: String,
         policy: uuid::Uuid,
         version: uuid::Uuid,
@@ -52,15 +57,63 @@ impl ExecutionAuthority {
         snapshot: &Snapshot,
         proof: &AuthorizedPrincipal,
         device: &str,
-        permission: Permission,
+        permissions: &[Permission],
     ) -> Result<Self, Error> {
         Ok(Self::User {
-            evidence: UserGrant::from_proof(snapshot, proof, device, permission)?,
+            required: permissions.to_vec(),
+            evidence: permissions
+                .iter()
+                .map(|&p| UserGrant::from_proof(snapshot, proof, device, p))
+                .collect::<Result<_, _>>()?,
         })
+    }
+    pub fn required(&self) -> &[Permission] {
+        match self {
+            Self::User { required, .. }
+            | Self::AgentInstall { required, .. }
+            | Self::RemoteOperation { required, .. }
+            | Self::Policy { required, .. } => required,
+        }
+    }
+    pub fn bind_required(&mut self, permissions: Vec<Permission>) {
+        match self {
+            Self::User { required, .. }
+            | Self::AgentInstall { required, .. }
+            | Self::RemoteOperation { required, .. }
+            | Self::Policy { required, .. } => *required = permissions,
+        }
+    }
+    pub fn agent_package(&self) -> Option<&crate::planning::policies::agent_install::Package> {
+        match self {
+            Self::AgentInstall { package, .. } => Some(package),
+            _ => None,
+        }
     }
     pub async fn valid(
         &self,
         conn: &mut PgConnection,
+        key: &rss_mdm_native_protection::Protector,
+        permissions: &[Permission],
+        now: i64,
+    ) -> Result<bool, Error> {
+        if permissions.is_empty() {
+            return Ok(false);
+        }
+        let mut permissions = permissions.to_vec();
+        permissions.extend_from_slice(self.required());
+        permissions.sort();
+        permissions.dedup();
+        for permission in permissions {
+            if !self.valid_one(conn, key, permission, now).await? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+    async fn valid_one(
+        &self,
+        conn: &mut PgConnection,
+        key: &rss_mdm_native_protection::Protector,
         permission: Permission,
         now: i64,
     ) -> Result<bool, Error> {
@@ -71,6 +124,7 @@ impl ExecutionAuthority {
                 version,
                 device,
                 operation,
+                ..
             } => {
                 if permission != Permission::SoftwareDeploy {
                     return Ok(false);
@@ -80,19 +134,25 @@ impl ExecutionAuthority {
                 )
                 .await
             }
-            Self::User { evidence } => evidence
-                .valid(conn, permission, now)
-                .await
-                .map_err(Error::from),
+            Self::User { evidence, .. } => {
+                for grant in evidence {
+                    if grant.valid(conn, permission, now).await? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
             Self::RemoteOperation {
                 tenant,
                 operation,
                 device,
+                ..
             } => {
-                if permission != Permission::FirewallWrite {
+                let frozen=sqlx::query_scalar::<_,serde_json::Value>("SELECT o.frozen FROM mdm_planning.remote_operations o JOIN mdm_planning.remote_operation_targets t ON(t.tenant_id,t.operation)=(o.tenant_id,o.id) WHERE o.tenant_id=$1::uuid AND o.id=$2 AND NOT o.cancelled AND o.deadline>$4 AND t.device=$3 AND t.status='accepted'").bind(tenant).bind(operation).bind(device).bind(now).fetch_optional(&mut *conn).await.map_err(db)?;
+                let Some(frozen) = frozen else {
                     return Ok(false);
-                }
-                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_planning.remote_operations o JOIN mdm_planning.remote_operation_targets t ON(t.tenant_id,t.operation)=(o.tenant_id,o.id) WHERE o.tenant_id=$1::uuid AND o.id=$2 AND NOT o.cancelled AND o.deadline>$4 AND o.frozen->>'kind'='configuration' AND t.device=$3 AND t.status='accepted')").bind(tenant).bind(operation).bind(device).bind(now).fetch_one(conn).await.map_err(db)
+                };
+                native_grant(conn, frozen, device, permission, now).await
             }
             Self::Policy {
                 tenant,
@@ -100,30 +160,118 @@ impl ExecutionAuthority {
                 version,
                 device,
                 remove,
+                ..
             } => {
-                if permission != Permission::FirewallWrite {
+                let frozen=sqlx::query_scalar::<_,serde_json::Value>("SELECT frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2 AND policy=$3").bind(tenant).bind(version).bind(policy).fetch_optional(&mut *conn).await.map_err(db)?;
+                let Some(frozen) = frozen else {
+                    return Ok(false);
+                };
+                if *remove && !native_grant(conn, frozen.clone(), device, permission, now).await? {
                     return Ok(false);
                 }
-                let valid=sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies p JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(p.tenant_id,p.current_version) JOIN mdm_policy.versions original ON original.tenant_id=p.tenant_id AND original.id=$3::uuid AND original.policy=$2::uuid WHERE p.tenant_id=$1::uuid AND p.enabled AND v.frozen->>'kind'='configuration' AND (v.frozen->'enabled',v.frozen->'platform')=(original.frozen->'enabled',original.frozen->'platform') AND (mdm_planning.scope_admission((p.definition->>'scope')::uuid,$4)->>'state'='eligible'))")
-                    .bind(tenant).bind(policy.to_string()).bind(version.to_string()).bind(device).fetch_one(&mut *conn).await.map_err(db)?;
-                if !remove {
-                    if !valid {
-                        return Ok(false);
+                let expected: crate::planning::policies::Frozen =
+                    serde_json::from_value(frozen).map_err(|_| Error::Malformed)?;
+                let crate::planning::policies::Frozen::Configuration { native, exit, .. } =
+                    expected
+                else {
+                    return Ok(false);
+                };
+                let tenant_id =
+                    rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
+                let native = native.open(
+                    key,
+                    tenant_id,
+                    crate::planning::configuration::Owner::Policy {
+                        policy: *policy,
+                        version: *version,
+                    },
+                )?;
+                if *remove
+                    && (!matches!(exit, rss_mdm_policy::Exit::Remove) || native.remove.is_none())
+                {
+                    return Ok(false);
+                }
+                let expected_objects = native.objects()?;
+                let expected = serde_json::to_vec(&(&native.target, &native.apply))
+                    .map_err(|_| Error::Malformed)?;
+                let mut after = uuid::Uuid::nil();
+                let mut live = false;
+                loop {
+                    let rows=sqlx::query("SELECT p.id,v.id AS version,v.frozen,mdm_planning.scope_admission((p.definition->>'scope')::uuid,$2)->>'state' AS admission FROM mdm_policy.policies p JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(p.tenant_id,p.current_version) WHERE p.tenant_id=$1::uuid AND p.enabled AND p.id>$3 AND p.definition->'action'->>'kind'='configuration' AND mdm_planning.scope_admission((p.definition->>'scope')::uuid,$2)->>'state'<>'excluded' ORDER BY p.id LIMIT 64").bind(tenant).bind(device).bind(after).fetch_all(&mut *conn).await.map_err(db)?;
+                    if rows.is_empty() {
+                        break;
                     }
-                    return sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM mdm_policy.policies p JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(p.tenant_id,p.current_version) JOIN mdm_policy.versions expected ON expected.tenant_id=p.tenant_id AND expected.id=$3 WHERE p.tenant_id=$1::uuid AND p.enabled AND v.frozen->>'kind'='configuration' AND (v.frozen->'enabled',v.frozen->'platform') IS DISTINCT FROM(expected.frozen->'enabled',expected.frozen->'platform') AND (mdm_planning.scope_admission((p.definition->>'scope')::uuid,$2)->>'state'<>'excluded'))")
-                        .bind(tenant).bind(device).bind(version).fetch_one(conn).await.map_err(db);
+                    for row in rows {
+                        use sqlx::Row;
+                        after = row.try_get("id").map_err(db)?;
+                        let current_frozen: serde_json::Value =
+                            row.try_get("frozen").map_err(db)?;
+                        let current: crate::planning::policies::Frozen =
+                            serde_json::from_value(current_frozen.clone())
+                                .map_err(|_| Error::Malformed)?;
+                        let crate::planning::policies::Frozen::Configuration {
+                            native: other, ..
+                        } = current
+                        else {
+                            return Ok(false);
+                        };
+                        let other = other.open(
+                            key,
+                            tenant_id,
+                            crate::planning::configuration::Owner::Policy {
+                                policy: after,
+                                version: row.try_get("version").map_err(db)?,
+                            },
+                        )?;
+                        if !other
+                            .objects()?
+                            .iter()
+                            .any(|o| expected_objects.iter().any(|expected| o.overlaps(expected)))
+                        {
+                            continue;
+                        }
+                        if *remove {
+                            return Ok(false);
+                        }
+                        if serde_json::to_vec(&(&other.target, &other.apply))
+                            .map_err(|_| Error::Malformed)?
+                            != expected
+                        {
+                            return Ok(false);
+                        }
+                        // The operation belongs to its native content. Any live coowner of
+                        // that exact input may authorize it after the original author exits.
+                        if row.try_get::<String, _>("admission").map_err(db)? == "eligible"
+                            && native_grant(conn, current_frozen, device, permission, now).await?
+                        {
+                            live = true;
+                        }
+                    }
                 }
-                // Cleanup is admitted only for a supported immutable resource and no remaining desired owner.
-                if valid {
-                    return Ok(false);
-                }
-                let supported=sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2 AND policy=$3 AND frozen->>'kind'='configuration' AND frozen->>'platform'='macos' AND frozen->>'exit'='remove')").bind(tenant).bind(version).bind(policy).fetch_one(&mut *conn).await.map_err(db)?;
-                if !supported {
-                    return Ok(false);
-                }
-                sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.enabled AND p.definition->'action'->>'kind'='configuration' AND (mdm_planning.scope_admission((p.definition->>'scope')::uuid,$2)->>'state'<>'excluded'))")
-                    .bind(tenant).bind(device).fetch_one(conn).await.map_err(db)
+                Ok(*remove || live)
             }
         }
     }
+}
+async fn native_grant(
+    conn: &mut PgConnection,
+    frozen: serde_json::Value,
+    device: &str,
+    permission: Permission,
+    now: i64,
+) -> Result<bool, Error> {
+    let frozen: crate::planning::policies::Frozen =
+        serde_json::from_value(frozen).map_err(|_| Error::Malformed)?;
+    let crate::planning::policies::Frozen::Configuration { grants, .. } = frozen else {
+        return Ok(false);
+    };
+    let Some(grants) = grants.get(device).or_else(|| grants.get("*")) else {
+        return Ok(false);
+    };
+    for grant in grants {
+        if grant.valid(conn, permission, now).await? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }

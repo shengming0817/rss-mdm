@@ -7,7 +7,9 @@ mod database;
 pub mod enrollment;
 mod error;
 pub mod flow_store;
+mod native;
 mod operations;
+mod protection;
 pub mod push;
 pub mod renewal;
 mod webhook;
@@ -37,6 +39,7 @@ pub struct Webhook {
     pub id: String,
 }
 pub struct Apple {
+    pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) agent_identity:
         Option<rss_mdm_flow_service::planning::policies::agent_install::Identity>,
     pub(crate) config: Config,
@@ -63,7 +66,12 @@ impl Health {
     }
 }
 impl Apple {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "explicit independent native, CA, signer and webhook key owners"
+    )]
     pub fn new(
+        protection: Arc<rss_mdm_native_protection::Protector>,
         config: Config,
         authority: certificate::AppleDeviceTrust,
         signer: certificate::ProfileSigner,
@@ -87,6 +95,7 @@ impl Apple {
         )
         .into();
         Self {
+            protection,
             agent_identity,
             config,
             authority,
@@ -99,22 +108,7 @@ impl Apple {
         }
     }
     pub(crate) fn access_rights(&self) -> i32 {
-        if self.agent_identity.is_some() {
-            19 | 256 | 4096
-        } else {
-            19
-        }
-    }
-    pub fn signed_firewall(
-        &self,
-        identifier: &str,
-        profile: uuid::Uuid,
-        enabled: bool,
-        now: i64,
-    ) -> Result<Vec<u8>, Error> {
-        Ok(self
-            .signer
-            .sign(&profile::firewall(identifier, profile, enabled)?, now)?)
+        8191
     }
 }
 pub fn browser_routes(app: Arc<HttpState>, envelope: boundary::Envelope) -> axum::Router {

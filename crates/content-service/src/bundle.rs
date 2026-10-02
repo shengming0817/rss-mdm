@@ -23,12 +23,16 @@ impl ContentPort for Store {
                 .try_acquire_owned()
                 .map_err(|_| catalog::Error::Content)?;
             let directory = self.directory.clone();
+            let protection = self.protection.clone();
+            let tenant = self.tenant;
             let config = self.config.clone();
             let version = version.clone();
             let timer = self.timer.clone();
             let deadline = self.deadline().map_err(|_| catalog::Error::Content)?;
             tokio::task::spawn_blocking(move || {
                 let store = Store {
+                    protection,
+                    tenant,
                     directory,
                     config,
                     transfers: Arc::new(Semaphore::new(1)),

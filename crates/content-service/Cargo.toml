@@ -7,6 +7,10 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+rss-mdm-native-protection.workspace = true
+base64.workspace = true
+zeroize.workspace = true
+subtle.workspace = true
 rss-mdm-authorization-service.workspace = true
 rss-mdm-audit-integration.workspace = true
 rss-mdm-resource-postgres.workspace = true

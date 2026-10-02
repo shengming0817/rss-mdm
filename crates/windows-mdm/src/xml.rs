@@ -90,6 +90,31 @@ enum Token {
     Text(String),
     Eof,
 }
+/// Validate one bounded native XML value with the same lexical/entity/namespace rules as SyncML.
+pub(crate) fn document(bytes: &[u8], max: usize, limits: &CodecLimits) -> Result<()> {
+    let mut input = Input::new(bytes, max, limits)?;
+    let mut roots = 0usize;
+    loop {
+        match input.read()? {
+            Token::Start(_) if input.budget.depth == 1 => {
+                roots += 1;
+                if roots != 1 {
+                    return Err(E::Structure);
+                }
+            }
+            Token::Text(text) if input.budget.depth == 0 && !text.trim().is_empty() => {
+                return Err(E::Structure);
+            }
+            Token::Eof => break,
+            _ => {}
+        }
+    }
+    if roots == 1 && input.budget.depth == 0 {
+        Ok(())
+    } else {
+        Err(E::Structure)
+    }
+}
 struct Budget {
     events: usize,
     elements: usize,

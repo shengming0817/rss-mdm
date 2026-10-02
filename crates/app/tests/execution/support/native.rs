@@ -20,6 +20,7 @@ pub(crate) struct ReadExchange {
     pub(crate) first: s::Message,
     pub(crate) gets: Vec<(u32, String)>,
     pub(crate) ack: s::Message,
+    pub(crate) response: s::Message,
 }
 pub(crate) async fn begin(
     peer: &reqwest::Client,
@@ -59,7 +60,6 @@ pub(crate) async fn begin(
     ];
     expected.extend(task_uri);
     ensure!(gets.iter().map(|(_, uri)| uri.as_str()).collect::<Vec<_>>() == expected);
-    ensure!(message.commands.len() == gets.len() + 1);
     ensure!(
         message
             .commands
@@ -69,7 +69,12 @@ pub(crate) async fn begin(
             .len()
             == message.commands.len()
     );
-    Ok(ReadExchange { first, gets, ack })
+    Ok(ReadExchange {
+        first,
+        gets,
+        ack,
+        response: message,
+    })
 }
 pub(crate) fn report(
     first: &s::Message,

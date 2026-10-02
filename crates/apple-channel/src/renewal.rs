@@ -210,7 +210,7 @@ async fn prepare_on(
     let signed = apple.signer.sign(
         &profile::enrollment(
             &profile::EnrollmentProfile {
-                agent_installation: apple.agent_identity.is_some(),
+                access_rights: apple.access_rights() as u16,
                 scep_url: &apple.config.scep_url,
                 scep_provisioner: &apple.config.scep_provisioner,
                 apns_topic: &apple.config.apns_topic,
@@ -234,6 +234,15 @@ async fn prepare_on(
     let deadline = after.min(now + 3600);
     sqlx::query("INSERT INTO mdm_apple.scep_attempts(tenant_id,id,enrollment,password_version,configuration,state,issuer,expires_at,registration,renewal_of,generation,challenge_hash,access_rights) SELECT $1::uuid,$2::uuid,$3::uuid,coalesce(max(password_version),0)+1,$4,'prepared',$5,to_timestamp($6),$7::uuid,$8::uuid,$9,$10,$11 FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND enrollment=$3::uuid")
         .bind(tenant).bind(id.to_string()).bind(enrollment.to_string()).bind(apple.configuration.as_slice()).bind(apple.authority.issuer_fingerprint().as_slice()).bind(deadline as f64).bind(&registration).bind(&old_id).bind(generation).bind(Sha256::digest(secret.as_bytes()).as_slice()).bind(apple.access_rights()).execute(&mut *c).await.map_err(db)?;
+    let request = crate::protection::seal(
+        &apple.protection,
+        tenant,
+        Uuid::parse_str(&registration).map_err(|_| Error::Malformed)?,
+        generation,
+        id,
+        crate::protection::Part::Request,
+        &request,
+    )?;
     sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,certificate,phase,request,state,deadline) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$2::uuid,'renew',$5,'pending',to_timestamp($6))")
         .bind(tenant).bind(id.to_string()).bind(&registration).bind(generation).bind(request).bind(deadline as f64).execute(&mut *c).await.map_err(db)?;
     sqlx::query("UPDATE mdm_apple.devices SET next_push=clock_timestamp() WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(&registration).execute(&mut *c).await.map_err(db)?;
@@ -516,7 +525,7 @@ pub async fn management(
     let control = budget.control();
     let outcome = app.audit_store.write(app.identity.tenant(), &control, (app, p, d, bytes, audit),
         |(app, p, d, bytes, audit), tx| Box::pin(async move {
-            let result = tx.with_connection_context(&mut (*p, *d, *bytes), |(p, d, bytes), c| Box::pin(async move {
+            let result = tx.with_connection_context(&mut (*p, *d, *bytes, app.execution.protection.clone()), |(p, d, bytes, protection), c| Box::pin(async move {
                 let p = *p; let d = *d; let bytes = *bytes;
     let message = protocol::management(d)?;
     let tenant = p.tenant().to_string();
@@ -527,7 +536,7 @@ pub async fn management(
         return Err(Error::Unauthorized);
     }
     if let Some(id) = message.command {
-        match attempt::lock(c, p, id, attempt::Owner::Certificate, bytes).await? {
+        match attempt::lock(c, protection, p, id, attempt::Owner::Certificate, bytes).await? {
             None => return Ok(None),
             Some(attempt::Reception::Replay) => {}
             Some(attempt::Reception::Ready(a)) => a.settle(c, message.status).await?,
@@ -538,7 +547,9 @@ pub async fn management(
     let result = if let Some(row) = next {
         sqlx::query("UPDATE mdm_apple.attempts SET state='sent',next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(&tenant).bind(row.try_get::<String,_>("id").map_err(db)?).execute(&mut *c).await.map_err(db)?;
         crate::notify(c, "apple").await.map_err(db)?;
-        Some(row.try_get("request").map_err(db)?)
+        let sealed: Vec<u8> = row.try_get("request").map_err(db)?;
+        let id = Uuid::parse_str(&row.try_get::<String,_>("id").map_err(db)?).map_err(|_| Error::Malformed)?;
+        Some(crate::protection::open(protection,&tenant,p.registration(),p.generation(),id,crate::protection::Part::Request,&sealed)?.expose().to_vec())
     } else {
         message.command.map(|_| Vec::new())
     };

@@ -30,6 +30,7 @@ fn refs(c: &Command) -> Option<(u32, u32)> {
 }
 pub async fn receive(
     c: &mut PgConnection,
+    protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     message: &s::Message,
     previous: &str,
@@ -58,10 +59,17 @@ pub async fn receive(
         {
             return Err(Error::Conflict);
         }
-        let request: Vec<u8> = row.try_get("request").map_err(db)?;
+        let run =
+            rss_mdm_inventory_service::collection::store::load_on(c, &p.tenant().to_string(), id)
+                .await?;
+        let sealed: Vec<u8> = row.try_get("request").map_err(db)?;
+        let plain = protection
+            .open_bytes(&sealed, &crate::protection::collection_aad(&run.scope, id)?)
+            .map_err(|_| protocol())?;
+        let request = plain.expose();
         let limits = CodecLimits::default();
         let (_, sent) = s::encode_request(
-            &s::decode(&request, &limits).map_err(|_| protocol())?,
+            &s::decode(request, &limits).map_err(|_| protocol())?,
             &limits,
         )
         .map_err(|_| protocol())?;
@@ -183,6 +191,7 @@ pub async fn receive(
 }
 pub async fn send(
     c: &mut PgConnection,
+    protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     response: &mut s::Message,
     identity: Option<&Identity>,
@@ -198,15 +207,19 @@ pub async fn send(
     if let Some(sealed) = old {
         return Ok(sealed.is_none());
     }
-    let (id, _, _) = channel::start_in(c, p, ReportSource::MdmWindows).await?;
+    let (id, scope, _) = channel::start_in(c, p, ReportSource::MdmWindows).await?;
     let first = rss_mdm_inventory_service::collection::store::allocate_commands_in(c, p, 4).await?;
     let mut request = response.clone();
     request.commands.clear();
     let mut uris = vec![];
     for name in ["Status", "Publisher", "Version"] {
         uris.push(
-            rss_mdm_windows_mdm::agent_install::property(&product.to_string(), name)
-                .map_err(|_| protocol())?,
+            rss_mdm_windows_mdm::software::property(
+                rss_mdm_windows_mdm::native::Scope::Device,
+                &product.to_string(),
+                name,
+            )
+            .map_err(|_| protocol())?,
         );
     }
     uris.push(ARCH.into());
@@ -229,6 +242,9 @@ pub async fn send(
         statuses: [None; 4],
         values: std::array::from_fn(|_| None),
     };
+    let wire = protection
+        .seal_bytes(&wire, &crate::protection::collection_aad(&scope, id)?)
+        .map_err(|_| protocol())?;
     sqlx::query("INSERT INTO mdm_windows.collections(tenant_id,id,registration,session_id,request_message,first_command,request,channel_state) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8)")
         .bind(p.tenant().to_string()).bind(id).bind(p.registration()).bind(response.header.session_id.to_string()).bind(i64::from(response.header.message_id)).bind(i64::from(first)).bind(wire).bind(serde_json::to_value(query).map_err(|_|protocol())?).execute(&mut *c).await.map_err(db)?;
     response.commands.extend(request.commands);

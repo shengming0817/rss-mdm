@@ -35,7 +35,7 @@ async fn policy(
     runtime.inject_next_transaction_fault(
         rss_transactional_messaging_postgres::PgTransactionFault::CommitPending,
     );
-    let path = format!("/api/v2/policies/{id}");
+    let path = format!("/api/v3/policies/{id}");
     ensure!(
         author
             .call(router, Method::POST, &path, Some(body.clone()))
@@ -77,7 +77,7 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
         .cloned()
         .collect();
     crate::test_support::identity::set_grants(case_tenant(), &author_id, without_resource).await?;
-    let denied=author.call(&router,Method::POST,&format!("/api/v2/policies/{}",Uuid::new_v4()),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(id,case_task_scope())}}))).await?;
+    let denied=author.call(&router,Method::POST,&format!("/api/v3/policies/{}",Uuid::new_v4()),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(id,case_task_scope())}}))).await?;
     ensure!(
         denied.0 == StatusCode::FORBIDDEN,
         "publishing without ResourceRead: {denied:?}"
@@ -90,7 +90,7 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
     let preview = post(
         &mut author,
         &router,
-        "/api/v2/policies/previews",
+        "/api/v3/policies/previews",
         json!({"definition":policy_definition(id,case_task_scope())}),
     )
     .await?;
@@ -108,7 +108,7 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
             .call(
                 &router,
                 Method::POST,
-                &format!("/api/v3/resources/{id}"),
+                &format!("/api/v4/resources/{id}"),
                 Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":3,"input":{"action":"archive","version":"v1"}})),
             )
             .await?
@@ -146,7 +146,7 @@ async fn explicit_rerun_deduplicates() -> Result<()> {
     );
     let rerun = Uuid::new_v4();
     let body = json!({"operationId":rerun,"expectedRevision":1,"input":{"deadline":now+600}});
-    let path = format!("/api/v2/policies/{policy_id}/reruns");
+    let path = format!("/api/v3/policies/{policy_id}/reruns");
     let receipt = post(&mut author, &router, &path, body.clone()).await?;
     ensure!(post(&mut author, &router, &path, body).await? == receipt);
     ensure!(
@@ -205,10 +205,10 @@ async fn policy_scan_reaches_late_match() -> Result<()> {
     let ordered_namespace = case::id("policy-scan") & !0xffff;
     for n in 1..=70 {
         let id = Uuid::from_u128(ordered_namespace | n);
-        post(author,router,&format!("/api/v2/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,case_empty_scope())}})).await?;
+        post(author,router,&format!("/api/v3/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,case_empty_scope())}})).await?;
     }
     let id = Uuid::from_u128(ordered_namespace | 0xffff);
-    post(author,router,&format!("/api/v2/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,case_task_scope())}})).await?;
+    post(author,router,&format!("/api/v3/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,case_task_scope())}})).await?;
     ensure!(
         pg(&format!(
             "SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{}' AND device='{}'",
@@ -244,9 +244,9 @@ async fn policy_reference_and_archive_are_serialized() -> Result<()> {
     // Both authenticated requests contend on the same active resource version.
     let policy = Uuid::new_v4();
     let create = json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(id,case_empty_scope())}});
-    let policy_path = format!("/api/v2/policies/{policy}");
+    let policy_path = format!("/api/v3/policies/{policy}");
     let archive = json!({"operationId":Uuid::new_v4(),"expectedRevision":3,"input":{"action":"archive","version":"v1"}});
-    let path = format!("/api/v3/resources/{id}");
+    let path = format!("/api/v4/resources/{id}");
     let mut archiver = author.clone();
     let (created, archived) = tokio::try_join!(
         author.call(router, Method::POST, &policy_path, Some(create)),

@@ -1,0 +1,14 @@
+{
+  "document": "[MS-GPWL]",
+  "revision": "30.0",
+  "published": "2024-04-23",
+  "url": "https://winprotocoldocs-bhdugrdyduf5h2e4.b02.azurefd.net/MS-GPWL/%5bMS-GPWL%5d-240423.docx",
+  "sha256": "d93fe8b983efc2f987b60de440e5af6f8aa536772e743a4058f094a9faf209c3",
+  "extraction": "Complete xs:schema blocks in section 6.6, preserving paragraph text and line breaks; no schema edits.",
+  "files": {
+    "EapHostConfig.xsd": "cb72f76347d07ee2b4cde5930128a7575283852e0b59ccc7f6bc494189250b80",
+    "EapCommon.xsd": "a29beb24a31127484c6adfc31f814bb36452d991d31b009e545e155b0fe74b12",
+    "BaseEapMethodConfig.xsd": "ae496ef4e940a3970fff9de4197a211f4a392a033f507c198601a5c25b6ec974"
+  },
+  "licenseSha256": "0bbbacd82680a94bbbb6bd18b1d764e09927ce496daf67d5f2be430fff105b74"
+}

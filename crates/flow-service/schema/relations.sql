@@ -315,17 +315,16 @@ GRANT UPDATE(registration) ON TABLE mdm_commands.apple_profiles TO mdm_command_r
 
 GRANT UPDATE(version) ON TABLE mdm_commands.apple_profiles TO mdm_command_runtime;
 
-GRANT UPDATE(enabled) ON TABLE mdm_commands.apple_profiles TO mdm_command_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_commands.attempts TO mdm_command_runtime;
 
-GRANT UPDATE(status) ON TABLE mdm_commands.attempts TO mdm_command_runtime;
+GRANT UPDATE(status) ON TABLE mdm_commands.attempt_items TO mdm_command_runtime;
 
-GRANT UPDATE(value) ON TABLE mdm_commands.attempts TO mdm_command_runtime;
+GRANT UPDATE(value) ON TABLE mdm_commands.attempt_items TO mdm_command_runtime;
 
-GRANT UPDATE(received_at) ON TABLE mdm_commands.attempts TO mdm_command_runtime;
+GRANT UPDATE(received_at) ON TABLE mdm_commands.attempt_items TO mdm_command_runtime;
 
-GRANT UPDATE(receipt_accepted) ON TABLE mdm_commands.attempts TO mdm_command_runtime;
+GRANT UPDATE(receipt_accepted,result_accepted,result_received_at) ON TABLE mdm_commands.attempt_items TO mdm_command_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_commands.capabilities TO mdm_command_runtime;
 GRANT SELECT ON TABLE mdm_commands.capabilities TO mdm_flow_runtime;
@@ -369,7 +368,7 @@ GRANT UPDATE(approval) ON TABLE mdm_commands.operations TO mdm_command_runtime;
 
 GRANT UPDATE(revision) ON TABLE mdm_commands.operations TO mdm_command_runtime;
 
-GRANT UPDATE(gateway_accepted) ON TABLE mdm_commands.operations TO mdm_command_runtime;
+GRANT UPDATE(gateway_accepted,dispatch_failure) ON TABLE mdm_commands.operations TO mdm_command_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_commands.policy_recovery TO mdm_command_runtime;
 
@@ -408,13 +407,14 @@ GRANT UPDATE(input_revision) ON TABLE mdm_planning.configuration_devices TO mdm_
 
 GRANT UPDATE(observed_revision) ON TABLE mdm_planning.configuration_devices TO mdm_command_runtime;
 
-GRANT UPDATE(operation) ON TABLE mdm_planning.configuration_devices TO mdm_command_runtime;
+GRANT UPDATE(operation) ON TABLE mdm_planning.configuration_objects TO mdm_command_runtime;
 
-GRANT UPDATE(digest) ON TABLE mdm_planning.configuration_devices TO mdm_command_runtime;
+GRANT UPDATE(digest) ON TABLE mdm_planning.configuration_objects TO mdm_command_runtime;
 
-GRANT UPDATE(diagnosis) ON TABLE mdm_planning.configuration_devices TO mdm_command_runtime;
+GRANT UPDATE(diagnosis) ON TABLE mdm_planning.configuration_objects TO mdm_command_runtime;
 
-GRANT SELECT,INSERT ON TABLE mdm_planning.firewall_resources TO mdm_flow_runtime;
+GRANT SELECT ON TABLE mdm_planning.configuration_objects TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON TABLE mdm_planning.configuration_objects TO mdm_command_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_planning.operations TO mdm_flow_runtime;
 
@@ -632,8 +632,14 @@ GRANT SELECT,UPDATE ON TABLE rss_transactional_messaging.tenant_epoch TO rss_tms
 
 -- Native peer registration reads frozen install authority under the access/audit transaction.
 GRANT USAGE ON SCHEMA mdm_commands,mdm_policy,mdm_resource,mdm_software,mdm_planning TO mdm_access;
-GRANT SELECT ON TABLE mdm_commands.operations,mdm_commands.attempts,mdm_policy.policies,mdm_policy.versions,mdm_resource.aggregates,mdm_resource.immutable,mdm_software.sources,mdm_software.approvals TO mdm_access;
+GRANT SELECT ON TABLE mdm_commands.operations,mdm_commands.attempts,mdm_commands.attempt_items,mdm_policy.policies,mdm_policy.versions,mdm_resource.aggregates,mdm_resource.immutable,mdm_software.sources,mdm_software.approvals TO mdm_access;
 GRANT EXECUTE ON FUNCTION mdm_planning.scope_admission(uuid,text),mdm_commands.installation_status(uuid) TO mdm_access;
 
 GRANT SELECT,INSERT ON mdm_commands.output_chunks TO mdm_command_runtime;
 COMMIT;
+
+ALTER TABLE mdm_commands.attempt_items ADD CONSTRAINT attempt_items_attempt_fkey FOREIGN KEY(tenant_id,attempt) REFERENCES mdm_commands.attempts(tenant_id,id);
+GRANT SELECT,INSERT ON TABLE mdm_commands.attempt_items TO mdm_command_runtime;
+ALTER TABLE mdm_planning.configuration_objects ADD CONSTRAINT configuration_objects_operation_fkey FOREIGN KEY(tenant_id,operation) REFERENCES mdm_commands.operations(tenant_id,id);
+
+GRANT SELECT,INSERT ON TABLE mdm_flow.native_protection TO mdm_flow_runtime;

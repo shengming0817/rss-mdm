@@ -12,6 +12,7 @@ use rss_transactional_messaging_postgres::{
 use std::{sync::Arc, time::Duration};
 pub(crate) fn open_content(
     config: &crate::config::Config,
+    protection: Arc<rss_mdm_native_protection::Protector>,
 ) -> std::result::Result<Option<Arc<rss_mdm_content_service::Store>>, Error> {
     let tenant = TenantId::parse(&config.identity.tenant_id)
         .map_err(|_| Error::Configuration(crate::ConfigIssue::Execution))?;
@@ -20,6 +21,7 @@ pub(crate) fn open_content(
         .as_ref()
         .map(|c| {
             rss_mdm_content_service::Store::open(
+                protection.clone(),
                 c,
                 &tenant.to_string(),
                 Arc::new(crate::lifecycle::RuntimeTimer),
@@ -30,6 +32,7 @@ pub(crate) fn open_content(
 }
 pub(crate) async fn open(
     config: &crate::config::Config,
+    protection: Arc<rss_mdm_native_protection::Protector>,
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     content: Option<Arc<rss_mdm_content_service::Store>>,
     exports: std::collections::BTreeMap<
@@ -132,12 +135,15 @@ pub(crate) async fn open(
         config.agent_installation.validate()?;
         config.enrollment_entries.validate()?;
         Ok(Arc::new(ExecutionService {
+            protection: protection.clone(),
             readiness: Default::default(),
             exports,
             agent_installation: config.agent_installation.clone(),
             enrollment_entries: config.enrollment_entries.clone(),
             agent_store: Arc::new(rss_mdm_agent_channel::Bindings),
-            apple_store: Arc::new(rss_mdm_apple_channel::flow_store::Store),
+            apple_store: Arc::new(rss_mdm_apple_channel::flow_store::Store {
+                protection: protection.clone(),
+            }),
             policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
             audit_store,
             runtime: runtime.clone(),

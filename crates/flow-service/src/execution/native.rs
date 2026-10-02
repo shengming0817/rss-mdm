@@ -1,9 +1,9 @@
-//! One durable native exchange for tasks and capability evidence. No transaction commits.
+//! Durable Windows exchanges retain group and item correlation without brand-specific tasks.
 use super::*;
 use crate::{database::db, device::DevicePrincipal, execution::authority::ExecutionAuthority};
 use rss_mdm_windows_mdm::{
     CodecLimits,
-    configuration::{Firewall, Platform},
+    native::{Context, Execution as W, Scope},
     syncml::{self as s, Command, Item, Message},
 };
 use sqlx::{PgConnection, Row};
@@ -24,11 +24,10 @@ fn get(id: u32, uri: &str) -> Command {
         }],
     }
 }
-
 fn refs(c: &Command) -> Option<(u32, u32)> {
     match c {
-        Command::Status(x) if x.command_ref != 0 => Some((x.message_ref, x.command_ref)),
-        Command::Results(x) => Some((x.message_ref.unwrap_or(1), x.command_ref.unwrap_or(1))),
+        Command::Status(s) if s.command_ref != 0 => Some((s.message_ref, s.command_ref)),
+        Command::Results(r) => Some((r.message_ref.unwrap_or(1), r.command_ref.unwrap_or(1))),
         _ => None,
     }
 }
@@ -68,9 +67,10 @@ fn correlate(
     };
     s::correlate(&expected, &response, &limits).map_err(|_| Error::Conflict)
 }
-/// Consume only exact server-authored references; leave Inventory to its owner.
+/// Consume exact native references under the authenticated registration generation.
 pub async fn receive_on(
     c: &mut PgConnection,
+    protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     message: &Message,
     authenticated: bool,
@@ -80,63 +80,158 @@ pub async fn receive_on(
         return Ok(message.clone());
     }
     let tenant = p.tenant().to_string();
-    let reg = p.registration().to_string();
     let session = i64::from(message.header.session_id);
-    let rows=sqlx::query("SELECT a.id::text,a.command,a.message,a.status,a.value,a.request,a.uri,a.receipt_accepted,o.request::text AS task_request,o.approval::text,d.status AS command_status,(o.request->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AS within_deadline,a.ordinal=(SELECT max(latest.ordinal) FROM mdm_commands.attempts latest WHERE latest.tenant_id=a.tenant_id AND latest.operation=a.operation AND latest.phase=a.phase) AS latest FROM mdm_commands.attempts a JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.registration_generation=$3 AND a.credential=$4::uuid AND a.session=$5 ORDER BY a.ordinal")
- .bind(&tenant).bind(&reg).bind(p.generation()).bind(p.credential().to_string()).bind(session).fetch_all(&mut *c).await.map_err(db)?;
+    let rows=sqlx::query("SELECT a.id,a.operation,a.message,a.request,o.device,o.registration,o.registration_generation,o.input_context,o.request AS task_request,o.approval::text,d.status AS command_status,(o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AS within_deadline,a.ordinal=(SELECT max(latest.ordinal) FROM mdm_commands.attempts latest WHERE latest.tenant_id=a.tenant_id AND latest.operation=a.operation AND latest.phase=a.phase) AS latest FROM mdm_commands.attempts a JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND a.credential=$4 AND a.session=$5 ORDER BY a.ordinal")
+        .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(session).fetch_all(&mut *c).await.map_err(db)?;
     let mut consumed = std::collections::BTreeSet::new();
     for row in rows {
-        let id = row.try_get::<i64, _>("command").map_err(db)? as u32;
+        let attempt: Uuid = row.try_get("id").map_err(db)?;
         let msg = row.try_get::<i64, _>("message").map_err(db)? as u32;
-        if !message.commands.iter().any(|c| refs(c) == Some((msg, id))) {
+        let items=sqlx::query("SELECT command,parent_command,item_ordinal,uri,kind,status,value,receipt_accepted,result_accepted FROM mdm_commands.attempt_items WHERE tenant_id=$1::uuid AND attempt=$2 ORDER BY command,item_ordinal FOR UPDATE").bind(&tenant).bind(attempt).fetch_all(&mut *c).await.map_err(db)?;
+        let ids = items
+            .iter()
+            .map(|r| r.try_get::<i64, _>("command").map(|v| v as u32))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(db)?;
+        if !message
+            .commands
+            .iter()
+            .any(|command| refs(command).is_some_and(|(m, id)| m == msg && ids.contains(&id)))
+        {
             continue;
         }
-        let report = correlate(
-            &row.try_get::<Vec<u8>, _>("request").map_err(db)?,
-            message,
-            &[id],
-            previous.as_bytes(),
+        let stored_request = protection
+            .open_bytes(
+                &row.try_get::<Vec<u8>, _>("request").map_err(db)?,
+                &crate::protection::aad(
+                    p.tenant(),
+                    "windows.attempt.request",
+                    &(p.registration(), p.generation(), attempt),
+                )?,
+            )
+            .map_err(|_| protocol())?;
+        let report = correlate(stored_request.expose(), message, &ids, previous.as_bytes())?;
+        let task_request = super::input_storage::open_row(
+            protection,
+            p.tenant(),
+            row.try_get("operation").map_err(db)?,
+            &row,
+            "task_request",
         )?;
-        let status = report
-            .statuses
+        let parents = items
             .iter()
-            .find(|s| s.command_id == id)
-            .map(|s| i32::from(s.code));
-        let value = report.results.first().map(|r| r.value.0.clone());
-        let old_status = row.try_get::<Option<i32>, _>("status").map_err(db)?;
-        let old_value = row.try_get::<Option<String>, _>("value").map_err(db)?;
-        if old_status.is_some_and(|s| s >= 200 && s != 202 && status.is_some_and(|n| s != n))
-            || old_value
-                .as_ref()
-                .is_some_and(|v| value.as_ref().is_some_and(|n| n != v))
-        {
-            return Err(Error::Conflict);
-        }
-        let status = status.or(old_status);
-        let value = value.or(old_value);
-        let uri: String = row.try_get("uri").map_err(db)?;
-        if let Some(value) = &value {
-            let valid = match uri.as_str() {
-                rss_mdm_windows_mdm::configuration::STATUS_URI => {
-                    matches!(value.as_str(), "0" | "1" | "2" | "3" | "4")
-                }
-                "./DevInfo/Mod" => Field::Model.digest(value).is_ok(),
-                VERSION => Field::OsVersion.digest(value).is_ok(),
-                _ => false,
-            };
-            if !valid {
-                return Err(Error::Malformed);
+            .map(|item| {
+                Ok((
+                    item.try_get::<i64, _>("command").map_err(db)?,
+                    (
+                        item.try_get::<Option<i64>, _>("parent_command")
+                            .map_err(db)?,
+                        item.try_get::<String, _>("kind").map_err(db)?,
+                    ),
+                ))
+            })
+            .collect::<std::result::Result<std::collections::BTreeMap<_, _>, Error>>()?;
+        for item in items {
+            let id = item.try_get::<i64, _>("command").map_err(db)? as u32;
+            let uri: Option<String> = item.try_get("uri").map_err(db)?;
+            let status = report
+                .statuses
+                .iter()
+                .find(|s| {
+                    s.message_id == msg
+                        && s.command_id == id
+                        && (s.targets.is_empty()
+                            || uri.as_ref().is_some_and(|u| s.targets.contains(u)))
+                })
+                .map(|s| i32::from(s.code));
+            let value = report
+                .results
+                .iter()
+                .find(|r| {
+                    r.reference.message_id == msg
+                        && r.reference.command_id == id
+                        && Some(&r.reference.uri) == uri.as_ref()
+                })
+                .map(|r| r.value.0.clone());
+            if status.is_none() && value.is_none() {
+                continue;
             }
+            let old_status: Option<i32> = item.try_get("status").map_err(db)?;
+            let item_ordinal: i32 = item.try_get("item_ordinal").map_err(db)?;
+            let value_aad = result_aad(
+                p.tenant(),
+                p.registration(),
+                p.generation(),
+                attempt,
+                i64::from(id),
+                item_ordinal,
+            )?;
+            let old_sealed: Option<Vec<u8>> = item.try_get("value").map_err(db)?;
+            let old_value = old_sealed
+                .as_ref()
+                .map(|sealed| {
+                    let plain = protection
+                        .open_bytes(sealed, &value_aad)
+                        .map_err(|_| protocol())?;
+                    String::from_utf8(plain.expose().to_vec()).map_err(|_| protocol())
+                })
+                .transpose()?;
+            let atomic = atomic_ancestor(i64::from(id), &parents);
+            let kind: String = item.try_get("kind").map_err(db)?;
+            if old_status.is_some_and(|old| {
+                terminal_status(old)
+                    && status.is_some_and(|new| {
+                        old != new
+                            && !(atomic
+                                && matches!(new, 216 | 516)
+                                && successful_status(&kind, old))
+                    })
+            }) || old_value
+                .as_ref()
+                .is_some_and(|old| value.as_ref().is_some_and(|new| old != new))
+            {
+                return Err(Error::Conflict);
+            }
+            let new_status = status.is_some_and(terminal_status);
+            let new_result = value.is_some();
+            let status = status.or(old_status);
+            let value = value.or(old_value);
+            let old: Option<bool> = item.try_get("receipt_accepted").map_err(db)?;
+            // Atomic rollback is a new receipt, not a replay of a child's earlier success.
+            // Recheck current permission/deadline/generation instead of inheriting its acceptance.
+            let old = if status == old_status { old } else { None };
+            let accepted =
+                receipt_acceptance(c, protection, &task_request, &row, new_status, old).await?;
+            let old_result: Option<bool> = item.try_get("result_accepted").map_err(db)?;
+            let result_accepted =
+                receipt_acceptance(c, protection, &task_request, &row, new_result, old_result)
+                    .await?;
+            let value = if old_sealed.is_some() {
+                old_sealed
+            } else {
+                value
+                    .as_ref()
+                    .map(|v| {
+                        protection
+                            .seal_bytes(v.as_bytes(), &value_aad)
+                            .map_err(|_| protocol())
+                    })
+                    .transpose()?
+            };
+            sqlx::query("UPDATE mdm_commands.attempt_items SET status=$5,value=$6,receipt_accepted=$7,result_accepted=$8,received_at=CASE WHEN $9 AND (received_at IS NULL OR status IS DISTINCT FROM $5) THEN floor(extract(epoch FROM clock_timestamp()))::bigint ELSE received_at END,result_received_at=CASE WHEN $10 AND result_received_at IS NULL THEN floor(extract(epoch FROM clock_timestamp()))::bigint ELSE result_received_at END WHERE tenant_id=$1::uuid AND attempt=$2 AND command=$3 AND item_ordinal=$4")
+                .bind(&tenant).bind(attempt).bind(i64::from(id)).bind(item.try_get::<i32,_>("item_ordinal").map_err(db)?).bind(status).bind(value).bind(accepted).bind(result_accepted).bind(new_status).bind(new_result).execute(&mut *c).await.map_err(db)?;
         }
-        if status.is_some_and(|s| s >= 400) && value.is_some() {
-            return Err(Error::Conflict);
-        }
-        let accepted = receipt_acceptance(c, &row, status).await?;
-        sqlx::query("UPDATE mdm_commands.attempts SET status=$3,value=$4,received_at=floor(extract(epoch FROM clock_timestamp()))::bigint,receipt_accepted=$5 WHERE tenant_id=$1::uuid AND id=$2::uuid")
-  .bind(&tenant).bind(row.try_get::<String,_>("id").map_err(db)?).bind(status).bind(value).bind(accepted).execute(&mut *c).await.map_err(db)?;
-        consumed.insert((msg, id));
+        consumed.extend(ids.into_iter().map(|id| (msg, id)));
     }
-    receive_capabilities(c, p, message, &mut consumed, previous.as_bytes()).await?;
+    receive_capabilities(
+        c,
+        protection,
+        p,
+        message,
+        &mut consumed,
+        previous.as_bytes(),
+    )
+    .await?;
     Ok(Message {
         header: message.header.clone(),
         commands: message
@@ -150,6 +245,7 @@ pub async fn receive_on(
 }
 async fn receive_capabilities(
     c: &mut PgConnection,
+    protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     message: &Message,
     consumed: &mut std::collections::BTreeSet<(u32, u32)>,
@@ -170,9 +266,20 @@ async fn receive_capabilities(
             .iter()
             .any(|c| refs(c).is_some_and(|(_, id)| ids.contains(&id)))
         {
-            let request: Vec<u8> = row.try_get("request").map_err(db)?;
-            let sent = s::decode(&request, &CodecLimits::default()).map_err(|_| protocol())?;
-            let report = correlate(&request, message, &ids, previous)?;
+            let sealed: Vec<u8> = row.try_get("request").map_err(db)?;
+            let plain = protection
+                .open_bytes(
+                    &sealed,
+                    &crate::protection::aad(
+                        p.tenant(),
+                        "windows.capability.request",
+                        &(p.registration(), p.generation(), session),
+                    )?,
+                )
+                .map_err(|_| protocol())?;
+            let request = plain.expose();
+            let sent = s::decode(request, &CodecLimits::default()).map_err(|_| protocol())?;
+            let report = correlate(request, message, &ids, previous)?;
             let mut values = [
                 row.try_get::<Option<String>, _>("os_version").map_err(db)?,
                 row.try_get::<Option<String>, _>("edition").map_err(db)?,
@@ -207,7 +314,7 @@ async fn receive_capabilities(
             if statuses == [Some(200), Some(200)]
                 && let [Some(version), Some(edition)] = &values
                 && let Some(edition) = edition_id(edition)
-                && Platform::new(version, edition).is_ok()
+                && context(version, edition, Scope::Device).is_ok()
             {
                 let changed=sqlx::query_scalar::<_,bool>("SELECT NOT EXISTS(SELECT 1 FROM mdm_commands.capabilities WHERE tenant_id=$1::uuid AND registration=$2::uuid AND generation=$3 AND os_version=$4 AND edition=$5)").bind(&tenant).bind(&reg).bind(p.generation()).bind(version).bind(edition as i32).fetch_one(&mut *c).await.map_err(db)?;
                 sqlx::query("INSERT INTO mdm_commands.capabilities VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,floor(extract(epoch FROM clock_timestamp()))::bigint) ON CONFLICT(tenant_id,registration) DO UPDATE SET generation=excluded.generation,os_version=excluded.os_version,edition=excluded.edition,session=excluded.session,observed_at=excluded.observed_at")
@@ -240,9 +347,49 @@ fn edition_id(value: &str) -> Option<u32> {
         _ => value.parse::<u32>().ok(),
     }
 }
-/// Add bounded native work before the response owner encodes/caches its final bytes.
+
+fn context(version: &str, edition: u32, scope: Scope) -> std::result::Result<Context, Error> {
+    let parts = version.split('.').collect::<Vec<_>>();
+    if parts.len() != 4 {
+        return Err(protocol());
+    }
+    let mut build = [0; 4];
+    for (i, part) in parts.iter().enumerate() {
+        build[i] = part.parse().map_err(|_| protocol())?;
+    }
+    Ok(Context {
+        build: Some(build),
+        edition: Some(edition),
+        scope,
+    })
+}
+/// Persist the exact native request and expected item set before exposing outbound bytes.
+/// Admission uses the complete response; a valid tree must not poison every check-in.
+fn admit_response(
+    response: &Message,
+    commands: &[Command],
+) -> std::result::Result<Option<Vec<u8>>, &'static str> {
+    let mut candidate = response.clone();
+    candidate.commands.extend_from_slice(commands);
+    candidate.final_message = true;
+    if let Ok(bytes) = s::encode(&candidate, &CodecLimits::default()) {
+        return Ok(Some(bytes));
+    }
+    let mut minimum = response.clone();
+    minimum
+        .commands
+        .retain(|c| matches!(c, Command::Status(status) if status.command_ref == 0));
+    minimum.commands.extend_from_slice(commands);
+    minimum.final_message = true;
+    if s::encode(&minimum, &CodecLimits::default()).is_ok() {
+        Ok(None)
+    } else {
+        Err("native_response_budget_exceeded")
+    }
+}
 pub async fn send_on(
     c: &mut PgConnection,
+    protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     response: &mut Message,
     authenticated: bool,
@@ -251,192 +398,300 @@ pub async fn send_on(
         return Ok(false);
     }
     let tenant = p.tenant().to_string();
-    let reg = p.registration().to_string();
     let session = i64::from(response.header.session_id);
+    let stopped: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) WHERE a.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND a.session=$4 AND i.status=214)")
+        .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(session)
+        .fetch_one(&mut *c).await.map_err(db)?;
+    if stopped {
+        return Ok(false);
+    }
     let msg = i64::from(response.header.message_id);
     if msg >= 8 {
         return Ok(false);
     }
-    let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.capability_queries WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session=$3)").bind(&tenant).bind(&reg).bind(session).fetch_one(&mut *c).await.map_err(db)?;
+    let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.capability_queries WHERE tenant_id=$1::uuid AND registration=$2 AND session=$3)").bind(&tenant).bind(p.registration()).bind(session).fetch_one(&mut *c).await.map_err(db)?;
     let mut pending = false;
     if !exists {
         let id = crate::collection::store::allocate_commands_in(c, p, 2).await?;
         let mut request = response.clone();
         request.commands = vec![get(id, VERSION), get(id + 1, EDITION)];
+        let Some(_) = admit_response(response, &request.commands).map_err(|_| protocol())? else {
+            return Ok(true);
+        };
         let wire = s::encode(&request, &CodecLimits::default()).map_err(|_| protocol())?;
-        sqlx::query("INSERT INTO mdm_commands.capability_queries(tenant_id,registration,generation,session,request,version_command,edition_command) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,$7)")
-  .bind(&tenant).bind(&reg).bind(p.generation()).bind(session).bind(wire).bind(i64::from(id)).bind(i64::from(id+1)).execute(&mut *c).await.map_err(db)?;
+        let wire = protection
+            .seal_bytes(
+                &wire,
+                &crate::protection::aad(
+                    p.tenant(),
+                    "windows.capability.request",
+                    &(p.registration(), p.generation(), session),
+                )?,
+            )
+            .map_err(|_| protocol())?;
+        sqlx::query("INSERT INTO mdm_commands.capability_queries(tenant_id,registration,generation,session,request,version_command,edition_command) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)").bind(&tenant).bind(p.registration()).bind(p.generation()).bind(session).bind(wire).bind(i64::from(id)).bind(i64::from(id+1)).execute(&mut *c).await.map_err(db)?;
         response.commands.extend(request.commands);
         pending = true;
     }
-    let rows=sqlx::query("SELECT o.id::text,o.request::text,o.approval::text FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.registration_generation=$3 AND o.request->'task'->>'kind' IN ('state_verify','firewall','agent_install') AND o.gateway_accepted AND d.status IN('published','received') AND (o.request->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AND NOT EXISTS(SELECT 1 FROM mdm_commands.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND a.session=$4 AND o.request->'task'->>'kind'='state_verify') ORDER BY o.id LIMIT 64")
- .bind(&tenant).bind(&reg).bind(p.generation()).bind(session).fetch_all(&mut *c).await.map_err(db)?;
+    let cap=sqlx::query_as::<_,(String,i32)>("SELECT os_version,edition FROM mdm_commands.capabilities WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3").bind(&tenant).bind(p.registration()).bind(p.generation()).fetch_optional(&mut *c).await.map_err(db)?;
+    let rows=sqlx::query("SELECT o.id,o.device,o.registration,o.registration_generation,o.input_context,o.request,o.approval FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND o.input_context->>'platform'='windows' AND o.gateway_accepted AND o.dispatch_failure IS NULL AND d.status IN('published','received') AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) ORDER BY o.id LIMIT 64").bind(&tenant).bind(p.registration()).bind(p.generation()).fetch_all(&mut *c).await.map_err(db)?;
     for row in rows {
-        let op: Create = serde_json::from_str(&row.try_get::<String, _>("request").map_err(db)?)
-            .map_err(|_| protocol())?;
+        let op = super::input_storage::open_row(
+            protection,
+            p.tenant(),
+            row.try_get("id").map_err(db)?,
+            &row,
+            "request",
+        )?;
         let approval: ExecutionAuthority =
-            serde_json::from_str(&row.try_get::<String, _>("approval").map_err(db)?)
-                .map_err(|_| protocol())?;
+            serde_json::from_value(row.try_get("approval").map_err(db)?).map_err(|_| protocol())?;
         let at = now(c).await?;
-        if !approval.valid(c, op.task.permission(), at).await?
+        if !approval
+            .valid(c, protection, &op.task.permissions()?, at)
+            .await?
             || !approval.dispatch_ready(c).await?
         {
             continue;
         }
-        let id: String = row.try_get("id").map_err(db)?;
-        let old=sqlx::query("SELECT ordinal,phase,status,value,session,receipt_accepted FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2::uuid ORDER BY ordinal DESC LIMIT 1").bind(&tenant).bind(&id).fetch_optional(&mut *c).await.map_err(db)?;
-        let (next, waiting) = next_phase(old.as_ref(), &op.task, session)?;
-        pending |= waiting;
-        let Some((ordinal, phase)) = next else {
+        // A user request must be served by its independently authenticated user context.
+        if !matches!(op.target, NativeTarget::Device) {
             continue;
+        }
+        let Task::Windows { request } = &op.task else {
+            return Err(protocol());
         };
-        let native = crate::collection::store::allocate_commands_in(c, p, 1).await?;
-        let Some(command) = command_for(c, p, &op, native, phase, session).await? else {
+        let old=sqlx::query("SELECT a.id,a.ordinal,a.phase,a.session,a.platform FROM mdm_commands.attempts a WHERE a.tenant_id=$1::uuid AND a.operation=$2 ORDER BY a.ordinal DESC LIMIT 1").bind(&tenant).bind(op.operation_id).fetch_optional(&mut *c).await.map_err(db)?;
+        let accepted = if let Some(old) = &old {
+            let items = sqlx::query("SELECT kind,status,receipt_accepted,value,result_accepted FROM mdm_commands.attempt_items WHERE tenant_id=$1::uuid AND attempt=$2")
+                .bind(&tenant).bind(old.try_get::<Uuid, _>("id").map_err(db)?)
+                .fetch_all(&mut *c).await.map_err(db)?;
+            let mut accepted = !items.is_empty();
+            for item in items {
+                let kind: String = item.try_get("kind").map_err(db)?;
+                let status: Option<i32> = item.try_get("status").map_err(db)?;
+                accepted &= item
+                    .try_get::<Option<bool>, _>("receipt_accepted")
+                    .map_err(db)?
+                    == Some(true)
+                    && status.is_some_and(|code| successful_status(&kind, code))
+                    && (kind != "get"
+                        || status == Some(204)
+                        || (item
+                            .try_get::<Option<Vec<u8>>, _>("value")
+                            .map_err(db)?
+                            .is_some()
+                            && item
+                                .try_get::<Option<bool>, _>("result_accepted")
+                                .map_err(db)?
+                                == Some(true)));
+            }
+            accepted
+        } else {
+            false
+        };
+        let fresh = cap
+            .as_ref()
+            .map(|(v, e)| context(v, *e as u32, Scope::Device))
+            .transpose()?;
+        let frozen = old
+            .as_ref()
+            .map(|r| r.try_get::<Option<serde_json::Value>, _>("platform"))
+            .transpose()
+            .map_err(db)?
+            .flatten()
+            .map(|v| serde_json::from_value::<Context>(v).map_err(|_| protocol()))
+            .transpose()?;
+        let platform = frozen.or(fresh);
+        let (ordinal, phase) = match (&old, request) {
+            (None, W::Msi { .. }) => (1, AttemptPhase::Prepare),
+            (None, _) => (1, AttemptPhase::Execute),
+            (Some(old), W::Msi { .. })
+                if old.try_get::<String, _>("phase").map_err(db)? == "prepare" && accepted =>
+            {
+                (
+                    old.try_get::<i64, _>("ordinal")
+                        .map_err(db)?
+                        .checked_add(1)
+                        .ok_or_else(protocol)?,
+                    AttemptPhase::Execute,
+                )
+            }
+            (Some(old), W::SyncMl { request })
+                if old.try_get::<String, _>("phase").map_err(db)? == "execute"
+                    && old.try_get::<i64, _>("session").map_err(db)? != session
+                    && request.read_only().map_err(|_| protocol())? =>
+            {
+                (
+                    old.try_get::<i64, _>("ordinal")
+                        .map_err(db)?
+                        .checked_add(1)
+                        .ok_or_else(protocol)?,
+                    AttemptPhase::Execute,
+                )
+            }
+            (Some(old), W::SyncMl { request })
+                if (old.try_get::<String, _>("phase").map_err(db)? == "execute" && accepted)
+                    || (old.try_get::<String, _>("phase").map_err(db)? == "observe"
+                        && old.try_get::<i64, _>("session").map_err(db)? != session) =>
+            {
+                let Some(platform) = platform else {
+                    continue;
+                };
+                if request
+                    .effect_plan(platform)
+                    .map_err(|_| Error::Unsupported)?
+                    .readback()
+                    .is_none()
+                {
+                    continue;
+                }
+                (
+                    old.try_get::<i64, _>("ordinal")
+                        .map_err(db)?
+                        .checked_add(1)
+                        .ok_or_else(protocol)?,
+                    AttemptPhase::Observe,
+                )
+            }
+            _ => continue,
+        };
+        if ordinal > 32 {
             continue;
+        }
+        let readback = if phase == AttemptPhase::Observe {
+            let W::SyncMl { request } = request else {
+                return Err(protocol());
+            };
+            Some(
+                request
+                    .effect_plan(platform.ok_or_else(protocol)?)
+                    .map_err(|_| Error::Unsupported)?
+                    .into_readback()
+                    .ok_or_else(protocol)?,
+            )
+        } else {
+            None
         };
-        let uri = match &command {
-            Command::Get { items, .. } => items[0].target.clone().ok_or_else(protocol)?,
-            Command::Replace { .. } => rss_mdm_windows_mdm::configuration::FIREWALL_URI.into(),
-            Command::AgentInstall { command, .. } => command.target().map_err(|_| protocol())?,
-            _ => return Err(protocol()),
+        let count = match (request, &readback) {
+            (_, Some(v)) => v.request.command_count().map_err(|_| protocol())?,
+            (W::SyncMl { request }, _) => request.command_count().map_err(|_| protocol())?,
+            (W::Msi { .. }, _) => 1,
+        };
+        let id = crate::collection::store::allocate_commands_in(c, p, i64::from(count)).await?;
+        let command = match request {
+            W::SyncMl { request } => {
+                let Some(platform) = platform else {
+                    continue;
+                };
+                match readback
+                    .as_ref()
+                    .map(|v| &v.request)
+                    .unwrap_or(request)
+                    .compile(platform, id)
+                {
+                    Ok(compiled) => compiled.command,
+                    Err(error) => {
+                        let failure = serde_json::json!({"platform":"windows","phase":phase.as_str(),"reason":error.to_string(),"context":platform});
+                        sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
+                            .bind(&tenant).bind(op.operation_id).bind(failure).execute(&mut *c).await.map_err(db)?;
+                        continue;
+                    }
+                }
+            }
+            W::Msi { job } => {
+                let installer = rss_mdm_windows_mdm::software::Installer::new(job.clone())
+                    .map_err(|_| protocol())?;
+                if phase == AttemptPhase::Prepare {
+                    installer.prepare(id)
+                } else {
+                    installer.install(id).map_err(|_| protocol())?
+                }
+            }
+        };
+        match admit_response(response, std::slice::from_ref(&command)) {
+            Ok(Some(_)) => (),
+            Ok(None) => {
+                pending = true;
+                continue;
+            }
+            Err(reason) => {
+                let failure = serde_json::json!({"platform":"windows","phase":phase.as_str(),"reason":reason});
+                sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
+                    .bind(&tenant).bind(op.operation_id).bind(failure).execute(&mut *c).await.map_err(db)?;
+                continue;
+            }
         };
         let mut request = response.clone();
         request.commands = vec![command.clone()];
-        let wire = s::encode(&request, &CodecLimits::default()).map_err(|_| protocol())?;
-        sqlx::query("INSERT INTO mdm_commands.attempts(tenant_id,id,operation,ordinal,credential,session,message,command,phase,uri,request) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5::uuid,$6,$7,$8,$9,$10,$11)")
-  .bind(&tenant).bind(Uuid::new_v4().to_string()).bind(id).bind(ordinal).bind(p.credential().to_string()).bind(session).bind(msg).bind(i64::from(native)).bind(phase.as_str()).bind(uri).bind(wire).execute(&mut *c).await.map_err(db)?;
+        let (wire, _) =
+            s::encode_request(&request, &CodecLimits::default()).map_err(|_| protocol())?;
+        let attempt = Uuid::new_v4();
+        let wire = protection
+            .seal_bytes(
+                &wire,
+                &crate::protection::aad(
+                    p.tenant(),
+                    "windows.attempt.request",
+                    &(p.registration(), p.generation(), attempt),
+                )?,
+            )
+            .map_err(|_| protocol())?;
+        sqlx::query("INSERT INTO mdm_commands.attempts(tenant_id,id,operation,ordinal,credential,session,message,phase,request,platform) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10)").bind(&tenant).bind(attempt).bind(op.operation_id).bind(ordinal).bind(p.credential()).bind(session).bind(msg).bind(phase.as_str()).bind(wire).bind(platform.map(serde_json::to_value).transpose().map_err(|_|protocol())?).execute(&mut *c).await.map_err(db)?;
+        for item in expected_items(&command)? {
+            sqlx::query("INSERT INTO mdm_commands.attempt_items(tenant_id,attempt,command,item_ordinal,kind,uri,parent_command) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)").bind(&tenant).bind(attempt).bind(i64::from(item.command)).bind(item.ordinal).bind(item.kind).bind(item.uri).bind(item.parent.map(i64::from)).execute(&mut *c).await.map_err(db)?;
+        }
         response.commands.push(command);
         pending = true;
         break;
     }
-    let outstanding:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.attempts a JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) WHERE a.tenant_id=$1::uuid AND o.registration=$2::uuid AND a.session=$3 AND (o.request->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AND (a.status IS NULL OR (a.status=200 AND a.value IS NULL AND (a.phase=$4 OR o.request->'task'->>'kind'='state_verify'))))")
-    .bind(&tenant).bind(&reg).bind(session).bind(AttemptPhase::Observe.as_str()).fetch_one(c).await.map_err(db)?;
+    let outstanding:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) WHERE a.tenant_id=$1::uuid AND o.registration=$2 AND a.session=$3 AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AND (i.status IS NULL OR i.status IN (101,202,206,213) OR (i.kind='get' AND i.status IN (200,214) AND i.value IS NULL)))").bind(&tenant).bind(p.registration()).bind(session).fetch_one(c).await.map_err(db)?;
     Ok(pending || outstanding)
 }
-type NextPhase = (Option<(i64, AttemptPhase)>, bool);
-fn next_phase(
-    old: Option<&sqlx::postgres::PgRow>,
-    task: &Task,
-    session: i64,
-) -> std::result::Result<NextPhase, Error> {
-    let Some(old) = old else {
-        return Ok((
-            Some((
-                1,
-                if matches!(task, Task::AgentInstall { .. }) {
-                    AttemptPhase::Prepare
-                } else {
-                    AttemptPhase::Execute
-                },
-            )),
-            false,
-        ));
-    };
-    let ordinal = old
-        .try_get::<i64, _>("ordinal")
-        .map_err(db)?
-        .checked_add(1)
-        .ok_or_else(protocol)?;
-    let phase = AttemptPhase::parse(&old.try_get::<String, _>("phase").map_err(db)?)?;
-    let status: Option<i32> = old.try_get("status").map_err(db)?;
-    let same = old.try_get::<i64, _>("session").map_err(db)? == session;
-    match task {
-        Task::AgentInstall { .. }
-            if phase == AttemptPhase::Prepare
-                && matches!(status, Some(200 | 201))
-                && old
-                    .try_get::<Option<bool>, _>("receipt_accepted")
-                    .map_err(db)?
-                    == Some(true) =>
-        {
-            Ok((Some((ordinal, AttemptPhase::Execute)), false))
-        }
-        Task::AgentInstall { .. } => Ok((None, same && status.is_none())),
-        Task::Firewall { .. }
-            if phase == AttemptPhase::Execute
-                && status == Some(200)
-                && old
-                    .try_get::<Option<bool>, _>("receipt_accepted")
-                    .map_err(db)?
-                    == Some(true) =>
-        {
-            Ok((Some((ordinal, AttemptPhase::Observe)), false))
-        }
-        Task::StateVerify { .. } if !same => Ok((Some((ordinal, AttemptPhase::Execute)), false)),
-        _ => Ok((
-            None,
-            same && (status.is_none()
-                || (status == Some(200)
-                    && old
-                        .try_get::<Option<String>, _>("value")
-                        .map_err(db)?
-                        .is_none())),
-        )),
-    }
+struct ExpectedItem {
+    command: u32,
+    ordinal: i32,
+    kind: &'static str,
+    uri: Option<String>,
+    parent: Option<u32>,
 }
-async fn command_for(
-    c: &mut PgConnection,
-    p: &DevicePrincipal,
-    request: &Create,
-    native: u32,
-    phase: AttemptPhase,
-    session: i64,
-) -> std::result::Result<Option<Command>, Error> {
-    let tenant = p.tenant().to_string();
-    let reg = p.registration().to_string();
-    let command = match &request.task {
-        Task::AgentInstall { package } => {
-            let crate::planning::policies::agent_install::Identity::Windows { product, .. } =
-                package.identity
-            else {
-                return Ok(None);
-            };
-            let installer = rss_mdm_windows_mdm::agent_install::Installer::new(
-                &product.to_string(),
-                &package.version,
-                &package.url(request.operation_id),
-                package.artifact.sha256,
-                &request.operation_id.to_string(),
-            )
-            .map_err(|_| protocol())?;
-            if phase == AttemptPhase::Prepare {
-                installer.prepare(native)
-            } else {
-                installer.install(native)
+fn expected_items(command: &Command) -> std::result::Result<Vec<ExpectedItem>, Error> {
+    let mut pending = vec![(command, None)];
+    let mut out = Vec::new();
+    while let Some((command, parent)) = pending.pop() {
+        let (kind, items) = match command {
+            Command::Get { items, .. } => ("get", items.as_slice()),
+            Command::Add { items, .. } => ("add", items.as_slice()),
+            Command::Replace { items, .. } => ("replace", items.as_slice()),
+            Command::Delete { items, .. } => ("delete", items.as_slice()),
+            Command::Exec { items, .. } => ("exec", items.as_slice()),
+            Command::Atomic { id, commands } | Command::Sequence { id, commands } => {
+                pending.extend(commands.iter().rev().map(|c| (c, Some(*id))));
+                out.push(ExpectedItem {
+                    command: *id,
+                    ordinal: 0,
+                    kind: if matches!(command, Command::Atomic { .. }) {
+                        "atomic"
+                    } else {
+                        "sequence"
+                    },
+                    uri: None,
+                    parent,
+                });
+                continue;
             }
+            _ => return Err(protocol()),
+        };
+        for (ordinal, item) in items.iter().enumerate() {
+            out.push(ExpectedItem {
+                command: command.id(),
+                ordinal: ordinal as i32,
+                kind,
+                uri: Some(item.target.clone().ok_or_else(protocol)?),
+                parent,
+            });
         }
-        Task::ProfileInstall { .. } | Task::ProfileRemove { .. } => return Err(Error::Unsupported),
-        Task::StateVerify { field, .. } => get(
-            native,
-            match field {
-                Field::Model => "./DevInfo/Mod",
-                Field::OsVersion => VERSION,
-            },
-        ),
-        Task::Firewall {
-            enabled,
-            os_version,
-            edition,
-            ..
-        } => {
-            let eligible:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.capabilities c WHERE c.tenant_id=$1::uuid AND c.registration=$2::uuid AND c.generation=$3 AND c.os_version=$4 AND c.edition=$5 AND c.session=$6)")
-    .bind(&tenant).bind(&reg).bind(p.generation()).bind(os_version).bind(*edition as i32).bind(session).fetch_one(&mut *c).await.map_err(db)?;
-            if !eligible {
-                return Ok(None);
-            }
-            let firewall = Firewall::compile(
-                *enabled,
-                &Platform::new(os_version, *edition).map_err(|_| protocol())?,
-            )
-            .map_err(|_| protocol())?;
-            if phase == AttemptPhase::Observe {
-                firewall.observe(native)
-            } else {
-                firewall.replace(native)
-            }
-        }
-    };
-    Ok(Some(command))
+    }
+    Ok(out)
 }
 async fn now(c: &mut PgConnection) -> std::result::Result<i64, Error> {
     sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
@@ -447,16 +702,21 @@ async fn now(c: &mut PgConnection) -> std::result::Result<i64, Error> {
 /// Cached command bytes still require a live task approval and deadline.
 pub async fn replay_on(
     c: &mut PgConnection,
+    protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     m: &Message,
 ) -> std::result::Result<(), Error> {
-    let rows=sqlx::query("SELECT o.request::text,o.approval::text,d.status FROM mdm_commands.attempts a JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE a.tenant_id=$1::uuid AND o.registration=$2::uuid AND a.session=$3 AND a.message=$4")
+    let rows=sqlx::query("SELECT o.id,o.device,o.registration,o.registration_generation,o.input_context,o.request,o.approval::text,d.status FROM mdm_commands.attempts a JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE a.tenant_id=$1::uuid AND o.registration=$2::uuid AND a.session=$3 AND a.message=$4")
  .bind(p.tenant().to_string()).bind(p.registration().to_string()).bind(i64::from(m.header.session_id)).bind(i64::from(m.header.message_id)).fetch_all(&mut *c).await.map_err(db)?;
     let now = now(c).await?;
     for row in rows {
-        let request: Create =
-            serde_json::from_str(&row.try_get::<String, _>("request").map_err(db)?)
-                .map_err(|_| protocol())?;
+        let request = super::input_storage::open_row(
+            protection,
+            p.tenant(),
+            row.try_get("id").map_err(db)?,
+            &row,
+            "request",
+        )?;
         let approval: ExecutionAuthority =
             serde_json::from_str(&row.try_get::<String, _>("approval").map_err(db)?)
                 .map_err(|_| protocol())?;
@@ -465,7 +725,9 @@ pub async fn replay_on(
                 row.try_get::<String, _>("status").map_err(db)?.as_str(),
                 "published" | "received"
             )
-            || !approval.valid(c, request.task.permission(), now).await?
+            || !approval
+                .valid(c, protection, &request.task.permissions()?, now)
+                .await?
         {
             return Err(Error::Forbidden);
         }
@@ -475,11 +737,13 @@ pub async fn replay_on(
 
 async fn receipt_acceptance(
     c: &mut PgConnection,
+    protection: &rss_mdm_native_protection::Protector,
+    request: &Create,
     row: &sqlx::postgres::PgRow,
-    status: Option<i32>,
+    received: bool,
+    old: Option<bool>,
 ) -> std::result::Result<Option<bool>, Error> {
-    let old: Option<bool> = row.try_get("receipt_accepted").map_err(db)?;
-    if old.is_some() || !status.is_some_and(|s| s >= 200 && s != 202) {
+    if old.is_some() || !received {
         return Ok(old);
     }
     if !row.try_get::<bool, _>("within_deadline").map_err(db)?
@@ -493,13 +757,153 @@ async fn receipt_acceptance(
     {
         return Ok(Some(false));
     }
-    let request: Create =
-        serde_json::from_str(&row.try_get::<String, _>("task_request").map_err(db)?)
-            .map_err(|_| protocol())?;
     let approval: ExecutionAuthority =
         serde_json::from_str(&row.try_get::<String, _>("approval").map_err(db)?)
             .map_err(|_| protocol())?;
     let at = now(c).await?;
-    let valid = approval.valid(c, request.task.permission(), at).await?;
-    Ok(Some(valid))
+    Ok(Some(
+        at < request.deadline
+            && approval
+                .valid(c, protection, &request.task.permissions()?, at)
+                .await?,
+    ))
+}
+
+/// OMA SyncML Representation 1.2.2 §10: provisional receipts allow later completion.
+/// Unknown codes remain evidence, without inventing a successful business outcome.
+pub(super) fn terminal_status(status: i32) -> bool {
+    status >= 200 && !matches!(status, 202 | 206 | 213)
+}
+pub(super) fn successful_status(kind: &str, status: i32) -> bool {
+    match status {
+        200 | 214 => matches!(
+            kind,
+            "add" | "replace" | "delete" | "get" | "exec" | "atomic" | "sequence"
+        ),
+        201 => kind == "add",
+        204 => kind == "get",
+        210 | 211 => kind == "delete",
+        _ => false,
+    }
+}
+pub(super) fn rejected_status(status: i32) -> bool {
+    matches!(status, 215 | 216) || ((400..600).contains(&status) && status != 516)
+}
+fn atomic_ancestor(
+    command: i64,
+    parents: &std::collections::BTreeMap<i64, (Option<i64>, String)>,
+) -> bool {
+    let mut next = parents.get(&command).and_then(|(parent, _)| *parent);
+    for _ in 0..parents.len() {
+        let Some((parent, kind)) = next.and_then(|id| parents.get(&id)) else {
+            return false;
+        };
+        if kind == "atomic" {
+            return true;
+        }
+        next = *parent;
+    }
+    false
+}
+
+pub(super) fn result_aad(
+    tenant: TenantId,
+    registration: Uuid,
+    generation: i64,
+    attempt: Uuid,
+    command: i64,
+    ordinal: i32,
+) -> std::result::Result<rss_mdm_native_protection::DerivedAad, Error> {
+    crate::protection::aad(
+        tenant,
+        "windows.attempt.result",
+        &(registration, generation, attempt, command, ordinal),
+    )
+}
+
+#[cfg(test)]
+mod status_tests {
+    #[test]
+    fn only_explicit_command_outcomes_are_successful() {
+        for kind in [
+            "add", "replace", "delete", "get", "exec", "atomic", "sequence",
+        ] {
+            assert!(super::successful_status(kind, 200));
+            for code in [
+                101, 202, 203, 205, 206, 207, 208, 209, 212, 213, 215, 216, 217, 218, 507, 516,
+            ] {
+                assert!(!super::successful_status(kind, code), "{kind} {code}");
+            }
+        }
+        assert!(super::successful_status("get", 204));
+        assert!(!super::successful_status("exec", 204));
+        assert!(super::successful_status("add", 201));
+        assert!(!super::successful_status("get", 201));
+        assert!(super::successful_status("delete", 211));
+        assert!(super::rejected_status(215));
+        assert!(super::rejected_status(216));
+        assert!(!super::rejected_status(516));
+    }
+    #[test]
+    fn partial_completion_can_receive_a_later_terminal_receipt() {
+        for code in [101, 202, 206, 213] {
+            assert!(!super::terminal_status(code), "provisional status {code}");
+        }
+        assert!(super::terminal_status(200));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn response() -> Message {
+        Message {
+            header: s::Header {
+                session_id: 1,
+                message_id: 2,
+                target: "device".into(),
+                source: "https://mdm.example.test".into(),
+                credential: None,
+                meta: None,
+            },
+            commands: vec![Command::Status(s::Status {
+                id: 1,
+                message_ref: 1,
+                command_ref: 0,
+                command: s::CommandName::SyncHdr,
+                target_refs: vec![],
+                source_refs: vec![],
+                code: 212,
+                items: vec![],
+                challenge: None,
+                credential: None,
+            })],
+            final_message: true,
+        }
+    }
+    fn tree(children: u32) -> Command {
+        Command::Sequence {
+            id: 10,
+            commands: (0..children)
+                .map(|n| get(11 + n, "./DevInfo/Mod"))
+                .collect(),
+        }
+    }
+    #[test]
+    fn response_admission_accounts_for_header_and_collection_without_splitting_groups() {
+        let response = response();
+        assert!(admit_response(&response, &[tree(254)]).unwrap().is_some());
+        assert_eq!(
+            admit_response(&response, &[tree(255)]).unwrap_err(),
+            "native_response_budget_exceeded"
+        );
+        let mut with_collection = response.clone();
+        with_collection.commands.push(get(2, "./DevInfo/Man"));
+        assert!(
+            admit_response(&with_collection, &[tree(254)])
+                .unwrap()
+                .is_none()
+        );
+        assert!(admit_response(&response, &[tree(254)]).unwrap().is_some());
+    }
 }

@@ -67,6 +67,8 @@ docker run --rm --network host --mount type=bind,src=/private/mdm-operator,dst=/
 
 `identity.audit_worker` 必须配置独立 `mdm_identity_audit` 登录角色及秘密文件；host、port、name 必须与 `identity.database` 一致。安装器通过 Identity 公共 worker 授权接口赋予 consumer 与 Audit 权限，并通过 Ledger 的公开 SQL 接缝赋予追加能力；worker 不具有身份私表、producer、DDL 或直接审计表写权限。运行服务同时挂入 worker 密码，maintenance 密码仍仅归 operator。现有安装集合新增 `identity-audit-runtime-v1`，旧候选安装账本不会被静默升级。
 
+所有运行模式（含 Apple-only 与 Agent-only）必须配置顶层 `native_protection_key_file`，例如 `"native_protection_key_file":"/run/mdm/native-protection.key"`。文件必须恰好包含 **32 字节原始随机密钥**，不是 hex/Base64/PEM 文本。首次部署可用 `umask 077; openssl rand 32 > /run/mdm/native-protection.key` 生成，由服务账户读取，文件权限限制为 0600。它是保护原生输入、回执及内容的持久身份；与 Windows 协议 `protection_key_file`、CA/TLS 私钥和审计 Ledger 密钥分别生成、配置和保管。所有访问同一部署数据的实例必须使用同一原始密钥；启动会检查数据库中的 tenant key identity，错误长度或换 key 拒绝启动。
+
 运行配置和 `initialize-authorization` 配置必须显式填写 `audit`：Plain 为 `{"mode":"plain"}`；Ledger 为 `{"mode":"ledger","key_id":"部署提供的标识","key_file":"/run/mdm/audit-key"}`。密钥文件保存至少 32 字节的原始密钥，必须受文件权限保护；服务不自动生成、轮换或在错误时降级。所有运行角色使用 READ COMMITTED，恢复入口拒绝其他隔离级别。
 
 Linux host 网络使回环浏览器监听与同机 HTTPS 网关配合；Windows 协议由产品直接终止 TLS/mTLS。采用 `deployment/nginx.conf`，替换产品域名和证书路径；覆盖 X-Forwarded-For 为真实 peer，清空 Forwarded，限制真实 peer 的登录频率、连接数、正文与读取时间。后端只在真实 TCP peer 匹配 trusted_gateway 后采用覆盖后的单一来源地址。不能把浏览器监听直接暴露或接到未受控转发器。

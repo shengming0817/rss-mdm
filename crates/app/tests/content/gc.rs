@@ -10,6 +10,7 @@ async fn cleanup_preserves_resource_references(
     let data = case::name("orphaned upload without resource reference").as_bytes();
     let upload = Uuid::new_v4();
     let binding = rss_mdm_content_service::Binding {
+        storage_class: rss_mdm_content_service::StorageClass::Artifact,
         resource: "orphan".into(),
         version: "1".into(),
         variant: "default".into(),
@@ -30,7 +31,7 @@ async fn cleanup_preserves_resource_references(
     let tenant_dir = directory.join(case_tenant());
     let metadata_path = super::upload_metadata(&tenant_dir, upload)?;
     let mut metadata: Value = serde_json::from_slice(&std::fs::read(&metadata_path)?)?;
-    metadata["expires"] = json!(0);
+    metadata["upload"]["expires"] = json!(0);
     std::fs::write(metadata_path, serde_json::to_vec(&metadata)?)?;
     for owned in [&artifact, retained] {
         let digest = owned
@@ -109,10 +110,6 @@ async fn gc_reference_race(
             r::Id::new("default")?,
             r::Declaration::Configuration {
                 artifact: artifact.clone(),
-                schema: r::Id::new("schema")?,
-                apply: r::Id::new("apply")?,
-                detect: r::Id::new("detect")?,
-                remove: None,
             },
         )],
     )?;
@@ -122,6 +119,7 @@ async fn gc_reference_race(
         .begin(
             id,
             rss_mdm_content_service::Binding {
+                storage_class: rss_mdm_content_service::StorageClass::Artifact,
                 resource: resource.as_str().into(),
                 version: "v1".into(),
                 variant: "default".into(),

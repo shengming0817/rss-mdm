@@ -21,14 +21,17 @@ impl ExecutionService {
         else {
             return Ok(());
         };
+        let operation_id = Uuid::new_v4();
         let input = Create {
-            operation_id: Uuid::new_v4(),
+            operation_id,
             deadline,
-            task: Task::AgentInstall {
-                package: Box::new(package),
-            },
+            input_version: version.to_string(),
+            target: NativeTarget::Device,
+            task: package.native_task(operation_id)?,
         };
         let approval = authority::ExecutionAuthority::AgentInstall {
+            required: input.task.permissions()?,
+            package: Box::new(package),
             tenant: tx.tenant_id().to_string(),
             policy,
             version,
@@ -37,11 +40,17 @@ impl ExecutionService {
         };
         let now = storage::now(tx).await?;
         let check = approval.clone();
+        let protection = self.protection.clone();
         if !tx
             .with_connection(move |c| {
                 Box::pin(async move {
                     Ok(check
-                        .valid(c, crate::authorization::Permission::SoftwareDeploy, now)
+                        .valid(
+                            c,
+                            &protection,
+                            &[crate::authorization::Permission::SoftwareDeploy],
+                            now,
+                        )
                         .await)
                 })
             })
@@ -59,7 +68,13 @@ impl ExecutionService {
                 device,
                 &input,
                 approval,
-                crate::transaction::fingerprint(&(device, &input, policy, version))?,
+                crate::protection::fingerprint(
+                    &self.protection,
+                    self.tenant,
+                    device,
+                    "agent-install-command/v3",
+                    &(&input, policy, version),
+                )?,
                 &fact_audit,
             )
             .await;
@@ -137,7 +152,7 @@ impl ExecutionService {
         // One installation per source registration, shared across overlapping policies and revisions.
         // Repeated inventory and unknown delivery never create another installer execution.
         let tenant = tx.tenant_id().to_string();
-        let old=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND registration=$2 AND registration_generation=$3 AND request->'task'->>'kind'='agent_install')").bind(tenant).bind(registration).bind(generation).fetch_one(c).await})).await?;
+        let old=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND registration=$2 AND registration_generation=$3 AND approval->>'kind'='agent_install')").bind(tenant).bind(registration).bind(generation).fetch_one(c).await})).await?;
         if old {
             return Ok(None);
         }
@@ -264,9 +279,9 @@ impl ExecutionService {
                     })
                     .await??;
                     crate::transaction::lock(tx).await?;
-                    let op = storage::load(tx, id).await?;
+                    let op = storage::load(tx, &s.protection, id).await?;
                     storage::lock(tx, &op.device).await?;
-                    let Task::AgentInstall { package } = &op.request.task else {
+                    let Some(package) = op.approval.agent_package() else {
                         return Err(Error::NotFound.into());
                     };
                     let now = storage::now(tx).await?;
@@ -278,7 +293,7 @@ impl ExecutionService {
                         )
                         || storage::current_registration(tx, &op.device).await?
                             != (op.registration, op.registration_generation)
-                        || !storage::approval_valid(tx, &op, now).await?
+                        || !storage::approval_valid(&s.protection, tx, &op, now).await?
                     {
                         return Err(Error::Forbidden.into());
                     }
@@ -312,11 +327,13 @@ impl ExecutionService {
     ) -> Result<()> {
         let tenant = tx.tenant_id().to_string();
         let name = device.to_owned();
-        let ids=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,Uuid>("SELECT o.id FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(o.tenant_id,o.registration,o.registration_generation) WHERE o.tenant_id=$1::uuid AND o.device=$2 AND r.state='active' AND o.request->'task'->>'kind'='agent_install' AND d.status IN('published','received') ORDER BY o.id LIMIT 64").bind(tenant).bind(name).fetch_all(c).await})).await?;
+        let ids=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,Uuid>("SELECT o.id FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(o.tenant_id,o.registration,o.registration_generation) WHERE o.tenant_id=$1::uuid AND o.device=$2 AND r.state='active' AND o.approval->>'kind'='agent_install' AND d.status IN('published','received') ORDER BY o.id LIMIT 64").bind(tenant).bind(name).fetch_all(c).await})).await?;
         for id in ids {
-            let op = storage::load(tx, id).await?;
+            let op = storage::load(tx, &self.protection, id).await?;
             let now = storage::now(tx).await?;
-            if now >= op.request.deadline || !storage::approval_valid(tx, &op, now).await? {
+            if now >= op.request.deadline
+                || !storage::approval_valid(&self.protection, tx, &op, now).await?
+            {
                 continue;
             }
             let observation = installation_observation(
@@ -327,9 +344,11 @@ impl ExecutionService {
             )
             .await?;
             let event = match observation["installation"].as_str() {
-                Some("installed") => dc::DeviceEvent::Reported(
-                    op.request.digest(&self.tenant.to_string(), &op.device)?,
-                ),
+                Some("installed") => dc::DeviceEvent::Reported(op.request.digest(
+                    &self.protection,
+                    self.tenant,
+                    &op.device,
+                )?),
                 Some("failed") => dc::DeviceEvent::Rejected,
                 _ => continue,
             };
@@ -371,7 +390,7 @@ pub async fn installation_observation(
     agent: Arc<dyn channels::Agent>,
     op: &storage::Operation,
 ) -> Result<serde_json::Value> {
-    let Task::AgentInstall { package } = &op.request.task else {
+    let Some(package) = op.approval.agent_package() else {
         return Err(Error::Malformed.into());
     };
     let tenant = tx.tenant_id();
@@ -407,7 +426,7 @@ pub async fn installation_observation(
         let product = product.to_string();
         let publisher = publisher.clone();
         let query=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_scalar::<_,serde_json::Value>("SELECT q.channel_state FROM mdm_windows.collections q JOIN mdm_commands.attempts a ON a.tenant_id=q.tenant_id AND a.operation=$2 AND a.phase='execute' WHERE q.tenant_id=$1::uuid AND q.id=$3 AND q.registration=$4 AND q.first_command>a.command AND q.channel_state->>'product'=$5 AND q.channel_state->>'publisher'=$6").bind(tenant.to_string()).bind(operation).bind(snapshot).bind(registration).bind(product).bind(publisher).fetch_optional(c).await
+            sqlx::query_scalar::<_,serde_json::Value>("SELECT q.channel_state FROM mdm_windows.collections q JOIN mdm_commands.attempts a ON a.tenant_id=q.tenant_id AND a.operation=$2 AND a.phase='execute' JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE q.tenant_id=$1::uuid AND q.id=$3 AND q.registration=$4 AND q.first_command>i.command AND q.channel_state->>'product'=$5 AND q.channel_state->>'publisher'=$6").bind(tenant.to_string()).bind(operation).bind(snapshot).bind(registration).bind(product).bind(publisher).fetch_optional(c).await
         })).await?;
         after_dispatch = sent && query.is_some();
         if after_dispatch {
@@ -419,7 +438,7 @@ pub async fn installation_observation(
                 && query["statuses"][0] == 200
                 && let Some(status) = query["values"][0].as_str()
             {
-                use rss_mdm_windows_mdm::agent_install::{Progress, progress};
+                use rss_mdm_windows_mdm::software::{Progress, progress};
                 installation = match progress(status) {
                     Progress::Installing => "installing",
                     Progress::UserRequired => "user_required",
@@ -468,18 +487,18 @@ pub async fn installation_observation(
                 let d = rss_mdm_apple_mdm::protocol::decode(&bytes).map_err(Error::from)?;
                 observed_at = row.received_at;
                 installation = match if row.state == "acknowledged" {
-                    rss_mdm_apple_mdm::agent_install::presence(&d, bundle)
+                    rss_mdm_apple_mdm::software::presence(&d, bundle)
                 } else {
                     Err(rss_mdm_apple_mdm::Error::Malformed)
                 } {
-                    Ok(rss_mdm_apple_mdm::agent_install::Presence::Installing) => "installing",
-                    Ok(rss_mdm_apple_mdm::agent_install::Presence::Absent) => "absent",
+                    Ok(rss_mdm_apple_mdm::software::Presence::Installing) => "installing",
+                    Ok(rss_mdm_apple_mdm::software::Presence::Absent) => "absent",
                     _ => "unknown",
                 };
             }
         }
     } else {
-        let status=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,Option<i32>>("SELECT status FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND (phase='execute' OR(phase='prepare' AND status>=400)) AND receipt_accepted ORDER BY ordinal DESC LIMIT 1").bind(tenant.to_string()).bind(operation).fetch_optional(c).await})).await?.flatten();
+        let status=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,Option<i32>>("SELECT i.status FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id=$1::uuid AND a.operation=$2 AND (a.phase='execute' OR(a.phase='prepare' AND i.status>=400)) AND i.receipt_accepted ORDER BY a.ordinal DESC,i.command DESC LIMIT 1").bind(tenant.to_string()).bind(operation).fetch_optional(c).await})).await?.flatten();
         delivery = match status {
             Some(200 | 202) => "acknowledged",
             Some(n) if n >= 400 => "rejected",

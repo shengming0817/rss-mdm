@@ -6,6 +6,8 @@
 
 部署使用配套数据库、服务、Agent 协议及可信签名配置。管理客户端使用 Enrollment `/api/v3`、状态型设备命令 `/api/v2`、企业脚本计划及运行 `/api/v3/script-plans`。安装前显式配置审计 Plain 或 Ledger；Ledger 的 key ID 与受保护密钥文件必须由部署方提供，缺失或错误时拒绝启动。
 
+恢复前停止全部写入实例，按同一备份时间点恢复数据库、内容卷和原 `native_protection_key_file`，确认服务账户可读且所有实例使用同一份 32 原始字节密钥后再启动。密钥备份应存入受控秘密存储并验证可取回；不要打印密钥或提交到代码/日志。当前不支持原地轮转或自行替换密钥；丢失原密钥后重新生成文件不能解密已有 native 数据，也不能解除 key identity 校验。原生输入认证或身份完整性损坏归为永久恢复失败，记录 `mdm_command_recovery_integrity_failure` / `native_input_integrity`，不持续退避；保留证据并从一致备份恢复，不能删除 guards 后重发变更。
+
 每个 tenant 制品目录必须允许服务创建并锁定 `.upload.lock`；启动持有跨实例独占锁时核对 `.upload-<canonical hyphenated UUID>.json` 元数据并清理已完成会话的 `.part` 残留，损坏元数据、目录锁冲突或清理失败均阻止启动。未完成会话保留以便按原 offset 续传；过期会话及孤立的 `.part`/`.next` 在新上传或显式内容清理时按保留窗口回收。回退使用配套数据库、制品、密钥备份和服务，不能仅降级二进制。
 
 ## 就绪、停机与恢复

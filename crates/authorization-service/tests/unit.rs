@@ -48,7 +48,6 @@ fn user_group_requires_an_explicit_enabled_state() {
 fn grants_keep_each_operation_with_its_scope() {
     for operation in [
         Permission::InventoryAssign,
-        Permission::StateVerify,
         Permission::OperationRead,
         Permission::OperationCancel,
     ] {

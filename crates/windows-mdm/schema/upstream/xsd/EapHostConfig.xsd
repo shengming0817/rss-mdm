@@ -1,0 +1,34 @@
+<xs:schema 
+ targetNamespace="http://www.microsoft.com/provisioning/EapHostConfig"
+ elementFormDefault="qualified" 
+ xmlns="http://www.microsoft.com/provisioning/EapHostConfig"
+ xmlns:xs="http://www.w3.org/2001/XMLSchema"
+ xmlns:baseEap="http://www.microsoft.com/provisioning/BaseEapMethodConfig"
+ xmlns:eapCommon="http://www.microsoft.com/provisioning/EapCommon"
+ version="1.0">
+
+  <xs:import 
+   namespace="http://www.microsoft.com/provisioning/BaseEapMethodConfig"
+   schemaLocation="BaseEapMethodConfig.xsd"/>
+
+  <xs:import 
+   namespace="http://www.microsoft.com/provisioning/EapCommon"
+   schemaLocation="EapCommon.xsd"/>
+
+   <xs:element name="EapHostConfig">
+      <xs:complexType>
+         <xs:sequence>
+            <!-- This element defines the EAP Method being configured -->
+            <xs:element name="EapMethod" type="eapCommon:EapMethodType"/>
+            <xs:choice>
+               <!-- Use Config element when configuration is present in plain text  -->
+               <xs:element name="Config" type="baseEap:BaseEapMethodConfig"/>
+               <!-- Use ConfigBlob element when configuration is present in blob format. MUST be a BLOB specifying EAP configuration settings to be used while performing IEEE 802.1X authentication. For the EAP method which is being configured via group policy, the EAP configuration settings format is specific to the corresponding EAP method implementation on the client machines. The EAPData blob format for Microsoft's implementation of PEAP, EAP-TLS and Ms-ChapV2 is documented in section 2.2.5.1.6. For non-Microsoft EAP method implementations, please contact the corresponding vendors.-->
+               <xs:element name="ConfigBlob" type="xs:hexBinary"/>
+            </xs:choice>
+            <!-- extension point for other namespaces -->
+            <xs:any processContents="lax" minOccurs="0" maxOccurs="unbounded" namespace="##other"/>
+         </xs:sequence>
+      </xs:complexType>
+   </xs:element>
+</xs:schema>

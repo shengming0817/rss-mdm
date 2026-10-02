@@ -49,6 +49,31 @@ INT/TERM/HUP/QUIT 取消信号会转发到运行进程组，五秒后仍存活�
 池损坏或遗留进程无法确认时改用新的专用池，并先排查原进程；不删除活跃锁、不自动接管未标记非空目录。
 旧公共 target 不自动迁移或清理，确认所有旧构建退出后再自行处理。
 
+## 原生协议 schema 来源与生成
+
+`rss-mdm-native-schema` 是开发工具，不参与产品服务装配。固定来源由
+`crates/native-schema/sources/` 中的确定性 ZIP 与 `lock.json` 持有。生成入口先校验归档摘要，
+再还原被 Git 忽略的展开目录，并核对归档内逐文件来源、许可证和摘要。Learn 完整正文不入库；
+普通离线生成消费 `windows-mdm/schema/learn-facts.json` 的结构化适用性与来源 URL/摘要。
+普通构建和生成检查均不下载来源，不跟随浮动分支。
+
+```sh
+python3 hack/build_run.py -- cargo run --locked -p rss-mdm-native-schema -- --write
+python3 hack/build_run.py -- cargo run --locked -p rss-mdm-native-schema -- --check
+python3 hack/build_run.py -- cargo run --locked -p rss-mdm-native-schema -- --check-windows-sources
+```
+
+前两条命令生成或核对两平台实际编译使用的 schema，包括 Windows DDF 节点及 ADMX 参数合同。
+Apple 历史正式来源合成为一份带版本条件的字段图，
+保留原生字段的引入、移除及设备/用户条件，不为旧 RSS wire 生成兼容执行路径。
+最后一条命令校验 DDF/ADMX 字节及模板策略引用；来源引用完整不代表 Windows 原生执行已验证。
+schema 检查也不替代操作语义、真实 HTTP/DB 接缝或独立真机验证。
+
+来源更新须固定官方 revision 或归档摘要，再重新生成并验证受影响行为。结构化 Learn 事实保留
+实际消费的适用性及可追溯 URL/摘要；ADMX 归档保存模板及可取得的许可文本。只有需要重新导入官方 MSI
+时才使用 `--import-admx <来源清单> <显式暂存目录>`；该操作只读取已下载且摘要匹配的归档，
+不安装或执行其中程序。临时归档和提取目录放在被忽略的 `artifacts/` 下。
+
 ## Inventory 调试
 
 示例程序使用受控操作员提供的 `DATABASE_URL`、`PG_CA_FILE`、`MDM_SCOPE_FILE`；scope 文件不是来自请求的认证声明。输入格式见 [fixtures](../../fixtures)，示例入口见 [examples](../../crates/examples)。
@@ -118,3 +143,11 @@ make t3-auth T3_ARGS="--mode faults --candidate <候选目录> --tools-image <�
 多个 localhost 端口的浏览器调试使用独立浏览器 profile 或自动化 context；Cookie 按主机而非端口隔离。
 
 T2 的模块职责、选择边界、并发与结果格式见[测试模块](test-modules.md)。`JOBS=1` 可顺序诊断；默认 `JOBS=2`。LIST 只构建和发现测试，不启动服务，不覆盖正式执行结果。
+
+## Windows 原生操作与效果证据
+
+原生输入使用 Windows 的类型化 Node/Atomic/Sequence 或通用 MSI 合同；旧 Firewall、AgentInstall、StateVerify 输入和旧原生派发格式不再解码或转换。产品软件准入仍只允许已有固定 Agent，原生 MSI 编码不持有品牌限制。
+
+操作查询分别展示执行进度、原生回执、`effect` 和 `effectReason`。效果可为 verified、diverged、waiting 或 unverifiable；查询本身不证明变更效果。永久节点 Delete 若恢复默认值但缺少固定检测条件，明确保持 unverifiable 和对象 guards。设备控制、敏感操作及受限诊断没有通用效果查询时记录族专属证据需求；没有实际脚本原生映射时拒绝，不自动转 Agent/安装包。诊断制品、用户身份维护与持续配置由对应生命周期 owner 持有。
+
+ADMX 更新先运行 `python3 hack/native_sources.py prepare` 还原现有机器来源，再导入到新的 `artifacts/` 暂存目录；核对暂存清单、字节和许可证后替换展开的 ADMX 来源目录，运行 `python3 hack/native_sources.py pack` 更新确定性 ZIP/lock，最后运行生成器 `--write`。生成和检查会用固定 ZIP 重建缓存，不能把未经打包的缓存改动当成新来源。来源更新提交包含 ZIP、lock 和实际生成结果。

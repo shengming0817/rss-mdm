@@ -16,14 +16,14 @@ async fn publish(
     if let Some(schedule) = schedule {
         definition["action"]["schedule"] = schedule;
     }
-    post(author,router,&format!("/api/v2/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":definition}})).await?;
+    post(author,router,&format!("/api/v3/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":definition}})).await?;
     Ok(id)
 }
 async fn disable(author: &mut Browser, router: &Router, id: Uuid) -> Result<()> {
     post(
         author,
         router,
-        &format!("/api/v2/policies/{id}"),
+        &format!("/api/v3/policies/{id}"),
         json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"disable"}}),
     )
     .await?;

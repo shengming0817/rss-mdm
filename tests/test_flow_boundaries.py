@@ -25,7 +25,8 @@ class FlowOwnership(unittest.TestCase):
             text = path.read_text()
             for forbidden in ("INSERT INTO mdm_policy.policies",
                               "UPDATE mdm_policy.policies",
-                              "crate::management::", "crate::planning::configuration"):
+                              "INSERT INTO mdm_policy.versions",
+                              "UPDATE mdm_policy.versions", "crate::management::"):
                 self.assertNotIn(forbidden, text, str(path))
 
     def test_retired_plan_model_and_authority_do_not_escape_to_execution(self):

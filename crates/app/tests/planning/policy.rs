@@ -8,7 +8,7 @@ async fn large_assignment_uses_published_scope_without_eager_execution() -> Resu
     let router = app(&fixture.base, reader.clone()).await?;
     let mut browser = fixture.browser("other")?;
     let member = browser_subject(&browser, &router).await?;
-    let mut grants = identity::device_grants(None, &["inventory_read", "firewall_write"])?;
+    let mut grants = identity::device_grants(None, &["inventory_read", "configuration_write"])?;
     for permission in [
         "group_read",
         "group_write",
@@ -28,29 +28,13 @@ async fn large_assignment_uses_published_scope_without_eager_execution() -> Resu
     identity::set_grants(case_tenant(), &member, grants).await?;
     let automation = start_automation(&fixture.base).await?;
     let resource = Uuid::new_v4();
-    let path = format!("/api/v3/resources/{resource}");
-    call(
+    native_configuration_resource(
         &mut browser,
         &router,
-        &path,
-        0,
-        json!({"action":"create","kind":"configuration"}),
-    )
-    .await?;
-    call(
-        &mut browser,
-        &router,
-        &path,
-        1,
-        json!({"action":"firewall_version","version":"v1","enabled":true}),
-    )
-    .await?;
-    call(
-        &mut browser,
-        &router,
-        &path,
-        2,
-        json!({"action":"activate","version":"v1"}),
+        resource,
+        "windows",
+        "x86_64",
+        windows_configuration(),
     )
     .await?;
     let scope = Uuid::new_v4();
@@ -63,8 +47,8 @@ async fn large_assignment_uses_published_scope_without_eager_execution() -> Resu
     )
     .await?;
     let id = Uuid::new_v4();
-    let path = format!("/api/v2/policies/{id}");
-    call(&mut browser,&router,&path,0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action": {"resource": {"id":resource,"version":"v1","platform":"windows","architecture":"x86_64","variant":"domain-firewall"},"kind":"configuration","exit":"retain"}}})).await?;
+    let path = format!("/api/v3/policies/{id}");
+    call(&mut browser,&router,&path,0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action": {"resource": {"id":resource,"version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"kind":"configuration","exit":"retain"}}})).await?;
     let policy = path.as_str();
     let revision = 1;
     let browser = &mut browser;
@@ -105,8 +89,10 @@ async fn large_assignment_uses_published_scope_without_eager_execution() -> Resu
     definition["scope"] = json!(scope);
     // This fixture grants publish authority separately from scope/member read authority.
     let member = browser_subject(browser, router).await?;
-    let grants =
-        crate::test_support::identity::device_grants(None, &["firewall_write", "inventory_read"])?;
+    let grants = crate::test_support::identity::device_grants(
+        None,
+        &["configuration_write", "inventory_read"],
+    )?;
     let mut grants = grants;
     for permission in [
         crate::authorization::Permission::PolicyRead,

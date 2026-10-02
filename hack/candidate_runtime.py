@@ -122,7 +122,11 @@ def inputs(root, example, gateway_file):
     def copy_file(source):
         path=runtime/Path(source).name;shutil.copy(source,path);path.chmod(0o600)
         return "/run/mdm/"+path.name
+    native_key=runtime/"native-data.key"
+    native_key.touch(mode=0o600)
+    native_key.write_bytes(os.urandom(32))
     config=json.loads(example.read_text())
+    config["native_protection_key_file"]="/run/mdm/native-data.key"
     config["native_protocols"]={"windows":copy_inputs(windows)}
     for field,role in [("access_database","mdm_access"),("runtime_database","mdm_runtime")]:
         config[field]=database(runtime,role)

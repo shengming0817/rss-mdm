@@ -77,7 +77,7 @@ pub(crate) async fn publish_until(
     )
     .await?;
     let resource = Uuid::new_v4();
-    let path = format!("/api/v3/resources/{resource}");
+    let path = format!("/api/v4/resources/{resource}");
     write(
         user,
         router,
@@ -95,7 +95,7 @@ pub(crate) async fn publish_until(
     };
     let definition = json!({"source":registered["snapshot"],"package":"RSS.Agent","version":"1.2.3","artifacts":{"package":{"reference":"agent-installer","length":bytes().len(),"sha256":Sha256::digest(bytes()).to_vec()}},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"behavior":{"kind":if windows{"msi"}else{"pkg"},"installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":detect,"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
     write(user,router,&path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":platform,"architecture":arch,"key":"default","declaration":{"kind":"software","definition":definition}}]})).await?;
-    let request=Request::builder().method(Method::POST).uri(format!("{path}/content?version=v1&variant=default&platform={platform}&architecture={arch}&operation={}",Uuid::new_v4()))
+    let request=Request::builder().method(Method::POST).uri(format!("/api/v3/resources/{resource}/content?version=v1&variant=default&platform={platform}&architecture={arch}&operation={}",Uuid::new_v4()))
         .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1").header("x-csrf-token",user.csrf.as_ref().unwrap())
         .header("cookie",user.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; ")).header("content-type","application/octet-stream").body(Body::from(bytes()))?;
     {
@@ -135,7 +135,7 @@ pub(crate) async fn publish_until(
     write(
         user,
         router,
-        &format!("/api/v2/policies/{policy}"),
+        &format!("/api/v3/policies/{policy}"),
         0,
         input,
     )
@@ -162,7 +162,7 @@ pub(crate) async fn diagnosis(
         .call(
             router,
             Method::GET,
-            &format!("/api/v2/policies/{policy}/devices"),
+            &format!("/api/v3/policies/{policy}/devices"),
             None,
         )
         .await?;

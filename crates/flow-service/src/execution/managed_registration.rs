@@ -125,7 +125,7 @@ impl ExecutionService {
         if let Some(receipt) = self.agent_store.managed_replay(c, p, input, audit).await? {
             return Ok((receipt, true));
         }
-        let row=sqlx::query("SELECT o.device,o.registration,o.registration_generation,o.request,o.approval,mdm_commands.installation_status(o.id) AS status FROM mdm_commands.operations o WHERE o.tenant_id=$1::uuid AND o.id=$2").bind(&tenant).bind(input.installation_operation).fetch_optional(&mut *c).await.map_err(crate::database::db)?.ok_or(Error::Forbidden)?;
+        let row=sqlx::query("SELECT o.device,o.registration,o.registration_generation,o.request,o.input_context,o.approval,mdm_commands.installation_status(o.id) AS status FROM mdm_commands.operations o WHERE o.tenant_id=$1::uuid AND o.id=$2").bind(&tenant).bind(input.installation_operation).fetch_optional(&mut *c).await.map_err(crate::database::db)?.ok_or(Error::Forbidden)?;
         if row
             .try_get::<Uuid, _>("registration")
             .map_err(crate::database::db)?
@@ -141,12 +141,17 @@ impl ExecutionService {
         {
             return Err(Error::Forbidden);
         }
-        let request: Create =
-            serde_json::from_value(row.try_get("request").map_err(crate::database::db)?)
+        let request = super::input_storage::open_row(
+            &self.protection,
+            self.tenant,
+            input.installation_operation,
+            &row,
+            "request",
+        )?;
+        let approval: authority::ExecutionAuthority =
+            serde_json::from_value(row.try_get("approval").map_err(crate::database::db)?)
                 .map_err(|_| Error::Malformed)?;
-        let Task::AgentInstall { package } = &request.task else {
-            return Err(Error::Forbidden);
-        };
+        let package = approval.agent_package().ok_or(Error::Forbidden)?.clone();
         if request.task.source() != source {
             return Err(Error::Forbidden);
         }
@@ -185,11 +190,13 @@ impl ExecutionService {
         {
             return Err(Error::Forbidden);
         }
-        let approval: authority::ExecutionAuthority =
-            serde_json::from_value(row.try_get("approval").map_err(crate::database::db)?)
-                .map_err(|_| Error::Malformed)?;
         if !approval
-            .valid(c, crate::authorization::Permission::SoftwareDeploy, now)
+            .valid(
+                c,
+                &self.protection,
+                &[crate::authorization::Permission::SoftwareDeploy],
+                now,
+            )
             .await?
         {
             return Err(Error::Forbidden);

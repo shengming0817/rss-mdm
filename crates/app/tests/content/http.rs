@@ -13,7 +13,7 @@ async fn upload_recovery_download_range_and_authorization() -> Result<()> {
     let registered = &fixture.registered;
     let mut user = fixture.user.clone();
     let resource = Uuid::new_v4();
-    let resource_path = format!("/api/v3/resources/{resource}");
+    let resource_path = format!("/api/v4/resources/{resource}");
     write(
         &mut user,
         router,
@@ -45,7 +45,7 @@ async fn upload_recovery_download_range_and_authorization() -> Result<()> {
     );
     let operation = Uuid::new_v4();
     let upload_path = format!(
-        "{origin}{resource_path}/content?version=v1&variant=default&platform=windows&architecture=x86_64&operation={operation}"
+        "{origin}/api/v3/resources/{resource}/content?version=v1&variant=default&platform=windows&architecture=x86_64&operation={operation}"
     );
     let cookie = user
         .cookies
@@ -110,7 +110,7 @@ async fn upload_recovery_download_range_and_authorization() -> Result<()> {
         .call(
             router,
             Method::GET,
-            &format!("{resource_path}/content/operations/{operation}"),
+            &format!("/api/v3/resources/{resource}/content/operations/{operation}"),
             None,
         )
         .await?;
@@ -237,7 +237,7 @@ async fn corrupt_uploads_have_no_binding_and_new_operations_reuse_verified_conte
     let mut user = fixture.user.clone();
     let router = &fixture.router;
     let resource = Uuid::new_v4();
-    let path = format!("/api/v3/resources/{resource}");
+    let path = format!("/api/v4/resources/{resource}");
     let bytes = b"validated";
     write(
         &mut user,
@@ -271,7 +271,7 @@ async fn corrupt_uploads_have_no_binding_and_new_operations_reuse_verified_conte
         (bytes.as_slice(), StatusCode::CREATED),
     ] {
         let operation = Uuid::new_v4();
-        let response = fixture.client.post(format!("{}{path}/content?version=v1&variant=default&platform=windows&architecture=x86_64&operation={operation}", fixture.origin))
+        let response = fixture.client.post(format!("{}/api/v3/resources/{resource}/content?version=v1&variant=default&platform=windows&architecture=x86_64&operation={operation}", fixture.origin))
             .header("host","mdm.example.test").header("origin","https://mdm.example.test")
             .header("x-identity-request","1").header("x-csrf-token",user.csrf.as_ref().unwrap())
             .header("cookie",&cookie).header("content-type","application/octet-stream")

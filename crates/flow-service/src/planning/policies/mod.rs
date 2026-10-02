@@ -40,7 +40,9 @@ pub enum Frozen {
         frequency: Frequency,
     },
     Configuration {
-        enabled: bool,
+        #[serde(rename = "native_sealed")]
+        native: super::configuration::Protected,
+        grants: std::collections::BTreeMap<String, Vec<crate::authorization::UserGrant>>,
         platform: Platform,
         exit: Exit,
         resource_digest: [u8; 32],
@@ -102,9 +104,16 @@ impl Policies {
                         } else {
                             let variant = variant(&version, binding)?;
                             Ok(match variant.declaration() {
+                                resource::Declaration::Configuration { artifact } => Some((
+                                    artifact.clone(),
+                                    rss_mdm_content_service::StorageClass::NativeConfiguration,
+                                )),
                                 resource::Declaration::Script { artifact, .. }
                                 | resource::Declaration::NativeCollection { artifact, .. } => {
-                                    Some(artifact.clone())
+                                    Some((
+                                        artifact.clone(),
+                                        rss_mdm_content_service::StorageClass::Artifact,
+                                    ))
                                 }
                                 _ => None,
                             })
@@ -117,13 +126,13 @@ impl Policies {
         } else {
             None
         };
-        let verified = if let Some(artifact) = &artifact {
+        let verified = if let Some((artifact, class)) = &artifact {
             Some(
                 self.execution
                     .content
                     .as_ref()
                     .ok_or(Error::Unsupported)?
-                    .verify(artifact)
+                    .verify_class(artifact, *class)
                     .await?,
             )
         } else {
@@ -171,7 +180,7 @@ impl Policies {
                     let policy = changed_policy.policy;
                     authorize_snapshot(&authorization, p, &policy.definition)?;
                     if changed {
-                        let frozen = if matches!(policy.definition.action, Action::EnsureAgentInstalled { .. }) {
+                        let mut frozen = if matches!(policy.definition.action, Action::EnsureAgentInstalled { .. }) {
                             Frozen::AgentInstall { action: Box::new(s.freeze_agent_in(tx,p,&authorization,&policy.definition.action).await?) }
                         } else if matches!(policy.definition.action, Action::RequestMdmEnrollment { .. }) {
                             if s.execution.signer.is_none() { return Err(Error::Unsupported.into()); }
@@ -181,8 +190,10 @@ impl Policies {
                                 tx,
                                 &policy.definition.action,
                                 verified,
+                                Some(super::configuration::Owner::Policy { policy: policy.id, version: policy.version }),
                             )
                             .await? };
+                        frozen.authorize_native(p,&authorization,None,&s.execution.protection,tx.tenant_id(),Some(super::configuration::Owner::Policy { policy: policy.id, version: policy.version }))?;
                         storage::write_in(
                             &s.planning.policy_store,
                             tx,
@@ -246,6 +257,7 @@ impl Policies {
         tx: &mut PgTransaction<'_>,
         action: &Action,
         verified: Option<&rss_mdm_content_service::Verified>,
+        owner: Option<super::configuration::Owner>,
     ) -> Result<Frozen> {
         let binding = action.resource().ok_or(Error::Unsupported)?;
         let version = self.resource_in(tx, binding).await?;
@@ -421,6 +433,27 @@ impl Policies {
                             run_lifetime_seconds: *run_lifetime_seconds,
                         },
                         definition: definition.clone(),
+                        windows_queries: if definition.spec().adapter
+                            == resource::NativeAdapter::WindowsCsp
+                        {
+                            definition
+                                .spec()
+                                .mappings
+                                .values()
+                                .map(|mapping| {
+                                    rss_mdm_windows_mdm::native::Request::from_uri(
+                                        &mapping.query,
+                                        rss_mdm_windows_mdm::native::Verb::Get,
+                                        None,
+                                        rss_mdm_windows_mdm::native::Scope::Device,
+                                    )
+                                    .map_err(|_| Error::Unsupported)
+                                })
+                                .collect::<std::result::Result<_, _>>()?
+                        } else {
+                            Vec::new()
+                        },
+                        grants: Default::default(),
                         collection,
                         resource_digest: version.digest().bytes(),
                     }),
@@ -498,20 +531,30 @@ impl Policies {
             }
             (
                 Action::Configuration { exit, .. },
-                resource::Declaration::Configuration { remove, .. },
+                resource::Declaration::Configuration { artifact },
             ) => {
-                if matches!(exit, Exit::Remove) && remove.is_none() {
+                let verified = verified
+                    .filter(|v| v.matches(artifact))
+                    .ok_or(Error::Conflict)?;
+                let native = super::configuration::Configuration::read(verified)?;
+                if matches!(exit, Exit::Remove) && native.remove.is_none() {
                     return Err(Error::Unsupported.into());
                 }
-                let tenant = tx.tenant_id().to_string();
-                let resource = binding.id().to_owned();
-                let version_id = binding.version().to_owned();
-                let enabled=tx.with_connection(move|c|Box::pin(async move {
-                    sqlx::query_scalar::<_,bool>("SELECT enabled FROM mdm_planning.firewall_resources WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3")
-                        .bind(tenant).bind(resource).bind(version_id).fetch_optional(c).await
-                })).await?.ok_or(Error::Unsupported)?;
+                let expected = match exact.platform {
+                    Platform::Windows => rss_mdm_inventory::ReportSource::MdmWindows,
+                    Platform::Macos => rss_mdm_inventory::ReportSource::MdmApple,
+                };
+                if native.apply.source() != expected {
+                    return Err(Error::Malformed.into());
+                }
                 Ok(Frozen::Configuration {
-                    enabled,
+                    native: super::configuration::Protected::seal(
+                        &self.execution.protection,
+                        tx.tenant_id(),
+                        owner.ok_or(Error::Malformed)?,
+                        &native,
+                    )?,
+                    grants: std::collections::BTreeMap::new(),
                     platform: exact.platform,
                     exit: *exit,
                     resource_digest: version.digest().bytes(),
@@ -529,7 +572,7 @@ pub fn authorize_snapshot(
     let permission = match definition.action {
         Action::Execution { .. } => Permission::ScriptExecute,
         Action::NativeCollection { .. } => Permission::InventoryCollect,
-        Action::Configuration { .. } => Permission::FirewallWrite,
+        Action::Configuration { .. } => Permission::ConfigurationWrite,
         Action::Software { .. } | Action::EnsureAgentInstalled { .. } => Permission::SoftwareDeploy,
         Action::RequestMdmEnrollment { .. } => Permission::Enrollment,
     };
@@ -547,7 +590,7 @@ pub fn authorize(
     let permission = match definition.action {
         Action::Execution { .. } => Permission::ScriptExecute,
         Action::NativeCollection { .. } => Permission::InventoryCollect,
-        Action::Configuration { .. } => Permission::FirewallWrite,
+        Action::Configuration { .. } => Permission::ConfigurationWrite,
         Action::Software { .. } | Action::EnsureAgentInstalled { .. } => Permission::SoftwareDeploy,
         Action::RequestMdmEnrollment { .. } => Permission::Enrollment,
     };
@@ -633,4 +676,57 @@ async fn freeze_collection<'a>(
     })
     .await?;
     Ok(definition)
+}
+
+impl Frozen {
+    pub fn authorize_native(
+        &mut self,
+        proof: &AuthorizedPrincipal,
+        snapshot: &crate::authorization::Snapshot,
+        devices: Option<&std::collections::BTreeSet<String>>,
+        key: &rss_mdm_native_protection::Protector,
+        tenant: rss_request_context::TenantId,
+        owner: Option<super::configuration::Owner>,
+    ) -> std::result::Result<(), Error> {
+        let (mut permissions, grants) = match self {
+            Self::Configuration { native, grants, .. } => {
+                let native = native.open(key, tenant, owner.ok_or(Error::Malformed)?)?;
+                let mut permissions = native.apply.permissions()?;
+                if let Some(remove) = &native.remove {
+                    permissions.extend(remove.permissions()?);
+                }
+                (permissions, grants)
+            }
+            Self::NativeCollection { action, .. } => (action.permissions()?, &mut action.grants),
+            _ => return Ok(()),
+        };
+        permissions.sort();
+        permissions.dedup();
+        if let Some(devices) = devices {
+            for device in devices {
+                grants.insert(
+                    device.clone(),
+                    permissions
+                        .iter()
+                        .map(|&permission| {
+                            crate::authorization::UserGrant::from_proof(
+                                snapshot, proof, device, permission,
+                            )
+                        })
+                        .collect::<std::result::Result<_, _>>()?,
+                );
+            }
+        } else {
+            grants.insert(
+                "*".into(),
+                permissions
+                    .iter()
+                    .map(|&permission| {
+                        crate::authorization::UserGrant::all_devices(snapshot, proof, permission)
+                    })
+                    .collect::<std::result::Result<_, _>>()?,
+            );
+        }
+        Ok(())
+    }
 }

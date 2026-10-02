@@ -1,6 +1,5 @@
 //! Persistent configuration owns the native effect through install and removal recovery.
 use super::*;
-use rss_mdm_apple_mdm::profile;
 use serde_json::Value;
 use sqlx::Connection;
 impl Fixture {
@@ -36,7 +35,7 @@ impl Fixture {
                 "credentials",
                 "inventory_read",
                 "inventory_collect",
-                "firewall_write",
+                "configuration_write",
                 "operation_read",
                 "operation_cancel",
             ],
@@ -56,7 +55,7 @@ impl Fixture {
         }
         grants.extend(crate::test_support::identity::device_grants(
             None,
-            &["inventory_read", "firewall_write"],
+            &["inventory_read", "configuration_write"],
         )?);
         crate::test_support::identity::set_grants(
             case_tenant(),
@@ -83,33 +82,19 @@ impl Fixture {
             automation.registration(self.signals.flow()).critical(),
         );
         launch.finish();
-        let resource = format!("profile-{}", Uuid::new_v4());
-        let path = format!("/api/v3/resources/{resource}");
-        self.policy_post(&path, 0, json!({"action":"create","kind":"configuration"}))
-            .await?;
-        self.policy_post(
-            &path,
-            1,
-            json!({"action":"firewall_version","version":"v1","enabled":true}),
-        )
-        .await?;
-        let current = self
-            .browser
-            .call(&self.router, Method::GET, &path, None)
-            .await?;
-        self.policy_post(
-            &path,
-            current.1["revision"].as_u64().unwrap(),
-            json!({"action":"activate","version":"v1"}),
-        )
-        .await?;
+        let resource = Uuid::new_v4();
+        let profile = Uuid::new_v4();
+        crate::test_support::planning_http::native_configuration_resource(
+            &mut self.browser, &self.router, resource, "macos", "aarch64",
+            json!({"target":{"kind":"device"},"apply":profile_task(profile,true),"remove":remove_profile_task(profile)}),
+        ).await?;
         let scope = Uuid::new_v4();
         self.policy_post(&format!("/api/v2/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}})).await?;
-        let definition = json!({"scope":scope,"action": {"resource": {"id":resource,"version":"v1","platform":"macos","architecture":"aarch64","variant":"firewall-profile"},"kind":"configuration","exit":"remove"}});
+        let definition = json!({"scope":scope,"action": {"resource": {"id":resource,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"kind":"configuration","exit":"remove"}});
         let first = Uuid::new_v4();
         let second = Uuid::new_v4();
         self.policy_post(
-            &format!("/api/v2/policies/{first}"),
+            &format!("/api/v3/policies/{first}"),
             0,
             json!({"action":"put","enabled":true,"definition":definition}),
         )
@@ -124,11 +109,8 @@ impl Fixture {
             Some((
                 "ProfileList",
                 plist::Value::Array(vec![plist::Value::Dictionary(protocol::dictionary([
-                    (
-                        "PayloadIdentifier",
-                        profile::identifier(case_tenant(), case_device()).into(),
-                    ),
-                    ("PayloadUUID", install.to_string().into()),
+                    ("PayloadIdentifier", NATIVE_PROFILE.into()),
+                    ("PayloadUUID", profile.to_string().into()),
                     ("PayloadVersion", 1.into()),
                 ]))]),
             )),
@@ -136,30 +118,36 @@ impl Fixture {
         .await?;
         ensure!(self.operation(install).await?["commandStatus"] == "applied");
         self.policy_post(
-            &format!("/api/v2/policies/{second}"),
+            &format!("/api/v3/policies/{second}"),
             0,
             json!({"action":"put","enabled":true,"definition":definition}),
         )
         .await?;
         ensure!(self.policy_operation(second).await? == install);
         self.policy_post(
-            &format!("/api/v2/policies/{first}"),
+            &format!("/api/v3/policies/{first}"),
             1,
             json!({"action":"disable"}),
         )
         .await?;
         ensure!(self.policy_operation(second).await? == install);
         self.policy_post(
-            &format!("/api/v2/policies/{second}"),
+            &format!("/api/v3/policies/{second}"),
             1,
             json!({"action":"disable"}),
         )
         .await?;
-        let (remove, _) = peer.next("RemoveProfile").await?;
+        let (remove, _) = peer
+            .next("RemoveProfile")
+            .await
+            .map_err(|e| e.context("initial shared-owner removal"))?;
         // A real native rejection must retain cleanup intent and admit another
         // bounded command through the same existing queue, without administrator action.
         peer.manage("Error", Some(remove), None).await?;
-        let (retry, _) = peer.next("RemoveProfile").await?;
+        let (retry, _) = peer
+            .next("RemoveProfile")
+            .await
+            .map_err(|e| e.context("retry after explicit negative removal receipt"))?;
         ensure!(retry != remove);
         let bytes = peer.manage("Acknowledged", Some(retry), None).await?;
         let (observe, _) = lifecycle::command(&bytes, "ProfileList")?;
@@ -184,9 +172,7 @@ impl Fixture {
 use lifecycle::Peer;
 impl Fixture {
     async fn approval_and_timeout(&mut self, peer: &Peer) -> Result<()> {
-        let op = self
-            .create_operation(json!({"kind":"profile_install","enabled":true}))
-            .await?;
+        let op = self.create_operation(|id| profile_task(id, true)).await?;
         let path = format!(
             "/api/v1/devices/{DEVICE}/collection-runs",
             DEVICE = case_device()
@@ -247,7 +233,7 @@ impl Fixture {
                 &self.router,
                 Method::POST,
                 &format!(
-                    "/api/v2/devices/{DEVICE}/operations/{op}/cancel",
+                    "/api/v3/devices/{DEVICE}/operations/{op}/cancel",
                     DEVICE = case_device()
                 ),
                 Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":1})),
@@ -298,7 +284,7 @@ impl Fixture {
                     "credentials",
                     "inventory_read",
                     "inventory_collect",
-                    "firewall_write",
+                    "configuration_write",
                     "operation_read",
                     "operation_cancel",
                 ],

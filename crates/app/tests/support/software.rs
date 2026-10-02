@@ -162,7 +162,7 @@ pub(crate) async fn create_software_version(
 ) -> Result<(String, Value)> {
     let resource = Uuid::new_v4().to_string();
     definition["package"] = json!(format!("Private.{resource}"));
-    let path = format!("/api/v3/resources/{resource}");
+    let path = format!("/api/v4/resources/{resource}");
     write(
         user,
         router,

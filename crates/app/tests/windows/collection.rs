@@ -117,7 +117,7 @@ async fn native_template_policy_uses_correlated_get_and_collection_run() -> anyh
     post(&mut f.browser,&f.router,&format!("/api/v2/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}}})).await?;
     let policy = Uuid::new_v4();
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-    post(&mut f.browser,&f.router,&format!("/api/v2/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"native_collection","frequency":"every_trigger","schedule":{"trigger":{"kind":"interval","anchor":now-7200,"seconds":3600},"notBefore":0,"jitterSeconds":0,"misfire":{"kind":"coalesce_one"}},"resource":{"id":id,"version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"runLifetimeSeconds":300}}}})).await?;
+    post(&mut f.browser,&f.router,&format!("/api/v3/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"native_collection","frequency":"every_trigger","schedule":{"trigger":{"kind":"interval","anchor":now-7200,"seconds":3600},"notBefore":0,"jitterSeconds":0,"misfire":{"kind":"coalesce_one"}},"resource":{"id":id,"version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"runLifetimeSeconds":300}}}})).await?;
     // The existing outbox accepts the action before its native read can be sent.
     use sqlx::Connection;
     let mut pg =
@@ -159,7 +159,40 @@ async fn native_template_policy_uses_correlated_get_and_collection_run() -> anyh
         "Get admission: {}",
         response.status()
     );
-    let wire = s::decode(&response.bytes().await?, &CodecLimits::default())?;
+    let capabilities = s::decode(&response.bytes().await?, &CodecLimits::default())?;
+    let gets: Vec<_> = capabilities
+        .commands
+        .iter()
+        .filter_map(|c| {
+            if let s::Command::Get { id, items, .. } = c {
+                Some((*id, items[0].target.clone().unwrap()))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let mut report = native::report(&peer.message, &gets, "10.0.22621.0", 200);
+    for command in &mut report.commands {
+        match command {
+            s::Command::Status(status) => status.message_ref = capabilities.header.message_id,
+            s::Command::Results(result) => {
+                result.message_ref = Some(capabilities.header.message_id)
+            }
+            _ => {}
+        }
+    }
+    for command in &mut report.commands {
+        if let s::Command::Results(result) = command {
+            for item in &mut result.items {
+                if item.source.as_deref() == Some("./Vendor/MSFT/DeviceStatus/OS/Edition") {
+                    item.data = Some(rss_mdm_windows_mdm::Secret("48".into()));
+                }
+            }
+        }
+    }
+    let ready = native::post(&peer.mutual, &peer.url, &report).await?;
+    ensure!(ready.status() == StatusCode::OK);
+    let wire = s::decode(&ready.bytes().await?, &CodecLimits::default())?;
     let gets: Vec<_> = wire
         .commands
         .iter()
@@ -175,7 +208,15 @@ async fn native_template_policy_uses_correlated_get_and_collection_run() -> anyh
             == 1,
         "template Get missing: {gets:?}"
     );
-    let packet = native::report(&peer.message, &gets, "template-workstation", 200);
+    let mut packet = native::report(&peer.message, &gets, "template-workstation", 200);
+    packet.header.message_id = report.header.message_id + 1;
+    for command in &mut packet.commands {
+        match command {
+            s::Command::Status(status) => status.message_ref = wire.header.message_id,
+            s::Command::Results(result) => result.message_ref = Some(wire.header.message_id),
+            _ => {}
+        }
+    }
     ensure!(
         native::post(&peer.mutual, &peer.url, &packet)
             .await?

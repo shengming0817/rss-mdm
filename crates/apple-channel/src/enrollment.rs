@@ -93,7 +93,7 @@ pub async fn download(
     let (attempt, replayed) = prepared(c, apple, auth, proof.tenant_id(), &deadline).await?;
     let bytes = apple.signer.sign(
         &profile::enrollment(&profile::EnrollmentProfile {
-                agent_installation: apple.agent_identity.is_some(),
+                access_rights: apple.access_rights() as u16,
             scep_url: &apple.config.scep_url,
             scep_provisioner: &apple.config.scep_provisioner,
             apns_topic: &apple.config.apns_topic,

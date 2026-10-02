@@ -40,7 +40,7 @@ pub(crate) async fn resource(
     post(
         browser,
         router,
-        &format!("/api/v3/resources/{id}"),
+        &format!("/api/v4/resources/{id}"),
         json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":input}),
     )
     .await
@@ -284,7 +284,7 @@ impl Fixture {
 }
 pub(crate) async fn publish(author: &mut Browser, router: &Router, resource: Uuid) -> Result<Uuid> {
     let id = Uuid::new_v4();
-    post(author,router,&format!("/api/v2/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,case_task_scope())}})).await?;
+    post(author,router,&format!("/api/v3/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,case_task_scope())}})).await?;
     Ok(id)
 }
 pub(crate) async fn worker(base: &Value) -> Result<Option<rss_runtime::ShutdownStack>> {
@@ -294,8 +294,9 @@ pub(crate) async fn worker(base: &Value) -> Result<Option<rss_runtime::ShutdownS
     let config: Config = serde_json::from_value(base.clone())?;
     let service = crate::flow::execution::open(
         &config,
+        config.native_protector()?,
         crate::test_support::identity::audit_store(&config).await?,
-        crate::flow::execution::open_content(&config)?,
+        crate::flow::execution::open_content(&config, config.native_protector()?)?,
         std::collections::BTreeMap::new(),
         rss_device_command_postgres::CommandClock::Postgres,
     )

@@ -73,10 +73,6 @@ enum Declaration {
     },
     Configuration {
         artifact: Artifact,
-        schema: String,
-        apply: String,
-        detect: String,
-        remove: Option<String>,
     },
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -95,10 +91,6 @@ pub struct Variant {
     deny_unknown_fields
 )]
 pub enum Change {
-    FirewallVersion {
-        version: String,
-        enabled: bool,
-    },
     Create {
         kind: Kind,
     },
@@ -146,18 +138,8 @@ fn variant(v: &Variant) -> Result<r::Variant> {
             artifact: artifact(a)?,
             definition: definition.clone(),
         },
-        Declaration::Configuration {
-            artifact: a,
-            schema,
-            apply,
-            detect,
-            remove,
-        } => r::Declaration::Configuration {
+        Declaration::Configuration { artifact: a } => r::Declaration::Configuration {
             artifact: artifact(a)?,
-            schema: id(schema)?,
-            apply: id(apply)?,
-            detect: id(detect)?,
-            remove: remove.as_ref().map(|s| id(s)).transpose()?,
         },
     };
     Ok(r::Variant::new(
@@ -246,11 +228,6 @@ impl ResourceCatalog {
             }
         }
         let command = match &op.input {
-            Change::FirewallVersion { version, enabled } => pg::Command::Insert(
-                self.author
-                    .version_in(tx, resource, version, *enabled)
-                    .await?,
-            ),
             Change::Create { kind } => pg::Command::Create(kind.core()),
             Change::Version {
                 version,
@@ -310,9 +287,8 @@ impl ResourceCatalog {
             Error::Resource(crate::resource_catalog::error::ResourceError::Missing),
         )?;
         let snapshot = stored.resource.snapshot();
-        let configurations = self.author.read_in(tx, resource).await?;
         Ok(
-            json!({"id":resource,"revision":stored.storage_revision,"kind":resource_kind(snapshot.kind),"versions":snapshot.versions.iter().map(|v|json!({"id":v.version.label().as_str(),"configuration":configurations.get(v.version.label().as_str()).map(|enabled|serde_json::json!({"enabled":enabled})),"digest":v.version.digest().bytes(),"state":resource_state(v.state),"variants":v.version.variants().iter().map(variant_view).collect::<Vec<_>>()})).collect::<Vec<_>>() }),
+            json!({"id":resource,"revision":stored.storage_revision,"kind":resource_kind(snapshot.kind),"versions":snapshot.versions.iter().map(|v|json!({"id":v.version.label().as_str(),"digest":v.version.digest().bytes(),"state":resource_state(v.state),"variants":v.version.variants().iter().map(variant_view).collect::<Vec<_>>()})).collect::<Vec<_>>() }),
         )
     }
 }
@@ -344,18 +320,8 @@ fn variant_view(v: &r::Variant) -> Variant {
             artifact: artifact_view(artifact),
             definition: definition.clone(),
         },
-        r::Declaration::Configuration {
-            artifact,
-            schema,
-            apply,
-            detect,
-            remove,
-        } => Declaration::Configuration {
+        r::Declaration::Configuration { artifact } => Declaration::Configuration {
             artifact: artifact_view(artifact),
-            schema: text(schema),
-            apply: text(apply),
-            detect: text(detect),
-            remove: remove.as_ref().map(text),
         },
     };
     Variant {
@@ -397,30 +363,12 @@ pub trait References: Send + Sync {
         version: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + 'a>>;
 }
-type CatalogFuture<'a, T> =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<T>> + Send + 'a>>;
-pub trait ConfigurationAuthor: Send + Sync {
-    fn read_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        resource: &'a str,
-    ) -> CatalogFuture<'a, std::collections::BTreeMap<String, bool>>;
-
-    fn version_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        resource: &'a str,
-        version: &'a str,
-        enabled: bool,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<r::Version>> + Send + 'a>>;
-}
 pub struct ResourceCatalog {
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     runtime: Arc<PgRuntime>,
     tenant: TenantId,
     clock: Arc<dyn crate::clock::Clock>,
     resources: pg::ResourceStore,
-    author: Arc<dyn ConfigurationAuthor>,
     references: Arc<dyn References>,
 }
 #[derive(Serialize)]
@@ -443,7 +391,6 @@ impl ResourceCatalog {
         runtime: Arc<PgRuntime>,
         tenant: TenantId,
         clock: Arc<dyn crate::clock::Clock>,
-        author: Arc<dyn ConfigurationAuthor>,
         references: Arc<dyn References>,
     ) -> std::result::Result<Self, Error> {
         let resources = pg::ResourceStore::new(runtime.clone(), tenant, deadline())
@@ -455,7 +402,6 @@ impl ResourceCatalog {
             tenant,
             clock,
             resources,
-            author,
             references,
         })
     }

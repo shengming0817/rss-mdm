@@ -190,7 +190,7 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
         .call(
             &f.router,
             Method::GET,
-            &format!("/api/v2/devices/{device}/operations/{management}"),
+            &format!("/api/v3/devices/{device}/operations/{management}"),
             None,
         )
         .await?;

@@ -22,7 +22,7 @@ async fn fixture() -> Result<Fixture> {
 }
 async fn publish(f: &mut Fixture) -> Result<Uuid> {
     let id = Uuid::new_v4();
-    post(&mut f.author,&f.router,&format!("/api/v2/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":case_task_scope(),"action":{"kind":"request_mdm_enrollment","organization":case_tenant(),"runLifetimeSeconds":300}}}})).await?;
+    post(&mut f.author,&f.router,&format!("/api/v3/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":case_task_scope(),"action":{"kind":"request_mdm_enrollment","organization":case_tenant(),"runLifetimeSeconds":300}}}})).await?;
     Ok(id)
 }
 async fn report(f: &Fixture, sequence: u64, state: &str) -> Result<()> {
@@ -186,7 +186,7 @@ async fn uncertain_entry_survives_application_restart_and_policy_disable() -> Re
     post(
         &mut f.author,
         &router,
-        &format!("/api/v2/policies/{id}"),
+        &format!("/api/v3/policies/{id}"),
         json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"disable"}}),
     )
     .await?;

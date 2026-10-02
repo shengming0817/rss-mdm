@@ -78,3 +78,43 @@ pub(crate) async fn await_ingress() -> Result<()> {
     ))?;
     anyhow::bail!("fixture ingress did not settle: {progress}")
 }
+
+/// Publish and upload the real immutable native input consumed by Configuration Policies.
+pub(crate) async fn native_configuration_resource(
+    browser: &mut Browser,
+    router: &Router,
+    id: uuid::Uuid,
+    platform: &str,
+    architecture: &str,
+    input: Value,
+) -> Result<()> {
+    let path = format!("/api/v4/resources/{id}");
+    call(
+        browser,
+        router,
+        &path,
+        0,
+        json!({"action":"create","kind":"configuration"}),
+    )
+    .await?;
+    let bytes = serde_json::to_vec(&input)?;
+    let digest = rss_mdm_resource::Digest::of(&bytes).bytes();
+    call(browser, router, &path, 1, json!({"action":"version","version":"v1","kind":"configuration","variants":[{"platform":platform,"architecture":architecture,"key":"default","declaration":{"kind":"configuration","artifact":{"reference":"native-input","length":bytes.len(),"sha256":digest}}}]})).await?;
+    ensure!(
+        super::agent_execution::upload_for(browser, router, id, &bytes, platform, architecture)
+            .await?
+            == StatusCode::CREATED
+    );
+    call(
+        browser,
+        router,
+        &path,
+        2,
+        json!({"action":"activate","version":"v1"}),
+    )
+    .await?;
+    Ok(())
+}
+pub(crate) fn windows_configuration() -> Value {
+    json!({"target":{"kind":"device"},"apply":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/Policy/Config/Experience/AllowCortana","instance":[],"operation":"replace","value":{"type":"integer","value":"1"}}}},"remove":null})
+}

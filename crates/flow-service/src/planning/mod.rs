@@ -28,6 +28,7 @@ use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 
 pub struct Planning {
+    pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     automation_observation: std::sync::Mutex<automation::health::AutomationObservation>,
     pub automation_task: std::sync::OnceLock<rss_runtime::TaskStatus>,
@@ -45,6 +46,7 @@ use crate::operation::Operation;
 use crate::transaction::*;
 impl Planning {
     pub async fn new(
+        protection: Arc<rss_mdm_native_protection::Protector>,
         audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         runtime: Arc<PgRuntime>,
         tenant: TenantId,
@@ -60,6 +62,7 @@ impl Planning {
                 .await
                 .map_err(|_| Error::Unavailable(Failure::PlanningAdmission))?;
         Ok(Self {
+            protection,
             audit_store: audit_store.clone(),
             automation_observation: std::sync::Mutex::new(Default::default()),
             automation_task: std::sync::OnceLock::new(),

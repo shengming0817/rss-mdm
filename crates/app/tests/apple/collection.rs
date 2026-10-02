@@ -276,7 +276,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     let scope = Uuid::new_v4();
     post(&mut f.browser,&f.router,&format!("/api/v2/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}}})).await?;
     let policy = Uuid::new_v4();
-    post(&mut f.browser,&f.router,&format!("/api/v2/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"native_collection","resource":{"id":id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"runLifetimeSeconds":300}}}})).await?;
+    post(&mut f.browser,&f.router,&format!("/api/v3/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"native_collection","resource":{"id":id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"runLifetimeSeconds":300}}}})).await?;
     let (run, payload) = peer.next("DeviceInformation").await?;
     ensure!(
         payload["Queries"].as_array().unwrap()
@@ -340,7 +340,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
         "item quality: {first:?}"
     );
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-    post(&mut f.browser,&f.router,"/api/v2/remote-operations",json!({"operationId":Uuid::new_v4(),"resource":{"id":id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"targets":{"kind":"devices","devices":[case_device()]},"action":{"kind":"collect_native"},"deadline":now+300})).await?;
+    post(&mut f.browser,&f.router,"/api/v3/remote-operations",json!({"operationId":Uuid::new_v4(),"resource":{"id":id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"targets":{"kind":"devices","devices":[case_device()]},"action":{"kind":"collect_native"},"deadline":now+300})).await?;
     let (refresh, _) = peer.next("DeviceInformation").await?;
     ensure!(refresh != run);
     peer.manage(

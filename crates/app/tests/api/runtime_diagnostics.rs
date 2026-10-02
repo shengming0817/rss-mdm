@@ -50,6 +50,7 @@ impl Fixture {
         let flow = config
             .flow
             .open(
+                config.native_protector()?,
                 authority.audit.clone(),
                 authority.identity.tenant,
                 Arc::new(crate::clock::SystemClock),
@@ -59,6 +60,7 @@ impl Fixture {
             .await?;
         let execution = crate::flow::execution::open(
             &config,
+            config.native_protector()?,
             authority.audit.clone(),
             None,
             Default::default(),

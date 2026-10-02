@@ -4,8 +4,11 @@ use rss_mdm_inventory_service::collection::{Attempts, store};
 use rss_mdm_registration_service::enrollment::store::uuid;
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;
+// Keep transaction, protection, audit sink and authenticated wire evidence explicit.
+#[allow(clippy::too_many_arguments)]
 pub async fn receive(
     c: &mut PgConnection,
+    protection: &rss_mdm_native_protection::Protector,
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     p: &DevicePrincipal,
     id: Uuid,
@@ -15,7 +18,7 @@ pub async fn receive(
 ) -> Result<bool, Error> {
     use crate::attempt::{self, Owner, Reception};
     let tenant = p.tenant().to_string();
-    let attempt = match attempt::lock(c, p, id, Owner::Collection, bytes).await? {
+    let attempt = match attempt::lock(c, protection, p, id, Owner::Collection, bytes).await? {
         None => return Ok(false),
         Some(Reception::Replay) => return Ok(true),
         Some(Reception::Ready(attempt)) => attempt,
@@ -95,7 +98,11 @@ pub async fn receive(
     }
     Ok(true)
 }
-pub async fn send(c: &mut PgConnection, p: &DevicePrincipal) -> Result<Vec<u8>, Error> {
+pub async fn send(
+    c: &mut PgConnection,
+    protection: &rss_mdm_native_protection::Protector,
+    p: &DevicePrincipal,
+) -> Result<Vec<u8>, Error> {
     let tenant = p.tenant().to_string();
     let rows=sqlx::query("SELECT id::text,request FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND registration=$2::uuid AND generation=$3 AND phase='collect' AND state IN ('pending','sent','not_now') AND next_attempt<=clock_timestamp() AND deadline>clock_timestamp() ORDER BY collection_sequence LIMIT 32 FOR UPDATE")
         .bind(&tenant).bind(p.registration().to_string()).bind(p.generation()).fetch_all(&mut *c).await.map_err(db)?;
@@ -110,12 +117,24 @@ pub async fn send(c: &mut PgConnection, p: &DevicePrincipal) -> Result<Vec<u8>, 
             .bind(&tenant).bind(id.to_string()).execute(&mut *c).await.map_err(db)?;
         crate::notify(c, "apple").await.map_err(db)?;
         crate::execution::actions::native_collection::sent(c, &tenant, id).await?;
-        return row.try_get("request").map_err(db);
+        let sealed: Vec<u8> = row.try_get("request").map_err(db)?;
+        return crate::protection::open(
+            protection,
+            &tenant,
+            p.registration(),
+            p.generation(),
+            id,
+            crate::protection::Part::Request,
+            &sealed,
+        )
+        .map(|v| v.expose().to_vec());
     }
     Ok(Vec::new())
 }
 
-pub struct Participant;
+pub struct Participant {
+    pub protection: std::sync::Arc<rss_mdm_native_protection::Protector>,
+}
 impl rss_mdm_inventory_service::apple_collection::Participant for Participant {
     fn start<'a>(
         &'a self,
@@ -153,6 +172,20 @@ impl rss_mdm_inventory_service::apple_collection::Participant for Participant {
                     rss_mdm_inventory_service::Failure::Protocol,
                 )
             })?;
+            let request = crate::protection::seal(
+                &self.protection,
+                tenant,
+                registration,
+                generation,
+                id,
+                crate::protection::Part::Request,
+                &request,
+            )
+            .map_err(|_| {
+                rss_mdm_inventory_service::Error::Unavailable(
+                    rss_mdm_inventory_service::Failure::Protocol,
+                )
+            })?;
             sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,collection,phase,request,state,collection_sequence,deadline) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$2::uuid,'collect',$5,'pending',$6,$7::text::timestamptz)").bind(tenant).bind(id).bind(registration).bind(generation).bind(request).bind(sequence).bind(deadline).execute(&mut *c).await.map_err(|_|rss_mdm_inventory_service::Error::Unavailable(rss_mdm_inventory_service::Failure::Database))?;
             crate::notify(c, "apple").await.map_err(|_| {
                 rss_mdm_inventory_service::Error::Unavailable(
@@ -166,6 +199,7 @@ impl rss_mdm_inventory_service::apple_collection::Participant for Participant {
 
 pub async fn prepare_native(
     c: &mut PgConnection,
+    protection: &rss_mdm_native_protection::Protector,
     tenant: &str,
     id: Uuid,
 ) -> Result<Vec<rss_mdm_audit_integration::Fact>, Error> {
@@ -231,6 +265,15 @@ pub async fn prepare_native(
         _ => return Err(Error::Malformed),
     };
     let request = wire::command(id, command)?;
+    let request = crate::protection::seal(
+        protection,
+        tenant,
+        row.try_get("registration").map_err(db)?,
+        row.try_get("generation").map_err(db)?,
+        id,
+        crate::protection::Part::Request,
+        &request,
+    )?;
     sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,collection,phase,request,state,collection_sequence,deadline) VALUES($1::uuid,$2,$3,$4,$2,'collect',$5,'pending',$6,$7::text::timestamptz)")
         .bind(tenant).bind(id).bind(row.try_get::<Uuid,_>("registration").map_err(db)?).bind(row.try_get::<i64,_>("generation").map_err(db)?).bind(request).bind(row.try_get::<i64,_>("sequence").map_err(db)?).bind(row.try_get::<String,_>("deadline").map_err(db)?).execute(&mut *c).await.map_err(db)?;
     crate::notify(c, "apple").await.map_err(db)?;

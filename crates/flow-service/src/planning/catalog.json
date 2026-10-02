@@ -109,6 +109,42 @@
       ""
     ],
     [
+      "configuration_claims",
+      "user_key",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "configuration_claims",
+      "platform",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "configuration_claims",
+      "object_kind",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "configuration_claims",
+      "object_key",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
       "configuration_devices",
       "tenant_id",
       "uuid",
@@ -145,34 +181,7 @@
       ""
     ],
     [
-      "configuration_devices",
-      "operation",
-      "uuid",
-      false,
-      null,
-      "",
-      ""
-    ],
-    [
-      "configuration_devices",
-      "digest",
-      "bytea",
-      false,
-      null,
-      "",
-      ""
-    ],
-    [
-      "configuration_devices",
-      "diagnosis",
-      "text",
-      false,
-      null,
-      "",
-      ""
-    ],
-    [
-      "firewall_resources",
+      "configuration_objects",
       "tenant_id",
       "uuid",
       true,
@@ -181,8 +190,8 @@
       ""
     ],
     [
-      "firewall_resources",
-      "resource",
+      "configuration_objects",
+      "device",
       "text",
       true,
       null,
@@ -190,8 +199,8 @@
       ""
     ],
     [
-      "firewall_resources",
-      "version",
+      "configuration_objects",
+      "user_key",
       "text",
       true,
       null,
@@ -199,19 +208,55 @@
       ""
     ],
     [
-      "firewall_resources",
-      "enabled",
-      "boolean",
+      "configuration_objects",
+      "platform",
+      "text",
       true,
       null,
       "",
       ""
     ],
     [
-      "firewall_resources",
+      "configuration_objects",
+      "object_kind",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "configuration_objects",
+      "object_key",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "configuration_objects",
+      "operation",
+      "uuid",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "configuration_objects",
       "digest",
       "bytea",
-      true,
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "configuration_objects",
+      "diagnosis",
+      "text",
+      false,
       null,
       "",
       ""
@@ -905,7 +950,7 @@
       "configuration_claims",
       "configuration_claims_pkey",
       "p",
-      "PRIMARY KEY (tenant_id, policy, device)",
+      "PRIMARY KEY (tenant_id, policy, device, user_key, platform, object_kind, object_key)",
       true
     ],
     [
@@ -920,13 +965,6 @@
       "configuration_claims_tenant_id_version_fkey",
       "f",
       "FOREIGN KEY (tenant_id, version) REFERENCES mdm_policy.versions(tenant_id, id)",
-      true
-    ],
-    [
-      "configuration_devices",
-      "configuration_devices_diagnosis_check",
-      "c",
-      "CHECK ((diagnosis = ANY (ARRAY['waiting_scope'::text, 'waiting_registration'::text, 'waiting_capability'::text, 'not_applicable'::text, 'configuration_conflict'::text, 'removing'::text, 'unassigned'::text])))",
       true
     ],
     [
@@ -951,17 +989,52 @@
       true
     ],
     [
-      "firewall_resources",
-      "firewall_resources_digest_check",
+      "configuration_objects",
+      "configuration_objects_diagnosis_check",
       "c",
-      "CHECK ((octet_length(digest) = 32))",
+      "CHECK ((diagnosis = ANY (ARRAY['waiting_scope'::text, 'waiting_registration'::text, 'waiting_capability'::text, 'not_applicable'::text, 'configuration_conflict'::text, 'native_group_conflict'::text, 'removal_blocked_by_shared_unit'::text, 'removing'::text, 'unassigned'::text])))",
       true
     ],
     [
-      "firewall_resources",
-      "firewall_resources_pkey",
+      "configuration_objects",
+      "configuration_objects_digest_check",
+      "c",
+      "CHECK (((digest IS NULL) OR (octet_length(digest) = 32)))",
+      true
+    ],
+    [
+      "configuration_objects",
+      "configuration_objects_object_key_check",
+      "c",
+      "CHECK (((octet_length(object_key) >= 1) AND (octet_length(object_key) <= 2048)))",
+      true
+    ],
+    [
+      "configuration_objects",
+      "configuration_objects_object_kind_check",
+      "c",
+      "CHECK ((object_kind = ANY (ARRAY['csp'::text, 'profile'::text, 'payload'::text, 'declaration'::text])))",
+      true
+    ],
+    [
+      "configuration_objects",
+      "configuration_objects_operation_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, operation) REFERENCES mdm_commands.operations(tenant_id, id)",
+      true
+    ],
+    [
+      "configuration_objects",
+      "configuration_objects_pkey",
       "p",
-      "PRIMARY KEY (tenant_id, resource, version)",
+      "PRIMARY KEY (tenant_id, device, user_key, platform, object_kind, object_key)",
+      true
+    ],
+    [
+      "configuration_objects",
+      "configuration_objects_platform_check",
+      "c",
+      "CHECK ((platform = ANY (ARRAY['windows'::text, 'macos'::text])))",
       true
     ],
     [
@@ -1031,7 +1104,7 @@
       "remote_operations",
       "remote_operations_frozen_check",
       "c",
-      "CHECK ((octet_length((frozen)::text) <= 1048576))",
+      "CHECK ((octet_length((frozen)::text) <= 25165824))",
       true
     ],
     [
@@ -1299,7 +1372,7 @@
     [
       "configuration_claims",
       "configuration_claims_pkey",
-      "CREATE UNIQUE INDEX configuration_claims_pkey ON mdm_planning.configuration_claims USING btree (tenant_id, policy, device)",
+      "CREATE UNIQUE INDEX configuration_claims_pkey ON mdm_planning.configuration_claims USING btree (tenant_id, policy, device, user_key, platform, object_kind, object_key)",
       true,
       true,
       true
@@ -1313,9 +1386,9 @@
       true
     ],
     [
-      "firewall_resources",
-      "firewall_resources_pkey",
-      "CREATE UNIQUE INDEX firewall_resources_pkey ON mdm_planning.firewall_resources USING btree (tenant_id, resource, version)",
+      "configuration_objects",
+      "configuration_objects_pkey",
+      "CREATE UNIQUE INDEX configuration_objects_pkey ON mdm_planning.configuration_objects USING btree (tenant_id, device, user_key, platform, object_kind, object_key)",
       true,
       true,
       true

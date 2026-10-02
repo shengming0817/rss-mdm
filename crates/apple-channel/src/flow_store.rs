@@ -1,10 +1,12 @@
 use crate::device::DevicePrincipal;
-use crate::execution::channels::{self, AppleCommand, NativeTask, Pending, Reception};
+use crate::execution::channels::{self, AppleCommand, AppleDispatch, Pending, Reception};
 use crate::{Error, database::db};
-use rss_mdm_apple_mdm::{profile, protocol as wire};
+use rss_mdm_apple_mdm::protocol as wire;
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;
-pub struct Store;
+pub struct Store {
+    pub protection: std::sync::Arc<rss_mdm_native_protection::Protector>,
+}
 impl channels::AppleStore for Store {
     fn prepare_native_collection<'a>(
         &'a self,
@@ -13,7 +15,7 @@ impl channels::AppleStore for Store {
         id: Uuid,
     ) -> channels::Pending<'a, Vec<rss_mdm_audit_integration::Fact>> {
         Box::pin(async move {
-            crate::collection::prepare_native(c, &tenant, id)
+            crate::collection::prepare_native(c, &self.protection, &tenant, id)
                 .await
                 .map_err(Into::into)
         })
@@ -184,7 +186,7 @@ impl channels::AppleStore for Store {
         operation: Uuid,
     ) -> Pending<'a, Vec<channels::Observation>> {
         Box::pin(async move {
-            let rows=sqlx::query("SELECT phase,state,response,received_at FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2::uuid ORDER BY ordinal,phase").bind(tenant).bind(operation).fetch_all(c).await.map_err(|e|channels::Rejection::from(db(e)))?;
+            let rows=sqlx::query("SELECT id,registration,generation,phase,state,response,received_at FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2::uuid ORDER BY ordinal,phase").bind(&tenant).bind(operation).fetch_all(c).await.map_err(|e|channels::Rejection::from(db(e)))?;
             rows.into_iter()
                 .map(|r| {
                     Ok(channels::Observation {
@@ -195,8 +197,22 @@ impl channels::AppleStore for Store {
                             .try_get("state")
                             .map_err(|e| channels::Rejection::from(db(e)))?,
                         response: r
-                            .try_get("response")
-                            .map_err(|e| channels::Rejection::from(db(e)))?,
+                            .try_get::<Option<Vec<u8>>, _>("response")
+                            .map_err(storage)?
+                            .map(|sealed| {
+                                crate::protection::open(
+                                    &self.protection,
+                                    &tenant,
+                                    r.try_get("registration").map_err(db)?,
+                                    r.try_get("generation").map_err(db)?,
+                                    r.try_get("id").map_err(db)?,
+                                    crate::protection::Part::Response,
+                                    &sealed,
+                                )
+                                .map(|v| v.expose().to_vec())
+                            })
+                            .transpose()
+                            .map_err(channels::Rejection::from)?,
                         received_at: r
                             .try_get("received_at")
                             .map_err(|e| channels::Rejection::from(db(e)))?,
@@ -207,6 +223,9 @@ impl channels::AppleStore for Store {
     }
 }
 impl channels::AppleAttempt for super::attempt::Attempt {
+    fn latest(&self) -> bool {
+        self.latest
+    }
     fn operation(&self) -> Option<Uuid> {
         self.operation
     }
@@ -240,18 +259,33 @@ impl channels::Apple for super::Apple {
         bytes: &'a [u8],
     ) -> Pending<'a, (bool, Vec<rss_mdm_audit_integration::Fact>)> {
         Box::pin(async move {
-            if let Some(facts) =
-                crate::agent_collection::receive(c, p, id, status, dictionary, bytes)
-                    .await
-                    .map_err(channels::Rejection::from)?
+            if let Some(facts) = crate::agent_collection::receive(
+                c,
+                &self.protection,
+                p,
+                id,
+                status,
+                dictionary,
+                bytes,
+            )
+            .await
+            .map_err(channels::Rejection::from)?
             {
                 return Ok((true, facts));
             }
             let mut facts = Vec::new();
-            let collected =
-                crate::collection::receive(c, &mut facts, p, id, status, dictionary, bytes)
-                    .await
-                    .map_err(channels::Rejection::from)?;
+            let collected = crate::collection::receive(
+                c,
+                &self.protection,
+                &mut facts,
+                p,
+                id,
+                status,
+                dictionary,
+                bytes,
+            )
+            .await
+            .map_err(channels::Rejection::from)?;
             Ok((collected, facts))
         })
     }
@@ -263,15 +297,20 @@ impl channels::Apple for super::Apple {
         bytes: &'a [u8],
     ) -> Pending<'a, Option<Reception>> {
         Box::pin(async move {
-            Ok(
-                super::attempt::lock(c, p, id, super::attempt::Owner::Command, bytes)
-                    .await
-                    .map_err(channels::Rejection::from)?
-                    .map(|r| match r {
-                        super::attempt::Reception::Replay => Reception::Replay,
-                        super::attempt::Reception::Ready(a) => Reception::Ready(Box::new(a)),
-                    }),
+            Ok(super::attempt::lock(
+                c,
+                &self.protection,
+                p,
+                id,
+                super::attempt::Owner::Command,
+                bytes,
             )
+            .await
+            .map_err(channels::Rejection::from)?
+            .map(|r| match r {
+                super::attempt::Reception::Replay => Reception::Replay,
+                super::attempt::Reception::Ready(a) => Reception::Ready(Box::new(a)),
+            }))
         })
     }
     fn command<'a>(
@@ -279,7 +318,7 @@ impl channels::Apple for super::Apple {
         c: &'a mut PgConnection,
         p: &'a DevicePrincipal,
         command: &'a AppleCommand,
-    ) -> Pending<'a, Option<Vec<u8>>> {
+    ) -> Pending<'a, AppleDispatch> {
         Box::pin(async move { send_command(c, self, p, command).await.map_err(Into::into) })
     }
     fn collection<'a>(
@@ -289,11 +328,11 @@ impl channels::Apple for super::Apple {
     ) -> Pending<'a, channels::Reply> {
         Box::pin(async move {
             let (mut bytes, facts) =
-                crate::agent_collection::send(c, p, self.agent_identity.as_ref())
+                crate::agent_collection::send(c, &self.protection, p, self.agent_identity.as_ref())
                     .await
                     .map_err(channels::Rejection::from)?;
             if bytes.is_empty() {
-                bytes = crate::collection::send(c, p)
+                bytes = crate::collection::send(c, &self.protection, p)
                     .await
                     .map_err(channels::Rejection::from)?;
             }
@@ -316,101 +355,133 @@ async fn send_command(
     apple: &super::Apple,
     p: &DevicePrincipal,
     command: &AppleCommand,
-) -> Result<Option<Vec<u8>>, Error> {
-    let tenant = p.tenant().to_string();
-    let rows=sqlx::query("SELECT id,phase,ordinal,state,request,next_attempt<=clock_timestamp() AS ready FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2::uuid ORDER BY ordinal DESC,phase FOR UPDATE").bind(&tenant).bind(command.operation).fetch_all(&mut *c).await.map_err(db)?;
-    let agent = matches!(command.task, NativeTask::AgentInstall { .. });
-    if agent {
-        let rights:bool=sqlx::query_scalar("SELECT access_rights & 4352 = 4352 FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2").bind(&tenant).bind(p.registration()).fetch_one(&mut *c).await.map_err(db)?;
-        if !rights {
-            return Ok(None);
-        }
+) -> Result<AppleDispatch, Error> {
+    use rss_mdm_apple_mdm::native::{self, request::Request as A};
+    if !matches!(command.target, crate::execution::NativeTarget::Device) {
+        return Err(Error::Unsupported);
     }
-    let phase = if rows.iter().any(|r| {
+    let Some(context) = super::native::context(c, &apple.protection, p, command).await? else {
+        return super::native::resolve(c, &apple.protection, p, command)
+            .await
+            .map(Into::into);
+    };
+    let rights:i32=sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'").bind(p.tenant().to_string()).bind(p.registration()).fetch_one(&mut *c).await.map_err(db)?;
+    let rights = super::native::rights(rights);
+    let target = native::Target {
+        context: &context,
+        access_rights: &rights,
+    };
+    let tenant = p.tenant().to_string();
+    let rows=sqlx::query("SELECT id,phase,ordinal,state,request,next_attempt<=clock_timestamp() AS ready FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase IN('execute','observe') ORDER BY ordinal DESC,phase FOR UPDATE").bind(&tenant).bind(command.operation).fetch_all(&mut *c).await.map_err(db)?;
+    let profile = matches!(
+        command.request,
+        A::InstallProfile { .. } | A::RemoveProfile { .. }
+    );
+    let software_query = match &command.request {
+        A::Command { command } => rss_mdm_apple_mdm::software::observation(command)?,
+        _ => None,
+    };
+    let executed = rows.iter().any(|r| {
         r.try_get::<String, _>("phase").ok().as_deref() == Some("execute")
-            && r.try_get::<String, _>("state").ok().as_deref() == Some("acknowledged")
-            || (agent
-                && r.try_get::<String, _>("phase").ok().as_deref() == Some("execute")
-                && r.try_get::<String, _>("state").ok().as_deref() == Some("sent"))
-    }) {
+            && matches!(
+                r.try_get::<String, _>("state").ok().as_deref(),
+                Some("sent" | "acknowledged")
+            )
+    });
+    let phase = if (profile || software_query.is_some()) && executed {
         "observe"
     } else {
         "execute"
     };
-    let mut ordinal = 0_i32;
-    if let Some(row) = rows
-        .iter()
-        .find(|r| r.try_get::<String, _>("phase").ok().as_deref() == Some(phase))
-    {
-        let state: String = row.try_get("state").map_err(db)?;
-        if !row.try_get::<bool, _>("ready").map_err(db)? {
-            return Ok(None);
-        }
-        if agent && phase == "observe" && matches!(state.as_str(), "acknowledged" | "error") {
-            ordinal = row.try_get::<i32, _>("ordinal").map_err(db)? + 1;
-            if ordinal > 32 {
-                return Ok(None);
-            }
-        } else {
-            if !matches!(state.as_str(), "pending" | "sent" | "not_now") {
-                return Ok(None);
-            }
-            let id: Uuid = row.try_get("id").map_err(db)?;
-            sqlx::query("UPDATE mdm_apple.attempts SET state='sent',next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2").bind(&tenant).bind(id).execute(&mut *c).await.map_err(db)?;
-            crate::notify(c, "apple").await.map_err(db)?;
-            return row.try_get("request").map(Some).map_err(db);
-        }
-    }
     let id = Uuid::new_v4();
     let now = sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
         .fetch_one(&mut *c)
         .await
         .map_err(db)?;
-    let identifier = profile::identifier(&tenant, p.device());
-    let payload = if phase == "observe" {
-        match &command.task {
-            NativeTask::AgentInstall { bundle, .. } => {
-                rss_mdm_apple_mdm::agent_install::query(bundle)?
-            }
-            _ => wire::dictionary([("RequestType", "ProfileList".into())]),
+    let compiled = if phase == "observe" {
+        if let Some(query) = software_query {
+            query.compile(&target)
+        } else {
+            native::Command::new("ProfileList", plist::Dictionary::new(), &target)
         }
     } else {
-        match &command.task {
-            NativeTask::AgentInstall {
-                bundle,
-                version,
-                url,
-                sha256,
-            } => rss_mdm_apple_mdm::agent_install::install(
-                bundle,
-                version,
-                url,
-                *sha256,
-                command.operation,
-            )?,
-            NativeTask::Install { enabled } => wire::dictionary([
-                ("RequestType", "InstallProfile".into()),
-                (
-                    "Payload",
-                    plist::Value::Data(apple.signed_firewall(
-                        &identifier,
-                        command.operation,
-                        *enabled,
-                        now,
-                    )?),
-                ),
-            ]),
-            NativeTask::Remove => wire::dictionary([
-                ("RequestType", "RemoveProfile".into()),
-                ("Identifier", identifier.into()),
-            ]),
+        match &command.request {
+            A::Command { command } => command.compile(&target),
+            A::InstallProfile { profile } => {
+                let profile = match profile.compile(&target) {
+                    Ok(profile) => profile,
+                    Err(error) => return Ok(AppleDispatch::Rejected(error)),
+                };
+                let signed = apple.signer.sign(&profile.bytes, now)?;
+                native::Command::new(
+                    "InstallProfile",
+                    wire::dictionary([("Payload", plist::Value::Data(signed))]),
+                    &target,
+                )
+            }
+            A::RemoveProfile { identifier, .. } => native::Command::new(
+                "RemoveProfile",
+                wire::dictionary([("Identifier", identifier.as_str().into())]),
+                &target,
+            ),
+            A::Declarations { .. } => return Err(Error::Unsupported),
         }
     };
-    let bytes = wire::command(id, payload)?;
-    sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,operation,phase,request,state,deadline,next_attempt,ordinal) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5::uuid,$6,$7,'sent',to_timestamp($8),clock_timestamp()+interval '30 seconds',$9)")
- .bind(&tenant).bind(id).bind(p.registration()).bind(p.generation()).bind(command.operation).bind(phase).bind(&bytes).bind(command.deadline as f64).bind(ordinal).execute(&mut *c).await.map_err(db)?;
+    let compiled = match compiled {
+        Ok(compiled) => compiled,
+        Err(error) => return Ok(AppleDispatch::Rejected(error)),
+    };
+    let mut ordinal = 0;
+    if let Some(row) = rows
+        .iter()
+        .find(|r| r.try_get::<String, _>("phase").ok().as_deref() == Some(phase))
+    {
+        if !row.try_get::<bool, _>("ready").map_err(db)? {
+            return Ok(AppleDispatch::Waiting);
+        }
+        let state: String = row.try_get("state").map_err(db)?;
+        if matches!(state.as_str(), "pending" | "not_now") {
+            // Explicit refusal permits only the same immutable native command.
+            let id: Uuid = row.try_get("id").map_err(db)?;
+            sqlx::query("UPDATE mdm_apple.attempts SET state='sent',next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2").bind(&tenant).bind(id).execute(&mut *c).await.map_err(db)?;
+            let sealed: Vec<u8> = row.try_get("request").map_err(db)?;
+            let plain = crate::protection::open(
+                &apple.protection,
+                &tenant,
+                p.registration(),
+                p.generation(),
+                id,
+                crate::protection::Part::Request,
+                &sealed,
+            )?;
+            return Ok(AppleDispatch::Ready(plain.expose().to_vec()));
+        }
+        // Unknown mutations are never reissued. Only an independent native read can advance.
+        if phase != "observe" || !matches!(state.as_str(), "sent" | "acknowledged" | "error") {
+            return Ok(AppleDispatch::Waiting);
+        }
+        ordinal = row
+            .try_get::<i32, _>("ordinal")
+            .map_err(db)?
+            .checked_add(1)
+            .ok_or(Error::Malformed)?;
+        if ordinal > 32 {
+            return Ok(AppleDispatch::Waiting);
+        }
+    }
+    let bytes = compiled.encode(id).map_err(|_| Error::Malformed)?;
+    let sealed = crate::protection::seal(
+        &apple.protection,
+        &tenant,
+        p.registration(),
+        p.generation(),
+        id,
+        crate::protection::Part::Request,
+        &bytes,
+    )?;
+    sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,operation,phase,request,state,deadline,next_attempt,ordinal) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,'sent',to_timestamp($8),clock_timestamp()+interval '30 seconds',$9)").bind(&tenant).bind(id).bind(p.registration()).bind(p.generation()).bind(command.operation).bind(phase).bind(sealed).bind(command.deadline as f64).bind(ordinal).execute(&mut *c).await.map_err(db)?;
     crate::notify(c, "apple").await.map_err(db)?;
-    Ok(Some(bytes))
+    Ok(AppleDispatch::Ready(bytes))
 }
 
 fn storage(e: sqlx::Error) -> channels::Rejection {
