@@ -99,7 +99,7 @@ impl Client {
             .call(Method::GET, &format!("/{}", expiry), None)
             .await?;
         ensure!(
-            read.1["commandStatus"] == "timed_out" && read.1["observation"]["result"] == "unknown",
+            read.1["commandStatus"] == "timed_out" && read.1["observation"]["effect"] == "waiting",
             "expiry or unknown effect lost {:?}",
             read
         );

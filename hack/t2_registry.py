@@ -595,13 +595,14 @@ MODULES['publication.recovery'] = replace(MODULES['publication.recovery'], db_mo
 MODULES['windows.issuance'] = replace(MODULES['windows.issuance'], db_mode='fresh', scope='objects')
 MODULES['windows.retention'] = replace(MODULES['windows.retention'], db_mode='fresh', scope='objects')
 MODULES['windows.limits'] = replace(MODULES['windows.limits'], db_mode='reuse', scope='tenant')
-MODULES['apple.policy'] = replace(MODULES['apple.policy'], db_mode='reuse', scope='tenant', policies=(
-    CasePolicy('apple::tests::policy::current_approval_and_deadlines', 'reuse', 'objects'),
+MODULES['apple.profile'] = replace(MODULES['apple.profile'], scope='tenant', fixtures=(*MODULES['apple.profile'].fixtures,'local_worker'))
+MODULES['apple.policy'] = replace(MODULES['apple.policy'], db_mode='reuse', scope='tenant', fixtures=(*MODULES['apple.policy'].fixtures,'local_worker'), policies=(
+    CasePolicy('apple::tests::policy::current_approval_and_deadlines', 'reuse', 'tenant'),
 ))
 MODULES['apple.onboarding'] = replace(MODULES['apple.onboarding'], db_mode='reuse', scope='tenant', fixtures=(*MODULES['apple.onboarding'].fixtures,'local_worker'), support_inputs=(*MODULES['apple.onboarding'].support_inputs,'crates/app/tests/support/channel_onboarding.rs','crates/app/tests/support/software.rs'))
 MODULES['apple.renewal'] = replace(MODULES['apple.renewal'], db_mode='reuse', scope='tenant')
-MODULES['apple.identity'] = replace(MODULES['apple.identity'], db_mode='reuse', scope='tenant', policies=(
-    CasePolicy('apple::tests::identity::token_is_required_before_management', 'reuse', 'objects'),
+MODULES['apple.identity'] = replace(MODULES['apple.identity'], db_mode='reuse', scope='tenant', fixtures=(*MODULES['apple.identity'].fixtures,'local_worker'), policies=(
+    CasePolicy('apple::tests::identity::token_is_required_before_management', 'reuse', 'tenant'),
 ))
 MODULES['apple.push'] = replace(MODULES['apple.push'], db_mode='reuse', scope='tenant', policies=(
     CasePolicy('apple::tests::push::deadline_query_failure_is_not_healthy_idle', 'fresh', 'objects'),

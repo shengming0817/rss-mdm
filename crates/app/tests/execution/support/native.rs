@@ -59,7 +59,10 @@ pub(crate) async fn begin(
         "./Vendor/MSFT/DeviceStatus/OS/Edition",
     ];
     expected.extend(task_uri);
-    ensure!(gets.iter().map(|(_, uri)| uri.as_str()).collect::<Vec<_>>() == expected);
+    ensure!(
+        gets.iter().map(|(_, uri)| uri.as_str()).collect::<Vec<_>>() == expected,
+        "unexpected native Get order: {gets:?}"
+    );
     ensure!(
         message
             .commands

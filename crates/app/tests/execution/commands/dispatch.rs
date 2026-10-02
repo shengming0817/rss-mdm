@@ -116,10 +116,10 @@ impl Client {
             .await?;
         ensure!(
             read.0 == StatusCode::OK
-                && read.1["task"]["field"] == "model"
-                && read.1["task"]["expectedValue"] == "Final-Model"
+                && read.1["task"]["kind"] == "sync_ml"
+                && read.1["task"]["objects"] == serde_json::json!(["./DevInfo/Mod"])
                 && read.1["commandStatus"] == "published"
-                && read.1["observation"]["result"] == "unknown",
+                && read.1["observation"]["effect"] == "waiting",
             "published is not observed {:?}",
             read
         );

@@ -45,7 +45,7 @@ async fn seed(
 ) -> anyhow::Result<()> {
     sqlx::query("INSERT INTO mdm_access.management_sessions SELECT s.tenant_id,s.registration,n::text,s.generation,s.credential,'complete',1,s.client_authenticated,s.correlation,s.nonce,clock_timestamp()-interval '1 second',NULL::uuid FROM (SELECT * FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND expires_at>clock_timestamp() ORDER BY session_id LIMIT 1) s CROSS JOIN generate_series(1000,$3) n")
         .bind(tenant).bind(registration.to_string()).bind(last).execute(&mut *pg).await?;
-    sqlx::query("INSERT INTO mdm_access.management_messages SELECT tenant_id,registration,session_id,1,repeat('f',64),decode('00','hex') FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id::int BETWEEN 1000 AND $3")
+    sqlx::query("INSERT INTO mdm_access.management_messages SELECT tenant_id,registration,session_id,1,repeat('f',64),decode(repeat('00',68),'hex') FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id::int BETWEEN 1000 AND $3")
         .bind(tenant).bind(registration.to_string()).bind(last).execute(&mut *pg).await?;
     sqlx::query("INSERT INTO mdm_commands.capability_queries(tenant_id,registration,generation,session,request,version_command,edition_command) SELECT tenant_id,registration,generation,session_id::bigint,decode('00','hex'),1,2 FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id::int BETWEEN 1000 AND $3")
         .bind(tenant).bind(registration.to_string()).bind(last).execute(&mut *pg).await?;

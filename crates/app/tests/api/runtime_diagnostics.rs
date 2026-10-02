@@ -1,4 +1,5 @@
 use crate::test_support::*;
+use anyhow::Context;
 const PATH: &str = "/api/v2/runtime/diagnostics";
 
 #[tokio::test]
@@ -155,7 +156,8 @@ async fn execution_first_scan_failure_recovers_only_after_real_success() -> Resu
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
-        .await??;
+        .await
+        .context("execution recovery did not report the first failed scan")??;
         pg("ALTER ROLE mdm_command_runtime CONNECTION LIMIT -1")?;
         signals.command_recovery().notify_one();
         signals.command_relay().notify_one();
@@ -169,7 +171,8 @@ async fn execution_first_scan_failure_recovers_only_after_real_success() -> Resu
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
-        .await??;
+        .await
+        .context("execution recovery did not become ready after restoring connections")??;
         use sqlx::Connection;
         let mut administrator =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
@@ -207,7 +210,7 @@ async fn execution_first_scan_failure_recovers_only_after_real_success() -> Resu
         })
         .await;
         blocked.rollback().await?;
-        failed??;
+        failed.context("execution recovery did not report the blocked scan deadline")??;
         signals.command_recovery().notify_one();
         tokio::time::timeout(Duration::from_secs(15), async {
             loop {

@@ -584,10 +584,12 @@ impl Fixture {
     }
 }
 
-const NATIVE_PROFILE: &str = "org.example.native-profile";
+fn native_profile() -> &'static str {
+    crate::test_support::case::name("org.example.native-profile")
+}
 fn profile_task(id: Uuid, enabled: bool) -> serde_json::Value {
-    json!({"platform":"macos","request":{"kind":"install_profile","profile":{"identifier":NATIVE_PROFILE,"uuid":id,"metadata":{},"payloads":[{"schema":"mdm/profiles/com.apple.security.firewall.yaml","identifier":"org.example.native-profile.settings","uuid":Uuid::new_v4(),"metadata":{},"fields":{"EnableFirewall":{"type":"boolean","value":enabled}}}]}}})
+    json!({"platform":"macos","request":{"kind":"install_profile","profile":{"identifier":native_profile(),"uuid":id,"metadata":{},"payloads":[{"schema":"mdm/profiles/com.apple.security.firewall.yaml","identifier":format!("{}.settings",native_profile()),"uuid":Uuid::new_v4(),"metadata":{},"fields":{"EnableFirewall":{"type":"boolean","value":enabled}}}]}}})
 }
 fn remove_profile_task(profile: Uuid) -> serde_json::Value {
-    json!({"platform":"macos","request":{"kind":"remove_profile","identifier":NATIVE_PROFILE,"uuid":profile}})
+    json!({"platform":"macos","request":{"kind":"remove_profile","identifier":native_profile(),"uuid":profile}})
 }

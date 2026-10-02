@@ -51,7 +51,7 @@ impl Fixture {
         let (observe, _) = command(&bytes, "ProfileList")?;
         ensure!(self.operation(installed).await?["commandStatus"] == "received");
         let profiles = plist::Value::Array(vec![plist::Value::Dictionary(protocol::dictionary([
-            ("PayloadIdentifier", NATIVE_PROFILE.into()),
+            ("PayloadIdentifier", native_profile().into()),
             ("PayloadUUID", installed.to_string().into()),
             ("PayloadVersion", 1.into()),
         ]))]);
@@ -84,7 +84,7 @@ impl Fixture {
             .create_operation(|_| remove_profile_task(installed))
             .await?;
         let (execute, payload) = peer.next("RemoveProfile").await?;
-        ensure!(payload["Identifier"].as_string() == Some(NATIVE_PROFILE));
+        ensure!(payload["Identifier"].as_string() == Some(native_profile()));
         let bytes = peer.manage("Acknowledged", Some(execute), None).await?;
         let (observe, _) = command(&bytes, "ProfileList")?;
         ensure!(self.operation(removed).await?["commandStatus"] == "received");
@@ -117,7 +117,7 @@ impl Fixture {
         let next = peer.manage("Acknowledged", Some(id), None).await?;
         let (observe, _) = command(&next, "ProfileList")?;
         let wrong = plist::Value::Array(vec![plist::Value::Dictionary(protocol::dictionary([
-            ("PayloadIdentifier", NATIVE_PROFILE.into()),
+            ("PayloadIdentifier", native_profile().into()),
             ("PayloadUUID", Uuid::new_v4().to_string().into()),
         ]))]);
         peer.manage("Acknowledged", Some(observe), Some(("ProfileList", wrong)))
@@ -241,7 +241,7 @@ async fn security_profile_replacement_and_removal_keep_target_permissions() -> R
         Some((
             "ProfileList",
             plist::Value::Array(vec![plist::Value::Dictionary(protocol::dictionary([
-                ("PayloadIdentifier", NATIVE_PROFILE.into()),
+                ("PayloadIdentifier", native_profile().into()),
                 ("PayloadUUID", installed.to_string().into()),
                 ("PayloadVersion", 1.into()),
             ]))]),

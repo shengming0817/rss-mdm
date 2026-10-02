@@ -109,7 +109,7 @@ impl Fixture {
             Some((
                 "ProfileList",
                 plist::Value::Array(vec![plist::Value::Dictionary(protocol::dictionary([
-                    ("PayloadIdentifier", NATIVE_PROFILE.into()),
+                    ("PayloadIdentifier", native_profile().into()),
                     ("PayloadUUID", profile.to_string().into()),
                     ("PayloadVersion", 1.into()),
                 ]))]),
