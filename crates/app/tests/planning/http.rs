@@ -884,6 +884,10 @@ async fn derived_result_authorization(
     let absent = uuid::Uuid::new_v4();
     for (route, code) in [
         (
+            format!("/api/v3/policies/{absent}/devices"),
+            "policy_not_found",
+        ),
+        (
             format!("/api/v2/groups/{absent}/results/{group_result}/members"),
             "group_not_found",
         ),

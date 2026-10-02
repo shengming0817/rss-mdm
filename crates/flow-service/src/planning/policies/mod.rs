@@ -17,7 +17,7 @@ pub mod reconcile;
 pub mod rerun;
 pub mod storage;
 
-use rss_mdm_execution_service::frozen::Frozen;
+use rss_mdm_execution_service::{authorize_policy_snapshot, frozen::Frozen};
 pub use rss_mdm_policy::{Change, Policy};
 pub struct Policies {
     pub planning: std::sync::Arc<super::Planning>,
@@ -41,7 +41,8 @@ impl Policies {
                 proof.manage(Permission::ResourceRead)?;
             }
             definition.validate()?;
-            authorize(proof, definition)?;
+            authorize_policy_snapshot(proof.authorization()?, proof, definition)
+                .map_err(Error::from)?;
             if matches!(definition.action, Action::Execution { .. }) {
                 None
             } else {
@@ -147,7 +148,7 @@ impl Policies {
                     }
                     let old = storage::read_in(s.planning.policy_store.reader(), tx, id).await?;
                     if let Some(previous) = &old {
-                        authorize_snapshot(&authorization, p, &previous.definition)?;
+                        authorize_policy_snapshot(&authorization, p, &previous.definition).map_err(Error::from)?;
                     }
                     let now = crate::action_admission::now(tx).await?;
                     let changed_policy = Policy::apply(
@@ -160,7 +161,7 @@ impl Policies {
                     let semantic = changed_policy.semantic.to_vec();
                     let changed = changed_policy.semantic_changed;
                     let policy = changed_policy.policy;
-                    authorize_snapshot(&authorization, p, &policy.definition)?;
+                    authorize_policy_snapshot(&authorization, p, &policy.definition).map_err(Error::from)?;
                     if changed {
                         let mut frozen = if matches!(policy.definition.action, Action::EnsureAgentInstalled { .. }) {
                             Frozen::AgentInstall { action: Box::new(s.inputs.freeze_agent_in(tx,p,&authorization,&policy.definition.action).await?) }
@@ -215,43 +216,6 @@ impl Policies {
         )
         .await
     }
-}
-
-pub fn authorize_snapshot(
-    snapshot: &crate::authorization::Snapshot,
-    proof: &AuthorizedPrincipal,
-    definition: &Definition,
-) -> std::result::Result<(), Error> {
-    let permission = match definition.action {
-        Action::Execution { .. } => Permission::ScriptExecute,
-        Action::NativeCollection { .. } => Permission::InventoryCollect,
-        Action::Configuration { .. } => Permission::ConfigurationWrite,
-        Action::Software { .. } | Action::EnsureAgentInstalled { .. } => Permission::SoftwareDeploy,
-        Action::RequestMdmEnrollment { .. } => Permission::Enrollment,
-    };
-    if matches!(definition.action, Action::EnsureAgentInstalled { .. }) {
-        snapshot.require_all_devices(proof, Permission::Enrollment)?;
-    }
-    snapshot.require(proof, Permission::ScopeRead, None)?;
-    snapshot.require_all_devices(proof, permission)?;
-    Ok(())
-}
-pub fn authorize(
-    proof: &AuthorizedPrincipal,
-    definition: &Definition,
-) -> std::result::Result<(), Error> {
-    let permission = match definition.action {
-        Action::Execution { .. } => Permission::ScriptExecute,
-        Action::NativeCollection { .. } => Permission::InventoryCollect,
-        Action::Configuration { .. } => Permission::ConfigurationWrite,
-        Action::Software { .. } | Action::EnsureAgentInstalled { .. } => Permission::SoftwareDeploy,
-        Action::RequestMdmEnrollment { .. } => Permission::Enrollment,
-    };
-    if matches!(definition.action, Action::EnsureAgentInstalled { .. }) {
-        proof.require_all_devices(Permission::Enrollment)?;
-    }
-    proof.manage(Permission::ScopeRead)?;
-    proof.require_all_devices(permission).map_err(Error::from)
 }
 
 pub fn variant<'a>(

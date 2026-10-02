@@ -1,4 +1,5 @@
 //! Execution prepares immutable resource inputs without creating a Policy.
+use crate::authorization::{Permission, context::AuthorizedPrincipal};
 use crate::{Error, Inputs, action_contract::*, freeze_inputs::*, frozen::Frozen, transaction::*};
 use rss_mdm_policy::{Action, Exit, ResourceBinding, SoftwareIntent};
 use rss_mdm_resource as resource;
@@ -308,4 +309,24 @@ pub fn variant<'a>(
         },
         &checked_input(resource::Id::new(&exact.variant))?,
     ))
+}
+
+pub fn authorize_policy_snapshot(
+    snapshot: &crate::authorization::Snapshot,
+    proof: &AuthorizedPrincipal,
+    definition: &rss_mdm_policy::Definition,
+) -> std::result::Result<(), crate::Error> {
+    let permission = match definition.action {
+        Action::Execution { .. } => Permission::ScriptExecute,
+        Action::NativeCollection { .. } => Permission::InventoryCollect,
+        Action::Configuration { .. } => Permission::ConfigurationWrite,
+        Action::Software { .. } | Action::EnsureAgentInstalled { .. } => Permission::SoftwareDeploy,
+        Action::RequestMdmEnrollment { .. } => Permission::Enrollment,
+    };
+    if matches!(definition.action, Action::EnsureAgentInstalled { .. }) {
+        snapshot.require_all_devices(proof, Permission::Enrollment)?;
+    }
+    snapshot.require(proof, Permission::ScopeRead, None)?;
+    snapshot.require_all_devices(proof, permission)?;
+    Ok(())
 }

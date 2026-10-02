@@ -1,6 +1,5 @@
 //! Independently assembled execution reads. No writer, outbox, recovery store or signing key.
 use crate::*;
-use rss_mdm_policy::Action;
 use serde_json::json;
 #[derive(Clone)]
 pub struct Admission {
@@ -93,26 +92,6 @@ impl Queries {
 }
 
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
-use rss_mdm_policy::Definition;
-pub fn authorize_snapshot(
-    snapshot: &crate::authorization::Snapshot,
-    proof: &AuthorizedPrincipal,
-    definition: &Definition,
-) -> std::result::Result<(), crate::Error> {
-    let permission = match definition.action {
-        Action::Execution { .. } => Permission::ScriptExecute,
-        Action::NativeCollection { .. } => Permission::InventoryCollect,
-        Action::Configuration { .. } => Permission::ConfigurationWrite,
-        Action::Software { .. } | Action::EnsureAgentInstalled { .. } => Permission::SoftwareDeploy,
-        Action::RequestMdmEnrollment { .. } => Permission::Enrollment,
-    };
-    if matches!(definition.action, Action::EnsureAgentInstalled { .. }) {
-        snapshot.require_all_devices(proof, Permission::Enrollment)?;
-    }
-    snapshot.require(proof, Permission::ScopeRead, None)?;
-    snapshot.require_all_devices(proof, permission)?;
-    Ok(())
-}
 pub mod records;
 
 mod error;

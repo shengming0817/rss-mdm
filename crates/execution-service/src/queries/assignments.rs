@@ -43,5 +43,5 @@ pub async fn devices(
         }
         s.audit_store.append_request_in(tx,audit,200,"success").await?;
         super::records::decode(json!({"items":items,"nextCursor":next}))
-    }),TransactionOwner::Execution).await.map_err(Into::into)
+    }),TransactionOwner::Execution).await.map_err(|error| match error { Error::NotFound => super::QueryError::Missing(super::Missing::Policy), other => other.into() })
 }

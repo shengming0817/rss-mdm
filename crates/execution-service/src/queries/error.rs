@@ -1,6 +1,7 @@
 //! Closed read errors, projected to wire codes only by HTTP.
 #[derive(Clone, Copy, Debug)]
 pub enum Missing {
+    Policy,
     Inventory,
     Resource,
     Operation,

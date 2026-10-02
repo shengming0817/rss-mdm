@@ -24,6 +24,7 @@ impl From<rss_mdm_execution_service::queries::QueryError> for Error {
    Read::Unsupported=>Wire::Unsupported,Read::CommitUnknown=>Wire::CommitUnknown,Read::RollbackFailed=>Wire::RollbackFailed,
    Read::Unavailable(f)=>rss_mdm_execution_service::Error::Unavailable(f).into(),
    Read::Missing(m)=>match m {
+    Missing::Policy=>Wire::Planning(rss_mdm_flow_service::planning::error::PlanningError::Missing(rss_mdm_flow_service::planning::error::Missing::Policy)),
     Missing::Inventory=>Wire::NotFound,Missing::Resource=>Wire::Resource(rss_mdm_flow_service::resource_catalog::error::ResourceError::Missing),
     Missing::Operation=>Wire::Execution(rss_mdm_execution_service::missing::ExecutionError::MissingOperation),
     Missing::Task=>Wire::Execution(rss_mdm_execution_service::missing::ExecutionError::MissingTask),

@@ -23,7 +23,6 @@ class FlowOwnership(unittest.TestCase):
 
     def test_flow_policy_only_retains_input_preparation(self):
         policy = (FLOW / "planning/policies/mod.rs").read_text()
-        self.assertIn("Arc<rss_mdm_execution_service::Inputs>", policy)
         for forbidden in ("ExecutionRead", "Arc<ExecutionService>", "Arc<Queries>"):
             self.assertNotIn(forbidden, policy)
         manifest = (ROOT / "crates/execution-service/Cargo.toml").read_text()

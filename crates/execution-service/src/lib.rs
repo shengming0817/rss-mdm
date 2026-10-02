@@ -126,6 +126,7 @@ pub mod wake;
 
 pub mod freeze_inputs;
 pub mod input_preparation;
+pub use input_preparation::authorize_policy_snapshot;
 
 /// Exact execution storage contracts consumed by application admission.
 pub const CATALOG_SQL: &str = include_str!("catalog.sql");
@@ -141,7 +142,7 @@ pub struct Inputs {
     pub software: Arc<rss_mdm_software_service::preparation::Preparation>,
     pub agent_installation: crate::agent_install::Config,
     pub enrollment_entries: crate::enrollment::Entries,
-    pub runtime: Arc<PgRuntime>,
+    pub(crate) runtime: Arc<PgRuntime>,
     pub tenant: TenantId,
     pub content: Option<Arc<rss_mdm_content_service::Store>>,
     pub signing_enabled: bool,

@@ -14,7 +14,7 @@ use rss_mdm_policy::Action;
 use serde_json::json;
 use uuid::Uuid;
 
-use super::authorize_snapshot;
+use crate::authorize_policy_snapshot;
 use crate::enrollment_preparation as enrollment;
 use crate::input_preparation::variant;
 use rss_mdm_policy::Definition;
@@ -39,7 +39,7 @@ pub async fn preview(
     if input.definition.action.resource().is_some() {
         proof.manage(Permission::ResourceRead)?;
     }
-    authorize_snapshot(proof.authorization()?, proof, &input.definition)?;
+    authorize_policy_snapshot(proof.authorization()?, proof, &input.definition)?;
     let verified = if let Action::Execution {
         resource,
         parameters,
@@ -57,7 +57,7 @@ pub async fn preview(
     run(&s.audit_store,&s.runtime,s.tenant,audit,(s,proof,audit,input,verified.as_ref()),|ctx,tx|Box::pin(async move {
         let (s,proof,audit,input,verified)=*ctx;
         let authorization=crate::action_admission::current(tx,proof).await?;
-        authorize_snapshot(&authorization,proof,&input.definition)?;
+        authorize_policy_snapshot(&authorization,proof,&input.definition)?;
         let enrollment=if matches!(input.definition.action,Action::RequestMdmEnrollment{..}) {Some(Frozen::MdmEnrollment{action:Box::new(enrollment::freeze(proof,&authorization,&input.definition.action,&s.inputs.enrollment_entries)?)})}else{None};
         let agent=if matches!(input.definition.action,Action::EnsureAgentInstalled{..}){Some(s.inputs.freeze_agent_in(tx,proof,&authorization,&input.definition.action).await?)}else{None};
         let binding=input.definition.action.resource();
