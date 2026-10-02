@@ -32,6 +32,10 @@ async fn template_revocation_between_fragments_aborts() -> anyhow::Result<()> {
 async fn template_dispatch_at_last_supported_message() -> anyhow::Result<()> {
     template_flow(None, CodecLimits::default().session_messages as u32 - 1).await
 }
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "sequential real protocol and durable recovery assertions shared by T2 scenarios"
+)]
 async fn template_flow(
     revoke_after_first: Option<bool>,
     request_message: u32,
