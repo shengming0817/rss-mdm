@@ -398,7 +398,7 @@ pub async fn import<C: ManagementContentPort>(
                     .catalog
                     .import_in(tx, &app.resources, audit, op, prepared)
                     .await?;
-                for evidence in retained {
+                if let Some(evidence) = retained {
                     evidence.bind_in(tx).await?;
                 }
                 proof.check_live()?;

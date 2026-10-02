@@ -420,7 +420,7 @@ async fn dependency_admission_uses_exact_current_approval() -> Result<()> {
                 )?;
                 ensure_catalog(*packages[1] == format!("Private.{}", binding.resource))?;
                 let artifact = preparation
-                    .artifact_in(tx, binding, target, 0, "installer")
+                    .artifact_in(tx, binding, target, 0, "package")
                     .await?
                     .ok_or(catalog::Error::Missing)?;
                 ensure_catalog(artifact.length() == 3)?;

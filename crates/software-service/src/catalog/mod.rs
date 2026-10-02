@@ -384,10 +384,10 @@ impl Catalog {
             if active.contains(&key) {
                 return Err(Error::Input);
             }
-            if let Some(previous) = materials.get(&key) {
-                if previous.digest().bytes() != dependency.sha256 {
-                    return Err(Error::NotAdmitted);
-                }
+            if let Some(previous) = materials.get(&key)
+                && previous.digest().bytes() != dependency.sha256
+            {
+                return Err(Error::NotAdmitted);
             }
             if done.contains(&key) {
                 continue;

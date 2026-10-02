@@ -346,8 +346,6 @@ for name in ('planning.assets', 'planning.scope', 'planning.group_scope', 'plann
              'planning.resource_archive', 'assets.http', 'audit.integrity'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs +
                             ('crates/app/tests/planning/support.rs',))
-for name in ('planning.assets', 'planning.scope', 'planning.group_scope', 'planning.recovery', 'planning.resource_archive'):
-    MODULES[name] = replace(MODULES[name], fixtures=())
 MODULES['planning.resource_archive'] = replace(MODULES['planning.resource_archive'], fixtures=('identity', 'tls'))
 MODULES['audit.integrity'] = replace(MODULES['audit.integrity'],
     test_inputs=MODULES['audit.integrity'].test_inputs + ('crates/app/tests/audit/owner_admission.rs',))
@@ -516,7 +514,7 @@ MODULES['planning.scope'] = replace(MODULES['planning.scope'], db_mode='reuse', 
 ))
 MODULES['planning.group_scope'] = replace(MODULES['planning.group_scope'], db_mode='reuse', scope='tenant', policies=(
     CasePolicy('planning::t2::group_scope::group_delete_scope_reference_compete_without_dangling_references', 'reuse', 'objects'),
-    CasePolicy('planning::t2::group_scope::group_scope_replay_and_audit_atomicity', 'fresh', 'objects'),
+    CasePolicy('planning::t2::group_scope::group_scope_replay_and_audit_atomicity', 'fresh', 'pair'),
 ))
 MODULES['planning.onboarding'] = replace(MODULES['planning.onboarding'], db_mode='reuse', scope='tenant')
 MODULES['planning.policy'] = replace(MODULES['planning.policy'], db_mode='reuse', scope='tenant')
