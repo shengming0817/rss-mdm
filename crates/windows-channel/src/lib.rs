@@ -15,6 +15,9 @@ use rss_mdm_authorization_service as authorization;
 use rss_mdm_registration_service::{device, enrollment};
 mod agent_collection;
 mod collection;
+mod large_object;
+mod notifications;
+mod transcript;
 use axum::{
     Extension, Router,
     body::Bytes,

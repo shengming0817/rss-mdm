@@ -459,4 +459,24 @@ ALTER TABLE mdm_commands.attempt_items ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY tenant ON mdm_commands.attempt_items USING (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 
+-- Actual native wire ranges within one logical attempt; original input remains on the operation.
+CREATE TABLE mdm_commands.attempt_frames (
+    tenant_id uuid NOT NULL, attempt uuid NOT NULL,
+    message bigint NOT NULL CHECK(message BETWEEN 1 AND 4294967295),
+    command bigint NOT NULL CHECK(command BETWEEN 1 AND 4294967295),
+    start_byte integer NOT NULL CHECK(start_byte>=0),
+    end_byte integer NOT NULL, total_bytes integer NOT NULL,
+    status integer CHECK(status BETWEEN 100 AND 599), accepted boolean,
+    received_at bigint,
+    PRIMARY KEY(tenant_id,attempt,message,command),
+    CHECK(end_byte>start_byte AND end_byte<=total_bytes AND total_bytes<=16777216),
+    CHECK(accepted IS NULL OR status IS NOT NULL)
+);
+ALTER TABLE mdm_commands.attempt_frames ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_commands.attempt_frames FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_commands.attempt_frames USING (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
+
+
+
 COMMIT;
+

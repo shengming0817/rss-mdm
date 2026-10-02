@@ -15,6 +15,31 @@ use uuid::Uuid;
 #[tokio::test]
 #[ignore = "MODULE=windows.management: native template over real SyncML mTLS"]
 async fn native_template_policy_uses_correlated_get_and_collection_run() -> anyhow::Result<()> {
+    template_flow(None, 9).await
+}
+#[tokio::test]
+#[ignore = "MODULE=windows.management: template authority before first fragment"]
+async fn template_revocation_before_first_fragment_aborts() -> anyhow::Result<()> {
+    template_flow(Some(false), 9).await
+}
+#[tokio::test]
+#[ignore = "MODULE=windows.management: template authority between fragments"]
+async fn template_revocation_between_fragments_aborts() -> anyhow::Result<()> {
+    template_flow(Some(true), 9).await
+}
+#[tokio::test]
+#[ignore = "MODULE=windows.management: last supported collection dispatch message"]
+async fn template_dispatch_at_last_supported_message() -> anyhow::Result<()> {
+    template_flow(None, CodecLimits::default().session_messages as u32 - 1).await
+}
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "sequential real protocol and durable recovery assertions shared by T2 scenarios"
+)]
+async fn template_flow(
+    revoke_after_first: Option<bool>,
+    request_message: u32,
+) -> anyhow::Result<()> {
     let mut host = Host::open().await?;
     host.listen().await?;
     let peer = host.peer().await?;
@@ -87,7 +112,7 @@ async fn native_template_policy_uses_correlated_get_and_collection_run() -> anyh
             },
         )]
         .into(),
-        timeout_seconds: 60,
+        timeout_seconds: 120,
         output_bytes: 16384,
     })?;
     let bytes = template.canonical();
@@ -191,7 +216,32 @@ async fn native_template_policy_uses_correlated_get_and_collection_run() -> anyh
             }
         }
     }
-    let ready = native::post(&peer.mutual, &peer.url, &report).await?;
+    report.final_message = false;
+    let mut ready = native::post(&peer.mutual, &peer.url, &report).await?;
+    ensure!(ready.status() == StatusCode::OK);
+    // Complete capability evidence may precede the package Final by many messages.
+    for message_id in 4..=request_message {
+        let mut end = report.clone();
+        end.header.message_id = message_id;
+        end.commands = vec![s::Command::Status(s::Status {
+            id: 1,
+            message_ref: message_id - 1,
+            command_ref: 0,
+            command: s::CommandName::SyncHdr,
+            target_refs: vec![],
+            source_refs: vec![],
+            code: 200,
+            items: vec![],
+            challenge: None,
+            credential: None,
+        })];
+        end.final_message = message_id == request_message;
+        ready = native::post(&peer.mutual, &peer.url, &end).await?;
+        ensure!(
+            ready.status() == StatusCode::OK,
+            "late dispatch at {message_id}"
+        );
+    }
     ensure!(ready.status() == StatusCode::OK);
     let wire = s::decode(&ready.bytes().await?, &CodecLimits::default())?;
     let gets: Vec<_> = wire
@@ -209,14 +259,32 @@ async fn native_template_policy_uses_correlated_get_and_collection_run() -> anyh
             == 1,
         "template Get missing: {gets:?}"
     );
+    if request_message == CodecLimits::default().session_messages as u32 - 1 {
+        let stored:i64=sqlx::query_scalar("SELECT w.request_message FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id=$1::uuid AND r.evidence ? 'nativeTemplate'").bind(case_tenant()).fetch_one(&mut pg).await?;
+        ensure!(
+            stored == i64::from(request_message),
+            "last supported request was not persisted"
+        );
+        crate::test_support::stop_worker(Some(owner)).await?;
+        host.close().await?;
+        return Ok(());
+    }
     let mut packet = native::report(&peer.message, &gets, "template-workstation", 200);
-    packet.header.message_id = report.header.message_id + 1;
+    packet.header.message_id = wire.header.message_id + 1;
+    packet.final_message = false;
     for command in &mut packet.commands {
         match command {
             s::Command::Status(status) => status.message_ref = wire.header.message_id,
             s::Command::Results(result) => result.message_ref = Some(wire.header.message_id),
             _ => {}
         }
+    }
+    if let Some(after_first) = revoke_after_first {
+        let run:Uuid=sqlx::query_scalar("SELECT r.id FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2").bind(case_tenant()).bind(policy).fetch_one(&mut pg).await?;
+        revoked_template_result(&peer, &mut pg, packet, run, after_first).await?;
+        crate::test_support::stop_worker(Some(owner)).await?;
+        host.close().await?;
+        return Ok(());
     }
     ensure!(
         native::post(&peer.mutual, &peer.url, &packet)
@@ -234,6 +302,29 @@ async fn native_template_policy_uses_correlated_get_and_collection_run() -> anyh
     let runs: Vec<Uuid> = sqlx::query_scalar("SELECT r.id FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2")
         .bind(case_tenant()).bind(policy).fetch_all(&mut pg).await?;
     ensure!(runs.len() == 1, "native Policy runs: {runs:?}");
+    let pending:bool=sqlx::query_scalar("SELECT sealed_at IS NULL FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(runs[0]).fetch_one(&mut pg).await?;
+    ensure!(pending, "non-Final template results sealed early");
+    crate::test_support::stop_worker(Some(owner)).await?;
+    let browser = f.browser.clone();
+    drop(f);
+    host = host.restart().await?;
+    f = Client::with_browser(host.browser.clone(), host.app.clone(), browser);
+    let mut end = packet.clone();
+    end.header.message_id += 1;
+    end.commands = vec![s::Command::Status(s::Status {
+        id: 1,
+        message_ref: packet.header.message_id,
+        command_ref: 0,
+        command: s::CommandName::SyncHdr,
+        target_refs: vec![],
+        source_refs: vec![],
+        code: 200,
+        items: vec![],
+        challenge: None,
+        credential: None,
+    })];
+    end.final_message = true;
+    ensure!(native::post(&peer.mutual, &peer.url, &end).await?.status() == StatusCode::OK);
     let result = f
         .browser
         .call(
@@ -247,7 +338,6 @@ async fn native_template_policy_uses_correlated_get_and_collection_run() -> anyh
         result.0 == StatusCode::OK && result.1["asset"]["run"]["result"] == "snapshot",
         "native progress: {result:?}"
     );
-    crate::test_support::stop_worker(Some(owner)).await?;
     // Restore the durable pre-settlement state while retaining the already sealed response.
     // Recovery happens after its original execution timeout, as after worker downtime.
     sqlx::query("UPDATE mdm_commands.action_runs SET state=jsonb_set(jsonb_set(state,'{execution}','\"running\"'),'{startedAt}',to_jsonb($3::bigint)) WHERE tenant_id=$1::uuid AND id=$2")
@@ -286,4 +376,71 @@ async fn native_template_policy_uses_correlated_get_and_collection_run() -> anyh
     ensure!(unknown == 65, "unknown history was retried or rewritten");
     pg.close().await?;
     host.close().await
+}
+
+async fn revoked_template_result(
+    peer: &crate::windows::test_support::Peer,
+    pg: &mut sqlx::PgConnection,
+    mut packet: s::Message,
+    run: Uuid,
+    after_first: bool,
+) -> anyhow::Result<()> {
+    for command in &mut packet.commands {
+        if let s::Command::Results(result) = command {
+            result.items[0].data = Some(rss_mdm_windows_mdm::Secret("template".into()));
+            result.items[0].more_data = true;
+            result.items[0].meta = Some(s::Meta {
+                format: Some("chr".into()),
+                size: Some("template-workstation".len() as u32),
+                ..Default::default()
+            });
+        }
+    }
+    let revoke = || {
+        crate::test_support::identity::set_grants(
+            case_tenant(),
+            crate::test_support::case::admin(),
+            vec![],
+        )
+    };
+    if !after_first {
+        revoke().await?;
+    }
+    let mut response = native::post(&peer.mutual, &peer.url, &packet).await?;
+    ensure!(response.status() == StatusCode::OK);
+    if after_first {
+        let ack = s::decode(&response.bytes().await?, &CodecLimits::default())?;
+        ensure!(
+            ack.commands
+                .iter()
+                .any(|c| matches!(c,s::Command::Status(status) if status.code==213))
+        );
+        revoke().await?;
+        packet.header.message_id += 1;
+        for command in &mut packet.commands {
+            if let s::Command::Results(result) = command {
+                result.items[0].data = Some(rss_mdm_windows_mdm::Secret("-workstation".into()));
+                result.items[0].more_data = false;
+                result.items[0].meta = None;
+            }
+        }
+        packet.final_message = true;
+        response = native::post(&peer.mutual, &peer.url, &packet).await?;
+        ensure!(response.status() == StatusCode::OK);
+    }
+    let aborted = s::decode(&response.bytes().await?, &CodecLimits::default())?;
+    ensure!(aborted.commands.iter().any(|c| matches!(
+        c,
+        s::Command::Alert {
+            alert: s::Alert::SessionAbort,
+            ..
+        }
+    )));
+    ensure!(!aborted.commands.iter().any(
+        |c| matches!(c,s::Command::Status(status) if status.code==213)
+            || matches!(c, s::Command::Get { .. })
+    ));
+    let failed:bool=sqlx::query_scalar("SELECT result='failed' AND reason='aborted' AND batch IS NULL AND NOT delivery_pending FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(run).fetch_one(&mut *pg).await?;
+    ensure!(failed, "revoked template published a result");
+    Ok(())
 }

@@ -1,4 +1,4 @@
-//! Channel-owned protocol participants borrow the Flow-owned connection and cannot commit it.
+//! Channel-owned protocol participants borrow the Execution-owned connection and cannot commit it.
 use rss_mdm_audit_integration::{Fact, RequestAudit};
 use rss_mdm_registration_service::DevicePrincipal;
 use sqlx::PgConnection;
@@ -39,19 +39,63 @@ pub struct Reply {
     pub bytes: Vec<u8>,
     pub facts: Vec<Fact>,
 }
-pub trait Windows: Send + Sync {
-    // The adapter borrows the transaction and its process-owned protection key together.
+/// Packet completeness is independent of command receipts and effects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PackageState {
+    Partial,
+    Complete,
+    Aborted,
+}
+pub enum WindowsReception {
+    Replay { reply: Reply, package: PackageState },
+    Challenge(PreparedWindows),
+    Authenticated(PreparedWindows),
+}
+/// Protocol preparation retains adapter-private session state without transferring its owner.
+pub struct PreparedWindows {
+    pub input: rss_mdm_windows_mdm::syncml::Message,
+    pub history: Option<rss_mdm_windows_mdm::syncml::Expected>,
+    pub response: rss_mdm_windows_mdm::syncml::Message,
+    pub controls: Vec<rss_mdm_windows_mdm::syncml::Command>,
+    pub continuing: Vec<rss_mdm_windows_mdm::syncml::Reference>,
+    pub limits: rss_mdm_windows_mdm::CodecLimits,
+    pub package: PackageState,
+    pub session: Box<dyn WindowsSession>,
+}
+/// One request's channel participant. Every method borrows the original transaction.
+pub trait WindowsSession: Send {
     #[allow(clippy::too_many_arguments)]
-    fn exchange<'a>(
-        &'a self,
+    fn collect<'a>(
+        &'a mut self,
         source: &'a dyn crate::source_authority::SourceAuthority,
+        c: &'a mut PgConnection,
+        key: &'a rss_mdm_native_protection::Protector,
+        p: &'a DevicePrincipal,
+        input: &'a rss_mdm_windows_mdm::syncml::Message,
+        history: Option<&'a rss_mdm_windows_mdm::syncml::Expected>,
+        response: &'a mut rss_mdm_windows_mdm::syncml::Message,
+        dispatch: bool,
+    ) -> Pending<'a, bool>;
+    fn finish<'a>(
+        self: Box<Self>,
+        c: &'a mut PgConnection,
+        key: &'a rss_mdm_native_protection::Protector,
+        p: &'a DevicePrincipal,
+        response: rss_mdm_windows_mdm::syncml::Message,
+        package: PackageState,
+        pending: bool,
+    ) -> Pending<'a, Reply>;
+}
+pub trait Windows: Send + Sync {
+    fn prepare<'a>(
+        self: std::sync::Arc<Self>,
         connection: &'a mut PgConnection,
         protection: &'a rss_mdm_native_protection::Protector,
         principal: &'a DevicePrincipal,
         message: &'a rss_mdm_windows_mdm::syncml::Message,
         bytes: &'a [u8],
         audit: &'a RequestAudit,
-    ) -> Pending<'a, Reply>;
+    ) -> Pending<'a, WindowsReception>;
 }
 
 use rss_mdm_apple_mdm::protocol::Status;

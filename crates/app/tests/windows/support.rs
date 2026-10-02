@@ -92,6 +92,16 @@ impl IngressClock {
     }
 }
 
+async fn admin_session(
+    identity: &crate::identity::Identity,
+    credential: Option<rss_identity_core::session::SessionSecret>,
+) -> anyhow::Result<rss_identity_core::session::SessionSecret> {
+    match credential {
+        Some(secret) => Ok(secret),
+        None => crate::test_support::identity::login(identity, "admin").await,
+    }
+}
+
 pub(crate) struct Host {
     pub(crate) root: PathBuf,
     pub(crate) app: Arc<Assembly>,
@@ -119,9 +129,21 @@ impl Host {
         agent: Option<serde_json::Value>,
         command_clock: rss_device_command_postgres::CommandClock,
     ) -> anyhow::Result<Self> {
+        Self::bind(agent, command_clock, None, None).await
+    }
+    async fn bind(
+        agent: Option<serde_json::Value>,
+        command_clock: rss_device_command_postgres::CommandClock,
+        addresses: Option<(std::net::SocketAddr, std::net::SocketAddr)>,
+        credential: Option<rss_identity_core::session::SessionSecret>,
+    ) -> anyhow::Result<Self> {
         let root = root()?;
-        let enroll = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let manage = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let enroll =
+            tokio::net::TcpListener::bind(addresses.map(|a| a.0).unwrap_or("127.0.0.1:0".parse()?))
+                .await?;
+        let manage =
+            tokio::net::TcpListener::bind(addresses.map(|a| a.1).unwrap_or("127.0.0.1:0".parse()?))
+                .await?;
         let mut value: serde_json::Value =
             serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json"))?;
         value["native_protocols"]["windows"] =
@@ -166,7 +188,7 @@ impl Host {
         let identity =
             crate::identity::Identity::connect(&config, identity_management.clone(), |_| {})
                 .await?;
-        let secret = crate::test_support::identity::login(&identity, "admin").await?;
+        let secret = admin_session(&identity, credential).await?;
         let credentials = crate::enrollment::credentials::Credentials::new(monotonic(), 100);
         let reference = credentials.insert(rss_identity_core::session::SessionSecret::parse(
             secret.expose().into(),
@@ -193,11 +215,15 @@ impl Host {
         let command_audit = store
             .audit_store(&crate::config::AuditConfig::Plain)
             .await?;
+        let content = {
+            let _guard = crate::test_support::software::content_setup_guard().await?;
+            crate::execution_assembly::open_content(&config, config.native_protector()?)?
+        };
         let execution = crate::execution_assembly::open(
             &config,
             config.native_protector()?,
             command_audit.clone(),
-            crate::execution_assembly::open_content(&config, config.native_protector()?)?,
+            content,
             std::collections::BTreeMap::new(),
             command_clock,
         )
@@ -338,6 +364,26 @@ impl Host {
         launch.finish();
         self.running = Some(owner);
         Ok(())
+    }
+    /// Drop listener/runtime ownership and reconstruct all product services against committed state.
+    pub(crate) async fn restart(self) -> anyhow::Result<Self> {
+        let windows = self.app.windows()?;
+        let addresses = (
+            windows.config.enrollment.listen,
+            windows.config.management.listen,
+        );
+        let credential =
+            rss_identity_core::session::SessionSecret::parse(self.secret.expose().into())?;
+        self.close().await?;
+        let mut next = Self::bind(
+            None,
+            rss_device_command_postgres::CommandClock::Postgres,
+            Some(addresses),
+            Some(credential),
+        )
+        .await?;
+        next.listen().await?;
+        Ok(next)
     }
     pub(crate) async fn close(mut self) -> anyhow::Result<()> {
         if let Some(owner) = self.running.take() {

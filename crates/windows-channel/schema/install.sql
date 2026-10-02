@@ -44,8 +44,10 @@ CREATE TABLE mdm_access.management_messages (
     message_id bigint NOT NULL,
     digest text NOT NULL,
     response bytea NOT NULL,
+    request bytea NOT NULL CHECK(octet_length(request) BETWEEN 68 AND 524356),
+    package_state text NOT NULL CHECK(package_state IN ('partial','complete','aborted')),
     CONSTRAINT management_messages_digest_check CHECK ((digest ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT management_messages_response_check CHECK (((octet_length(response) >= 68) AND (octet_length(response) <= 262212)))
+    CONSTRAINT management_messages_response_check CHECK (((octet_length(response) >= 68) AND (octet_length(response) <= 524356)))
 );
 
 ALTER TABLE ONLY mdm_access.management_messages FORCE ROW LEVEL SECURITY;
@@ -59,11 +61,9 @@ CREATE TABLE mdm_access.management_sessions (
     state text NOT NULL,
     last_message bigint NOT NULL,
     client_authenticated boolean NOT NULL,
-    correlation bytea NOT NULL,
     nonce bytea NOT NULL,
     expires_at timestamp with time zone NOT NULL,
     run_id uuid,
-    CONSTRAINT management_sessions_correlation_check CHECK ((octet_length(correlation) BETWEEN 68 AND 262212)),
     CONSTRAINT management_sessions_last_message_check CHECK ((last_message > 0)),
     CONSTRAINT management_sessions_nonce_check CHECK (((octet_length(nonce) >= 16) AND (octet_length(nonce) <= 64))),
     CONSTRAINT management_sessions_session_id_check CHECK (((length(session_id) >= 1) AND (length(session_id) <= 128))),
@@ -134,7 +134,7 @@ CREATE TABLE mdm_windows.collections (
  id uuid NOT NULL,
  registration uuid NOT NULL,
  session_id text NOT NULL,
- request_message bigint NOT NULL CHECK(request_message BETWEEN 1 AND 8),
+ request_message bigint NOT NULL CHECK(request_message BETWEEN 1 AND 127),
  first_command bigint NOT NULL CHECK(first_command BETWEEN 1024 AND 4294967294),
  request bytea NOT NULL CHECK(octet_length(request) BETWEEN 68 AND 32836),
  channel_state jsonb CHECK(octet_length(channel_state::text)<=8192),

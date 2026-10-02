@@ -7,6 +7,10 @@ use rss_mdm_windows_mdm::{
     syncml::{self as s, Command, Item, Message},
 };
 use sqlx::{PgConnection, Row};
+mod outbound;
+use crate::native_rules;
+pub use outbound::{Continuation, continue_on, outgoing_on};
+use s::{successful_status, terminal_status};
 const VERSION: &str = "./DevDetail/SwV";
 const EDITION: &str = "./Vendor/MSFT/DeviceStatus/OS/Edition";
 fn protocol() -> Error {
@@ -17,6 +21,7 @@ fn get(id: u32, uri: &str) -> Command {
         id,
         meta: None,
         items: vec![Item {
+            more_data: false,
             target: Some(uri.into()),
             source: None,
             meta: None,
@@ -32,26 +37,11 @@ fn refs(c: &Command) -> Option<(u32, u32)> {
     }
 }
 fn correlate(
-    request: &[u8],
+    expected: &s::Expected,
     message: &Message,
     ids: &[u32],
-    previous: &[u8],
 ) -> std::result::Result<s::Correlated, Error> {
     let limits = CodecLimits::default();
-    let sent = s::decode(request, &limits).map_err(|_| protocol())?;
-    let (_, sent) = s::encode_request(&sent, &limits).map_err(|_| protocol())?;
-    let mut expected =
-        s::Expected::new(sent, message.header.message_id, &limits).map_err(|_| protocol())?;
-    if !previous.is_empty() {
-        let last = s::decode(previous, &limits).map_err(|_| protocol())?;
-        let original = s::decode(request, &limits).map_err(|_| protocol())?;
-        if last.header.message_id != original.header.message_id {
-            let (_, last) = s::encode_request(&last, &limits).map_err(|_| protocol())?;
-            expected
-                .record_sent(last, &limits)
-                .map_err(|_| protocol())?;
-        }
-    }
     let response = Message {
         header: message.header.clone(),
         commands: message
@@ -63,9 +53,62 @@ fn correlate(
             })
             .cloned()
             .collect(),
-        final_message: true,
+        final_message: message.final_message,
     };
-    s::correlate(&expected, &response, &limits).map_err(|_| Error::Conflict)
+    s::correlate(expected, &response, &limits).map_err(|_| Error::Conflict)
+}
+/// A large-object continuation is a further data request and needs current operation authority.
+/// Resolve the exact producer before applying its current collection/prerequisite authority.
+pub async fn result_eligible_on(
+    source: &dyn crate::source_authority::SourceAuthority,
+    c: &mut PgConnection,
+    protection: &rss_mdm_native_protection::Protector,
+    p: &DevicePrincipal,
+    session: u32,
+    reference: &s::Reference,
+) -> std::result::Result<bool, Error> {
+    let row=sqlx::query("SELECT o.id,o.device,o.registration,o.registration_generation,o.input_context,o.request,o.approval::text,d.status AS command_status,(o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AS within_deadline,a.ordinal=(SELECT max(b.ordinal) FROM mdm_commands.attempts b WHERE b.tenant_id=a.tenant_id AND b.operation=a.operation AND b.phase=a.phase) AS latest FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON (i.tenant_id,i.attempt)=(a.tenant_id,a.id) JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND a.credential=$4 AND a.session=$5 AND a.message=$6 AND i.command=$7 AND i.uri=$8")
+        .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(i64::from(session)).bind(i64::from(reference.message_id)).bind(i64::from(reference.command_id)).bind(&reference.uri).fetch_optional(&mut *c).await.map_err(db)?;
+    let Some(row) = row else {
+        return collection_result_eligible(source, c, p, session, reference).await;
+    };
+    let input = super::input_storage::open_row(
+        protection,
+        p.tenant(),
+        row.try_get("id").map_err(db)?,
+        &row,
+        "request",
+    )?;
+    Ok(receipt_acceptance(source, c, protection, &input, &row, true, None).await? == Some(true))
+}
+async fn collection_result_eligible(
+    source: &dyn crate::source_authority::SourceAuthority,
+    c: &mut PgConnection,
+    p: &DevicePrincipal,
+    session: u32,
+    reference: &s::Reference,
+) -> std::result::Result<bool, Error> {
+    let row=sqlx::query("SELECT w.id,coalesce(r.evidence ? 'nativeTemplate',false) AS template,r.sealed_at IS NULL AND (r.deadline IS NULL OR r.deadline>clock_timestamp()) AS live FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND w.session_id=$3 AND w.request_message=$4 AND $5 BETWEEN w.first_command AND w.first_command+(CASE WHEN w.channel_state IS NOT NULL THEN 4 ELSE jsonb_array_length(r.attempts::jsonb->'definition'->'fields') END)-1")
+        .bind(p.tenant().to_string()).bind(p.registration()).bind(session.to_string()).bind(i64::from(reference.message_id)).bind(i64::from(reference.command_id)).fetch_optional(&mut *c).await.map_err(db)?;
+    if let Some(row) = row {
+        if !row.try_get::<bool, _>("live").map_err(db)? {
+            return Ok(false);
+        }
+        return if row.try_get::<bool, _>("template").map_err(db)? {
+            crate::actions::native_collection::eligible_on(
+                source,
+                c,
+                p,
+                row.try_get("id").map_err(db)?,
+            )
+            .await
+        } else {
+            Ok(true)
+        };
+    }
+    // Capability prerequisites are bounded, registration-owned reads, never user operations.
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.capability_queries WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND session=$4 AND ((version_command=$5 AND $6='./DevDetail/SwV') OR (edition_command=$5 AND $6='./Vendor/MSFT/DeviceStatus/OS/Edition')))" )
+        .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(i64::from(session)).bind(i64::from(reference.command_id)).bind(&reference.uri).fetch_one(c).await.map_err(db)
 }
 /// Consume exact native references under the authenticated registration generation.
 pub async fn receive_on(
@@ -75,11 +118,12 @@ pub async fn receive_on(
     p: &DevicePrincipal,
     message: &Message,
     authenticated: bool,
-    previous: &str,
+    history: Option<&s::Expected>,
 ) -> std::result::Result<Message, Error> {
     if !authenticated {
         return Ok(message.clone());
     }
+    let history = history.ok_or_else(protocol)?;
     let tenant = p.tenant().to_string();
     let session = i64::from(message.header.session_id);
     let rows=sqlx::query("SELECT a.id,a.operation,a.message,a.request,o.device,o.registration,o.registration_generation,o.input_context,o.request AS task_request,o.approval::text,d.status AS command_status,(o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AS within_deadline,a.ordinal=(SELECT max(latest.ordinal) FROM mdm_commands.attempts latest WHERE latest.tenant_id=a.tenant_id AND latest.operation=a.operation AND latest.phase=a.phase) AS latest FROM mdm_commands.attempts a JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND a.credential=$4 AND a.session=$5 ORDER BY a.ordinal")
@@ -88,6 +132,12 @@ pub async fn receive_on(
     for row in rows {
         let attempt: Uuid = row.try_get("id").map_err(db)?;
         let msg = row.try_get::<i64, _>("message").map_err(db)? as u32;
+        if let Some(frames) =
+            outbound::receive(source, c, protection, p, &row, message, history).await?
+        {
+            consumed.extend(frames);
+            continue;
+        }
         let items=sqlx::query("SELECT command,parent_command,item_ordinal,uri,kind,status,value,receipt_accepted,result_accepted FROM mdm_commands.attempt_items WHERE tenant_id=$1::uuid AND attempt=$2 ORDER BY command,item_ordinal FOR UPDATE").bind(&tenant).bind(attempt).fetch_all(&mut *c).await.map_err(db)?;
         let ids = items
             .iter()
@@ -101,17 +151,7 @@ pub async fn receive_on(
         {
             continue;
         }
-        let stored_request = protection
-            .open_bytes(
-                &row.try_get::<Vec<u8>, _>("request").map_err(db)?,
-                &crate::protection::aad(
-                    p.tenant(),
-                    "windows.attempt.request",
-                    &(p.registration(), p.generation(), attempt),
-                )?,
-            )
-            .map_err(|_| protocol())?;
-        let report = correlate(stored_request.expose(), message, &ids, previous.as_bytes())?;
+        let report = correlate(history, message, &ids)?;
         let task_request = super::input_storage::open_row(
             protection,
             p.tenant(),
@@ -179,18 +219,14 @@ pub async fn receive_on(
                 .transpose()?;
             let atomic = atomic_ancestor(i64::from(id), &parents);
             let kind: String = item.try_get("kind").map_err(db)?;
-            if old_status.is_some_and(|old| {
-                terminal_status(old)
-                    && status.is_some_and(|new| {
-                        old != new
-                            && !(atomic
-                                && matches!(new, 216 | 516)
-                                && successful_status(&kind, old))
-                    })
-            }) || old_value
-                .as_ref()
-                .is_some_and(|old| value.as_ref().is_some_and(|new| old != new))
-            {
+            if !native_rules::compatible_receipt(
+                &kind,
+                atomic,
+                old_status,
+                status,
+                old_value.as_deref(),
+                value.as_deref(),
+            ) {
                 return Err(Error::Conflict);
             }
             let new_status = status.is_some_and(terminal_status);
@@ -232,15 +268,7 @@ pub async fn receive_on(
         }
         consumed.extend(ids.into_iter().map(|id| (msg, id)));
     }
-    receive_capabilities(
-        c,
-        protection,
-        p,
-        message,
-        &mut consumed,
-        previous.as_bytes(),
-    )
-    .await?;
+    receive_capabilities(c, protection, p, message, &mut consumed, history).await?;
     Ok(Message {
         header: message.header.clone(),
         commands: message
@@ -258,7 +286,7 @@ async fn receive_capabilities(
     p: &DevicePrincipal,
     message: &Message,
     consumed: &mut std::collections::BTreeSet<(u32, u32)>,
-    previous: &[u8],
+    history: &s::Expected,
 ) -> std::result::Result<(), Error> {
     let tenant = p.tenant().to_string();
     let reg = p.registration().to_string();
@@ -288,7 +316,7 @@ async fn receive_capabilities(
                 .map_err(|_| protocol())?;
             let request = plain.expose();
             let sent = s::decode(request, &CodecLimits::default()).map_err(|_| protocol())?;
-            let report = correlate(request, message, &ids, previous)?;
+            let report = correlate(history, message, &ids)?;
             let mut values = [
                 row.try_get::<Option<String>, _>("os_version").map_err(db)?,
                 row.try_get::<Option<String>, _>("edition").map_err(db)?,
@@ -403,6 +431,7 @@ pub async fn send_on(
     p: &DevicePrincipal,
     response: &mut Message,
     authenticated: bool,
+    limits: &CodecLimits,
 ) -> std::result::Result<bool, Error> {
     if !authenticated {
         return Ok(false);
@@ -416,7 +445,7 @@ pub async fn send_on(
         return Ok(false);
     }
     let msg = i64::from(response.header.message_id);
-    if msg >= 8 {
+    if msg as usize >= limits.session_messages {
         return Ok(false);
     }
     let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.capability_queries WHERE tenant_id=$1::uuid AND registration=$2 AND session=$3)").bind(&tenant).bind(p.registration()).bind(session).fetch_one(&mut *c).await.map_err(db)?;
@@ -618,21 +647,39 @@ pub async fn send_on(
                 }
             }
         };
-        match admit_response(response, std::slice::from_ref(&command)) {
-            Ok(Some(_)) => (),
-            Ok(None) => {
-                pending = true;
+        let frame = match s::fragment(response, &command, 0, limits.syncml_bytes, limits) {
+            Ok(frame) => frame,
+            Err(rss_mdm_windows_mdm::CodecError::LimitExceeded) => {
+                let mut minimum = response.clone();
+                minimum
+                    .commands
+                    .retain(|c| matches!(c, Command::Status(v) if v.command_ref == 0));
+                if s::fragment(&minimum, &command, 0, limits.syncml_bytes, limits).is_ok() {
+                    pending = true;
+                    continue;
+                }
+                sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
+                    .bind(&tenant).bind(op.operation_id).bind(serde_json::json!({"platform":"windows","phase":phase.as_str(),"reason":"native_response_budget_exceeded"})).execute(&mut *c).await.map_err(db)?;
                 continue;
             }
-            Err(reason) => {
-                let failure = serde_json::json!({"platform":"windows","phase":phase.as_str(),"reason":reason});
+            Err(_) => {
                 sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
-                    .bind(&tenant).bind(op.operation_id).bind(failure).execute(&mut *c).await.map_err(db)?;
+                    .bind(&tenant).bind(op.operation_id).bind(serde_json::json!({"platform":"windows","phase":phase.as_str(),"reason":"native_fragment_unsupported"})).execute(&mut *c).await.map_err(db)?;
                 continue;
             }
         };
-        let mut request = response.clone();
-        request.commands = vec![command.clone()];
+        let total = match &command {
+            Command::Add { items, .. } | Command::Replace { items, .. } if items.len() == 1 => {
+                items[0]
+                    .data
+                    .as_ref()
+                    .map(|d| d.0.len())
+                    .filter(|total| frame.end < *total)
+            }
+            _ => None,
+        };
+        let mut request = frame.message.clone();
+        request.commands = vec![frame.message.commands.last().ok_or_else(protocol)?.clone()];
         let (wire, _) =
             s::encode_request(&request, &CodecLimits::default()).map_err(|_| protocol())?;
         let attempt = Uuid::new_v4();
@@ -650,7 +697,19 @@ pub async fn send_on(
         for item in expected_items(&command)? {
             sqlx::query("INSERT INTO mdm_commands.attempt_items(tenant_id,attempt,command,item_ordinal,kind,uri,parent_command) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)").bind(&tenant).bind(attempt).bind(i64::from(item.command)).bind(item.ordinal).bind(item.kind).bind(item.uri).bind(item.parent.map(i64::from)).execute(&mut *c).await.map_err(db)?;
         }
-        response.commands.push(command);
+        if let Some(total) = total {
+            outbound::record(
+                c,
+                p,
+                attempt,
+                response.header.message_id,
+                command.id(),
+                0..frame.end,
+                total,
+            )
+            .await?;
+        }
+        *response = frame.message;
         pending = true;
         break;
     }
@@ -717,7 +776,7 @@ pub async fn replay_on(
     p: &DevicePrincipal,
     m: &Message,
 ) -> std::result::Result<(), Error> {
-    let rows=sqlx::query("SELECT o.id,o.device,o.registration,o.registration_generation,o.input_context,o.request,o.approval::text,d.status FROM mdm_commands.attempts a JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE a.tenant_id=$1::uuid AND o.registration=$2::uuid AND a.session=$3 AND a.message=$4")
+    let rows=sqlx::query("SELECT o.id,o.device,o.registration,o.registration_generation,o.input_context,o.request,o.approval::text,d.status FROM mdm_commands.attempts a JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE a.tenant_id=$1::uuid AND o.registration=$2::uuid AND a.session=$3 AND (a.message=$4 OR EXISTS(SELECT 1 FROM mdm_commands.attempt_frames f WHERE f.tenant_id=a.tenant_id AND f.attempt=a.id AND f.message=$4))")
  .bind(p.tenant().to_string()).bind(p.registration().to_string()).bind(i64::from(m.header.session_id)).bind(i64::from(m.header.message_id)).fetch_all(&mut *c).await.map_err(db)?;
     let now = now(c).await?;
     for row in rows {
@@ -758,49 +817,29 @@ async fn receipt_acceptance(
     if old.is_some() || !received {
         return Ok(old);
     }
-    if !row.try_get::<bool, _>("within_deadline").map_err(db)?
-        || !row.try_get::<bool, _>("latest").map_err(db)?
-        || !matches!(
-            row.try_get::<String, _>("command_status")
-                .map_err(db)?
-                .as_str(),
-            "published" | "received"
-        )
-    {
-        return Ok(Some(false));
-    }
     let approval: ExecutionAuthority =
         serde_json::from_str(&row.try_get::<String, _>("approval").map_err(db)?)
             .map_err(|_| protocol())?;
     let at = now(c).await?;
     Ok(Some(
-        at < request.deadline
-            && approval
+        native_rules::Eligibility {
+            latest: row.try_get("latest").map_err(db)?,
+            within_deadline: row.try_get::<bool, _>("within_deadline").map_err(db)?
+                && at < request.deadline,
+            active: matches!(
+                row.try_get::<String, _>("command_status")
+                    .map_err(db)?
+                    .as_str(),
+                "published" | "received"
+            ),
+            authority_valid: approval
                 .valid(source, c, protection, &request.task.permissions()?, at)
                 .await?,
+        }
+        .allows(),
     ))
 }
 
-/// OMA SyncML Representation 1.2.2 §10: provisional receipts allow later completion.
-/// Unknown codes remain evidence, without inventing a successful business outcome.
-pub(super) fn terminal_status(status: i32) -> bool {
-    status >= 200 && !matches!(status, 202 | 206 | 213)
-}
-pub(super) fn successful_status(kind: &str, status: i32) -> bool {
-    match status {
-        200 | 214 => matches!(
-            kind,
-            "add" | "replace" | "delete" | "get" | "exec" | "atomic" | "sequence"
-        ),
-        201 => kind == "add",
-        204 => kind == "get",
-        210 | 211 => kind == "delete",
-        _ => false,
-    }
-}
-pub(super) fn rejected_status(status: i32) -> bool {
-    matches!(status, 215 | 216) || ((400..600).contains(&status) && status != 516)
-}
 fn atomic_ancestor(
     command: i64,
     parents: &std::collections::BTreeMap<i64, (Option<i64>, String)>,
@@ -831,38 +870,6 @@ pub(super) fn result_aad(
         "windows.attempt.result",
         &(registration, generation, attempt, command, ordinal),
     )
-}
-
-#[cfg(test)]
-mod status_tests {
-    #[test]
-    fn only_explicit_command_outcomes_are_successful() {
-        for kind in [
-            "add", "replace", "delete", "get", "exec", "atomic", "sequence",
-        ] {
-            assert!(super::successful_status(kind, 200));
-            for code in [
-                101, 202, 203, 205, 206, 207, 208, 209, 212, 213, 215, 216, 217, 218, 507, 516,
-            ] {
-                assert!(!super::successful_status(kind, code), "{kind} {code}");
-            }
-        }
-        assert!(super::successful_status("get", 204));
-        assert!(!super::successful_status("exec", 204));
-        assert!(super::successful_status("add", 201));
-        assert!(!super::successful_status("get", 201));
-        assert!(super::successful_status("delete", 211));
-        assert!(super::rejected_status(215));
-        assert!(super::rejected_status(216));
-        assert!(!super::rejected_status(516));
-    }
-    #[test]
-    fn partial_completion_can_receive_a_later_terminal_receipt() {
-        for code in [101, 202, 206, 213] {
-            assert!(!super::terminal_status(code), "provisional status {code}");
-        }
-        assert!(super::terminal_status(200));
-    }
 }
 
 #[cfg(test)]

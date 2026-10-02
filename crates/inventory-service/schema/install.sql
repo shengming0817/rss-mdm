@@ -92,7 +92,7 @@ CREATE TABLE mdm_access.collection_runs (
     CONSTRAINT collection_runs_check3 CHECK (((NOT delivery_pending) OR (batch IS NOT NULL))),
     CONSTRAINT collection_runs_check4 CHECK (((batch IS NULL) OR (sealed_at IS NOT NULL))),
     CONSTRAINT collection_runs_digest_check CHECK ((digest ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT collection_runs_reason_check CHECK ((reason = ANY (ARRAY['complete'::text, 'message_budget'::text, 'timeout'::text, 'superseded'::text, 'revoked'::text]))),
+    CONSTRAINT collection_runs_reason_check CHECK ((reason = ANY (ARRAY['complete'::text, 'message_budget'::text, 'aborted'::text, 'timeout'::text, 'superseded'::text, 'revoked'::text]))),
     CONSTRAINT collection_runs_result_check CHECK ((result = ANY (ARRAY['pending'::text, 'snapshot'::text, 'partial'::text, 'failed'::text]))),
     CONSTRAINT collection_runs_scope_check CHECK ((octet_length(scope) <= 4096)),
     CONSTRAINT collection_runs_sequence_check CHECK ((sequence >= 0)),

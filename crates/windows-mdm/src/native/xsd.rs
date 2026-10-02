@@ -51,8 +51,11 @@ fn compile(source: &str) -> Result<SchemaSet, Error> {
 }
 
 pub(super) fn validate(source: &'static str, xml: &str) -> Result<(), Error> {
-    let limits = crate::CodecLimits::default();
-    crate::xml::document(xml.as_bytes(), limits.field_bytes, &limits).map_err(|e| {
+    let limits = crate::CodecLimits {
+        field_bytes: crate::CodecLimits::default().object_bytes,
+        ..Default::default()
+    };
+    crate::xml::document(xml.as_bytes(), limits.object_bytes, &limits).map_err(|e| {
         if e == crate::CodecError::LimitExceeded {
             Error::Limit
         } else {

@@ -123,6 +123,7 @@ pub(crate) fn report(
                 command: Some(s::CommandName::Get),
                 meta: None,
                 items: vec![s::Item {
+                    more_data: false,
                     source: Some(uri.clone()),
                     target: None,
                     meta: None,

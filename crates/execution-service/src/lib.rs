@@ -36,6 +36,7 @@ mod input_storage;
 mod managed_registration;
 mod native_configuration;
 mod native_installation;
+mod native_rules;
 pub use native_configuration::Diagnosis as ConfigurationDiagnosis;
 pub mod health;
 mod lifecycle;

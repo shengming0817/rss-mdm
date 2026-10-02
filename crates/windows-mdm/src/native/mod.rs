@@ -260,6 +260,7 @@ impl Operation {
     /// Codec validation still rejects zero or duplicate IDs in the containing message.
     pub fn command(&self, id: u32) -> Command {
         let items = vec![Item {
+            more_data: false,
             source: None,
             target: Some(self.uri.clone()),
             data: self.data.clone(),

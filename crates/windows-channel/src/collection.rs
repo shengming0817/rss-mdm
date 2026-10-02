@@ -100,6 +100,7 @@ pub async fn create(
             id: first as u32 + index as u32,
             meta: None,
             items: vec![Item {
+                more_data: false,
                 source: None,
                 target: Some((*uri).into()),
                 meta: None,
@@ -122,12 +123,12 @@ pub async fn create(
 }
 pub async fn accept(
     tx: &mut sqlx::PgConnection,
-    protection: &rss_mdm_native_protection::Protector,
+    _protection: &rss_mdm_native_protection::Protector,
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     tenant: &str,
     id: Uuid,
     message: &syncml::Message,
-    previous: &str,
+    history: &syncml::Expected,
 ) -> Result<bool, Error> {
     let mut run = store::load_on(tx, tenant, id).await?;
     if run.scope.source().as_str() != "mdm.windows" {
@@ -144,17 +145,8 @@ pub async fn accept(
         return Ok(true);
     }
     let limits = CodecLimits::default();
-    let previous = syncml::decode(previous.as_bytes(), &limits).map_err(|_| corrupt())?;
-    let (_, sent) = syncml::encode_request(&previous, &limits).map_err(|_| corrupt())?;
-    let mut expected =
-        syncml::Expected::new(sent, message.header.message_id, &limits).map_err(|_| corrupt())?;
     let row = sqlx::query("SELECT request,request_message,first_command FROM mdm_windows.collections WHERE tenant_id=$1::uuid AND id=$2::uuid AND registration=$3::uuid")
         .bind(tenant).bind(id.to_string()).bind(run.scope.registration().as_str()).fetch_one(&mut *tx).await.map_err(db)?;
-    let sealed: Vec<u8> = row.try_get("request").map_err(db)?;
-    let plain = protection
-        .open_bytes(&sealed, &crate::protection::collection_aad(&run.scope, id)?)
-        .map_err(|_| corrupt())?;
-    let request = plain.expose();
     let request_message: u32 = row
         .try_get::<i64, _>("request_message")
         .map_err(db)?
@@ -165,12 +157,7 @@ pub async fn accept(
         .map_err(db)?
         .try_into()
         .map_err(|_| corrupt())?;
-    if previous.header.message_id != request_message {
-        let sent = syncml::decode(request, &limits).map_err(|_| corrupt())?;
-        let (_, sent) = syncml::encode_request(&sent, &limits).map_err(|_| corrupt())?;
-        expected.record_sent(sent, &limits).map_err(|_| corrupt())?;
-    }
-    let correlated = syncml::correlate(&expected, message, &limits).map_err(|_| Error::Conflict)?;
+    let correlated = syncml::correlate(history, message, &limits).map_err(|_| Error::Conflict)?;
     let received_at: i64 =
         sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
             .fetch_one(&mut *tx)
@@ -183,14 +170,21 @@ pub async fn accept(
         first_command,
         received_at,
     )?;
-    let terminal = run.attempts.complete() || message.header.message_id == 8;
-    if terminal {
-        let reason = if run.attempts.complete() {
-            "complete"
-        } else {
-            "message_budget"
-        };
-        facts.extend(store::seal(tx, &mut run, reason).await?);
+    let complete = run.attempts.complete() && message.final_message;
+    let budget = message.header.message_id as usize >= limits.session_messages;
+    let terminal = complete || budget;
+    if complete {
+        facts.extend(store::seal(tx, &mut run, "complete").await?);
+    } else if budget {
+        facts.extend(
+            rss_mdm_inventory_service::collection::channel::abandon_in(
+                tx,
+                tenant,
+                id,
+                "message_budget",
+            )
+            .await?,
+        );
     } else {
         store::save_attempts_in(tx, &run).await?;
     }
@@ -209,7 +203,7 @@ pub async fn terminate_session(
         .bind(tenant).bind(registration).bind(session).fetch_all(&mut *tx).await.map_err(db)?;
     for id in ids {
         let native:bool=sqlx::query_scalar("SELECT channel_state IS NOT NULL FROM mdm_windows.collections WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(&id).fetch_one(&mut *tx).await.map_err(db)?;
-        if native {
+        if native || reason == "aborted" {
             facts.extend(
                 rss_mdm_inventory_service::collection::channel::abandon_in(
                     tx,

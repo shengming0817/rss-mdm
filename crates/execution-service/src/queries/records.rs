@@ -218,8 +218,21 @@ struct WindowsReceipt {
     received_at: Option<i64>,
     result_accepted: Option<bool>,
     result_received_at: Option<i64>,
+    frames: Vec<WindowsFrame>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     redacted: bool,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowsFrame {
+    message: i64,
+    command: i64,
+    start_byte: i64,
+    end_byte: i64,
+    total_bytes: i64,
+    status: Option<i32>,
+    accepted: Option<bool>,
+    received_at: Option<i64>,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -379,6 +379,96 @@
       ""
     ],
     [
+      "attempt_frames",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "attempt_frames",
+      "attempt",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "attempt_frames",
+      "message",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "attempt_frames",
+      "command",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "attempt_frames",
+      "start_byte",
+      "integer",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "attempt_frames",
+      "end_byte",
+      "integer",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "attempt_frames",
+      "total_bytes",
+      "integer",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "attempt_frames",
+      "status",
+      "integer",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "attempt_frames",
+      "accepted",
+      "boolean",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "attempt_frames",
+      "received_at",
+      "bigint",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
       "attempt_items",
       "tenant_id",
       "uuid",
@@ -1366,6 +1456,62 @@
       true
     ],
     [
+      "attempt_frames",
+      "attempt_frames_attempt_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, attempt) REFERENCES mdm_commands.attempts(tenant_id, id)",
+      true
+    ],
+    [
+      "attempt_frames",
+      "attempt_frames_check",
+      "c",
+      "CHECK (((end_byte > start_byte) AND (end_byte <= total_bytes) AND (total_bytes <= 16777216)))",
+      true
+    ],
+    [
+      "attempt_frames",
+      "attempt_frames_check1",
+      "c",
+      "CHECK (((accepted IS NULL) OR (status IS NOT NULL)))",
+      true
+    ],
+    [
+      "attempt_frames",
+      "attempt_frames_command_check",
+      "c",
+      "CHECK (((command >= 1) AND (command <= '4294967295'::bigint)))",
+      true
+    ],
+    [
+      "attempt_frames",
+      "attempt_frames_message_check",
+      "c",
+      "CHECK (((message >= 1) AND (message <= '4294967295'::bigint)))",
+      true
+    ],
+    [
+      "attempt_frames",
+      "attempt_frames_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, attempt, message, command)",
+      true
+    ],
+    [
+      "attempt_frames",
+      "attempt_frames_start_byte_check",
+      "c",
+      "CHECK ((start_byte >= 0))",
+      true
+    ],
+    [
+      "attempt_frames",
+      "attempt_frames_status_check",
+      "c",
+      "CHECK (((status >= 100) AND (status <= 599)))",
+      true
+    ],
+    [
       "attempt_items",
       "attempt_items_attempt_fkey",
       "f",
@@ -1821,6 +1967,14 @@
       "apple_profiles",
       "profiles_tenant_id_identifier_key",
       "CREATE UNIQUE INDEX profiles_tenant_id_identifier_key ON mdm_commands.apple_profiles USING btree (tenant_id, identifier)",
+      true,
+      true,
+      true
+    ],
+    [
+      "attempt_frames",
+      "attempt_frames_pkey",
+      "CREATE UNIQUE INDEX attempt_frames_pkey ON mdm_commands.attempt_frames USING btree (tenant_id, attempt, message, command)",
       true,
       true,
       true

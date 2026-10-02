@@ -51,7 +51,6 @@ pub async fn manage(
     let message = syncml::decode(&bytes, &CodecLimits::default()).map_err(|_| Error::Malformed)?;
     if message.header.source != principal.device()
         || message.header.target != app.windows()?.management_url()
-        || !message.final_message
     {
         return Err(Error::Forbidden);
     }
@@ -80,223 +79,8 @@ pub async fn manage(
         .into_response())
 }
 
-/// Response provenance belongs to the native adapter, independently of audit formatting.
-use rss_mdm_execution_service::channels::Reply as ManagementReply;
-// The exchange borrows authority, connection and protocol inputs together.
-#[allow(clippy::too_many_arguments)]
-pub async fn management_on(
-    source: &dyn rss_mdm_execution_service::source_authority::SourceAuthority,
-    conn: &mut sqlx::PgConnection,
-    windows: &Windows,
-    protection: &rss_mdm_native_protection::Protector,
-    principal: &DevicePrincipal,
-    message: &syncml::Message,
-    bytes: &[u8],
-    audit: &RequestAudit,
-) -> Result<ManagementReply, Error> {
-    let mut facts = Vec::new();
-    let tenant = principal.tenant().to_string();
-    let registration = principal.registration().to_string();
-    let session = message.header.session_id.to_string();
-    let message_id = i64::from(message.header.message_id);
-    let binding = (
-        principal.registration(),
-        principal.generation(),
-        principal.credential(),
-        &session,
-        message_id,
-    );
-    let digest = protection
-        .mac(
-            bytes,
-            &crate::protection::native_aad(
-                principal.tenant(),
-                "windows.management.incoming",
-                &binding,
-            )?,
-        )
-        .map_err(|_| Error::Unavailable(Failure::Protocol))?
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>();
-    let tx = conn;
-    let scope = crate::device::store::revalidate(tx, principal).await?;
-    lock_sessions(tx, &tenant, &registration).await?;
-    let stored =
-        match session_decision(source, tx, protection, principal, message, &digest, audit).await? {
-            SessionDecision::Replay(bytes) => {
-                return Ok(ManagementReply { bytes, facts });
-            }
-            SessionDecision::Continue(stored) => stored,
-        };
-    let registration_data = crate::enrollment_store::registration(&mut *tx, &tenant, &registration)
-        .await
-        .map_err(db)?;
-    let request = crate::enrollment::store::uuid(&registration_data, "request_id")?;
-    let secrets = windows.protection.open(
-        &tenant,
-        request,
-        &registration_data
-            .try_get::<Vec<u8>, _>("secrets")
-            .map_err(db)?,
-    )?;
-    let authenticated_before = stored
-        .as_ref()
-        .map(|r| r.try_get::<bool, _>("client_authenticated").map_err(db))
-        .transpose()?
-        .unwrap_or(false);
-    let authenticated = authenticate_client(
-        &registration,
-        &secrets,
-        message.header.credential.as_ref(),
-        authenticated_before,
-    )?;
-    let nonce: Vec<u8> = stored
-        .as_ref()
-        .map(|r| r.try_get("nonce").map_err(db))
-        .transpose()?
-        .unwrap_or(registration_data.try_get("server_nonce").map_err(db)?);
-    let previous_bytes = stored
-        .as_ref()
-        .map(|row| {
-            let previous_id: i64 = row.try_get("last_message").map_err(db)?;
-            let sealed: Vec<u8> = row.try_get("correlation").map_err(db)?;
-            let aad = crate::protection::native_aad(
-                principal.tenant(),
-                "windows.management.response",
-                &(
-                    principal.registration(),
-                    principal.generation(),
-                    principal.credential(),
-                    &session,
-                    previous_id,
-                ),
-            )?;
-            protection
-                .open_bytes(&sealed, &aad)
-                .map_err(|_| Error::Unavailable(Failure::Protocol))
-        })
-        .transpose()?;
-    let previous = previous_bytes
-        .as_ref()
-        .map(|v| std::str::from_utf8(v.expose()).map_err(|_| Error::Unavailable(Failure::Protocol)))
-        .transpose()?
-        .unwrap_or("");
-    let server = authenticate_server(stored.as_ref(), previous, message, nonce)?;
-    let initial = initialization(message, authenticated_before)?;
-    let authenticated_session = authenticated && server.authenticated;
-    let mut response = management_response(
-        windows,
-        principal,
-        message,
-        &secrets,
-        authenticated,
-        &server.nonce,
-        initial,
-    )?;
-    let filtered = rss_mdm_execution_service::native::receive_on(
-        source,
-        tx,
-        protection,
-        principal,
-        message,
-        authenticated_session,
-        previous,
-    )
-    .await?;
-    let filtered = if authenticated_session {
-        crate::agent_collection::receive(tx, protection, principal, &filtered, previous, &mut facts)
-            .await?
-    } else {
-        filtered
-    };
-    let filtered = if authenticated_session {
-        crate::template_collection::receive(
-            source, tx, protection, principal, &filtered, previous, &mut facts,
-        )
-        .await?
-    } else {
-        filtered
-    };
-    let (run_id, complete) = collect(
-        tx,
-        (&mut facts, audit),
-        &scope,
-        &filtered,
-        (protection, stored.as_ref(), previous),
-        &mut response,
-        authenticated_session,
-    )
-    .await?;
-    let channel_pending = if authenticated_session {
-        crate::agent_collection::send(
-            tx,
-            protection,
-            principal,
-            &mut response,
-            windows.agent_identity.as_ref(),
-        )
-        .await?
-    } else {
-        false
-    };
-    let template_pending = if authenticated_session {
-        crate::template_collection::send(
-            source,
-            tx,
-            protection,
-            principal,
-            &mut response,
-            &mut facts,
-        )
-        .await?
-    } else {
-        false
-    };
-    let pending = rss_mdm_execution_service::native::send_on(
-        source,
-        tx,
-        protection,
-        principal,
-        &mut response,
-        authenticated_session,
-    )
-    .await?;
-    let response = syncml::encode(&response, &CodecLimits::default())
-        .map_err(|_| Error::Unavailable(Failure::Protocol))?;
-    let correlation = protection
-        .seal_bytes(
-            &response,
-            &crate::protection::native_aad(
-                principal.tenant(),
-                "windows.management.response",
-                &binding,
-            )?,
-        )
-        .map_err(|_| Error::Unavailable(Failure::Protocol))?;
-    let state = session_state(
-        complete && !pending && !channel_pending && !template_pending,
-        run_id,
-    );
-    if stored.is_none() {
-        sqlx::query("INSERT INTO mdm_access.management_sessions(tenant_id,registration,session_id,generation,credential,state,last_message,client_authenticated,correlation,nonce,expires_at) VALUES($1::uuid,$2::uuid,$3,$4,$5::uuid,$6,$7,$8,$9,$10,clock_timestamp()+interval '15 minutes')")
-                .bind(&tenant).bind(&registration).bind(&session).bind(principal.generation()).bind(principal.credential().to_string()).bind(state).bind(message_id).bind(authenticated).bind(&correlation).bind(&server.nonce).execute(&mut *tx).await.map_err(db)?;
-        notify(tx).await.map_err(db)?;
-    } else {
-        sqlx::query("UPDATE mdm_access.management_sessions SET state=$4,last_message=$5,client_authenticated=$6,correlation=$7,nonce=$8 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3")
-                .bind(&tenant).bind(&registration).bind(&session).bind(state).bind(message_id).bind(authenticated).bind(&correlation).bind(&server.nonce).execute(&mut *tx).await.map_err(db)?;
-    }
-    sqlx::query("UPDATE mdm_access.management_sessions SET run_id=$4::uuid WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3")
-            .bind(&tenant).bind(&registration).bind(&session).bind(run_id.map(|id| id.to_string())).execute(&mut *tx).await.map_err(db)?;
-    server.persist_nonce(tx, &tenant, request, message).await?;
-    sqlx::query("INSERT INTO mdm_access.management_messages(tenant_id,registration,session_id,message_id,digest,response) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6)")
-            .bind(&tenant).bind(&registration).bind(&session).bind(message_id).bind(digest).bind(&correlation).execute(&mut *tx).await.map_err(db)?;
-    Ok(ManagementReply {
-        bytes: response,
-        facts,
-    })
-}
-
+use rss_mdm_execution_service::channels::{PackageState, Reply};
+mod session;
 async fn lock_sessions(
     tx: &mut sqlx::PgConnection,
     tenant: &str,
@@ -314,14 +98,6 @@ async fn lock_sessions(
     Ok(())
 }
 
-fn session_state(complete: bool, run_id: Option<Uuid>) -> &'static str {
-    match (complete, run_id) {
-        (true, _) => "complete",
-        (false, Some(_)) => "collecting",
-        (false, None) => "challenge",
-    }
-}
-
 async fn collect(
     tx: &mut sqlx::PgConnection,
     effects: (&mut Vec<rss_mdm_audit_integration::Fact>, &RequestAudit),
@@ -330,13 +106,14 @@ async fn collect(
     native: (
         &rss_mdm_native_protection::Protector,
         Option<&sqlx::postgres::PgRow>,
-        &str,
+        Option<&syncml::Expected>,
+        bool,
     ),
     response: &mut syncml::Message,
-    authenticated_session: bool,
+    dispatch: bool,
 ) -> Result<(Option<Uuid>, bool), Error> {
     let (facts, audit) = effects;
-    let (protection, stored, previous) = native;
+    let (protection, stored, history, authenticated_session) = native;
     let tenant = scope.tenant().to_string();
     let registration = scope.registration().as_str().to_owned();
     let run_id = stored
@@ -375,8 +152,16 @@ async fn collect(
         if !authenticated_session {
             return Err(Error::Unauthorized);
         }
-        complete = crate::collection::accept(tx, protection, facts, &tenant, id, message, previous)
-            .await?;
+        complete = crate::collection::accept(
+            tx,
+            protection,
+            facts,
+            &tenant,
+            id,
+            message,
+            history.ok_or(Error::Conflict)?,
+        )
+        .await?;
         audit.operation(id, "windows_management");
     } else if message
         .commands
@@ -385,10 +170,10 @@ async fn collect(
     {
         return Err(Error::Conflict);
     }
-    let run_id = if authenticated_session && run_id.is_none() {
+    let run_id = if dispatch && authenticated_session && run_id.is_none() {
         let id = crate::collection::create(tx, protection, scope, response).await?;
         audit.operation(id, "windows_management");
-        if message.header.message_id == 8 {
+        if message.header.message_id as usize >= CodecLimits::default().session_messages {
             crate::collection::terminate_session(
                 tx,
                 facts,
@@ -463,20 +248,14 @@ impl ServerAuthentication {
 
 fn authenticate_server(
     stored: Option<&sqlx::postgres::PgRow>,
-    previous: &str,
+    history: Option<&syncml::Expected>,
     message: &syncml::Message,
     mut nonce: Vec<u8>,
 ) -> Result<ServerAuthentication, Error> {
     let mut next_nonce = nonce.clone();
     let mut server_authenticated = false;
     if let Some(row) = stored {
-        let previous = syncml::decode(previous.as_bytes(), &CodecLimits::default())
-            .map_err(|_| Error::Unavailable(Failure::Protocol))?;
-        let (_, sent) = syncml::encode_request(&previous, &CodecLimits::default())
-            .map_err(|_| Error::Unavailable(Failure::Protocol))?;
-        let expected =
-            syncml::Expected::new(sent, message.header.message_id, &CodecLimits::default())
-                .map_err(|_| Error::Unavailable(Failure::Protocol))?;
+        let expected = history.ok_or(Error::Conflict)?;
         let collecting = row.try_get::<String, _>("state").map_err(db)? == "collecting";
         let statuses = syncml::Message {
             header: message.header.clone(),
@@ -488,7 +267,7 @@ fn authenticate_server(
                 .collect(),
             final_message: true,
         };
-        let _correlated = syncml::correlate(&expected, &statuses, &CodecLimits::default())
+        let _correlated = syncml::correlate(expected, &statuses, &CodecLimits::default())
             .map_err(|_| Error::Conflict)?;
         let header_status = message
             .commands
@@ -544,7 +323,19 @@ fn initialization(
             initial.as_slice(),
             [Command::Alert { .. }, Command::DevInfo { .. }]
         )
-        || authenticated_before && !initial.is_empty()
+        || authenticated_before
+            && initial.iter().any(|c| {
+                !matches!(
+                    c,
+                    Command::Alert {
+                        alert: syncml::Alert::Generic { .. }
+                            | syncml::Alert::SessionAbort
+                            | syncml::Alert::MoreMessages
+                            | syncml::Alert::EndOfData { .. },
+                        ..
+                    }
+                )
+            })
     {
         return Err(Error::Malformed);
     }
@@ -653,11 +444,10 @@ fn verify_session_identity(
 }
 
 enum SessionDecision {
-    Replay(Vec<u8>),
+    Replay(Reply, PackageState),
     Continue(Option<sqlx::postgres::PgRow>),
 }
 async fn session_decision(
-    source: &dyn rss_mdm_execution_service::source_authority::SourceAuthority,
     tx: &mut sqlx::PgConnection,
     protection: &rss_mdm_native_protection::Protector,
     principal: &DevicePrincipal,
@@ -669,26 +459,29 @@ async fn session_decision(
     let registration = principal.registration().to_string();
     let session = message.header.session_id.to_string();
     let message_id = i64::from(message.header.message_id);
-    let stored=sqlx::query("SELECT generation,credential::text,run_id::text,state,last_message,client_authenticated,correlation,nonce,expires_at>clock_timestamp() AS live FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3 FOR UPDATE")
+    let stored=sqlx::query("SELECT generation,credential::text,run_id::text,state,last_message,client_authenticated,nonce,expires_at>clock_timestamp() AS live FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3 FOR UPDATE")
         .bind(&tenant).bind(&registration).bind(&session).fetch_optional(&mut *tx).await.map_err(db)?;
     if let Some(row) = &stored {
         verify_session_identity(row, principal)?;
-        if let Some(old)=sqlx::query("SELECT digest,response FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3 AND message_id=$4")
+        if let Some(old)=sqlx::query("SELECT digest,response,package_state FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3 AND message_id=$4")
             .bind(&tenant).bind(&registration).bind(&session).bind(message_id).fetch_optional(&mut *tx).await.map_err(db)? {
             if old.try_get::<String,_>("digest").map_err(db)?!=digest { return Err(Error::Conflict); }
-            rss_mdm_execution_service::native::replay_on(source,tx,protection,principal,message).await?;
             audit.operation(Uuid::from_bytes(Sha256::digest(format!("{registration}:{session}:{message_id}")).as_slice()[..16].try_into().expect("digest width")),"windows_management");
             audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
             let sealed: Vec<u8> = old.try_get("response").map_err(db)?;
             let aad = crate::protection::native_aad(principal.tenant(), "windows.management.response", &(principal.registration(), principal.generation(), principal.credential(), &session, message_id))?;
             let plain = protection.open_bytes(&sealed, &aad).map_err(|_| Error::Unavailable(Failure::Protocol))?;
-            return Ok(SessionDecision::Replay(plain.expose().to_vec()));
+            let package = match old.try_get::<String,_>("package_state").map_err(db)?.as_str() {
+                "complete" => PackageState::Complete, "partial" => PackageState::Partial, "aborted" => PackageState::Aborted,
+                _ => return Err(Error::Unavailable(Failure::Protocol)),
+            };
+            return Ok(SessionDecision::Replay(Reply { bytes: plain.expose().to_vec(), facts: vec![] }, package));
         }
         if !matches!(
             row.try_get::<String, _>("state").map_err(db)?.as_str(),
             "challenge" | "collecting"
         ) || row.try_get::<i64, _>("last_message").map_err(db)? + 1 != message_id
-            || message_id > 8
+            || message_id as usize > CodecLimits::default().session_messages
         {
             return Err(Error::Conflict);
         }
@@ -701,28 +494,6 @@ async fn session_decision(
         return Err(Error::Conflict);
     }
     Ok(SessionDecision::Continue(stored))
-}
-
-impl rss_mdm_execution_service::channels::Windows for super::Windows {
-    fn exchange<'a>(
-        &'a self,
-        source: &'a dyn rss_mdm_execution_service::source_authority::SourceAuthority,
-        connection: &'a mut sqlx::PgConnection,
-        protection: &'a rss_mdm_native_protection::Protector,
-        principal: &'a crate::device::DevicePrincipal,
-        message: &'a rss_mdm_windows_mdm::syncml::Message,
-        bytes: &'a [u8],
-        audit: &'a RequestAudit,
-    ) -> rss_mdm_execution_service::channels::Pending<'a, rss_mdm_execution_service::channels::Reply>
-    {
-        Box::pin(async move {
-            management_on(
-                source, connection, self, protection, principal, message, bytes, audit,
-            )
-            .await
-            .map_err(Into::into)
-        })
-    }
 }
 
 async fn notify(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {

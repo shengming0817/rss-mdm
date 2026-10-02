@@ -19,6 +19,7 @@ fn outbound(message_id: u32, command_id: u32) -> syncml::Message {
         items: TARGETS
             .iter()
             .map(|uri| syncml::Item {
+                more_data: false,
                 source: None,
                 target: Some((*uri).into()),
                 meta: None,
@@ -182,7 +183,14 @@ fn requested_command_type_and_expected_set_must_be_unambiguous() {
         Err(CodecError::Duplicate)
     ));
     assert_eq!(
-        syncml::correlate(&e, &m, &CodecLimits { items: 4, ..l }),
+        syncml::correlate(
+            &e,
+            &m,
+            &CodecLimits {
+                session_items: 4,
+                ..l
+            }
+        ),
         Err(CorrelationError::InvalidExpected(CodecError::LimitExceeded))
     );
 }
@@ -326,7 +334,7 @@ fn accumulating_requests_is_atomic_and_bounded() {
         expected.record_sent(
             second.clone(),
             &CodecLimits {
-                items: 9,
+                session_items: 9,
                 ..l.clone()
             }
         ),
@@ -342,7 +350,7 @@ fn accumulating_requests_is_atomic_and_bounded() {
         expected.record_sent(
             second.clone(),
             &CodecLimits {
-                commands: 1,
+                session_commands: 1,
                 ..l.clone()
             }
         ),
@@ -366,4 +374,25 @@ fn accumulating_requests_is_atomic_and_bounded() {
         syncml::encode_request(&response, &l),
         Err(CodecError::Unsupported)
     ));
+}
+
+#[test]
+fn retained_message_budget_is_atomic_and_independent_of_per_packet_limits() {
+    let limits = CodecLimits {
+        session_messages: 2,
+        commands: 1,
+        items: 5,
+        ..CodecLimits::default()
+    };
+    let (_, sent) = syncml::encode_request(&outbound(1, 4), &limits).unwrap();
+    let mut e = Expected::new(sent, 2, &limits).unwrap();
+    let (_, sent) = syncml::encode_request(&outbound(2, 4), &limits).unwrap();
+    e.record_sent(sent, &limits).unwrap();
+    let (_, sent) = syncml::encode_request(&outbound(3, 4), &limits).unwrap();
+    assert_eq!(
+        e.record_sent(sent, &limits),
+        Err(CorrelationError::InvalidExpected(CodecError::LimitExceeded))
+    );
+    assert!(e.get_reference(2, 4, TARGETS[0]).is_ok());
+    assert!(e.get_reference(3, 4, TARGETS[0]).is_err());
 }

@@ -175,6 +175,7 @@ async fn session_replay_nonce_collection_and_revoke() -> anyhow::Result<()> {
                 command: Some(CommandName::Get),
                 meta: None,
                 items: vec![syncml::Item {
+                    more_data: false,
                     source: Some(gets[index].1.clone()),
                     target: None,
                     meta: None,
@@ -383,3 +384,231 @@ async fn session_replay_nonce_collection_and_revoke() -> anyhow::Result<()> {
 #[cfg(feature = "integration")]
 #[path = "collection.rs"]
 mod collection;
+
+#[cfg(feature = "integration")]
+#[tokio::test]
+#[ignore = "make t2 MODULE=windows.management"]
+async fn native_notifications_are_acked_and_replayed_without_finishing_pending_queries()
+-> anyhow::Result<()> {
+    use crate::execution::test_support::native;
+    let mut host = Host::open().await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    let exchange = native::begin(
+        &peer.mutual,
+        &peer.url,
+        &peer.message,
+        &peer.ack,
+        1900,
+        None,
+    )
+    .await?;
+    let mut message = syncml::Message {
+        header: syncml::Header {
+            message_id: 3,
+            credential: None,
+            ..exchange.first.header.clone()
+        },
+        commands: vec![
+            Command::Status(syncml::Status {
+                id: 1,
+                message_ref: exchange.response.header.message_id,
+                command_ref: 0,
+                command: CommandName::SyncHdr,
+                target_refs: vec![],
+                source_refs: vec![],
+                code: 200,
+                items: vec![],
+                challenge: None,
+                credential: None,
+            }),
+            Command::Alert {
+                id: 2,
+                alert: syncml::Alert::Generic {
+                    items: vec![syncml::Item {
+                        source: Some("./Vendor/MSFT/HealthAttestation/VerifyHealth".into()),
+                        target: None,
+                        meta: Some(syncml::Meta {
+                            media_type: Some("com.microsoft.mdm:HealthAttestation.Result".into()),
+                            format: Some("int".into()),
+                            ..Default::default()
+                        }),
+                        data: Some(Secret("3".into())),
+                        more_data: false,
+                    }],
+                },
+            },
+        ],
+        final_message: false,
+    };
+    let response = native::post(&peer.mutual, &peer.url, &message).await?;
+    ensure!(
+        response.status() == StatusCode::OK,
+        "native notification {}",
+        response.status()
+    );
+    let original = response.bytes().await?;
+    ensure!(
+        native::post(&peer.mutual, &peer.url, &message)
+            .await?
+            .bytes()
+            .await?
+            == original
+    );
+    let reply = syncml::decode(&original, &CodecLimits::default())?;
+    ensure!(!reply.final_message);
+    ensure!(reply.commands.iter().any(|c|matches!(c,Command::Status(status) if status.command==CommandName::Alert && status.command_ref==2 && status.code==200)));
+    use sqlx::Connection;
+    let mut pg = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
+    let records: Vec<Vec<u8>> =
+        sqlx::query_scalar("SELECT canonical FROM mdm_audit.receipts WHERE tenant_id=$1::uuid")
+            .bind(case_tenant())
+            .fetch_all(&mut pg)
+            .await?;
+    let notifications = records
+        .iter()
+        .filter_map(|record| {
+            let decoded = rss_audit_core::decode_untrusted(record).ok()?;
+            let payload: serde_json::Value =
+                serde_json::from_slice(decoded.event().context().payload().as_bytes()).ok()?;
+            (payload["details"]["nativeCode"] == 1226).then_some(payload)
+        })
+        .collect::<Vec<_>>();
+    ensure!(
+        notifications.len() == 1
+            && notifications[0]["details"]["nativeItems"][0]["nativeType"]
+                == "com.microsoft.mdm:HealthAttestation.Result"
+            && notifications[0]["details"]["nativeItems"][0]["source"]
+                == "./Vendor/MSFT/HealthAttestation/VerifyHealth",
+        "native notification metadata was lost or replayed twice"
+    );
+    // The notification carries no values for the still-outstanding Get operations.
+    let gets = exchange.gets.clone();
+    message = native::report(&exchange.first, &gets, "10.0.26100.0", 200);
+    message.header.message_id = 4;
+    if let Command::Status(status) = &mut message.commands[0] {
+        status.message_ref = reply.header.message_id;
+    }
+    let result = native::post(&peer.mutual, &peer.url, &message).await?;
+    ensure!(
+        result.status() == StatusCode::OK,
+        "pending native reads lost after alert {}",
+        result.status()
+    );
+    host.close().await
+}
+
+#[cfg(feature = "integration")]
+#[tokio::test]
+#[ignore = "make t2 MODULE=windows.management"]
+async fn damaged_committed_transcript_fails_closed_without_rewriting_evidence() -> anyhow::Result<()>
+{
+    use crate::execution::test_support::native;
+    use sqlx::Connection;
+    let mut host = Host::open().await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    let exchange = native::begin(
+        &peer.mutual,
+        &peer.url,
+        &peer.message,
+        &peer.ack,
+        1901,
+        None,
+    )
+    .await?;
+    let mut pg = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
+    let changed = sqlx::query("UPDATE mdm_access.management_messages SET request=set_byte(request,0,get_byte(request,0)#1) WHERE tenant_id=$1::uuid AND registration=$2 AND session_id='1901' AND message_id=1")
+        .bind(case_tenant()).bind(peer.intent.registration).execute(&mut pg).await?;
+    ensure!(changed.rows_affected() == 1);
+    let damaged:Vec<u8>=sqlx::query_scalar("SELECT request FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND registration=$2 AND session_id='1901' AND message_id=1")
+        .bind(case_tenant()).bind(peer.intent.registration).fetch_one(&mut pg).await?;
+    let next = native::report(&exchange.first, &exchange.gets, "10.0.26100.0", 200);
+    ensure!(
+        native::post(&peer.mutual, &peer.url, &next).await?.status()
+            == StatusCode::SERVICE_UNAVAILABLE
+    );
+    let retained:Vec<u8>=sqlx::query_scalar("SELECT request FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND registration=$2 AND session_id='1901' AND message_id=1")
+        .bind(case_tenant()).bind(peer.intent.registration).fetch_one(&mut pg).await?;
+    let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND registration=$2 AND session_id='1901'")
+        .bind(case_tenant()).bind(peer.intent.registration).fetch_one(&mut pg).await?;
+    ensure!(
+        retained == damaged && count == 2,
+        "damaged history was rewritten or advanced"
+    );
+    host.close().await
+}
+
+#[cfg(feature = "integration")]
+#[tokio::test]
+#[ignore = "make t2 MODULE=windows.management"]
+async fn abort_and_nonfinal_message_budget_cannot_publish_a_collection_snapshot()
+-> anyhow::Result<()> {
+    use crate::execution::test_support::native;
+    use sqlx::Connection;
+    let mut host = Host::open().await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    let mut pg = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
+    for (session, abort) in [(1902, true), (1903, false)] {
+        let exchange = native::begin(
+            &peer.mutual,
+            &peer.url,
+            &peer.message,
+            &peer.ack,
+            session,
+            None,
+        )
+        .await?;
+        let mut complete = native::report(&exchange.first, &exchange.gets, "10.0.26100.0", 200);
+        if abort {
+            let id = complete.commands.iter().map(Command::id).max().unwrap() + 1;
+            complete.commands.push(Command::Alert {
+                id,
+                alert: syncml::Alert::SessionAbort,
+            });
+        } else {
+            for message_id in 3..CodecLimits::default().session_messages as u32 {
+                let mut packet = complete.clone();
+                packet.commands.truncate(1);
+                packet.header.message_id = message_id;
+                packet.final_message = false;
+                if let Command::Status(status) = &mut packet.commands[0] {
+                    status.message_ref = message_id - 1;
+                }
+                let response = native::post(&peer.mutual, &peer.url, &packet).await?;
+                ensure!(
+                    response.status() == StatusCode::OK,
+                    "partial packet {message_id}: {}",
+                    response.status()
+                );
+            }
+            complete.header.message_id = CodecLimits::default().session_messages as u32;
+            complete.final_message = false;
+            if let Command::Status(status) = &mut complete.commands[0] {
+                status.message_ref = complete.header.message_id - 1;
+            }
+        }
+        let response = native::post(&peer.mutual, &peer.url, &complete).await?;
+        ensure!(
+            response.status() == StatusCode::OK,
+            "termination response {}",
+            response.status()
+        );
+        let response = syncml::decode(&response.bytes().await?, &CodecLimits::default())?;
+        ensure!(!response.final_message);
+        let rows:Vec<(String,String,Option<Vec<u8>>,bool)> = sqlx::query_as("SELECT r.result,r.reason,r.batch,r.delivery_pending FROM mdm_access.collection_runs r JOIN mdm_windows.collections w ON(w.tenant_id,w.id)=(r.tenant_id,r.id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND w.session_id=$3")
+            .bind(case_tenant()).bind(peer.intent.registration).bind(session.to_string()).fetch_all(&mut pg).await?;
+        ensure!(
+            !rows.is_empty()
+                && rows
+                    .iter()
+                    .all(|(result, reason, batch, pending)| result == "failed"
+                        && reason == if abort { "aborted" } else { "message_budget" }
+                        && batch.is_none()
+                        && !pending),
+            "termination published successful collection evidence: {rows:?}"
+        );
+    }
+    host.close().await
+}

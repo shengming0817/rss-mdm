@@ -8,6 +8,7 @@ WITH tables AS (
  ('mdm_planning.configuration_claims','version'),('mdm_planning.configuration_claims','operation'),
  ('mdm_planning.configuration_devices','input_revision'),('mdm_planning.configuration_devices','observed_revision'),('mdm_planning.configuration_objects','operation'),('mdm_planning.configuration_objects','digest'),('mdm_planning.configuration_objects','diagnosis'),
  ('mdm_commands.action_polls','cancellation_after'),('mdm_commands.action_runs','state'),('mdm_commands.action_runs','result'),('mdm_commands.action_runs','gateway_accepted'),('mdm_commands.action_attempts','permit'),
+ ('mdm_commands.attempt_frames','status'),('mdm_commands.attempt_frames','accepted'),('mdm_commands.attempt_frames','received_at'),
  ('mdm_commands.attempt_items','receipt_accepted'),('mdm_commands.attempt_items','result_accepted'),('mdm_commands.attempt_items','result_received_at'),('mdm_commands.attempt_items','status'),
  ('mdm_commands.attempt_items','value'),
  ('mdm_commands.attempt_items','received_at'),
@@ -23,7 +24,7 @@ WITH tables AS (
  ('mdm_commands.devices','generation'),('mdm_commands.devices','epoch'),('mdm_commands.devices','registration'),('mdm_commands.devices','registration_generation'),('mdm_commands.devices','recovery_after'),
  ('mdm_commands.operations','dispatch_failure'),('mdm_commands.operations','approval'),('mdm_commands.operations','revision'),('mdm_commands.operations','gateway_accepted'),
  ('mdm_access.report_sources','next_sequence'),('mdm_access.report_sources','next_command'),('mdm_access.enrollment_certificates','server_nonce'),
- ('mdm_access.management_sessions','state'),('mdm_access.management_sessions','last_message'),('mdm_access.management_sessions','client_authenticated'),('mdm_access.management_sessions','correlation'),('mdm_access.management_sessions','nonce'),('mdm_access.management_sessions','run_id'),
+ ('mdm_access.management_sessions','state'),('mdm_access.management_sessions','last_message'),('mdm_access.management_sessions','client_authenticated'),('mdm_access.management_sessions','nonce'),('mdm_access.management_sessions','run_id'),
  ('mdm_access.collection_runs','evidence'),('mdm_access.collection_runs','attempts'),('mdm_access.collection_runs','result'),('mdm_access.collection_runs','reason'),('mdm_access.collection_runs','batch'),('mdm_access.collection_runs','digest'),('mdm_access.collection_runs','sealed_at'),('mdm_access.collection_runs','delivery_pending')
 ,
  ('mdm_apple.attempts','state'),('mdm_apple.attempts','response'),('mdm_apple.attempts','response_digest'),('mdm_apple.attempts','received_at'),('mdm_apple.attempts','next_attempt'),
@@ -43,7 +44,7 @@ WITH tables AS (
 ('mdm_commands.capabilities',true,true,false),
 ('mdm_commands.capability_queries',true,true,false),
 
- ('mdm_commands.devices',true,true,false),('mdm_commands.operations',true,true,false),('mdm_commands.requests',true,true,false),('mdm_commands.attempts',true,true,false),('mdm_commands.attempt_items',true,true,false),('mdm_planning.configuration_objects',true,true,false),
+ ('mdm_commands.devices',true,true,false),('mdm_commands.operations',true,true,false),('mdm_commands.requests',true,true,false),('mdm_commands.attempts',true,true,false),('mdm_commands.attempt_items',true,true,false),('mdm_commands.attempt_frames',true,true,false),('mdm_planning.configuration_objects',true,true,false),
  ('mdm_access.devices',true,false,false),('mdm_access.registrations',true,false,false),('mdm_access.credentials',true,false,false),('mdm_access.report_sources',true,false,false),('mdm_access.enrollment_intents',true,false,false),('mdm_access.enrollment_certificates',true,false,false),('mdm_access.authorization_rules',true,false,false),('mdm_access.user_groups',true,false,false),
  ('mdm_access.management_sessions',true,true,false),('mdm_access.management_messages',true,true,false),('mdm_access.collection_runs',true,true,false),('mdm_windows.collections',true,true,false),('rss_audit.heads',true,false,false),('rss_audit.records',true,false,false),('rss_ledger.heads',true,false,false),('rss_ledger.entries',true,false,false),('mdm_audit.receipts',true,true,false),
  ('rss_device_command.commands',true,false,false),('rss_device_command.authorities',true,false,false),
@@ -60,7 +61,7 @@ SELECT current_user='mdm_command_runtime' AND session_user=current_user
  AND NOT EXISTS(SELECT 1 FROM pg_auth_members WHERE member=(SELECT oid FROM pg_roles WHERE rolname=current_user) OR roleid=(SELECT oid FROM pg_roles WHERE rolname=current_user))
  AND NOT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname NOT LIKE 'pg_temp_%' AND has_schema_privilege(current_user,oid,'CREATE'))
  AND NOT has_database_privilege(current_user,current_database(),'CREATE')
- AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['action_attempts','action_polls','action_receipts','action_runs','apple_profiles','attempt_items','attempts','capabilities','capability_queries','devices','operations','output_chunks','policy_recovery','requests'] FROM tables)
+ AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['action_attempts','action_polls','action_receipts','action_runs','apple_profiles','attempt_frames','attempt_items','attempts','capabilities','capability_queries','devices','operations','output_chunks','policy_recovery','requests'] FROM tables)
  AND NOT EXISTS(SELECT 1 FROM tables t WHERE relkind<>'r' OR relpersistence<>'p' OR NOT relrowsecurity OR NOT relforcerowsecurity OR relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)
   OR (SELECT count(*) FROM pg_policy WHERE polrelid=t.oid)<>1
   OR NOT EXISTS(SELECT 1 FROM pg_policy WHERE polrelid=t.oid AND polname='tenant' AND polcmd='*' AND polpermissive AND polroles=ARRAY[0::oid]

@@ -26,7 +26,7 @@ pub async fn send(
     response: &mut s::Message,
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
 ) -> Result<bool, Error> {
-    if response.header.message_id >= 8 {
+    if response.header.message_id as usize >= CodecLimits::default().session_messages {
         return Ok(false);
     }
     let row=sqlx::query("SELECT r.id FROM mdm_access.collection_runs r WHERE r.tenant_id=$1::uuid AND r.registration=$2 AND r.source='mdm.windows' AND r.sealed_at IS NULL AND r.evidence ? 'nativeTemplate' AND r.deadline>clock_timestamp() AND NOT EXISTS(SELECT 1 FROM mdm_windows.collections w WHERE (w.tenant_id,w.id)=(r.tenant_id,r.id)) ORDER BY r.sequence LIMIT 1 FOR UPDATE")
@@ -108,10 +108,10 @@ pub async fn send(
 pub async fn receive(
     source: &dyn rss_mdm_execution_service::source_authority::SourceAuthority,
     c: &mut PgConnection,
-    protection: &rss_mdm_native_protection::Protector,
+    _protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     message: &s::Message,
-    previous: &str,
+    history: &s::Expected,
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
 ) -> Result<s::Message, Error> {
     let tenant = p.tenant().to_string();
@@ -142,9 +142,6 @@ pub async fn receive(
             })
             .cloned()
             .collect();
-        if commands.is_empty() {
-            continue;
-        }
         consumed.extend(commands.iter().filter_map(refs));
         let mut run = store::load_on(c, &tenant, id).await?;
         if run.sealed_at.is_some()
@@ -154,23 +151,8 @@ pub async fn receive(
             continue;
         }
         let limits = CodecLimits::default();
-        let sealed: Vec<u8> = row.try_get("request").map_err(db)?;
-        let plain = protection
-            .open_bytes(&sealed, &crate::protection::collection_aad(&run.scope, id)?)
-            .map_err(|_| corrupt())?;
-        let original = s::decode(plain.expose(), &limits).map_err(|_| corrupt())?;
-        let (_, sent) = s::encode_request(&original, &limits).map_err(|_| corrupt())?;
-        let mut expected =
-            s::Expected::new(sent, message.header.message_id, &limits).map_err(|_| corrupt())?;
-        if !previous.is_empty() {
-            let prior = s::decode(previous.as_bytes(), &limits).map_err(|_| corrupt())?;
-            if prior.header.message_id != msg {
-                let (_, sent) = s::encode_request(&prior, &limits).map_err(|_| corrupt())?;
-                expected.record_sent(sent, &limits).map_err(|_| corrupt())?;
-            }
-        }
         let correlated = s::correlate(
-            &expected,
+            history,
             &s::Message {
                 header: message.header.clone(),
                 commands: message
@@ -251,13 +233,18 @@ pub async fn receive(
                     .map_err(|_| Error::Conflict)?,
             }
         }
-        if run.attempts.complete() || message.header.message_id >= 8 {
-            let reason = if run.attempts.complete() {
-                "complete"
-            } else {
-                "message_budget"
-            };
-            facts.extend(store::seal(c, &mut run, reason).await?);
+        if run.attempts.complete() && message.final_message {
+            facts.extend(store::seal(c, &mut run, "complete").await?);
+        } else if message.header.message_id as usize >= CodecLimits::default().session_messages {
+            facts.extend(
+                rss_mdm_inventory_service::collection::channel::abandon_in(
+                    c,
+                    &p.tenant().to_string(),
+                    id,
+                    "message_budget",
+                )
+                .await?,
+            );
         } else {
             store::save_attempts_in(c, &run).await?;
         }

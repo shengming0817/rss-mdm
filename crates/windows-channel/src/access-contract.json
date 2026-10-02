@@ -30,7 +30,6 @@
       "updates": [
         "state",
         "last_message",
-        "correlation",
         "nonce",
         "client_authenticated",
         "run_id"
