@@ -380,6 +380,18 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
                         .is_none()
                 );
             }
+            let detail_path = item["detailUrl"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing execution detail URL"))?;
+            let detail = fixture
+                .author
+                .call(&fixture.router, Method::GET, detail_path, None)
+                .await?;
+            ensure!(
+                detail.0 == StatusCode::OK,
+                "unusable execution detail URL {detail_path}: {:?}",
+                detail
+            );
             let Some(cursor) = page["nextCursor"].as_object() else {
                 break;
             };

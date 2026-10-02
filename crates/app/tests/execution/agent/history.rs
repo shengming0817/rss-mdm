@@ -79,7 +79,7 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
             );
         }
         ensure!(ids.len() == 26, "run history lost records: {ids:?}");
-        let mut path=format!("/api/v2/operations?kind=action_run&policy={plan}&limit=3&descending=true");
+        let mut path=format!("/api/v3/operations?kind=action_run&policy={plan}&limit=3&descending=true");
         let mut directory_ids=Vec::new();
         loop {
             let (status,page)=author.call(router,Method::GET,&path,None).await?;
@@ -91,7 +91,7 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
                 directory_ids.push(item["id"].as_str().context("directory id")?.to_owned());
             }
             let Some(cursor)=page["nextCursor"].as_object() else{break};
-            path=format!("/api/v2/operations?kind=action_run&policy={plan}&limit=3&descending=true&after={}&afterKind={}",cursor["id"].as_str().unwrap(),cursor["kind"].as_str().unwrap());
+            path=format!("/api/v3/operations?kind=action_run&policy={plan}&limit=3&descending=true&after={}&afterKind={}",cursor["id"].as_str().unwrap(),cursor["kind"].as_str().unwrap());
             ensure!(directory_ids.len()<=26,"directory repeated pages");
         }
         ensure!(directory_ids.len()==26 && directory_ids.windows(2).all(|pair|pair[0]>pair[1]));
@@ -227,8 +227,9 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
         } else {
             "policies"
         };
+        let version = if remote { 3 } else { 2 };
         let path = format!(
-            "/api/v2/{route}/{parent}/runs/{}",
+            "/api/v{version}/{route}/{parent}/runs/{}",
             task["payload"]["taskId"].as_str().unwrap()
         );
         let denied = f.author.call(&f.router, Method::GET, &path, None).await?;
@@ -249,9 +250,132 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
                 && detail.1["result"]["output"]["secret"] == "private-collection-canary"
                 && detail.1["result"]["diagnostics"]["stdout"] == "private-collection-canary"
         );
+        // Keep the original loaded snapshot after withdrawal, then call the service directly.
+        let stale = crate::device::test_support::admin(case_tenant(), "other-a").await?;
+        ensure!(stale.manage(Permission::InventorySensitiveRead).is_ok());
         crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
             .await?;
+        let audit =
+            rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(), "command_read");
+        let task_id = Uuid::parse_str(task["payload"]["taskId"].as_str().unwrap())?;
+        let denied = if remote {
+            f.execution
+                .queries()
+                .remote_action_run(&stale, parent, task_id, &audit)
+                .await
+        } else {
+            f.execution
+                .queries()
+                .action_run(&stale, parent, task_id, &audit)
+                .await
+        };
+        ensure!(
+            matches!(
+                denied,
+                Err(rss_mdm_execution_service::queries::QueryError::Forbidden)
+            ),
+            "stale sensitive grant survived withdrawal"
+        );
     }
     crate::test_support::stop_worker(stack).await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.agent.history"]
+async fn device_capabilities_use_current_permissions_after_proof_capture() -> Result<()> {
+    use crate::authorization::Permission;
+    let mut f = Fixture::new().await?;
+    f.register().await?;
+    let stale = crate::device::test_support::admin(case_tenant(), "other-a").await?;
+    ensure!(
+        stale
+            .require(Permission::ScriptExecute, Some(case_device_id()))
+            .is_ok()
+    );
+    let queries = f.execution.queries();
+    let initial = serde_json::to_value(
+        queries
+            .directory_capabilities(&stale, case_device_id(), true, true)
+            .await?,
+    )?;
+    ensure!(initial[0]["permission"]["allowed"] == true);
+    let withdrawn = f
+        .grants
+        .iter()
+        .filter(|g| g.operation != Permission::ScriptExecute)
+        .cloned()
+        .collect();
+    crate::test_support::identity::set_grants(case_tenant(), &f.author_id, withdrawn).await?;
+    let current = serde_json::to_value(
+        queries
+            .directory_capabilities(&stale, case_device_id(), true, true)
+            .await?,
+    )?;
+    ensure!(
+        current[0]["permission"]["allowed"] == false
+            && current[0]["permission"]["reason"] == "permission_denied",
+        "stale action capability: {current}"
+    );
+    let withdrawn = f
+        .grants
+        .iter()
+        .filter(|g| g.operation != Permission::InventoryRead)
+        .cloned()
+        .collect();
+    crate::test_support::identity::set_grants(case_tenant(), &f.author_id, withdrawn).await?;
+    ensure!(matches!(
+        queries
+            .directory_capabilities(&stale, case_device_id(), true, true)
+            .await,
+        Err(rss_mdm_execution_service::queries::QueryError::Forbidden)
+    ));
+    crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
+        .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.agent.history"]
+async fn capability_product_support_requires_signer_and_content_independently() -> Result<()> {
+    use rss_runtime::ManagedResource;
+    let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    for (signed, content) in [(true, true), (true, false), (false, true), (false, false)] {
+        let mut config = base.clone();
+        if !signed {
+            config["task_signing"] = Value::Null;
+        }
+        if !content {
+            config["content"] = Value::Null;
+        }
+        let f = Fixture::from_config(config).await?;
+        let proof = crate::device::test_support::admin(case_tenant(), "other-a").await?;
+        let capabilities = serde_json::to_value(
+            f.execution
+                .queries()
+                .directory_capabilities(&proof, case_device_id(), true, true)
+                .await?,
+        )?;
+        let state = if signed && content {
+            "supported"
+        } else {
+            "unsupported"
+        };
+        for capability in capabilities
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|v| v["channel"] == "agent")
+        {
+            ensure!(
+                capability["productSupport"]["state"] == state,
+                "incorrect configured support: signer={signed}, content={content}, {capability}"
+            );
+        }
+        f.plan_runtime.close().await;
+        rss_mdm_execution_service::Resource(f.execution)
+            .shutdown()
+            .await?;
+    }
     Ok(())
 }

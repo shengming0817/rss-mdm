@@ -16,7 +16,7 @@ pub async fn devices(
     audit: &RequestAudit,
     id: Uuid,
     after: Option<String>,
-) -> std::result::Result<super::records::AssignmentPage, Error> {
+) -> std::result::Result<super::records::AssignmentPage, crate::queries::QueryError> {
     audit.set_action("management_read");
     audit.target(&id.to_string());
     auth.manage(Permission::PolicyRead)?;
@@ -41,5 +41,5 @@ pub async fn devices(
         }
         s.audit_store.append_request_in(tx,audit,200,"success").await?;
         super::records::decode(json!({"items":items,"nextCursor":next}))
-    }),TransactionOwner::Execution).await
+    }),TransactionOwner::Execution).await.map_err(Into::into)
 }

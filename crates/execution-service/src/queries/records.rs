@@ -379,3 +379,7 @@ struct Stage {
 pub(crate) fn decode<T: serde::de::DeserializeOwned>(v: Value) -> crate::transaction::Result<T> {
     crate::transaction::stored(serde_json::from_value(v))
 }
+
+#[cfg(test)]
+#[path = "../../tests/query_records.rs"]
+mod tests;

@@ -21,7 +21,7 @@ class ModuleImpactTests(unittest.TestCase):
 
     def test_script_preparation_selects_all_script_entrances(self):
         for path in ('crates/resource/src/script.rs',
-                     'crates/flow-service/src/resource_catalog/scripts.rs',
+                     'crates/execution-service/src/input_preparation.rs',
                      'crates/execution-service/src/freeze_inputs.rs',
                      'crates/flow-service/src/resource_catalog/mod.rs'):
             selected = select_paths([path])

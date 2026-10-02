@@ -32,7 +32,7 @@ pub async fn preview(
     proof: &AuthorizedPrincipal,
     audit: &RequestAudit,
     input: &Preview,
-) -> std::result::Result<super::records::Preview, Error> {
+) -> std::result::Result<super::records::Preview, crate::queries::QueryError> {
     audit.set_action("management_read");
     input.definition.validate()?;
     proof.manage(Permission::PolicyRead)?;
@@ -96,5 +96,5 @@ pub async fn preview(
         }
         s.audit_store.append_request_in(tx,audit,200,"success").await?;
         super::records::decode(json!({"action":input.definition.action,"scopeResult":result,"items":items,"nextCursor":next}))
-    }),TransactionOwner::Execution).await
+    }),TransactionOwner::Execution).await.map_err(Into::into)
 }

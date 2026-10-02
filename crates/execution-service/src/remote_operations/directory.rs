@@ -19,7 +19,7 @@ pub async fn list(
     a: &AuthorizedPrincipal,
     q: &Query,
     audit: &RequestAudit,
-) -> std::result::Result<crate::queries::records::RemoteDirectory, Error> {
+) -> std::result::Result<crate::queries::records::RemoteDirectory, crate::queries::QueryError> {
     if !(1..=1000).contains(&q.limit)
         || q.after.is_some_and(|v| v.is_nil())
         || q.resource
@@ -29,7 +29,7 @@ pub async fn list(
             .as_deref()
             .is_some_and(|v| !["script", "configuration"].contains(&v))
     {
-        return Err(Error::Malformed);
+        return Err(Error::Malformed.into());
     }
     a.authorization()?
         .devices_for(a, Permission::OperationRead)?;
@@ -44,5 +44,5 @@ pub async fn list(
         let items=value["items"].as_array_mut().ok_or(Error::Malformed)?;let more=items.len()>q.limit;items.truncate(q.limit);
         let next=if more{items.last().map(|v|v["id"].clone())}else{None};value["nextCursor"]=next.unwrap_or(Value::Null);
         a.check_live()?;s.audit_store.append_request_in(tx,audit,200,"success").await?;crate::queries::records::decode(value)
-    }),TransactionOwner::Execution).await
+    }),TransactionOwner::Execution).await.map_err(Into::into)
 }

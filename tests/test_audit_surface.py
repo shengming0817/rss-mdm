@@ -148,7 +148,7 @@ DECLARATIONS = {
  ('inventory_read', 'crates/management-http/src/boundary.rs'),
  ('management_read', 'crates/content-service/src/service.rs'),
  ('management_read', 'crates/execution-service/src/recovery.rs'),
- ('management_read', 'crates/flow-service/src/planning/policies/preview.rs'),
+ ('management_read', 'crates/execution-service/src/queries/preview.rs'),
  ('management_read', 'crates/flow-service/src/planning/policies/read.rs'),
  ('management_read', 'crates/execution-service/src/remote_operations/read.rs'),
  ('management_read', 'crates/software-service/src/management/catalog.rs'),

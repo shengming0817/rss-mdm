@@ -134,10 +134,13 @@ impl Fixture {
         Self::from_config(base).await
     }
     pub(crate) async fn from_config(base: Value) -> Result<Self> {
-        let key = ring::signature::Ed25519KeyPair::from_pkcs8(&std::fs::read(
-            base["task_signing"]["private_key_file"].as_str().unwrap(),
-        )?)
-        .unwrap();
+        let fixture_config: Value =
+            serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+        let key_file = base["task_signing"]["private_key_file"]
+            .as_str()
+            .or_else(|| fixture_config["task_signing"]["private_key_file"].as_str())
+            .ok_or_else(|| anyhow::anyhow!("fixture task key missing"))?;
+        let key = ring::signature::Ed25519KeyPair::from_pkcs8(&std::fs::read(key_file)?).unwrap();
         // Store startup recovery and fixture uploads share the content directory.
         let content_setup = super::software::content_setup_guard().await?;
         let (router, execution, plan_runtime) = crate::api::application_fixture(

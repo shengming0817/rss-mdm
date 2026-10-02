@@ -52,6 +52,10 @@ async fn scope_snapshot_result_views_and_authorization() -> Result<()> {
             && directory.1["statistics"]["total"] == 1,
         "remote directory: {directory:?}"
     );
+    let detail_url = directory.1["items"][0]["detailUrl"].as_str().unwrap();
+    ensure!(detail_url == format!("/api/v3/remote-operations/{id}"));
+    ensure!(author.call(router, Method::GET, detail_url, None).await?.0 == StatusCode::OK);
+
     let changed=post(author,router,&format!("/api/v2/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"put","definition":{"targets":[],"limitations":null,"exclusions":[]}}})).await?;
     await_task(
         author,

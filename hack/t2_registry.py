@@ -685,7 +685,7 @@ consume(('crates/inventory/src/*', 'crates/inventory-postgres/src/*', 'crates/in
         'inventory.manual inventory.reader inventory.projection inventory.recovery inventory.runtime assets.http assets.queries assets.sources assets.group_input planning.assets planning.group_scope compliance.evaluation')
 consume(('crates/compliance/src/*', 'crates/compliance-postgres/src/*', 'crates/compliance-postgres/migrations/*'),
         'compliance.storage compliance.http compliance.evaluation compliance.recovery compliance.group_input')
-consume(('crates/resource/src/script.rs', 'crates/flow-service/src/resource_catalog/scripts.rs'),
+consume(('crates/resource/src/script.rs', 'crates/execution-service/src/input_preparation.rs'),
         'planning.agent_policy planning.remote planning.frequency execution.agent.delivery execution.agent.content execution.agent.recovery')
 consume(('crates/execution-service/src/freeze_inputs.rs', 'crates/flow-service/src/resource_catalog/mod.rs'),
         'planning.agent_policy planning.remote planning.onboarding')
@@ -1019,6 +1019,9 @@ T1_INPUTS = ('crates/authorization-service/tests/unit.rs','crates/inventory-serv
     'crates/execution-service/tests/model_phase_unit.rs',
     'crates/execution-service/tests/agent_install_unit.rs',
     'crates/execution-service/tests/recovery_unit.rs',
+    'crates/execution-service/tests/query_records.rs',
+    'crates/execution-service/tests/remote_phase_unit.rs',
+    'crates/execution-service/tests/actions/state_schedule_unit.rs',
     'crates/app/tests/flow/unit.rs',
     'crates/app/tests/config/publication_unit.rs',
     'crates/app/tests/identity/unit.rs',

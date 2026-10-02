@@ -11,7 +11,7 @@ pub async fn read(
     audit: &RequestAudit,
     id: Uuid,
     after: Option<String>,
-) -> std::result::Result<crate::queries::records::RemoteDetail, Error> {
+) -> std::result::Result<crate::queries::records::RemoteDetail, crate::queries::QueryError> {
     audit.set_action("management_read");
     audit.target(&id.to_string());
     run(&s.audit_store,&s.runtime,s.tenant,audit,(&s,&a,audit,after),|ctx,tx|Box::pin(async move {
@@ -29,7 +29,7 @@ pub async fn read(
         let phase=crate::remote_execution::remote_phase_in(tx,&remote,now).await?;
         s.audit_store.append_request_in(tx,audit,200,"success").await?;
         crate::queries::records::decode(json!({"operationId":id,"deadline":remote.deadline,"snapshot":remote.snapshot,"phase":phase,"cancellationRequested":remote.cancelled,"deadlineElapsed":now>=remote.deadline,"items":items,"nextCursor":next}))
-    }),TransactionOwner::Execution).await
+    }),TransactionOwner::Execution).await.map_err(Into::into)
 }
 pub async fn cancel(
     s: &ExecutionService,

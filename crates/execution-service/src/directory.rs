@@ -46,7 +46,7 @@ impl Query {
                 .as_ref()
                 .is_some_and(|v| v.is_empty() || v.len() > 64)
         {
-            return Err(Error::Malformed);
+            return Err(Error::Malformed.into());
         }
         Ok(())
     }
@@ -57,7 +57,8 @@ impl crate::queries::Queries {
         proof: &AuthorizedPrincipal,
         page: &Query,
         audit: &RequestAudit,
-    ) -> std::result::Result<crate::queries::records::ExecutionDirectory, Error> {
+    ) -> std::result::Result<crate::queries::records::ExecutionDirectory, crate::queries::QueryError>
+    {
         page.validate()?;
         proof
             .authorization()?
@@ -99,7 +100,7 @@ impl crate::queries::Queries {
             }
             a.check_live()?;s.audit_store.append_request_in(tx,audit,200,"success").await?;
             crate::queries::records::decode(value)
-        }),crate::transaction::TransactionOwner::Execution).await
+        }),crate::transaction::TransactionOwner::Execution).await.map_err(Into::into)
     }
 
     pub async fn directory_capabilities(
@@ -108,7 +109,8 @@ impl crate::queries::Queries {
         device: &str,
         windows: bool,
         apple: bool,
-    ) -> std::result::Result<Vec<crate::queries::records::Capability>, Error> {
+    ) -> std::result::Result<Vec<crate::queries::records::Capability>, crate::queries::QueryError>
+    {
         proof.require(Permission::InventoryRead, Some(device))?;
         crate::transaction::inspect(
             &self.runtime,
@@ -194,7 +196,7 @@ impl crate::queries::Queries {
             },
             crate::transaction::TransactionOwner::Execution,
         )
-        .await
+        .await.map_err(Into::into)
     }
 }
 fn agent_prerequisite(

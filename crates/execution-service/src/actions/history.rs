@@ -25,7 +25,7 @@ impl Queries {
         proof: &AuthorizedPrincipal,
         id: Uuid,
         audit: &RequestAudit,
-    ) -> Result<crate::queries::records::Rollout, Error> {
+    ) -> Result<crate::queries::records::Rollout, crate::queries::QueryError> {
         crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,proof,id,audit),|ctx,tx|Box::pin(async move {
             let (service,proof,id,audit)=*ctx;
             let current=crate::action_admission::current(tx,proof).await?;
@@ -48,7 +48,7 @@ impl Queries {
             }
             service.audit_store.append_request_in(tx,audit,200,"success").await?;
             crate::queries::records::decode(json!({"policyId":id,"versionId":policy.version,"paused":!policy.enabled,"asOf":now,"stages":stages}))
-        }),crate::transaction::TransactionOwner::Execution).await
+        }),crate::transaction::TransactionOwner::Execution).await.map_err(Into::into)
     }
     pub async fn action_runs(
         &self,
@@ -56,12 +56,12 @@ impl Queries {
         id: Uuid,
         page: &Page,
         audit: &RequestAudit,
-    ) -> Result<crate::queries::records::RunPage, Error> {
+    ) -> Result<crate::queries::records::RunPage, crate::queries::QueryError> {
         if page.after_at.is_some() != page.after_id.is_some()
             || page.after_at.is_some_and(|at| at < 0)
             || page.after_id.is_some_and(|id| id.is_nil())
         {
-            return Err(Error::Malformed);
+            return Err(Error::Malformed.into());
         }
         crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(&self.audit_store,proof,id,page,audit),|ctx,tx|Box::pin(async move {
             let (store,proof,id,page,audit)=*ctx;
@@ -79,7 +79,7 @@ impl Queries {
             let next=if more {rows.last().map(|row|json!({"availableAt":row["availableAt"],"taskId":row["taskId"]}))}else{None};
             store.append_request_in(tx,audit,200,"success").await?;
             crate::queries::records::decode(json!({"items":rows,"nextCursor":next}))
-        }),crate::transaction::TransactionOwner::Execution).await
+        }),crate::transaction::TransactionOwner::Execution).await.map_err(Into::into)
     }
     pub async fn action_run(
         &self,
@@ -87,7 +87,7 @@ impl Queries {
         policy: Uuid,
         id: Uuid,
         audit: &RequestAudit,
-    ) -> Result<crate::queries::records::RunDetail, Error> {
+    ) -> Result<crate::queries::records::RunDetail, crate::queries::QueryError> {
         self.run_detail(proof, RunOwner::Policy(policy), id, audit)
             .await
     }
@@ -97,7 +97,7 @@ impl Queries {
         operation: Uuid,
         id: Uuid,
         audit: &RequestAudit,
-    ) -> Result<crate::queries::records::RunDetail, Error> {
+    ) -> Result<crate::queries::records::RunDetail, crate::queries::QueryError> {
         self.run_detail(proof, RunOwner::Remote(operation), id, audit)
             .await
     }
@@ -107,7 +107,7 @@ impl Queries {
         owner: RunOwner,
         id: Uuid,
         audit: &RequestAudit,
-    ) -> Result<crate::queries::records::RunDetail, Error> {
+    ) -> Result<crate::queries::records::RunDetail, crate::queries::QueryError> {
         crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(&self.audit_store,&self.policy_reader,proof,owner,id,audit),|ctx,tx|Box::pin(async move {
             let (store,reader,proof,owner,id,audit)=*ctx;
             let run=db::load_run(tx,id).await?;
@@ -130,7 +130,7 @@ impl Queries {
             let user_action=if matches!(plan,db::ScheduledPolicy::Software(ref software) if matches!(software.intent(),rss_mdm_policy::SoftwareIntent::AvailableInstall)) && run.state.awaits_user(storage::now(tx).await?) {Some("waiting_user")}else{None};
             let mut value=json!({"taskId":id,"device":run.target.device,"registrationId":run.target.registration,"generation":run.target.generation,"availableAt":run.available_at,"deadline":run.deadline,"state":run.state,"effect":effect,"userAction":user_action,"result":run.result});
             value[field]=json!(parent);crate::queries::records::decode(value)
-        }),crate::transaction::TransactionOwner::Execution).await
+        }),crate::transaction::TransactionOwner::Execution).await.map_err(Into::into)
     }
 }
 
