@@ -1,4 +1,4 @@
-"""Product flow ownership: prevent reintroducing the pre-2521 service graph."""
+"""Product flow ownership: prevent reintroducing the composite service graph."""
 from pathlib import Path
 import unittest
 import sys
@@ -9,17 +9,28 @@ ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "crates/app/src"
 FLOW = ROOT / "crates/flow-service/src"
 INVENTORY = ROOT / "crates/inventory-service/src"
+EXECUTION = ROOT / "crates/execution-service/src"
 
 
 class FlowOwnership(unittest.TestCase):
     def test_capability_owners_replace_composite_services(self):
-        for owner in ("resource_catalog", "planning", "execution", "assets"):
+        for owner in ("resource_catalog", "planning", "assets"):
             self.assertTrue(((INVENTORY if owner == "assets" else FLOW) / owner / "mod.rs").is_file(), owner)
+        self.assertTrue((EXECUTION / "lib.rs").is_file())
+        self.assertFalse((FLOW / "execution").exists())
         self.assertFalse((APP / "management").exists())
         self.assertFalse((APP / "commands").exists())
 
+    def test_flow_policy_only_retains_input_preparation(self):
+        policy = (FLOW / "planning/policies/mod.rs").read_text()
+        self.assertIn("Arc<rss_mdm_execution_service::Inputs>", policy)
+        for forbidden in ("ExecutionRead", "Arc<ExecutionService>", "Arc<Queries>"):
+            self.assertNotIn(forbidden, policy)
+        manifest = (ROOT / "crates/execution-service/Cargo.toml").read_text()
+        self.assertNotIn("rss-mdm-flow-service", manifest)
+
     def test_execution_cannot_write_authored_policies(self):
-        files = list((FLOW / "execution").rglob("*.rs"))
+        files = list(EXECUTION.rglob("*.rs"))
         self.assertTrue(files)
         for path in files:
             text = path.read_text()
@@ -30,7 +41,7 @@ class FlowOwnership(unittest.TestCase):
                 self.assertNotIn(forbidden, text, str(path))
 
     def test_retired_plan_model_and_authority_do_not_escape_to_execution(self):
-        for path in (FLOW / "execution").rglob("*.rs"):
+        for path in EXECUTION.rglob("*.rs"):
             text = path.read_text()
             for forbidden in ("planning::actions::storage", "planning::actions::model", "ActionDispatch"):
                 self.assertNotIn(forbidden, text, str(path))
@@ -39,7 +50,7 @@ class FlowOwnership(unittest.TestCase):
         content = (ROOT / "crates/content-service/src/lib.rs").read_text()
         self.assertNotIn("Ed25519KeyPair", content)
         self.assertFalse((APP / "task_content.rs").exists())
-        self.assertTrue((FLOW / "task_signing.rs").is_file())
+        self.assertTrue((EXECUTION / "task_signing.rs").is_file())
         self.assertFalse((APP / "mutation.rs").exists())
         self.assertFalse((APP / "execution_transaction.rs").exists())
         for path in (FLOW / "planning").rglob("*.rs"):
@@ -54,13 +65,14 @@ class FlowOwnership(unittest.TestCase):
         self.assertRegex((ROOT / "crates/software-service/src/management/publication/receipts.rs").read_text(), r'format!\(\s*"software_publication:\{\}:\{id\}"')
 
     def test_task_and_planning_pages_cannot_project_inventory_errors(self):
-        for name in ("execution/actions/storage.rs", "execution/actions/history.rs", "planning/pages.rs", "planning/pages/scope.rs"):
-            self.assertNotIn("Error::NotFound", (FLOW / name).read_text(), name)
+        for path in (EXECUTION / "actions/storage.rs", EXECUTION / "actions/history.rs",
+                     FLOW / "planning/pages.rs", FLOW / "planning/pages/scope.rs"):
+            self.assertNotIn("Error::NotFound", path.read_text(), str(path))
 
     def test_policy_and_execution_progress_have_distinct_storage(self):
         schema = (ROOT / "crates/policy-postgres/migrations/0001.sql").read_text()
         self.assertIn("CREATE TABLE mdm_policy.policies", schema)
-        app_sql = (ROOT / "crates/flow-service/schema/install.sql").read_text()
+        app_sql = (ROOT / "crates/execution-service/schema/install.sql").read_text()
         self.assertIn("CREATE TABLE mdm_commands.action_runs", app_sql)
         self.assertNotIn("CREATE TABLE mdm_policy.policies", app_sql)
         self.assertNotIn("CREATE TABLE mdm_planning.action_plans", app_sql)

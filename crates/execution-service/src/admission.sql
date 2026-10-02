@@ -30,6 +30,7 @@ WITH tables AS (
  ('mdm_commands.apple_profiles','profile'),('mdm_commands.apple_profiles','operation'),('mdm_commands.apple_profiles','registration'),('mdm_commands.apple_profiles','version'),
  ('mdm_apple.devices','token'),('mdm_apple.devices','magic'),('mdm_apple.devices','state'),('mdm_apple.devices','push_id'),('mdm_apple.devices','push_lease_until'),('mdm_apple.devices','next_push'),('mdm_apple.devices','push_status'),('mdm_apple.devices','push_outcome'),('mdm_apple.devices','push_configuration'),('mdm_apple.devices','push_failures')
 ), allowed(relation,sel,ins,del) AS (VALUES
+ ('mdm_flow.native_protection',true,true,false),
  ('mdm.inventory',true,false,false),
  ('mdm.field_versions',true,false,false),('mdm.collection_definitions',true,true,false),('mdm.collection_results',true,true,false),
  ('mdm_software_composition.subjects',true,false,false),('mdm_software_composition.targets',true,false,false),('mdm_software_composition.projections',true,false,false),('mdm_software_release.aggregates',true,false,false),

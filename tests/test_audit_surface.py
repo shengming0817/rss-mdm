@@ -8,7 +8,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"hack"))
 from rust_test_layout import is_test_path
 
 ROOT = Path(__file__).resolve().parents[1]
-PRODUCERS = ('app','software-service','authorization-service','registration-service','inventory-service','flow-service','content-service','management-http','agent-channel','windows-channel','apple-channel')
+PRODUCERS = ('app','software-service','authorization-service','registration-service','inventory-service','flow-service','execution-service','content-service','management-http','agent-channel','windows-channel','apple-channel')
 def production_paths():
     return [path for owner in PRODUCERS for path in (ROOT/'crates'/owner/'src').rglob('*.rs')]
 
@@ -73,7 +73,7 @@ OWNERS = {
 
 DECLARATIONS = {
  ('management_read','crates/management-http/src/enrollment/directory.rs'),
- ('management_read','crates/management-http/src/planning/remote_operations/http.rs'),
+ ('management_read','crates/management-http/src/remote_operations/http.rs'),
  ('timeline_read','crates/management-http/src/boundary.rs'),
  ('audit_search','crates/management-http/src/boundary.rs'),
  ('runtime_diagnostics_read','crates/management-http/src/runtime_diagnostics.rs'),
@@ -128,7 +128,7 @@ DECLARATIONS = {
  ('command_read', 'crates/agent-channel/src/tasks.rs'),
  ('command_read', 'crates/management-http/src/execution/actions/http.rs'),
  ('command_read', 'crates/management-http/src/execution/http.rs'),
- ('command_read', 'crates/management-http/src/planning/remote_operations/http.rs'),
+ ('command_read', 'crates/management-http/src/remote_operations/http.rs'),
  ('command_reconcile', 'crates/execution-service/src/actions/recovery.rs'),
  ('command_reconcile', 'crates/execution-service/src/recovery.rs'),
  ('compliance_read', 'crates/management-http/src/compliance/http.rs'),
@@ -149,6 +149,7 @@ DECLARATIONS = {
  ('management_read', 'crates/content-service/src/service.rs'),
  ('management_read', 'crates/execution-service/src/recovery.rs'),
  ('management_read', 'crates/execution-service/src/queries/preview.rs'),
+ ('management_read', 'crates/execution-service/src/queries/assignments.rs'),
  ('management_read', 'crates/flow-service/src/planning/policies/read.rs'),
  ('management_read', 'crates/execution-service/src/remote_operations/read.rs'),
  ('management_read', 'crates/software-service/src/management/catalog.rs'),
@@ -164,7 +165,7 @@ DECLARATIONS = {
  ('management_write', 'crates/management-http/src/assets/http.rs'),
  ('management_write', 'crates/management-http/src/planning/http.rs'),
  ('management_write', 'crates/management-http/src/planning/policies/http.rs'),
- ('management_write', 'crates/management-http/src/planning/remote_operations/http.rs'),
+ ('management_write', 'crates/management-http/src/remote_operations/http.rs'),
  ('management_write', 'crates/management-http/src/resource_catalog/http.rs'),
  ('protected_request', 'crates/agent-channel/src/boundary.rs'),
  ('protected_request', 'crates/app/src/native/mod.rs'),
