@@ -390,17 +390,13 @@ fn effect_decision_keeps_partial_duplicate_and_default_restoration_unverified() 
 fn subtree_permissions_include_children_and_unknown_access_is_rejected() {
     use rss_mdm_windows_mdm::native::Request;
     let request = Request::Node {
-        node: "./Device/Vendor/MSFT/Policy/Config/Update".into(),
-        instance: vec![],
+        node: "./Vendor/MSFT/Firewall/MdmStore/FirewallRules/*".into(),
+        instance: vec!["rule".into()],
         operation: Verb::Delete,
         value: None,
     };
     let targets = request.authorization_nodes().unwrap();
-    assert!(
-        targets
-            .iter()
-            .any(|(path, _)| path.ends_with("/AllowAutoUpdate"))
-    );
+    assert!(targets.iter().any(|(path, _)| path.ends_with("/Direction")));
     let invalid = Request::Node {
         node: "./DevInfo/Mod".into(),
         instance: vec![],

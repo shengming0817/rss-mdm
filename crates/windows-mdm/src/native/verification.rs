@@ -171,7 +171,8 @@ impl Request {
                         return Ok(EffectPlan::Unverifiable("native_object_is_not_queryable"));
                     }
                     let goal = if *operation == Verb::Delete {
-                        if op.semantics().lifetime != "Dynamic" {
+                        if node.contains("/Policy/Config/") || op.semantics().lifetime != "Dynamic"
+                        {
                             return Ok(EffectPlan::Unverifiable(
                                 "delete_restores_default_without_frozen_detector",
                             ));
