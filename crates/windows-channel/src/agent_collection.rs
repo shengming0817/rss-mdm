@@ -30,12 +30,13 @@ fn refs(c: &Command) -> Option<(u32, u32)> {
 }
 pub async fn receive(
     c: &mut PgConnection,
-    protection: &rss_mdm_native_protection::Protector,
+    _protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     message: &s::Message,
-    previous: &str,
+    history: &s::Expected,
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
 ) -> Result<s::Message, Error> {
+    let limits = CodecLimits::default();
     let rows=sqlx::query("SELECT w.id,w.request,w.request_message,w.first_command,w.channel_state,r.sealed_at FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND w.session_id=$3 AND w.channel_state IS NOT NULL ORDER BY w.first_command")
         .bind(p.tenant().to_string()).bind(p.registration()).bind(message.header.session_id.to_string()).fetch_all(&mut *c).await.map_err(db)?;
     let mut consumed = std::collections::BTreeSet::new();
@@ -59,33 +60,8 @@ pub async fn receive(
         {
             return Err(Error::Conflict);
         }
-        let run =
-            rss_mdm_inventory_service::collection::store::load_on(c, &p.tenant().to_string(), id)
-                .await?;
-        let sealed: Vec<u8> = row.try_get("request").map_err(db)?;
-        let plain = protection
-            .open_bytes(&sealed, &crate::protection::collection_aad(&run.scope, id)?)
-            .map_err(|_| protocol())?;
-        let request = plain.expose();
-        let limits = CodecLimits::default();
-        let (_, sent) = s::encode_request(
-            &s::decode(request, &limits).map_err(|_| protocol())?,
-            &limits,
-        )
-        .map_err(|_| protocol())?;
-        let mut expected =
-            s::Expected::new(sent, message.header.message_id, &limits).map_err(|_| protocol())?;
-        if !previous.is_empty() {
-            let prior = s::decode(previous.as_bytes(), &limits).map_err(|_| protocol())?;
-            if prior.header.message_id != msg {
-                let (_, sent) = s::encode_request(&prior, &limits).map_err(|_| protocol())?;
-                expected
-                    .record_sent(sent, &limits)
-                    .map_err(|_| protocol())?;
-            }
-        }
         let report = s::correlate(
-            &expected,
+            history,
             &s::Message {
                 header: message.header.clone(),
                 commands: message
@@ -133,7 +109,9 @@ pub async fn receive(
         let complete = (0..4).all(|i| {
             query.statuses[i].is_some_and(|v| v >= 400 || v == 200 && query.values[i].is_some())
         });
-        if complete || message.header.message_id >= 8 {
+        if (complete && message.final_message)
+            || message.header.message_id as usize >= CodecLimits::default().session_messages
+        {
             let absent = query.statuses[..3] == [Some(404); 3];
             let installed = query.statuses[..3] == [Some(200); 3]
                 && query.values[0].as_deref() == Some("70")
@@ -199,7 +177,7 @@ pub async fn send(
     let Some(Identity::Windows { product, publisher }) = identity else {
         return Ok(false);
     };
-    if response.header.message_id >= 8 {
+    if response.header.message_id as usize >= CodecLimits::default().session_messages {
         return Ok(false);
     }
     let old:Option<Option<i64>>=sqlx::query_scalar("SELECT r.sealed_at FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND w.session_id=$3 AND w.channel_state IS NOT NULL")
@@ -228,6 +206,7 @@ pub async fn send(
             id: first + i as u32,
             meta: None,
             items: vec![Item {
+                more_data: false,
                 target: Some(uri),
                 source: None,
                 meta: None,

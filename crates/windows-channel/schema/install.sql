@@ -44,8 +44,10 @@ CREATE TABLE mdm_access.management_messages (
     message_id bigint NOT NULL,
     digest text NOT NULL,
     response bytea NOT NULL,
+    request bytea NOT NULL CHECK(octet_length(request) BETWEEN 68 AND 524356),
+    package_state text NOT NULL CHECK(package_state IN ('partial','complete','aborted')),
     CONSTRAINT management_messages_digest_check CHECK ((digest ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT management_messages_response_check CHECK (((octet_length(response) >= 68) AND (octet_length(response) <= 262212)))
+    CONSTRAINT management_messages_response_check CHECK (((octet_length(response) >= 68) AND (octet_length(response) <= 524356)))
 );
 
 ALTER TABLE ONLY mdm_access.management_messages FORCE ROW LEVEL SECURITY;
@@ -59,11 +61,9 @@ CREATE TABLE mdm_access.management_sessions (
     state text NOT NULL,
     last_message bigint NOT NULL,
     client_authenticated boolean NOT NULL,
-    correlation bytea NOT NULL,
     nonce bytea NOT NULL,
     expires_at timestamp with time zone NOT NULL,
     run_id uuid,
-    CONSTRAINT management_sessions_correlation_check CHECK ((octet_length(correlation) BETWEEN 68 AND 262212)),
     CONSTRAINT management_sessions_last_message_check CHECK ((last_message > 0)),
     CONSTRAINT management_sessions_nonce_check CHECK (((octet_length(nonce) >= 16) AND (octet_length(nonce) <= 64))),
     CONSTRAINT management_sessions_session_id_check CHECK (((length(session_id) >= 1) AND (length(session_id) <= 128))),

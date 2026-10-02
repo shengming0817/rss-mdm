@@ -48,12 +48,13 @@ impl ExecutionService {
                     let message = m.clone();
                     let bytes = b.to_vec();
                     let audit = a.clone();
-                    let reply = tx
+                    let (reply, package) = tx
                         .with_connection(move |c| {
                             Box::pin(async move {
-                                Ok(w.exchange(
+                                Ok(manage_on(
                                     source.as_ref(),
                                     c,
+                                    w,
                                     &protection,
                                     &principal,
                                     &message,
@@ -63,10 +64,9 @@ impl ExecutionService {
                                 .await)
                             })
                         })
-                        .await?
-                        .map_err(Error::from)?;
+                        .await??;
                     settle_dispatch_failures(s, tx, p, a).await?;
-                    settle_reports(s, tx, p, m.header.session_id).await?;
+                    settle_reports(s, tx, p, m.header.session_id, package).await?;
                     actions::native_collection::settle_device(s, tx, p.device()).await?;
                     s.reconcile_agent_install_in(tx, p.device(), a).await?;
                     if !matches!(
@@ -91,22 +91,178 @@ impl ExecutionService {
         .await
     }
 }
+async fn manage_on(
+    source: &dyn crate::source_authority::SourceAuthority,
+    c: &mut sqlx::PgConnection,
+    windows: Arc<dyn channels::Windows>,
+    key: &rss_mdm_native_protection::Protector,
+    p: &DevicePrincipal,
+    raw: &rss_mdm_windows_mdm::syncml::Message,
+    bytes: &[u8],
+    audit: &RequestAudit,
+) -> std::result::Result<(channels::Reply, channels::PackageState), Error> {
+    use channels::{PackageState as P, WindowsReception};
+    use rss_mdm_windows_mdm::syncml::{self as sm, Alert, Command, CommandName};
+    let (mut prepared, authenticated) = match windows
+        .prepare(c, key, p, raw, bytes, audit)
+        .await
+        .map_err(Error::from)?
+    {
+        WindowsReception::Replay { reply, package } => {
+            native::replay_on(source, c, key, p, raw).await?;
+            return Ok((reply, package));
+        }
+        WindowsReception::Challenge(prepared) => (prepared, false),
+        WindowsReception::Authenticated(prepared) => (prepared, true),
+    };
+    for reference in &prepared.continuing {
+        if !native::result_eligible_on(source, c, key, p, raw.header.session_id, reference).await? {
+            prepared.package = P::Aborted;
+            prepared.controls = vec![Command::Alert {
+                id: 0,
+                alert: Alert::SessionAbort,
+            }];
+            prepared
+                .input
+                .commands
+                .retain(|c| !matches!(c, Command::Results(_)));
+            prepared.input.final_message = false;
+            break;
+        }
+    }
+    let filtered = native::receive_on(
+        source,
+        c,
+        key,
+        p,
+        &prepared.input,
+        authenticated,
+        prepared.history.as_ref(),
+    )
+    .await?;
+    let outgoing = authenticated && native::outgoing_on(c, p, raw.header.session_id).await?;
+    let dispatch = authenticated && prepared.package == P::Complete && !outgoing;
+    let channel_pending = prepared
+        .session
+        .collect(
+            source,
+            c,
+            key,
+            p,
+            &filtered,
+            prepared.history.as_ref(),
+            &mut prepared.response,
+            dispatch,
+        )
+        .await
+        .map_err(Error::from)?;
+    let continuation = if outgoing && prepared.package != P::Aborted && prepared.controls.is_empty()
+    {
+        prepared
+            .response
+            .commands
+            .retain(|c| matches!(c,Command::Status(s) if s.command==CommandName::SyncHdr));
+        native::continue_on(source, c, key, p, &mut prepared.response, &prepared.limits).await?
+    } else if outgoing && prepared.package != P::Aborted {
+        native::Continuation::Waiting
+    } else {
+        native::Continuation::None
+    };
+    if matches!(continuation, native::Continuation::Abort) {
+        prepared.package = P::Aborted;
+        prepared.controls.push(Command::Alert {
+            id: 0,
+            alert: Alert::SessionAbort,
+        });
+    }
+    let command_pending = native::send_on(
+        source,
+        c,
+        key,
+        p,
+        &mut prepared.response,
+        dispatch,
+        &prepared.limits,
+    )
+    .await?;
+    let sent = matches!(continuation, native::Continuation::Sent);
+    let waiting = matches!(continuation, native::Continuation::Waiting);
+    if prepared.package != P::Complete && !sent {
+        prepared
+            .response
+            .commands
+            .retain(|c| matches!(c,Command::Status(s) if s.command==CommandName::SyncHdr));
+        prepared.response.final_message = false;
+    }
+    if waiting {
+        prepared.response.final_message = false;
+    }
+    if (prepared.package == P::Partial || waiting) && !sent {
+        let alert = if raw.header.message_id as usize >= prepared.limits.session_messages {
+            prepared.package = P::Aborted;
+            Alert::SessionAbort
+        } else {
+            Alert::MoreMessages
+        };
+        prepared.controls.push(Command::Alert { id: 0, alert });
+    }
+    for mut control in prepared.controls {
+        let id = prepared
+            .response
+            .commands
+            .iter()
+            .map(Command::id)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(Error::Conflict)?;
+        match &mut control {
+            Command::Status(status) => status.id = id,
+            Command::Alert { id: command, .. } => *command = id,
+            _ => return Err(Error::Malformed),
+        }
+        prepared.response.commands.push(control);
+    }
+    sm::encode(&prepared.response, &prepared.limits)
+        .map_err(|_| Error::Unavailable(Failure::Protocol))?;
+    let package = prepared.package;
+    let reply = prepared
+        .session
+        .finish(
+            c,
+            key,
+            p,
+            prepared.response,
+            package,
+            channel_pending || command_pending || outgoing,
+        )
+        .await
+        .map_err(Error::from)?;
+    Ok((reply, package))
+}
+
 pub(super) async fn settle_reports(
     s: &ExecutionService,
     tx: &mut PgTransaction<'_>,
     p: &DevicePrincipal,
     session: u32,
+    package: channels::PackageState,
 ) -> Result<()> {
     let tenant = s.tenant.to_string();
     let registration = p.registration();
     let generation = p.generation();
     let ids=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Uuid>("SELECT DISTINCT o.id FROM mdm_commands.operations o JOIN mdm_commands.attempts a ON(a.tenant_id,a.operation)=(o.tenant_id,o.id) JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND a.session=$4 AND i.receipt_accepted AND d.terminal_at IS NULL ORDER BY o.id LIMIT 64").bind(tenant).bind(registration).bind(generation).bind(i64::from(session)).fetch_all(c).await})).await?;
     for id in ids {
-        settle_one(s, tx, id).await?;
+        settle_one(s, tx, id, package).await?;
     }
     Ok(())
 }
-async fn settle_one(s: &ExecutionService, tx: &mut PgTransaction<'_>, id: Uuid) -> Result<()> {
+async fn settle_one(
+    s: &ExecutionService,
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+    package: channels::PackageState,
+) -> Result<()> {
     let op = storage::load(tx, &s.protection, id).await?;
     let command = s.required_command(tx, &op).await?;
     if command.status().is_terminal() {
@@ -119,37 +275,32 @@ async fn settle_one(s: &ExecutionService, tx: &mut PgTransaction<'_>, id: Uuid) 
         return Ok(());
     }
     let tenant = s.tenant.to_string();
-    let rows=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT a.phase,i.kind,i.status,i.value,i.receipt_accepted,i.result_accepted FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id=$1::uuid AND a.operation=$2 AND (a.phase='execute' OR(a.phase='prepare' AND (i.status>=400 OR i.status IN (215,216)))) AND a.ordinal=(SELECT max(last.ordinal) FROM mdm_commands.attempts last WHERE last.tenant_id=a.tenant_id AND last.operation=a.operation AND last.phase=a.phase) ORDER BY i.command,i.item_ordinal").bind(tenant).bind(id).fetch_all(c).await})).await?;
+    let rows=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT a.phase,i.kind,i.status,i.value,i.receipt_accepted,i.result_accepted FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id=$1::uuid AND a.operation=$2 AND a.ordinal=(SELECT max(last.ordinal) FROM mdm_commands.attempts last WHERE last.tenant_id=a.tenant_id AND last.operation=a.operation AND last.phase=a.phase) ORDER BY i.command,i.item_ordinal").bind(tenant).bind(id).fetch_all(c).await})).await?;
     if rows.is_empty() {
         return Ok(());
     }
-    let mut rejected = false;
-    let mut complete = true;
-    let mut query = true;
-    let mut has_query = false;
-    let mut values = true;
-    let mut prepare = false;
-    for row in rows {
-        let accepted = row.try_get::<Option<bool>, _>("receipt_accepted")? == Some(true);
-        let status: Option<i32> = row.try_get("status")?;
-        rejected |= accepted && status.is_some_and(super::native::rejected_status);
-        let kind: String = row.try_get("kind")?;
-        complete &= accepted && status.is_some_and(|s| super::native::successful_status(&kind, s));
-        query &= matches!(kind.as_str(), "get" | "atomic" | "sequence");
-        if kind == "get" {
-            has_query = true;
-            values &= (accepted && status == Some(204))
-                || (row.try_get::<Option<Vec<u8>>, _>("value")?.is_some()
-                    && row.try_get::<Option<bool>, _>("result_accepted")? == Some(true));
-        }
-        prepare |= row.try_get::<String, _>("phase")? == "prepare";
-    }
-    let event = if rejected {
-        dc::DeviceEvent::Rejected
-    } else if complete && !prepare {
-        dc::DeviceEvent::Received
-    } else {
-        return Ok(());
+    let evidence = rows
+        .into_iter()
+        .map(|row| {
+            Ok(crate::native_rules::ItemEvidence {
+                prepare: row.try_get::<String, _>("phase")? == "prepare",
+                kind: row.try_get("kind")?,
+                status: row.try_get("status")?,
+                receipt_accepted: row.try_get::<Option<bool>, _>("receipt_accepted")? == Some(true),
+                has_value: row.try_get::<Option<Vec<u8>>, _>("value")?.is_some(),
+                result_accepted: row.try_get::<Option<bool>, _>("result_accepted")? == Some(true),
+            })
+        })
+        .collect::<std::result::Result<Vec<_>, sqlx::Error>>()?;
+    let decision =
+        crate::native_rules::settle(&evidence, package == channels::PackageState::Complete);
+    let (event, query_complete, values_complete) = match decision {
+        crate::native_rules::Settlement::Wait => return Ok(()),
+        crate::native_rules::Settlement::Reject => (dc::DeviceEvent::Rejected, false, false),
+        crate::native_rules::Settlement::Receive {
+            query_complete,
+            values_complete,
+        } => (dc::DeviceEvent::Received, query_complete, values_complete),
     };
     let mut report = dc::DeviceReport {
         scope: op.scope,
@@ -161,11 +312,10 @@ async fn settle_one(s: &ExecutionService, tx: &mut PgTransaction<'_>, id: Uuid) 
     if result.outcome == dc::Outcome::OutOfOrder {
         return Ok(());
     }
-    if !rejected
-        && ((complete && query && has_query && values)
-            || (values
-                && effect_assessment(&s.protection, tx, &op).await?.state
-                    == rss_mdm_windows_mdm::native::verification::EffectState::Verified))
+    if (query_complete
+        || (values_complete
+            && effect_assessment(&s.protection, tx, &op).await?.state
+                == rss_mdm_windows_mdm::native::verification::EffectState::Verified))
         && !result.command.status().is_terminal()
     {
         report.event =
@@ -189,7 +339,7 @@ pub async fn observation(
     }
     let tenant = tx.tenant_id();
     let id = op.id;
-    let rows=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT a.id AS attempt,a.phase,a.ordinal,a.session,a.message,i.command,i.parent_command,i.item_ordinal,i.kind,i.uri,i.status,i.value,i.receipt_accepted,i.received_at,i.result_accepted,i.result_received_at FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id=$1::uuid AND a.operation=$2 ORDER BY a.ordinal,i.command,i.item_ordinal").bind(tenant.to_string()).bind(id).fetch_all(c).await})).await?;
+    let rows=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT a.id AS attempt,a.phase,a.ordinal,a.session,a.message,i.command,i.parent_command,i.item_ordinal,i.kind,i.uri,i.status,i.value,i.receipt_accepted,i.received_at,i.result_accepted,i.result_received_at,coalesce((SELECT jsonb_agg(jsonb_build_object('message',f.message,'command',f.command,'startByte',f.start_byte,'endByte',f.end_byte,'totalBytes',f.total_bytes,'status',f.status,'accepted',f.accepted,'receivedAt',f.received_at) ORDER BY f.message,f.command) FROM mdm_commands.attempt_frames f WHERE f.tenant_id=a.tenant_id AND f.attempt=a.id AND f.command=i.command),'[]'::jsonb) AS frames FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id=$1::uuid AND a.operation=$2 ORDER BY a.ordinal,i.command,i.item_ordinal").bind(tenant.to_string()).bind(id).fetch_all(c).await})).await?;
     let sensitive = op.request.task.permissions()?.iter().any(|p| {
         matches!(
             p,
@@ -220,7 +370,8 @@ pub async fn observation(
             "accepted":row.try_get::<Option<bool>,_>("receipt_accepted")?,
             "receivedAt":row.try_get::<Option<i64>,_>("received_at")?,
             "resultAccepted":row.try_get::<Option<bool>,_>("result_accepted")?,
-            "resultReceivedAt":row.try_get::<Option<i64>,_>("result_received_at")?
+            "resultReceivedAt":row.try_get::<Option<i64>,_>("result_received_at")?,
+            "frames":row.try_get::<Value,_>("frames")?
         });
         if sensitive {
             receipt["redacted"] = json!(true);

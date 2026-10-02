@@ -237,3 +237,7 @@ GRANT USAGE ON SCHEMA mdm_flow TO mdm_command_runtime;
 
 GRANT SELECT, INSERT ON mdm_flow.native_protection TO mdm_command_runtime;
 COMMIT;
+
+ALTER TABLE mdm_commands.attempt_frames ADD CONSTRAINT attempt_frames_attempt_fkey FOREIGN KEY(tenant_id,attempt) REFERENCES mdm_commands.attempts(tenant_id,id);
+GRANT SELECT,INSERT ON TABLE mdm_commands.attempt_frames TO mdm_command_runtime;
+GRANT UPDATE(status,accepted,received_at) ON TABLE mdm_commands.attempt_frames TO mdm_command_runtime;

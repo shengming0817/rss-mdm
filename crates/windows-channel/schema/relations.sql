@@ -43,8 +43,6 @@ GRANT UPDATE(last_message) ON TABLE mdm_access.management_sessions TO mdm_comman
 GRANT UPDATE(client_authenticated) ON TABLE mdm_access.management_sessions TO mdm_access;
 GRANT UPDATE(client_authenticated) ON TABLE mdm_access.management_sessions TO mdm_command_runtime;
 
-GRANT UPDATE(correlation) ON TABLE mdm_access.management_sessions TO mdm_access;
-GRANT UPDATE(correlation) ON TABLE mdm_access.management_sessions TO mdm_command_runtime;
 
 GRANT UPDATE(nonce) ON TABLE mdm_access.management_sessions TO mdm_access;
 GRANT UPDATE(nonce) ON TABLE mdm_access.management_sessions TO mdm_command_runtime;
