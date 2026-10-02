@@ -280,3 +280,196 @@ async fn policy_reference_and_archive_are_serialized() -> Result<()> {
     }
     Ok(())
 }
+
+async fn reject_script_at_all_entrances(
+    fixture: &mut Fixture,
+    definition: Value,
+    expected: StatusCode,
+) -> Result<()> {
+    let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+    let requests = [
+        (
+            "/api/v3/policies/previews".to_owned(),
+            json!({"definition":definition}),
+        ),
+        (
+            format!("/api/v3/policies/{}", Uuid::new_v4()),
+            json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":definition}}),
+        ),
+        (
+            "/api/v3/remote-operations".to_owned(),
+            json!({"operationId":Uuid::new_v4(),"resource":definition["action"]["resource"],"targets":{"kind":"devices","devices":[case_device_id()]},"action":{"kind":"execute","parameters":definition["action"]["parameters"]},"deadline":now+600}),
+        ),
+    ];
+    let mut code = None;
+    for (path, body) in requests {
+        let response = fixture
+            .author
+            .call(&fixture.router, Method::POST, &path, Some(body))
+            .await?;
+        ensure!(response.0 == expected, "{path}: {response:?}");
+        if let Some(code) = &code {
+            ensure!(
+                &response.1 == code,
+                "inconsistent script rejection: {response:?}"
+            );
+        }
+        code = Some(response.1);
+    }
+    Ok(())
+}
+
+async fn script_resource(
+    fixture: &mut Fixture,
+    definition: &Value,
+    length: u64,
+    digest: [u8; 32],
+) -> Result<Uuid> {
+    let id = Uuid::new_v4();
+    let author = &mut fixture.author;
+    let router = &fixture.router;
+    resource(
+        author,
+        router,
+        id,
+        0,
+        json!({"action":"create","kind":"script"}),
+    )
+    .await?;
+    resource(author, router, id, 1, json!({"action":"version","version":"v1","kind":"script","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"script","artifact":{"reference":"prepared-script","length":length,"sha256":digest},"definition":definition}}]})).await?;
+    resource(
+        author,
+        router,
+        id,
+        2,
+        json!({"action":"activate","version":"v1"}),
+    )
+    .await?;
+    Ok(id)
+}
+
+fn script_effects() -> Result<String> {
+    pg(&format!(
+        "SELECT jsonb_build_array((SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.versions WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_planning.remote_operations WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm.collection_definitions WHERE tenant_id='{tenant}'))",
+        tenant = case_tenant()
+    ))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=planning.agent_policy"]
+async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
+    use sha2::{Digest, Sha256};
+    let mut fixture = Fixture::new().await?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let _server =
+        crate::test_support::software::HttpServer::start(listener, fixture.router.clone());
+    fixture.author.network = Some((
+        Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(12))
+            .build()?,
+        format!("http://{address}"),
+    ));
+    fixture.register().await?;
+    fixture
+        .scope(
+            case_task_scope(),
+            json!([{"kind":"device","id":case_device_id()}]),
+        )
+        .await?;
+    let (id, _, declaration) = fixture.resource().await?;
+    let before = script_effects()?;
+    let definition = policy_definition(id, case_task_scope());
+    let preview = post(
+        &mut fixture.author,
+        &fixture.router,
+        "/api/v3/policies/previews",
+        json!({"definition":definition}),
+    )
+    .await?;
+    ensure!(preview["items"][0]["eligibility"]["state"] == "eligible");
+    let mut invalid = definition.clone();
+    invalid["action"]["parameters"] = json!({"unexpected":true});
+    reject_script_at_all_entrances(&mut fixture, invalid, StatusCode::BAD_REQUEST).await?;
+    let mut invalid = definition.clone();
+    invalid["action"]["resource"]["architecture"] = json!("x86_64");
+    reject_script_at_all_entrances(&mut fixture, invalid, StatusCode::BAD_REQUEST).await?;
+    let digest: [u8; 32] = Sha256::digest(Uuid::new_v4().as_bytes()).into();
+    let oversized = script_resource(&mut fixture, &declaration, 16_777_217, digest).await?;
+    reject_script_at_all_entrances(
+        &mut fixture,
+        policy_definition(oversized, case_task_scope()),
+        StatusCode::BAD_REQUEST,
+    )
+    .await?;
+    let mut sql = declaration.clone();
+    sql["profile"] = json!("osquery");
+    sql["sql"] = json!("SELECT version FROM osquery_info");
+    let mismatch = script_resource(&mut fixture, &sql, 3, digest).await?;
+    reject_script_at_all_entrances(
+        &mut fixture,
+        policy_definition(mismatch, case_task_scope()),
+        StatusCode::BAD_REQUEST,
+    )
+    .await?;
+    // Unique bytes isolate the missing/corrupt content checks from other T2 cases.
+    let bytes = format!("#!/bin/sh\n# {}\nprintf '{{}}'\n", Uuid::new_v4());
+    let digest: [u8; 32] = Sha256::digest(bytes.as_bytes()).into();
+    let content_id =
+        script_resource(&mut fixture, &declaration, bytes.len() as u64, digest).await?;
+    let content_definition = policy_definition(content_id, case_task_scope());
+    reject_script_at_all_entrances(
+        &mut fixture,
+        content_definition.clone(),
+        StatusCode::SERVICE_UNAVAILABLE,
+    )
+    .await?;
+    ensure!(
+        upload(
+            &fixture.author,
+            &fixture.router,
+            content_id,
+            bytes.as_bytes()
+        )
+        .await?
+            == StatusCode::CREATED
+    );
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    let path = std::path::Path::new(fixture.base["content"]["directory"].as_str().unwrap())
+        .join(case_tenant())
+        .join(hex);
+    std::fs::write(&path, "x".repeat(bytes.len()))?;
+    let rejected = reject_script_at_all_entrances(
+        &mut fixture,
+        content_definition,
+        StatusCode::SERVICE_UNAVAILABLE,
+    )
+    .await;
+    std::fs::write(&path, &bytes)?;
+    rejected?;
+    ensure!(
+        script_effects()? == before,
+        "preview or rejected script wrote execution facts"
+    );
+    let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+    let input = json!({"operationId":Uuid::new_v4(),"resource":definition["action"]["resource"],"targets":{"kind":"devices","devices":[case_device_id()]},"action":{"kind":"execute","parameters":{}},"deadline":now+600});
+    let accepted = post(
+        &mut fixture.author,
+        &fixture.router,
+        "/api/v3/remote-operations",
+        input.clone(),
+    )
+    .await?;
+    ensure!(
+        post(
+            &mut fixture.author,
+            &fixture.router,
+            "/api/v3/remote-operations",
+            input
+        )
+        .await?
+            == accepted
+    );
+    Ok(())
+}

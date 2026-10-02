@@ -19,6 +19,16 @@ class ModuleImpactTests(unittest.TestCase):
             self.assertFalse(selected.full)
             self.assertTrue(expected <= set(selected.modules),(path,selected.modules))
 
+    def test_script_preparation_selects_all_script_entrances(self):
+        for path in ('crates/resource/src/script.rs',
+                     'crates/flow-service/src/resource_catalog/scripts.rs',
+                     'crates/flow-service/src/planning/action_contract.rs',
+                     'crates/flow-service/src/resource_catalog/mod.rs'):
+            selected = select_paths([path])
+            self.assertFalse(selected.full, path)
+            self.assertTrue({'planning.agent_policy', 'planning.remote'} <= set(selected.modules), path)
+        self.assertIn('execution.agent.recovery', self.selected('crates/resource/src/script.rs'))
+
     def test_native_rules_select_configuration_consumer(self):
         for path in ('crates/windows-mdm/src/native/request.rs', 'crates/windows-mdm/src/native/verification.rs'):
             self.assertIn('execution.commands.configuration', self.selected(path), path)

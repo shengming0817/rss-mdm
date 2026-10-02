@@ -9,6 +9,7 @@ use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use serde_json::Value;
 use std::sync::Arc;
 pub mod directory;
+pub(crate) mod scripts;
 pub mod wire;
 
 use rss_mdm_resource as r;
@@ -156,6 +157,24 @@ fn variant(v: &Variant) -> Result<r::Variant> {
     ))
 }
 impl ResourceCatalog {
+    pub(crate) async fn active_version_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        resource: &str,
+        version: &str,
+    ) -> Result<r::Version> {
+        let (version, state, _) = self
+            .lock_version_in(
+                tx,
+                &checked_input(r::Id::new(resource))?,
+                &checked_input(r::Id::new(version))?,
+            )
+            .await?;
+        if state != r::State::Active {
+            return Err(Error::Conflict.into());
+        }
+        Ok(version)
+    }
     pub async fn resource_change(
         &self,
         tx: &mut PgTransaction<'_>,

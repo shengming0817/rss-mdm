@@ -20,24 +20,42 @@ pub async fn preview(
         proof.manage(Permission::ResourceRead)?;
     }
     authorize(proof, &input.definition)?;
-    run(&s.planning.audit_store,&s.planning.runtime,s.planning.tenant,audit,(s,proof,audit,input),|ctx,tx|Box::pin(async move {
-        let (s,proof,audit,input)=*ctx;
+    let verified = if let Action::Execution {
+        resource,
+        parameters,
+        ..
+    } = &input.definition.action
+    {
+        Some(
+            s.planning
+                .catalog
+                .verify_script(resource, parameters, s.execution.content.as_ref())
+                .await?,
+        )
+    } else {
+        None
+    };
+    run(&s.planning.audit_store,&s.planning.runtime,s.planning.tenant,audit,(s,proof,audit,input,verified.as_ref()),|ctx,tx|Box::pin(async move {
+        let (s,proof,audit,input,verified)=*ctx;
         let authorization=crate::action_admission::current(tx,proof).await?;
         authorize_snapshot(&authorization,proof,&input.definition)?;
         let enrollment=if matches!(input.definition.action,Action::RequestMdmEnrollment{..}) {Some(Frozen::MdmEnrollment{action:Box::new(enrollment::freeze(proof,&authorization,&input.definition.action,&s.execution.enrollment_entries)?)})}else{None};
         let agent=if matches!(input.definition.action,Action::EnsureAgentInstalled{..}){Some(s.freeze_agent_in(tx,proof,&authorization,&input.definition.action).await?)}else{None};
         let binding=input.definition.action.resource();
-        let version=if let Some(binding)=binding {Some(s.resource_in(tx,binding).await?)}else{None};
+        let version=if let Some(binding)=binding {Some(s.planning.catalog.active_version_in(tx,binding.id(),binding.version()).await?)}else{None};
         let software=if matches!(input.definition.action, Action::Software { .. }) {
             let Frozen::Software { action }=s.freeze_in(tx, &input.definition.action, None, None).await? else {return Err(Error::Malformed.into());};
             Some(software::SoftwareExecutionPolicy::draft(input.definition.clone(),*action))
         } else if agent.is_some() {None} else if let Some(version)=version {
-            let selected=variant(&version,binding.ok_or(Error::Malformed)?)?;
-            match (&input.definition.action,selected.declaration()) {
-                (Action::Execution {parameters,..},resource::Declaration::Script {definition,..})=>checked_input(definition.validate_parameters(parameters))?,
-                (Action::NativeCollection{..},resource::Declaration::NativeCollection{..})=>(),
-                (Action::Configuration {..},resource::Declaration::Configuration {..})=>(),
-                _=>return Err(Error::Malformed.into()),
+            if let Action::Execution {parameters,..}=&input.definition.action {
+                crate::resource_catalog::scripts::prepare(&version,binding.ok_or(Error::Malformed)?,parameters,verified.ok_or(Error::Conflict)?)?;
+            } else {
+                let selected=variant(&version,binding.ok_or(Error::Malformed)?)?;
+                match (&input.definition.action,selected.declaration()) {
+                    (Action::NativeCollection{..},resource::Declaration::NativeCollection{..})=>(),
+                    (Action::Configuration {..},resource::Declaration::Configuration {..})=>(),
+                    _=>return Err(Error::Malformed.into()),
+                }
             }
             None
         } else {None};

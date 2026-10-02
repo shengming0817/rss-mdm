@@ -348,7 +348,7 @@ for name in ('planning.assets', 'planning.scope', 'planning.group_scope', 'plann
                             ('crates/app/tests/planning/support.rs',))
 for name in ('planning.assets', 'planning.scope', 'planning.group_scope', 'planning.recovery', 'planning.resource_archive'):
     MODULES[name] = replace(MODULES[name], fixtures=())
-MODULES['planning.resource_archive'] = replace(MODULES['planning.resource_archive'], fixtures=('tls',))
+MODULES['planning.resource_archive'] = replace(MODULES['planning.resource_archive'], fixtures=('identity', 'tls'))
 MODULES['audit.integrity'] = replace(MODULES['audit.integrity'],
     test_inputs=MODULES['audit.integrity'].test_inputs + ('crates/app/tests/audit/owner_admission.rs',))
 for name in ('policy', 'resource', 'software_release'):
@@ -529,6 +529,7 @@ MODULES['planning.http'] = replace(MODULES['planning.http'], db_mode='fresh', sc
 MODULES['planning.agent_policy'] = replace(MODULES['planning.agent_policy'], db_mode='reuse', scope='objects', policies=(
     CasePolicy('planning::t2::agent_policy::policy_scan_reaches_late_match', 'reuse', 'tenant'),
     CasePolicy('planning::t2::agent_policy::preview_publish_authorization_and_commit_replay', 'reuse', 'tenant'),
+    CasePolicy('planning::t2::agent_policy::script_preparation_is_shared_without_preview_effects', 'reuse', 'tenant'),
 ))
 MODULES['planning.frequency'] = replace(MODULES['planning.frequency'], db_mode='reuse', scope='objects', policies=(
     CasePolicy('planning::t2::frequency::once_per_entry_tracks_membership_epochs', 'reuse', 'tenant'),
@@ -686,6 +687,10 @@ consume(('crates/inventory/src/*', 'crates/inventory-postgres/src/*', 'crates/in
         'inventory.manual inventory.reader inventory.projection inventory.recovery inventory.runtime assets.http assets.queries assets.sources assets.group_input planning.assets planning.group_scope compliance.evaluation')
 consume(('crates/compliance/src/*', 'crates/compliance-postgres/src/*', 'crates/compliance-postgres/migrations/*'),
         'compliance.storage compliance.http compliance.evaluation compliance.recovery compliance.group_input')
+consume(('crates/resource/src/script.rs', 'crates/flow-service/src/resource_catalog/scripts.rs'),
+        'planning.agent_policy planning.remote planning.frequency execution.agent.delivery execution.agent.content execution.agent.recovery')
+consume(('crates/flow-service/src/planning/action_contract.rs', 'crates/flow-service/src/resource_catalog/mod.rs'),
+        'planning.agent_policy planning.remote planning.onboarding')
 TASK_CONSUMERS = 'planning.onboarding planning.policy planning.agent_policy planning.frequency planning.remote planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
 consume(('crates/agent-wire/src/tasks.rs', 'crates/agent-wire/schema/task-*.json',
          'crates/agent-wire/schema/signed-task-v5.schema.json', 'crates/flow-service/src/task_signing.rs'), TASK_CONSUMERS)

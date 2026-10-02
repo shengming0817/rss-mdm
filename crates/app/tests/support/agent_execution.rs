@@ -138,6 +138,8 @@ impl Fixture {
             base["task_signing"]["private_key_file"].as_str().unwrap(),
         )?)
         .unwrap();
+        // Store startup recovery and fixture uploads share the content directory.
+        let content_setup = super::software::content_setup_guard().await?;
         let (router, execution, plan_runtime) = crate::api::application_fixture(
             serde_json::from_value(base.clone())?,
             Arc::new(crate::clock::SystemClock),
@@ -151,6 +153,7 @@ impl Fixture {
         )
         .await
         .map_err(|error| anyhow::anyhow!("application fixture rejected: {error:?}"))?;
+        drop(content_setup);
         let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
             "127.0.0.1".parse()?,
         )));
