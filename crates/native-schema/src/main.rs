@@ -57,14 +57,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let windows_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../windows-mdm");
     let windows = windows::generate(&windows_root)?;
     let windows_path = windows_root.join("src/native/generated.rs");
-    if args == ["--check"] {
-        if std::fs::read_to_string(&windows_path)? != windows {
-            return Err("generated Windows schema is stale".into());
-        }
-    } else {
-        std::fs::create_dir_all(windows_path.parent().ok_or("generated Windows path")?)?;
-        std::fs::write(windows_path, windows)?;
-    }
     let root =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../apple-mdm/schema/upstream");
     let (sources, documents) = sources::read_apple(&root)?;
@@ -74,16 +66,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let generated = apple::generate(&sources, &documents)?;
     let destination = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../apple-mdm/src/native/generated.rs");
-    let check = std::env::args().skip(1).collect::<Vec<_>>();
-    if check == ["--check"] {
+    // Validate and generate both platforms before mutating either production file.
+    if args == ["--check"] {
+        if std::fs::read_to_string(&windows_path)? != windows {
+            return Err("generated Windows schema is stale".into());
+        }
         if std::fs::read_to_string(&destination)? != generated {
             return Err("generated Apple schema is stale".into());
         }
-    } else if check == ["--write"] {
-        std::fs::create_dir_all(destination.parent().ok_or("generated path")?)?;
-        std::fs::write(destination, generated)?;
     } else {
-        return Err("usage: native_schema --check|--write".into());
+        std::fs::create_dir_all(windows_path.parent().ok_or("generated Windows path")?)?;
+        std::fs::create_dir_all(destination.parent().ok_or("generated Apple path")?)?;
+        std::fs::write(windows_path, windows)?;
+        std::fs::write(destination, generated)?;
     }
     println!(
         "verified {} releases and {} distinct schemas",
