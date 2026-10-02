@@ -253,15 +253,17 @@ def verify_candidate(directory):
 
 class Candidate:
     """One owned PG/network namespace, product binary and canonical UI ingress."""
-    def __init__(self, directory, *, prepare=None, network=None, host="mdm.example.test", instance=INSTANCE, tenant=TENANT, diagnostics=None, diagnostic_filename=None):
+    def __init__(self, directory, *, prepare=None, network=None, host="mdm.example.test", instance=INSTANCE, tenant=TENANT, diagnostics=None, diagnostic_filename=None, require_ui=False):
         self.directory,self.prepare,self.host=directory,prepare,host
         self.instance,self.tenant=instance,tenant
         self.diagnostics=diagnostics or directory
         self.manifest=verify_candidate(directory)
+        require(not require_ui or "ui" in self.manifest,
+                "browser acceptance requires a UI image; rebuild with --web-image")
         artifact=image_identity(self.manifest["image"])
         require(self.manifest["image"].endswith("@"+self.manifest["archive"]["manifest_digest"]),"runtime image differs from candidate")
         self.image=artifact["id"]
-        self.web=load_ui(directory,self.manifest["ui"])
+        self.web=load_ui(directory,self.manifest["ui"]) if "ui" in self.manifest else None
         self.providers=self.manifest["providers"]
         self.name="mdm-candidate-"+uuid.uuid4().hex
         self.diagnostic_filename=diagnostic_filename or self.name+"-failure.json"
@@ -332,6 +334,9 @@ class Candidate:
             if self.tenant not in authorization['installation']['tenants']:authorization['installation']['tenants'].append(self.tenant)
             path.write_text(json.dumps(authorization))
             gateway=(self.root/"nginx.conf").read_text().replace("mdm.example.test",self.host)
+            if self.web is None:
+                gateway=gateway.replace("location / { try_files $uri $uri/ /index.html; }",
+                                        "location / { return 404; }")
             (self.root/"nginx.conf").write_text(gateway)
             for name, value in public_host_inputs(self.config).items():
                 (self.root/name).write_text(json.dumps(value))
@@ -354,14 +359,21 @@ class Candidate:
             self.operator("initialize-authorization","authorization.json",Stage.AUTHORIZATION_REPLAY)
             self.start_server()
             self.gateway_inputs=self.secret_volume("gateway-inputs",["server.crt","server.key","nginx.conf","ui.json","mdm.json"],10001)
-            self.created.append(self.gateway)
-            self.command("run","-d","--name",self.gateway,"--network","container:"+self.pg,"-v",self.gateway_inputs+":/certs:ro",self.web["id"],"-c","/certs/nginx.conf",stage=Stage.GATEWAY)
+            self.start_gateway()
             self.port=int(self.command("port",self.pg,"8445/tcp",stage=Stage.PORT).rsplit(":",1)[1])
             self.ready()
             return self
         except BaseException:
             self.__exit__(*sys.exc_info())
             raise
+    def start_gateway(self):
+        # API-only candidates still exercise the real HTTPS ingress without a UI artifact.
+        image=self.web["id"] if self.web is not None else self.providers["nginx"]
+        self.created.append(self.gateway)
+        self.command("run","-d","--name",self.gateway,"--network","container:"+self.pg,
+                     "--user","10001:10001","--entrypoint","nginx",
+                     "-v",self.gateway_inputs+":/certs:ro",image,
+                     "-e","stderr","-c","/certs/nginx.conf","-g","daemon off;",stage=Stage.GATEWAY)
     def ready(self):
         def check():
             conn=http.client.HTTPSConnection("127.0.0.1",self.port,context=ssl.create_default_context(cafile=str(self.root/"ca.crt")),timeout=3)

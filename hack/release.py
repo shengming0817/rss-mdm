@@ -65,7 +65,7 @@ def snapshot_ui(reference, output):
     metadata['archive']={'file':output.name,'sha256':sha(output)}
     return metadata
 
-def build(out, header, web_image):
+def build(out, header, web_image=None):
     if out.exists():
         raise ValueError("candidate output must be new")
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -133,7 +133,7 @@ def copy_source(root, destination, header=None):
     return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
 
 
-def build_staged(out, header, web_image):
+def build_staged(out, header, web_image=None):
     if out.exists():
         raise ValueError("candidate output must be new")
     if header.is_symlink() or not header.is_file() or header.stat().st_mode & 0o077:
@@ -146,7 +146,7 @@ def build_staged(out, header, web_image):
         providers = json.loads((source / "deployment/providers.lock.json").read_text())
         if any("@sha256:" not in image for image in providers.values()):
             raise ValueError("build providers must be pinned")
-        ui = snapshot_ui(web_image, out / "identity-ui.image.tar")
+        ui = snapshot_ui(web_image, out / "identity-ui.image.tar") if web_image is not None else None
         shutil.copy(source / "deployment/Dockerfile", context / "Dockerfile")
         image = "rss-mdm/server:build-" + uuid.uuid4().hex
         output = out / "server.oci.tar"
@@ -179,19 +179,21 @@ def build_staged(out, header, web_image):
         for name in ("Cargo.lock", "rust-toolchain.toml"):
             shutil.copy(source / name, build / name)
         manifest = {
-            "format_version": 3, "ui": ui,
+            "format_version": 3,
             "source": {"inputs_sha256": inputs_sha256},
             "version": version, "platform": platform(config), "migrations": migrations,
             "image": image + "@" + digest,
             "archive": {"file": output.name, "sha256": sha(output), "manifest_digest": digest},
             "providers": providers, "deployment": deployment,
         }
+        if ui is not None:
+            manifest["ui"] = ui
         (out / "candidate.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--git-auth-header-file", type=Path, required=True)
-    parser.add_argument("--web-image", required=True, help="immutable UI image ID or repository digest")
+    parser.add_argument("--web-image", help="optional immutable UI image ID or repository digest for combined delivery")
     args = parser.parse_args()
     build(args.output.resolve(), args.git_auth_header_file.absolute(), args.web_image)

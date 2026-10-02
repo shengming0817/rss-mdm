@@ -139,11 +139,11 @@ def run(candidate, tools_image, output):
         probe=run_owned([], 'mdm-tools-'+uuid.uuid4().hex[:10], '--network','none','--entrypoint','node',tool['id'],'-e',
                      "console.log(JSON.stringify({version:require('/opt/playwright-core/package.json').version,integrity:require('fs').readFileSync('/opt/playwright-integrity','utf8')}))",stage=Stage.TOOLS)
         require(json.loads(probe)==dict(version='1.60.0',integrity=PLAYWRIGHT_INTEGRITY),'browser package mismatch')
-        with Candidate(candidate,prepare=enterprise,diagnostics=output) as primary:
+        with Candidate(candidate,prepare=enterprise,diagnostics=output,require_ui=True) as primary:
             prepare_member(primary);seed_inventory(primary)
             mismatch=installation_mismatch(primary)
             with Candidate(candidate,network=primary.network,host='mdm-other.example.test',
-                           instance=str(uuid.uuid4()),tenant=TENANT,diagnostics=output) as other:
+                           instance=str(uuid.uuid4()),tenant=TENANT,diagnostics=output,require_ui=True) as other:
                 # Same port 443 on distinct private network addresses; host smoke retains 8445.
                 for stack in [primary,other]:
                     conf=(stack.root/'nginx.conf').read_text().replace('listen 8445 ssl;','listen 443 ssl;\n        listen 8445 ssl;')
