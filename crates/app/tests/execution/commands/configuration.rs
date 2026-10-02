@@ -576,7 +576,22 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
-    tokio::time::timeout(Duration::from_secs(30),async {loop {let remaining:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND policy=$2").bind(case_tenant()).bind(first).fetch_one(&mut pg).await?;if remaining==0{return Ok::<_,anyhow::Error>(());}tokio::time::sleep(Duration::from_millis(50)).await;}}).await??;
+    // Delete of permanent Policy leaves restores native defaults. A fake 404 must not
+    // release guards for this unresolved removal, even after withdrawal is acknowledged.
+    let remaining:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND policy=$2").bind(case_tenant()).bind(first).fetch_one(&mut pg).await?;
+    ensure!(
+        remaining > 0,
+        "unverified default restoration released claims"
+    );
+    for id in &removed {
+        let read = client.call(Method::GET, &format!("/{id}"), None).await?;
+        ensure!(read.1["commandStatus"] != "applied");
+        ensure!(read.1["observation"]["effect"] == "unverifiable");
+        ensure!(
+            read.1["observation"]["effectReason"]
+                == "delete_restores_default_without_frozen_detector"
+        );
+    }
     let other:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND policy=$2").bind(case_tenant()).bind(second).fetch_one(&mut pg).await?;
     ensure!(other == 1);
     let remote = Uuid::new_v4();

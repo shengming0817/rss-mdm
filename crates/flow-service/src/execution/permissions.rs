@@ -65,20 +65,36 @@ pub(super) fn required(task: &Task) -> Result<Vec<P>, Error> {
     }
     Ok(permissions.into_iter().collect())
 }
-fn windows(request: &rss_mdm_windows_mdm::native::Request, out: &mut BTreeSet<P>) -> Result<(), Error> {
-    for (node, operation) in request.authorization_nodes().map_err(|_| Error::Malformed)? {
+fn windows(
+    request: &rss_mdm_windows_mdm::native::Request,
+    out: &mut BTreeSet<P>,
+) -> Result<(), Error> {
+    for (node, operation) in request
+        .authorization_nodes()
+        .map_err(|_| Error::Malformed)?
+    {
         windows_node(&node, operation, out)?;
     }
     Ok(())
 }
-fn windows_node(node: &str, operation: rss_mdm_windows_mdm::native::Verb, out: &mut BTreeSet<P>) -> Result<(), Error> {
+fn windows_node(
+    node: &str,
+    operation: rss_mdm_windows_mdm::native::Verb,
+    out: &mut BTreeSet<P>,
+) -> Result<(), Error> {
     use rss_mdm_windows_mdm::native::Verb;
     let read = operation == Verb::Get;
     if node.starts_with("./DevInfo") || node.starts_with("./DevDetail") {
-        if read { out.insert(P::InventoryCollect); return Ok(()); }
+        if read {
+            out.insert(P::InventoryCollect);
+            return Ok(());
+        }
         return Err(Error::Unsupported);
     }
-    let path = node.split("/Vendor/MSFT/").nth(1).ok_or(Error::Unsupported)?;
+    let path = node
+        .split("/Vendor/MSFT/")
+        .nth(1)
+        .ok_or(Error::Unsupported)?;
     let mut parts = path.split('/');
     let family = parts.next().ok_or(Error::Unsupported)?;
     let area = if family == "Policy" {
@@ -86,15 +102,35 @@ fn windows_node(node: &str, operation: rss_mdm_windows_mdm::native::Verb, out: &
             (Some("Config" | "Result"), Some(area)) => area,
             _ => return Err(Error::Unsupported),
         }
-    } else { family };
+    } else {
+        family
+    };
     let permission = match area {
         "RemoteWipe" if !read => P::DeviceWipe,
-        "EnterpriseDesktopAppManagement" | "EnterpriseModernAppManagement" if !read => P::SoftwareDeploy,
-        "CertificateStore" | "ClientCertificateInstall" | "PassportForWork" | "RootCATrustedCertificates"
-        | "BitLocker" | "Defender" | "DeviceGuard" | "LAPS" | "HealthAttestation" | "PDE"
-        | "ApplicationControl" | "AppLocker" | "WindowsDefenderApplicationGuard"
-        | "Authentication" | "Security" | "SecurityOptions" | "LocalPoliciesSecurityOptions"
-        | "UserRights" | "CredentialsUI" | "ADMX_CredSsp" | "ADMX_CredentialProviders" => P::SecurityOperate,
+        "EnterpriseDesktopAppManagement" | "EnterpriseModernAppManagement" if !read => {
+            P::SoftwareDeploy
+        }
+        "CertificateStore"
+        | "ClientCertificateInstall"
+        | "PassportForWork"
+        | "RootCATrustedCertificates"
+        | "BitLocker"
+        | "Defender"
+        | "DeviceGuard"
+        | "LAPS"
+        | "HealthAttestation"
+        | "PDE"
+        | "ApplicationControl"
+        | "AppLocker"
+        | "WindowsDefenderApplicationGuard"
+        | "Authentication"
+        | "Security"
+        | "SecurityOptions"
+        | "LocalPoliciesSecurityOptions"
+        | "UserRights"
+        | "CredentialsUI"
+        | "ADMX_CredSsp"
+        | "ADMX_CredentialProviders" => P::SecurityOperate,
         "Accounts" | "LocalUsersAndGroups" if !read => P::AccountWrite,
         "Update" if !read => P::DeviceUpdate,
         "DiagnosticLog" => P::DeviceDiagnostics,
@@ -107,20 +143,53 @@ fn windows_node(node: &str, operation: rss_mdm_windows_mdm::native::Verb, out: &
         _ => return Err(Error::Unsupported),
     };
     out.insert(permission);
-    if path.split('/').any(|segment| matches!(segment, "Password" | "PasswordValue" | "PFXCertBlob" | "PFXCertPassword" | "PrivateKey" | "Secret" | "RecoveryKey")) {
+    if path.split('/').any(|segment| {
+        matches!(
+            segment,
+            "Password"
+                | "PasswordValue"
+                | "PFXCertBlob"
+                | "PFXCertPassword"
+                | "PrivateKey"
+                | "Secret"
+                | "RecoveryKey"
+        )
+    }) {
         out.insert(P::Credentials);
         out.insert(P::SecurityOperate);
     }
     Ok(())
 }
 fn configuration_family(family: &str) -> bool {
-    matches!(family,
-        "ActiveSync" | "AssignedAccess" | "CloudDesktop" | "DeviceManageability"
-        | "DevicePreparation" | "DeviceStatus" | "DnsClient" | "EMAIL2" | "Firewall"
-        | "LanguagePackManagement" | "MultiSIM" | "NetworkProxy" | "NetworkQoSPolicy"
-        | "NodeCache" | "Office" | "Personalization" | "PrinterProvisioning" | "SecureAssessment"
-        | "SharedPC" | "VPNv2" | "WiFi" | "WindowsBackupAndRestore" | "WindowsLicensing"
-        | "WiredNetwork" | "WirelessNetworkPreference" | "eUICCs")
+    matches!(
+        family,
+        "ActiveSync"
+            | "AssignedAccess"
+            | "CloudDesktop"
+            | "DeviceManageability"
+            | "DevicePreparation"
+            | "DeviceStatus"
+            | "DnsClient"
+            | "EMAIL2"
+            | "Firewall"
+            | "LanguagePackManagement"
+            | "MultiSIM"
+            | "NetworkProxy"
+            | "NetworkQoSPolicy"
+            | "NodeCache"
+            | "Office"
+            | "Personalization"
+            | "PrinterProvisioning"
+            | "SecureAssessment"
+            | "SharedPC"
+            | "VPNv2"
+            | "WiFi"
+            | "WindowsBackupAndRestore"
+            | "WindowsLicensing"
+            | "WiredNetwork"
+            | "WirelessNetworkPreference"
+            | "eUICCs"
+    )
 }
 fn apple_command(name: &str) -> Result<P, Error> {
     Ok(match name {
@@ -182,8 +251,18 @@ mod windows_tests {
     #[test]
     fn nested_policy_operations_keep_their_real_permissions() {
         let mut permissions = BTreeSet::new();
-        windows_node("./Device/Vendor/MSFT/Policy/Config/Update/AllowAutoUpdate", Verb::Replace, &mut permissions).unwrap();
-        windows_node("./Device/Vendor/MSFT/Policy/Result/Defender/AllowRealTimeMonitoring", Verb::Get, &mut permissions).unwrap();
+        windows_node(
+            "./Device/Vendor/MSFT/Policy/Config/Update/AllowAutoUpdate",
+            Verb::Replace,
+            &mut permissions,
+        )
+        .unwrap();
+        windows_node(
+            "./Device/Vendor/MSFT/Policy/Result/Defender/AllowRealTimeMonitoring",
+            Verb::Get,
+            &mut permissions,
+        )
+        .unwrap();
         assert!(permissions.contains(&P::DeviceUpdate));
         assert!(permissions.contains(&P::SecurityOperate));
         assert!(!permissions.contains(&P::ConfigurationWrite));
@@ -191,9 +270,28 @@ mod windows_tests {
     #[test]
     fn secrets_require_credentials_and_unknown_mutations_fail_closed() {
         let mut permissions = BTreeSet::new();
-        windows_node("./Device/Vendor/MSFT/ClientCertificateInstall/PFXCertInstall/*/PFXCertPassword", Verb::Replace, &mut permissions).unwrap();
+        windows_node(
+            "./Device/Vendor/MSFT/ClientCertificateInstall/PFXCertInstall/*/PFXCertPassword",
+            Verb::Replace,
+            &mut permissions,
+        )
+        .unwrap();
         assert!(permissions.contains(&P::Credentials));
-        assert!(windows_node("./Device/Vendor/MSFT/Invented/Value", Verb::Replace, &mut permissions).is_err());
-        assert!(windows_node("./Device/Vendor/MSFT/DeclaredConfiguration/Host", Verb::Get, &mut permissions).is_err());
+        assert!(
+            windows_node(
+                "./Device/Vendor/MSFT/Invented/Value",
+                Verb::Replace,
+                &mut permissions
+            )
+            .is_err()
+        );
+        assert!(
+            windows_node(
+                "./Device/Vendor/MSFT/DeclaredConfiguration/Host",
+                Verb::Get,
+                &mut permissions
+            )
+            .is_err()
+        );
     }
 }

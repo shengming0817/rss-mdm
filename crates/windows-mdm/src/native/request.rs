@@ -219,22 +219,35 @@ impl Request {
         let mut result = Vec::new();
         while let Some(request) = pending.pop() {
             match request {
-                Self::Node { node, operation, .. } => {
+                Self::Node {
+                    node, operation, ..
+                } => {
                     result.push((node.clone(), *operation));
                     let selected = super::generated::NODES
                         .binary_search_by_key(&node.as_str(), |n| n.path)
                         .map_err(|_| Error::UnknownObject)?;
+                    if super::generated::NODES[selected].access & operation.mask() == 0 {
+                        return Err(Error::OperationNotAllowed);
+                    }
                     if *operation == Verb::Delete
-                        || (*operation == Verb::Get && matches!(super::generated::NODES[selected].format, super::Format::Node))
+                        || (*operation == Verb::Get
+                            && matches!(
+                                super::generated::NODES[selected].format,
+                                super::Format::Node
+                            ))
                     {
                         let prefix = format!("{node}/");
                         for child in &super::generated::NODES[selected + 1..] {
-                            if !child.path.starts_with(&prefix) { break; }
+                            if !child.path.starts_with(&prefix) {
+                                break;
+                            }
                             result.push((child.path.into(), *operation));
                         }
                     }
                 }
-                Self::Atomic { operations } | Self::Sequence { operations } => pending.extend(operations),
+                Self::Atomic { operations } | Self::Sequence { operations } => {
+                    pending.extend(operations)
+                }
             }
         }
         Ok(result)

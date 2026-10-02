@@ -1,8 +1,8 @@
 //! Readback evidence for queryable native mutations. ACKs never satisfy this contract.
 use super::{Context, Error, Operation, Request, Verb};
 use crate::syncml::Command;
-use std::collections::BTreeMap;
 use serde::Serialize;
+use std::collections::BTreeMap;
 
 /// Native evidence expected after a mutation, separate from its receipt.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,38 +33,66 @@ pub enum EffectPlan {
 impl EffectPlan {
     /// Borrow the independently compiled readback when the contract supplies one.
     pub fn readback(&self) -> Option<&Verification> {
-        if let Self::Readback(v) = self { Some(v) } else { None }
+        if let Self::Readback(v) = self {
+            Some(v)
+        } else {
+            None
+        }
     }
     /// Consume the compiled readback for dispatch.
     pub fn into_readback(self) -> Option<Verification> {
-        if let Self::Readback(v) = self { Some(v) } else { None }
+        if let Self::Readback(v) = self {
+            Some(v)
+        } else {
+            None
+        }
     }
     /// Evaluate exact, already-correlated facts. Ingestion owns identity and eligibility checks.
     pub fn assess(&self, facts: &[EffectFact]) -> EffectAssessment {
         let Self::Readback(verification) = self else {
             return match self {
-                Self::Unverifiable(reason) => EffectAssessment { state: EffectState::Unverifiable, reason: Some(reason) },
+                Self::Unverifiable(reason) => EffectAssessment {
+                    state: EffectState::Unverifiable,
+                    reason: Some(reason),
+                },
                 _ => EffectAssessment::waiting("query_facts_have_no_mutation_effect"),
             };
         };
-        if facts.iter().any(|f| f.uri.is_empty() && (!f.receipt_accepted || f.status != Some(200))) {
+        if facts
+            .iter()
+            .any(|f| f.uri.is_empty() && (!f.receipt_accepted || f.status != Some(200)))
+        {
             return EffectAssessment::waiting("incomplete_group_evidence");
         }
-        if facts.iter().any(|f| !f.uri.is_empty() && !verification.expected.contains_key(&f.uri)) {
+        if facts
+            .iter()
+            .any(|f| !f.uri.is_empty() && !verification.expected.contains_key(&f.uri))
+        {
             return EffectAssessment::waiting("unexpected_object_evidence");
         }
         for (uri, expected) in &verification.expected {
             let matching = facts.iter().filter(|f| &f.uri == uri).collect::<Vec<_>>();
-            if matching.len() != 1 { return EffectAssessment::waiting("incomplete_or_ambiguous_evidence"); }
+            if matching.len() != 1 {
+                return EffectAssessment::waiting("incomplete_or_ambiguous_evidence");
+            }
             let fact = matching[0];
-            if !fact.receipt_accepted || (fact.value.is_some() && !fact.result_accepted) || fact.status.is_none() {
+            if !fact.receipt_accepted
+                || (fact.value.is_some() && !fact.result_accepted)
+                || fact.status.is_none()
+            {
                 return EffectAssessment::waiting("ineligible_or_incomplete_evidence");
             }
             if !expected.matches(fact.status, fact.value.as_deref()) {
-                return EffectAssessment { state: EffectState::Diverged, reason: Some("native_value_mismatch") };
+                return EffectAssessment {
+                    state: EffectState::Diverged,
+                    reason: Some("native_value_mismatch"),
+                };
             }
         }
-        EffectAssessment { state: EffectState::Verified, reason: None }
+        EffectAssessment {
+            state: EffectState::Verified,
+            reason: None,
+        }
     }
 }
 /// Native results after correlation, decryption and generation/permission admission.
@@ -103,7 +131,12 @@ pub struct EffectAssessment {
 }
 impl EffectAssessment {
     /// Missing evidence must not manufacture success.
-    pub fn waiting(reason: &'static str) -> Self { Self { state: EffectState::Waiting, reason: Some(reason) } }
+    pub fn waiting(reason: &'static str) -> Self {
+        Self {
+            state: EffectState::Waiting,
+            reason: Some(reason),
+        }
+    }
 }
 impl Request {
     /// Build readback only if every mutation has a valid native Get on the same target.
@@ -128,7 +161,9 @@ impl Request {
                         continue;
                     }
                     if *operation == Verb::Exec {
-                        return Ok(EffectPlan::Unverifiable("operation_requires_family_effect_evidence"));
+                        return Ok(EffectPlan::Unverifiable(
+                            "operation_requires_family_effect_evidence",
+                        ));
                     }
                     let op =
                         Operation::compile(node, instance, *operation, value.clone(), context)?;
@@ -137,7 +172,9 @@ impl Request {
                     }
                     let goal = if *operation == Verb::Delete {
                         if op.semantics().lifetime != "Dynamic" {
-                            return Ok(EffectPlan::Unverifiable("delete_restores_default_without_frozen_detector"));
+                            return Ok(EffectPlan::Unverifiable(
+                                "delete_restores_default_without_frozen_detector",
+                            ));
                         }
                         Expected::Absent
                     } else {

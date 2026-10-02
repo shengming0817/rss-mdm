@@ -166,7 +166,7 @@ async fn native_partial_receipts_late_results_read_recovery_and_generation_fence
     let acked = operation(&mut client).await?;
     ensure!(
         acked["commandStatus"] == "received"
-            && acked["observation"]["effect"] == "unverified"
+            && acked["observation"]["effect"] == "waiting"
             && acked["observation"]["receipts"][0]["value"].is_null(),
         "ACK became native state: {acked}"
     );
@@ -254,7 +254,7 @@ async fn native_partial_receipts_late_results_read_recovery_and_generation_fence
     ensure!(post(&peer.mutual, &peer.url, &completed).await?.status() == StatusCode::OK);
     let read = operation(&mut client).await?;
     ensure!(
-        read["commandStatus"] == "applied" && read["observation"]["effect"] == "unverified",
+        read["commandStatus"] == "applied" && read["observation"]["effect"] == "waiting",
         "complete native query missing: {read}"
     );
     ensure!(read["observation"]["receipts"].as_array().unwrap().len() == 2);
@@ -365,7 +365,7 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
             if kind == "command" {
                 ensure!(
                     item["evidence"]["commandStatus"] == "published"
-                        && item["evidence"]["observation"]["effect"] == "unverified",
+                        && item["evidence"]["observation"]["effect"] == "waiting",
                     "receipt became effect: {item}"
                 );
                 ensure!(item["evidence"]["observation"].get("value").is_none());
@@ -488,7 +488,7 @@ async fn native_status_requires_the_reported_command_semantics() -> anyhow::Resu
             _ => "published",
         };
         ensure!(actual["commandStatus"] == expected, "code {code}: {actual}");
-        ensure!(actual["observation"]["effect"] == "unverified");
+        ensure!(actual["observation"]["effect"] == "waiting");
         if code == 204 {
             ensure!(actual["observation"]["receipts"][0]["value"].is_null());
         }
@@ -659,7 +659,7 @@ async fn atomic_rollback_replaces_tentative_child_success_with_fresh_authority()
                 "rollback inherited earlier authority: {actual}"
             );
         }
-        ensure!(actual["observation"]["effect"] == "unverified");
+        ensure!(actual["observation"]["effect"] == "waiting");
         if revoke {
             let cancelled = client
                 .call(

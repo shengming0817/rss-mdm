@@ -176,3 +176,14 @@ fn native_input_digest_is_not_a_keyless_pin_verifier() {
         guess
     );
 }
+
+#[test]
+fn retired_native_task_shapes_are_not_decoded_or_converted() {
+    for value in [
+        json!({"kind":"firewall","enabled":true,"osVersion":"10.0.22621.0","edition":48}),
+        json!({"kind":"agent_install","package":{}}),
+        json!({"kind":"state_verify","field":"model","expectedValue":"one"}),
+    ] {
+        assert!(serde_json::from_value::<Task>(value).is_err());
+    }
+}

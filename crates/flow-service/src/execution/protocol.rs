@@ -162,7 +162,9 @@ async fn settle_one(s: &ExecutionService, tx: &mut PgTransaction<'_>, id: Uuid) 
     }
     if !rejected
         && ((complete && query && has_query && values)
-            || (values && effect_assessment(&s.protection, tx, &op).await?.state == rss_mdm_windows_mdm::native::verification::EffectState::Verified))
+            || (values
+                && effect_assessment(&s.protection, tx, &op).await?.state
+                    == rss_mdm_windows_mdm::native::verification::EffectState::Verified))
         && !result.command.status().is_terminal()
     {
         report.event =
@@ -225,7 +227,9 @@ pub async fn observation(
         receipts.push(receipt);
     }
     let assessment = effect_assessment(&service.protection, tx, op).await?;
-    Ok(json!({"protocol":"syncml","observationScope":"native_objects","receipts":receipts,"progress":super::service::status(command_status),"effect":assessment.state,"effectReason":assessment.reason}))
+    Ok(
+        json!({"protocol":"syncml","observationScope":"native_objects","receipts":receipts,"progress":super::service::status(command_status),"effect":assessment.state,"effectReason":assessment.reason}),
+    )
 }
 fn result_value(
     protection: &rss_mdm_native_protection::Protector,
@@ -257,17 +261,32 @@ async fn effect_assessment(
     tx: &mut PgTransaction<'_>,
     op: &storage::Operation,
 ) -> Result<rss_mdm_windows_mdm::native::verification::EffectAssessment> {
-    use rss_mdm_windows_mdm::native::{Context, Execution, verification::{EffectAssessment, EffectFact, EffectState}};
-    let Task::Windows { request: Execution::SyncMl { request } } = &op.request.task else {
-        return Ok(EffectAssessment { state: EffectState::Unverifiable, reason: Some("software_requires_installation_evidence") });
+    use rss_mdm_windows_mdm::native::{
+        Context, Execution,
+        verification::{EffectAssessment, EffectFact, EffectState},
+    };
+    let Task::Windows {
+        request: Execution::SyncMl { request },
+    } = &op.request.task
+    else {
+        return Ok(EffectAssessment {
+            state: EffectState::Unverifiable,
+            reason: Some("software_requires_installation_evidence"),
+        });
     };
     let tenant = tx.tenant_id().to_string();
     let id = op.id;
     let state=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Option<Value>>("SELECT platform FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute' ORDER BY ordinal DESC LIMIT 1").bind(tenant).bind(id).fetch_optional(c).await})).await?.flatten();
-    let Some(state) = state else { return Ok(EffectAssessment::waiting("missing_target_evidence")); };
+    let Some(state) = state else {
+        return Ok(EffectAssessment::waiting("missing_target_evidence"));
+    };
     let context: Context = stored(serde_json::from_value(state))?;
-    let plan = request.effect_plan(context).map_err(|_| Error::Unsupported)?;
-    if plan.readback().is_none() { return Ok(plan.assess(&[])); }
+    let plan = request
+        .effect_plan(context)
+        .map_err(|_| Error::Unsupported)?;
+    if plan.readback().is_none() {
+        return Ok(plan.assess(&[]));
+    }
     let tenant = tx.tenant_id().to_string();
     let rows=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT a.id AS attempt,i.command,i.item_ordinal,i.kind,i.uri,i.status,i.value,i.receipt_accepted,i.result_accepted FROM mdm_commands.attempt_items i JOIN mdm_commands.attempts a ON(a.tenant_id,a.id)=(i.tenant_id,i.attempt) WHERE a.tenant_id=$1::uuid AND a.operation=$2 AND a.phase='observe' AND a.ordinal=(SELECT max(ordinal) FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='observe') ORDER BY i.command,i.item_ordinal").bind(tenant).bind(id).fetch_all(c).await})).await?;
     let mut facts = Vec::new();

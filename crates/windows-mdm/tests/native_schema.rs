@@ -250,7 +250,11 @@ fn mutation_readback_requires_native_results_instead_of_an_acknowledgement() {
         operation: Verb::Replace,
         value: Some(Value::Integer(1)),
     };
-    let verification = request.effect_plan(context).unwrap().into_readback().unwrap();
+    let verification = request
+        .effect_plan(context)
+        .unwrap()
+        .into_readback()
+        .unwrap();
     let goal = verification.expected.values().next().unwrap();
     assert!(!goal.matches(Some(200), None));
     assert!(!goal.matches(Some(200), Some("0")));
@@ -334,4 +338,74 @@ fn learn_applicability_does_not_erase_an_explicit_ddf_servicing_branch() {
             "official DDF servicing branch {build:?}"
         );
     }
+}
+
+#[test]
+fn effect_decision_keeps_partial_duplicate_and_default_restoration_unverified() {
+    use rss_mdm_windows_mdm::native::{
+        Request, Value,
+        verification::{EffectFact, EffectState},
+    };
+    let context = target([10, 0, 22621, 0]);
+    let request = Request::Node {
+        node: "./Device/Vendor/MSFT/Policy/Config/Experience/AllowCortana".into(),
+        instance: vec![],
+        operation: Verb::Replace,
+        value: Some(Value::Integer(1)),
+    };
+    let plan = request.effect_plan(context).unwrap();
+    let fact = || EffectFact {
+        uri: request.objects().unwrap()[0].uri.clone(),
+        status: Some(200),
+        value: Some("1".into()),
+        receipt_accepted: true,
+        result_accepted: true,
+    };
+    assert_eq!(plan.assess(&[]).state, EffectState::Waiting);
+    assert_eq!(plan.assess(&[fact(), fact()]).state, EffectState::Waiting);
+    let mut rejected = fact();
+    rejected.result_accepted = false;
+    assert_eq!(plan.assess(&[rejected]).state, EffectState::Waiting);
+    let mut mismatch = fact();
+    mismatch.value = Some("0".into());
+    assert_eq!(plan.assess(&[mismatch]).state, EffectState::Diverged);
+    assert_eq!(plan.assess(&[fact()]).state, EffectState::Verified);
+    let Request::Node { node, instance, .. } = request else {
+        unreachable!()
+    };
+    let deleted = Request::Node {
+        node,
+        instance,
+        operation: Verb::Delete,
+        value: None,
+    };
+    let decision = deleted.effect_plan(context).unwrap().assess(&[]);
+    assert_eq!(decision.state, EffectState::Unverifiable);
+    assert_eq!(
+        decision.reason,
+        Some("delete_restores_default_without_frozen_detector")
+    );
+}
+#[test]
+fn subtree_permissions_include_children_and_unknown_access_is_rejected() {
+    use rss_mdm_windows_mdm::native::Request;
+    let request = Request::Node {
+        node: "./Device/Vendor/MSFT/Policy/Config/Update".into(),
+        instance: vec![],
+        operation: Verb::Delete,
+        value: None,
+    };
+    let targets = request.authorization_nodes().unwrap();
+    assert!(
+        targets
+            .iter()
+            .any(|(path, _)| path.ends_with("/AllowAutoUpdate"))
+    );
+    let invalid = Request::Node {
+        node: "./DevInfo/Mod".into(),
+        instance: vec![],
+        operation: Verb::Replace,
+        value: None,
+    };
+    assert!(invalid.authorization_nodes().is_err());
 }

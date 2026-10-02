@@ -514,7 +514,8 @@ pub async fn send_on(
                 if request
                     .effect_plan(platform)
                     .map_err(|_| Error::Unsupported)?
-                    .readback().is_none()
+                    .readback()
+                    .is_none()
                 {
                     continue;
                 }
@@ -539,7 +540,8 @@ pub async fn send_on(
                 request
                     .effect_plan(platform.ok_or_else(protocol)?)
                     .map_err(|_| Error::Unsupported)?
-                    .into_readback().ok_or_else(protocol)?,
+                    .into_readback()
+                    .ok_or_else(protocol)?,
             )
         } else {
             None

@@ -143,3 +143,9 @@ make t3-auth T3_ARGS="--mode faults --candidate <候选目录> --tools-image <�
 多个 localhost 端口的浏览器调试使用独立浏览器 profile 或自动化 context；Cookie 按主机而非端口隔离。
 
 T2 的模块职责、选择边界、并发与结果格式见[测试模块](test-modules.md)。`JOBS=1` 可顺序诊断；默认 `JOBS=2`。LIST 只构建和发现测试，不启动服务，不覆盖正式执行结果。
+
+## Windows 原生操作与效果证据
+
+原生输入使用 Windows 的类型化 Node/Atomic/Sequence 或通用 MSI 合同；旧 Firewall、AgentInstall、StateVerify 输入和旧原生派发格式不再解码或转换。产品软件准入仍只允许已有固定 Agent，原生 MSI 编码不持有品牌限制。
+
+操作查询分别展示执行进度、原生回执、`effect` 和 `effectReason`。效果可为 verified、diverged、waiting 或 unverifiable；查询本身不证明变更效果。永久节点 Delete 若恢复默认值但缺少固定检测条件，明确保持 unverifiable 和对象 guards。设备控制、敏感操作及受限诊断没有通用效果查询时记录族专属证据需求；没有实际脚本原生映射时拒绝，不自动转 Agent/安装包。诊断制品、用户身份维护与持续配置由对应生命周期 owner 持有。

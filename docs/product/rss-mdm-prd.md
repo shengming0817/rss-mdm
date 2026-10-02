@@ -320,7 +320,7 @@ AC-P01-02　策略暂停、范围移除、资源变更、重复结果与过时�
 
 ## 关键规则与边界
 
-历史 DDF 的 warning-mode 不作为 #2466 的执行准入。首批已冻结 DomainProfile/EnableFirewall 单节点、严格白名单、未知或不适用即拒绝；该叶仅支持 Replace，独立 DeviceStatus 观察不能证明其配置效果。真实设备支持矩阵由 #2479 验证，其他 CSP 准入仍另行决定。
+历史 DDF 的 warning-mode 不作为执行准入。#2551 将固定 Firewall 形状替换为固定来源、类型化 CSP/ADMX 操作树，按真实操作权限、对象 claims、设备/用户 scope 及适用性接入现有执行链；未知前提拒绝。DomainProfile/EnableFirewall 仍只有其原生 Replace 语义，独立 DeviceStatus 不证明该叶效果。Delete 可能删除动态对象或恢复默认值，效果条件按原生规则确定；没有检测条件的动作明确不可验证，ACK 不制造收敛，未知副作用不盲重试。会话、身份维护、持续配置和诊断制品由同组独立 PBI 持有；后端验证不代表真机矩阵已通过，真实设备证据继续由独立 T3 持有。
 
 历史裁剪建议 [D14](../reference/historical-sources.md#d14) 提出：可减少纯“配置翻译型”专用 Provider，但软件、凭证、更新环的业务对象和结果链仍必须保留。旧策略兼容与迁移另行验收。
 

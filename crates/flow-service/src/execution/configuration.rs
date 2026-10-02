@@ -82,15 +82,29 @@ fn desired<'a>(
     })
 }
 // Read-only planning over loaded claims; transaction code owns applying the decision.
-fn claim_diagnosis(index: usize, inputs: &[Desired<'_>], owners: &BTreeMap<Object, Vec<usize>>) -> Option<Diagnosis> {
+fn claim_diagnosis(
+    index: usize,
+    inputs: &[Desired<'_>],
+    owners: &BTreeMap<Object, Vec<usize>>,
+) -> Option<Diagnosis> {
     let input = &inputs[index];
-    if input.objects.iter().any(|o| owners[o].iter().any(|&i| inputs[i].object_digests.get(o) != input.object_digests.get(o))) {
+    if input.objects.iter().any(|o| {
+        owners[o]
+            .iter()
+            .any(|&i| inputs[i].object_digests.get(o) != input.object_digests.get(o))
+    }) {
         Some(Diagnosis::Conflict)
-    } else if input.objects.iter().any(|o| owners[o].iter().any(|&i| inputs[i].digest != input.digest)) {
+    } else if input
+        .objects
+        .iter()
+        .any(|o| owners[o].iter().any(|&i| inputs[i].digest != input.digest))
+    {
         Some(Diagnosis::GroupConflict)
     } else if !inputs.iter().any(|d| d.digest == input.digest && d.ready) {
         Some(Diagnosis::WaitingScope)
-    } else { None }
+    } else {
+        None
+    }
 }
 impl ExecutionService {
     pub async fn reconcile_configuration(
