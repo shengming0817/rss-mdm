@@ -5,6 +5,34 @@ use rss_mdm_apple_mdm::{profile, protocol as wire};
 use serde_json::{Value, json};
 use sqlx::Row;
 
+/// Freeze old and new object authority under the existing device/authorization locks.
+pub async fn required(
+    tx: &mut PgTransaction<'_>,
+    key: &rss_mdm_native_protection::Protector,
+    device: &str,
+    input: &Create,
+) -> Result<Vec<crate::authorization::Permission>> {
+    let mut required = input.task.permissions()?;
+    let Some((identifier, _, _)) = input.profile_target() else {
+        return Ok(required);
+    };
+    let tenant = tx.tenant_id().to_string();
+    let device = device.to_owned();
+    let user = input.target.user_key().to_owned();
+    let identifier = identifier.to_owned();
+    let old = tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query_scalar::<_, Uuid>("SELECT operation FROM mdm_commands.apple_profiles WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND identifier=$4 FOR UPDATE")
+            .bind(tenant).bind(device).bind(user).bind(identifier).fetch_optional(c).await
+    })).await?;
+    if let Some(old) = old {
+        let old = storage::load(tx, key, old).await?;
+        required.extend(old.request.task.permissions()?);
+        required.extend_from_slice(old.approval.required());
+    }
+    required.sort();
+    required.dedup();
+    Ok(required)
+}
 pub async fn own(
     tx: &mut PgTransaction<'_>,
     device: &str,

@@ -322,6 +322,7 @@ impl ExecutionService {
         let input = native.request(delivery, id.to_string(), operation.deadline, false)?;
         record_target(tx, id, device, Some(delivery), None).await?;
         let authority = crate::execution::authority::ExecutionAuthority::RemoteOperation {
+            required: input.task.permissions()?,
             tenant: tx.tenant_id().to_string(),
             operation: id,
             device: device.into(),

@@ -109,10 +109,11 @@ impl ExecutionService {
         }
         storage::admit(tx).await?;
         require_tenant(self.tenant, proof)?;
-        let auth =
-            storage::authorized_native(tx, proof, device, &input.task.permissions()?).await?;
+        storage::authorized_native(tx, proof, device, &input.task.permissions()?).await?;
         storage::lock(tx, &format!("request:{}", input.operation_id)).await?;
         storage::lock(tx, device).await?;
+        let required = apple::required(tx, &self.protection, device, input).await?;
+        let auth = storage::authorized_native(tx, proof, device, &required).await?;
         let fingerprint = create_fingerprint(self, proof, device, input)?;
         if let Some(value) = replay(tx, input.operation_id, &fingerprint, audit).await? {
             audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
@@ -131,8 +132,7 @@ impl ExecutionService {
             self.audit_store.append_in(tx, &fact, true).await?;
             return Ok(value);
         }
-        let approval =
-            ExecutionAuthority::from_proof(&auth, proof, device, &input.task.permissions()?)?;
+        let approval = ExecutionAuthority::from_proof(&auth, proof, device, &required)?;
         let response = self
             .queue_authorized_in(tx, device, input, approval, fingerprint, audit)
             .await?;
@@ -144,7 +144,7 @@ impl ExecutionService {
         tx: &mut PgTransaction<'_>,
         device: &str,
         input: &Create,
-        approval: ExecutionAuthority,
+        mut approval: ExecutionAuthority,
         fingerprint: Vec<u8>,
         audit: &RequestAudit,
     ) -> Result<Value> {
@@ -201,6 +201,18 @@ impl ExecutionService {
             },
             input,
         )?;
+        let required = apple::required(tx, &self.protection, device, input).await?;
+        approval.bind_required(required.clone());
+        let check = approval.clone();
+        let key = self.protection.clone();
+        if !tx
+            .with_connection(move |c| {
+                Box::pin(async move { Ok(check.valid(c, &key, &required, now).await) })
+            })
+            .await??
+        {
+            return Err(Error::Forbidden.into());
+        }
         let (source, policy_version, remote_operation) = match &approval {
             ExecutionAuthority::User { .. } => ("direct", None, None),
             ExecutionAuthority::AgentInstall { version, .. }
@@ -260,7 +272,7 @@ impl ExecutionService {
         crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,proof,device,id,change,approve,audit),|ctx,tx|Box::pin(async move {
             let (service,proof,device,id,change,approve,audit) = *ctx;
             let op=storage::load(tx,&service.protection,id).await?;
-            let permissions=if approve {op.request.task.permissions()?}else{vec![Permission::OperationCancel]};
+            let permissions=if approve {op.approval.required().to_vec()}else{vec![Permission::OperationCancel]};
             let auth=storage::authorized_native(tx,proof,device,&permissions).await?;
             storage::lock(tx,&format!("request:{}",change.request_id)).await?;storage::lock(tx,device).await?;
             let fingerprint=Sha256::digest(checked_input(serde_json::to_vec(&("mdm.command-change/v3",proof.user(),device,id,change,approve)))?).to_vec();
@@ -275,7 +287,7 @@ impl ExecutionService {
             let approval=if approve {
                 if !matches!(op.approval,ExecutionAuthority::User {..}) {return Err(Error::Conflict.into());}
                 if storage::current_registration(tx,device).await? != (op.registration,op.registration_generation) {return Err(Error::Conflict.into());}
-                ExecutionAuthority::from_proof(&auth,proof,device,&op.request.task.permissions()?)?
+                ExecutionAuthority::from_proof(&auth,proof,device,op.approval.required())?
             } else {
                 let transition=service.store.cancel(tx,op.scope,&op.command_id()?,op.coordinate).await?;
                 if transition.outcome==dc::Outcome::OutOfOrder {return Err(Error::Conflict.into());}

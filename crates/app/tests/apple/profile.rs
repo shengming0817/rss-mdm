@@ -178,3 +178,138 @@ async fn profile_lifecycle() -> Result<()> {
     drop(device);
     f.close().await
 }
+
+#[tokio::test]
+#[ignore = "MODULE=apple.profile: profile target authorization"]
+async fn security_profile_replacement_and_removal_keep_target_permissions() -> Result<()> {
+    let mut f = Fixture::start().await?;
+    let (peer, device) = f.ready_local_peer().await?;
+    let grant = |security: bool| {
+        let mut operations = vec![
+            "enrollment",
+            "credentials",
+            "inventory_read",
+            "inventory_collect",
+            "configuration_write",
+            "operation_read",
+            "operation_cancel",
+        ];
+        if security {
+            operations.push("security_operate");
+        }
+        crate::test_support::identity::device_grants(Some(case_device()), &operations)
+    };
+    let path = format!("/api/v3/devices/{}/operations", case_device());
+    let security_task = |id| {
+        let mut task = profile_task(id, true);
+        let payload = &mut task["request"]["profile"]["payloads"][0];
+        payload["schema"] = json!("mdm/profiles/com.apple.MCX.FileVault2.yaml");
+        payload["fields"] = json!({"Enable":{"type":"string","value":"On"}});
+        task
+    };
+    let body = |id, task| json!({"operationId":id,"inputVersion":"1","target":{"kind":"device"},"task":task,"deadline":f.app.clock.unix_seconds().unwrap()+300});
+    let denied = f
+        .browser
+        .call(
+            &f.router,
+            Method::POST,
+            &path,
+            Some(body(Uuid::new_v4(), security_task(Uuid::new_v4()))),
+        )
+        .await?;
+    ensure!(
+        denied.0 == StatusCode::FORBIDDEN,
+        "ordinary configuration grant installed security profile: {denied:?}"
+    );
+    crate::test_support::identity::set_grants(
+        case_tenant(),
+        crate::test_support::case::admin(),
+        grant(true)?,
+    )
+    .await?;
+    let installed = f.create_operation(security_task).await?;
+    let (execute, _) = peer.next("InstallProfile").await?;
+    let bytes = peer.manage("Acknowledged", Some(execute), None).await?;
+    let (observe, _) = command(&bytes, "ProfileList")?;
+    peer.manage(
+        "Acknowledged",
+        Some(observe),
+        Some((
+            "ProfileList",
+            plist::Value::Array(vec![plist::Value::Dictionary(protocol::dictionary([
+                ("PayloadIdentifier", NATIVE_PROFILE.into()),
+                ("PayloadUUID", installed.to_string().into()),
+                ("PayloadVersion", 1.into()),
+            ]))]),
+        )),
+    )
+    .await?;
+    ensure!(f.operation(installed).await?["commandStatus"] == "applied");
+    crate::test_support::identity::set_grants(
+        case_tenant(),
+        crate::test_support::case::admin(),
+        grant(false)?,
+    )
+    .await?;
+    let make_body = |id, task| json!({"operationId":id,"inputVersion":"1","target":{"kind":"device"},"task":task,"deadline":f.app.clock.unix_seconds().unwrap()+300});
+    for task in [
+        remove_profile_task(installed),
+        profile_task(Uuid::new_v4(), false),
+    ] {
+        let denied = f
+            .browser
+            .call(
+                &f.router,
+                Method::POST,
+                &path,
+                Some(make_body(Uuid::new_v4(), task)),
+            )
+            .await?;
+        ensure!(
+            denied.0 == StatusCode::FORBIDDEN,
+            "old security target authority omitted: {denied:?}"
+        );
+    }
+    crate::test_support::identity::set_grants(
+        case_tenant(),
+        crate::test_support::case::admin(),
+        grant(true)?,
+    )
+    .await?;
+    let replacement = f.create_operation(|id| profile_task(id, false)).await?;
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let required: Value=sqlx::query_scalar("SELECT approval->'required' FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(replacement).fetch_one(&mut pg).await?;
+    ensure!(
+        required
+            .as_array()
+            .unwrap()
+            .contains(&json!("security_operate")),
+        "target authority not frozen: {required}"
+    );
+    crate::test_support::identity::set_grants(
+        case_tenant(),
+        crate::test_support::case::admin(),
+        grant(false)?,
+    )
+    .await?;
+    ensure!(
+        peer.manage("Idle", None, None).await?.is_empty(),
+        "revoked old authority still dispatched replacement"
+    );
+    let attempts: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2",
+    )
+    .bind(case_tenant())
+    .bind(replacement)
+    .fetch_one(&mut pg)
+    .await?;
+    ensure!(
+        attempts == 0,
+        "attempt persisted after target permission revocation"
+    );
+    pg.close().await?;
+    drop(device);
+    f.close().await
+}

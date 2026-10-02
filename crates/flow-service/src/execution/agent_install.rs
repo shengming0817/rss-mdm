@@ -30,6 +30,7 @@ impl ExecutionService {
             task: package.native_task(operation_id)?,
         };
         let approval = authority::ExecutionAuthority::AgentInstall {
+            required: input.task.permissions()?,
             package: Box::new(package),
             tenant: tx.tenant_id().to_string(),
             policy,

@@ -27,13 +27,7 @@ pub(super) fn required(task: &Task) -> Result<Vec<P>, Error> {
                 A::InstallProfile { profile } => {
                     permissions.insert(P::ConfigurationWrite);
                     for payload in &profile.payloads {
-                        if (payload.schema.contains("security.")
-                            && !payload.schema.ends_with("com.apple.security.firewall.yaml"))
-                            || payload.schema.contains("scep")
-                            || payload.schema.contains("acme")
-                        {
-                            permissions.insert(P::SecurityOperate);
-                        }
+                        permissions.insert(apple_profile(&payload.schema)?);
                     }
                 }
                 A::RemoveProfile { .. } => {
@@ -64,6 +58,117 @@ pub(super) fn required(task: &Task) -> Result<Vec<P>, Error> {
         }
     }
     Ok(permissions.into_iter().collect())
+}
+fn apple_profile(schema: &str) -> Result<P, Error> {
+    Ok(match schema {
+        "mdm/profiles/GlobalPreferences.yaml"
+        | "mdm/profiles/com.apple.MCX(EnergySaver).yaml"
+        | "mdm/profiles/com.apple.MCX(Mobility).yaml"
+        | "mdm/profiles/com.apple.MCX(TimeServer).yaml"
+        | "mdm/profiles/com.apple.desktop.yaml"
+        | "mdm/profiles/com.apple.dock.yaml"
+        | "mdm/profiles/com.apple.finder.yaml"
+        | "mdm/profiles/com.apple.screensaver.yaml"
+        | "mdm/profiles/com.apple.security.firewall.yaml" => P::ConfigurationWrite,
+        "mdm/profiles/com.apple.MCX(Accounts).yaml"
+        | "mdm/profiles/com.apple.ADCertificate.managed.yaml"
+        | "mdm/profiles/com.apple.AIM.account.yaml"
+        | "mdm/profiles/com.apple.AssetCache.managed.yaml"
+        | "mdm/profiles/com.apple.Dictionary.yaml"
+        | "mdm/profiles/com.apple.DirectoryService.managed.yaml"
+        | "mdm/profiles/com.apple.DiscRecording.yaml"
+        | "mdm/profiles/com.apple.MCX.FileVault2.yaml"
+        | "mdm/profiles/com.apple.MCX.TimeMachine.yaml"
+        | "mdm/profiles/com.apple.NSExtension.yaml"
+        | "mdm/profiles/com.apple.SetupAssistant.managed.yaml"
+        | "mdm/profiles/com.apple.ShareKitHelper.yaml"
+        | "mdm/profiles/com.apple.SoftwareUpdate.yaml"
+        | "mdm/profiles/com.apple.SystemConfiguration.yaml"
+        | "mdm/profiles/com.apple.TCC.configuration-profile-policy.yaml"
+        | "mdm/profiles/com.apple.airplay.yaml"
+        | "mdm/profiles/com.apple.airprint.yaml"
+        | "mdm/profiles/com.apple.applicationaccess.new.yaml"
+        | "mdm/profiles/com.apple.applicationaccess.yaml"
+        | "mdm/profiles/com.apple.appstore.yaml"
+        | "mdm/profiles/com.apple.asam.yaml"
+        | "mdm/profiles/com.apple.associated-domains.yaml"
+        | "mdm/profiles/com.apple.caldav.account.yaml"
+        | "mdm/profiles/com.apple.carddav.account.yaml"
+        | "mdm/profiles/com.apple.configurationprofile.identification.yaml"
+        | "mdm/profiles/com.apple.dashboard.yaml"
+        | "mdm/profiles/com.apple.declarations.yaml"
+        | "mdm/profiles/com.apple.dnsProxy.managed.yaml"
+        | "mdm/profiles/com.apple.dnsSettings.managed.yaml"
+        | "mdm/profiles/com.apple.domains.yaml"
+        | "mdm/profiles/com.apple.education.yaml"
+        | "mdm/profiles/com.apple.ews.account.yaml"
+        | "mdm/profiles/com.apple.extensiblesso(kerberos).yaml"
+        | "mdm/profiles/com.apple.extensiblesso.yaml"
+        | "mdm/profiles/com.apple.familycontrols.contentfilter.yaml"
+        | "mdm/profiles/com.apple.familycontrols.timelimits.v2.yaml"
+        | "mdm/profiles/com.apple.fileproviderd.yaml"
+        | "mdm/profiles/com.apple.firstactiveethernet.managed.yaml"
+        | "mdm/profiles/com.apple.firstethernet.managed.yaml"
+        | "mdm/profiles/com.apple.font.yaml"
+        | "mdm/profiles/com.apple.gamed.yaml"
+        | "mdm/profiles/com.apple.globalethernet.managed.yaml"
+        | "mdm/profiles/com.apple.ironwood.support.yaml"
+        | "mdm/profiles/com.apple.jabber.account.yaml"
+        | "mdm/profiles/com.apple.ldap.account.yaml"
+        | "mdm/profiles/com.apple.loginitems.managed.yaml"
+        | "mdm/profiles/com.apple.loginwindow.yaml"
+        | "mdm/profiles/com.apple.lom.yaml"
+        | "mdm/profiles/com.apple.mail.managed.yaml"
+        | "mdm/profiles/com.apple.mcxMenuExtras.yaml"
+        | "mdm/profiles/com.apple.mcxloginscripts.yaml"
+        | "mdm/profiles/com.apple.mcxprinting.yaml"
+        | "mdm/profiles/com.apple.mdm.yaml"
+        | "mdm/profiles/com.apple.mobiledevice.passwordpolicy.yaml"
+        | "mdm/profiles/com.apple.notificationsettings.yaml"
+        | "mdm/profiles/com.apple.preference.security.yaml"
+        | "mdm/profiles/com.apple.preferences.users.yaml"
+        | "mdm/profiles/com.apple.profileRemovalPassword.yaml"
+        | "mdm/profiles/com.apple.proxy.http.global.yaml"
+        | "mdm/profiles/com.apple.relay.managed.yaml"
+        | "mdm/profiles/com.apple.screensaver.user.yaml"
+        | "mdm/profiles/com.apple.secondactiveethernet.managed.yaml"
+        | "mdm/profiles/com.apple.secondethernet.managed.yaml"
+        | "mdm/profiles/com.apple.security.FDERecoveryKeyEscrow.yaml"
+        | "mdm/profiles/com.apple.security.FDERecoveryRedirect.yaml"
+        | "mdm/profiles/com.apple.security.acme.yaml"
+        | "mdm/profiles/com.apple.security.certificatepreference.yaml"
+        | "mdm/profiles/com.apple.security.certificatetransparency.yaml"
+        | "mdm/profiles/com.apple.security.identitypreference.yaml"
+        | "mdm/profiles/com.apple.security.pem.yaml"
+        | "mdm/profiles/com.apple.security.pkcs1.yaml"
+        | "mdm/profiles/com.apple.security.pkcs12.yaml"
+        | "mdm/profiles/com.apple.security.root.yaml"
+        | "mdm/profiles/com.apple.security.scep.yaml"
+        | "mdm/profiles/com.apple.security.smartcard.yaml"
+        | "mdm/profiles/com.apple.servicemanagement.yaml"
+        | "mdm/profiles/com.apple.syspolicy.kernel-extension-policy.yaml"
+        | "mdm/profiles/com.apple.system-extension-policy.yaml"
+        | "mdm/profiles/com.apple.system.logging.yaml"
+        | "mdm/profiles/com.apple.systemmigration.yaml"
+        | "mdm/profiles/com.apple.systempolicy.control.yaml"
+        | "mdm/profiles/com.apple.systempolicy.managed.yaml"
+        | "mdm/profiles/com.apple.systempolicy.rule.yaml"
+        | "mdm/profiles/com.apple.systempreferences.yaml"
+        | "mdm/profiles/com.apple.systemuiserver.yaml"
+        | "mdm/profiles/com.apple.thirdactiveethernet.managed.yaml"
+        | "mdm/profiles/com.apple.thirdethernet.managed.yaml"
+        | "mdm/profiles/com.apple.universalaccess.yaml"
+        | "mdm/profiles/com.apple.vpn.managed.applayer.yaml"
+        | "mdm/profiles/com.apple.vpn.managed.appmapping.yaml"
+        | "mdm/profiles/com.apple.vpn.managed.yaml"
+        | "mdm/profiles/com.apple.webClip.managed.yaml"
+        | "mdm/profiles/com.apple.webcontent-filter.yaml"
+        | "mdm/profiles/com.apple.wifi.managed.yaml"
+        | "mdm/profiles/com.apple.xsan.preferences.yaml"
+        | "mdm/profiles/com.apple.xsan.yaml"
+        | "mdm/profiles/loginwindow.yaml" => P::SecurityOperate,
+        _ => return Err(Error::Unsupported),
+    })
 }
 fn windows(
     request: &rss_mdm_windows_mdm::native::Request,
@@ -529,6 +634,27 @@ fn security_policy_area(area: &str) -> bool {
 mod windows_tests {
     use super::*;
     use rss_mdm_windows_mdm::native::Verb;
+    #[test]
+    fn apple_profile_security_is_explicit_and_unknown_schema_is_rejected() {
+        for schema in [
+            "com.apple.MCX.FileVault2.yaml",
+            "com.apple.MCX(FileVault2).yaml",
+            "com.apple.TCC.configuration-profile-policy.yaml",
+            "com.apple.mobiledevice.passwordpolicy.yaml",
+            "com.apple.security.pkcs1.yaml",
+            "com.apple.ManagedClient.preferences.yaml",
+        ] {
+            assert_eq!(
+                apple_profile(&format!("mdm/profiles/{schema}")).unwrap(),
+                P::SecurityOperate
+            );
+        }
+        assert_eq!(
+            apple_profile("mdm/profiles/com.apple.security.firewall.yaml").unwrap(),
+            P::ConfigurationWrite
+        );
+        assert!(apple_profile("mdm/profiles/new-unknown-security.yaml").is_err());
+    }
     #[test]
     fn nested_policy_operations_keep_their_real_permissions() {
         let mut permissions = BTreeSet::new();

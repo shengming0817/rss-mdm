@@ -8,6 +8,7 @@ use sqlx::PgConnection;
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExecutionAuthority {
     AgentInstall {
+        required: Vec<Permission>,
         package: Box<crate::planning::policies::agent_install::Package>,
         tenant: String,
         policy: uuid::Uuid,
@@ -16,14 +17,17 @@ pub enum ExecutionAuthority {
         operation: uuid::Uuid,
     },
     User {
+        required: Vec<Permission>,
         evidence: Vec<UserGrant>,
     },
     RemoteOperation {
+        required: Vec<Permission>,
         tenant: String,
         operation: uuid::Uuid,
         device: String,
     },
     Policy {
+        required: Vec<Permission>,
         tenant: String,
         policy: uuid::Uuid,
         version: uuid::Uuid,
@@ -56,11 +60,28 @@ impl ExecutionAuthority {
         permissions: &[Permission],
     ) -> Result<Self, Error> {
         Ok(Self::User {
+            required: permissions.to_vec(),
             evidence: permissions
                 .iter()
                 .map(|&p| UserGrant::from_proof(snapshot, proof, device, p))
                 .collect::<Result<_, _>>()?,
         })
+    }
+    pub fn required(&self) -> &[Permission] {
+        match self {
+            Self::User { required, .. }
+            | Self::AgentInstall { required, .. }
+            | Self::RemoteOperation { required, .. }
+            | Self::Policy { required, .. } => required,
+        }
+    }
+    pub fn bind_required(&mut self, permissions: Vec<Permission>) {
+        match self {
+            Self::User { required, .. }
+            | Self::AgentInstall { required, .. }
+            | Self::RemoteOperation { required, .. }
+            | Self::Policy { required, .. } => *required = permissions,
+        }
     }
     pub fn agent_package(&self) -> Option<&crate::planning::policies::agent_install::Package> {
         match self {
@@ -78,7 +99,11 @@ impl ExecutionAuthority {
         if permissions.is_empty() {
             return Ok(false);
         }
-        for &permission in permissions {
+        let mut permissions = permissions.to_vec();
+        permissions.extend_from_slice(self.required());
+        permissions.sort();
+        permissions.dedup();
+        for permission in permissions {
             if !self.valid_one(conn, key, permission, now).await? {
                 return Ok(false);
             }
@@ -109,7 +134,7 @@ impl ExecutionAuthority {
                 )
                 .await
             }
-            Self::User { evidence } => {
+            Self::User { evidence, .. } => {
                 for grant in evidence {
                     if grant.valid(conn, permission, now).await? {
                         return Ok(true);
@@ -121,6 +146,7 @@ impl ExecutionAuthority {
                 tenant,
                 operation,
                 device,
+                ..
             } => {
                 let frozen=sqlx::query_scalar::<_,serde_json::Value>("SELECT o.frozen FROM mdm_planning.remote_operations o JOIN mdm_planning.remote_operation_targets t ON(t.tenant_id,t.operation)=(o.tenant_id,o.id) WHERE o.tenant_id=$1::uuid AND o.id=$2 AND NOT o.cancelled AND o.deadline>$4 AND t.device=$3 AND t.status='accepted'").bind(tenant).bind(operation).bind(device).bind(now).fetch_optional(&mut *conn).await.map_err(db)?;
                 let Some(frozen) = frozen else {
@@ -134,6 +160,7 @@ impl ExecutionAuthority {
                 version,
                 device,
                 remove,
+                ..
             } => {
                 let frozen=sqlx::query_scalar::<_,serde_json::Value>("SELECT frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2 AND policy=$3").bind(tenant).bind(version).bind(policy).fetch_optional(&mut *conn).await.map_err(db)?;
                 let Some(frozen) = frozen else {

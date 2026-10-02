@@ -426,6 +426,7 @@ impl ExecutionService {
         audit: &RequestAudit,
     ) -> Result<()> {
         let authority = crate::execution::authority::ExecutionAuthority::Policy {
+            required: input.task.permissions()?,
             tenant: tx.tenant_id().to_string(),
             policy: policy.id,
             version: policy.version,
