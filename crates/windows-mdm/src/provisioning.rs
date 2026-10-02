@@ -1,7 +1,9 @@
 //! Bounded provisioning encoder. Values are supplied by the product's verified enrollment.
 //! ref: Microsoft MS-MDE2 §3.4.4.1.1.2.2 RequestSecurityTokenResponseCollection.
 use crate::{CodecLimits, Result, Secret, bound, text, xml::Output};
+mod poll;
 use base64::{Engine, engine::general_purpose::STANDARD};
+pub use poll::Poll;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Enrollment profile selecting the certificate store in the generated document.
 pub enum EnrollmentType {
@@ -23,6 +25,10 @@ impl EnrollmentType {
 /// Certificate authenticity, key binding, endpoint authorization and credential generation
 /// belong to the product. Encoding checks bounds and syntax, not these trust assertions.
 pub struct Provisioning<'a> {
+    /// Required administrator-selected polling schedules, independent of WNS.
+    pub poll: &'a Poll,
+    /// Optional configured WNS package family; protocol transport remains independent of polling.
+    pub push_pfn: Option<&'a str>,
     /// Profile controlling certificate store selection.
     pub enrollment_type: EnrollmentType,
     /// Product-assigned enterprise device identity, emitted as EntDMID.
@@ -67,6 +73,7 @@ fn parm(w: &mut Output<'_>, name: &str, value: &str) -> Result<()> {
 /// Output is bounded by [`CodecLimits::binary_bytes`] and XML structure budgets.
 /// Contains certificates and plaintext credential values; callers must protect the bytes.
 pub fn encode(p: &Provisioning<'_>, l: &CodecLimits) -> Result<Vec<u8>> {
+    p.poll.validate()?;
     for cert in [p.issuer, p.certificate] {
         bound(cert.len(), l.binary_bytes)?;
     }
@@ -176,8 +183,65 @@ pub fn encode(p: &Provisioning<'_>, l: &CodecLimits) -> Result<Vec<u8>> {
     characteristic(&mut w, "Provider")?;
     characteristic(&mut w, p.provider_id)?;
     parm(&mut w, "EntDMID", p.enterprise_device_id)?;
+    characteristic(&mut w, "Poll")?;
+    for (name, value, datatype) in p.poll.parameters() {
+        w.start(
+            "parm",
+            &[("name", name), ("value", &value), ("datatype", datatype)],
+        )?;
+        w.end("parm")?;
+    }
+    end(&mut w)?;
+    if let Some(pfn) = p.push_pfn {
+        text(pfn, 256, false)?;
+        characteristic(&mut w, "Push")?;
+        parm(&mut w, "PFN", pfn)?;
+        end(&mut w)?;
+    }
     end(&mut w)?;
     end(&mut w)?;
+    end(&mut w)?;
+    w.end("wap-provisioningdoc")?;
+    w.finish()
+}
+
+/// Encode a renewal response without re-provisioning enrollment identity, credentials or policy.
+pub fn renewal(
+    certificate: &[u8],
+    thumbprint: &str,
+    provider: &str,
+    enrollment: EnrollmentType,
+    l: &CodecLimits,
+) -> Result<Vec<u8>> {
+    if certificate.is_empty()
+        || thumbprint.len() != 40
+        || !thumbprint.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return Err(crate::CodecError::InvalidValue);
+    }
+    bound(certificate.len(), l.binary_bytes)?;
+    text(provider, l.uri_bytes, false)?;
+    let mut w = Output::new(l.binary_bytes, l);
+    w.start("wap-provisioningdoc", &[("version", "1.1")])?;
+    characteristic(&mut w, "CertificateStore")?;
+    characteristic(&mut w, "My")?;
+    characteristic(
+        &mut w,
+        match enrollment {
+            EnrollmentType::Full => "User",
+            EnrollmentType::Device => "System",
+        },
+    )?;
+    characteristic(&mut w, thumbprint)?;
+    parm(&mut w, "EncodedCertificate", &STANDARD.encode(certificate))?;
+    end(&mut w)?;
+    characteristic(&mut w, "PrivateKeyContainer")?;
+    end(&mut w)?;
+    end(&mut w)?;
+    end(&mut w)?;
+    end(&mut w)?;
+    characteristic(&mut w, "APPLICATION")?;
+    parm(&mut w, "PROVIDER-ID", provider)?;
     end(&mut w)?;
     w.end("wap-provisioningdoc")?;
     w.finish()

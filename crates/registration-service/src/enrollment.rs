@@ -10,12 +10,36 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
+/// Immutable, administrator-selected Windows certificate and user-context profile.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub enum WindowsProfile {
+    Full,
+    Device,
+}
+impl WindowsProfile {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "Full",
+            Self::Device => "Device",
+        }
+    }
+    pub(crate) fn parse(value: Option<&str>) -> Result<Option<Self>, Error> {
+        match value {
+            None => Ok(None),
+            Some("Full") => Ok(Some(Self::Full)),
+            Some("Device") => Ok(Some(Self::Device)),
+            _ => Err(Error::Storage),
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Create {
     pub device_id: String,
     pub password: Password,
     pub source: ReportSource,
+    pub windows_profile: Option<WindowsProfile>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -77,6 +101,7 @@ pub struct Authorization {
     pub operation: Uuid,
     pub state: String,
     pub source: ReportSource,
+    pub windows_profile: Option<WindowsProfile>,
 }
 
 /// Enrollment password generation, independent of browser authentication.
@@ -141,6 +166,9 @@ impl EnrollmentService {
         key: Uuid,
         audit: &rss_mdm_audit_integration::RequestAudit,
     ) -> Result<Receipt, Error> {
+        if (input.source == ReportSource::MdmWindows) != input.windows_profile.is_some() {
+            return Err(Error::Malformed);
+        }
         let permission = proof.enrollment(&input.device_id)?;
         audit.target(&input.device_id);
         let reference = self.credentials.insert(
@@ -152,6 +180,7 @@ impl EnrollmentService {
             permission,
             &input.password,
             input.source,
+            input.windows_profile,
             reference,
             key,
             audit,

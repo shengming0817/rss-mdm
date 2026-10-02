@@ -7,7 +7,7 @@ pub struct UsernameToken {
     pub id: String,
     /// Nonblank username claim bounded by `field_bytes`.
     pub username: Secret<String>,
-    /// Nonblank plaintext password bounded by `field_bytes`; encoded XML exposes its value.
+    /// Plaintext password (empty only for certificate-authenticated renewal), bounded by `field_bytes`; encoded XML exposes its value.
     pub password: Secret<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,7 +67,7 @@ pub(super) fn read(p: &mut Input<'_>) -> Result<Security> {
             if s.attr("", "Type") != Some(PASSWORD) {
                 return Err(E::Unsupported);
             }
-            let password = p.content(SECURITY, "Password", p.limits.field_bytes, false)?;
+            let password = p.content(SECURITY, "Password", p.limits.field_bytes, true)?;
             p.end(SECURITY, "UsernameToken")?;
             username = Some(UsernameToken {
                 id,
@@ -102,7 +102,7 @@ pub(super) fn validate(s: &Security, l: &CodecLimits) -> Result<()> {
     if let Some(t) = &s.username {
         text(&t.id, l.identifier_bytes, false)?;
         text(&t.username.0, l.field_bytes, false)?;
-        text(&t.password.0, l.field_bytes, false)?;
+        text(&t.password.0, l.field_bytes, true)?;
     }
     if let (Some(a), Some(b)) = (&s.timestamp, &s.username)
         && a.id == b.id

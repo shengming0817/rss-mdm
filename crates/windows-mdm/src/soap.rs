@@ -8,7 +8,8 @@ mod enrollment;
 mod policy;
 mod security;
 pub use enrollment::{
-    AuthPolicy, Discover, DiscoverResponse, Disposition, Issue, IssueResponse, NillableText,
+    AuthPolicy, CertificateRequest, Discover, DiscoverResponse, Disposition, Issue, IssueResponse,
+    NillableText,
 };
 pub use policy::Policy;
 pub use security::{Security, Timestamp, UsernameToken};

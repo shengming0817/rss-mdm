@@ -312,3 +312,149 @@ impl Request {
         selected.ok_or(Error::UnknownObject)
     }
 }
+
+impl Request {
+    /// Bind DMClient maintenance to the provider that owns the authenticated enrollment.
+    /// A schema-valid dynamic identity alone does not authorize another MDM provider.
+    pub fn validate_provider(&self, provider: &str) -> Result<(), Error> {
+        self.command_count()?;
+        let mut pending = vec![self];
+        while let Some(request) = pending.pop() {
+            match request {
+                Self::Node {
+                    node,
+                    instance,
+                    operation,
+                    value,
+                } => {
+                    if node.contains("/Vendor/MSFT/DMClient/Provider/*")
+                        && instance.first().map(String::as_str) != Some(provider)
+                    {
+                        return Err(Error::Scope);
+                    }
+                    if node == "./SyncML/DMAcc/*/ServerID"
+                        && matches!(operation, Verb::Add | Verb::Replace)
+                        && !matches!(value,Some(Value::Text(v)) if v==provider)
+                    {
+                        return Err(Error::Scope);
+                    }
+                    if node == "./Device/Vendor/MSFT/DMClient/Unenroll"
+                        && *operation == Verb::Exec
+                        && !matches!(value,Some(Value::Text(v)) if v==provider)
+                    {
+                        return Err(Error::Scope);
+                    }
+                }
+                Self::Atomic { operations } | Self::Sequence { operations } => {
+                    pending.extend(operations)
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Request {
+    /// Declared configuration belongs exclusively to an independently verified linked enrollment.
+    pub fn requires_linked_enrollment(&self) -> Result<bool, Error> {
+        self.command_count()?;
+        let mut pending = vec![self];
+        while let Some(request) = pending.pop() {
+            match request {
+                Self::Node { node, .. }
+                    if node.ends_with("/Vendor/MSFT/DeclaredConfiguration")
+                        || node.contains("/Vendor/MSFT/DeclaredConfiguration/") =>
+                {
+                    return Ok(true);
+                }
+                Self::Atomic { operations } | Self::Sequence { operations } => {
+                    pending.extend(operations)
+                }
+                _ => {}
+            }
+        }
+        Ok(false)
+    }
+}
+
+impl Request {
+    /// Replace a complete, validated native polling schedule through the existing execution tree.
+    pub fn poll_schedule(provider: &str, poll: &crate::provisioning::Poll) -> Result<Self, Error> {
+        poll.validate().map_err(|_| Error::Value)?;
+        Ok(Self::Sequence {
+            operations: poll
+                .parameters()
+                .into_iter()
+                .map(|(name, value, kind)| {
+                    Ok(Self::Node {
+                        node: format!("./Device/Vendor/MSFT/DMClient/Provider/*/Poll/{name}"),
+                        instance: vec![provider.to_owned()],
+                        operation: Verb::Replace,
+                        value: Some(if kind == "boolean" {
+                            Value::Boolean(value == "true")
+                        } else {
+                            Value::Integer(value.parse().map_err(|_| Error::Value)?)
+                        }),
+                    })
+                })
+                .collect::<Result<_, Error>>()?,
+        })
+    }
+    /// Schedule changes are a complete tuple. Partial writes or deletes could silently disable polling.
+    pub fn validate_poll(&self) -> Result<(), Error> {
+        let mut pending = vec![self];
+        let mut parameters = std::collections::BTreeMap::new();
+        while let Some(request) = pending.pop() {
+            match request {
+                Self::Atomic { operations } | Self::Sequence { operations } => {
+                    pending.extend(operations)
+                }
+                Self::Node {
+                    node,
+                    operation,
+                    value,
+                    ..
+                } if node.contains("/DMClient/Provider/*/Poll/") && *operation != Verb::Get => {
+                    if *operation != Verb::Replace {
+                        return Err(Error::Value);
+                    }
+                    let name = node.rsplit('/').next().ok_or(Error::Value)?;
+                    if parameters
+                        .insert(name, value.as_ref().ok_or(Error::Value)?)
+                        .is_some()
+                    {
+                        return Err(Error::Value);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if parameters.is_empty() {
+            return Ok(());
+        }
+        let integer = |name| match parameters.get(name) {
+            Some(Value::Integer(v)) => u32::try_from(*v).map_err(|_| Error::Value),
+            _ => Err(Error::Value),
+        };
+        let boolean = |name| match parameters.get(name) {
+            Some(Value::Boolean(v)) => Ok(*v),
+            _ => Err(Error::Value),
+        };
+        let poll = crate::provisioning::Poll {
+            interval_for_first_set_of_retries: integer("IntervalForFirstSetOfRetries")?,
+            number_of_first_retries: integer("NumberOfFirstRetries")?,
+            interval_for_second_set_of_retries: integer("IntervalForSecondSetOfRetries")?,
+            number_of_second_retries: integer("NumberOfSecondRetries")?,
+            interval_for_remaining_scheduled_retries: integer(
+                "IntervalForRemainingScheduledRetries",
+            )?,
+            number_of_remaining_scheduled_retries: integer("NumberOfRemainingScheduledRetries")?,
+            poll_on_login: boolean("PollOnLogin")?,
+            all_users_poll_on_first_login: boolean("AllUsersPollOnFirstLogin")?,
+        };
+        if parameters.len() != 8 {
+            return Err(Error::Value);
+        }
+        poll.validate().map_err(|_| Error::Value)
+    }
+}

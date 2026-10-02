@@ -6,6 +6,9 @@ const TOKEN: &str =
 const PROVISION: &str = "http://schemas.microsoft.com/5.0.0.0/ConfigurationManager/Enrollment/DeviceEnrollmentProvisionDoc";
 const PKCS10: &str = "http://schemas.microsoft.com/windows/pki/2009/01/enrollment#PKCS10";
 const B64: &str = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd#base64binary";
+const PKCS7: &str =
+    "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd#PKCS7";
+const RENEW: &str = "http://docs.oasis-open.org/ws-sx/ws-trust/200512/Renew";
 const ISSUE: &str = "http://docs.oasis-open.org/ws-sx/ws-trust/200512/Issue";
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Untrusted device discovery claims under the supported OnPremise profile.
@@ -83,14 +86,30 @@ pub struct DiscoverResponse {
 pub struct Issue {
     /// Optional nonblank request context bounded by `identifier_bytes`; response matching preserves it.
     pub context: Option<String>,
-    /// Nonempty decoded CSR bytes bounded by `binary_bytes`; no ASN.1/signature validation.
-    pub csr: Secret<Vec<u8>>,
+    /// Native enrollment proof, bounded but not cryptographically verified by the codec.
+    pub request: CertificateRequest,
     /// Ordered name/value claims bounded by `items`, identifier and field bytes.
     /// Names are unique except distinct MAC/IMEI pairs; recognized claims get profile
     /// syntax checks. Claims are not tenant, device or enrollment authority.
     pub additional_context: Secret<Vec<(String, String)>>,
     /// Optional WSTEP string, retaining absence, explicit nil and empty value separately.
     pub request_id: Option<NillableText>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Initial proof of possession or a renewal signed by the current enrollment identity.
+pub enum CertificateRequest {
+    /// Initial enrollment PKCS#10 CSR.
+    Pkcs10(Secret<Vec<u8>>),
+    /// PKCS#7 signed renewal carrying the new PKCS#10 CSR.
+    RenewalPkcs7(Secret<Vec<u8>>),
+}
+impl CertificateRequest {
+    /// Unverified native bytes; cryptographic validation belongs to the certificate owner.
+    pub fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Pkcs10(v) | Self::RenewalPkcs7(v) => &v.0,
+        }
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// WSTEP provisioning response, not evidence of certificate installation or enrollment success.
@@ -334,9 +353,13 @@ pub(super) fn write_discover_response(
     w.end("e:DiscoverResponse")
 }
 fn binary(p: &mut Input<'_>, value_type: &str) -> Result<Secret<Vec<u8>>> {
+    Ok(binary_types(p, &[value_type])?.1)
+}
+fn binary_types(p: &mut Input<'_>, types: &[&str]) -> Result<(String, Secret<Vec<u8>>)> {
     let s = p.start(SECURITY, "BinarySecurityToken")?;
     s.attrs(&[("", "ValueType"), ("", "EncodingType")])?;
-    if s.attr("", "ValueType") != Some(value_type) || s.attr("", "EncodingType") != Some(B64) {
+    let value_type = s.attr("", "ValueType").ok_or(E::Structure)?.to_owned();
+    if !types.contains(&value_type.as_str()) || s.attr("", "EncodingType") != Some(B64) {
         return Err(E::Unsupported);
     }
     let value = p.content(SECURITY, "BinarySecurityToken", p.limits.wstep_bytes, false)?;
@@ -358,7 +381,7 @@ fn binary(p: &mut Input<'_>, value_type: &str) -> Result<Secret<Vec<u8>>> {
     if decoded.is_empty() {
         return Err(E::InvalidValue);
     }
-    Ok(Secret(decoded))
+    Ok((value_type, Secret(decoded)))
 }
 fn write_binary(w: &mut Output<'_>, data: &[u8], value_type: &str, l: &CodecLimits) -> Result<()> {
     bound(data.len(), l.binary_bytes)?;
@@ -386,7 +409,7 @@ pub(super) fn read_issue(p: &mut Input<'_>) -> Result<Issue> {
     // WS-Trust defines this body as an unordered collection; accept either order
     // of TokenType/RequestType while requiring each exactly once.
     let mut token = false;
-    let mut request = false;
+    let mut request = None;
     let mut csr = None;
     let mut additional_context = None;
     let mut request_id = None;
@@ -400,18 +423,24 @@ pub(super) fn read_issue(p: &mut Input<'_>) -> Result<Issue> {
                 return Err(E::Unsupported);
             }
         } else if p.is(TRUST, "RequestType")? {
-            if request {
+            if request.is_some() {
                 return Err(E::Duplicate);
             }
-            request = true;
-            if p.scalar(TRUST, "RequestType", p.limits.uri_bytes, false)? != ISSUE {
-                return Err(E::Unsupported);
-            }
+            request = Some(
+                match p
+                    .scalar(TRUST, "RequestType", p.limits.uri_bytes, false)?
+                    .as_str()
+                {
+                    ISSUE => false,
+                    RENEW => true,
+                    _ => return Err(E::Unsupported),
+                },
+            );
         } else if p.is(SECURITY, "BinarySecurityToken")? {
             if csr.is_some() {
                 return Err(E::Duplicate);
             }
-            csr = Some(binary(p, PKCS10)?);
+            csr = Some(binary_types(p, &[PKCS10, PKCS7])?);
         } else if p.is(WSTEP, "RequestID")? {
             once(&mut request_id, read_nillable(p, "RequestID")?)?;
         } else if p.is(CONTEXT, "AdditionalContext")? {
@@ -437,13 +466,19 @@ pub(super) fn read_issue(p: &mut Input<'_>) -> Result<Issue> {
         }
     }
     p.end(TRUST, "RequestSecurityToken")?;
-    if !token || !request {
+    if !token || request.is_none() {
         return Err(E::Structure);
     }
+    let (kind, bytes) = csr.ok_or(E::Structure)?;
+    let request = match (request, kind.as_str()) {
+        (Some(false), PKCS10) => CertificateRequest::Pkcs10(bytes),
+        (Some(true), PKCS7) => CertificateRequest::RenewalPkcs7(bytes),
+        _ => return Err(E::InvalidValue),
+    };
     Ok(Issue {
         context,
-        csr: csr.ok_or(E::Structure)?,
-        additional_context: additional_context.ok_or(E::Structure)?,
+        request,
+        additional_context: additional_context.unwrap_or_else(|| Secret(Vec::new())),
         request_id,
     })
 }
@@ -452,8 +487,8 @@ pub(super) fn validate_issue(i: &Issue, l: &CodecLimits) -> Result<()> {
         text(c, l.identifier_bytes, false)?;
     }
     validate_nillable(&i.request_id, l)?;
-    bound(i.csr.0.len(), l.binary_bytes)?;
-    if i.csr.0.is_empty() {
+    bound(i.request.bytes().len(), l.binary_bytes)?;
+    if i.request.bytes().is_empty() {
         return Err(E::InvalidValue);
     }
     bound(i.additional_context.0.len(), l.items)?;
@@ -519,17 +554,18 @@ pub(super) fn validate_issue(i: &Issue, l: &CodecLimits) -> Result<()> {
             _ => return Err(E::Unsupported),
         }
     }
-    if [
-        "OSEdition",
-        "OSVersion",
-        "DeviceName",
-        "EnrollmentType",
-        "DeviceType",
-        "ApplicationVersion",
-        "DeviceID",
-    ]
-    .iter()
-    .any(|k| !keys.contains(k))
+    if matches!(i.request, CertificateRequest::Pkcs10(_))
+        && [
+            "OSEdition",
+            "OSVersion",
+            "DeviceName",
+            "EnrollmentType",
+            "DeviceType",
+            "ApplicationVersion",
+            "DeviceID",
+        ]
+        .iter()
+        .any(|k| !keys.contains(k))
     {
         return Err(E::Structure);
     }
@@ -543,8 +579,12 @@ pub(super) fn write_issue(w: &mut Output<'_>, i: &Issue, l: &CodecLimits) -> Res
         .unwrap_or_default();
     w.start("t:RequestSecurityToken", &attrs)?;
     w.scalar("t:TokenType", TOKEN, l.uri_bytes, false)?;
-    w.scalar("t:RequestType", ISSUE, l.uri_bytes, false)?;
-    write_binary(w, &i.csr.0, PKCS10, l)?;
+    let (request_type, value_type) = match i.request {
+        CertificateRequest::Pkcs10(_) => (ISSUE, PKCS10),
+        CertificateRequest::RenewalPkcs7(_) => (RENEW, PKCS7),
+    };
+    w.scalar("t:RequestType", request_type, l.uri_bytes, false)?;
+    write_binary(w, i.request.bytes(), value_type, l)?;
     w.start("c:AdditionalContext", &[])?;
     for (k, v) in &i.additional_context.0 {
         w.item()?;

@@ -209,7 +209,7 @@ impl DeviceService {
         let row=sqlx::query("SELECT registration::text AS id FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND channel=$2 AND locator=$3")
             .bind(&tenant).bind(credential.channel.as_str()).bind(locator(credential)).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
         let registration = uuid(&row, "id")?;
-        let row=sqlx::query("SELECT device,generation,channel FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2::uuid AND channel=$3 AND state='active' FOR SHARE")
+        let row=sqlx::query("SELECT r.device,r.generation,r.channel,q.windows_profile FROM mdm_access.registrations r JOIN mdm_access.requests q ON (q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND r.channel=$3 AND r.state='active' FOR SHARE OF r")
             .bind(&tenant).bind(registration.to_string()).bind(credential.channel.as_str()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
         let child=sqlx::query("SELECT c.id::text AS id,s.epoch::text AS epoch FROM mdm_access.credentials c JOIN mdm_access.report_sources s ON (s.tenant_id,s.registration)=(c.tenant_id,c.registration) WHERE c.tenant_id=$1::uuid AND c.registration=$2::uuid AND c.channel=$3 AND c.locator=$4 AND c.state='active' AND s.source=$5 AND s.enabled FOR SHARE OF c,s")
             .bind(&tenant).bind(registration.to_string()).bind(credential.channel.as_str()).bind(locator(credential)).bind(source.as_str()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
@@ -220,6 +220,13 @@ impl DeviceService {
             generation: row.try_get("generation").map_err(db)?,
             channel: channel(&row)?,
             credential: uuid(&child, "id")?,
+            user_context: (source == ReportSource::MdmWindows
+                && row
+                    .try_get::<Option<String>, _>("windows_profile")
+                    .map_err(db)?
+                    .as_deref()
+                    == Some("Full"))
+            .then_some(registration),
         };
         let scope = scope(
             credential.tenant,
@@ -709,4 +716,28 @@ pub async fn allocate_request_ids_in(
         return Err(sqlx::Error::Protocol("invalid request allocation".into()));
     }
     sqlx::query_scalar("UPDATE mdm_access.report_sources SET next_command=next_command+$4 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND enabled AND next_command<=$5 RETURNING next_command-$4").bind(p.tenant().to_string()).bind(p.registration()).bind(source.as_str()).bind(count).bind(maximum-count).fetch_one(c).await
+}
+
+pub async fn activate_renewed_mdm_in(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    device: &str,
+    registration: Uuid,
+    generation: i64,
+    predecessor: Uuid,
+    credential: &super::VerifiedChannelCredential,
+) -> Result<(), Error> {
+    if credential.tenant.to_string() != tenant
+        || credential.channel != super::Channel::Mdm
+        || credential.source != rss_mdm_inventory::ReportSource::MdmWindows
+    {
+        return Err(Error::Unauthorized);
+    }
+    lock_channel(c, tenant, device, credential.channel).await?;
+    let current:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations r JOIN mdm_access.credentials k ON(k.tenant_id,k.registration)=(r.tenant_id,r.id) JOIN mdm_access.report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.device=$3 AND r.generation=$4 AND r.state='active' AND k.id=$5 AND k.state='active' AND s.source='mdm.windows' AND s.enabled)")
+        .bind(tenant).bind(registration).bind(device).bind(generation).bind(predecessor).fetch_one(&mut *c).await.map_err(db)?;
+    if !current {
+        return Err(Error::Unauthorized);
+    }
+    replace_mdm_credential_in(c, tenant, &registration.to_string(), &locator(credential)).await
 }
