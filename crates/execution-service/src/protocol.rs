@@ -192,11 +192,13 @@ async fn manage_on(
         key,
         p,
         &mut prepared.response,
-        dispatch,
-        prepared.user_available,
-        &prepared.provider_id,
-        &prepared.management_urls,
-        &prepared.limits,
+        native::Dispatch {
+            enabled: dispatch,
+            user_available: prepared.user_available,
+            provider_id: &prepared.provider_id,
+            management_urls: &prepared.management_urls,
+            limits: &prepared.limits,
+        },
     )
     .await?;
     let sent = matches!(continuation, native::Continuation::Sent);

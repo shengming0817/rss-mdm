@@ -28,6 +28,7 @@ use std::time::{Duration, Instant};
 use zeroize::Zeroizing;
 
 pub struct Push {
+    clock: std::sync::Arc<dyn rss_observation::Clock>,
     client: reqwest::Client,
     token_url: String,
     #[cfg(feature = "integration")]
@@ -63,7 +64,12 @@ pub fn channel_uri(value: &str) -> Result<reqwest::Url, Error> {
     Ok(uri)
 }
 impl Push {
-    pub fn new(pfn: String, sid: String, secret: String) -> Result<Self, Error> {
+    pub fn new(
+        pfn: String,
+        sid: String,
+        secret: String,
+        clock: std::sync::Arc<dyn rss_observation::Clock>,
+    ) -> Result<Self, Error> {
         if pfn.is_empty()
             || pfn.len() > 256
             || !pfn
@@ -89,6 +95,7 @@ impl Push {
             .build()
             .map_err(unavailable)?;
         Ok(Self {
+            clock,
             client,
             token_url: "https://login.live.com/accesstoken.srf".into(),
             #[cfg(feature = "integration")]
@@ -102,10 +109,10 @@ impl Push {
     }
     async fn bearer(&self) -> Result<Zeroizing<String>, Error> {
         let mut cached = self.token.lock().await;
-        if let Some((token, expires)) = &*cached {
-            if *expires > Instant::now() + Duration::from_secs(30) {
-                return Ok(token.clone());
-            }
+        if let Some((token, expires)) = &*cached
+            && *expires > self.clock.now() + Duration::from_secs(30)
+        {
+            return Ok(token.clone());
         }
         let mut response = self
             .client
@@ -149,7 +156,7 @@ impl Push {
         let token = value.access_token;
         *cached = Some((
             token.clone(),
-            Instant::now() + Duration::from_secs(value.expires_in),
+            self.clock.now() + Duration::from_secs(value.expires_in),
         ));
         Ok(token)
     }
@@ -225,8 +232,9 @@ impl Push {
         secret: String,
         client: reqwest::Client,
         origin: &str,
+        clock: std::sync::Arc<dyn rss_observation::Clock>,
     ) -> Result<Self, Error> {
-        let mut push = Self::new(pfn, sid, secret)?;
+        let mut push = Self::new(pfn, sid, secret, clock)?;
         let origin = reqwest::Url::parse(origin).map_err(unavailable)?;
         if origin.scheme() != "https" || origin.host_str() != Some("localhost") {
             return Err(Error::Malformed);

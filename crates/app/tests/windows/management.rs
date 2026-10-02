@@ -613,6 +613,7 @@ async fn abort_and_nonfinal_message_budget_cannot_publish_a_collection_snapshot(
     host.close().await
 }
 
+#[cfg(feature = "integration")]
 #[tokio::test]
 #[ignore = "make t2 MODULE=windows.management"]
 async fn native_unenrollment_notification_retires_only_its_authenticated_registration()
@@ -727,5 +728,6 @@ async fn native_unenrollment_notification_retires_only_its_authenticated_registr
     Ok(())
 }
 
+#[cfg(feature = "integration")]
 #[path = "wns.rs"]
 mod wns;

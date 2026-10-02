@@ -168,6 +168,10 @@ impl Host {
         )
         .await
     }
+    #[allow(
+        clippy::cognitive_complexity,
+        reason = "fixture composition keeps TLS certificate, listener and enrollment variants explicit"
+    )]
     async fn bind(
         agent: Option<serde_json::Value>,
         command_clock: rss_device_command_postgres::CommandClock,

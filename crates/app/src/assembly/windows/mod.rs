@@ -86,6 +86,10 @@ pub(crate) struct Windows {
     additional_management_tls: Vec<Arc<tokio_rustls::rustls::ServerConfig>>,
 }
 impl Windows {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "App composition root injects the system monotonic clock into the WNS transport"
+    )]
     pub(crate) fn load(
         config: WindowsConfig,
         now: i64,
@@ -132,6 +136,7 @@ impl Windows {
                     push.package_family_name.clone(),
                     push.sid.clone(),
                     secret.trim_end_matches(['\r', '\n']).to_owned(),
+                    Arc::new(crate::Monotonic(std::time::Instant::now)),
                 )
                 .map_err(|_| Error::Configuration(ConfigIssue::WindowsPush))?,
             );

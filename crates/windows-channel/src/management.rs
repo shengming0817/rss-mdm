@@ -61,19 +61,17 @@ pub(crate) async fn manage(
                 ..
             }
         )
-    }) {
-        if let Some(response) =
-            crate::unenrollment::replay(&app, &checked, &message, &bytes, &audit).await?
-        {
-            return Ok((
-                [(
-                    axum::http::header::CONTENT_TYPE,
-                    "application/vnd.syncml.dm+xml; charset=utf-8",
-                )],
-                response,
-            )
-                .into_response());
-        }
+    }) && let Some(response) =
+        crate::unenrollment::replay(&app, &checked, &message, &bytes, &audit).await?
+    {
+        return Ok((
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "application/vnd.syncml.dm+xml; charset=utf-8",
+            )],
+            response,
+        )
+            .into_response());
     }
     crate::renewal::activate(&app, &checked, &message.header.source).await?;
     let credential = app.mount.credential(checked.fingerprint());

@@ -433,18 +433,28 @@ fn admit_response(
         Err("native_response_budget_exceeded")
     }
 }
-pub async fn send_on(
+pub(crate) struct Dispatch<'a> {
+    pub enabled: bool,
+    pub user_available: bool,
+    pub provider_id: &'a str,
+    pub management_urls: &'a [String],
+    pub limits: &'a CodecLimits,
+}
+pub(crate) async fn send_on(
     source: &dyn crate::source_authority::SourceAuthority,
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     response: &mut Message,
-    authenticated: bool,
-    user_available: bool,
-    provider_id: &str,
-    management_urls: &[String],
-    limits: &CodecLimits,
+    dispatch: Dispatch<'_>,
 ) -> std::result::Result<bool, Error> {
+    let Dispatch {
+        enabled: authenticated,
+        user_available,
+        provider_id,
+        management_urls,
+        limits,
+    } = dispatch;
     if !authenticated {
         return Ok(false);
     }
@@ -591,46 +601,47 @@ pub async fn send_on(
                 .map_err(|_| Error::Unsupported)?,
             _ => None,
         };
-        if let (Some(old), Some(binding)) = (&old, &binding) {
-            if old.try_get::<String, _>("phase").map_err(db)? == "prepare" && accepted {
-                let attempt: Uuid = old.try_get("id").map_err(db)?;
-                let items=sqlx::query("SELECT command,item_ordinal,uri,value FROM mdm_commands.attempt_items WHERE tenant_id=$1::uuid AND attempt=$2 AND kind='get'")
+        if let (Some(old), Some(binding)) = (&old, &binding)
+            && old.try_get::<String, _>("phase").map_err(db)? == "prepare"
+            && accepted
+        {
+            let attempt: Uuid = old.try_get("id").map_err(db)?;
+            let items=sqlx::query("SELECT command,item_ordinal,uri,value FROM mdm_commands.attempt_items WHERE tenant_id=$1::uuid AND attempt=$2 AND kind='get'")
                     .bind(&tenant).bind(attempt).fetch_all(&mut *c).await.map_err(db)?;
-                let mut matches = items.len() == binding.expected.len();
-                for item in items {
-                    let uri: String = item.try_get("uri").map_err(db)?;
-                    let sealed: Option<Vec<u8>> = item.try_get("value").map_err(db)?;
-                    let value = if let Some(sealed) = sealed {
-                        let aad = result_aad(
-                            p.tenant(),
-                            p.registration(),
-                            p.generation(),
-                            attempt,
-                            item.try_get("command").map_err(db)?,
-                            item.try_get("item_ordinal").map_err(db)?,
-                        )?;
-                        Some(
-                            protection
-                                .open_bytes(&sealed, &aad)
-                                .map_err(|_| protocol())?,
-                        )
-                    } else {
-                        None
-                    };
-                    matches &= binding.expected.get(&uri).is_some_and(|expected| {
-                        expected.matches(
-                            Some(200),
-                            value
-                                .as_ref()
-                                .and_then(|v| std::str::from_utf8(v.expose()).ok()),
-                        )
-                    });
-                }
-                if !matches {
-                    sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
+            let mut matches = items.len() == binding.expected.len();
+            for item in items {
+                let uri: String = item.try_get("uri").map_err(db)?;
+                let sealed: Option<Vec<u8>> = item.try_get("value").map_err(db)?;
+                let value = if let Some(sealed) = sealed {
+                    let aad = result_aad(
+                        p.tenant(),
+                        p.registration(),
+                        p.generation(),
+                        attempt,
+                        item.try_get("command").map_err(db)?,
+                        item.try_get("item_ordinal").map_err(db)?,
+                    )?;
+                    Some(
+                        protection
+                            .open_bytes(&sealed, &aad)
+                            .map_err(|_| protocol())?,
+                    )
+                } else {
+                    None
+                };
+                matches &= binding.expected.get(&uri).is_some_and(|expected| {
+                    expected.matches(
+                        Some(200),
+                        value
+                            .as_ref()
+                            .and_then(|v| std::str::from_utf8(v.expose()).ok()),
+                    )
+                });
+            }
+            if !matches {
+                sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
                         .bind(&tenant).bind(op.operation_id).bind(serde_json::json!({"platform":"windows","reason":"enrollment_account_scope"})).execute(&mut *c).await.map_err(db)?;
-                    continue;
-                }
+                continue;
             }
         }
         let (ordinal, phase) = match (&old, request) {
@@ -927,6 +938,10 @@ pub async fn replay_on(
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "receipt admission carries exact authenticated principal, frozen request, stored correlation and acceptance state on the original connection"
+)]
 async fn receipt_acceptance(
     source: &dyn crate::source_authority::SourceAuthority,
     c: &mut PgConnection,

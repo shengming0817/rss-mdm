@@ -20,7 +20,7 @@ Get Results 的 MoreData / Size 在连续消息中重组，最后一片通过大
 
 ## 用户任务与配置输入
 
-有权管理员先从 `GET /api/v3/devices/{device}/registrations` 的 Full 活动注册读取 `userContextId`，使用[设备操作](device-operations.md#Windows-原生操作)现有 `/api/v3/devices/{device}/operations` 入口。以下命令生成可提交 JSON；`user_context_id` 必须替换为该注册返回的值，提交仍需既有会话、Origin/CSRF 和设备操作授权：
+有权管理员先从 `GET /api/v3/devices/{device}/registrations` 的 Full 活动注册读取 `userContextId`，使用[设备操作](device-operations.md#windows-原生操作)现有 `/api/v3/devices/{device}/operations` 入口。以下命令生成可提交 JSON；`user_context_id` 必须替换为该注册返回的值，提交仍需既有会话、Origin/CSRF 和设备操作授权：
 
 ```sh
 user_context_id='<当前 Full 注册的 userContextId>'

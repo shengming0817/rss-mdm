@@ -36,6 +36,10 @@ pub async fn request(tx: &mut sqlx::PgConnection, tenant: &str, id: Uuid) -> Res
         .bind(tenant).bind(id.to_string()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "borrowed audit transaction retains explicit authorization, enrollment identity, source/profile and credential inputs"
+)]
 pub async fn create_enrollment(
     store: &rss_mdm_audit_integration::AuditStore,
     permission: EnrollmentPermission<'_>,

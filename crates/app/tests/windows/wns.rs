@@ -95,6 +95,7 @@ async fn native_push_transport_refreshes_tokens_without_claiming_command_deliver
         "fixture-secret".into(),
         client,
         &config.management.origin,
+        crate::windows::test_support::monotonic(),
     )?;
     ensure!(push.send("https://localhost/wake").await.is_err());
     for (status, outcome) in [
@@ -270,6 +271,7 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
         "fixture-secret".into(),
         transport,
         &origin,
+        crate::windows::test_support::monotonic(),
     )?);
     let database = host.store.windows_store();
     let eligibility = crate::windows::WakeEligibility(host.app.execution.clone());
