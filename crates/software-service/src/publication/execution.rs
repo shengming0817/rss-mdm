@@ -1,5 +1,5 @@
 //! Native execution reads the same frozen publication and approval authorities as hosted clients.
-use super::{self as publication, config::Driver, spec, storage as db, *};
+use super::{self as publication, spec, storage as db, *};
 use rss_mdm_resource as r;
 use rss_mdm_software_release as rel;
 use rss_request_context::TenantId;
@@ -33,7 +33,31 @@ pub struct NativeExport {
     pub artifacts: Vec<PublicArtifact>,
     pub protocol: NativeExportProtocol,
 }
-impl PublicationService {
+pub struct ExportReader {
+    sources: super::config::ExportSources,
+    catalog: crate::catalog::Reader,
+}
+impl ExportReader {
+    pub(super) fn new(sources: super::config::ExportSources) -> Self {
+        Self {
+            catalog: crate::catalog::Reader::new(sources.tenant),
+            sources,
+        }
+    }
+    fn tenant(&self) -> rss_request_context::TenantId {
+        self.sources.tenant
+    }
+    fn native_identifier(&self, ring: rel::Ring, publication: Option<[u8; 32]>) -> String {
+        match publication {
+            Some(id) => format!("rss.{}", super::hex(&id)),
+            None => format!(
+                "rss.{}.{}",
+                super::hex(&self.sources.digest),
+                super::config::index(ring)
+            ),
+        }
+    }
+
     /// Borrow the execution transaction so current Resource, source and publication locks are shared.
     pub async fn native_export_in(
         &self,
@@ -79,8 +103,12 @@ impl PublicationService {
         if candidate.snapshot().content.digest() != prepared.content.digest() {
             return Ok(Err(Error::Content));
         }
-        let (protocol, document) = match (&self.sources.binding(ring).driver, &prepared.document) {
-            (Driver::Winget { base, .. }, ExportDocument::Winget { manifest }) => (
+        let (protocol, document) = match (&self.sources.binding(ring).protocol, &prepared.document)
+        {
+            (
+                super::config::ExportProtocol::Winget { base, .. },
+                ExportDocument::Winget { manifest },
+            ) => (
                 NativeExportProtocol::Winget {
                     uri: format!("{base}exports/{}/", publication::hex(&id)),
                     identifier: self.native_identifier(ring, Some(id)),
@@ -88,7 +116,7 @@ impl PublicationService {
                 db::encode(manifest)?,
             ),
             (
-                Driver::Brew {
+                super::config::ExportProtocol::Brew {
                     base,
                     credential_reference,
                     ..
@@ -115,10 +143,9 @@ impl PublicationService {
             }
             _ => return Ok(Err(Error::Unsupported)),
         };
-        let base = match &self.sources.binding(ring).driver {
-            Driver::Winget { artifacts_base, .. } | Driver::Brew { artifacts_base, .. } => {
-                artifacts_base
-            }
+        let base = match &self.sources.binding(ring).protocol {
+            super::config::ExportProtocol::Winget { artifacts_base, .. }
+            | super::config::ExportProtocol::Brew { artifacts_base, .. } => artifacts_base,
         };
         Ok(Ok(Some(NativeExport {
             source: self.sources.logical.clone(),
@@ -156,5 +183,111 @@ impl PublicationService {
             Err(crate::catalog::Error::Sql(e)) => Err(e.into()),
             Err(_) => Ok(Err(Error::Content)),
         }
+    }
+}
+
+impl ExportReader {
+    pub(super) async fn published_in(
+        &self,
+        tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+        ring: rel::Ring,
+        publication: [u8; 32],
+    ) -> InTransaction<(r::Version, db::Subject, db::Target)> {
+        input!(self.catalog.lock_in(tx).await.map_err(|_| Error::Content));
+        let tenant = self.tenant().to_string();
+        let prefix = format!("p:{}:%", hex(&publication));
+        let keys:Vec<String>=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT id FROM mdm_software_composition.targets WHERE tenant_id=$1::uuid AND id LIKE $2 ORDER BY length(id) DESC,id COLLATE \"C\" DESC LIMIT 2").bind(tenant).bind(prefix).fetch_all(c).await})).await?;
+        let mut selected = None;
+        for key in keys {
+            let call = db::call(tx, db::Table::Publish, &key)
+                .await?
+                .ok_or_else(db::fault)?;
+            let target = call.target;
+            if (
+                target.publication,
+                target.binding.as_slice(),
+                input!(target.ring()),
+            ) != (
+                publication,
+                self.sources.binding(ring).identity.as_slice(),
+                ring,
+            ) {
+                continue;
+            }
+            db::lock(
+                tx,
+                "source",
+                &format!("{}:{}", hex(&target.binding), target.slot),
+            )
+            .await?;
+            if db::projection(tx, &target).await?.as_deref() != Some(publication.as_slice()) {
+                continue;
+            }
+            let id = input!(
+                rel::CandidateId::new(self.tenant(), &target.candidate)
+                    .map_err(|_| Error::Identity)
+            );
+            let candidate = input!(
+                rss_mdm_software_release_postgres::lock_candidate_reference_in(tx, &id)
+                    .await?
+                    .map_err(|_| Error::Content)
+            );
+            if !current_published(&candidate, ring, &target) {
+                continue;
+            }
+            let subject = db::subject(tx, &target.candidate)
+                .await?
+                .ok_or_else(db::fault)?;
+            input!(self.resource_usable(tx, &subject).await?);
+            let (version, _) = input!(
+                rss_mdm_resource_postgres::lock_reference_in(
+                    tx,
+                    &input!(r::Id::new(&subject.resource).map_err(|_| Error::Content)),
+                    &input!(r::Id::new(&subject.version).map_err(|_| Error::Content))
+                )
+                .await?
+                .map_err(|_| Error::Content)
+            );
+            selected = Some((version, subject, target));
+            break;
+        }
+        Ok(selected.ok_or(Error::CandidateNotFound))
+    }
+    pub(super) async fn resource_usable(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        subject: &Subject,
+    ) -> InTransaction<()> {
+        let id = db::required(
+            "service::resource_usable",
+            resource::Id::new(&subject.resource),
+        )?;
+        let version = db::required(
+            "service::resource_usable",
+            resource::Id::new(&subject.version),
+        )?;
+        input!(
+            self.catalog
+                .lock_in(tx)
+                .await
+                .map_err(|cause| Error::Content.context("service::admission_lock", cause))
+        );
+        let (v, state) = input!(
+            rss_mdm_resource_postgres::lock_reference_in(tx, &id, &version)
+                .await?
+                .map_err(|cause| Error::Content.context("service::resource_usable", cause))
+        );
+        if v.digest().bytes() != subject.resource_digest
+            || !matches!(state, resource::State::Frozen | resource::State::Active)
+        {
+            return Ok(Err(Error::Content));
+        }
+        input!(
+            self.catalog
+                .publication_admitted_in(tx, &v)
+                .await
+                .map_err(|cause| Error::Content.context("service::resource_usable", cause))
+        );
+        Ok(Ok(()))
     }
 }

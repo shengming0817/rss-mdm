@@ -177,6 +177,7 @@ async fn uncertain_entry_survives_application_restart_and_policy_disable() -> Re
             .await?,
     )
     .await?;
+    let execution = execution.service;
     let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
         "127.0.0.1".parse()?,
     )));

@@ -204,11 +204,15 @@ impl Host {
         let app = Arc::new(Assembly {
             timeline,
             content_writer: execution.content.clone(),
+            queries: execution.queries.clone(),
+            inputs: execution.inputs.clone(),
+            protection: execution.protection.clone(),
+            execution_runtime: execution.runtime.clone(),
             audit_store: store
                 .audit_store(&crate::config::AuditConfig::Plain)
                 .await?,
             apple: None,
-            execution,
+            execution: execution.service.clone(),
             flow: management,
             identity: Arc::new(identity),
             credentials: Arc::new(credentials),

@@ -99,7 +99,7 @@ impl ExecutionService {
         tx: &mut PgTransaction<'_>,
         device: &str,
     ) -> Result<Option<(Uuid, Uuid, Package, i64)>> {
-        if self.agent_installation.packages.is_empty() {
+        if self.inputs.agent_installation.packages.is_empty() {
             return Ok(None);
         }
         let (registration, generation) = match storage::current_registration(tx, device).await {
@@ -141,7 +141,7 @@ impl ExecutionService {
             _ => return Ok(None),
         };
         let target = SoftwareTarget::new(platform, architecture);
-        let Some(pin) = self.agent_installation.packages.get(&target) else {
+        let Some(pin) = self.inputs.agent_installation.packages.get(&target) else {
             return Ok(None);
         };
         let identity = match &pin.identity {

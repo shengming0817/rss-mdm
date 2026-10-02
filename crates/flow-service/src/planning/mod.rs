@@ -29,7 +29,7 @@ use uuid::Uuid;
 pub struct Planning {
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     automation_observation: std::sync::Mutex<automation::health::AutomationObservation>,
-    pub automation_task: std::sync::OnceLock<rss_runtime::TaskStatus>,
+    pub(crate) automation_task: std::sync::OnceLock<rss_runtime::TaskStatus>,
     pub runtime: Arc<PgRuntime>,
     cursor_key: ring::hmac::Key,
     pub asset_reader: assets::planning::SnapshotReader,
@@ -37,8 +37,7 @@ pub struct Planning {
     pub clock: Arc<dyn crate::clock::Clock>,
     pub groups: Arc<rss_mdm_group_postgres::GroupStore>,
     sources: sources::SourceHeads,
-    pub policy_store: rss_mdm_policy_postgres::PolicyStore,
-    pub catalog: Arc<crate::resource_catalog::ResourceCatalog>,
+    pub policy_store: Arc<rss_mdm_policy_postgres::PolicyStore>,
 }
 use crate::operation::Operation;
 use crate::transaction::*;
@@ -48,7 +47,6 @@ impl Planning {
         runtime: Arc<PgRuntime>,
         tenant: TenantId,
         clock: Arc<dyn crate::clock::Clock>,
-        catalog: Arc<crate::resource_catalog::ResourceCatalog>,
         cursor_key: &[u8],
     ) -> std::result::Result<Self, Error> {
         let groups = rss_mdm_group_postgres::GroupStore::new(runtime.clone(), tenant, deadline())
@@ -69,8 +67,7 @@ impl Planning {
             clock,
             groups: Arc::new(groups),
             sources: sources::SourceHeads::new(tenant),
-            policy_store,
-            catalog,
+            policy_store: Arc::new(policy_store),
         })
     }
     // Business rejection must roll back already executed companion steps. Keep its
@@ -276,5 +273,13 @@ impl rss_mdm_inventory_service::groups::Flow for Planning {
                 .await
                 .map_err(crate::automation::inventory_tasks::failure)
         })
+    }
+}
+
+impl Planning {
+    pub fn automation_state(&self) -> Option<rss_runtime::TaskState> {
+        self.automation_task
+            .get()
+            .map(rss_runtime::TaskStatus::current)
     }
 }

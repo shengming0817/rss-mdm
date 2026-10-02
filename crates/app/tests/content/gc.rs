@@ -210,7 +210,7 @@ async fn reference_and_gc_are_serialized() -> Result<()> {
     let retained = fixture
         .seed_content(case::name("retained resource").as_bytes())
         .await?;
-    let store = fixture.execution.content.as_ref().unwrap();
+    let store = fixture.content.as_ref().unwrap();
     gc_reference_race(&fixture.runtime, store).await?;
     cleanup_preserves_resource_references(
         &mut fixture.user.clone(),

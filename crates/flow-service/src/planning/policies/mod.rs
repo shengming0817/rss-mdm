@@ -20,10 +20,32 @@ pub mod storage;
 use rss_mdm_execution_service::{authorize_policy_snapshot, frozen::Frozen};
 pub use rss_mdm_policy::{Change, Policy};
 pub struct Policies {
-    pub planning: std::sync::Arc<super::Planning>,
-    pub inputs: std::sync::Arc<rss_mdm_execution_service::Inputs>,
+    runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
+    tenant: rss_request_context::TenantId,
+    policy_store: std::sync::Arc<rss_mdm_policy_postgres::PolicyStore>,
+    resources: crate::resource_catalog::VersionReader,
+    inputs: std::sync::Arc<rss_mdm_execution_service::Inputs>,
 }
 impl Policies {
+    pub fn new(
+        runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
+        audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
+        tenant: rss_request_context::TenantId,
+        policy_store: std::sync::Arc<rss_mdm_policy_postgres::PolicyStore>,
+        resources: crate::resource_catalog::VersionReader,
+        inputs: std::sync::Arc<rss_mdm_execution_service::Inputs>,
+    ) -> Self {
+        Self {
+            runtime,
+            audit_store,
+            tenant,
+            policy_store,
+            resources,
+            inputs,
+        }
+    }
+
     pub async fn change(
         &self,
         proof: &AuthorizedPrincipal,
@@ -47,8 +69,8 @@ impl Policies {
                 None
             } else {
                 inspect(
-                    &self.planning.runtime,
-                    self.planning.tenant,
+                    &self.runtime,
+                    self.tenant,
                     (self, definition),
                     |ctx, tx| {
                         Box::pin(async move {
@@ -57,8 +79,7 @@ impl Policies {
                                 return Ok(None);
                             };
                             let version = s
-                                .planning
-                                .catalog
+                                .resources
                                 .active_version_in(tx, binding.id(), binding.version())
                                 .await?;
                             if matches!(
@@ -104,27 +125,16 @@ impl Policies {
                 ..
             } = &definition.action
         {
-            Some(
-                self.inputs
-                    .verify_script(resource, parameters, self.inputs.content.as_ref())
-                    .await?,
-            )
+            Some(self.inputs.verify_script(resource, parameters).await?)
         } else if let Some((artifact, class)) = &artifact {
-            Some(
-                self.inputs
-                    .content
-                    .as_ref()
-                    .ok_or(Error::Unsupported)?
-                    .verify_class(artifact, *class)
-                    .await?,
-            )
+            Some(self.inputs.verify_artifact(artifact, *class).await?)
         } else {
             None
         };
         run(
-            &self.planning.audit_store,
-            &self.planning.runtime,
-            self.planning.tenant,
+            &self.audit_store,
+            &self.runtime,
+            self.tenant,
             audit,
             (self, proof, id, op, audit, verified.as_ref()),
             |ctx, tx| {
@@ -139,14 +149,13 @@ impl Policies {
                     storage::lock(tx, id).await?;
                     let hash = fingerprint(&(id, &op.input, op.expected_revision, p.user()))?;
                     if let Some(value) = checked(
-                        s.planning
-                            .policy_store
+                        s.policy_store
                             .replay_in(tx, op.operation_id, &hash)
                             .await?,
                     )? {
                         return Ok(value);
                     }
-                    let old = storage::read_in(s.planning.policy_store.reader(), tx, id).await?;
+                    let old = storage::read_in(s.policy_store.reader(), tx, id).await?;
                     if let Some(previous) = &old {
                         authorize_policy_snapshot(&authorization, p, &previous.definition).map_err(Error::from)?;
                     }
@@ -166,8 +175,7 @@ impl Policies {
                         let mut frozen = if matches!(policy.definition.action, Action::EnsureAgentInstalled { .. }) {
                             Frozen::AgentInstall { action: Box::new(s.inputs.freeze_agent_in(tx,p,&authorization,&policy.definition.action).await?) }
                         } else if matches!(policy.definition.action, Action::RequestMdmEnrollment { .. }) {
-                            if !s.inputs.signing_enabled { return Err(Error::Unsupported.into()); }
-                            Frozen::MdmEnrollment { action: Box::new(rss_mdm_execution_service::enrollment_preparation::freeze(p, &authorization, &policy.definition.action, &s.inputs.enrollment_entries)?) }
+                            Frozen::MdmEnrollment { action: Box::new(s.inputs.freeze_enrollment(p, &authorization, &policy.definition.action)?) }
                         } else { s.inputs
                             .freeze_in(
                                 tx,
@@ -176,9 +184,9 @@ impl Policies {
                                 Some(rss_mdm_execution_service::configuration::Owner::Policy { policy: policy.id, version: policy.version }),
                             )
                             .await? };
-                        frozen.authorize_native(p,&authorization,None,&s.inputs.protection,tx.tenant_id(),Some(rss_mdm_execution_service::configuration::Owner::Policy { policy: policy.id, version: policy.version }))?;
+                        s.inputs.authorize_native(&mut frozen,p,&authorization,None,Some(rss_mdm_execution_service::configuration::Owner::Policy { policy: policy.id, version: policy.version }))?;
                         storage::write_in(
-                            &s.planning.policy_store,
+                            &s.policy_store,
                             tx,
                             &policy,
                             Some((&frozen, &semantic)),
@@ -187,15 +195,14 @@ impl Policies {
                         )
                         .await?;
                     } else {
-                        storage::write_in(&s.planning.policy_store, tx, &policy, None, p, now)
+                        storage::write_in(&s.policy_store, tx, &policy, None, p, now)
                             .await?;
                     }
                     // Publication performs no Agent fanout. Native reconciliation is a bounded background job.
                     storage::enqueue_change_in(tx, &policy, old.as_ref()).await?;
                     let value = storage::view(&policy)?;
                     checked(
-                        s.planning
-                            .policy_store
+                        s.policy_store
                             .receipt_in(tx, op.operation_id, &hash, &value)
                             .await?,
                     )?;
@@ -207,7 +214,7 @@ impl Policies {
                         "success",
                         None,
                     )?;
-                    s.planning.audit_store.append_in(tx, &fact, false).await?;
+                    s.audit_store.append_in(tx, &fact, false).await?;
                     p.check_live()?;
                     Ok(value)
                 })

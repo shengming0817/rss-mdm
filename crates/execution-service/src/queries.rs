@@ -22,33 +22,41 @@ pub struct Queries {
     pub(crate) signed: bool,
     pub(crate) content_available: bool,
 }
-impl ExecutionService {
-    pub(crate) fn admission(&self) -> Admission {
-        Admission {
-            source: self.source.clone(),
-            software: self.software.clone(),
-            agent_store: self.agent_store.clone(),
-            agent_installation: self.agent_installation.clone(),
+pub struct Dependencies {
+    pub source: Arc<dyn source_authority::SourceAuthority>,
+    pub protection: Arc<rss_mdm_native_protection::Protector>,
+    pub agent_store: Arc<dyn channels::Agent>,
+    pub apple_store: Arc<dyn channels::AppleStore>,
+    pub policy_reader: rss_mdm_policy_postgres::PolicyReader,
+    pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
+    pub runtime: Arc<PgRuntime>,
+    pub tenant: TenantId,
+    pub inputs: Arc<Inputs>,
+    pub signed: bool,
+    pub content_available: bool,
+}
+impl Queries {
+    pub fn new(dependencies: Dependencies) -> Self {
+        let admission = Admission {
+            source: dependencies.source.clone(),
+            software: dependencies.inputs.software.clone(),
+            agent_store: dependencies.agent_store.clone(),
+            agent_installation: dependencies.inputs.agent_installation.clone(),
+        };
+        Self {
+            admission,
+            source: dependencies.source,
+            protection: dependencies.protection,
+            agent_store: dependencies.agent_store,
+            apple_store: dependencies.apple_store,
+            policy_reader: dependencies.policy_reader,
+            audit_store: dependencies.audit_store,
+            runtime: dependencies.runtime,
+            tenant: dependencies.tenant,
+            inputs: dependencies.inputs,
+            signed: dependencies.signed,
+            content_available: dependencies.content_available,
         }
-    }
-    pub fn queries(&self) -> Arc<Queries> {
-        Arc::new(Queries {
-            source: self.source.clone(),
-            protection: self.protection.clone(),
-            agent_store: self.agent_store.clone(),
-            apple_store: self.apple_store.clone(),
-            policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(
-                self.runtime.clone(),
-                self.tenant,
-            ),
-            audit_store: self.audit_store.clone(),
-            runtime: self.runtime.clone(),
-            tenant: self.tenant,
-            inputs: self.inputs(),
-            admission: self.admission(),
-            signed: self.signer.is_some(),
-            content_available: self.content.is_some(),
-        })
     }
 }
 impl Queries {

@@ -168,6 +168,8 @@ pub(crate) struct Fixture {
     pub(crate) dependency_digest: Value,
     pub(crate) base: Value,
     pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    pub(crate) queries: Arc<rss_mdm_execution_service::queries::Queries>,
+    pub(crate) content: Option<Arc<rss_mdm_content_service::Store>>,
     pub(crate) router: Router,
     pub(crate) author: Browser,
     pub(crate) resource: Uuid,
@@ -406,7 +408,9 @@ impl Fixture {
             dependency,
             dependency_digest: dependency_version.1["resourceDigest"].clone(),
             base,
-            execution,
+            queries: execution.queries,
+            content: execution.content,
+            execution: execution.service,
             router,
             author,
             resource,
@@ -469,7 +473,8 @@ pub(crate) async fn worker(
         std::collections::BTreeMap::new(),
         rss_device_command_postgres::CommandClock::Postgres,
     )
-    .await?;
+    .await?
+    .service;
     worker_for(&config, worker).await
 }
 pub(crate) async fn worker_for(

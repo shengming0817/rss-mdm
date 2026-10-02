@@ -1,5 +1,6 @@
 use crate::publication_support::{Server, pg, seed};
 use crate::resource_catalog::{self as resources, Command};
+use std::sync::Arc;
 
 fn archive(input: &rss_mdm_software_service::publication::CandidateInput) -> Command {
     Command::Resource {
@@ -76,7 +77,15 @@ async fn execute(
         "management_write",
     );
     audit.set_principal("operator", crate::test_support::INSTANCE);
-    let result = service.catalog.execute(command, &audit, &|| Ok(())).await;
+    let catalog = crate::flow::catalog(
+        service.audit_store.clone(),
+        service.runtime.clone(),
+        service.tenant,
+        Arc::new(crate::clock::SystemClock),
+    )
+    .await
+    .unwrap();
+    let result = catalog.execute(command, &audit, &|| Ok(())).await;
     audit.finalize(None);
     result.map_err(Into::into)
 }

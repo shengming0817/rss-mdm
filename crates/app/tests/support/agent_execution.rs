@@ -121,6 +121,8 @@ pub(crate) struct Fixture {
     pub(crate) builtin_collections: Vec<Value>,
     pub(crate) router: Router,
     pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    pub(crate) queries: Arc<rss_mdm_execution_service::queries::Queries>,
+    pub(crate) content: Option<Arc<rss_mdm_content_service::Store>>,
     pub(crate) plan_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     pub(crate) author: Browser,
     pub(crate) author_id: String,
@@ -203,7 +205,9 @@ impl Fixture {
             builtin_collections: Vec::new(),
             base,
             router,
-            execution,
+            queries: execution.queries,
+            content: execution.content,
+            execution: execution.service,
             plan_runtime,
             author,
             author_id,
@@ -306,7 +310,8 @@ pub(crate) async fn worker(base: &Value) -> Result<Option<rss_runtime::ShutdownS
         std::collections::BTreeMap::new(),
         rss_device_command_postgres::CommandClock::Postgres,
     )
-    .await?;
+    .await?
+    .service;
     let mut owner = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
         Arc::new(crate::lifecycle::RuntimeTimer),

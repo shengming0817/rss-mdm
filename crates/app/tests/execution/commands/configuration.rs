@@ -614,7 +614,8 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
         std::collections::BTreeMap::new(),
         rss_device_command_postgres::CommandClock::Postgres,
     ))
-    .await?;
+    .await?
+    .service;
     let timer = recovery::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(2), &cancel);

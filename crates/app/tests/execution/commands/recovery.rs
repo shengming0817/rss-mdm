@@ -66,7 +66,8 @@ impl Client {
             std::collections::BTreeMap::new(),
             rss_device_command_postgres::CommandClock::Controlled(clock.clone()),
         ))
-        .await?;
+        .await?
+        .service;
         eprintln!("command T2: restarted runtime admitted");
         let persisted: (String, String) = sqlx::query_as(
             "SELECT c.status,o.status FROM rss_device_command.commands c JOIN rss_transactional_messaging.outbox o ON o.tenant_id=c.tenant_id AND o.message_id=c.outbox_message_id WHERE c.tenant_id=$1::uuid AND c.command_id=$2",

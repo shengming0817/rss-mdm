@@ -7,7 +7,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
     let mut fixture = Fixture::approved(Platform::MacOs).await?;
     let empty_scope =
         prepared_scope(&fixture.base, &mut fixture.author, &fixture.router, &[]).await?;
-    let stack = worker(&fixture.base, fixture.execution.content.clone()).await?;
+    let stack = worker(&fixture.base, fixture.content.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
     let resource = fixture.resource;
@@ -151,7 +151,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
 #[ignore = "make t2 MODULE=planning.software"]
 async fn new_approval_changes_execution_version() -> Result<()> {
     let fixture = Fixture::approved(Platform::MacOs).await?;
-    let stack = worker(&fixture.base, fixture.execution.content.clone()).await?;
+    let stack = worker(&fixture.base, fixture.content.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
     let resource = fixture.resource;

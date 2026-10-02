@@ -205,11 +205,10 @@ impl Inputs {
         }
     }
 }
-use rss_mdm_content_service::{Store, Verified};
+use rss_mdm_content_service::Verified;
 use rss_mdm_policy::{Architecture, Platform};
 use rss_mdm_resource::{self as r, PreparedScript};
 use serde_json::Value;
-use std::sync::Arc;
 pub fn select<'a>(
     version: &'a r::Version,
     binding: &ResourceBinding,
@@ -271,7 +270,6 @@ impl Inputs {
         &self,
         binding: &ResourceBinding,
         parameters: &Value,
-        content: Option<&Arc<Store>>,
     ) -> std::result::Result<Verified, Error> {
         let artifact = inspect(
             &self.runtime,
@@ -289,7 +287,12 @@ impl Inputs {
             TransactionOwner::Execution,
         )
         .await?;
-        Ok(content.ok_or(Error::Unsupported)?.verify(&artifact).await?)
+        Ok(self
+            .content
+            .as_ref()
+            .ok_or(Error::Unsupported)?
+            .verify(&artifact)
+            .await?)
     }
 }
 

@@ -90,26 +90,7 @@ impl Client {
         // Drive the public bounded recovery seam without a competing fault consumer.
         let s = self.app.execution.clone();
         let id = self.operation;
-        rss_mdm_execution_service::transaction::run(
-            &s.audit_store,
-            &s.runtime,
-            s.tenant,
-            &audit,
-            (s.as_ref(), id),
-            |ctx, tx| {
-                Box::pin(async move {
-                    let op = storage::load(tx, &ctx.0.protection, ctx.1).await?;
-                    let _page = ctx
-                        .0
-                        .store
-                        .recover(tx, op.scope, dc::BatchLimit::new(64).unwrap(), None)
-                        .await?;
-                    Ok(())
-                })
-            },
-            rss_mdm_execution_service::transaction::TransactionOwner::Execution,
-        )
-        .await?;
+        s.recover_operation(id, &audit).await?;
         audit.finalize(None);
         let read = self
             .call(Method::GET, &format!("/{}", self.operation), None)

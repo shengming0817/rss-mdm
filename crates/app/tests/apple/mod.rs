@@ -95,7 +95,6 @@ impl Fixture {
         let management = config
             .flow
             .open(
-                config.native_protector()?,
                 access
                     .audit_store(&crate::config::AuditConfig::Plain)
                     .await?,
@@ -134,10 +133,14 @@ impl Fixture {
         let app = Arc::new(Assembly {
             timeline,
             content_writer: execution.content.clone(),
+            queries: execution.queries.clone(),
+            inputs: execution.inputs.clone(),
+            protection: execution.protection.clone(),
+            execution_runtime: execution.runtime.clone(),
             audit_store: access
                 .audit_store(&crate::config::AuditConfig::Plain)
                 .await?,
-            execution: execution.clone(),
+            execution: execution.service.clone(),
             flow: management,
             identity: Arc::new(identity),
             credentials: Arc::new(crate::enrollment::credentials::Credentials::new(
@@ -158,7 +161,7 @@ impl Fixture {
                 execution.protection.clone(),
                 config.native_protocols.apple.unwrap(),
                 crate::clock::SystemClock.unix_seconds()?,
-                execution
+                config
                     .agent_installation
                     .identity(rss_mdm_policy::Platform::Macos)
                     .cloned(),

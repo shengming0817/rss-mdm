@@ -102,18 +102,13 @@ pub(crate) async fn planning(t: TenantId) -> Planning {
     let audit = audit_store().await;
     let runtime = runtime(t).await;
     let clock = Arc::new(crate::clock::SystemClock);
-    let catalog = crate::flow::catalog(audit.clone(), runtime.clone(), t, clock.clone())
-        .await
-        .unwrap();
     rss_mdm_flow_service::storage::admit(&runtime, t)
         .await
         .unwrap();
     let key = rss_mdm_flow_service::storage::cursor_key(&runtime, t)
         .await
         .unwrap();
-    Planning::new(audit, runtime, t, clock, catalog, &key)
-        .await
-        .unwrap()
+    Planning::new(audit, runtime, t, clock, &key).await.unwrap()
 }
 
 pub(super) trait FixtureCommand {

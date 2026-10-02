@@ -229,7 +229,7 @@ pub async fn serve(
                         .await
                         .map_err(|e| ProcessError::at("startup.execution", e))?;
                         startup.stage_resource(DynManagedResource::new_box(
-                            rss_mdm_execution_service::Resource(execution.clone()),
+                            rss_mdm_execution_service::Resource(execution.service.clone()),
                         ));
                         let automation = crate::automation::Automation::connect(
                             planning.planning.clone(),

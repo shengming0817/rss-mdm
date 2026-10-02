@@ -110,7 +110,6 @@ impl Config {
             runtime.clone(),
             tenant,
             Arc::new(crate::clock::FlowClock(clock.clone())),
-            catalog.clone(),
             &key,
         )
         .await

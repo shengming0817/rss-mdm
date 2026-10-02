@@ -46,11 +46,7 @@ pub async fn preview(
         ..
     } = &input.definition.action
     {
-        Some(
-            s.inputs
-                .verify_script(resource, parameters, s.inputs.content.as_ref())
-                .await?,
-        )
+        Some(s.inputs.verify_script(resource, parameters).await?)
     } else {
         None
     };

@@ -219,7 +219,7 @@ async fn enabling_agent_installation_preserves_existing_native_identity_and_righ
     .trim()
     .parse()?;
     let updated = Apple::load(
-        f.app.execution.protection.clone(),
+        f.app.protection.clone(),
         config,
         f.app.clock.unix_seconds()?,
         pin.identity(rss_mdm_policy::Platform::Macos).cloned(),

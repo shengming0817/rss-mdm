@@ -105,7 +105,7 @@ pub async fn state_in(
             let Some(package) = action.packages.get(&target) else {
                 return status(State::MissingVariant);
             };
-            let Some(pin) = service.agent_installation.packages.get(&target) else {
+            let Some(pin) = service.inputs.agent_installation.packages.get(&target) else {
                 return status(State::MissingVariant);
             };
             let identity = match &package.identity {

@@ -4,7 +4,7 @@ mod config;
 mod derive;
 mod driver;
 mod execution;
-pub use execution::{NativeExport, NativeExportProtocol};
+pub use execution::{ExportReader, NativeExport, NativeExportProtocol};
 mod read;
 mod service;
 mod spec;

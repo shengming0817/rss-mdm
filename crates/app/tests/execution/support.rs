@@ -98,26 +98,7 @@ impl Client {
         }
         let audit = RequestAudit::new(case_tenant().into(), "management_read");
         let service = self.app.execution.as_ref();
-        let result = rss_mdm_execution_service::transaction::run(
-            &service.audit_store,
-            &service.runtime,
-            service.tenant,
-            &audit,
-            (service, id),
-            |ctx, tx| {
-                Box::pin(async move {
-                    let (service, id) = *ctx;
-                    let operation = storage::load(tx, &service.protection, id).await?;
-                    let _page = service
-                        .store
-                        .recover(tx, operation.scope, dc::BatchLimit::new(64).unwrap(), None)
-                        .await?;
-                    Ok(())
-                })
-            },
-            rss_mdm_execution_service::transaction::TransactionOwner::Execution,
-        )
-        .await;
+        let result = service.recover_operation(id, &audit).await;
         audit.finalize(None);
         result?;
         Ok(())
@@ -210,7 +191,7 @@ async fn relay_crash_child() -> anyhow::Result<()> {
                 .unwrap(),
         )?;
         let digest = message.fingerprint().as_bytes().to_vec();
-        service.inject_fault(
+        service.service.inject_fault(
             rss_transactional_messaging_postgres::PgTransactionFault::CommitAcknowledgedPending,
         );
         service.accept_dispatch(id, digest).await?;

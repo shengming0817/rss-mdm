@@ -211,6 +211,7 @@ pub struct HttpState {
     pub apple: Option<std::sync::Arc<crate::Apple>>,
     pub clock: std::sync::Arc<dyn rss_mdm_flow_service::clock::Clock>,
     pub execution: std::sync::Arc<rss_mdm_execution_service::ExecutionService>,
+    pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub credentials:
         std::sync::Arc<rss_mdm_registration_service::enrollment::credentials::Credentials>,
     pub devices: std::sync::Arc<crate::device::DeviceService>,

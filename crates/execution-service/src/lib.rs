@@ -67,12 +67,27 @@ pub fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
 }
 
 pub struct ExecutionService {
+    pub(crate) inputs: Arc<Inputs>,
+    pub(crate) source: Arc<dyn source_authority::SourceAuthority>,
+    pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
+    pub(crate) agent_store: Arc<dyn channels::Agent>,
+    pub(crate) apple_store: Arc<dyn channels::AppleStore>,
+    pub(crate) policy_reader: rss_mdm_policy_postgres::PolicyReader,
+    pub(crate) signer: Option<Arc<crate::task_signing::Signer>>,
+    pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
+    pub(crate) runtime: Arc<PgRuntime>,
+    pub(crate) outbox: Arc<PgOutboxStore<()>>,
+    pub(crate) store: rss_device_command_postgres::PgStore<()>,
+    pub(crate) reconcile: rss_reconcile_postgres::PgStore,
+    pub(crate) tenant: TenantId,
+    pub(crate) instance: String,
+    pub(crate) content: Option<Arc<rss_mdm_content_service::Store>>,
+    pub(crate) readiness: health::Readiness,
+}
+pub struct Dependencies {
+    pub inputs: Arc<Inputs>,
     pub source: Arc<dyn source_authority::SourceAuthority>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
-    pub readiness: health::Readiness,
-    pub software: Arc<rss_mdm_software_service::preparation::Preparation>,
-    pub agent_installation: crate::agent_install::Config,
-    pub enrollment_entries: crate::enrollment::Entries,
     pub agent_store: Arc<dyn channels::Agent>,
     pub apple_store: Arc<dyn channels::AppleStore>,
     pub policy_reader: rss_mdm_policy_postgres::PolicyReader,
@@ -86,6 +101,40 @@ pub struct ExecutionService {
     pub instance: String,
     pub content: Option<Arc<rss_mdm_content_service::Store>>,
 }
+impl ExecutionService {
+    pub fn new(dependencies: Dependencies) -> Self {
+        Self {
+            readiness: Default::default(),
+            inputs: dependencies.inputs,
+            source: dependencies.source,
+            protection: dependencies.protection,
+            agent_store: dependencies.agent_store,
+            apple_store: dependencies.apple_store,
+            policy_reader: dependencies.policy_reader,
+            signer: dependencies.signer,
+            audit_store: dependencies.audit_store,
+            runtime: dependencies.runtime,
+            outbox: dependencies.outbox,
+            store: dependencies.store,
+            reconcile: dependencies.reconcile,
+            tenant: dependencies.tenant,
+            instance: dependencies.instance,
+            content: dependencies.content,
+        }
+    }
+    pub fn health(&self) -> health::Health {
+        self.readiness.health()
+    }
+    pub(crate) fn admission(&self) -> queries::Admission {
+        queries::Admission {
+            source: self.source.clone(),
+            software: self.inputs.software.clone(),
+            agent_store: self.agent_store.clone(),
+            agent_installation: self.inputs.agent_installation.clone(),
+        }
+    }
+}
+
 pub use transaction::*;
 impl ExecutionService {
     async fn required_command(
@@ -138,27 +187,77 @@ pub mod queries;
 
 /// Policy publication receives immutable input preparation, never execution readers or workers.
 pub struct Inputs {
+    pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
+    pub(crate) software: Arc<rss_mdm_software_service::preparation::Preparation>,
+    pub(crate) agent_installation: crate::agent_install::Config,
+    pub(crate) enrollment_entries: crate::enrollment::Entries,
+    pub(crate) runtime: Arc<PgRuntime>,
+    pub(crate) tenant: TenantId,
+    pub(crate) content: Option<Arc<rss_mdm_content_service::Store>>,
+    pub(crate) signing_enabled: bool,
+}
+pub struct InputDependencies {
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub software: Arc<rss_mdm_software_service::preparation::Preparation>,
     pub agent_installation: crate::agent_install::Config,
     pub enrollment_entries: crate::enrollment::Entries,
-    pub(crate) runtime: Arc<PgRuntime>,
+    pub runtime: Arc<PgRuntime>,
     pub tenant: TenantId,
     pub content: Option<Arc<rss_mdm_content_service::Store>>,
     pub signing_enabled: bool,
 }
-impl ExecutionService {
-    pub fn inputs(&self) -> Arc<Inputs> {
-        Arc::new(Inputs {
-            protection: self.protection.clone(),
-            software: self.software.clone(),
-            agent_installation: self.agent_installation.clone(),
-            enrollment_entries: self.enrollment_entries.clone(),
-            runtime: self.runtime.clone(),
-            tenant: self.tenant,
-            content: self.content.clone(),
-            signing_enabled: self.signer.is_some(),
-        })
+impl Inputs {
+    pub fn new(dependencies: InputDependencies) -> Self {
+        Self {
+            protection: dependencies.protection,
+            software: dependencies.software,
+            agent_installation: dependencies.agent_installation,
+            enrollment_entries: dependencies.enrollment_entries,
+            runtime: dependencies.runtime,
+            tenant: dependencies.tenant,
+            content: dependencies.content,
+            signing_enabled: dependencies.signing_enabled,
+        }
+    }
+    pub fn freeze_enrollment(
+        &self,
+        proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+        snapshot: &rss_mdm_authorization_service::Snapshot,
+        action: &rss_mdm_policy::Action,
+    ) -> std::result::Result<enrollment::FrozenEnrollment, Error> {
+        if !self.signing_enabled {
+            return Err(Error::Unsupported);
+        }
+        enrollment_preparation::freeze(proof, snapshot, action, &self.enrollment_entries)
+    }
+    pub fn authorize_native(
+        &self,
+        frozen: &mut frozen::Frozen,
+        proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+        snapshot: &rss_mdm_authorization_service::Snapshot,
+        device: Option<&std::collections::BTreeSet<String>>,
+        owner: Option<configuration::Owner>,
+    ) -> std::result::Result<(), Error> {
+        frozen.authorize_native(
+            proof,
+            snapshot,
+            device,
+            &self.protection,
+            self.tenant,
+            owner,
+        )
+    }
+    pub async fn verify_artifact(
+        &self,
+        artifact: &rss_mdm_resource::Artifact,
+        class: rss_mdm_content_service::StorageClass,
+    ) -> std::result::Result<rss_mdm_content_service::Verified, Error> {
+        Ok(self
+            .content
+            .as_ref()
+            .ok_or(Error::Unsupported)?
+            .verify_class(artifact, class)
+            .await?)
     }
 }
 

@@ -9,7 +9,7 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
     let fixture = Fixture::approved(Platform::MacOs)
         .await
         .map_err(|e| anyhow::anyhow!("approved fixture: {e:#}"))?;
-    let stack = worker(&fixture.base, fixture.execution.content.clone())
+    let stack = worker(&fixture.base, fixture.content.clone())
         .await
         .map_err(|e| anyhow::anyhow!("software worker: {e:#}"))?;
     let router = fixture.router;
@@ -267,7 +267,7 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
 #[ignore = "make t2 MODULE=execution.software.offer"]
 async fn windows_variant_delivery_and_detection() -> Result<()> {
     let fixture = Fixture::approved(Platform::Windows).await?;
-    let stack = worker(&fixture.base, fixture.execution.content.clone())
+    let stack = worker(&fixture.base, fixture.content.clone())
         .await
         .map_err(|e| anyhow::anyhow!("software worker: {e:#}"))?;
     let router = fixture.router;

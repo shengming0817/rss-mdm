@@ -525,7 +525,7 @@ pub async fn management(
     let control = budget.control();
     let outcome = app.audit_store.write(app.identity.tenant(), &control, (app, p, d, bytes, audit),
         |(app, p, d, bytes, audit), tx| Box::pin(async move {
-            let result = tx.with_connection_context(&mut (*p, *d, *bytes, app.execution.protection.clone()), |(p, d, bytes, protection), c| Box::pin(async move {
+            let result = tx.with_connection_context(&mut (*p, *d, *bytes, app.protection.clone()), |(p, d, bytes, protection), c| Box::pin(async move {
                 let p = *p; let d = *d; let bytes = *bytes;
     let message = protocol::management(d)?;
     let tenant = p.tenant().to_string();

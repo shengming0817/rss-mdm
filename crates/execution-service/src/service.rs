@@ -434,3 +434,39 @@ async fn created(
     receipt(tx, id, id, fingerprint, &response, audit).await?;
     Ok(response)
 }
+
+impl ExecutionService {
+    /// Reconcile the accepted command under the same audited execution owner.
+    #[cfg(feature = "integration")]
+    pub async fn recover_operation(
+        &self,
+        id: Uuid,
+        audit: &RequestAudit,
+    ) -> std::result::Result<(), Error> {
+        crate::transaction::run(
+            &self.audit_store,
+            &self.runtime,
+            self.tenant,
+            audit,
+            (self, id),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (service, id) = *ctx;
+                    let operation = storage::load(tx, &service.protection, id).await?;
+                    service
+                        .store
+                        .recover(
+                            tx,
+                            operation.scope,
+                            dc::BatchLimit::new(64).expect("fixed bounded page"),
+                            None,
+                        )
+                        .await?;
+                    Ok(())
+                })
+            },
+            crate::transaction::TransactionOwner::Execution,
+        )
+        .await
+    }
+}

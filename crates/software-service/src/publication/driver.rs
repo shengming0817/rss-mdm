@@ -218,7 +218,13 @@ impl PublicationService {
                             .lock_in(tx)
                             .await
                             .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                        input!(s.catalog.lock_in(tx).await.map_err(|_| Error::Content));
+                        input!(
+                            s.catalog
+                                .reader()
+                                .lock_in(tx)
+                                .await
+                                .map_err(|_| Error::Content)
+                        );
                         tx.prepare_outbox_partitions(&[s.releases.partition(&t.candidate)?])
                             .await?;
                         let id = db::required(
@@ -333,7 +339,13 @@ impl PublicationService {
                                 .lock_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                            input!(s.catalog.lock_in(tx).await.map_err(|_| Error::Content));
+                            input!(
+                                s.catalog
+                                    .reader()
+                                    .lock_in(tx)
+                                    .await
+                                    .map_err(|_| Error::Content)
+                            );
                             db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot))
                                 .await?;
                             let key = if matches!(table, Table::Publish) {
@@ -442,7 +454,13 @@ impl PublicationService {
                                 .lock_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                            input!(s.catalog.lock_in(tx).await.map_err(|_| Error::Content));
+                            input!(
+                                s.catalog
+                                    .reader()
+                                    .lock_in(tx)
+                                    .await
+                                    .map_err(|_| Error::Content)
+                            );
                             let key = if matches!(table, Table::Publish) {
                                 t.key()
                             } else {
@@ -610,7 +628,13 @@ impl PublicationService {
                                 .lock_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                            input!(s.catalog.lock_in(tx).await.map_err(|_| Error::Content));
+                            input!(
+                                s.catalog
+                                    .reader()
+                                    .lock_in(tx)
+                                    .await
+                                    .map_err(|_| Error::Content)
+                            );
                             tx.prepare_outbox_partitions(&[s.releases.partition(&t.candidate)?])
                                 .await?;
                             db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot))
@@ -732,7 +756,13 @@ impl PublicationService {
                                 .lock_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                            input!(s.catalog.lock_in(tx).await.map_err(|_| Error::Content));
+                            input!(
+                                s.catalog
+                                    .reader()
+                                    .lock_in(tx)
+                                    .await
+                                    .map_err(|_| Error::Content)
+                            );
                             tx.prepare_outbox_partitions(&[s.releases.partition(id.value())?])
                                 .await?;
                             let result =
@@ -830,7 +860,13 @@ impl PublicationService {
                                 .lock_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                            input!(s.catalog.lock_in(tx).await.map_err(|_| Error::Content));
+                            input!(
+                                s.catalog
+                                    .reader()
+                                    .lock_in(tx)
+                                    .await
+                                    .map_err(|_| Error::Content)
+                            );
                             let Some(call) = db::call(tx, Table::Withdraw, key).await? else {
                                 return Ok(Ok(None));
                             };
@@ -873,7 +909,13 @@ impl PublicationService {
                             .lock_in(tx)
                             .await
                             .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                        input!(s.catalog.lock_in(tx).await.map_err(|_| Error::Content));
+                        input!(
+                            s.catalog
+                                .reader()
+                                .lock_in(tx)
+                                .await
+                                .map_err(|_| Error::Content)
+                        );
                         db::lock(tx, "withdrawal", &t.withdrawal_key()).await?;
                         let replayed = db::call(tx, Table::Withdraw, &t.withdrawal_key())
                             .await?
@@ -914,7 +956,13 @@ impl PublicationService {
                                 .lock_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                            input!(s.catalog.lock_in(tx).await.map_err(|_| Error::Content));
+                            input!(
+                                s.catalog
+                                    .reader()
+                                    .lock_in(tx)
+                                    .await
+                                    .map_err(|_| Error::Content)
+                            );
                             tx.prepare_outbox_partitions(&[s.releases.partition(&t.candidate)?])
                                 .await?;
                             db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot))
@@ -1122,7 +1170,13 @@ impl PublicationService {
                                 .lock_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                            input!(s.catalog.lock_in(tx).await.map_err(|_| Error::Content));
+                            input!(
+                                s.catalog
+                                    .reader()
+                                    .lock_in(tx)
+                                    .await
+                                    .map_err(|_| Error::Content)
+                            );
                             let call = db::call(tx, Table::Withdraw, key)
                                 .await?
                                 .ok_or_else(db::fault)?;
@@ -1278,7 +1332,13 @@ impl PublicationService {
                                     .lock_in(tx)
                                     .await
                                     .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                                input!(s.catalog.lock_in(tx).await.map_err(|_| Error::Content));
+                                input!(
+                                    s.catalog
+                                        .reader()
+                                        .lock_in(tx)
+                                        .await
+                                        .map_err(|_| Error::Content)
+                                );
                                 db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot))
                                     .await?;
                                 if db::projection(tx, t).await?.as_deref() == Some(&t.publication) {
@@ -1345,7 +1405,13 @@ impl PublicationService {
                                 .lock_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                            input!(s.catalog.lock_in(tx).await.map_err(|_| Error::Content));
+                            input!(
+                                s.catalog
+                                    .reader()
+                                    .lock_in(tx)
+                                    .await
+                                    .map_err(|_| Error::Content)
+                            );
                             db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot))
                                 .await?;
                             let slot = db::slot(tx, &t.binding, &t.slot).await?;
@@ -1374,7 +1440,13 @@ impl PublicationService {
                             .lock_in(tx)
                             .await
                             .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                        input!(s.catalog.lock_in(tx).await.map_err(|_| Error::Content));
+                        input!(
+                            s.catalog
+                                .reader()
+                                .lock_in(tx)
+                                .await
+                                .map_err(|_| Error::Content)
+                        );
                         db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot)).await?;
                         let call = db::call(tx, Table::Withdraw, &t.withdrawal_key())
                             .await?
