@@ -70,7 +70,7 @@ pub struct Remote {
     pub snapshot: Snapshot,
 }
 impl Input {
-    fn policy_action(&self, now: i64) -> std::result::Result<PolicyAction, Error> {
+    fn validate(&self, now: i64) -> std::result::Result<(), Error> {
         if self.operation_id.is_nil()
             || self.deadline < now.saturating_add(60)
             || self.deadline > now.saturating_add(604800)
@@ -96,41 +96,21 @@ impl Input {
             }
             _ => (),
         }
-        let behavior = match &self.action {
-            Action::Execute { parameters } => PolicyAction::Execution {
-                resource: self.resource.clone(),
-                parameters: parameters.clone(),
-                schedule: rss_mdm_policy::schedule::Schedule {
-                    trigger: rss_mdm_policy::schedule::Trigger::Once { at: now },
-                    misfire: Default::default(),
-                    not_before: now,
-                    until: Some(self.deadline),
-                    jitter_seconds: 0,
-                    window: None,
-                },
-                frequency: Frequency::OncePerVersion,
-                run_lifetime_seconds: (self.deadline - now) as u32,
-            },
-            Action::CollectNative => PolicyAction::NativeCollection {
-                resource: self.resource.clone(),
-                schedule: rss_mdm_policy::schedule::Schedule {
-                    trigger: rss_mdm_policy::schedule::Trigger::Once { at: now },
-                    misfire: Default::default(),
-                    not_before: now,
-                    until: Some(self.deadline),
-                    jitter_seconds: 0,
-                    window: None,
-                },
-                frequency: Frequency::OncePerVersion,
-                run_lifetime_seconds: (self.deadline - now) as u32,
-            },
-            Action::ApplyConfiguration => PolicyAction::Configuration {
-                resource: self.resource.clone(),
-                exit: Exit::Retain,
-            },
-        };
-        behavior.validate()?;
-        Ok(behavior)
+        if self.resource.exact().is_none() {
+            return Err(Error::Malformed);
+        }
+        self.schedule(now).validate()?;
+        Ok(())
+    }
+    fn schedule(&self, now: i64) -> rss_mdm_policy::schedule::Schedule {
+        rss_mdm_policy::schedule::Schedule {
+            trigger: rss_mdm_policy::schedule::Trigger::Once { at: now },
+            misfire: Default::default(),
+            not_before: now,
+            until: Some(self.deadline),
+            jitter_seconds: 0,
+            window: None,
+        }
     }
     fn permission(&self) -> Permission {
         match self.action {
@@ -184,37 +164,57 @@ impl Policies {
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
         proof.manage(Permission::ResourceRead)?;
-        input.policy_action(input.deadline.saturating_sub(60))?;
+        input.validate(input.deadline.saturating_sub(60))?;
         input.authorize(proof)?;
-        let artifact = inspect(
-            &self.planning.runtime,
-            self.planning.tenant,
-            (self, input),
-            |ctx, tx| {
-                Box::pin(async move {
-                    let version = ctx.0.resource_in(tx, &ctx.1.resource).await?;
-                    Ok(
-                        match super::policies::variant(&version, &ctx.1.resource)?.declaration() {
-                            rss_mdm_resource::Declaration::Configuration { artifact } => Some((
-                                artifact.clone(),
-                                rss_mdm_content_service::StorageClass::NativeConfiguration,
-                            )),
-                            rss_mdm_resource::Declaration::Script { artifact, .. }
-                            | rss_mdm_resource::Declaration::NativeCollection {
-                                artifact, ..
-                            } => Some((
-                                artifact.clone(),
-                                rss_mdm_content_service::StorageClass::Artifact,
-                            )),
-                            _ => None,
-                        },
-                    )
-                })
-            },
-            TransactionOwner::Planning,
-        )
-        .await?;
-        let verified = if let Some((a, class)) = &artifact {
+        let artifact = if matches!(input.action, Action::Execute { .. }) {
+            None
+        } else {
+            inspect(
+                &self.planning.runtime,
+                self.planning.tenant,
+                (self, input),
+                |ctx, tx| {
+                    Box::pin(async move {
+                        let version = ctx
+                            .0
+                            .planning
+                            .catalog
+                            .active_version_in(tx, ctx.1.resource.id(), ctx.1.resource.version())
+                            .await?;
+                        Ok(
+                            match super::policies::variant(&version, &ctx.1.resource)?.declaration()
+                            {
+                                rss_mdm_resource::Declaration::Configuration { artifact } => {
+                                    Some((
+                                        artifact.clone(),
+                                        rss_mdm_content_service::StorageClass::NativeConfiguration,
+                                    ))
+                                }
+                                rss_mdm_resource::Declaration::Script { artifact, .. }
+                                | rss_mdm_resource::Declaration::NativeCollection {
+                                    artifact,
+                                    ..
+                                } => Some((
+                                    artifact.clone(),
+                                    rss_mdm_content_service::StorageClass::Artifact,
+                                )),
+                                _ => None,
+                            },
+                        )
+                    })
+                },
+                TransactionOwner::Planning,
+            )
+            .await?
+        };
+        let verified = if let Action::Execute { parameters } = &input.action {
+            Some(
+                self.planning
+                    .catalog
+                    .verify_script(&input.resource, parameters, self.execution.content.as_ref())
+                    .await?,
+            )
+        } else if let Some((a, class)) = &artifact {
             Some(
                 self.execution
                     .content
@@ -235,9 +235,28 @@ impl Policies {
             let hash=fingerprint(&(input,proof.user()))?;
             if let Some(receipt)=super::receipts::replay(tx,audit,input.operation_id,&hash).await? {return Ok(receipt);}
             let at=crate::action_admission::now(tx).await?;
-            let behavior=input.policy_action(at)?;
+            input.validate(at)?;
             let owner=Some(super::configuration::Owner::Remote { operation: input.operation_id });
-            let mut frozen=s.freeze_in(tx,&behavior,verified,owner).await?;
+            let mut frozen=match &input.action {
+                Action::Execute { parameters } => {
+                    if s.execution.signer.is_none() { return Err(Error::Conflict.into()); }
+                    let version=s.planning.catalog.active_version_in(tx,input.resource.id(),input.resource.version()).await?;
+                    let prepared=crate::resource_catalog::scripts::prepare(&version,&input.resource,parameters,verified.ok_or(Error::Conflict)?)?;
+                    Frozen::Execution {
+                        action:Box::new(super::action_contract::freeze_script_in(tx,s.planning.tenant,&prepared,
+                            input.schedule(at),(input.deadline-at) as u32,
+                        ).await?),
+                        frequency:Frequency::OncePerVersion,
+                    }
+                },
+                Action::CollectNative => s.freeze_in(tx,&PolicyAction::NativeCollection {
+                    resource:input.resource.clone(),schedule:input.schedule(at),
+                    frequency:Frequency::OncePerVersion,run_lifetime_seconds:(input.deadline-at) as u32,
+                },verified,owner).await?,
+                Action::ApplyConfiguration => s.freeze_in(tx,&PolicyAction::Configuration {
+                    resource:input.resource.clone(),exit:Exit::Retain,
+                },verified,owner).await?,
+            };
             frozen.authorize_native(proof,&auth,match &input.targets {Targets::Devices{devices}=>Some(devices),Targets::Scope{..}=>None},&s.execution.protection,tx.tenant_id(),owner)?;
             let snapshot=s.planning.capture_remote_targets_in(tx,&input.targets).await?;
             let tenant=tx.tenant_id().to_string();let id=input.operation_id;let resource=input.resource.id().to_owned();let version=input.resource.version().to_owned();let snapshot=checked_input(serde_json::to_value(snapshot))?;let content=checked_input(serde_json::to_value(frozen))?;let deadline=input.deadline;let author=checked_input(serde_json::to_value(proof.user()))?;

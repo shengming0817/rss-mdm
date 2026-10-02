@@ -1,7 +1,7 @@
 //! Authored Policy is the durable authority; execution progress never edits it.
 use super::action_contract::{
     Architecture, ExecutionInput, FrozenAction, FrozenNativeCollection, FrozenSoftwareAction,
-    Platform,
+    Platform, freeze_collection, freeze_script_in,
 };
 use crate::{
     Error,
@@ -80,53 +80,74 @@ impl Policies {
             }
             definition.validate()?;
             authorize(proof, definition)?;
-            inspect(
-                &self.planning.runtime,
-                self.planning.tenant,
-                (self, definition),
-                |ctx, tx| {
-                    Box::pin(async move {
-                        let (s, d) = *ctx;
-                        let Some(binding) = d.action.resource() else {
-                            return Ok(None);
-                        };
-                        let version = s.resource_in(tx, binding).await?;
-                        if matches!(
-                            d.action,
-                            Action::Software { .. } | Action::EnsureAgentInstalled { .. }
-                        ) {
-                            if binding.software().is_none()
-                                || version.kind() != resource::Kind::Software
-                            {
-                                return Err(Error::Malformed.into());
-                            }
-                            Ok(None)
-                        } else {
-                            let variant = variant(&version, binding)?;
-                            Ok(match variant.declaration() {
-                                resource::Declaration::Configuration { artifact } => Some((
-                                    artifact.clone(),
-                                    rss_mdm_content_service::StorageClass::NativeConfiguration,
-                                )),
-                                resource::Declaration::Script { artifact, .. }
-                                | resource::Declaration::NativeCollection { artifact, .. } => {
-                                    Some((
+            if matches!(definition.action, Action::Execution { .. }) {
+                None
+            } else {
+                inspect(
+                    &self.planning.runtime,
+                    self.planning.tenant,
+                    (self, definition),
+                    |ctx, tx| {
+                        Box::pin(async move {
+                            let (s, d) = *ctx;
+                            let Some(binding) = d.action.resource() else {
+                                return Ok(None);
+                            };
+                            let version = s
+                                .planning
+                                .catalog
+                                .active_version_in(tx, binding.id(), binding.version())
+                                .await?;
+                            if matches!(
+                                d.action,
+                                Action::Software { .. } | Action::EnsureAgentInstalled { .. }
+                            ) {
+                                if binding.software().is_none()
+                                    || version.kind() != resource::Kind::Software
+                                {
+                                    return Err(Error::Malformed.into());
+                                }
+                                Ok(None)
+                            } else {
+                                let variant = variant(&version, binding)?;
+                                Ok(match variant.declaration() {
+                                    resource::Declaration::Configuration { artifact } => Some((
+                                        artifact.clone(),
+                                        rss_mdm_content_service::StorageClass::NativeConfiguration,
+                                    )),
+                                    resource::Declaration::Script { artifact, .. }
+                                    | resource::Declaration::NativeCollection {
+                                        artifact, ..
+                                    } => Some((
                                         artifact.clone(),
                                         rss_mdm_content_service::StorageClass::Artifact,
-                                    ))
-                                }
-                                _ => None,
-                            })
-                        }
-                    })
-                },
-                TransactionOwner::Planning,
-            )
-            .await?
+                                    )),
+                                    _ => None,
+                                })
+                            }
+                        })
+                    },
+                    TransactionOwner::Planning,
+                )
+                .await?
+            }
         } else {
             None
         };
-        let verified = if let Some((artifact, class)) = &artifact {
+        let verified = if let Change::Put { definition, .. } = &op.input
+            && let Action::Execution {
+                resource,
+                parameters,
+                ..
+            } = &definition.action
+        {
+            Some(
+                self.planning
+                    .catalog
+                    .verify_script(resource, parameters, self.execution.content.as_ref())
+                    .await?,
+            )
+        } else if let Some((artifact, class)) = &artifact {
             Some(
                 self.execution
                     .content
@@ -233,25 +254,6 @@ impl Policies {
         )
         .await
     }
-    pub async fn resource_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        binding: &rss_mdm_policy::ResourceBinding,
-    ) -> Result<resource::Version> {
-        let (version, state, _) = self
-            .planning
-            .catalog
-            .lock_version_in(
-                tx,
-                &checked_input(resource::Id::new(binding.id()))?,
-                &checked_input(resource::Id::new(binding.version()))?,
-            )
-            .await?;
-        if state != resource::State::Active {
-            return Err(Error::Conflict.into());
-        }
-        Ok(version)
-    }
     pub async fn freeze_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -260,7 +262,11 @@ impl Policies {
         owner: Option<super::configuration::Owner>,
     ) -> Result<Frozen> {
         let binding = action.resource().ok_or(Error::Unsupported)?;
-        let version = self.resource_in(tx, binding).await?;
+        let version = self
+            .planning
+            .catalog
+            .active_version_in(tx, binding.id(), binding.version())
+            .await?;
         if let (
             ResourceBinding::Software(selection),
             Action::Software {
@@ -391,6 +397,37 @@ impl Policies {
                 action: Box::new(action),
             });
         }
+        if let Action::Execution {
+            parameters,
+            schedule,
+            frequency,
+            run_lifetime_seconds,
+            ..
+        } = action
+        {
+            if self.execution.signer.is_none() {
+                return Err(Error::Conflict.into());
+            }
+            let prepared = crate::resource_catalog::scripts::prepare(
+                &version,
+                binding,
+                parameters,
+                verified.ok_or(Error::Conflict)?,
+            )?;
+            return Ok(Frozen::Execution {
+                action: Box::new(
+                    freeze_script_in(
+                        tx,
+                        self.planning.tenant,
+                        &prepared,
+                        schedule.clone(),
+                        *run_lifetime_seconds,
+                    )
+                    .await?,
+                ),
+                frequency: *frequency,
+            });
+        }
         let v = variant(&version, binding)?;
         let exact = binding.exact().ok_or(Error::Malformed)?;
         match (action, v.declaration()) {
@@ -457,76 +494,6 @@ impl Policies {
                         collection,
                         resource_digest: version.digest().bytes(),
                     }),
-                })
-            }
-            (
-                Action::Execution {
-                    parameters,
-                    schedule,
-                    frequency,
-                    run_lifetime_seconds,
-                    ..
-                },
-                resource::Declaration::Script {
-                    artifact,
-                    definition: script,
-                },
-            ) => {
-                if self.execution.signer.is_none() || !verified.is_some_and(|v| v.matches(artifact))
-                {
-                    return Err(Error::Conflict.into());
-                }
-                checked_input(script.validate_parameters(parameters))?;
-                if artifact.length() > 16_777_216 {
-                    return Err(Error::Malformed.into());
-                }
-                if let Some(sql) = &script.spec().sql
-                    && (artifact.digest() != resource::Digest::of(sql.query().as_bytes())
-                        || artifact.length() != sql.query().len() as u64)
-                {
-                    return Err(Error::Malformed.into());
-                }
-                let collection = if let resource::ScriptPurpose::Collection { mappings } =
-                    &script.spec().purpose
-                {
-                    let source = if script.spec().profile == resource::ScriptProfile::Osquery {
-                        rss_mdm_inventory::Source::AgentOsquery
-                    } else {
-                        rss_mdm_inventory::Source::AgentScript
-                    };
-                    Some(
-                        freeze_collection(
-                            tx,
-                            self.planning.tenant,
-                            &version,
-                            v,
-                            source,
-                            mappings.keys(),
-                        )
-                        .await?,
-                    )
-                } else {
-                    None
-                };
-                Ok(Frozen::Execution {
-                    action: Box::new(FrozenAction {
-                        collection,
-                        input: ExecutionInput {
-                            platform: exact.platform,
-                            architecture: exact.architecture,
-                            parameters: parameters.clone(),
-                            schedule: schedule.clone(),
-                            run_lifetime_seconds: *run_lifetime_seconds,
-                        },
-                        definition: script.clone(),
-                        resource_digest: version.digest().bytes(),
-                        artifact_reference: artifact.reference().as_str().into(),
-                        content: rss_mdm_agent_wire::TaskContent {
-                            length: artifact.length(),
-                            sha256: artifact.digest().bytes(),
-                        },
-                    }),
-                    frequency: *frequency,
                 })
             }
             (
@@ -620,63 +587,6 @@ pub fn variant<'a>(
 }
 
 pub mod read;
-
-async fn freeze_collection<'a>(
-    tx: &mut PgTransaction<'_>,
-    tenant: rss_request_context::TenantId,
-    version: &resource::Version,
-    variant: &resource::Variant,
-    source: rss_mdm_inventory::Source,
-    keys: impl Iterator<Item = &'a String>,
-) -> Result<rss_mdm_inventory::CollectionDefinition> {
-    use sha2::{Digest, Sha256};
-    let dataset = format!(
-        "resource.{:x}",
-        Sha256::digest(checked_input(serde_json::to_vec(&(
-            version.resource().as_str(),
-            variant.key().as_str()
-        )))?)
-    );
-    let template = format!("{:x}", Sha256::digest(version.digest().bytes()));
-    let lookup = (dataset.clone(), template.clone());
-    let existing = tx
-        .with_connection(move |c| {
-            Box::pin(async move {
-                rss_mdm_inventory_postgres::collection_version_in(
-                    c, tenant, source, &lookup.0, &lookup.1,
-                )
-                .await
-                .map_err(|_| sqlx::Error::Protocol("collection lookup".into()))
-            })
-        })
-        .await?;
-    if let Some(existing) = existing {
-        return Ok(existing);
-    }
-    let catalog = crate::assets::catalog_in(tx, tenant, i64::MAX).await?;
-    let fields = keys
-        .map(|name| {
-            checked_input(
-                catalog
-                    .definition(checked_input(rss_mdm_inventory::FieldKey::parse(name))?)
-                    .cloned(),
-            )
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let definition = checked_input(rss_mdm_inventory::CollectionDefinition::new(
-        &dataset, template, source, fields,
-    ))?;
-    let frozen = definition.clone();
-    tx.with_connection(move |c| {
-        Box::pin(async move {
-            rss_mdm_inventory_postgres::register_collection_in(c, tenant, &frozen)
-                .await
-                .map_err(|_| sqlx::Error::Protocol("collection publication".into()))
-        })
-    })
-    .await?;
-    Ok(definition)
-}
 
 impl Frozen {
     pub fn authorize_native(

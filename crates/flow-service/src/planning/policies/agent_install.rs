@@ -231,7 +231,11 @@ impl Policies {
         let config = &self.execution.agent_installation;
         config.validate()?;
         let selection = binding.software().ok_or(Error::Malformed)?;
-        let version = self.resource_in(tx, binding).await?;
+        let version = self
+            .planning
+            .catalog
+            .active_version_in(tx, binding.id(), binding.version())
+            .await?;
         let catalog = rss_mdm_software_service::catalog::Catalog::new(
             self.planning.runtime.clone(),
             self.planning.tenant,
