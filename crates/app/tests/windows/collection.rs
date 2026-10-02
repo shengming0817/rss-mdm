@@ -374,6 +374,30 @@ async fn template_flow(
     let unknown:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND occurrence LIKE 'blocked-history:%' AND state->>'execution'='unknown'")
         .bind(case_tenant()).fetch_one(&mut pg).await?;
     ensure!(unknown == 65, "unknown history was retried or rewritten");
+    // Preserve historical terminal evidence when retiring the same real registration.
+    sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,policy_version,device,registration,generation,occurrence,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint) SELECT tenant_id,gen_random_uuid(),policy_version,device,registration,generation,'confirmed-history',created_at,available_at,deadline,jsonb_set(jsonb_set(state,'{execution}','\"unknown\"'),'{cancellation}','\"confirmed\"'),gateway_accepted,dispatch_fingerprint FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(runs[0]).execute(&mut pg).await?;
+    let history: serde_json::Value = sqlx::query_scalar("SELECT jsonb_agg(jsonb_build_array(id,state) ORDER BY id) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND registration=$2 AND (state->>'execution' IN('succeeded','failed') OR state->>'cancellation'='confirmed')").bind(case_tenant()).bind(peer.intent.registration).fetch_one(&mut pg).await?;
+    let mut notification = peer.message.clone();
+    notification.header.session_id = 3000;
+    notification.header.message_id = 1;
+    notification.header.credential = None;
+    notification.commands = vec![s::Command::Alert {
+        id: 2,
+        alert: s::Alert::UnenrollmentRequested,
+    }];
+    ensure!(
+        native::post(&peer.mutual, &peer.url, &notification)
+            .await?
+            .status()
+            == StatusCode::OK
+    );
+    let preserved: serde_json::Value = sqlx::query_scalar("SELECT jsonb_agg(jsonb_build_array(id,state) ORDER BY id) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND registration=$2 AND id IN(SELECT (value->>0)::uuid FROM jsonb_array_elements($3::jsonb))").bind(case_tenant()).bind(peer.intent.registration).bind(&history).fetch_one(&mut pg).await?;
+    ensure!(
+        preserved == history,
+        "registration retirement rewrote historical terminal evidence"
+    );
+    let live: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND registration=$2 AND state->>'execution' IN('not_started','running','waiting_reboot','unknown') AND state->>'cancellation'='none'").bind(case_tenant()).bind(peer.intent.registration).fetch_one(&mut pg).await?;
+    ensure!(live == 0, "retirement paging missed pending actions");
     pg.close().await?;
     host.close().await
 }

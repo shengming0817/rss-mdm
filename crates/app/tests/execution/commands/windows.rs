@@ -1793,6 +1793,22 @@ async fn full_user_context_is_exact_and_login_availability_is_session_local() ->
         )
         .await?;
     ensure!(principal.user_context() == Some(peer.intent.registration));
+    let config: rss_mdm_execution_service::configuration::Configuration = serde_json::from_value(
+        json!({"target":{"kind":"user","userId":user},"apply":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./User/Vendor/MSFT/Policy/Config/Experience/AllowWindowsSpotlight","instance":[],"operation":"replace","value":{"type":"integer","value":"1"}}}},"remove":null}),
+    )?;
+    config.validate()?;
+    let key = rss_mdm_native_protection::Protector::new(&[33; 32])?;
+    let owner = rss_mdm_execution_service::configuration::Owner::Remote {
+        operation: Uuid::new_v4(),
+    };
+    let protected = rss_mdm_execution_service::configuration::Protected::seal(
+        &key,
+        principal.tenant(),
+        owner,
+        &config,
+    )?;
+    ensure!(protected.open(&key, principal.tenant(), owner)?.target == config.target);
+
     let mut initial = peer.message.clone();
     initial.commands[0] = s::Command::Alert {
         id: initial.commands[0].id(),

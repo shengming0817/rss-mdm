@@ -162,6 +162,15 @@ pub(crate) async fn activate(
     device: &str,
 ) -> Result<(), Error> {
     let tenant = app.identity.tenant();
+    // A hint avoids an empty write/ledger transaction for every ordinary certificate.
+    // Activation still rechecks the pending row and current credential under the channel lock.
+    let mut hint = app.access.begin_read(&tenant.to_string()).await?;
+    let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_windows.renewals WHERE tenant_id=$1::uuid AND fingerprint=$2 AND activated_at IS NULL)")
+        .bind(tenant.to_string()).bind(leaf.fingerprint().as_slice()).fetch_one(&mut *hint).await.map_err(db)?;
+    hint.rollback().await.map_err(db)?;
+    if !pending {
+        return Ok(());
+    }
     let audit = RequestAudit::new(tenant.to_string(), "windows_renewal");
     let budget = app.devices.retirement_budget();
     let control = budget.control();

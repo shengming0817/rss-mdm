@@ -18,7 +18,8 @@
     }
   ],
   "external_relations": [
-    "rss_device_command.commands"
+    "rss_device_command.commands",
+    "mdm_planning.remote_operations"
   ],
   "verified_schemas": []
 }

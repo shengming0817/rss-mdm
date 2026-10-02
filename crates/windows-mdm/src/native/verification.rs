@@ -301,6 +301,7 @@ impl Request {
                 }
                 Self::Node {
                     node,
+                    instance,
                     operation,
                     value,
                     ..
@@ -336,7 +337,11 @@ impl Request {
                     }) {
                         return Err(Error::Value);
                     }
-                    addresses.insert(node, values);
+                    // Every dynamic address object is independently authorized. Repeated writes
+                    // to one object make the intended reconnect endpoint ambiguous.
+                    if addresses.insert((node, instance), values).is_some() {
+                        return Err(Error::Value);
+                    }
                 }
                 _ => {}
             }

@@ -116,3 +116,30 @@ fn asynchronous_alert_retains_native_type_and_rejects_correlator() {
         Err(CodecError::Duplicate)
     );
 }
+
+#[test]
+fn management_address_validation_preserves_dynamic_objects_and_rejects_repeated_writes() {
+    use rss_mdm_windows_mdm::native::{Request, Value, Verb};
+    let address = |name: &str, uri: &str| Request::Node {
+        node: "./SyncML/DMAcc/*/AppAddr/*/Addr".into(),
+        instance: vec!["owned-account".into(), name.into()],
+        operation: Verb::Replace,
+        value: Some(Value::Text(uri.into())),
+    };
+    let request = Request::Sequence {
+        operations: vec![
+            address("first", "https://unconfigured.test/MDM.svc"),
+            address("second", "https://configured.test/MDM.svc"),
+        ],
+    };
+    let addresses = request.management_addresses().unwrap();
+    assert_eq!(addresses.len(), 2);
+    assert!(addresses.iter().any(|u| u.contains("unconfigured.test")));
+    let ambiguous = Request::Sequence {
+        operations: vec![
+            address("same", "https://unconfigured.test/MDM.svc"),
+            address("same", "https://configured.test/MDM.svc"),
+        ],
+    };
+    assert!(ambiguous.management_addresses().is_err());
+}

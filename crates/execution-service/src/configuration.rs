@@ -22,13 +22,6 @@ impl Configuration {
         use rss_mdm_apple_mdm::native::request::Request as A;
         use rss_mdm_windows_mdm::native::Execution as W;
         self.target.validate()?;
-        if matches!(self.apply, Task::Windows { .. })
-            && !matches!(self.target, crate::NativeTarget::Device)
-        {
-            // No current Windows user binding is supplied by the registration/channel owner.
-            // Reject at publication rather than poisoning device-wide reconciliation.
-            return Err(Error::Unsupported);
-        }
         let owned = self.objects()?;
         if self
             .apply
