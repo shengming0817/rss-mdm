@@ -51,6 +51,7 @@ WITH tables AS (
  ('rss_transactional_messaging.policy',true,false,false),('rss_transactional_messaging.outbox',true,false,false),('rss_transactional_messaging.inbox',true,true,true)
 )
 SELECT current_user='mdm_command_runtime' AND session_user=current_user
+ AND has_schema_privilege(current_user,'mdm_flow','USAGE')
  AND current_setting('transaction_isolation')='read committed'
  AND NOT EXISTS(SELECT 1 FROM pg_namespace n JOIN pg_roles r ON r.oid=n.nspowner
   WHERE n.nspname IN('mdm_access','mdm_commands','mdm_resource','rss_device_command','rss_reconcile')

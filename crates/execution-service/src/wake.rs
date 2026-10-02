@@ -6,12 +6,23 @@ pub async fn wake_native_in(
     device: &str,
 ) -> Result<()> {
     let source_tenant = tx.tenant_id();
+    let tenant = source_tenant.to_string();
     let name = device.to_owned();
-    let interested = tx
-        .with_connection(move |c| {
+    let present = tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$2)")
+            .bind(tenant).bind(name).fetch_one(c).await
+    })).await?;
+    // Preserve the existing-device short circuit: source locks are only needed
+    // to decide whether to create previously absent configuration state.
+    let interested = if present {
+        true
+    } else {
+        let name = device.to_owned();
+        tx.with_connection(move |c| {
             Box::pin(async move { Ok(source.native_interest_on(c, source_tenant, &name).await) })
         })
-        .await??;
+        .await??
+    };
     let tenant = tx.tenant_id().to_string();
     let name = device.to_owned();
     // Authority ingress exists even without configuration policies. Do not create

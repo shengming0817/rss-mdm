@@ -1,6 +1,7 @@
 use super::test_support::Participant;
 use super::*;
 use anyhow::{Result, ensure};
+use rss_mdm_execution_service::channels::PushOutcome;
 use uuid::Uuid;
 #[tokio::test]
 #[ignore = "Apple T2: controlled HTTP/2 APNs with certificate authentication"]
@@ -10,11 +11,11 @@ async fn production_transport_receipts_are_not_command_evidence() -> Result<()> 
     let id = Uuid::new_v4();
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
     for (status, outcome) in [
-        (200, Outcome::Accepted),
-        (410, Outcome::Unregistered),
-        (429, Outcome::Retryable),
-        (503, Outcome::Retryable),
-        (400, Outcome::Rejected),
+        (200, PushOutcome::Accepted),
+        (410, PushOutcome::Unregistered),
+        (429, PushOutcome::Retryable),
+        (503, PushOutcome::Retryable),
+        (400, PushOutcome::Rejected),
     ] {
         let receipt = participant
             .push
@@ -26,7 +27,8 @@ async fn production_transport_receipts_are_not_command_evidence() -> Result<()> 
     let oversized = Participant::responses(vec![(200, vec![b' '; 4097])], vec![1], false).await?;
     let receipt = oversized.push.send(id, &[1], "fixture-magic", now).await?;
     ensure!(
-        receipt.outcome == Outcome::Retryable && receipt.reason == Some(Reason::InvalidResponse),
+        receipt.outcome == PushOutcome::Retryable
+            && receipt.reason == Some(Reason::InvalidResponse),
         "oversized HTTP 200 response was accepted"
     );
     oversized.close().await

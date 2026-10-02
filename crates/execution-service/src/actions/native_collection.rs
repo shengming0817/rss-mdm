@@ -300,16 +300,15 @@ pub async fn eligible_on(
     if let Some(scope) = row
         .try_get::<Option<Uuid>, _>("scope")
         .map_err(crate::database::db)?
-    {
-        if !matches!(
+        && !matches!(
             source
                 .admission_on(c, p.tenant(), scope, p.device())
                 .await
                 .map_err(crate::Error::from)?,
             crate::source_authority::ScopeAdmission::Eligible { .. }
-        ) {
-            return Ok(false);
-        }
+        )
+    {
+        return Ok(false);
     }
     let state: super::state::RunState =
         serde_json::from_value(row.try_get("state").map_err(crate::database::db)?)

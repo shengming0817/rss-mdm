@@ -1,5 +1,4 @@
 use super::*;
-use crate::apple::push;
 use lifecycle::Peer;
 use sqlx::Connection;
 impl Fixture {
@@ -52,7 +51,11 @@ impl Fixture {
             wake.ok_or_else(|| anyhow::anyhow!("expired queue starved a current collection"))?;
         self.app
             .execution
-            .apple_pushed(&wake, Some(200), push::Outcome::Accepted)
+            .apple_pushed(
+                &wake,
+                Some(200),
+                rss_mdm_execution_service::channels::PushOutcome::Accepted,
+            )
             .await?;
         // Make old entries due again to independently exercise the native 32-item scan.
         sqlx::query("UPDATE mdm_apple.attempts SET next_attempt=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND collection IS NOT NULL AND state='pending'").bind(case_tenant()).execute(&mut pg).await?;

@@ -71,7 +71,7 @@ pub struct ExecutionSummary {
 #[derive(Deserialize, Serialize)]
 #[serde(untagged)]
 enum ExecutionEvidence {
-    Command(CommandEvidence),
+    Command(Box<CommandEvidence>),
     Run(RunEvidence),
 }
 #[derive(Deserialize, Serialize)]

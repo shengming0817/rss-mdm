@@ -124,21 +124,11 @@ impl ExecutionAuthority {
         now: i64,
     ) -> Result<bool, Error> {
         match self {
-            Self::AgentInstall {
-                tenant,
-                policy,
-                version,
-                device,
-                operation,
-                ..
-            } => {
+            Self::AgentInstall { .. } => {
                 if permission != Permission::SoftwareDeploy {
                     return Ok(false);
                 }
-                crate::agent_install::authorized_on(
-                    source, conn, tenant, *policy, *version, device, *operation, now,
-                )
-                .await
+                crate::agent_install::authorized_on(source, conn, self, now).await
             }
             Self::User { evidence, .. } => {
                 for grant in evidence {

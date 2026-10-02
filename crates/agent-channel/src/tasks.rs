@@ -35,7 +35,7 @@ async fn authenticate(
         .devices
         .authorize_report(&credential, rss_mdm_inventory::ReportSource::AgentBuiltin)
         .await
-        .map_err(|e| task_error(e))?;
+        .map_err(task_error)?;
     let mut tx = app.access.begin(&principal.tenant().to_string()).await?;
     use rss_mdm_execution_service::channels::Agent;
     let binding = crate::Bindings

@@ -211,7 +211,7 @@ async fn pending(
                                 .valid(source.as_ref(), c, &protection, &permissions, now)
                                 .await
                         }
-                        Err(error) => Err(error.into()),
+                        Err(error) => Err(error),
                     })
                 })
             })

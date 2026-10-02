@@ -35,9 +35,9 @@ class BackendSupportBoundary(unittest.TestCase):
 
 class AuditIntegrationBoundary(unittest.TestCase):
     def graph(self):
-        names = {'rss-mdm-timeline-service','rss-mdm-authorization-service','rss-mdm-registration-service','rss-mdm-inventory-service','rss-mdm-flow-service','rss-mdm-content-service','rss-mdm-management-http','rss-mdm-agent-channel','rss-mdm-windows-channel','rss-mdm-apple-channel','rss-mdm-software-service', 'rss-mdm-audit-integration', 'rss-mdm-app', 'rss-mdm-policy', 'rss-identity-core', 'rss-audit-postgres'}
+        names = {'rss-mdm-timeline-service','rss-mdm-authorization-service','rss-mdm-registration-service','rss-mdm-inventory-service','rss-mdm-flow-service','rss-mdm-execution-service','rss-mdm-content-service','rss-mdm-management-http','rss-mdm-agent-channel','rss-mdm-windows-channel','rss-mdm-apple-channel','rss-mdm-software-service', 'rss-mdm-audit-integration', 'rss-mdm-app', 'rss-mdm-policy', 'rss-identity-core', 'rss-audit-postgres'}
         nodes = [{'id': name, 'features': [], 'deps': []} for name in names]
-        for owner, target in [(owner,'rss-mdm-audit-integration') for owner in ['rss-mdm-timeline-service', 'rss-mdm-authorization-service', 'rss-mdm-registration-service', 'rss-mdm-inventory-service', 'rss-mdm-flow-service', 'rss-mdm-content-service', 'rss-mdm-management-http', 'rss-mdm-agent-channel', 'rss-mdm-windows-channel', 'rss-mdm-apple-channel']] + [('rss-mdm-software-service','rss-mdm-audit-integration'), ('rss-mdm-app','rss-mdm-audit-integration'), ('rss-mdm-audit-integration','rss-audit-postgres')]:
+        for owner, target in [(owner,'rss-mdm-audit-integration') for owner in ['rss-mdm-timeline-service', 'rss-mdm-authorization-service', 'rss-mdm-registration-service', 'rss-mdm-inventory-service', 'rss-mdm-flow-service', 'rss-mdm-execution-service', 'rss-mdm-content-service', 'rss-mdm-management-http', 'rss-mdm-agent-channel', 'rss-mdm-windows-channel', 'rss-mdm-apple-channel']] + [('rss-mdm-software-service','rss-mdm-audit-integration'), ('rss-mdm-app','rss-mdm-audit-integration'), ('rss-mdm-audit-integration','rss-audit-postgres')]:
             next(n for n in nodes if n['id'] == owner)['deps'].append({'pkg':target})
         return {'packages':[{'id':name,'name':name} for name in names], 'resolve':{'nodes':nodes}}
 

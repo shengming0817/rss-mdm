@@ -233,5 +233,7 @@ ALTER TABLE mdm_planning.configuration_objects ADD CONSTRAINT configuration_obje
 
 GRANT SELECT,INSERT ON TABLE mdm_flow.native_protection TO mdm_flow_runtime;
 
+GRANT USAGE ON SCHEMA mdm_flow TO mdm_command_runtime;
+
 GRANT SELECT, INSERT ON mdm_flow.native_protection TO mdm_command_runtime;
 COMMIT;

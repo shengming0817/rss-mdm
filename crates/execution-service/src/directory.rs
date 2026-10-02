@@ -46,7 +46,7 @@ impl Query {
                 .as_ref()
                 .is_some_and(|v| v.is_empty() || v.len() > 64)
         {
-            return Err(Error::Malformed.into());
+            return Err(Error::Malformed);
         }
         Ok(())
     }

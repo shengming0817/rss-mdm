@@ -19,6 +19,16 @@ fn admission(value: Value) -> Result<ScopeAdmission, SourceError> {
         _ => Err(SourceError::Invariant),
     }
 }
+// The source owner grants locking through this SECURITY DEFINER function;
+// Execution keeps SELECT-only authority on Scope tables.
+async fn lock_scope_on(connection: &mut PgConnection, scope: Uuid) -> Result<Value, SourceError> {
+    Ok(
+        sqlx::query_scalar("SELECT mdm_planning.scope_admission($1,NULL)")
+            .bind(scope)
+            .fetch_one(connection)
+            .await?,
+    )
+}
 impl SourceAuthority for ExecutionSource {
     fn preview_scope_on<'a>(
         &'a self,
@@ -28,7 +38,8 @@ impl SourceAuthority for ExecutionSource {
         after: Option<&'a str>,
     ) -> Pending<'a, ScopePreview> {
         Box::pin(async move {
-            let result = sqlx::query_scalar::<_, Option<Uuid>>("SELECT resolution FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted FOR SHARE")
+            lock_scope_on(&mut *connection, scope).await?;
+            let result = sqlx::query_scalar::<_, Option<Uuid>>("SELECT resolution FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted")
                 .bind(tenant.to_string()).bind(scope).fetch_optional(&mut *connection).await?
                 .ok_or(SourceError::Missing)?.ok_or(SourceError::Conflict)?;
             let devices = sqlx::query_scalar("SELECT device FROM mdm_planning.scope_results WHERE tenant_id=$1::uuid AND run=$2 AND device>coalesce($3,'') COLLATE \"C\" ORDER BY device COLLATE \"C\" LIMIT 65")
@@ -46,8 +57,15 @@ impl SourceAuthority for ExecutionSource {
         Box::pin(async move {
             // A locked immutable resolution lets Execution merge this bounded source page
             // with its own claims without observing a different Scope resolution.
-            let result = sqlx::query_scalar::<_, Option<Uuid>>("SELECT resolution FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2 FOR SHARE")
-                .bind(tenant.to_string()).bind(scope).fetch_optional(&mut *connection).await?.flatten();
+            lock_scope_on(&mut *connection, scope).await?;
+            let result = sqlx::query_scalar::<_, Option<Uuid>>(
+                "SELECT resolution FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2",
+            )
+            .bind(tenant.to_string())
+            .bind(scope)
+            .fetch_optional(&mut *connection)
+            .await?
+            .flatten();
             let Some(result) = result else {
                 return Ok(Vec::new());
             };
@@ -90,9 +108,10 @@ impl SourceAuthority for ExecutionSource {
         scope: Uuid,
     ) -> Pending<'a, ScopeSnapshot> {
         Box::pin(async move {
-            let row = sqlx::query("SELECT revision,resolution,resolution_revision,mdm_planning.scope_admission(id,NULL)->>'state' AS freshness FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted FOR SHARE")
+            let freshness = lock_scope_on(&mut *connection, scope).await?;
+            let row = sqlx::query("SELECT revision,resolution,resolution_revision FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted")
                 .bind(tenant.to_string()).bind(scope).fetch_optional(connection).await?.ok_or(SourceError::Missing)?;
-            if row.try_get::<String, _>("freshness")? != "fresh" {
+            if freshness["state"].as_str() != Some("fresh") {
                 return Err(SourceError::Conflict);
             }
             Ok(ScopeSnapshot {

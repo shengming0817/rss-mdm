@@ -288,16 +288,23 @@ pub fn resource_target(target: SoftwareTarget) -> (resource::Platform, resource:
 }
 
 /// Durable Policy authority survives administrator logout and rechecks every actual grant.
-pub async fn authorized_on(
+pub(crate) async fn authorized_on(
     source: &dyn crate::source_authority::SourceAuthority,
     c: &mut sqlx::PgConnection,
-    tenant: &str,
-    policy: Uuid,
-    version: Uuid,
-    device: &str,
-    operation: Uuid,
+    authority: &crate::authority::ExecutionAuthority,
     now: i64,
 ) -> std::result::Result<bool, Error> {
+    let crate::authority::ExecutionAuthority::AgentInstall {
+        tenant,
+        policy,
+        version,
+        device,
+        operation,
+        ..
+    } = authority
+    else {
+        return Err(Error::Malformed);
+    };
     use crate::database::db;
     let row=sqlx::query("SELECT v.frozen,p.enabled AND p.current_version=v.id AS live,(p.definition->>'scope')::uuid AS scope FROM mdm_policy.policies p JOIN mdm_policy.versions v ON(v.tenant_id,v.policy)=(p.tenant_id,p.id) WHERE p.tenant_id=$1::uuid AND p.id=$2 AND v.id=$3")
         .bind(tenant).bind(policy).bind(version).fetch_optional(&mut *c).await.map_err(db)?;
@@ -333,7 +340,7 @@ pub async fn authorized_on(
             )
             .await?,
         crate::source_authority::ScopeAdmission::Eligible { .. }
-    ) && !dispatched_on(c, tenant, operation).await?
+    ) && !dispatched_on(c, tenant, *operation).await?
     {
         return Ok(false);
     }

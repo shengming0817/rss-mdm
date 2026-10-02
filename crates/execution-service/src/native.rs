@@ -826,11 +826,11 @@ pub(super) fn result_aad(
     command: i64,
     ordinal: i32,
 ) -> std::result::Result<rss_mdm_native_protection::DerivedAad, Error> {
-    Ok(crate::protection::aad(
+    crate::protection::aad(
         tenant,
         "windows.attempt.result",
         &(registration, generation, attempt, command, ordinal),
-    )?)
+    )
 }
 
 #[cfg(test)]

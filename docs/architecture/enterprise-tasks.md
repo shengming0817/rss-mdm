@@ -23,7 +23,7 @@ Scope 是目标计算的唯一 owner。成员三值结果、来源水位和定�
 
 配置持续分配和单次命令期限独立。临时缺少注册或能力时保留分配及诊断，相关事实到达后自动核对。脚本成功只表示退出结果；MDM 收到回执也不等于效果已经核实。采集输出仍通过 CollectionRun → Observation → Inventory，非法、部分、截断和迟到结果保留最后可信值。
 
-Content 持有内容流及其锁、permit 与截止时间，Flow 持有任务签名和命令提交；Agent 通道持有 HTTP 报文转换。事务消息、后台 claim/lease 和协议状态机复用现有设施。Agent 与 MDM 共享关联身份和管理查询，各自保留状态机；不引入 Agent 推送、SSH 或远程终端。
+Content 持有内容流及其锁、permit 与截止时间，Execution 持有任务签名和命令提交；Agent 通道持有 HTTP 报文转换。事务消息、后台 claim/lease 和协议状态机复用现有设施。Agent 与 MDM 共享关联身份和管理查询，各自保留状态机；不引入 Agent 推送、SSH 或远程终端。
 
 ## 来源
 
