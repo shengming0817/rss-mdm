@@ -165,6 +165,7 @@ async fn prepare(
         }) {
             package = PackageState::Aborted;
         }
+        input.final_message &= package == PackageState::Complete;
         input
             .commands
             .retain(|c| !matches!(c, Command::Alert { .. }));
@@ -337,7 +338,7 @@ impl WindowsSession for Session {
     }
 }
 async fn save(
-    session: Session,
+    mut session: Session,
     c: &mut sqlx::PgConnection,
     key: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
@@ -361,6 +362,17 @@ async fn save(
     };
     let reply = seal(&bytes, "windows.management.response")?;
     let incoming = seal(&session.bytes, "windows.management.incoming")?;
+    if package == PackageState::Aborted {
+        crate::collection::terminate_session(
+            c,
+            &mut session.facts,
+            &tenant,
+            &registration,
+            &sid,
+            "aborted",
+        )
+        .await?;
+    }
     let state = if package == PackageState::Aborted {
         "complete"
     } else if session.authenticated {

@@ -38,6 +38,7 @@ impl RunResult {
 pub enum FinishReason {
     Complete,
     MessageBudget,
+    Aborted,
     Timeout,
     Superseded,
     Revoked,
@@ -47,6 +48,7 @@ impl FinishReason {
         match value {
             "complete" => Ok(Self::Complete),
             "message_budget" => Ok(Self::MessageBudget),
+            "aborted" => Ok(Self::Aborted),
             "timeout" => Ok(Self::Timeout),
             "superseded" => Ok(Self::Superseded),
             "revoked" => Ok(Self::Revoked),

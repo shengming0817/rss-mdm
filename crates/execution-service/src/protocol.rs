@@ -102,7 +102,7 @@ async fn manage_on(
     audit: &RequestAudit,
 ) -> std::result::Result<(channels::Reply, channels::PackageState), Error> {
     use channels::{PackageState as P, WindowsReception};
-    use rss_mdm_windows_mdm::syncml::{self as sm, Alert, Command, CommandName};
+    use rss_mdm_windows_mdm::syncml::{self as sm, Alert, Command};
     let (mut prepared, authenticated) = match windows
         .prepare(c, key, p, raw, bytes, audit)
         .await
@@ -158,10 +158,7 @@ async fn manage_on(
         .map_err(Error::from)?;
     let continuation = if outgoing && prepared.package != P::Aborted && prepared.controls.is_empty()
     {
-        prepared
-            .response
-            .commands
-            .retain(|c| matches!(c,Command::Status(s) if s.command==CommandName::SyncHdr));
+        retain_received_acks(&mut prepared.response, &prepared.input, &prepared.controls);
         native::continue_on(source, c, key, p, &mut prepared.response, &prepared.limits).await?
     } else if outgoing && prepared.package != P::Aborted {
         native::Continuation::Waiting
@@ -188,10 +185,7 @@ async fn manage_on(
     let sent = matches!(continuation, native::Continuation::Sent);
     let waiting = matches!(continuation, native::Continuation::Waiting);
     if prepared.package != P::Complete && !sent {
-        prepared
-            .response
-            .commands
-            .retain(|c| matches!(c,Command::Status(s) if s.command==CommandName::SyncHdr));
+        retain_received_acks(&mut prepared.response, &prepared.input, &prepared.controls);
         prepared.response.final_message = false;
     }
     if waiting {
@@ -239,6 +233,23 @@ async fn manage_on(
         .await
         .map_err(Error::from)?;
     Ok((reply, package))
+}
+
+fn retain_received_acks(
+    response: &mut rss_mdm_windows_mdm::syncml::Message,
+    input: &rss_mdm_windows_mdm::syncml::Message,
+    controls: &[rss_mdm_windows_mdm::syncml::Command],
+) {
+    use rss_mdm_windows_mdm::syncml::{Command, CommandName};
+    response.commands.retain(|command| match command {
+        Command::Status(status) => match status.command {
+            CommandName::SyncHdr | CommandName::Alert => true,
+            CommandName::Results => input.commands.iter().any(|command| matches!(command, Command::Results(r) if r.id == status.command_ref))
+                && !controls.iter().any(|command| matches!(command, Command::Status(s) if s.command == CommandName::Results && s.command_ref == status.command_ref)),
+            _ => false,
+        },
+        _ => false,
+    });
 }
 
 pub(super) async fn settle_reports(

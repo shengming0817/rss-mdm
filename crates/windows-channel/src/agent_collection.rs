@@ -109,9 +109,13 @@ pub async fn receive(
         let complete = (0..4).all(|i| {
             query.statuses[i].is_some_and(|v| v >= 400 || v == 200 && query.values[i].is_some())
         });
-        if (complete && message.final_message)
-            || message.header.message_id as usize >= CodecLimits::default().session_messages
+        if message.header.message_id as usize >= CodecLimits::default().session_messages
+            && !(complete && message.final_message)
         {
+            facts.extend(
+                channel::abandon_in(c, &p.tenant().to_string(), id, "message_budget").await?,
+            );
+        } else if complete && message.final_message {
             let absent = query.statuses[..3] == [Some(404); 3];
             let installed = query.statuses[..3] == [Some(200); 3]
                 && query.values[0].as_deref() == Some("70")

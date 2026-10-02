@@ -1081,28 +1081,99 @@ async fn native_large_results_reassemble_once_and_size_errors_keep_result_unknow
                 });
             }
         }
-        let response = post(&peer.mutual, &peer.url, &first).await?;
+        let mut blocker =
+            sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+                .await?;
+        let mut observer =
+            sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+                .await?;
+        let registration: Uuid = sqlx::query_scalar(
+            "SELECT registration FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2",
+        )
+        .bind(case_tenant())
+        .bind(client.operation)
+        .fetch_one(&mut observer)
+        .await?;
+        let audit_before: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM mdm_audit.receipts WHERE tenant_id=$1::uuid")
+                .bind(case_tenant())
+                .fetch_one(&mut observer)
+                .await?;
+        let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&mut blocker)
+            .await?;
+        sqlx::query("BEGIN").execute(&mut blocker).await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2351))")
+            .bind(format!("{}:{registration}", case_tenant()))
+            .execute(&mut blocker)
+            .await?;
+        let barrier = tokio::sync::Barrier::new(3);
+        let request = || async {
+            barrier.wait().await;
+            post(&peer.mutual, &peer.url, &first).await
+        };
+        let release = async {
+            barrier.wait().await;
+            let overlap = tokio::time::timeout(Duration::from_secs(6),async {
+                loop {
+                    let blocked:i64 = sqlx::query_scalar("WITH RECURSIVE waiting(pid) AS (SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)) UNION SELECT a.pid FROM pg_stat_activity a JOIN waiting w ON w.pid=ANY(pg_blocking_pids(a.pid))) SELECT count(*) FROM waiting")
+                        .bind(pid).fetch_one(&mut observer).await?;
+                    if blocked>=2 { break Ok::<_,sqlx::Error>(()); }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }).await;
+            sqlx::query("ROLLBACK").execute(&mut blocker).await?;
+            overlap??;
+            Ok::<_, anyhow::Error>(())
+        };
+        let (left, right, overlap) = tokio::join!(request(), request(), release);
+        overlap?;
+        let left = left?;
+        let right = right?;
         ensure!(
-            response.status() == StatusCode::OK,
-            "first large result: {}",
-            response.status()
+            left.status() == StatusCode::OK && right.status() == StatusCode::OK,
+            "competing fragment request failed"
         );
-        let bytes = response.bytes().await?;
-        let (left, right) = tokio::join!(
-            post(&peer.mutual, &peer.url, &first),
-            post(&peer.mutual, &peer.url, &first)
-        );
+        let bytes = left.bytes().await?;
         ensure!(
-            left?.bytes().await? == bytes && right?.bytes().await? == bytes,
-            "concurrent replay changed a fragment response"
+            right.bytes().await? == bytes,
+            "first-write competition changed response"
         );
+        let persisted:i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND registration=$2 AND session_id=$3 AND message_id=3")
+            .bind(case_tenant()).bind(registration).bind(session.to_string()).fetch_one(&mut observer).await?;
+        let attempts: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2",
+        )
+        .bind(case_tenant())
+        .bind(client.operation)
+        .fetch_one(&mut observer)
+        .await?;
+        ensure!(
+            persisted == 1 && attempts == 1,
+            "competing fragment duplicated transcript or logical attempt"
+        );
+        let audit_after: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM mdm_audit.receipts WHERE tenant_id=$1::uuid")
+                .bind(case_tenant())
+                .fetch_one(&mut observer)
+                .await?;
+        ensure!(
+            audit_after == audit_before + 1,
+            "competing fragment duplicated the transactional audit fact"
+        );
+        drop(blocker);
+        drop(observer);
         let ack = s::decode(&bytes, &rss_mdm_windows_mdm::CodecLimits::default())?;
         ensure!(!ack.final_message && ack.commands.iter().any(|c|matches!(c,s::Command::Status(s) if s.command==s::CommandName::Results && s.code==213)));
         ensure!(
             post(&peer.mutual, &peer.url, &first).await?.bytes().await? == bytes,
             "fragment replay changed response"
         );
+        let operation_id = client.operation;
+        drop(client);
         host = host.restart().await?;
+        let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+        client.operation = operation_id;
         let buffered = operation(&mut client).await?;
         ensure!(
             buffered["commandStatus"] == "published"
@@ -1330,6 +1401,23 @@ async fn native_outgoing_chunks_wait_for_buffer_receipts_and_never_accept_early_
                 challenge: None,
                 credential: None,
             }));
+            let notification = packet.commands.iter().map(s::Command::id).max().unwrap() + 1;
+            packet.commands.push(s::Command::Alert {
+                id: notification,
+                alert: s::Alert::Generic {
+                    items: vec![s::Item {
+                        source: Some("./Vendor/MSFT/HealthAttestation/VerifyHealth".into()),
+                        target: None,
+                        meta: Some(s::Meta {
+                            format: Some("int".into()),
+                            media_type: Some("com.microsoft.mdm:HealthAttestation.Result".into()),
+                            ..Default::default()
+                        }),
+                        data: Some(Secret("3".into())),
+                        more_data: false,
+                    }],
+                },
+            });
             let response = post(&peer.mutual, &peer.url, &packet).await?;
             ensure!(
                 response.status() == StatusCode::OK,
@@ -1346,6 +1434,22 @@ async fn native_outgoing_chunks_wait_for_buffer_receipts_and_never_accept_early_
                 "chunk replay changed response"
             );
             sent = s::decode(&bytes, &rss_mdm_windows_mdm::CodecLimits::default())?;
+            ensure!(sent.commands.iter().any(|c|matches!(c,s::Command::Status(status) if status.command==s::CommandName::Alert && status.command_ref==notification && status.code==200)),"notification ACK was lost during outgoing transfer");
+            if frames == 1 && !early {
+                let operation_id = client.operation;
+                drop(client);
+                host = host.restart().await?;
+                client = Client::start(host.browser.clone(), host.app.clone()).await?;
+                client.operation = operation_id;
+                ensure!(
+                    post(&peer.mutual, &peer.url, &packet)
+                        .await?
+                        .bytes()
+                        .await?
+                        == bytes,
+                    "outgoing frame replay changed after service reconstruction"
+                );
+            }
             let after = operation(&mut client).await?;
             if early {
                 ensure!(

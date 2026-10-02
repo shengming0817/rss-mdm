@@ -170,15 +170,21 @@ pub async fn accept(
         first_command,
         received_at,
     )?;
-    let terminal = (run.attempts.complete() && message.final_message)
-        || message.header.message_id as usize >= CodecLimits::default().session_messages;
-    if terminal {
-        let reason = if run.attempts.complete() {
-            "complete"
-        } else {
-            "message_budget"
-        };
-        facts.extend(store::seal(tx, &mut run, reason).await?);
+    let complete = run.attempts.complete() && message.final_message;
+    let budget = message.header.message_id as usize >= limits.session_messages;
+    let terminal = complete || budget;
+    if complete {
+        facts.extend(store::seal(tx, &mut run, "complete").await?);
+    } else if budget {
+        facts.extend(
+            rss_mdm_inventory_service::collection::channel::abandon_in(
+                tx,
+                tenant,
+                id,
+                "message_budget",
+            )
+            .await?,
+        );
     } else {
         store::save_attempts_in(tx, &run).await?;
     }
@@ -197,7 +203,7 @@ pub async fn terminate_session(
         .bind(tenant).bind(registration).bind(session).fetch_all(&mut *tx).await.map_err(db)?;
     for id in ids {
         let native:bool=sqlx::query_scalar("SELECT channel_state IS NOT NULL FROM mdm_windows.collections WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(&id).fetch_one(&mut *tx).await.map_err(db)?;
-        if native {
+        if native || reason == "aborted" {
             facts.extend(
                 rss_mdm_inventory_service::collection::channel::abandon_in(
                     tx,

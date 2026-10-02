@@ -236,15 +236,18 @@ pub async fn receive(
                     .map_err(|_| Error::Conflict)?,
             }
         }
-        if (run.attempts.complete() && message.final_message)
-            || message.header.message_id as usize >= CodecLimits::default().session_messages
-        {
-            let reason = if run.attempts.complete() {
-                "complete"
-            } else {
-                "message_budget"
-            };
-            facts.extend(store::seal(c, &mut run, reason).await?);
+        if run.attempts.complete() && message.final_message {
+            facts.extend(store::seal(c, &mut run, "complete").await?);
+        } else if message.header.message_id as usize >= CodecLimits::default().session_messages {
+            facts.extend(
+                rss_mdm_inventory_service::collection::channel::abandon_in(
+                    c,
+                    &p.tenant().to_string(),
+                    id,
+                    "message_budget",
+                )
+                .await?,
+            );
         } else {
             store::save_attempts_in(c, &run).await?;
         }

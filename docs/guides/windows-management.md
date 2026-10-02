@@ -12,7 +12,7 @@ Windows UsernameToken 使用 enrollmentId 与一次性口令。签发期间持�
 
 会话以加密的原始请求和实际响应记录为唯一关联来源，重启后按 MsgID 连续重建；没有另存的关联缓存。当前预算为最多 128 条消息、每条 XML 512 KiB、编码对象 16 MiB、解码对象 12 MiB；响应还受设备声明的 MaxMsgSize / MaxObjSize 限制。非 Final 包仅积累回执，完整 Final 与当前授权共同决定成功结算。
 
-Get Results 的 MoreData / Size 在连续消息中重组，最后一片通过大小、引用与授权核对后才形成值。单 Item Add/Replace 可按实际 XML 字节分片；每片范围留在原 attempt，213 只允许继续传输，最后一片的成功回执才代表对象交付。Atomic/Sequence 保持整体，不跨包拆分。中断、大小冲突及预算耗尽关闭传输并保留未知结果，沿既有恢复 owner 处理，不盲目重发有副作用的命令。
+Get Results 的 MoreData / Size 在连续消息中重组，最后一片通过大小、引用与授权核对后才形成值。单 Item Add/Replace 可按实际 XML 字节分片；每片范围留在原 attempt，213 只允许继续传输，最后一片的成功回执才代表对象交付。Atomic/Sequence 保持整体，不跨包拆分。中断、大小冲突及预算耗尽关闭传输并保留未知结果；Abort 和非 Final 预算耗尽将未完成采集分别以 aborted / message_budget 失败结束，不投递成功快照，沿既有恢复 owner 处理，不盲目重发有副作用的命令。
 
 1226 Generic Alert 保存原生类型、源 URI 和不可逆证据摘要并原样关联 ACK；1222 / 1223 / 1225 仅控制协议传输。通知与交付回执不证明业务效果，也不提供应用 Correlator 支持。
 

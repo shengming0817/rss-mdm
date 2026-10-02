@@ -41,8 +41,15 @@ pub(crate) fn facts(
                 )?,
             )
             .map_err(|_| Error::Unavailable(Failure::Protocol))?;
+        let items = match alert {
+            Alert::Generic {items} => items.iter().map(|item| serde_json::json!({
+                "source":item.source,"format":item.meta.as_ref().and_then(|meta|meta.format.as_ref()),
+                "nativeType":item.meta.as_ref().and_then(|meta|meta.media_type.as_ref()),
+            })).collect::<Vec<_>>(),
+            _ => vec![],
+        };
         let fact=Fact::business(audit,&format!("windows-notification:{}:{}:{}:{}:{}",p.registration(),p.generation(),message.header.session_id,message.header.message_id,id),&digest,200,"success",None)
-            .and_then(|fact|fact.with_details(serde_json::json!({"nativeCode":code,"kind":kind,"items":count,"effect":"unverified"})))
+            .and_then(|fact|fact.with_details(serde_json::json!({"nativeCode":code,"kind":kind,"items":count,"nativeItems":items,"effect":"unverified"})))
             .map_err(Error::from)?;
         facts.push(fact);
     }
