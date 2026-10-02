@@ -395,3 +395,6 @@ pub const ADMISSION_SQL: &str = include_str!("admission.sql");
 
 pub mod service;
 mod transaction;
+
+/// Content operations consumed through software-owned ports.
+pub mod software;

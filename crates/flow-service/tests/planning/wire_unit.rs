@@ -10,6 +10,11 @@ fn request_fields_have_one_spelling_and_responses_are_typed() {
     assert!(serde_json::from_value::<Operation<ScopeChange>>(old).is_err());
     let request =
         serde_json::json!({"action":"approve","ring":"test","publisher_subject":"operator"});
-    assert!(serde_json::from_value::<crate::software_publication::model::Change>(request).is_err());
+    assert!(
+        serde_json::from_value::<rss_mdm_software_service::management::publication::model::Change>(
+            request
+        )
+        .is_err()
+    );
     assert!(Response::decode(serde_json::json!({"invented":"untyped"})).is_err());
 }

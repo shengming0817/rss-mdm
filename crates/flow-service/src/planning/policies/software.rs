@@ -2,9 +2,10 @@
 use super::super::action_contract::FrozenSoftwareAction;
 use super::*;
 use rss_mdm_policy::{SoftwareIntent, SoftwareRollout, SoftwareTarget};
-use rss_mdm_software_service::catalog::{Catalog, Error as CatalogError, FrozenSoftware};
-use std::collections::BTreeSet;
-use std::sync::Arc;
+use rss_mdm_software_service::{
+    catalog::FrozenSoftware,
+    preparation::{Delivery, Selection, Target},
+};
 
 pub struct SoftwareExecutionPolicy {
     pub id: Uuid,
@@ -179,90 +180,24 @@ impl SoftwareExecutionPolicy {
             "aarch64" => Architecture::Aarch64,
             _ => return Ok(false),
         };
-        let steps = match self
-            .execution_steps_in(service, tx, platform, architecture)
-            .await
-        {
-            Ok(Some(v)) => v,
-            Ok(None) => return Ok(false),
-            Err(crate::transaction::Fault::Request(Error::Unsupported)) => return Ok(false),
-            Err(e) => return Err(e),
-        };
-        self.supported_steps_in(service, tx, binding, platform, steps)
-            .await
-    }
-    async fn supported_steps_in(
-        &self,
-        service: &crate::execution::ExecutionService,
-        tx: &mut PgTransaction<'_>,
-        binding: &crate::execution::channels::AgentBinding,
-        platform: Platform,
-        steps: Vec<FrozenSoftware>,
-    ) -> Result<bool> {
-        let mut artifact_count = 0usize;
-        for (index, selected) in steps.into_iter().enumerate() {
-            let variant = selected
-                .version()
-                .resolve(
-                    selected.platform(),
-                    selected.architecture(),
-                    selected.variant(),
-                )
-                .map_err(|_| Error::Malformed)?;
-            let resource::Declaration::Software { definition } = variant.declaration() else {
-                return Err(Error::Malformed.into());
-            };
-            let action =
-                crate::execution::actions::software_wire::software_action(definition.spec());
-            let task_platform = match platform {
-                Platform::Windows => rss_mdm_agent_wire::TaskPlatform::Windows,
-                Platform::Macos => rss_mdm_agent_wire::TaskPlatform::Macos,
-            };
-            let export = match crate::execution::actions::software_exports::for_step_in(
+        match self
+            .prepared_in(
                 service,
                 tx,
-                &self.frozen.delivery,
-                &selected,
-                &action,
+                platform,
+                architecture,
+                &binding.execution_context,
             )
             .await
-            {
-                Ok(export) => export,
-                Err(crate::transaction::Fault::Request(Error::Unsupported)) => return Ok(false),
-                Err(error) => return Err(error),
-            };
-            let step = match crate::execution::actions::software_wire::software_step(
-                definition.spec(),
-                index,
-                task_platform,
-                &binding.execution_context,
-                export,
-            ) {
-                Ok(step) => step,
-                Err(_) => return Ok(false),
-            };
-            artifact_count += step.artifacts.len();
-            if artifact_count > 64
-                || step
-                    .export
-                    .validate_for(
-                        &step,
-                        Uuid::parse_str(&tx.tenant_id().to_string())
-                            .map_err(|_| Error::Malformed)?,
-                        &binding.execution_context,
-                    )
-                    .is_err()
-            {
-                return Ok(false);
-            }
-            if action
-                .required_profile(task_platform)
-                .is_none_or(|required| !binding.capabilities.contains(&required))
-            {
-                return Ok(false);
-            }
+        {
+            Ok(Some(steps)) => Ok(steps.iter().all(|step| {
+                step.action
+                    .required_profile(task_platform(platform))
+                    .is_some_and(|required| binding.capabilities.contains(&required))
+            })),
+            Ok(None) | Err(crate::transaction::Fault::Request(Error::Unsupported)) => Ok(false),
+            Err(e) => Err(e),
         }
-        Ok(true)
     }
     /// Current stage denominator and independently verified results; never infer from publication.
     pub async fn stage_progress_in(
@@ -333,130 +268,60 @@ impl SoftwareExecutionPolicy {
             unsupported_capability: unsupported.try_into().map_err(|_| Error::Malformed)?,
         })
     }
-    fn catalog(&self, service: &crate::execution::ExecutionService) -> Catalog {
-        Catalog::new(
-            service.runtime.clone(),
-            service.tenant,
-            Arc::new(crate::software_publication::host::Audit(
-                service.audit_store.clone(),
-            )),
-        )
+    fn selection(&self, platform: Platform, architecture: Architecture) -> Option<Selection<'_>> {
+        Some(Selection {
+            resource: &self.frozen.resource,
+            version: &self.frozen.version,
+            digest: self.frozen.resource_digest,
+            admission: self.frozen.admission_operation,
+            variant: self.variant(platform, architecture)?,
+            uninstall: matches!(self.intent(), SoftwareIntent::ExplicitUninstall),
+        })
     }
-    /// Resolve exact fixed prerequisites in dependency-first order.
-    /// Missing/withdrawn admission is None; storage and integrity failures remain errors.
-    pub async fn execution_steps_in(
+    pub async fn prepared_in(
         &self,
         service: &crate::execution::ExecutionService,
         tx: &mut PgTransaction<'_>,
         platform: Platform,
         architecture: Architecture,
-    ) -> Result<Option<Vec<FrozenSoftware>>> {
-        let catalog = self.catalog(service);
-        catalog.lock_in(tx).await?;
-        let target_platform = match platform {
-            Platform::Windows => resource::Platform::Windows,
-            Platform::Macos => resource::Platform::MacOS,
+        context: &rss_mdm_agent_wire::SoftwareExecutionContext,
+    ) -> Result<Option<Vec<rss_mdm_agent_wire::SoftwareTaskStep>>> {
+        let Some(selection) = self.selection(platform, architecture) else {
+            return Ok(None);
         };
-        let target_architecture = match architecture {
-            Architecture::X86_64 => resource::Architecture::X86_64,
-            Architecture::Aarch64 => resource::Architecture::Aarch64,
-        };
-        let mut stack = vec![(
-            self.frozen.resource.clone(),
-            self.frozen.version.clone(),
-            self.frozen.resource_digest,
-            false,
-            true,
-            None,
-        )];
-        let mut active = BTreeSet::new();
-        let mut done = BTreeSet::new();
-        let mut ordered = Vec::new();
-        while let Some((resource_id, version_id, digest, exit, root, selected)) = stack.pop() {
-            let key = (resource_id.clone(), version_id.clone());
-            if exit {
-                active.remove(&key);
-                done.insert(key);
-                ordered.push(selected.ok_or(Error::Malformed)?);
-                continue;
-            }
-            if done.contains(&key) {
-                continue;
-            }
-            if !active.insert(key.clone()) || active.len() + done.len() > 256 {
-                return Err(Error::Malformed.into());
-            }
-            let version = match catalog.version_in(tx, &resource_id, &version_id).await {
-                Ok(version) => version,
-                Err(CatalogError::NotAdmitted | CatalogError::Missing) => return Ok(None),
-                Err(error) => return Err(error.into()),
-            };
-            if version.digest().bytes() != digest {
-                return Err(Error::Conflict.into());
-            }
-            let variant_key = if root {
-                self.variant(platform, architecture)
-                    .ok_or(Error::Unsupported)?
-                    .to_owned()
-            } else {
-                let mut matches = version.variants().iter().filter(|v| {
-                    v.platform() == target_platform && v.architecture() == target_architecture
-                });
-                let selected = matches.next().ok_or(Error::Unsupported)?;
-                if matches.next().is_some() {
-                    return Err(Error::Unsupported.into());
-                }
-                selected.key().as_str().to_owned()
-            };
-            let selected = catalog
-                .resolve_admitted_in(
-                    tx,
-                    &resource_id,
-                    &version_id,
-                    target_platform,
-                    target_architecture,
-                    &checked_input(resource::Id::new(&variant_key))?,
-                )
-                .await;
-            let selected = match selected {
-                Ok(selected) => selected,
-                Err(CatalogError::NotAdmitted | CatalogError::Missing) => return Ok(None),
-                Err(error) => return Err(error.into()),
-            };
-            if root && selected.admission().operation != self.frozen.admission_operation {
-                return Ok(None);
-            }
-            let variant = selected
-                .version()
-                .resolve(target_platform, target_architecture, selected.variant())
-                .map_err(|_| Error::Malformed)?;
-            let resource::Declaration::Software { definition } = variant.declaration() else {
-                return Err(Error::Malformed.into());
-            };
-            let dependencies = if root && matches!(self.intent(), SoftwareIntent::ExplicitUninstall)
-            {
-                Vec::new()
-            } else {
-                definition.spec().dependencies.clone()
-            };
-            stack.push((resource_id, version_id, digest, true, root, Some(selected)));
-            for dependency in dependencies.into_iter().rev() {
-                stack.push((
-                    dependency.resource,
-                    dependency.version,
-                    dependency.sha256,
-                    false,
-                    false,
-                    None,
-                ));
-            }
-        }
-        if ordered.is_empty() || ordered.len() > 32 {
-            return Err(Error::Unsupported.into());
-        }
-        Ok(Some(ordered))
+        Ok(service
+            .software
+            .prepare_in(
+                tx,
+                &selection,
+                target(platform, architecture),
+                &delivery(&self.frozen.delivery),
+                context,
+            )
+            .await?)
     }
-    /// Recheck the original enterprise approval and immutable target bytes in the transaction.
+    pub async fn artifact_in(
+        &self,
+        service: &crate::execution::ExecutionService,
+        tx: &mut PgTransaction<'_>,
+        platform: Platform,
+        architecture: Architecture,
+        index: usize,
+        key: &str,
+    ) -> Result<resource::Artifact> {
+        let selection = self
+            .selection(platform, architecture)
+            .ok_or(Error::Forbidden)?;
+        service
+            .software
+            .artifact_in(tx, &selection, target(platform, architecture), index, key)
+            .await
+            .map_err(|e| match e {
+                rss_mdm_software_service::catalog::Error::Missing => Error::NotFound.into(),
+                other => crate::transaction::Fault::from(other),
+            })?
+            .ok_or_else(|| Error::Forbidden.into())
+    }
     pub async fn admitted_in(
         &self,
         service: &crate::execution::ExecutionService,
@@ -464,37 +329,13 @@ impl SoftwareExecutionPolicy {
         platform: Platform,
         architecture: Architecture,
     ) -> Result<Option<FrozenSoftware>> {
-        let Some(key) = self.variant(platform, architecture) else {
+        let Some(selection) = self.selection(platform, architecture) else {
             return Ok(None);
         };
-        let selected = self
-            .catalog(service)
-            .resolve_admitted_in(
-                tx,
-                &self.frozen.resource,
-                &self.frozen.version,
-                match platform {
-                    Platform::Windows => resource::Platform::Windows,
-                    Platform::Macos => resource::Platform::MacOS,
-                },
-                match architecture {
-                    Architecture::X86_64 => resource::Architecture::X86_64,
-                    Architecture::Aarch64 => resource::Architecture::Aarch64,
-                },
-                &checked_input(resource::Id::new(key))?,
-            )
-            .await;
-        let selected = match selected {
-            Ok(value) => value,
-            Err(CatalogError::NotAdmitted | CatalogError::Missing) => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        if selected.version().digest().bytes() != self.frozen.resource_digest
-            || selected.admission().operation != self.frozen.admission_operation
-        {
-            return Ok(None);
-        }
-        Ok(Some(selected))
+        Ok(service
+            .software
+            .recheck_in(tx, &selection, target(platform, architecture))
+            .await?)
     }
     pub async fn authorized_in(
         &self,
@@ -630,29 +471,7 @@ impl SoftwareExecutionPolicy {
                 Some(index),
             ));
         }
-        let steps = match self
-            .execution_steps_in(service, tx, platform, architecture)
-            .await
-        {
-            Ok(Some(steps)) => steps,
-            Ok(None) => {
-                return Ok(TaskAdmission::new(
-                    TaskAdmissionState::ApprovalWithdrawn,
-                    Some(index),
-                ));
-            }
-            Err(crate::transaction::Fault::Request(Error::Unsupported)) => {
-                return Ok(TaskAdmission::new(
-                    TaskAdmissionState::UnsupportedCapability,
-                    Some(index),
-                ));
-            }
-            Err(error) => return Err(error),
-        };
-        if !self
-            .supported_steps_in(service, tx, binding, platform, steps)
-            .await?
-        {
+        if !self.supported_in(service, tx, binding).await? {
             return Ok(TaskAdmission::new(
                 TaskAdmissionState::UnsupportedCapability,
                 Some(index),
@@ -662,5 +481,41 @@ impl SoftwareExecutionPolicy {
             TaskAdmissionState::Eligible,
             Some(index),
         ))
+    }
+}
+
+pub(crate) fn target(platform: Platform, architecture: Architecture) -> Target {
+    Target {
+        platform: match platform {
+            Platform::Windows => resource::Platform::Windows,
+            Platform::Macos => resource::Platform::MacOS,
+        },
+        architecture: match architecture {
+            Architecture::X86_64 => resource::Architecture::X86_64,
+            Architecture::Aarch64 => resource::Architecture::Aarch64,
+        },
+    }
+}
+fn task_platform(platform: Platform) -> rss_mdm_agent_wire::TaskPlatform {
+    match platform {
+        Platform::Windows => rss_mdm_agent_wire::TaskPlatform::Windows,
+        Platform::Macos => rss_mdm_agent_wire::TaskPlatform::Macos,
+    }
+}
+fn delivery(input: &rss_mdm_policy::SoftwareDelivery) -> Delivery<'_> {
+    match input {
+        rss_mdm_policy::SoftwareDelivery::Direct => Delivery::Direct,
+        rss_mdm_policy::SoftwareDelivery::Native { source, ring } => Delivery::Native {
+            source,
+            ring: match ring {
+                rss_mdm_policy::SoftwareDeliveryRing::Test => rss_mdm_software_release::Ring::Test,
+                rss_mdm_policy::SoftwareDeliveryRing::Pilot => {
+                    rss_mdm_software_release::Ring::Pilot
+                }
+                rss_mdm_policy::SoftwareDeliveryRing::Production => {
+                    rss_mdm_software_release::Ring::Production
+                }
+            },
+        },
     }
 }

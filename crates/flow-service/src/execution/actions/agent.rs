@@ -289,18 +289,14 @@ impl ExecutionService {
                     let (index,local_key)=key.split_once('/').ok_or(Error::Malformed)?;
                     let index:usize=index.parse().map_err(|_|Error::Malformed)?;
                     let (platform, architecture) = db::agent_profile_in(service,tx, run.target.registration).await?.ok_or(Error::Forbidden)?;
-                    let steps=software.execution_steps_in(service,tx,platform,architecture).await?.ok_or(Error::Forbidden)?;
-                    let selected=steps.get(index).ok_or(Error::NotFound)?;
-                    let variant = selected.version().resolve(selected.platform(),selected.architecture(),selected.variant()).map_err(|_| Error::Malformed)?;
-                    let rss_mdm_resource::Declaration::Software { definition } = variant.declaration() else { return Err(Error::Malformed.into()); };
-                    let artifact=definition.spec().artifacts.get(local_key).ok_or(Error::NotFound)?;
+                    let artifact=software.artifact_in(service,tx,platform,architecture,index,local_key).await?;
                     let tenant=tx.tenant_id().to_string();let attempt_id=attempt.to_string();let run_id=id.to_string();
                     let offer:Value=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT offer FROM mdm_commands.action_attempts WHERE tenant_id=$1::uuid AND id=$2::uuid AND run=$3::uuid").bind(tenant).bind(attempt_id).bind(run_id).fetch_one(c).await})).await?;
                     let signed:wire::SignedTask=stored(serde_json::from_value(offer))?;
                     let wire::TaskPayload::Software(spec)=signed.payload else {return Err(Error::Malformed.into());};
                     let offered=spec.steps.get(index).and_then(|s|s.artifacts.iter().find(|a|a.key==key)).ok_or(Error::Forbidden)?;
-                    if offered.length!=artifact.length || offered.sha256!=artifact.sha256 {return Err(Error::Forbidden.into());}
-                    artifact.artifact().map_err(|_| Error::Malformed.into())
+                    if offered.length!=artifact.length() || offered.sha256!=artifact.digest().bytes() {return Err(Error::Forbidden.into());}
+                    Ok(artifact)
                 }
             }
         }),crate::transaction::TransactionOwner::Execution).await

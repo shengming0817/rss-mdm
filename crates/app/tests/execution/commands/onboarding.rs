@@ -741,3 +741,64 @@ async fn scope_exit_preserves_dispatched_installation_authority_until_its_deadli
     ensure!(owner.shutdown().join().await?.is_clean());
     host.close().await
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.commands.onboarding"]
+async fn policy_freeze_distinguishes_superseded_identity_from_withdrawn_approval() -> Result<()> {
+    let (host, mut client, _, commands, owner, policy, _) = start_fixture().await?;
+    ensure!(commands.shutdown().join().await?.is_clean());
+    ensure!(owner.shutdown().join().await?.is_clean());
+    let original = client
+        .browser
+        .call(
+            &client.router,
+            Method::GET,
+            &format!("/api/v3/policies/{policy}"),
+            None,
+        )
+        .await?;
+    ensure!(original.0 == StatusCode::OK, "{original:?}");
+    let definition = original.1["definition"].clone();
+    let resource = definition["action"]["resource"]["id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing software resource: {original:?}"))?;
+    let mut wrong = definition.clone();
+    wrong["action"]["admissionOperation"] = json!(Uuid::new_v4());
+    let rejected = client
+        .browser
+        .call(
+            &client.router,
+            Method::POST,
+            &format!("/api/v3/policies/{}", Uuid::new_v4()),
+            Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,
+            "input":{"action":"put","enabled":true,"definition":wrong}})),
+        )
+        .await?;
+    ensure!(
+        rejected.0 == StatusCode::CONFLICT && rejected.1["code"] == "operation_conflict",
+        "wrong approval identity: {rejected:?}"
+    );
+    crate::test_support::software::write(
+        &mut client.browser,
+        &client.router,
+        &format!("/api/v3/software/resources/{resource}/versions/v1"),
+        1,
+        json!({"action":"withdraw","evidence":["freeze-rejection-contract"]}),
+    )
+    .await?;
+    let rejected = client
+        .browser
+        .call(
+            &client.router,
+            Method::POST,
+            &format!("/api/v3/policies/{}", Uuid::new_v4()),
+            Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,
+            "input":{"action":"put","enabled":true,"definition":definition}})),
+        )
+        .await?;
+    ensure!(
+        rejected.0 == StatusCode::FORBIDDEN && rejected.1["code"] == "permission_denied",
+        "withdrawn approval: {rejected:?}"
+    );
+    host.close().await
+}

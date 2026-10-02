@@ -137,7 +137,14 @@ pub(crate) async fn open(
         Ok(Arc::new(ExecutionService {
             protection: protection.clone(),
             readiness: Default::default(),
-            exports,
+            software: rss_mdm_software_service::preparation::Preparation::new(
+                rss_mdm_software_service::catalog::Catalog::new(
+                    runtime.clone(),
+                    tenant,
+                    audit_store.clone(),
+                ),
+                exports,
+            ),
             agent_installation: config.agent_installation.clone(),
             enrollment_entries: config.enrollment_entries.clone(),
             agent_store: Arc::new(rss_mdm_agent_channel::Bindings),

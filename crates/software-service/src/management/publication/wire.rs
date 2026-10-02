@@ -29,5 +29,5 @@ pub struct Candidate {
     pub source_snapshot: [u8; 32],
     pub rings: Vec<CandidateRing>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub document: Option<rss_mdm_software_service::publication::ExportDocument>,
+    pub document: Option<crate::publication::ExportDocument>,
 }

@@ -80,8 +80,8 @@ impl From<rss_mdm_flow_service::execution::error::ExecutionError> for Error {
         Self::Service(rss_mdm_flow_service::Error::from(e))
     }
 }
-impl From<rss_mdm_flow_service::software_publication::error::PublicationError> for Error {
-    fn from(e: rss_mdm_flow_service::software_publication::error::PublicationError) -> Self {
+impl From<rss_mdm_software_service::management::publication::error::PublicationError> for Error {
+    fn from(e: rss_mdm_software_service::management::publication::error::PublicationError) -> Self {
         Self::Service(rss_mdm_flow_service::Error::from(e))
     }
 }
@@ -103,3 +103,9 @@ pub(crate) fn audit_deadline(outcome: rss_mdm_audit_integration::WriteOutcome) -
 #[cfg(test)]
 #[path = "../tests/error_projection/unit.rs"]
 mod tests;
+
+impl From<rss_mdm_software_service::management::Error> for Error {
+    fn from(e: rss_mdm_software_service::management::Error) -> Self {
+        rss_mdm_flow_service::Error::from(e).into()
+    }
+}

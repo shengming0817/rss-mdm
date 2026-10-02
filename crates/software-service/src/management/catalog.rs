@@ -1,31 +1,31 @@
-use crate::{
-    Error,
-    authorization::{Permission, context::AuthorizedPrincipal},
+use super::{
+    Clock, Error, Failure,
+    content::{ImportedContent, ManagementContentPort, StageImport},
     transaction::{self, TransactionOwner},
 };
+use crate::catalog::{Catalog, Operation, SourceChange, VersionChange};
 use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_software_service::catalog::{
-    Catalog, ContentPort, Operation, SourceChange, VersionChange,
-};
+use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use serde_json::Value;
 use std::sync::Arc;
-pub struct Access {
+pub struct Access<C: ManagementContentPort> {
     pub runtime: Arc<PgRuntime>,
     pub audit: Arc<rss_mdm_audit_integration::AuditStore>,
     pub tenant: TenantId,
     pub catalog: Catalog,
-    pub resources: Arc<crate::resource_catalog::ResourceCatalog>,
-    pub clock: Arc<dyn rss_mdm_content_service::service::Clock>,
-    pub content: Option<Arc<rss_mdm_content_service::Store>>,
+    pub resources: Arc<rss_mdm_resource_postgres::ResourceStore>,
+    pub clock: Arc<dyn Clock>,
+    pub content: Option<Arc<C>>,
+    pub imports: ImportConfig,
 }
 async fn authorize(
     tx: &mut PgTransaction<'_>,
     proof: &AuthorizedPrincipal,
     permission: Permission,
 ) -> transaction::Result<()> {
-    let snapshot = crate::action_admission::current(tx, proof).await?;
+    let snapshot = transaction::current(tx, proof).await?;
     snapshot.require(proof, permission, None)?;
     proof.check_live()?;
     Ok(())
@@ -38,8 +38,8 @@ pub struct Selection {
     variant: String,
     artifact: Option<String>,
 }
-pub async fn read_source(
-    app: &Access,
+pub async fn read_source<C: ManagementContentPort>(
+    app: &Access<C>,
     auth: &AuthorizedPrincipal,
     audit: &RequestAudit,
     id: String,
@@ -69,8 +69,8 @@ pub async fn read_source(
     )
     .await
 }
-pub async fn write_source(
-    app: &Access,
+pub async fn write_source<C: ManagementContentPort>(
+    app: &Access<C>,
     auth: &AuthorizedPrincipal,
     audit: &RequestAudit,
     id: String,
@@ -105,8 +105,8 @@ pub async fn write_source(
     )
     .await
 }
-pub async fn read_version(
-    app: &Access,
+pub async fn read_version<C: ManagementContentPort>(
+    app: &Access<C>,
     auth: &AuthorizedPrincipal,
     audit: &RequestAudit,
     id: String,
@@ -136,8 +136,8 @@ pub async fn read_version(
     )
     .await
 }
-pub async fn write_version(
-    app: &Access,
+pub async fn write_version<C: ManagementContentPort>(
+    app: &Access<C>,
     auth: &AuthorizedPrincipal,
     audit: &RequestAudit,
     id: String,
@@ -214,14 +214,14 @@ pub async fn write_version(
     )
     .await
 }
-pub async fn download(
-    app: &Access,
+pub async fn download<C: ManagementContentPort>(
+    app: &Access<C>,
     auth: &AuthorizedPrincipal,
     audit: &RequestAudit,
     id: String,
     version: String,
     selection: Selection,
-) -> Result<rss_mdm_content_service::Verified, Error> {
+) -> Result<C::Download, Error> {
     auth.require(Permission::SoftwareRead, None)?;
     audit.require_request_settlement();
     audit.set_action("management_read");
@@ -270,7 +270,7 @@ pub async fn download(
         .content
         .as_ref()
         .ok_or(Error::Unsupported)?
-        .verify(&artifact)
+        .verify_artifact(&artifact)
         .await?;
     transaction::inspect(
         &app.runtime,
@@ -291,14 +291,13 @@ pub async fn download(
 }
 
 /// Import exact source bytes and retain them in the existing tenant content store.
-pub async fn import(
-    app: &Access,
+pub async fn import<C: ManagementContentPort>(
+    app: &Access<C>,
     auth: &AuthorizedPrincipal,
     audit: &RequestAudit,
-    op: Operation<rss_mdm_software_service::imports::ImportRequest>,
+    op: Operation<crate::imports::ImportRequest>,
 ) -> Result<Value, Error> {
-    use rss_mdm_content_service::{Binding, bindings};
-    use rss_mdm_software_service::imports;
+    use crate::imports;
     use sha2::{Digest, Sha256};
     auth.require(Permission::SoftwareWrite, None)?;
     auth.require(Permission::ResourceWrite, None)?;
@@ -326,32 +325,32 @@ pub async fn import(
         TransactionOwner::SoftwareCatalog,
     )
     .await?;
-    let mut uploads = Vec::new();
-    let mut pins = Vec::new();
+    let mut retained = None;
     let prepared = if let Some(source) = source {
         let content = app.content.as_ref().ok_or(Error::Unsupported)?;
-        let origins = content
-            .config
+        let origins = app
             .imports
+            .sources
             .get(&source.id)
             .ok_or(Error::Forbidden)?
             .clone();
-        let reader = rss_mdm_software_service::publication::ArtifactReader::new(
+        let reader = crate::publication::ArtifactReader::new(
             origins,
             4 * 1024 * 1024,
-            std::time::Duration::from_secs(content.config.transfer_seconds.min(30)),
+            std::time::Duration::from_secs(app.imports.transfer_seconds.min(30)),
         )
         .map_err(|_| Error::Malformed)?;
         let documents = tokio::time::timeout(
-            std::time::Duration::from_secs(content.config.transfer_seconds.min(30)),
+            std::time::Duration::from_secs(app.imports.transfer_seconds.min(30)),
             imports::fetch::fetch(app.tenant, &reader, &source, &op.input),
         )
         .await
-        .map_err(|_| Error::from(rss_mdm_content_service::Error::Deadline))?
+        .map_err(|_| Error::Unavailable(Failure::ContentDeadline))?
         .map_err(import_failure)?;
         let prepared =
             imports::prepare(app.tenant, &source, &op.input, &documents).map_err(import_failure)?;
         let actor = format!("{}:{}", auth.instance_id(), auth.principal_id());
+        let mut staged = Vec::new();
         for (artifact, bytes) in &prepared.originals {
             auth.check_live()?;
             let hash = Sha256::digest(
@@ -363,59 +362,23 @@ pub async fn import(
                 .concat(),
             );
             let upload = uuid::Uuid::from_bytes(hash[..16].try_into().expect("digest prefix"));
-            let now = app
-                .clock
-                .unix_seconds()
-                .ok_or(Error::Unavailable(crate::Failure::Clock))?;
-            let binding = Binding {
-                storage_class: rss_mdm_content_service::StorageClass::Artifact,
-                resource: op.input.resource.clone(),
-                version: op.input.resource_version.clone(),
-                variant: op.input.variant.clone(),
-                platform: op.input.platform,
-                architecture: op.input.architecture,
-                resource_digest: prepared.version.digest().bytes(),
-                source: Some(op.input.source.clone()),
-                origin: None,
-                reference: artifact.reference.clone(),
-                length: artifact.length,
-                sha256: artifact.sha256,
-                actor: actor.clone(),
-            };
-            let session = content.begin(upload, binding, now).await?;
-            if !session.complete {
-                let offset = usize::try_from(session.offset).map_err(|_| Error::Malformed)?;
-                let tail = bytes.get(offset..).ok_or(Error::Malformed)?.to_vec();
-                if !tail.is_empty() {
-                    content
-                        .append(
-                            &actor,
-                            upload,
-                            session.offset,
-                            now,
-                            std::io::Cursor::new(tail),
-                        )
-                        .await?;
-                }
-            }
-            uploads.push(
+            staged.push(
                 content
-                    .finish(
-                        &actor,
+                    .stage_import(StageImport {
                         upload,
-                        app.clock
-                            .unix_seconds()
-                            .ok_or(Error::Unavailable(crate::Failure::Clock))?,
-                    )
+                        actor: &actor,
+                        version: &prepared.version,
+                        variant: &op.input.variant,
+                        platform: op.input.platform,
+                        architecture: op.input.architecture,
+                        source: &op.input.source,
+                        artifact,
+                        bytes,
+                    })
                     .await?,
             );
         }
-        let artifacts = prepared
-            .originals
-            .iter()
-            .map(|(a, _)| a.artifact().map_err(|_| Error::Malformed))
-            .collect::<Result<Vec<_>, _>>()?;
-        pins = content.verify_materials(&artifacts).await?;
+        retained = Some(content.pin_imports(staged).await?);
         Some(prepared)
     } else {
         None
@@ -425,18 +388,18 @@ pub async fn import(
         &app.runtime,
         app.tenant,
         audit,
-        (app, auth, audit, &op, prepared.as_ref(), &uploads),
+        (app, auth, audit, &op, prepared.as_ref(), &retained),
         |ctx, tx| {
             Box::pin(async move {
-                let (app, proof, audit, op, prepared, uploads) = *ctx;
+                let (app, proof, audit, op, prepared, retained) = *ctx;
                 authorize(tx, proof, Permission::SoftwareWrite).await?;
                 authorize(tx, proof, Permission::ResourceWrite).await?;
                 let value = app
                     .catalog
-                    .import_in(tx, app.resources.software_resources(), audit, op, prepared)
+                    .import_in(tx, &app.resources, audit, op, prepared)
                     .await?;
-                for upload in uploads {
-                    bindings::bind_in(tx, upload).await?;
+                if let Some(evidence) = retained {
+                    evidence.bind_in(tx).await?;
                 }
                 proof.check_live()?;
                 Ok(value)
@@ -445,15 +408,21 @@ pub async fn import(
         TransactionOwner::SoftwareCatalog,
     )
     .await;
-    drop(pins);
+    drop(retained);
     result
 }
 
-fn import_failure(error: rss_mdm_software_service::catalog::Error) -> Error {
+fn import_failure(error: crate::catalog::Error) -> Error {
     match transaction::Fault::from(error) {
         transaction::Fault::Request(e) => e,
         transaction::Fault::Storage(_) | transaction::Fault::Sql(_) => {
-            Error::Unavailable(crate::Failure::SoftwareCatalogInvariant)
+            Error::Unavailable(Failure::SoftwareCatalogInvariant)
         }
     }
+}
+
+/// Host-selected source access policy, retaining the existing content configuration values.
+pub struct ImportConfig {
+    pub sources: std::collections::BTreeMap<String, Vec<crate::publication::ArtifactOrigin>>,
+    pub transfer_seconds: u64,
 }

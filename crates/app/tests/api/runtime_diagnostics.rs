@@ -573,12 +573,14 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
         );
         ensure!(inventory["queues"][0]["count"] == 0 && inventory["progress"]["lagging"] == false);
         ensure!(component(&projected,"automation")["bridge"]["successful"] == true);
-        pg(&format!("INSERT INTO mdm_planning.asset_dispatch(tenant_id,failure) VALUES('{}','automation_suspended') ON CONFLICT(tenant_id) DO UPDATE SET failure=excluded.failure",case_tenant()))?;
+        let suspend = format!("INSERT INTO mdm_planning.asset_dispatch(tenant_id,failure) VALUES('{}','automation_suspended') ON CONFLICT(tenant_id) DO UPDATE SET failure=excluded.failure", case_tenant());
+        tokio::task::spawn_blocking(move || pg(&suspend)).await??;
         let suspended = component(&fixture.query().await?,"automation");
         ensure!(suspended["task"] == "running" && suspended["bridge"]["successful"] == true);
         ensure!(suspended["readiness"] == "not_ready" && suspended["health"] == "degraded");
         ensure!(suspended["reasons"].as_array().unwrap().contains(&json!("automation_suspended")));
-        pg(&format!("UPDATE mdm_planning.asset_dispatch SET failure=NULL WHERE tenant_id='{}'",case_tenant()))?;
+        let resume = format!("UPDATE mdm_planning.asset_dispatch SET failure=NULL WHERE tenant_id='{}'", case_tenant());
+        tokio::task::spawn_blocking(move || pg(&resume)).await??;
         let expired = serde_json::to_value(
             fixture
                 .source

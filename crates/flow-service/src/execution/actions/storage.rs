@@ -223,49 +223,16 @@ impl ScheduledPolicy {
                 )
                 .await?
                 .ok_or(Error::Forbidden)?;
-                let task_platform = match platform {
-                    rss_mdm_policy::Platform::Windows => wire::TaskPlatform::Windows,
-                    rss_mdm_policy::Platform::Macos => wire::TaskPlatform::Macos,
-                };
-                let selected_steps = v
-                    .execution_steps_in(service, tx, platform, architecture)
-                    .await?
-                    .ok_or(Error::Forbidden)?;
-                let mut steps = Vec::new();
-                for (index, selected) in selected_steps.iter().enumerate() {
-                    let variant = selected
-                        .version()
-                        .resolve(
-                            selected.platform(),
-                            selected.architecture(),
-                            selected.variant(),
-                        )
-                        .map_err(|_| Error::Malformed)?;
-                    let rss_mdm_resource::Declaration::Software { definition } =
-                        variant.declaration()
-                    else {
-                        return Err(Error::Malformed.into());
-                    };
-                    let action = super::software_wire::software_action(definition.spec());
-                    let export = super::software_exports::for_step_in(
+                let steps = v
+                    .prepared_in(
                         service,
                         tx,
-                        &v.frozen.delivery,
-                        selected,
-                        &action,
+                        platform,
+                        architecture,
+                        &binding.execution_context,
                     )
-                    .await?;
-                    steps.push(
-                        super::software_wire::software_step(
-                            definition.spec(),
-                            index,
-                            task_platform,
-                            &binding.execution_context,
-                            export,
-                        )
-                        .map_err(|_| Error::Forbidden)?,
-                    );
-                }
+                    .await?
+                    .ok_or(Error::Forbidden)?;
                 let plan_bytes = checked_input(serde_json::to_vec(&steps))?;
                 let digest: [u8; 32] = ring::digest::digest(&ring::digest::SHA256, &plan_bytes)
                     .as_ref()

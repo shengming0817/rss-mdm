@@ -46,10 +46,7 @@ pub fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
 pub struct ExecutionService {
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub readiness: health::Readiness,
-    pub exports: std::collections::BTreeMap<
-        String,
-        Arc<rss_mdm_software_service::publication::PublicationService>,
-    >,
+    pub software: rss_mdm_software_service::preparation::Preparation,
     pub agent_installation: crate::planning::policies::agent_install::Config,
     pub enrollment_entries: crate::planning::policies::enrollment::Entries,
     pub agent_store: Arc<dyn channels::Agent>,

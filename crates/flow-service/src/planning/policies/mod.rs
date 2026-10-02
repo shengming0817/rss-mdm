@@ -282,67 +282,28 @@ impl Policies {
             if version.kind() != resource::Kind::Software {
                 return Err(Error::Malformed.into());
             }
-            let catalog = rss_mdm_software_service::catalog::Catalog::new(
-                self.planning.runtime.clone(),
-                self.planning.tenant,
-                std::sync::Arc::new(crate::software_publication::host::Audit(
-                    self.planning.audit_store.clone(),
-                )),
-            );
-            let mut approval = None;
-            for (target, key) in &selection.variants {
-                let (platform, architecture) = target.parts();
-                let selected = catalog
-                    .resolve_admitted_in(
-                        tx,
-                        binding.id(),
-                        binding.version(),
-                        match platform {
-                            Platform::Windows => resource::Platform::Windows,
-                            Platform::Macos => resource::Platform::MacOS,
-                        },
-                        match architecture {
-                            Architecture::X86_64 => resource::Architecture::X86_64,
-                            Architecture::Aarch64 => resource::Architecture::Aarch64,
-                        },
-                        &checked_input(resource::Id::new(key))?,
-                    )
-                    .await?;
-                if selected.version().digest() != version.digest() {
-                    return Err(Error::Conflict.into());
-                }
-                if let Some(previous) = approval
-                    && previous != selected.admission().operation
-                {
-                    return Err(Error::Conflict.into());
-                }
-                approval = Some(selected.admission().operation);
-                let variant = version
-                    .resolve(
-                        match platform {
-                            Platform::Windows => resource::Platform::Windows,
-                            Platform::Macos => resource::Platform::MacOS,
-                        },
-                        match architecture {
-                            Architecture::X86_64 => resource::Architecture::X86_64,
-                            Architecture::Aarch64 => resource::Architecture::Aarch64,
-                        },
-                        &checked_input(resource::Id::new(key))?,
-                    )
-                    .map_err(|_| Error::Malformed)?;
-                let resource::Declaration::Software { definition } = variant.declaration() else {
-                    return Err(Error::Malformed.into());
-                };
-                if matches!(intent, SoftwareIntent::ExplicitUninstall)
-                    && !definition.spec().behavior.supports_removal()
-                {
-                    return Err(Error::Unsupported.into());
-                }
-            }
-            if approval != Some(*admission_operation) {
-                return Err(Error::Conflict.into());
-            }
-            let action_definition = action;
+            let targets = selection
+                .variants
+                .iter()
+                .map(|(target, key)| {
+                    let (platform, architecture) = target.parts();
+                    (software::target(platform, architecture), key.clone())
+                })
+                .collect::<Vec<_>>();
+            self.execution
+                .software
+                .freeze_in(
+                    tx,
+                    rss_mdm_software_service::preparation::FreezeRequest {
+                        resource: binding.id(),
+                        version: binding.version(),
+                        digest: version.digest().bytes(),
+                        admission: *admission_operation,
+                        uninstall: matches!(intent, SoftwareIntent::ExplicitUninstall),
+                        targets: &targets,
+                    },
+                )
+                .await?;
             let action = FrozenSoftwareAction {
                 delivery: delivery.clone(),
                 resource_digest: version.digest().bytes(),
@@ -354,45 +315,6 @@ impl Policies {
                 schedule: schedule.clone(),
                 run_lifetime_seconds: *run_lifetime_seconds,
             };
-            let draft = software::SoftwareExecutionPolicy::draft(
-                Definition {
-                    scope: Uuid::nil(),
-                    action: action_definition.clone(),
-                },
-                action.clone(),
-            );
-            for target in selection.variants.keys() {
-                let (platform, architecture) = target.parts();
-                let steps = draft
-                    .execution_steps_in(&self.execution, tx, platform, architecture)
-                    .await?
-                    .ok_or(Error::Forbidden)?;
-                let mut artifact_count = 0usize;
-                let mut definition_bytes = 0usize;
-                for selected in &steps {
-                    let variant = selected
-                        .version()
-                        .resolve(
-                            selected.platform(),
-                            selected.architecture(),
-                            selected.variant(),
-                        )
-                        .map_err(|_| Error::Malformed)?;
-                    let resource::Declaration::Software { definition } = variant.declaration()
-                    else {
-                        return Err(Error::Malformed.into());
-                    };
-                    artifact_count = artifact_count
-                        .checked_add(definition.spec().artifacts.len())
-                        .ok_or(Error::Malformed)?;
-                    definition_bytes = definition_bytes
-                        .checked_add(checked_input(serde_json::to_vec(definition.spec()))?.len())
-                        .ok_or(Error::Malformed)?;
-                }
-                if artifact_count > 64 || definition_bytes > 4_000_000 {
-                    return Err(Error::Unsupported.into());
-                }
-            }
             return Ok(Frozen::Software {
                 action: Box::new(action),
             });

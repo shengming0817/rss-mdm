@@ -11,7 +11,6 @@ pub mod operation;
 pub mod planning;
 mod protection;
 pub mod resource_catalog;
-pub mod software_publication;
 pub mod task_signing;
 pub mod transaction;
 pub mod worker_wake;
@@ -20,8 +19,6 @@ pub use error::Error;
 use rss_mdm_authorization_service as authorization;
 use rss_mdm_inventory_service::{assets, collection, compliance};
 use rss_mdm_registration_service::device;
-
-pub mod software_catalog;
 
 /// Fresh product schema owned by this capability.
 pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
@@ -33,7 +30,3 @@ pub mod storage;
 /// Exact read-only execution authority required by native Agent registration.
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 pub const ACCESS_ADMISSION_SQL: &str = include_str!("access-admission.sql");
-
-#[cfg(test)]
-#[path = "../tests/software_publication.rs"]
-mod software_publication_contract;

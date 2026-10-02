@@ -1,6 +1,7 @@
 """#2529 must replace old ownership, not wrap it in a compatibility facade."""
 from pathlib import Path
 import unittest
+import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 class SoftwareOwnership(unittest.TestCase):
     def test_content_has_no_signing_or_whole_body_path(self):
@@ -16,7 +17,10 @@ class SoftwareOwnership(unittest.TestCase):
     def test_publication_service_cannot_depend_on_app(self):
         service = ROOT / 'crates/software-service'
         self.assertTrue(service.is_dir())
-        self.assertNotIn('rss-mdm-app', (service / 'Cargo.toml').read_text())
+        dependencies = tomllib.loads((service / 'Cargo.toml').read_text())['dependencies']
+        for consumer in ('rss-mdm-app', 'rss-mdm-flow-service',
+                         'rss-mdm-content-service', 'rss-mdm-management-http'):
+            self.assertNotIn(consumer, dependencies)
         for path in service.rglob('*.rs'):
             self.assertNotIn('crate::config::secret', path.read_text())
 if __name__ == '__main__':

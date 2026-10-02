@@ -1,5 +1,5 @@
 use crate::{ConfigIssue, Failure};
-use rss_mdm_flow_service::{execution, planning, software_publication};
+use rss_mdm_flow_service::{execution, planning};
 #[derive(Clone, Debug, thiserror::Error, serde::Serialize)]
 #[serde(tag = "kind", content = "reason", rename_all = "snake_case")]
 pub enum Error {
@@ -187,17 +187,9 @@ impl axum::response::IntoResponse for Error {
                     execution::error::ExecutionError::MissingTask => "task_not_found",
                 },
             ),
-            Self::Service(rss_mdm_flow_service::Error::Publication(e)) => (
-                StatusCode::NOT_FOUND,
-                match e {
-                    software_publication::error::PublicationError::MissingSource => {
-                        "software_source_not_found"
-                    }
-                    software_publication::error::PublicationError::MissingCandidate => {
-                        "software_candidate_not_found"
-                    }
-                },
-            ),
+            Self::Service(rss_mdm_flow_service::Error::Publication(e)) => {
+                (StatusCode::NOT_FOUND, e.code())
+            }
             Self::Service(_) | Self::Configuration(_) | Self::Unavailable(_) => {
                 (StatusCode::SERVICE_UNAVAILABLE, "service_unavailable")
             }

@@ -355,6 +355,14 @@ impl Catalog {
         Ok(())
     }
     async fn dependencies(&self, tx: &mut PgTransaction<'_>, root: &r::Version) -> Result<()> {
+        self.dependency_versions_in(tx, root).await.map(|_| ())
+    }
+    /// All-variant fixed materials, also consumed by native publication derivation.
+    pub(crate) async fn dependency_versions_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        root: &r::Version,
+    ) -> Result<Vec<r::Version>> {
         use std::collections::BTreeSet;
         let root_ref = r::SoftwareDependency {
             resource: root.resource().as_str().into(),
@@ -363,6 +371,7 @@ impl Catalog {
         };
         let mut active = BTreeSet::from([(root_ref.resource.clone(), root_ref.version.clone())]);
         let mut done = BTreeSet::new();
+        let mut materials = std::collections::BTreeMap::<_, r::Version>::new();
         let mut stack = vec![(root_ref, true)];
         stack.extend(dependency_refs(root)?.into_iter().map(|d| (d, false)));
         while let Some((dependency, exit)) = stack.pop() {
@@ -374,6 +383,11 @@ impl Catalog {
             }
             if active.contains(&key) {
                 return Err(Error::Input);
+            }
+            if let Some(previous) = materials.get(&key)
+                && previous.digest().bytes() != dependency.sha256
+            {
+                return Err(Error::NotAdmitted);
             }
             if done.contains(&key) {
                 continue;
@@ -394,11 +408,12 @@ impl Catalog {
                 return Err(Error::NotAdmitted);
             }
             self.check_sources(tx, &version).await?;
+            materials.insert(key.clone(), version.clone());
             active.insert(key);
             stack.push((dependency, true));
             stack.extend(dependency_refs(&version)?.into_iter().map(|d| (d, false)));
         }
-        Ok(())
+        Ok(materials.into_values().collect())
     }
     pub async fn version_read_in(
         &self,
