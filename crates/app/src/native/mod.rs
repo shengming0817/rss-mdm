@@ -55,6 +55,7 @@ pub(crate) struct TlsRouter {
     pub router: Router,
 }
 pub(crate) struct Routers {
+    pub windows: Option<Arc<crate::windows::Windows>>,
     pub apple: Option<Arc<crate::apple::Apple>>,
     pub browser: Router,
     pub listeners: Vec<(NativeListenerKind, TlsRouter)>,

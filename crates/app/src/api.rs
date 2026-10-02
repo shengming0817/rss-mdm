@@ -291,6 +291,7 @@ pub(crate) fn from_state(
         requests: state.requests.clone(),
     });
     let windows_state = Arc::new(rss_mdm_windows_channel::HttpState {
+        protection: state.protection.clone(),
         mount: crate::device::ChannelMount::new(
             state.identity.tenant,
             rss_mdm_inventory::ReportSource::MdmWindows,
@@ -444,10 +445,11 @@ pub(crate) fn from_state(
             crate::native::NativeListenerKind::WindowsEnrollment,
             enrollment,
         ));
-        listeners.push((
-            crate::native::NativeListenerKind::WindowsManagement,
-            planning,
-        ));
+        listeners.extend(
+            planning
+                .into_iter()
+                .map(|router| (crate::native::NativeListenerKind::WindowsManagement, router)),
+        );
     }
     if let Some(apple) = crate::apple::router(
         state.apple.as_deref(),
@@ -504,6 +506,7 @@ pub(crate) fn from_state(
         )
         .layer(DefaultBodyLimit::max(16384));
     crate::native::Routers {
+        windows: state.windows.clone(),
         apple,
         browser,
         listeners,
