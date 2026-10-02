@@ -53,7 +53,7 @@ pub(crate) async fn manage(
     {
         return Err(Error::Forbidden);
     }
-    if message.commands.iter().any(|c| {
+    let disconnect = message.commands.iter().any(|c| {
         matches!(
             c,
             Command::Alert {
@@ -61,21 +61,26 @@ pub(crate) async fn manage(
                 ..
             }
         )
-    }) && let Some(response) =
-        crate::unenrollment::replay(&app, &checked, &message, &bytes, &audit).await?
-    {
-        return Ok((
-            [(
-                axum::http::header::CONTENT_TYPE,
-                "application/vnd.syncml.dm+xml; charset=utf-8",
-            )],
-            response,
-        )
-            .into_response());
-    }
+    });
     crate::renewal::activate(&app, &checked, &message.header.source).await?;
     let credential = app.mount.credential(checked.fingerprint());
-    let principal = app.devices.management_principal(&credential).await?;
+    let principal = match app
+        .devices
+        .management_principal(&credential)
+        .await
+        .map_err(Error::from)
+    {
+        Ok(principal) => principal,
+        Err(Error::Unauthorized) if disconnect => {
+            // A concurrent retirement may commit after the principal lookup began.
+            // Recover only the exact committed receipt, without active authority.
+            let response = crate::unenrollment::replay(&app, &checked, &message, &bytes, &audit)
+                .await?
+                .ok_or(Error::Unauthorized)?;
+            return Ok(management_reply(response));
+        }
+        Err(error) => return Err(error),
+    };
     audit.identify_device(principal.registration());
     audit.registration(principal.registration());
     audit.target(principal.device());
@@ -98,29 +103,25 @@ pub(crate) async fn manage(
             }
         }
     }
-    let response = if message.commands.iter().any(|c| {
-        matches!(
-            c,
-            Command::Alert {
-                alert: syncml::Alert::UnenrollmentRequested,
-                ..
-            }
-        )
-    }) {
+    let response = if disconnect {
         crate::unenrollment::requested(&app, &principal, &message, &bytes, &audit).await?
     } else {
         app.execution
             .management(app.windows()?.clone(), &principal, &message, &bytes, &audit)
             .await?
     };
-    Ok((
+    Ok(management_reply(response))
+}
+
+fn management_reply(response: Vec<u8>) -> Response {
+    (
         [(
             axum::http::header::CONTENT_TYPE,
             "application/vnd.syncml.dm+xml; charset=utf-8",
         )],
         response,
     )
-        .into_response())
+        .into_response()
 }
 
 use rss_mdm_execution_service::channels::{PackageState, Reply};

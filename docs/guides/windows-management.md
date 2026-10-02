@@ -24,13 +24,13 @@ Get Results 的 MoreData / Size 在连续消息中重组，最后一片通过大
 
 ```sh
 user_context_id='<当前 Full 注册的 userContextId>'
-jq -n --arg operationId "$(uuidgen)" --arg userId "$user_context_id" --argjson deadline "$(($(date +%s)+300))" '{operationId:$operationId,inputVersion:"user-input-v1",deadline:$deadline,target:{kind:"user",userId:$userId},task:{platform:"windows",request:{kind:"sync_ml",request:{kind:"node",node:"./User/Vendor/MSFT/Policy/Config/Experience/AllowWindowsSpotlight",instance:[],operation:"get",value:null}}}}'
+jq -n --arg operationId "$(uuidgen)" --arg userId "$user_context_id" --argjson deadline "$(($(date +%s)+300))" '{operationId:$operationId,inputVersion:"user-input-v1",deadline:$deadline,target:{kind:"user",userId:$userId},task:{platform:"windows",request:{kind:"sync_ml",request:{kind:"node",node:"./User/Vendor/MSFT/Policy/Config/Experience/AllowThirdPartySuggestionsInWindowsSpotlight",instance:[],operation:"get",value:null}}}}'
 ```
 
 用户配置内容沿同一 Resource 上传与 Policy 消费路径，`apply` / `remove` 属于当前注册的用户 scope。配置 JSON 的形状如下；将 userId 替换为上述值，资源版本提供 operation 的 inputVersion：
 
 ```json
-{"target":{"kind":"user","userId":"<当前 Full 注册的 userContextId>"},"apply":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./User/Vendor/MSFT/Policy/Config/Experience/AllowWindowsSpotlight","instance":[],"operation":"replace","value":{"type":"integer","value":"1"}}}},"remove":null}
+{"target":{"kind":"user","userId":"<当前 Full 注册的 userContextId>"},"apply":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./User/Vendor/MSFT/Policy/Config/Experience/AllowThirdPartySuggestionsInWindowsSpotlight","instance":[],"operation":"replace","value":{"type":"integer","value":"1"}}}},"remove":null}
 ```
 
 ## 通道配置与维护

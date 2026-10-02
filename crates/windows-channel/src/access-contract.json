@@ -87,7 +87,7 @@
       "table": "push_queries",
       "read_write": true,
       "updates": [],
-      "delete_policy": "existsselect1frommdm_access.management_sessionsswheres.tenant_id=push_queries.tenant_idands.registration=push_queries.registrationands.session_id=push_queries.sessionands.expires_at<clock_timestamp"
+      "delete_policy": "existsselect1frommdm_access.management_sessionsswheres.tenant_id=push_queries.tenant_idands.registration=push_queries.registrationands.session_id=push_queries.session::textands.expires_at<clock_timestamp"
     },
     {
       "schema": "mdm_windows",

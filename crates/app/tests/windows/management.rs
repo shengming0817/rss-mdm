@@ -698,10 +698,30 @@ async fn native_unenrollment_notification_retires_only_its_authenticated_registr
     let original = response.bytes().await?;
     ensure!(duplicate.status() == StatusCode::OK);
     ensure!(duplicate.bytes().await? == original);
+    let state = work
+        .call(
+            axum::http::Method::GET,
+            &format!("/{}", work.operation),
+            None,
+        )
+        .await?;
+    ensure!(
+        state.1["commandStatus"] == "cancelled",
+        "pending command survived retirement: {}",
+        state.1
+    );
+
     // Retired response recovery survives temporary transcript pruning.
     let pool = sqlx::PgPool::connect_with(options("postgres")?).await?;
     sqlx::query(
-        "DELETE FROM mdm_windows.management_sessions WHERE tenant_id=$1::uuid AND registration=$2",
+        "DELETE FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND registration=$2",
+    )
+    .bind(case_tenant())
+    .bind(peer.intent.registration)
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "DELETE FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2",
     )
     .bind(case_tenant())
     .bind(peer.intent.registration)

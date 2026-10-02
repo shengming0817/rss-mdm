@@ -34,8 +34,8 @@ impl ExecutionService {
         .then_some(registration);
         let mut after = Uuid::nil();
         loop {
-            let rows=sqlx::query("SELECT o.id,o.device,o.registration,o.registration_generation,o.input_context,o.request,o.approval::text FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(o.tenant_id,o.registration,o.registration_generation) WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$4 AND o.id>$3 AND r.state='active' AND o.gateway_accepted AND o.dispatch_failure IS NULL AND o.input_context->>'platform'='windows' AND d.status IN ('published','received') AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) ORDER BY o.id LIMIT 64")
-                        .bind(&tenant).bind(registration).bind(after).bind(generation).fetch_all(&mut *c).await.map_err(database::db)?;
+            let rows=sqlx::query("SELECT id,device,registration,registration_generation,input_context,request,approval::text FROM mdm_commands.windows_pending_operations($1,$2,$3)")
+                .bind(registration).bind(generation).bind(after).fetch_all(&mut *c).await.map_err(database::db)?;
             let count = rows.len();
             for row in rows {
                 after = row.try_get("id").map_err(database::db)?;

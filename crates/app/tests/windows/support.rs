@@ -1,6 +1,6 @@
 use super::*;
 use crate::api::Assembly;
-use crate::enrollment::test_support::{audit, create};
+use crate::enrollment::test_support::audit;
 use crate::{
     Database,
     assets::collection::CollectionService,
@@ -669,6 +669,7 @@ impl Host {
             final_message: true,
         };
         Ok(Peer {
+            profile,
             proof,
             receipt,
             intent,
@@ -685,6 +686,7 @@ impl Host {
     }
 }
 pub(crate) struct Peer {
+    profile: rss_mdm_registration_service::enrollment::WindowsProfile,
     pub(super) proof: AuthorizedPrincipal,
     pub(super) receipt: crate::enrollment::Receipt,
     pub(crate) intent: issuance::Intent,
@@ -703,13 +705,14 @@ impl Host {
     pub(crate) async fn replace(&self, peer: &Peer) -> anyhow::Result<()> {
         let plain = crate::enrollment::random();
         let password = Password::new(plain.clone())?;
-        let next = create(
+        let next = crate::enrollment::test_support::create_windows(
             &self.store,
             &peer.proof,
             crate::test_support::case::name("tls-device"),
             &password,
             self.reference,
             Uuid::new_v4(),
+            peer.profile,
         )
         .await?;
         let mut issue = peer.issue.clone();

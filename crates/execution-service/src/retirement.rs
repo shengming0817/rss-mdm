@@ -18,8 +18,12 @@ pub async fn retire_in(
     audit.target(&registration.to_string());
     let mut after = String::new();
     loop {
-        let rows = sqlx::query("SELECT d.* FROM mdm_commands.operations o JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(o.tenant_id,o.registration) WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND r.state<>'active' AND d.terminal_at IS NULL AND d.command_id COLLATE \"C\" > $3 ORDER BY d.command_id COLLATE \"C\" LIMIT 64 FOR UPDATE OF d")
-        .bind(tenant).bind(registration).bind(&after).fetch_all(&mut *c).await.map_err(db)?;
+        let rows = sqlx::query("SELECT * FROM mdm_commands.retirement_commands($1,$2)")
+            .bind(registration)
+            .bind(&after)
+            .fetch_all(&mut *c)
+            .await
+            .map_err(db)?;
         let count = rows.len();
         let now: i64 = sqlx::query_scalar(
             "SELECT floor(extract(epoch FROM clock_timestamp())*1000000)::bigint",
@@ -72,14 +76,10 @@ pub async fn retire_in(
             }
             let record = command.record();
             let changed: bool =
-                sqlx::query_scalar("SELECT rss_device_command.save($1::uuid,$2,$3,$4,$5,$6,$7,$8)")
-                    .bind(tenant)
-                    .bind(device)
+                sqlx::query_scalar("SELECT mdm_commands.save_retired_command($1,$2::uuid,$3,$4)")
+                    .bind(registration)
                     .bind(&id)
                     .bind(previous)
-                    .bind(record.status.as_str())
-                    .bind(record.published_at)
-                    .bind(record.received_at)
                     .bind(record.terminal_at)
                     .fetch_one(&mut *c)
                     .await
@@ -105,7 +105,7 @@ pub async fn retire_in(
     }
     let mut after = Uuid::nil();
     loop {
-        let rows = sqlx::query("SELECT id,state FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND registration=$2 AND id>$3 AND state->>'execution' IN ('not_started','running','waiting_reboot','unknown') AND state->>'cancellation'='none' ORDER BY id LIMIT 64 FOR UPDATE").bind(tenant).bind(registration).bind(after).fetch_all(&mut *c).await.map_err(db)?;
+        let rows = sqlx::query("SELECT id,state FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND registration=$2 AND id>$3 AND state->>'execution' IN ('not_started','running','waiting_reboot','unknown') AND state->>'cancellation'='none' ORDER BY id LIMIT 64").bind(tenant).bind(registration).bind(after).fetch_all(&mut *c).await.map_err(db)?;
         let count = rows.len();
         for row in rows {
             let id: Uuid = row.try_get("id").map_err(db)?;
@@ -118,7 +118,18 @@ pub async fn retire_in(
             if state == previous {
                 continue;
             }
-            sqlx::query("UPDATE mdm_commands.action_runs SET state=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).bind(serde_json::to_value(state).map_err(|_| Error::Malformed)?).execute(&mut *c).await.map_err(db)?;
+            let changed: bool =
+                sqlx::query_scalar("SELECT mdm_commands.save_retired_action($1,$2,$3,$4)")
+                    .bind(registration)
+                    .bind(id)
+                    .bind(serde_json::to_value(previous).map_err(|_| Error::Malformed)?)
+                    .bind(serde_json::to_value(state).map_err(|_| Error::Malformed)?)
+                    .fetch_one(&mut *c)
+                    .await
+                    .map_err(db)?;
+            if !changed {
+                return Err(Error::Conflict);
+            }
             facts.push(
                 Fact::business(
                     &audit,

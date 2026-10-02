@@ -98,7 +98,8 @@ pub struct Header {
     pub to: Option<String>,
     /// Whether an anonymous ReplyTo is present; responses must set this to false.
     pub reply_to: bool,
-    /// Unverified security fields; policy/issue requests need UsernameToken, issue responses need Timestamp.
+    /// Unverified security fields; policy and initial issue requests need UsernameToken.
+    /// CMS renewal uses the existing TLS identity; issue responses need Timestamp.
     pub security: Option<Security>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -265,7 +266,7 @@ fn validate_header(h: &Header, op: Operation, l: &CodecLimits) -> Result<()> {
     } else if h.message_id.is_none() || h.to.is_none() || h.relates_to.is_some() {
         return Err(E::Structure);
     }
-    if matches!(op, Operation::GetPolicies | Operation::Issue)
+    if op == Operation::GetPolicies
         && h.security
             .as_ref()
             .and_then(|s| s.username.as_ref())
@@ -355,7 +356,18 @@ fn validate(m: &Message, l: &CodecLimits) -> Result<()> {
         Body::Discover(v) => enrollment::validate_discover(v, l),
         Body::DiscoverResponse(v) => enrollment::validate_discover_response(v, l),
         Body::GetPoliciesResponse(v) => policy::validate(v, l),
-        Body::Issue(v) => enrollment::validate_issue(v, l),
+        Body::Issue(v) => {
+            if matches!(v.request, CertificateRequest::Pkcs10(_))
+                && m.header
+                    .security
+                    .as_ref()
+                    .and_then(|s| s.username.as_ref())
+                    .is_none()
+            {
+                return Err(E::Structure);
+            }
+            enrollment::validate_issue(v, l)
+        }
         Body::IssueResponse(v) => enrollment::validate_issue_response(v, l),
         _ => Ok(()),
     }

@@ -221,6 +221,26 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
                 })
                 .collect(),
         }));
+        // Reply Status order follows the actual server request, including Push
+        // before the inventory Gets. Client CmdIDs stay unique and sequential.
+        let order = response
+            .commands
+            .iter()
+            .enumerate()
+            .map(|(index, command)| (command.id(), index))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        packet.commands[1..].sort_by_key(|command| match command {
+            s::Command::Status(value) => order[&value.command_ref],
+            s::Command::Results(value) => order[&value.command_ref.unwrap()],
+            _ => unreachable!(),
+        });
+        for (index, command) in packet.commands.iter_mut().enumerate() {
+            match command {
+                s::Command::Status(value) => value.id = index as u32 + 1,
+                s::Command::Results(value) => value.id = index as u32 + 1,
+                _ => unreachable!(),
+            }
+        }
         let result = native::post(&peer.mutual, &peer.url, &packet).await?;
         ensure!(
             result.status().is_success(),

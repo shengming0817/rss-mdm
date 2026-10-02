@@ -1632,8 +1632,8 @@ async fn management_address_effect_requires_a_new_session_on_the_actual_tls_endp
     );
     ensure!(
         crate::windows::test_support::absolute_form_post(&host, &peer, &alternate, &next).await?
-            == 403,
-        "absolute-form URI forged the endpoint identity"
+            == 400,
+        "absolute-form authority mismatch was accepted"
     );
     let mut peer_ack = peer.ack.clone();
     peer_ack.header.target = alternate.clone();
@@ -1794,7 +1794,7 @@ async fn full_user_context_is_exact_and_login_availability_is_session_local() ->
         .await?;
     ensure!(principal.user_context() == Some(peer.intent.registration));
     let config: rss_mdm_execution_service::configuration::Configuration = serde_json::from_value(
-        json!({"target":{"kind":"user","userId":user},"apply":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./User/Vendor/MSFT/Policy/Config/Experience/AllowWindowsSpotlight","instance":[],"operation":"replace","value":{"type":"integer","value":"1"}}}},"remove":null}),
+        json!({"target":{"kind":"user","userId":user},"apply":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./User/Vendor/MSFT/Policy/Config/Experience/AllowThirdPartySuggestionsInWindowsSpotlight","instance":[],"operation":"replace","value":{"type":"integer","value":"1"}}}},"remove":null}),
     )?;
     config.validate()?;
     let key = rss_mdm_native_protection::Protector::new(&[33; 32])?;
@@ -1830,7 +1830,8 @@ async fn full_user_context_is_exact_and_login_availability_is_session_local() ->
     );
     let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
     client.set_authorized(true).await?;
-    let uri = "./User/Vendor/MSFT/Policy/Config/Experience/AllowWindowsSpotlight";
+    let uri =
+        "./User/Vendor/MSFT/Policy/Config/Experience/AllowThirdPartySuggestionsInWindowsSpotlight";
     let request = |id, user: &str| json!({"operationId":id,"inputVersion":"user-context-v1","target":{"kind":"user","userId":user},"deadline":crate::windows::test_support::now()+300,"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":uri,"instance":[],"operation":"get","value":null}}}});
     let wrong = client
         .call(
@@ -1895,9 +1896,28 @@ async fn device_profile_never_grants_an_enrolled_user_scope() -> anyhow::Result<
     let mut host = crate::windows::test_support::Host::open().await?;
     host.listen().await?;
     let peer = host.peer().await?;
+    let warm = begin(
+        &peer.mutual,
+        &peer.url,
+        &peer.message,
+        &peer.ack,
+        2199,
+        None,
+    )
+    .await?;
+    ensure!(
+        post(
+            &peer.mutual,
+            &peer.url,
+            &report(&warm.first, &warm.gets, "10.0.26100.0", 200)
+        )
+        .await?
+        .status()
+            == StatusCode::OK
+    );
     let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
     client.set_authorized(true).await?;
-    let body = json!({"operationId":client.operation,"inputVersion":"device-profile-v1","target":{"kind":"user","userId":peer.intent.registration},"deadline":crate::windows::test_support::now()+300,"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./User/Vendor/MSFT/Policy/Config/Experience/AllowWindowsSpotlight","instance":[],"operation":"get","value":null}}}});
+    let body = json!({"operationId":client.operation,"inputVersion":"device-profile-v1","target":{"kind":"user","userId":peer.intent.registration},"deadline":crate::windows::test_support::now()+300,"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./User/Vendor/MSFT/Policy/Config/Experience/AllowThirdPartySuggestionsInWindowsSpotlight","instance":[],"operation":"get","value":null}}}});
     ensure!(client.call(Method::POST, "", Some(body)).await?.0 == StatusCode::FORBIDDEN);
     client.accept_approved().await?;
     client.publish_operation(client.operation).await?;
