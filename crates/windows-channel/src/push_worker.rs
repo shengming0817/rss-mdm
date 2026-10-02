@@ -1,5 +1,5 @@
 //! Claim and settle a channel lease; pending execution authority participates in the same transaction.
-use crate::push::PushOutcome;
+use crate::push::{PushOutcome, RetryAfter};
 use crate::{Error, Failure, RequestAudit, Store, Windows, database::db};
 use rss_mdm_audit_integration::{AuditStore, Fact};
 use rss_mdm_native_protection::Protector;
@@ -125,8 +125,7 @@ async fn settle(
 ) -> Result<(), Error> {
     let status = receipt.status;
     let outcome = receipt.outcome;
-    let retry_after = i64::try_from(receipt.retry_after.map_or(0, |wait| wait.as_secs()))
-        .map_err(|_| Error::Malformed)?;
+    let retry_after = receipt.retry_after;
     let audit = audit(tenant, wake.id, wake.registration);
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(3));
     let control = budget.control();
@@ -142,14 +141,19 @@ async fn settle(
             }
             if row.try_get::<Option<Uuid>,_>("lease_id").map_err(db)?!=Some(wake.id) {return Ok(None)}
             let failures=if matches!(*outcome, PushOutcome::Retryable | PushOutcome::Unknown) {(row.try_get::<i32,_>("failures").map_err(db)?+1).min(6)} else {0};
-            let delay=if matches!(*outcome, PushOutcome::Retryable | PushOutcome::Unknown) {(15i64*(1<<failures)).max(*retry_after)} else {120};
-            sqlx::query("UPDATE mdm_windows.push_channels SET lease_id=NULL,lease_until=NULL,settled_id=$5,status=$6,outcome=$7,failures=$8,next_push=clock_timestamp()+make_interval(secs=>$9::double precision) WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND revision=$4")
-                .bind(*tenant).bind(wake.registration).bind(wake.generation).bind(wake.revision).bind(wake.id).bind(i32::from(*status)).bind(outcome.as_str()).bind(failures).bind(delay as f64).execute(c).await.map_err(db)?;
+            let (retry_seconds,retry_at)=match *retry_after {
+                Some(RetryAfter::Seconds(seconds))=>(i64::from(seconds),None),
+                Some(RetryAfter::Date(at))=>(0,Some(at)),
+                None=>(0,None),
+            };
+            let delay=if matches!(*outcome, PushOutcome::Retryable | PushOutcome::Unknown) {(15i64*(1<<failures)).max(retry_seconds)} else {120};
+            sqlx::query("UPDATE mdm_windows.push_channels SET lease_id=NULL,lease_until=NULL,settled_id=$5,status=$6,outcome=$7,failures=$8,next_push=greatest(clock_timestamp()+make_interval(secs=>$9::double precision),to_timestamp($10::double precision)) WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND revision=$4")
+                .bind(*tenant).bind(wake.registration).bind(wake.generation).bind(wake.revision).bind(wake.id).bind(i32::from(*status)).bind(outcome.as_str()).bind(failures).bind(delay as f64).bind(retry_at.map(|at|at as f64)).execute(c).await.map_err(db)?;
             Ok(Some(true))
         })).await?;
         if let Some(changed)=changed {
             let input=serde_json::to_vec(&(wake.registration,wake.revision,wake.id,status,outcome,retry_after)).map_err(|_|Error::Malformed)?;
-            let fact=Fact::business(audit,&format!("windows-push:{}:settle",wake.id),&input,200,"success",None).and_then(|f|f.with_details(serde_json::json!({"status":status,"outcome":outcome,"channelRevision":wake.revision,"retryAfterSeconds":retry_after}))).map_err(Error::from)?;
+            let fact=Fact::business(audit,&format!("windows-push:{}:settle",wake.id),&input,200,"success",None).and_then(|f|f.with_details(serde_json::json!({"status":status,"outcome":outcome,"channelRevision":wake.revision,"retryAfter":retry_after}))).map_err(Error::from)?;
             store.append(tx,&fact,!changed).await.map_err(Error::from)?;audit.mark_commit_started();
         }
         Ok(())

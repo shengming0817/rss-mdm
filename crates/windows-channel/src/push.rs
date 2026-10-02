@@ -39,30 +39,33 @@ pub struct Push {
     pub configuration: [u8; 32],
     token: tokio::sync::Mutex<Option<(Zeroizing<String>, Instant)>>,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetryAfter {
+    Seconds(u32),
+    Date(i64),
+}
 pub struct Receipt {
     pub status: u16,
     pub outcome: PushOutcome,
     /// Validated server minimum wait; persistence applies at least the local backoff too.
-    pub retry_after: Option<Duration>,
+    pub retry_after: Option<RetryAfter>,
 }
-fn retry_after(headers: &reqwest::header::HeaderMap, now: SystemTime) -> Option<Duration> {
+fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<RetryAfter> {
     let mut values = headers.get_all(reqwest::header::RETRY_AFTER).iter();
     let value = values.next()?.to_str().ok()?.trim();
     if values.next().is_some() || value.is_empty() || value.len() > 128 {
         return None;
     }
-    let seconds = if value.bytes().all(|b| b.is_ascii_digit()) {
-        value.parse::<u64>().ok()?
+    if value.bytes().all(|b| b.is_ascii_digit()) {
+        value.parse().ok().map(RetryAfter::Seconds)
     } else {
-        let wait = httpdate::parse_http_date(value)
+        let date = httpdate::parse_http_date(value)
             .ok()?
-            .duration_since(now)
-            .unwrap_or_default();
-        wait.as_secs()
-            .checked_add(u64::from(wait.subsec_nanos() != 0))?
-    };
-    // Bound the untrusted interval to a representable scheduling value; never truncate a valid wait.
-    (seconds <= i32::MAX as u64).then(|| Duration::from_secs(seconds))
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .ok()?;
+        i64::try_from(date.as_secs()).ok().map(RetryAfter::Date)
+    }
 }
 fn unavailable(_: impl std::fmt::Debug) -> Error {
     Error::Unavailable(Failure::Protocol)
@@ -243,7 +246,7 @@ impl Push {
             _ => PushOutcome::Rejected,
         };
         let retry_after = (outcome == PushOutcome::Retryable)
-            .then(|| retry_after(response.headers(), SystemTime::now()))
+            .then(|| retry_after(response.headers()))
             .flatten();
         Ok(Receipt {
             status,
@@ -285,31 +288,29 @@ mod tests {
     #[test]
     fn provider_wait_handles_seconds_dates_and_rejects_ambiguous_or_invalid_values() {
         use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
-        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(86400) + Duration::from_millis(500);
         let mut headers = HeaderMap::new();
-        assert_eq!(retry_after(&headers, now), None);
-        for (value, seconds) in [
-            ("180", Some(180)),
-            ("0", Some(0)),
-            ("Fri, 02 Jan 1970 00:02:00 GMT", Some(120)),
-            ("Thu, 01 Jan 1970 00:00:00 GMT", Some(0)),
+        assert_eq!(retry_after(&headers), None);
+        for (value, wait) in [
+            ("180", Some(RetryAfter::Seconds(180))),
+            ("0", Some(RetryAfter::Seconds(0))),
+            (
+                "Fri, 02 Jan 1970 00:02:00 GMT",
+                Some(RetryAfter::Date(86520)),
+            ),
+            ("Thu, 01 Jan 1970 00:00:00 GMT", Some(RetryAfter::Date(0))),
             ("-1", None),
             ("+1", None),
             ("1.5", None),
-            ("2147483648", None),
+            ("4294967296", None),
             ("18446744073709551616", None),
             ("later", None),
         ] {
             headers.insert(RETRY_AFTER, HeaderValue::from_static(value));
-            assert_eq!(
-                retry_after(&headers, now),
-                seconds.map(Duration::from_secs),
-                "{value}"
-            );
+            assert_eq!(retry_after(&headers), wait, "{value}");
         }
         headers.insert(RETRY_AFTER, HeaderValue::from_static("120"));
         headers.append(RETRY_AFTER, HeaderValue::from_static("180"));
-        assert_eq!(retry_after(&headers, now), None);
+        assert_eq!(retry_after(&headers), None);
     }
     #[test]
     fn device_channel_is_limited_to_the_native_notification_service() {

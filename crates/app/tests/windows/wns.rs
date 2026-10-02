@@ -111,7 +111,11 @@ async fn native_push_transport_refreshes_tokens_without_claiming_command_deliver
     ] {
         let receipt = push.send("https://db5.notify.windows.com/wake").await?;
         ensure!(receipt.status == status && receipt.outcome == outcome);
-        ensure!(receipt.retry_after == (status == 406).then_some(Duration::from_secs(180)));
+        ensure!(
+            receipt.retry_after
+                == (status == 406)
+                    .then_some(rss_mdm_windows_channel::push::RetryAfter::Seconds(180))
+        );
     }
     stop.cancel();
     drop(push);
@@ -287,7 +291,8 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
         }
     }
     // Use the production claim/settle loop with the App authority bridge and a real TLS WNS peer.
-    let (origin, transport, server, stop) = worker_transport().await?;
+    let (retry_date,retry_at): (String,f64) = sqlx::query_as("WITH due AS (SELECT date_trunc('second',clock_timestamp()+interval '1 hour') AS at) SELECT to_char(at AT TIME ZONE 'UTC','Dy, DD Mon YYYY HH24:MI:SS \"GMT\"'),extract(epoch FROM at)::double precision FROM due").fetch_one(&pool).await?;
+    let (origin, transport, server, stop) = worker_transport(retry_date).await?;
     let mut windows = crate::windows::test_support::windows()?;
     let channel = Arc::get_mut(&mut windows.channel).unwrap();
     channel.push = Some(rss_mdm_windows_channel::push::Push::fixture(
@@ -379,6 +384,36 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
         )
         .await?
     );
+    let row = sqlx::query("SELECT outcome,status,failures,next_push>=to_timestamp($3) AS delayed FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(registration).bind(retry_at).fetch_one(&pool).await?;
+    ensure!(
+        row.try_get::<String, _>("outcome")? == "retryable"
+            && row.try_get::<i32, _>("status")? == 503
+            && row.try_get::<i32, _>("failures")? == 2
+            && row.try_get::<bool, _>("delayed")?
+    );
+    ensure!(
+        !rss_mdm_windows_channel::push::wake_once(
+            &windows.channel,
+            &eligibility,
+            &host.app.protection,
+            &database,
+            &host.app.audit_store,
+            case_tenant()
+        )
+        .await?
+    );
+    sqlx::query("UPDATE mdm_windows.push_channels SET next_push=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(registration).execute(&pool).await?;
+    ensure!(
+        rss_mdm_windows_channel::push::wake_once(
+            &windows.channel,
+            &eligibility,
+            &host.app.protection,
+            &database,
+            &host.app.audit_store,
+            case_tenant()
+        )
+        .await?
+    );
     let row = sqlx::query("SELECT outcome,status,failures,revision,next_push>clock_timestamp() AS delayed FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(registration).fetch_one(&pool).await?;
     ensure!(
         row.try_get::<String, _>("outcome")? == "accepted"
@@ -404,7 +439,9 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
     host.close().await
 }
 
-async fn worker_transport() -> Result<(
+async fn worker_transport(
+    retry_date: String,
+) -> Result<(
     String,
     reqwest::Client,
     tokio::task::JoinHandle<Result<()>>,
@@ -426,7 +463,8 @@ async fn worker_transport() -> Result<(
         let mut handlers = tokio::task::JoinSet::new();
         for (token, status, retry_after) in [
             (true, 200, None),
-            (false, 406, Some("300")),
+            (false, 406, Some("300".to_owned())),
+            (false, 503, Some(retry_date)),
             (false, 200, None),
         ] {
             let (request, mut send) = connection
