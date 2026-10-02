@@ -175,7 +175,7 @@ impl ExecutionService {
                 Box::pin(async move {
                     let version = ctx
                         .0
-                        .inputs()
+                        .inputs
                         .active_version_in(tx, ctx.1.resource.id(), ctx.1.resource.version())
                         .await?;
                     Ok(

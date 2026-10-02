@@ -22,8 +22,13 @@ class ModuleImpactTests(unittest.TestCase):
     def test_flow_settlement_selects_its_actual_owners(self):
         selected = select_paths(['crates/flow-service/src/transaction.rs'])
         self.assertFalse(selected.full)
-        self.assertTrue({'planning.http', 'planning.recovery', 'planning.resource_archive'} <= set(selected.modules))
+        self.assertTrue({'planning.http', 'planning.recovery', 'planning.resource_archive', 'planning.software', 'planning.onboarding'} <= set(selected.modules))
         self.assertFalse({'enrollment.http', 'agent.registration', 'audit.recovery'} & set(selected.modules))
+
+    def test_export_reader_selects_publication_read_and_withdrawal_consumers(self):
+        selected = select_paths(['crates/software-service/src/publication/execution.rs'])
+        self.assertFalse(selected.full)
+        self.assertTrue({'publication.winget', 'publication.brew', 'publication.withdrawal', 'execution.software.offer'} <= set(selected.modules))
 
     def test_http_projection_selects_diagnostic_and_management_consumers(self):
         for path in ('crates/management-http/src/response.rs', 'crates/management-http/src/diagnostic.rs'):
