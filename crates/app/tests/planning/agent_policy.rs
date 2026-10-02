@@ -360,6 +360,17 @@ fn script_effects() -> Result<String> {
 async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
     use sha2::{Digest, Sha256};
     let mut fixture = Fixture::new().await?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let _server =
+        crate::test_support::software::HttpServer::start(listener, fixture.router.clone());
+    fixture.author.network = Some((
+        Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(12))
+            .build()?,
+        format!("http://{address}"),
+    ));
     fixture.register().await?;
     fixture
         .scope(
