@@ -141,12 +141,23 @@ impl ExecutionService {
         for (p, f) in &waiting {
             inputs.push(desired(self, device, p, f, false)?);
         }
-        // An unresolved prior Scope must retain its own objects, not freeze every device object.
+        // Unresolved scope or dispatched unknown side effects retain their own exact object range.
+        // A retired parent's uncertain Delete must also fence a newly assigned child.
         for (p, f) in &prior {
-            if !inputs.iter().any(|d| d.policy.id == p.id)
-                && !policies::storage::withdrawn_in(tx, p, device).await?
+            if inputs.iter().any(|d| d.policy.id == p.id) {
+                continue;
+            }
+            let prior_input = desired(self, device, p, f, false)?;
+            let uncertain = if let Some(id) = object_state(tx, device, &prior_input.objects).await?
             {
-                inputs.push(desired(self, device, p, f, false)?);
+                let operation = storage::load(tx, &self.protection, id).await?;
+                self.required_command(tx, &operation).await?.status() != dc::Status::Applied
+                    && dispatched_in(tx, id).await?
+            } else {
+                false
+            };
+            if uncertain || !policies::storage::withdrawn_in(tx, p, device).await? {
+                inputs.push(prior_input);
             }
         }
         let mut owners: BTreeMap<Object, Vec<usize>> = BTreeMap::new();

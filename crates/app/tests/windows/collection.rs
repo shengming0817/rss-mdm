@@ -174,9 +174,7 @@ async fn native_template_policy_uses_correlated_get_and_collection_run() -> anyh
     let mut report = native::report(&peer.message, &gets, "10.0.22621.0", 200);
     for command in &mut report.commands {
         match command {
-            s::Command::Status(status) if status.command_ref != 0 => {
-                status.message_ref = capabilities.header.message_id
-            }
+            s::Command::Status(status) => status.message_ref = capabilities.header.message_id,
             s::Command::Results(result) => {
                 result.message_ref = Some(capabilities.header.message_id)
             }
@@ -214,9 +212,7 @@ async fn native_template_policy_uses_correlated_get_and_collection_run() -> anyh
     packet.header.message_id = report.header.message_id + 1;
     for command in &mut packet.commands {
         match command {
-            s::Command::Status(status) if status.command_ref != 0 => {
-                status.message_ref = wire.header.message_id
-            }
+            s::Command::Status(status) => status.message_ref = wire.header.message_id,
             s::Command::Results(result) => result.message_ref = Some(wire.header.message_id),
             _ => {}
         }

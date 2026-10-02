@@ -578,7 +578,7 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
             .await?;
     // Delete of permanent Policy leaves restores native defaults. A fake 404 must not
     // release guards for this unresolved removal, even after withdrawal is acknowledged.
-    let remaining:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND policy=$2").bind(case_tenant()).bind(first).fetch_one(&mut pg).await?;
+    let remaining:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND policy=ANY($2)").bind(case_tenant()).bind(vec![first,shared]).fetch_one(&mut pg).await?;
     ensure!(
         remaining > 0,
         "unverified default restoration released claims"
@@ -658,8 +658,7 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
         exchange(&peer, 976, &mut values).await?.is_empty(),
         "unknown deletion replayed after recovery"
     );
-    use rss_runtime::ManagedResource;
-    restarted.close().await?;
+    restarted.runtime.close().await;
     let other:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND policy=$2").bind(case_tenant()).bind(second).fetch_one(&mut pg).await?;
     ensure!(other == 1);
     let remote = Uuid::new_v4();

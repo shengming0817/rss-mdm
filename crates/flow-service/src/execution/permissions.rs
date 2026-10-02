@@ -255,58 +255,6 @@ fn apple_command(name: &str) -> Result<P, Error> {
     })
 }
 
-#[cfg(test)]
-mod windows_tests {
-    use super::*;
-    use rss_mdm_windows_mdm::native::Verb;
-    #[test]
-    fn nested_policy_operations_keep_their_real_permissions() {
-        let mut permissions = BTreeSet::new();
-        windows_node(
-            "./Device/Vendor/MSFT/Policy/Config/Update/AllowAutoUpdate",
-            Verb::Replace,
-            &mut permissions,
-        )
-        .unwrap();
-        windows_node(
-            "./Device/Vendor/MSFT/Policy/Result/Defender/AllowRealTimeMonitoring",
-            Verb::Get,
-            &mut permissions,
-        )
-        .unwrap();
-        assert!(permissions.contains(&P::DeviceUpdate));
-        assert!(permissions.contains(&P::SecurityOperate));
-        assert!(!permissions.contains(&P::ConfigurationWrite));
-    }
-    #[test]
-    fn secrets_require_credentials_and_unknown_mutations_fail_closed() {
-        let mut permissions = BTreeSet::new();
-        windows_node(
-            "./Device/Vendor/MSFT/ClientCertificateInstall/PFXCertInstall/*/PFXCertPassword",
-            Verb::Replace,
-            &mut permissions,
-        )
-        .unwrap();
-        assert!(permissions.contains(&P::Credentials));
-        assert!(
-            windows_node(
-                "./Device/Vendor/MSFT/Invented/Value",
-                Verb::Replace,
-                &mut permissions
-            )
-            .is_err()
-        );
-        assert!(
-            windows_node(
-                "./Device/Vendor/MSFT/DeclaredConfiguration/Host",
-                Verb::Get,
-                &mut permissions
-            )
-            .is_err()
-        );
-    }
-}
-
 // Product authorization for the pinned Policy areas. New source areas require explicit review.
 fn configuration_policy_area(area: &str) -> bool {
     matches!(
@@ -575,4 +523,56 @@ fn security_policy_area(area: &str) -> bool {
             | "WindowsPowerShell"
             | "WindowsSandbox"
     )
+}
+
+#[cfg(test)]
+mod windows_tests {
+    use super::*;
+    use rss_mdm_windows_mdm::native::Verb;
+    #[test]
+    fn nested_policy_operations_keep_their_real_permissions() {
+        let mut permissions = BTreeSet::new();
+        windows_node(
+            "./Device/Vendor/MSFT/Policy/Config/Update/AllowAutoUpdate",
+            Verb::Replace,
+            &mut permissions,
+        )
+        .unwrap();
+        windows_node(
+            "./Device/Vendor/MSFT/Policy/Result/Defender/AllowRealTimeMonitoring",
+            Verb::Get,
+            &mut permissions,
+        )
+        .unwrap();
+        assert!(permissions.contains(&P::DeviceUpdate));
+        assert!(permissions.contains(&P::SecurityOperate));
+        assert!(!permissions.contains(&P::ConfigurationWrite));
+    }
+    #[test]
+    fn secrets_require_credentials_and_unknown_mutations_fail_closed() {
+        let mut permissions = BTreeSet::new();
+        windows_node(
+            "./Device/Vendor/MSFT/ClientCertificateInstall/PFXCertInstall/*/PFXCertPassword",
+            Verb::Replace,
+            &mut permissions,
+        )
+        .unwrap();
+        assert!(permissions.contains(&P::Credentials));
+        assert!(
+            windows_node(
+                "./Device/Vendor/MSFT/Invented/Value",
+                Verb::Replace,
+                &mut permissions
+            )
+            .is_err()
+        );
+        assert!(
+            windows_node(
+                "./Device/Vendor/MSFT/DeclaredConfiguration/Host",
+                Verb::Get,
+                &mut permissions
+            )
+            .is_err()
+        );
+    }
 }
