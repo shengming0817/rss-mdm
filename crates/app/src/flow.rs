@@ -93,16 +93,20 @@ impl Config {
             runtime: runtime.clone(),
             role: Role::Storage,
         });
-        if let Err(error) =
-            crate::database::admit_audit_runtime(&runtime, &audit_store, tenant).await
-        {
-            runtime.close().await;
-            return Err(error);
-        }
+        admit_audit_runtime(&runtime, &audit_store, tenant).await?;
         storage::admit(&runtime, tenant).await?;
         storage::bind_native_key(&runtime, tenant, protection.id()).await?;
         let key = storage::cursor_key(&runtime, tenant).await?;
         let catalog = catalog(audit_store.clone(), runtime.clone(), tenant, clock.clone()).await?;
+        let software_resources = Arc::new(
+            rss_mdm_resource_postgres::ResourceStore::new(
+                runtime.clone(),
+                tenant,
+                rss_mdm_flow_service::transaction::deadline(),
+            )
+            .await
+            .map_err(|_| invalid())?,
+        );
         match Planning::new(
             protection,
             audit_store.clone(),
@@ -128,8 +132,7 @@ impl Config {
                     runtime: runtime.clone(),
                     planning: Arc::new(service),
                     catalog,
-                    software_resources: Arc::new(rss_mdm_resource_postgres::ResourceStore::new(runtime.clone(), tenant,
-                        rss_mdm_flow_service::transaction::deadline()).await.map_err(|_|invalid())?),
+                    software_resources,
                     assets,
                     publications: Arc::new(
                         rss_mdm_software_service::management::publication::service::PublicationDirectory {
@@ -304,3 +307,15 @@ pub(crate) async fn catalog(
 pub(crate) mod execution;
 
 use rss_mdm_flow_service::storage;
+
+async fn admit_audit_runtime(
+    runtime: &PgRuntime,
+    audit: &rss_mdm_audit_integration::AuditStore,
+    tenant: TenantId,
+) -> std::result::Result<(), Error> {
+    if let Err(error) = crate::database::admit_audit_runtime(runtime, audit, tenant).await {
+        runtime.close().await;
+        return Err(error);
+    }
+    Ok(())
+}
