@@ -95,8 +95,14 @@ impl From<rss_mdm_flow_service::execution::error::ExecutionError> for Error {
         Self(rss_mdm_flow_service::Error::from(e))
     }
 }
-impl From<rss_mdm_flow_service::software_publication::error::PublicationError> for Error {
-    fn from(e: rss_mdm_flow_service::software_publication::error::PublicationError) -> Self {
+impl From<rss_mdm_software_service::management::publication::error::PublicationError> for Error {
+    fn from(e: rss_mdm_software_service::management::publication::error::PublicationError) -> Self {
         Self(rss_mdm_flow_service::Error::from(e))
+    }
+}
+
+impl From<rss_mdm_software_service::management::Error> for Error {
+    fn from(e: rss_mdm_software_service::management::Error) -> Self {
+        rss_mdm_flow_service::Error::from(e).into()
     }
 }

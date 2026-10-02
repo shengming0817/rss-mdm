@@ -6,7 +6,9 @@ use axum::{
     routing::{get, post},
 };
 use rss_mdm_audit_integration::RequestAudit;
-pub(crate) use rss_mdm_flow_service::software_catalog::Access as HttpState;
+type HttpState = rss_mdm_software_service::management::catalog::Access<
+    rss_mdm_content_service::software::SoftwareContent,
+>;
 use rss_mdm_software_service::catalog::{Operation, SourceChange, VersionChange};
 use serde_json::Value;
 use std::sync::Arc;
@@ -34,10 +36,16 @@ async fn read_source(
     Extension(audit): Extension<RequestAudit>,
     Path((id, revision)): Path<(String, String)>,
 ) -> Result<Json<Value>, Error> {
-    rss_mdm_flow_service::software_catalog::read_source(&app, &auth.proof, &audit, id, revision)
-        .await
-        .map(Json)
-        .map_err(Into::into)
+    rss_mdm_software_service::management::catalog::read_source(
+        &app,
+        &auth.proof,
+        &audit,
+        id,
+        revision,
+    )
+    .await
+    .map(Json)
+    .map_err(Into::into)
 }
 async fn write_source(
     State(app): State<Arc<HttpState>>,
@@ -46,7 +54,7 @@ async fn write_source(
     Path((id, revision)): Path<(String, String)>,
     Json(op): Json<Operation<SourceChange>>,
 ) -> Result<Json<Value>, Error> {
-    rss_mdm_flow_service::software_catalog::write_source(
+    rss_mdm_software_service::management::catalog::write_source(
         &app,
         &auth.proof,
         &audit,
@@ -64,10 +72,16 @@ async fn read_version(
     Extension(audit): Extension<RequestAudit>,
     Path((id, version)): Path<(String, String)>,
 ) -> Result<Json<Value>, Error> {
-    rss_mdm_flow_service::software_catalog::read_version(&app, &auth.proof, &audit, id, version)
-        .await
-        .map(Json)
-        .map_err(Into::into)
+    rss_mdm_software_service::management::catalog::read_version(
+        &app,
+        &auth.proof,
+        &audit,
+        id,
+        version,
+    )
+    .await
+    .map(Json)
+    .map_err(Into::into)
 }
 async fn write_version(
     State(app): State<Arc<HttpState>>,
@@ -76,7 +90,7 @@ async fn write_version(
     Path((id, version)): Path<(String, String)>,
     Json(op): Json<Operation<VersionChange>>,
 ) -> Result<Json<Value>, Error> {
-    rss_mdm_flow_service::software_catalog::write_version(
+    rss_mdm_software_service::management::catalog::write_version(
         &app,
         &auth.proof,
         &audit,
@@ -89,7 +103,7 @@ async fn write_version(
     .map_err(Into::into)
 }
 
-use rss_mdm_flow_service::software_catalog::Selection;
+use rss_mdm_software_service::management::catalog::Selection;
 async fn download(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
@@ -98,7 +112,7 @@ async fn download(
     axum::extract::Query(selection): axum::extract::Query<Selection>,
     headers: axum::http::HeaderMap,
 ) -> Result<axum::response::Response, Error> {
-    let content = rss_mdm_flow_service::software_catalog::download(
+    let content = rss_mdm_software_service::management::catalog::download(
         &app,
         &auth.proof,
         &audit,
@@ -116,7 +130,7 @@ async fn import(
     Extension(audit): Extension<RequestAudit>,
     Json(op): Json<Operation<rss_mdm_software_service::imports::ImportRequest>>,
 ) -> Result<Json<Value>, Error> {
-    rss_mdm_flow_service::software_catalog::import(&app, &auth.proof, &audit, op)
+    rss_mdm_software_service::management::catalog::import(&app, &auth.proof, &audit, op)
         .await
         .map(Json)
         .map_err(Into::into)

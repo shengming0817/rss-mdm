@@ -352,8 +352,8 @@ pub(crate) fn from_state(
             assets: state.flow.assets.clone(),
             catalog: state.flow.catalog.clone(),
             publications: state.flow.publications.clone(),
-            software_catalog: Arc::new(rss_mdm_flow_service::software_catalog::Access {
-                resources: state.flow.catalog.clone(),
+            software_catalog: Arc::new(rss_mdm_software_service::management::catalog::Access {
+                resources: state.flow.software_resources.clone(),
                 clock: Arc::new(crate::clock::ContentClock(state.clock.clone())),
                 runtime: state.flow.runtime.clone(),
                 audit: state.audit_store.clone(),
@@ -363,7 +363,23 @@ pub(crate) fn from_state(
                     state.execution.tenant,
                     state.audit_store.clone(),
                 ),
-                content: state.content_writer.clone(),
+                content: state.content_writer.as_ref().map(|store| {
+                    Arc::new(rss_mdm_content_service::software::SoftwareContent::new(
+                        store.clone(),
+                        Arc::new(crate::clock::ContentClock(state.clock.clone())),
+                    ))
+                }),
+                imports: rss_mdm_software_service::management::catalog::ImportConfig {
+                    sources: state
+                        .content_writer
+                        .as_ref()
+                        .map(|s| s.config.imports.clone())
+                        .unwrap_or_default(),
+                    transfer_seconds: state
+                        .content_writer
+                        .as_ref()
+                        .map_or(0, |s| s.config.transfer_seconds),
+                },
             }),
             content: Arc::new(rss_mdm_content_service::service::Access {
                 catalog: Arc::new(rss_mdm_software_service::catalog::Catalog::new(

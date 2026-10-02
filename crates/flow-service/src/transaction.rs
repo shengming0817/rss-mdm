@@ -172,8 +172,6 @@ pub enum TransactionOwner {
     Assets,
     Compliance,
     ResourceCatalog,
-    Publication,
-    SoftwareCatalog,
     Execution,
 }
 impl TransactionOwner {
@@ -183,15 +181,12 @@ impl TransactionOwner {
             Self::Assets => Failure::AssetsStorage,
             Self::Compliance => Failure::ComplianceStorage,
             Self::ResourceCatalog => Failure::ResourceStorage,
-            Self::Publication => Failure::PublicationStorage,
-            Self::SoftwareCatalog => Failure::SoftwareCatalogStorage,
             Self::Execution => Failure::CommandStorage,
         }
     }
     fn invariant(self) -> Failure {
         match self {
             Self::Execution => Failure::CommandInvariant,
-            Self::SoftwareCatalog => Failure::SoftwareCatalogInvariant,
             _ => self.failure(),
         }
     }

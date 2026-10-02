@@ -400,9 +400,6 @@ pub enum Command {
     },
 }
 impl ResourceCatalog {
-    pub(crate) fn software_resources(&self) -> &pg::ResourceStore {
-        &self.resources
-    }
     pub async fn new(
         audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         runtime: Arc<PgRuntime>,

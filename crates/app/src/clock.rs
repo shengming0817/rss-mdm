@@ -54,3 +54,14 @@ impl rss_mdm_content_service::service::Clock for ContentClock {
         self.0.unix_seconds().ok()
     }
 }
+
+impl rss_mdm_software_service::management::Clock for FlowClock {
+    fn unix_seconds(&self) -> Option<i64> {
+        self.0.unix_seconds().ok()
+    }
+}
+impl rss_mdm_software_service::management::Clock for ContentClock {
+    fn unix_seconds(&self) -> Option<i64> {
+        self.0.unix_seconds().ok()
+    }
+}

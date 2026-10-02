@@ -315,7 +315,11 @@ impl SoftwareExecutionPolicy {
         service
             .software
             .artifact_in(tx, &selection, target(platform, architecture), index, key)
-            .await?
+            .await
+            .map_err(|e| match e {
+                rss_mdm_software_service::catalog::Error::Missing => Error::NotFound.into(),
+                other => crate::transaction::Fault::from(other),
+            })?
             .ok_or_else(|| Error::Forbidden.into())
     }
     pub async fn admitted_in(

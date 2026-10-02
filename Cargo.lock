@@ -3433,7 +3433,9 @@ dependencies = [
 name = "rss-mdm-software-service"
 version = "0.1.0"
 dependencies = [
+ "rss-ledger-postgres",
  "rss-mdm-agent-wire",
+ "rss-mdm-authorization-service",
  "anyhow",
  "futures",
  "reqwest",
@@ -3450,6 +3452,7 @@ dependencies = [
  "rss-mdm-software-release-postgres",
  "rss-mdm-winget-source",
  "rss-request-context",
+ "rss-runtime",
  "rss-transactional-messaging",
  "rss-transactional-messaging-postgres",
  "serde",

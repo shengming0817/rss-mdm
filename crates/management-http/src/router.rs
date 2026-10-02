@@ -25,8 +25,12 @@ pub struct Services {
     pub assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
     pub catalog: Arc<rss_mdm_flow_service::resource_catalog::ResourceCatalog>,
     pub publications:
-        Arc<rss_mdm_flow_service::software_publication::service::PublicationDirectory>,
-    pub software_catalog: Arc<rss_mdm_flow_service::software_catalog::Access>,
+        Arc<rss_mdm_software_service::management::publication::service::PublicationDirectory>,
+    pub software_catalog: Arc<
+        rss_mdm_software_service::management::catalog::Access<
+            rss_mdm_content_service::software::SoftwareContent,
+        >,
+    >,
     pub content: Arc<rss_mdm_content_service::service::Access>,
     pub enrollment: Arc<rss_mdm_registration_service::enrollment::EnrollmentService>,
     pub devices: Arc<rss_mdm_registration_service::device::DeviceService>,

@@ -1,12 +1,13 @@
 use super::wire;
-use crate::{Error, authorization::context::RequestAuth, http_operation::Operation};
+use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json, Router,
     extract::{Path, State},
     routing::get,
 };
 use rss_mdm_audit_integration::RequestAudit;
-pub(crate) use rss_mdm_flow_service::software_publication::{
+use rss_mdm_software_service::catalog::Operation;
+pub(crate) use rss_mdm_software_service::management::publication::{
     model::Change, service::PublicationDirectory,
 };
 use std::sync::Arc;
@@ -22,7 +23,7 @@ async fn read(
     Extension(audit): Extension<RequestAudit>,
     Path((source, id)): Path<(String, String)>,
 ) -> std::result::Result<Json<wire::Candidate>, Error> {
-    rss_mdm_flow_service::software_publication::service::read(
+    rss_mdm_software_service::management::publication::service::read(
         &app.publications,
         &app.access,
         &auth.proof,
@@ -41,7 +42,7 @@ async fn write(
     Path((source, id)): Path<(String, String)>,
     Json(request): Json<Operation<Change>>,
 ) -> std::result::Result<Json<wire::Candidate>, Error> {
-    rss_mdm_flow_service::software_publication::service::write(
+    rss_mdm_software_service::management::publication::service::write(
         &app.publications,
         &app.access,
         &auth.proof,

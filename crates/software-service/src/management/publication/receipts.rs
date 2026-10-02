@@ -1,4 +1,4 @@
-use rss_mdm_software_service::catalog::{Error, Result};
+use crate::catalog::{Error, Result};
 fn stored<T>(v: std::result::Result<T, serde_json::Error>) -> Result<T> {
     v.map_err(|_| Error::Integrity)
 }
@@ -9,7 +9,7 @@ use sqlx::Row;
 use uuid::Uuid;
 pub async fn audit(
     tx: &mut PgTransaction<'_>,
-    store: &dyn rss_mdm_software_service::AuditPort,
+    store: &dyn crate::AuditPort,
     audit: &RequestAudit,
     operation: Option<(Uuid, &[u8])>,
     replayed: bool,

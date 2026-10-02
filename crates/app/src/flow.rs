@@ -128,9 +128,11 @@ impl Config {
                     runtime: runtime.clone(),
                     planning: Arc::new(service),
                     catalog,
+                    software_resources: Arc::new(rss_mdm_resource_postgres::ResourceStore::new(runtime.clone(), tenant,
+                        rss_mdm_flow_service::transaction::deadline()).await.map_err(|_|invalid())?),
                     assets,
                     publications: Arc::new(
-                        rss_mdm_flow_service::software_publication::service::PublicationDirectory {
+                        rss_mdm_software_service::management::publication::service::PublicationDirectory {
                             services: Default::default(),
                             tenant,
                             runtime: runtime.clone(),
@@ -273,10 +275,11 @@ pub(crate) struct Flow {
     pub(crate) cursor_key: Vec<u8>,
     pub(crate) runtime: Arc<PgRuntime>,
     pub(crate) catalog: Arc<crate::resource_catalog::ResourceCatalog>,
+    pub(crate) software_resources: Arc<rss_mdm_resource_postgres::ResourceStore>,
     pub(crate) planning: Arc<Planning>,
     pub(crate) assets: Arc<crate::assets::AssetService>,
     pub(crate) publications:
-        Arc<rss_mdm_flow_service::software_publication::service::PublicationDirectory>,
+        Arc<rss_mdm_software_service::management::publication::service::PublicationDirectory>,
     publication_runtime: Option<Arc<PgRuntime>>,
 }
 

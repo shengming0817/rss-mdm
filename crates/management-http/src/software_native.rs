@@ -8,8 +8,8 @@ use axum::{
     routing::{get, post},
 };
 use base64::Engine;
-use rss_mdm_flow_service::software_publication::service::PublicationDirectory;
 use rss_mdm_software_release::Ring;
+use rss_mdm_software_service::management::publication::service::PublicationDirectory;
 use rss_mdm_software_service::publication::{
     self as p, ExportDocument, PublicationService, PublishedSoftware,
 };

@@ -100,9 +100,9 @@ pub async fn admit_in(tx: &mut PgTransaction<'_>) -> Result<()> {
         ),
         (
             "publication",
-            crate::software_publication::HTTP_CATALOG_SQL,
-            crate::software_publication::HTTP_CATALOG_JSON,
-            crate::software_publication::HTTP_ADMISSION_SQL,
+            rss_mdm_software_service::management::publication::HTTP_CATALOG_SQL,
+            rss_mdm_software_service::management::publication::HTTP_CATALOG_JSON,
+            rss_mdm_software_service::management::publication::HTTP_ADMISSION_SQL,
         ),
     ];
     for (owner, query, expected, admission) in contracts {

@@ -1,6 +1,6 @@
 use super::*;
+use crate::publication::{ArtifactOrigin, ArtifactReader, PublicationWork};
 use rss_mdm_software_release::{Digest, PublicationId};
-use rss_mdm_software_service::publication::{ArtifactOrigin, ArtifactReader, PublicationWork};
 #[test]
 fn recovery_failure_records_safe_category_and_original_identity() {
     let tenant =

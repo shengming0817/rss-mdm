@@ -1,6 +1,7 @@
 //! Product software authority and external publication over existing RSS transactions.
 //! Resource owns definitions; the host owns authenticated actors, secrets and composition.
 #![deny(clippy::cognitive_complexity)]
+pub mod management;
 pub mod preparation;
 pub mod publication;
 use rss_mdm_audit_integration::{Fact, RequestAudit};
