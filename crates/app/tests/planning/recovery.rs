@@ -52,7 +52,7 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
         ),
     ] {
         sql(change);
-        let rejected = rss_mdm_flow_service::storage::admit(&service.runtime, tenant())
+        let rejected = crate::flow::admit_storage(&service.runtime, tenant())
             .await
             .is_err()
             || rss_mdm_policy_postgres::PolicyStore::new(
@@ -80,7 +80,7 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
         sql(&format!(
             "GRANT UPDATE({column}) ON {table} TO mdm_flow_runtime"
         ));
-        let rejected = rss_mdm_flow_service::storage::admit(&service.runtime, tenant())
+        let rejected = crate::flow::admit_storage(&service.runtime, tenant())
             .await
             .is_err()
             || rss_mdm_policy_postgres::PolicyStore::new(
@@ -95,7 +95,7 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
         ));
         assert!(rejected);
     }
-    rss_mdm_flow_service::storage::admit(&service.runtime, tenant())
+    crate::flow::admit_storage(&service.runtime, tenant())
         .await
         .unwrap();
     let denied = service
@@ -712,5 +712,74 @@ async fn corrupt_background_query_is_not_client_input() {
     rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker))
         .await
         .unwrap();
+    service.runtime.close().await;
+}
+
+#[cfg(feature = "integration")]
+#[tokio::test]
+#[ignore = "MODULE=planning.recovery: real PG owner settlement and receipt replay"]
+async fn planning_owner_settlement_preserves_unknown_rollback_and_exact_replay() {
+    use rss_transactional_messaging_postgres::PgTransactionFault as F;
+    let service = planning(tenant()).await;
+    for (fault, unknown) in [
+        (F::CommitUnknownAfterAck, true),
+        (F::RollbackFailedAfterAck, false),
+    ] {
+        let id = Uuid::new_v4();
+        let command = Command::Scope {
+            id,
+            change: operation(
+                0,
+                ScopeChange::Put {
+                    definition: ScopeDefinition {
+                        targets: Default::default(),
+                        limitations: None,
+                        exclusions: Default::default(),
+                    },
+                },
+            ),
+        };
+        let audit = RequestAudit::new(tenant().to_string(), "management_write");
+        audit.set_principal("operator", crate::test_support::INSTANCE);
+        service.runtime.inject_next_transaction_fault(fault);
+        let first = if unknown {
+            service.execute(&command, &audit, &|| Ok(())).await
+        } else {
+            let calls = std::sync::atomic::AtomicUsize::new(0);
+            service
+                .execute(&command, &audit, &|| {
+                    if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                        Ok(())
+                    } else {
+                        Err(rss_mdm_flow_service::Error::Forbidden)
+                    }
+                })
+                .await
+        };
+        assert!(
+            matches!(
+                (&first, unknown),
+                (Err(rss_mdm_flow_service::Error::CommitUnknown), true)
+                    | (Err(rss_mdm_flow_service::Error::RollbackFailed), false)
+            ),
+            "{first:?}"
+        );
+        audit.finalize(None);
+        let settled = execute(&service, &command).await.unwrap();
+        assert_eq!(execute(&service, &command).await.unwrap(), settled);
+        assert_eq!(sql(&format!("SELECT count(*) FROM mdm_planning.scope_versions WHERE tenant_id='{}' AND id='{id}'", tenant())).trim(), "1");
+        let op = match &command {
+            Command::Scope { change, .. } => change.operation_id,
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            sql(&format!(
+                "SELECT count(*) FROM mdm_planning.operations WHERE tenant_id='{}' AND id='{op}'",
+                tenant()
+            ))
+            .trim(),
+            "1"
+        );
+    }
     service.runtime.close().await;
 }

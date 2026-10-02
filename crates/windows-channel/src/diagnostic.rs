@@ -5,9 +5,13 @@ use serde::Serialize;
 pub enum ConfigIssue {
     ProtocolKey,
 }
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Failure {
+    Execution(rss_mdm_execution_service::Failure),
+    ExecutionConfiguration(rss_mdm_execution_service::ConfigIssue),
+    Inventory(rss_mdm_inventory_service::Failure),
+    Runtime,
     Audit,
     AuditAdmission,
     AuditContract,

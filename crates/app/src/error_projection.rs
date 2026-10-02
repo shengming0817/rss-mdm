@@ -1,111 +1,99 @@
-//! Preserve service error ownership across host assembly.
-use crate::Error;
+//! Cross-owner host assembly conversions; protocol projections belong to ingress.
+use crate::{Error, Failure};
 impl From<crate::authorization::error::AuthorizationError> for Error {
     fn from(e: crate::authorization::error::AuthorizationError) -> Self {
-        Self::Service(rss_mdm_flow_service::Error::from(e))
+        rss_mdm_authorization_service::Error::from(e).into()
     }
 }
 impl From<crate::enrollment::EnrollmentError> for Error {
     fn from(e: crate::enrollment::EnrollmentError) -> Self {
-        Self::Service(rss_mdm_flow_service::Error::from(e))
+        rss_mdm_registration_service::Error::from(e).into()
     }
 }
 impl From<crate::device::DeviceError> for Error {
     fn from(e: crate::device::DeviceError) -> Self {
-        Self::Service(rss_mdm_flow_service::Error::from(e))
+        rss_mdm_registration_service::Error::from(e).into()
     }
 }
 impl From<crate::collection::CollectionError> for Error {
     fn from(e: crate::collection::CollectionError) -> Self {
-        Self::Service(rss_mdm_flow_service::Error::from(e))
+        rss_mdm_inventory_service::Error::from(e).into()
     }
 }
 impl From<rss_mdm_audit_integration::InvalidFact> for Error {
     fn from(e: rss_mdm_audit_integration::InvalidFact) -> Self {
-        Self::Service(rss_mdm_flow_service::Error::from(e))
+        rss_mdm_audit_integration::Error::Fact(e).into()
     }
 }
 impl From<rss_mdm_audit_integration::Error> for Error {
     fn from(e: rss_mdm_audit_integration::Error) -> Self {
-        Self::Service(rss_mdm_flow_service::Error::from(e))
+        Self::from(&e)
     }
 }
 impl From<&rss_mdm_audit_integration::Error> for Error {
     fn from(e: &rss_mdm_audit_integration::Error) -> Self {
-        Self::Service(rss_mdm_flow_service::Error::from(e))
-    }
-}
-impl From<rss_mdm_authorization_service::Error> for Error {
-    fn from(e: rss_mdm_authorization_service::Error) -> Self {
-        Self::Service(rss_mdm_flow_service::Error::from(e))
-    }
-}
-impl From<rss_mdm_registration_service::Error> for Error {
-    fn from(e: rss_mdm_registration_service::Error) -> Self {
-        Self::Service(rss_mdm_flow_service::Error::from(e))
-    }
-}
-impl From<rss_mdm_inventory_service::Error> for Error {
-    fn from(e: rss_mdm_inventory_service::Error) -> Self {
-        Self::Service(rss_mdm_flow_service::Error::from(e))
+        use rss_mdm_audit_integration::ErrorClass as A;
+        match e.class() {
+            A::CommitUnknown => Self::CommitUnknown,
+            A::RollbackFailed => Self::RollbackFailed,
+            A::RequestDeadline => Self::Unavailable(Failure::RequestDeadline),
+            A::Audit => Self::Unavailable(Failure::Audit),
+            A::AuditIntegrity => Self::Unavailable(Failure::AuditIntegrity),
+            A::AuditAdmission => Self::Unavailable(Failure::AuditAdmission),
+            A::AuditIsolation => Self::Unavailable(Failure::AuditIsolation),
+            A::AuditContract => Self::Unavailable(Failure::AuditContract),
+        }
     }
 }
 impl From<rss_mdm_inventory_service::transaction::Fault> for Error {
     fn from(e: rss_mdm_inventory_service::transaction::Fault) -> Self {
-        Self::Service(rss_mdm_flow_service::Error::from(e))
+        match e {
+            rss_mdm_inventory_service::transaction::Fault::Request(e) => e.into(),
+            _ => rss_mdm_inventory_service::Error::Unavailable(
+                rss_mdm_inventory_service::Failure::AssetsStorage,
+            )
+            .into(),
+        }
     }
 }
 impl From<rss_mdm_execution_service::channels::Rejection> for Error {
     fn from(e: rss_mdm_execution_service::channels::Rejection) -> Self {
-        Self::Service(rss_mdm_flow_service::Error::from(e))
+        rss_mdm_execution_service::Error::from(e).into()
     }
 }
 impl From<rss_mdm_policy::Error> for Error {
     fn from(e: rss_mdm_policy::Error) -> Self {
-        Self::Service(rss_mdm_flow_service::Error::from(e))
+        Self::Flow(e.into())
     }
 }
 impl From<rss_mdm_flow_service::planning::error::PlanningError> for Error {
     fn from(e: rss_mdm_flow_service::planning::error::PlanningError) -> Self {
-        Self::Service(rss_mdm_flow_service::Error::from(e))
+        Self::Flow(e.into())
     }
 }
 impl From<rss_mdm_flow_service::resource_catalog::error::ResourceError> for Error {
     fn from(e: rss_mdm_flow_service::resource_catalog::error::ResourceError) -> Self {
-        Self::Service(rss_mdm_flow_service::Error::from(e))
+        Self::Flow(e.into())
     }
 }
 impl From<rss_mdm_execution_service::missing::ExecutionError> for Error {
     fn from(e: rss_mdm_execution_service::missing::ExecutionError) -> Self {
-        Self::Service(rss_mdm_flow_service::Error::from(e))
+        Self::Execution(e.into())
     }
 }
 impl From<rss_mdm_software_service::management::publication::error::PublicationError> for Error {
     fn from(e: rss_mdm_software_service::management::publication::error::PublicationError) -> Self {
-        Self::Service(rss_mdm_flow_service::Error::from(e))
-    }
-}
-impl From<rss_mdm_management_http::Error> for Error {
-    fn from(e: rss_mdm_management_http::Error) -> Self {
-        Self::Service(e.0)
+        rss_mdm_software_service::management::Error::from(e).into()
     }
 }
 pub(crate) fn audit_deadline(outcome: rss_mdm_audit_integration::WriteOutcome) -> Error {
     use rss_mdm_audit_integration::WriteOutcome as W;
-    use rss_mdm_flow_service::{Error as E, Failure};
     match outcome {
-        W::Unknown | W::Committed => E::CommitUnknown,
-        W::RollbackFailed => E::RollbackFailed,
-        W::RolledBack | W::CommitNotStarted => E::Unavailable(Failure::RequestDeadline),
+        W::Unknown | W::Committed => Error::CommitUnknown,
+        W::RollbackFailed => Error::RollbackFailed,
+        W::RolledBack | W::CommitNotStarted => Error::Unavailable(Failure::RequestDeadline),
     }
-    .into()
 }
 #[cfg(test)]
 #[path = "../tests/error_projection/unit.rs"]
 mod tests;
-
-impl From<rss_mdm_software_service::management::Error> for Error {
-    fn from(e: rss_mdm_software_service::management::Error) -> Self {
-        rss_mdm_flow_service::Error::from(e).into()
-    }
-}

@@ -216,8 +216,8 @@ pub(crate) async fn admit_audit_runtime(
                     .expect("startup audit failure")
                     .unwrap_or(Error::Unavailable(Failure::Audit)))
             },
-            |_| Err(Error::Service(rss_mdm_flow_service::Error::RollbackFailed)),
-            |_| Err(Error::Service(rss_mdm_flow_service::Error::CommitUnknown)),
+            |_| Err(Error::RollbackFailed),
+            |_| Err(Error::CommitUnknown),
             |_| Err(Error::Unavailable(Failure::Audit)),
         )
 }

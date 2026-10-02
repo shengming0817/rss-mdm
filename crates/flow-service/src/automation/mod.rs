@@ -18,3 +18,9 @@ pub use runtime::{Automation, Resource};
 use rss_mdm_audit_integration::RequestAudit;
 
 pub mod inventory_tasks;
+
+pub const CATALOG_SQL: &str = include_str!("catalog.sql");
+
+pub const CATALOG_JSON: &str = include_str!("catalog.json");
+
+pub const ADMISSION_SQL: &str = include_str!("admission.sql");

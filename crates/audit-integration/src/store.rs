@@ -465,3 +465,51 @@ fn transaction_error(error: rss_audit_postgres::TransactionError<Error>) -> Erro
         rss_audit_postgres::TransactionError::Rollback { .. } => Error::RollbackFailed,
     }
 }
+
+/// Sanitized closed audit diagnosis; carries no provider messages or request input.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorClass {
+    CommitUnknown,
+    RollbackFailed,
+    RequestDeadline,
+    AuditIntegrity,
+    AuditAdmission,
+    AuditIsolation,
+    AuditContract,
+    Audit,
+}
+impl Error {
+    pub fn class(&self) -> ErrorClass {
+        let error = self;
+        match error {
+            Error::CommitUnknown => ErrorClass::CommitUnknown,
+            Error::RollbackFailed => ErrorClass::RollbackFailed,
+            Error::Audit(error) if error.is_interrupted() => ErrorClass::RequestDeadline,
+            Error::Receipt => ErrorClass::AuditIntegrity,
+            Error::Admission => ErrorClass::AuditAdmission,
+            Error::Isolation => ErrorClass::AuditIsolation,
+            Error::Fact(_) => ErrorClass::AuditContract,
+            Error::Audit(error) => {
+                use rss_audit_postgres::Error as Audit;
+                match error {
+                    Audit::Admission(_) => ErrorClass::AuditAdmission,
+                    Audit::Conflict | Audit::StorageContract | Audit::IntegrityRequired => {
+                        ErrorClass::AuditIntegrity
+                    }
+                    Audit::Ledger(error) => match error {
+                        rss_ledger_postgres::Error::Storage(_)
+                        | rss_ledger_postgres::Error::Messaging(_) => ErrorClass::Audit,
+                        rss_ledger_postgres::Error::Admission(_) => ErrorClass::AuditAdmission,
+                        _ => ErrorClass::AuditIntegrity,
+                    },
+                    Audit::InvalidBound
+                    | Audit::ScopeMismatch
+                    | Audit::Protocol(_)
+                    | Audit::ReadBudgetExceeded => ErrorClass::AuditContract,
+                    _ => ErrorClass::Audit,
+                }
+            }
+        }
+    }
+}

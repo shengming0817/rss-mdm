@@ -123,7 +123,7 @@ impl ExecutionService {
                 service.audit_store.append_in(tx,&fact,false).await?;
             }else{service.audit_store.append_request_in(tx,audit,200,"success").await?;}
             Ok(response)
-        }),crate::transaction::TransactionOwner::Execution).await
+        })).await
     }
     pub async fn action_event(
         &self,
@@ -237,7 +237,7 @@ impl ExecutionService {
             let fact=if let Some(details)=software_audit.clone() {fact.with_details(details)?}else{fact};
             db::receipt(tx,&actor,input.operation_id(),hash,&response,software_audit).await?;
             service.audit_store.append_in(tx,&fact,false).await?;Ok(response)
-        }),crate::transaction::TransactionOwner::Execution).await
+        })).await
     }
     pub async fn action_content(
         &self,
@@ -299,7 +299,7 @@ impl ExecutionService {
                     Ok(artifact)
                 }
             }
-        }),crate::transaction::TransactionOwner::Execution).await
+        })).await
     }
 }
 

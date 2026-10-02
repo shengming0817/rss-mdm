@@ -102,9 +102,7 @@ pub(crate) async fn planning(t: TenantId) -> Planning {
     let audit = audit_store().await;
     let runtime = runtime(t).await;
     let clock = Arc::new(crate::clock::SystemClock);
-    rss_mdm_flow_service::storage::admit(&runtime, t)
-        .await
-        .unwrap();
+    crate::flow::admit_storage(&runtime, t).await.unwrap();
     let key = rss_mdm_flow_service::storage::cursor_key(&runtime, t)
         .await
         .unwrap();
@@ -251,10 +249,10 @@ pub(crate) async fn wait_task(
             let value = match result {
                 Ok(value) => value,
                 Err(
-                    Error::Service(rss_mdm_flow_service::Error::Unavailable(
+                    Error::Flow(rss_mdm_flow_service::Error::Unavailable(
                         rss_mdm_flow_service::Failure::PlanningStorage,
                     ))
-                    | Error::Service(rss_mdm_flow_service::Error::CommitUnknown),
+                    | Error::Flow(rss_mdm_flow_service::Error::CommitUnknown),
                 ) => {
                     tokio::time::sleep(Duration::from_millis(20)).await;
                     continue;

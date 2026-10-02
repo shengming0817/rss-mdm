@@ -35,7 +35,7 @@ async fn candidate_reference_survives_admission_withdrawal_and_fences_archive() 
     }
     assert!(matches!(
         execute(&planning, &archive(&referenced)).await,
-        Err(crate::Error::Service(rss_mdm_flow_service::Error::Conflict))
+        Err(crate::Error::Flow(rss_mdm_flow_service::Error::Conflict))
     ));
 
     let mut document = server.winget_document();
@@ -54,7 +54,7 @@ async fn candidate_reference_survives_admission_withdrawal_and_fences_archive() 
     assert!(created.is_ok(), "candidate creation: {created:?}");
     assert!(matches!(
         archived,
-        Err(crate::Error::Service(rss_mdm_flow_service::Error::Conflict))
+        Err(crate::Error::Flow(rss_mdm_flow_service::Error::Conflict))
     ));
     assert!(
         publication

@@ -28,6 +28,20 @@ class FlowOwnership(unittest.TestCase):
         manifest = (ROOT / "crates/execution-service/Cargo.toml").read_text()
         self.assertNotIn("rss-mdm-flow-service", manifest)
 
+    def test_public_consumers_have_narrow_independent_construction(self):
+        import re
+        policies = (FLOW / 'planning/policies/mod.rs').read_text()
+        self.assertNotRegex(policies, r'Arc<[^>]*Planning>')
+        for source in ('lib.rs', 'queries.rs'):
+            text = (EXECUTION / source).read_text()
+            self.assertRegex(text, r'pub fn new\(')
+        preparation = (ROOT / 'crates/software-service/src/preparation/mod.rs').read_text()
+        self.assertNotRegex(preparation, r'Arc<[^>]*PublicationService>')
+        exports = (ROOT / 'crates/software-service/src/publication/execution.rs').read_text()
+        declaration = re.search(r'pub struct ExportReader\s*\{(.*?)\}', exports, re.S)
+        self.assertIsNotNone(declaration)
+        self.assertNotRegex(declaration.group(1), r'PublicationService|PgRuntime|Credentials|Repository|ReleaseStore')
+
     def test_execution_cannot_write_authored_policies(self):
         files = list(EXECUTION.rglob("*.rs"))
         self.assertTrue(files)

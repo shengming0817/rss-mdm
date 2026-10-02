@@ -1,6 +1,6 @@
 use super::*;
 use axum::http::{Request, StatusCode, header};
-use rss_mdm_flow_service::Failure;
+use rss_mdm_management_http::Failure;
 use rss_mdm_management_http::{
     Error,
     boundary::{Envelope, admit as envelope},
@@ -18,8 +18,7 @@ async fn audit_failure_logs_preserve_action_and_origin() {
                 "/api/v2/devices/{id}/inventory",
                 get(move || async move {
                     if mode == "transaction" {
-                        Error(rss_mdm_flow_service::Error::Unavailable(Failure::Audit))
-                            .into_response()
+                        Error::Unavailable(Failure::Audit).into_response()
                     } else {
                         Json(json!({"sensitive":"inventory-result"})).into_response()
                     }
@@ -109,7 +108,7 @@ async fn request_diagnostics_keep_causes_internal_and_issue_request_ids() {
         let router = Router::new()
             .route(
                 "/livez",
-                get(move || async move { Error(rss_mdm_flow_service::Error::Unavailable(reason)) }),
+                get(move || async move { Error::Unavailable(reason) }),
             )
             .layer(middleware::from_fn_with_state(
                 Envelope {
@@ -141,7 +140,7 @@ async fn request_diagnostics_keep_causes_internal_and_issue_request_ids() {
         );
         assert!(matches!(
             response.extensions().get::<Error>(),
-            Some(Error(rss_mdm_flow_service::Error::Unavailable(_)))
+            Some(Error::Unavailable(_))
         ));
         let bytes = axum::body::to_bytes(response.into_body(), 1024)
             .await
@@ -237,14 +236,20 @@ impl DeviceProtocol {
         }
     }
     fn category(self, response: &axum::response::Response) -> &'static str {
-        use rss_mdm_flow_service::Error as E;
+        use rss_mdm_management_http::Error as E;
         match self {
-            DeviceProtocol::Agent => match response.extensions().get::<E>() {
-                Some(E::CommitUnknown) => "operation_unknown",
-                Some(E::RollbackFailed) => "operation_rollback_unconfirmed",
-                Some(E::Unavailable(Failure::Audit)) => "service_unavailable",
-                other => panic!("{self:?}: unexpected {other:?}"),
-            },
+            DeviceProtocol::Agent => {
+                match response.extensions().get::<rss_mdm_agent_channel::Error>() {
+                    Some(rss_mdm_agent_channel::Error::CommitUnknown) => "operation_unknown",
+                    Some(rss_mdm_agent_channel::Error::RollbackFailed) => {
+                        "operation_rollback_unconfirmed"
+                    }
+                    Some(rss_mdm_agent_channel::Error::Unavailable(
+                        rss_mdm_agent_channel::Failure::Audit,
+                    )) => "service_unavailable",
+                    other => panic!("{self:?}: unexpected {other:?}"),
+                }
+            }
             DeviceProtocol::Windows => match response
                 .extensions()
                 .get::<rss_mdm_windows_channel::Error>()
@@ -253,9 +258,9 @@ impl DeviceProtocol {
                 Some(rss_mdm_windows_channel::Error::RollbackFailed) => {
                     "operation_rollback_unconfirmed"
                 }
-                Some(rss_mdm_windows_channel::Error::Service(E::Unavailable(Failure::Audit))) => {
-                    "service_unavailable"
-                }
+                Some(rss_mdm_windows_channel::Error::Unavailable(
+                    rss_mdm_windows_channel::Failure::Audit,
+                )) => "service_unavailable",
                 other => panic!("{self:?}: unexpected {other:?}"),
             },
             DeviceProtocol::Apple => {
@@ -264,9 +269,9 @@ impl DeviceProtocol {
                     Some(rss_mdm_apple_channel::Error::RollbackFailed) => {
                         "operation_rollback_unconfirmed"
                     }
-                    Some(rss_mdm_apple_channel::Error::Service(E::Unavailable(Failure::Audit))) => {
-                        "service_unavailable"
-                    }
+                    Some(rss_mdm_apple_channel::Error::Unavailable(
+                        rss_mdm_apple_channel::Failure::Audit,
+                    )) => "service_unavailable",
                     other => panic!("{self:?}: unexpected {other:?}"),
                 }
             }
@@ -308,24 +313,32 @@ impl DeviceProtocol {
         }
         Ok(())
     }
-    fn original(self, error: rss_mdm_flow_service::Error) -> axum::response::Response {
+    fn original(self, error: rss_mdm_management_http::Error) -> axum::response::Response {
+        macro_rules! project {
+            ($owner:ident) => {{
+                let error = match error {
+                    rss_mdm_management_http::Error::CommitUnknown => $owner::Error::CommitUnknown,
+                    rss_mdm_management_http::Error::RollbackFailed => $owner::Error::RollbackFailed,
+                    rss_mdm_management_http::Error::Conflict => $owner::Error::Conflict,
+                    rss_mdm_management_http::Error::Unavailable(Failure::RequestDeadline) => {
+                        $owner::Error::Unavailable($owner::Failure::RequestDeadline)
+                    }
+                    _ => panic!("unexpected fixture error"),
+                };
+                error.into_response()
+            }};
+        }
         match self {
-            Self::Agent => {
-                // Feed the service result into the real Agent boundary, without exposing
-                // its handler-only error wrapper to an external consumer.
-                let mut response = StatusCode::SERVICE_UNAVAILABLE.into_response();
-                response.extensions_mut().insert(error);
-                response
-            }
-            Self::Windows => rss_mdm_windows_channel::Error::from(error).into_response(),
-            Self::Apple => rss_mdm_apple_channel::Error::from(error).into_response(),
+            Self::Agent => project!(rss_mdm_agent_channel),
+            Self::Windows => project!(rss_mdm_windows_channel),
+            Self::Apple => project!(rss_mdm_apple_channel),
         }
     }
 }
 
 async fn failed_device_settlement(protocol: DeviceProtocol) -> anyhow::Result<()> {
     use rss_mdm_audit_integration::{RequestAudit, WriteOutcome as W};
-    use rss_mdm_flow_service::Error as E;
+    use rss_mdm_management_http::Error as E;
     use tower::ServiceExt;
     let (pool, store) = crate::audit_test_support::request_store().await?;
     let request = || {

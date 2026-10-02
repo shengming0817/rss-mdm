@@ -120,7 +120,6 @@ impl ExecutionService {
                     Ok(None)
                 })
             },
-            crate::transaction::TransactionOwner::Execution,
         )
         .await;
         audit.finalize(
@@ -157,7 +156,7 @@ impl ExecutionService {
                 None=>{service.audit_store.append_request_in(tx,audit,200,"success").await?;},
             }
             Ok(())
-        }),crate::transaction::TransactionOwner::Execution).await;
+        })).await;
         audit.finalize(
             result
                 .as_ref()

@@ -37,10 +37,12 @@ pub async fn manage(
     {
         return Err(Error::Malformed);
     }
-    let checked = app
-        .windows()?
-        .ca
-        .verify(peer.chain(), app.clock.unix_seconds()?)?;
+    let checked = app.windows()?.ca.verify(
+        peer.chain(),
+        app.clock
+            .unix_seconds()
+            .ok_or(Error::Unavailable(Failure::Clock))?,
+    )?;
     let credential = app.mount.credential(checked.fingerprint());
     let principal = app.devices.management_principal(&credential).await?;
     audit.identify_device(principal.registration());
@@ -756,10 +758,12 @@ pub async fn register_agent(
     {
         return Err(Error::Malformed);
     }
-    let checked = app
-        .windows()?
-        .ca
-        .verify(peer.chain(), app.clock.unix_seconds()?)?;
+    let checked = app.windows()?.ca.verify(
+        peer.chain(),
+        app.clock
+            .unix_seconds()
+            .ok_or(Error::Unavailable(Failure::Clock))?,
+    )?;
     let principal = app
         .devices
         .management_principal(&app.mount.credential(checked.fingerprint()))

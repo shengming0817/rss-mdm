@@ -210,8 +210,7 @@ async fn read(
     audit.target("runtime");
     auth.proof
         .manage(rss_mdm_authorization_service::Permission::RuntimeDiagnosticsRead)?;
-    let tenant = TenantId::parse(auth.proof.tenant_id())
-        .map_err(|_| Error(rss_mdm_flow_service::Error::Unauthorized))?;
+    let tenant = TenantId::parse(auth.proof.tenant_id()).map_err(|_| Error::Unauthorized)?;
     source
         .snapshot(tenant, auth.proof.instance_id(), deadline.0)
         .await

@@ -97,24 +97,52 @@ mod test_support;
 mod windows;
 pub use lifecycle::{serve, signal};
 
-#[derive(Clone, Debug, thiserror::Error, serde::Serialize)]
-#[serde(tag = "kind", content = "reason", rename_all = "snake_case")]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("invalid product configuration")]
     Configuration(ConfigIssue),
     #[error("host dependency unavailable")]
     Unavailable(Failure),
+    #[error("invalid host input")]
+    Malformed,
+    #[error("host operation unavailable")]
+    Unsupported,
+    #[error("host identity rejected")]
+    Unauthorized,
+    #[error("host permission denied")]
+    Forbidden,
+    #[error("host operation conflict")]
+    Conflict,
+    #[error("commit outcome unknown")]
+    CommitUnknown,
+    #[error("rollback unconfirmed")]
+    RollbackFailed,
+    #[error("certificate request rejected")]
+    CertificateRequest,
     #[error(transparent)]
     Apple(#[from] rss_mdm_apple_channel::Error),
     #[error(transparent)]
     Windows(#[from] rss_mdm_windows_channel::Error),
     #[error(transparent)]
-    #[serde(untagged)]
-    Service(#[from] rss_mdm_flow_service::Error),
+    Flow(#[from] rss_mdm_flow_service::Error),
     #[error(transparent)]
-    #[serde(untagged)]
     Execution(#[from] rss_mdm_execution_service::Error),
+    #[error(transparent)]
+    Authorization(#[from] rss_mdm_authorization_service::Error),
+    #[error(transparent)]
+    Registration(#[from] rss_mdm_registration_service::Error),
+    #[error(transparent)]
+    Inventory(#[from] rss_mdm_inventory_service::Error),
+    #[error(transparent)]
+    Software(#[from] rss_mdm_software_service::management::Error),
+    #[error(transparent)]
+    Content(#[from] rss_mdm_content_service::Error),
+    #[error(transparent)]
+    ContentRequest(#[from] rss_mdm_content_service::service::Error),
+    #[error(transparent)]
+    Http(#[from] rss_mdm_management_http::Error),
 }
+
 #[cfg(test)]
 #[path = "../tests/fixtures/error.rs"]
 mod fixture_error;
@@ -129,12 +157,10 @@ impl From<rss_mdm_certificate::Error> for Error {
     fn from(error: rss_mdm_certificate::Error) -> Self {
         use rss_mdm_certificate::Error as Certificate;
         match error {
-            Certificate::Malformed => Self::Service(rss_mdm_flow_service::Error::Malformed),
-            Certificate::CertificateRequest => {
-                Self::Service(rss_mdm_flow_service::Error::CertificateRequest)
-            }
-            Certificate::Unauthorized => Self::Service(rss_mdm_flow_service::Error::Unauthorized),
-            Certificate::Conflict => Self::Service(rss_mdm_flow_service::Error::Conflict),
+            Certificate::Malformed => Self::Malformed,
+            Certificate::CertificateRequest => Self::CertificateRequest,
+            Certificate::Unauthorized => Self::Unauthorized,
+            Certificate::Conflict => Self::Conflict,
             Certificate::Expired | Certificate::Signing => Self::Unavailable(Failure::Certificate),
         }
     }
@@ -142,31 +168,9 @@ impl From<rss_mdm_certificate::Error> for Error {
 impl From<rss_mdm_apple_mdm::Error> for Error {
     fn from(error: rss_mdm_apple_mdm::Error) -> Self {
         match error {
-            rss_mdm_apple_mdm::Error::Malformed => {
-                Self::Service(rss_mdm_flow_service::Error::Malformed)
-            }
-            rss_mdm_apple_mdm::Error::Unsupported => {
-                Self::Service(rss_mdm_flow_service::Error::Unsupported)
-            }
-            rss_mdm_apple_mdm::Error::Conflict => {
-                Self::Service(rss_mdm_flow_service::Error::Conflict)
-            }
-        }
-    }
-}
-
-impl From<rss_mdm_content_service::Error> for Error {
-    fn from(error: rss_mdm_content_service::Error) -> Self {
-        use rss_mdm_content_service::Error as Content;
-        match error {
-            Content::Configuration => Self::Configuration(ConfigIssue::Content),
-            Content::Malformed => Self::Service(rss_mdm_flow_service::Error::Malformed),
-            Content::Conflict => Self::Service(rss_mdm_flow_service::Error::Conflict),
-            Content::Storage => Self::Unavailable(Failure::ContentStorage),
-            Content::Invariant => Self::Unavailable(Failure::ContentInvariant),
-            Content::Metadata => Self::Unavailable(Failure::ContentMetadata),
-            Content::Deadline => Self::Unavailable(Failure::ContentDeadline),
-            Content::Cleanup => Self::Unavailable(Failure::ContentCleanup),
+            rss_mdm_apple_mdm::Error::Malformed => Self::Malformed,
+            rss_mdm_apple_mdm::Error::Unsupported => Self::Unsupported,
+            rss_mdm_apple_mdm::Error::Conflict => Self::Conflict,
         }
     }
 }

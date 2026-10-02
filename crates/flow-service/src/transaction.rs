@@ -164,16 +164,12 @@ use serde_json::Value;
 #[derive(Clone, Copy)]
 pub enum TransactionOwner {
     Planning,
-    Assets,
-    Compliance,
     ResourceCatalog,
 }
 impl TransactionOwner {
     fn failure(self) -> Failure {
         match self {
             Self::Planning => Failure::PlanningStorage,
-            Self::Assets => Failure::AssetsStorage,
-            Self::Compliance => Failure::ComplianceStorage,
             Self::ResourceCatalog => Failure::ResourceStorage,
         }
     }
@@ -320,9 +316,11 @@ impl From<catalog::Error> for Fault {
                 Error::Resource(crate::resource_catalog::error::ResourceError::Missing).into()
             }
             catalog::Error::Integrity => {
-                Error::Unavailable(crate::Failure::SoftwareCatalogInvariant).into()
+                Error::Unavailable(crate::Failure::ResourceSoftwareIntegrity).into()
             }
-            catalog::Error::Content => Error::Unavailable(crate::Failure::ContentInvariant).into(),
+            catalog::Error::Content => {
+                Error::Unavailable(crate::Failure::ResourceSoftwareIntegrity).into()
+            }
         }
     }
 }

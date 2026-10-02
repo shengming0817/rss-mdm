@@ -109,8 +109,8 @@ pub(crate) async fn open(
                     eprintln!("command startup: transaction failed");
                     Err(bad())
                 },
-                |_| Err(Error::Service(rss_mdm_flow_service::Error::CommitUnknown)),
-                |_| Err(Error::Service(rss_mdm_flow_service::Error::CommitUnknown)),
+                |_| Err(Error::CommitUnknown),
+                |_| Err(Error::CommitUnknown),
                 |_| {
                     eprintln!("command startup: transaction failed");
                     Err(bad())

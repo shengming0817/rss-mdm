@@ -17,7 +17,7 @@ pub fn checked_input<T>(value: std::result::Result<T, impl std::fmt::Debug>) -> 
     value.map_err(|_| Error::Malformed.into())
 }
 pub fn stored<T>(r: std::result::Result<T, impl std::fmt::Debug>) -> Result<T> {
-    r.map_err(|_| Error::Unavailable(Failure::FlowStorage).into())
+    r.map_err(|_| Error::Unavailable(Failure::CommandStorage).into())
 }
 pub fn checked<T>(r: std::result::Result<T, impl std::fmt::Debug>) -> Result<T> {
     r.map_err(|_| Error::Conflict.into())
@@ -28,13 +28,15 @@ pub fn json(v: &impl serde::Serialize) -> Result<Value> {
 pub fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
     rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(6))
 }
-pub fn rejection(error: Fault, failure: &Mutex<Option<Error>>, owner: TransactionOwner) -> PgError {
+pub fn rejection(error: Fault, failure: &Mutex<Option<Error>>) -> PgError {
     #[cfg(any(test, feature = "integration"))]
     eprintln!("transaction rejected: {error:?}");
     let (reason, db) = match error {
         Fault::Request(e) => {
             let e = match e {
-                Error::Unavailable(Failure::FlowStorage) => Error::Unavailable(owner.failure()),
+                Error::Unavailable(Failure::CommandStorage) => {
+                    Error::Unavailable(Failure::CommandStorage)
+                }
                 other => other,
             };
             (e, sqlx::Error::Protocol("request rejected".into()).into())
@@ -44,9 +46,9 @@ pub fn rejection(error: Fault, failure: &Mutex<Option<Error>>, owner: Transactio
             let reason = match e.kind() {
                 MessagingErrorKind::OwnershipLost | MessagingErrorKind::Conflict => Error::Conflict,
                 MessagingErrorKind::Permanent | MessagingErrorKind::Invariant => {
-                    Error::Unavailable(owner.invariant())
+                    Error::Unavailable(Failure::CommandInvariant)
                 }
-                _ => Error::Unavailable(owner.failure()),
+                _ => Error::Unavailable(Failure::CommandStorage),
             };
             (reason, e)
         }
@@ -58,7 +60,7 @@ pub fn rejection(error: Fault, failure: &Mutex<Option<Error>>, owner: Transactio
             {
                 Error::Conflict
             } else {
-                Error::Unavailable(owner.failure())
+                Error::Unavailable(Failure::CommandStorage)
             };
             (reason, e.into())
         }
@@ -70,27 +72,26 @@ pub fn settle<T>(
     attempt: rss_transactional_messaging::transaction::LocalTxAttempt<T, PgError>,
     audit: &RequestAudit,
     failure: Mutex<Option<Error>>,
-    owner: TransactionOwner,
 ) -> std::result::Result<T, Error> {
     attempt.fold(
         |v| {
             audit.mark_committed();
             Ok(v)
         },
-        |_| Err(Error::Unavailable(owner.failure())),
+        |_| Err(Error::Unavailable(Failure::CommandStorage)),
         |_| {
             audit.mark_rolled_back();
             Err(failure
                 .into_inner()
                 .expect("request result")
-                .unwrap_or(Error::Unavailable(owner.failure())))
+                .unwrap_or(Error::Unavailable(Failure::CommandStorage)))
         },
         |_| {
             audit.mark_rollback_failed();
             Err(Error::RollbackFailed)
         },
         |_| Err(Error::CommitUnknown),
-        |_| Err(Error::Unavailable(owner.failure())),
+        |_| Err(Error::Unavailable(Failure::CommandStorage)),
     )
 }
 pub async fn run<C: Send, R: Send, F>(
@@ -100,7 +101,6 @@ pub async fn run<C: Send, R: Send, F>(
     audit: &RequestAudit,
     context: C,
     operation: F,
-    owner: TransactionOwner,
 ) -> std::result::Result<R, Error>
 where
     F: for<'c> FnOnce(
@@ -120,12 +120,10 @@ where
                 Box::pin(async move {
                     let (audit_store, context, operation, audit, failure) = state;
                     if let Err(error) = audit_store.lock_in(tx).await {
-                        return Err(rejection(Error::from(error).into(), failure, owner));
+                        return Err(rejection(Error::from(error).into(), failure));
                     }
-                    if matches!(owner, TransactionOwner::Execution)
-                        && let Err(e) = crate::storage::admit(tx).await
-                    {
-                        return Err(rejection(e, failure, owner));
+                    if let Err(e) = crate::storage::admit(tx).await {
+                        return Err(rejection(e, failure));
                     }
                     let f = operation.take().expect("one callback");
                     match f(context, tx).await {
@@ -133,13 +131,13 @@ where
                             audit.mark_commit_started();
                             Ok(v)
                         }
-                        Err(e) => Err(rejection(e, failure, owner)),
+                        Err(e) => Err(rejection(e, failure)),
                     }
                 })
             },
         )
         .await;
-    settle(attempt, audit, failure, owner)
+    settle(attempt, audit, failure)
 }
 impl From<crate::authorization::error::AuthorizationError> for Fault {
     fn from(error: crate::authorization::error::AuthorizationError) -> Self {
@@ -166,22 +164,6 @@ pub fn fingerprint(value: &impl serde::Serialize) -> Result<Vec<u8>> {
 }
 
 use serde_json::Value;
-#[derive(Clone, Copy)]
-pub enum TransactionOwner {
-    Execution,
-}
-impl TransactionOwner {
-    fn failure(self) -> Failure {
-        match self {
-            Self::Execution => Failure::CommandStorage,
-        }
-    }
-    fn invariant(self) -> Failure {
-        match self {
-            Self::Execution => Failure::CommandInvariant,
-        }
-    }
-}
 impl From<crate::device::DeviceError> for Fault {
     fn from(error: crate::device::DeviceError) -> Self {
         Error::from(error).into()
@@ -209,7 +191,6 @@ pub async fn inspect<C: Send, R: Send, F>(
     tenant: TenantId,
     context: C,
     operation: F,
-    owner: TransactionOwner,
 ) -> std::result::Result<R, Error>
 where
     F: for<'c> FnOnce(
@@ -230,23 +211,23 @@ where
                     let (context, operation, failure) = state;
                     operation.take().expect("one preflight")(context, tx)
                         .await
-                        .map_err(|e| rejection(e, failure, owner))
+                        .map_err(|e| rejection(e, failure))
                 })
             },
         )
         .await;
     attempt.fold(
         Ok,
-        |_| Err(Error::Unavailable(owner.failure())),
+        |_| Err(Error::Unavailable(Failure::CommandStorage)),
         |_| {
             Err(failure
                 .into_inner()
                 .expect("preflight result")
-                .unwrap_or(Error::Unavailable(owner.failure())))
+                .unwrap_or(Error::Unavailable(Failure::CommandStorage)))
         },
         |_| Err(Error::RollbackFailed),
-        |_| Err(Error::Unavailable(owner.failure())),
-        |_| Err(Error::Unavailable(owner.failure())),
+        |_| Err(Error::Unavailable(Failure::CommandStorage)),
+        |_| Err(Error::Unavailable(Failure::CommandStorage)),
     )
 }
 
@@ -355,7 +336,7 @@ impl From<rss_mdm_audit_integration::operation_receipts::Error> for Fault {
             Receipt::Sql(e) => Self::Sql(e),
             Receipt::Conflict => Error::Conflict.into(),
             Receipt::Malformed => Error::Malformed.into(),
-            Receipt::Invariant => Error::Unavailable(Failure::FlowStorage).into(),
+            Receipt::Invariant => Error::Unavailable(Failure::CommandStorage).into(),
         }
     }
 }

@@ -26,7 +26,7 @@ async fn directory(
     >,
 ) -> Result<Json<Value>, Error> {
     audit.set_action("management_read");
-    let Query(q) = query.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
+    let Query(q) = query.map_err(|_| Error::Malformed)?;
     Ok(Json(s.catalog.directory(&auth.proof, &q, &audit).await?))
 }
 async fn run(
@@ -84,10 +84,7 @@ async fn write(
         &auth,
         &audit,
         id,
-        Some(
-            body.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?
-                .0,
-        ),
+        Some(body.map_err(|_| Error::Malformed)?.0),
     )
     .await
 }

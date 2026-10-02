@@ -53,11 +53,7 @@ impl ExecutionService {
                 |(service, target, context), tx| {
                     Box::pin(async move {
                         if let Err(error) = service.audit_store.lock_in(tx).await {
-                            return Err(rejection(
-                                Error::from(error).into(),
-                                context.5,
-                                crate::transaction::TransactionOwner::Execution,
-                            ));
+                            return Err(rejection(Error::from(error).into(), context.5));
                         }
                         rss_reconcile_postgres::messaging::wake_in(
                             tx,
@@ -71,11 +67,7 @@ impl ExecutionService {
                                             audit.mark_commit_started();
                                             Ok(v)
                                         }
-                                        Err(e) => Err(rejection(
-                                            e,
-                                            failure,
-                                            crate::transaction::TransactionOwner::Execution,
-                                        )),
+                                        Err(e) => Err(rejection(e, failure)),
                                     }
                                 })
                             },
@@ -85,12 +77,7 @@ impl ExecutionService {
                 },
             )
             .await;
-        settle(
-            attempt,
-            audit,
-            failure,
-            crate::transaction::TransactionOwner::Execution,
-        )
+        settle(attempt, audit, failure)
     }
     pub async fn create_in(
         &self,
@@ -284,7 +271,7 @@ impl ExecutionService {
             crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Apple).await?;
             let result=json!({"operationId":id,"revision":op.revision+1});
             let fact = Fact::business(audit, &event_key, &fingerprint, 200, "success", None)?; service.audit_store.append_in(tx, &fact, false).await?;receipt(tx,change.request_id,id,fingerprint,&result,audit).await?;proof.check_live()?;Ok(result)
-        }),crate::transaction::TransactionOwner::Execution).await
+        })).await
     }
 }
 async fn replay(
@@ -465,7 +452,6 @@ impl ExecutionService {
                     Ok(())
                 })
             },
-            crate::transaction::TransactionOwner::Execution,
         )
         .await
     }

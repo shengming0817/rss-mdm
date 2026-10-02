@@ -1,6 +1,10 @@
 //! Agent V5 ingress; request fields carry no tenant or registration authority.
 use rss_mdm_authorization_service as authorization;
-use rss_mdm_flow_service::{Error, Failure};
+mod diagnostic;
+mod error;
+pub use diagnostic::{ConfigIssue, Failure};
+pub use error::Error;
+use error::Missing;
 use rss_mdm_inventory_service::collection;
 use rss_mdm_registration_service::{device, enrollment};
 mod bindings;
@@ -75,18 +79,8 @@ impl IntoResponse for AgentError {
                         wire::ErrorCode::OperationUnknown
                     }
                     Error::Unauthorized | Error::Forbidden => wire::ErrorCode::InvalidIdentity,
-                    Error::Execution(
-                        rss_mdm_execution_service::missing::ExecutionError::MissingTask,
-                    ) => wire::ErrorCode::TaskNotFound,
-                    Error::NotFound
-                    | Error::Resource(_)
-                    | Error::Execution(
-                        rss_mdm_execution_service::missing::ExecutionError::MissingOperation,
-                    )
-                    | Error::Publication(_)
-                    | Error::Planning(
-                        rss_mdm_flow_service::planning::error::PlanningError::Missing(_),
-                    ) => wire::ErrorCode::ReportNotFound,
+                    Error::Missing(Missing::Task) => wire::ErrorCode::TaskNotFound,
+                    Error::Missing(_) | Error::NotFound => wire::ErrorCode::ReportNotFound,
                     Error::Configuration(_) | Error::Unavailable(_) | Error::Unsupported => {
                         wire::ErrorCode::ServiceUnavailable
                     }
@@ -708,5 +702,11 @@ async fn builtin_collections(
 impl From<rss_mdm_execution_service::Error> for AgentError {
     fn from(e: rss_mdm_execution_service::Error) -> Self {
         Self::Service(e.into())
+    }
+}
+
+impl IntoResponse for Error {
+    fn into_response(self) -> Response {
+        AgentError::Service(self).into_response()
     }
 }

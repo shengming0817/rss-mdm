@@ -284,7 +284,6 @@ impl Inputs {
                     Ok(select(&version, binding, parameters)?.artifact().clone())
                 })
             },
-            TransactionOwner::Execution,
         )
         .await?;
         Ok(self

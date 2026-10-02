@@ -119,7 +119,7 @@ pub async fn serve(
                             .map_err(|_| {
                                 ProcessError::at(
                                     "startup.notification_tenant",
-                                    crate::Error::Service(rss_mdm_flow_service::Error::Malformed),
+                                    crate::Error::Malformed,
                                 )
                             })?,
                         );
@@ -206,7 +206,7 @@ pub async fn serve(
                                     &compiled.config.identity.tenant_id,
                                 )
                                 .map_err(|_| {
-                                    assembly_error(Error::Service(
+                                    assembly_error(Error::Flow(
                                         rss_mdm_flow_service::Error::Malformed,
                                     ))
                                 })?,

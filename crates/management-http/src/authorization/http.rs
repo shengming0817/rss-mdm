@@ -120,19 +120,16 @@ async fn members(
         .groups
         .iter()
         .find(|r| r.id == id)
-        .ok_or(Error(rss_mdm_flow_service::Error::NotFound))?;
-    let group = record
-        .value
-        .as_ref()
-        .ok_or(Error(rss_mdm_flow_service::Error::NotFound))?;
+        .ok_or(Error::NotFound)?;
+    let group = record.value.as_ref().ok_or(Error::NotFound)?;
     let offset = page.offset.unwrap_or(0);
     if offset > 10000 {
-        return Err(Error(rss_mdm_flow_service::Error::Malformed));
+        return Err(Error::Malformed);
     }
     if page.expected_revision.is_some_and(|v| v != record.revision)
         || (offset > 0 && page.expected_revision.is_none())
     {
-        return Err(Error(rss_mdm_flow_service::Error::Conflict));
+        return Err(Error::Conflict);
     }
     let items = group
         .members
@@ -151,7 +148,7 @@ async fn departments(Extension(auth): Extension<RequestAuth>) -> Result<Json<Val
         .proof
         .session()
         .department_snapshot()
-        .map_err(|_| Error(rss_mdm_flow_service::Error::Unauthorized))?
+        .map_err(|_| Error::Unauthorized)?
     {
         Department::Available(view) => match view.snapshot() {
             Ok(snapshot) => {
@@ -160,7 +157,7 @@ async fn departments(Extension(auth): Extension<RequestAuth>) -> Result<Json<Val
             Err(rss_identity_postgres::DepartmentAccessError::SnapshotExpired) => {
                 json!({"status":"expired"})
             }
-            Err(_) => return Err(Error(rss_mdm_flow_service::Error::Unauthorized)),
+            Err(_) => return Err(Error::Unauthorized),
         },
         Department::Unavailable(reason) => json!({"status":"unavailable","reason":reason}),
         Department::Expired => json!({"status":"expired"}),
@@ -209,8 +206,7 @@ async fn authenticate_and_run(
     let _global = match app.requests.clone().try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => {
-            return Error(rss_mdm_flow_service::Error::Unavailable(Failure::Capacity))
-                .into_response();
+            return Error::Unavailable(Failure::Capacity).into_response();
         }
     };
     match app
@@ -227,8 +223,7 @@ async fn authenticate_and_run(
             }
             // Authentication has settled. Authorization I/O and the handler share the host budget.
             let Some(clock) = parts.extensions.get::<Arc<dyn rss_observation::Clock>>() else {
-                return Error(rss_mdm_flow_service::Error::Unavailable(Failure::Runtime))
-                    .into_response();
+                return Error::Unavailable(Failure::Runtime).into_response();
             };
             let deadline = clock.now() + Duration::from_secs(8);
             parts
@@ -252,12 +247,7 @@ async fn authenticate_and_run(
                 next.run(Request::from_parts(parts, body)).await
             })
             .await
-            .unwrap_or_else(|_| {
-                Error(rss_mdm_flow_service::Error::Unavailable(
-                    Failure::RequestDeadline,
-                ))
-                .into_response()
-            })
+            .unwrap_or_else(|_| Error::Unavailable(Failure::RequestDeadline).into_response())
         }
         Err(response) => response,
     }

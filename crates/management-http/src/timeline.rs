@@ -12,18 +12,17 @@ use std::sync::Arc;
 fn input(
     q: Result<Query<rss_mdm_timeline_service::Query>, axum::extract::rejection::QueryRejection>,
 ) -> Result<rss_mdm_timeline_service::Query, Error> {
-    q.map(|q| q.0)
-        .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))
+    q.map(|q| q.0).map_err(|_| Error::Malformed)
 }
 fn error(error: rss_mdm_timeline_service::Error) -> Error {
     use rss_mdm_timeline_service::Error as E;
-    Error(match error {
-        E::Malformed => rss_mdm_flow_service::Error::Malformed,
-        E::Conflict => rss_mdm_flow_service::Error::Conflict,
-        E::Forbidden => rss_mdm_flow_service::Error::Forbidden,
-        E::Integrity => rss_mdm_flow_service::Error::Unavailable(Failure::AuditIntegrity),
-        E::Storage | E::Deadline => rss_mdm_flow_service::Error::Unavailable(Failure::Timeline),
-    })
+    match error {
+        E::Malformed => Error::Malformed,
+        E::Conflict => Error::Conflict,
+        E::Forbidden => Error::Forbidden,
+        E::Integrity => Error::Unavailable(Failure::AuditIntegrity),
+        E::Storage | E::Deadline => Error::Unavailable(Failure::Timeline),
+    }
 }
 pub fn routes() -> Router<Arc<Timeline>> {
     Router::new()
@@ -43,7 +42,7 @@ async fn device(
     audit.target(&device);
     let mut query = input(params)?;
     if query.device.is_some() {
-        return Err(Error(rss_mdm_flow_service::Error::Malformed));
+        return Err(Error::Malformed);
     }
     query.device = Some(device);
     service

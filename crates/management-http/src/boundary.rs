@@ -26,28 +26,15 @@ pub fn wrap(router: Router, envelope: Envelope) -> Router {
 }
 fn classify(error: Option<&Error>) -> Option<ResponseFailure> {
     match error {
-        Some(Error(rss_mdm_flow_service::Error::CommitUnknown)) => {
-            Some(ResponseFailure::CommitUnknown)
-        }
-        Some(Error(rss_mdm_flow_service::Error::RollbackFailed)) => {
-            Some(ResponseFailure::RollbackFailed)
-        }
-        Some(
-            Error(rss_mdm_flow_service::Error::Unauthorized)
-            | Error(rss_mdm_flow_service::Error::Forbidden),
-        ) => Some(ResponseFailure::Denied),
-        Some(Error(rss_mdm_flow_service::Error::Unavailable(Failure::RequestDeadline))) => {
-            Some(ResponseFailure::Deadline)
-        }
-        Some(Error(rss_mdm_flow_service::Error::Unavailable(Failure::AuditIntegrity))) => {
-            Some(ResponseFailure::AuditIntegrity)
-        }
-        Some(Error(rss_mdm_flow_service::Error::Unavailable(
+        Some(Error::CommitUnknown) => Some(ResponseFailure::CommitUnknown),
+        Some(Error::RollbackFailed) => Some(ResponseFailure::RollbackFailed),
+        Some(Error::Unauthorized | Error::Forbidden) => Some(ResponseFailure::Denied),
+        Some(Error::Unavailable(Failure::RequestDeadline)) => Some(ResponseFailure::Deadline),
+        Some(Error::Unavailable(Failure::AuditIntegrity)) => Some(ResponseFailure::AuditIntegrity),
+        Some(Error::Unavailable(
             Failure::AuditContract | Failure::AuditIsolation | Failure::AuditAdmission,
-        ))) => Some(ResponseFailure::AuditContract),
-        Some(Error(rss_mdm_flow_service::Error::Unavailable(Failure::Audit))) => {
-            Some(ResponseFailure::AuditUnavailable)
-        }
+        )) => Some(ResponseFailure::AuditContract),
+        Some(Error::Unavailable(Failure::Audit)) => Some(ResponseFailure::AuditUnavailable),
         _ => None,
     }
 }
@@ -77,7 +64,7 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
             .and_then(|v| v.to_str().ok())
             != Some(envelope.host.as_str())
     {
-        project(Error(rss_mdm_flow_service::Error::Malformed))
+        project(Error::Malformed)
     } else {
         body(request, next, envelope.requests).await
     };
@@ -91,8 +78,8 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
     .await
     {
         response = project(match replacement {
-            Replacement::CommitUnknown => Error(rss_mdm_flow_service::Error::CommitUnknown),
-            Replacement::RollbackFailed => Error(rss_mdm_flow_service::Error::RollbackFailed),
+            Replacement::CommitUnknown => Error::CommitUnknown,
+            Replacement::RollbackFailed => Error::RollbackFailed,
             Replacement::Audit(e) => e.into(),
         });
     }
@@ -130,7 +117,7 @@ pub async fn authentication(
             .and_then(|v| v.to_str().ok())
             != Some(envelope.host.as_str())
     {
-        project(Error(rss_mdm_flow_service::Error::Malformed))
+        project(Error::Malformed)
     } else {
         body(request, next, envelope.requests).await
     };
@@ -199,9 +186,7 @@ async fn body(request: Request, next: Next, requests: Arc<tokio::sync::Semaphore
                 .await
         }
         Ok(Err(_)) => StatusCode::PAYLOAD_TOO_LARGE.into_response(),
-        Err(_) => project(Error(rss_mdm_flow_service::Error::Unavailable(
-            Failure::RequestDeadline,
-        ))),
+        Err(_) => project(Error::Unavailable(Failure::RequestDeadline)),
     }
 }
 fn project(error: Error) -> Response {

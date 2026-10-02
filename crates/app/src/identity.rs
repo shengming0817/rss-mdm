@@ -33,15 +33,9 @@ fn invalid() -> Error {
 }
 pub(crate) fn failure(error: AuthorityError) -> Error {
     match error {
-        AuthorityError::Rejected | AuthorityError::ReauthenticationFailed => {
-            Error::Service(rss_mdm_flow_service::Error::Unauthorized)
-        }
-        AuthorityError::CommitUnknown(_) => {
-            Error::Service(rss_mdm_flow_service::Error::CommitUnknown)
-        }
-        AuthorityError::RollbackFailed(_) => {
-            Error::Service(rss_mdm_flow_service::Error::RollbackFailed)
-        }
+        AuthorityError::Rejected | AuthorityError::ReauthenticationFailed => Error::Unauthorized,
+        AuthorityError::CommitUnknown(_) => Error::CommitUnknown,
+        AuthorityError::RollbackFailed(_) => Error::RollbackFailed,
         _ => Error::Unavailable(Failure::IdentityStorage),
     }
 }

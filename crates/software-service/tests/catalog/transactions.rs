@@ -346,18 +346,7 @@ async fn dependency_admission_uses_exact_current_approval() -> Result<()> {
         .resolve(&dependent)
         .await
         .context("resolve approved dependency")?;
-    let preparation = Preparation::new(
-        Catalog::new(
-            fixture.runtime.clone(),
-            pg::tenant(),
-            materials::host(
-                fixture.runtime.clone(),
-                pg::audit_store_for("mdm_flow_runtime").await,
-            )
-            .audit,
-        ),
-        Default::default(),
-    );
+    let preparation = Preparation::new(catalog::Reader::new(pg::tenant()), Default::default());
     let target = Target {
         platform: r::Platform::Windows,
         architecture: r::Architecture::X86_64,

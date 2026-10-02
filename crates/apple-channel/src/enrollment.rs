@@ -100,7 +100,7 @@ pub async fn download(
             management_origin: &apple.config.management.origin,
             subject: &certificate::subject(id, attempt),
         }, id, attempt, input.password.expose())?,
-        app.clock.unix_seconds()?,
+        app.clock.unix_seconds().ok_or(Error::Unavailable(Failure::Clock))?,
     )?;
     Ok::<_, Error>((attempt, replayed, bytes))
 
@@ -163,7 +163,9 @@ pub async fn challenge(
         &apple.config.challenge_webhook.id,
         &headers,
         &bytes,
-        app.clock.unix_seconds()?,
+        app.clock
+            .unix_seconds()
+            .ok_or(Error::Unavailable(Failure::Clock))?,
     )?;
     if input.provisioner_name.as_deref() != Some(apple.config.scep_provisioner.as_str())
         || input.x509_certificate.is_some()
@@ -227,7 +229,9 @@ pub async fn notify(
         &apple.config.notify_webhook.id,
         &headers,
         &bytes,
-        app.clock.unix_seconds()?,
+        app.clock
+            .unix_seconds()
+            .ok_or(Error::Unavailable(Failure::Clock))?,
     )?;
     let csr = certificate::csr(&input.x509_certificate_request.der()?)?;
     if input.scep_error_code.is_some() {
@@ -236,7 +240,9 @@ pub async fn notify(
     let der = input.x509_certificate.ok_or(Error::Malformed)?.der()?;
     let leaf = apple.authority.verify(
         &[tokio_rustls::rustls::pki_types::CertificateDer::from(der)],
-        app.clock.unix_seconds()?,
+        app.clock
+            .unix_seconds()
+            .ok_or(Error::Unavailable(Failure::Clock))?,
     )?;
     if leaf.enrollment() != csr.enrollment()
         || leaf.attempt() != csr.attempt()

@@ -209,7 +209,7 @@ pub struct HttpState {
     pub audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
     pub access: std::sync::Arc<crate::Store>,
     pub apple: Option<std::sync::Arc<crate::Apple>>,
-    pub clock: std::sync::Arc<dyn rss_mdm_flow_service::clock::Clock>,
+    pub clock: std::sync::Arc<dyn rss_mdm_inventory_service::clock::Clock>,
     pub execution: std::sync::Arc<rss_mdm_execution_service::ExecutionService>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub credentials:

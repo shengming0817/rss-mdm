@@ -21,7 +21,8 @@ pub enum Error {
     #[error("inventory audit failure")]
     Audit(std::sync::Arc<rss_mdm_audit_integration::Error>),
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Failure {
     AssetBytesLimit,
     AssetCandidates,

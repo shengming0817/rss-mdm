@@ -234,11 +234,11 @@ async fn inherited_delete_privilege_fails_admission() -> Result<()> {
     pg(
         "CREATE ROLE mdm_content_drift; GRANT USAGE ON SCHEMA mdm_content TO mdm_content_drift; GRANT DELETE ON mdm_content.bindings TO mdm_content_drift; GRANT mdm_content_drift TO mdm_flow_runtime WITH INHERIT FALSE, SET TRUE",
     )?;
-    let rejected = rss_mdm_flow_service::storage::admit(&fixture.runtime, tenant).await;
+    let rejected = crate::flow::admit_storage(&fixture.runtime, tenant).await;
     pg(
         "REVOKE mdm_content_drift FROM mdm_flow_runtime; DROP OWNED BY mdm_content_drift; DROP ROLE mdm_content_drift",
     )?;
     ensure!(rejected.is_err());
-    rss_mdm_flow_service::storage::admit(&fixture.runtime, tenant).await?;
+    crate::flow::admit_storage(&fixture.runtime, tenant).await?;
     Ok(())
 }

@@ -29,11 +29,11 @@ async fn list(
     >,
 ) -> Result<Json<Value>, Error> {
     audit.set_action("management_read");
-    let Query(query) = query.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
+    let Query(query) = query.map_err(|_| Error::Malformed)?;
     let mut page = s.devices.directory(&auth.proof, &query).await?;
     let ids = page["items"]
         .as_array()
-        .ok_or(Error(rss_mdm_flow_service::Error::Malformed))?
+        .ok_or(Error::Malformed)?
         .iter()
         .filter_map(|v| v["id"].as_str().map(str::to_owned))
         .collect::<Vec<_>>();
@@ -41,10 +41,7 @@ async fn list(
         .assets
         .directory_presence(&auth.proof, &ids, &audit)
         .await?;
-    for item in page["items"]
-        .as_array_mut()
-        .ok_or(Error(rss_mdm_flow_service::Error::Malformed))?
-    {
+    for item in page["items"].as_array_mut().ok_or(Error::Malformed)? {
         item["inventoryAvailable"] =
             Value::Bool(present.contains(item["id"].as_str().unwrap_or_default()));
     }

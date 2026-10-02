@@ -140,6 +140,7 @@ impl Policies {
             |ctx, tx| {
                 Box::pin(async move {
                     let (s, p, id, op, audit, verified) = *ctx;
+                    super::admit_in(tx).await?;
                     let authorization = crate::action_admission::current(tx, p).await?;
                     authorization.require(p, Permission::PolicyWrite, None)?;
                     if matches!(&op.input, Change::Put { definition, .. } if definition.action.resource().is_some()) {

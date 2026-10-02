@@ -44,6 +44,10 @@ class CapabilityBoundaries(unittest.TestCase):
             with self.subTest(package=package):
                 self.assertFalse(dependencies(package) & forbidden)
 
+    def test_native_protocols_have_no_flow_error_bus_dependency(self):
+        for package in ('agent-channel', 'windows-channel', 'apple-channel'):
+            self.assertNotIn('rss-mdm-flow-service', dependencies(package), package)
+
     def test_content_use_cases_have_one_owner(self):
         self.assertFalse((ROOT / 'crates/flow-service/src/content.rs').exists())
         self.assertNotIn('rss-mdm-flow-service', dependencies('content-service'))

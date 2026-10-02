@@ -258,11 +258,7 @@ impl ResourceCatalog {
         if let pg::Command::Insert(version) = &command
             && version.kind() == r::Kind::Software
         {
-            let catalog = rss_mdm_software_service::catalog::Catalog::new(
-                self.runtime.clone(),
-                self.tenant,
-                self.audit_store.clone(),
-            );
+            let catalog = rss_mdm_software_service::catalog::Reader::new(self.tenant);
             catalog.private_authoring_in(tx, version).await?;
         }
         json(&checked(
@@ -428,6 +424,7 @@ impl ResourceCatalog {
             |ctx, tx| {
                 Box::pin(async move {
                     let (s, command, audit, authorize) = *ctx;
+                    admit_in(tx).await?;
                     if let Command::Resource { id, .. } = command {
                         tx.prepare_outbox_partitions(&[s.resources.partition(id)?])
                             .await?;
@@ -571,4 +568,21 @@ impl VersionReader {
         }
         Ok(version)
     }
+}
+
+pub const CATALOG_SQL: &str = include_str!("catalog.sql");
+
+pub const CATALOG_JSON: &str = include_str!("catalog.json");
+
+pub const ADMISSION_SQL: &str = include_str!("admission.sql");
+
+async fn admit_in(tx: &mut PgTransaction<'_>) -> Result<()> {
+    crate::storage::verify_contract(
+        tx,
+        CATALOG_SQL,
+        CATALOG_JSON,
+        ADMISSION_SQL,
+        Failure::ResourceAdmission,
+    )
+    .await
 }

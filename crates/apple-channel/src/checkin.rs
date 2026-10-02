@@ -15,9 +15,12 @@ pub async fn checkin(
     bytes: Bytes,
 ) -> Result<StatusCode, Error> {
     let apple = app.apple()?;
-    let leaf = apple
-        .authority
-        .verify(peer.chain(), app.clock.unix_seconds()?)?;
+    let leaf = apple.authority.verify(
+        peer.chain(),
+        app.clock
+            .unix_seconds()
+            .ok_or(Error::Unavailable(Failure::Clock))?,
+    )?;
     let dictionary = protocol::decode(&bytes)?;
     let input = protocol::checkin(&dictionary)?;
     let udid = match input {
@@ -179,9 +182,12 @@ pub async fn manage(
 ) -> Result<axum::response::Response, Error> {
     use axum::response::IntoResponse;
     let apple = app.apple()?;
-    let leaf = apple
-        .authority
-        .verify(peer.chain(), app.clock.unix_seconds()?)?;
+    let leaf = apple.authority.verify(
+        peer.chain(),
+        app.clock
+            .unix_seconds()
+            .ok_or(Error::Unavailable(Failure::Clock))?,
+    )?;
     let dictionary = protocol::decode(&bytes)?;
     let message = protocol::management(&dictionary)?;
     super::renewal::activate(&app, &leaf, message.udid).await?;
@@ -275,10 +281,12 @@ pub async fn register_agent(
     {
         return Err(Error::Malformed);
     }
-    let leaf = app
-        .apple()?
-        .authority
-        .verify(peer.chain(), app.clock.unix_seconds()?)?;
+    let leaf = app.apple()?.authority.verify(
+        peer.chain(),
+        app.clock
+            .unix_seconds()
+            .ok_or(Error::Unavailable(Failure::Clock))?,
+    )?;
     bound(&app, &leaf).await?;
     let principal = app
         .devices

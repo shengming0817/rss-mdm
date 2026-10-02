@@ -119,7 +119,7 @@ mod storage {
             );
             assert!(matches!(
                 execute_asset_service(&m, &service, &command).await,
-                Err(Error::Service(rss_mdm_flow_service::Error::CommitUnknown))
+                Err(Error::Flow(rss_mdm_flow_service::Error::CommitUnknown))
             ));
             let recovered = execute_asset_service(&m, &service, &command).await.unwrap();
             assert_eq!(

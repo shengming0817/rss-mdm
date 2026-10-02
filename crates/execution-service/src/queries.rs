@@ -95,7 +95,7 @@ impl Queries {
             let agent_installation=if op.approval.agent_package().is_some(){Some(super::native_installation::installation_observation(tx,service.apple_store.clone(),service.agent_store.clone(),&op).await?)}else{None};
             service.audit_store.append_request_in(tx,audit,200,"success").await?;
             records::decode(json!({"operationId":op.id,"commandId":op.id,"revision":op.revision,"task":op.request.task.summary()?,"target":op.request.target,"inputVersion":op.request.input_version,"deadline":op.request.deadline,"dispatchFailure":op.dispatch_failure,"authorization":if approved{"approved"}else{"blocked"},"commandStatus":crate::service::status(command),"observation":observation,"agentInstallation":agent_installation}))
-        }),crate::transaction::TransactionOwner::Execution).await.map_err(Into::into)
+        })).await.map_err(Into::into)
     }
 }
 

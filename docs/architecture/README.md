@@ -12,7 +12,7 @@
 | `authorization-service` | 当前管理主体、授权规则、授权证明及初始化 |
 | `registration-service` | 注册世代、来源授权、凭据和设备生命周期 |
 | `inventory-service` | 采集质量与持久接收、资产、分组及合规 |
-| `flow-service` | Group、Scope、Policy 编排；资源目录等非执行余项继续按独立议题收敛 |
+| `flow-service` | 目标与 Scope/Policy 协调、任务组合和资源目录；Group/Compliance 管理入口直达 Inventory |
 | `execution-service` | 冻结执行输入、命令、Run、Attempt、一次性远程操作、执行存储与交付恢复；独立 Queries 提供类型化读事实 |
 | `content-service` | 内容授权、上传/镜像/回执用例、不可变文件与回收 |
 | `management-http` | 浏览器管理 HTTP、会话与错误投影 |
@@ -29,3 +29,7 @@
 安装单元由各能力导出，App 只决定顺序。产品 schema 是当前完整定义；仅接受空库或完全一致的安装记录，不保留历史升级链、旧模块转发或双写路径。现有 App 集成测试继续验证实际装配，测试载体不构成生产 facade。
 
 共享连接的准入由各能力 `access-contract.json` 声明自身表、列权限、函数和策略；App 只组合合同，Postgres support 检查合同并集及额外权限，Apple 的协议存储结构由 Apple 自检。入口只公开装配与 HTTP 类型，领域类型从原能力导入。入口错误保留服务来源，在响应边界映射；App 只拥有启动与生命周期错误。
+
+Policy 管理直接消费 PolicyStore、资源版本读取和 Inputs，不持有整个 Planning。软件准备只借用目录与原生导出读取能力；已验证的导出描述不携带发布驱动、凭据或仓库写能力。App 单次装配独立 Inputs/Queries 与执行服务，再向各消费者借出对应对象。
+
+各入口直接投影实际 owner 错误，Flow 不承接所有业务错误。Audit 的闭合诊断分类由 audit-integration 持有，事务结算仍由原发起方借用 RSS 完成。共享运行角色的完整越权检查属于 App 启动装配；Planning、Resource 和 Execution 分别核验自身事务所需合同，不扩张中央业务 owner 分类。

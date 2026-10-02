@@ -9,7 +9,7 @@ mod fact;
 pub use fact::{Fact, InvalidFact};
 
 mod store;
-pub use store::{AuditStore, Error};
+pub use store::{AuditStore, Error, ErrorClass};
 
 /// Product receipt schema, installed by the separately provisioned MDM owner.
 pub const MIGRATION_SQL: &str = include_str!("receipts.sql");

@@ -1,36 +1,51 @@
-//! Transport wrapper around the product request error; no duplicate error algebra.
+//! Closed HTTP request projection; domain errors are converted only at this ingress.
+use crate::{ConfigIssue, Failure, planning, resource_catalog};
 #[derive(Clone, Debug, thiserror::Error, serde::Serialize)]
-#[error(transparent)]
-#[serde(transparent)]
-pub struct Error(pub rss_mdm_flow_service::Error);
+#[serde(tag = "kind", content = "reason", rename_all = "snake_case")]
+pub enum Error {
+    #[error("invalid product configuration")]
+    Configuration(ConfigIssue),
+    #[error("invalid request")]
+    Malformed,
+    #[error(transparent)]
+    Group(#[from] rss_mdm_inventory_service::groups::GroupMissing),
+    #[error(transparent)]
+    Planning(#[from] planning::error::PlanningError),
+    #[error(transparent)]
+    Resource(#[from] resource_catalog::error::ResourceError),
+    #[error(transparent)]
+    Execution(#[from] rss_mdm_execution_service::missing::ExecutionError),
+    #[error(transparent)]
+    Publication(#[from] rss_mdm_software_service::management::publication::error::PublicationError),
+    #[error("certificate request rejected")]
+    CertificateRequest,
+    #[error("operation identity or enrollment/registration state conflict")]
+    Conflict,
+    #[error("commit outcome unknown; retry the same operation")]
+    CommitUnknown,
+    #[error("rollback not acknowledged; original attempt remains unresolved")]
+    RollbackFailed,
+    #[error("identity rejected")]
+    Unauthorized,
+    #[error("permission denied")]
+    Forbidden,
+    #[error("dependency unavailable")]
+    Unavailable(Failure),
+    #[error("inventory not found")]
+    NotFound,
+    #[error("action not supported")]
+    Unsupported,
+}
 impl Error {
     pub fn is_not_found(&self) -> bool {
-        self.0.is_not_found()
-    }
-}
-
-impl From<rss_mdm_execution_service::Error> for Error {
-    fn from(e: rss_mdm_execution_service::Error) -> Self {
-        Self(e.into())
-    }
-}
-
-impl From<rss_mdm_execution_service::queries::QueryError> for Error {
-    fn from(e: rss_mdm_execution_service::queries::QueryError) -> Self {
-        use rss_mdm_execution_service::queries::{Missing, QueryError as Read};
-        use rss_mdm_flow_service::Error as Wire;
-        Self(match e {
-   Read::Malformed=>Wire::Malformed,Read::Unauthorized=>Wire::Unauthorized,Read::Forbidden=>Wire::Forbidden,Read::Conflict=>Wire::Conflict,
-   Read::Unsupported=>Wire::Unsupported,Read::CommitUnknown=>Wire::CommitUnknown,Read::RollbackFailed=>Wire::RollbackFailed,
-   Read::Unavailable(f)=>rss_mdm_execution_service::Error::Unavailable(f).into(),
-   Read::Missing(m)=>match m {
-    Missing::Policy=>Wire::Planning(rss_mdm_flow_service::planning::error::PlanningError::Missing(rss_mdm_flow_service::planning::error::Missing::Policy)),
-    Missing::Inventory=>Wire::NotFound,Missing::Resource=>Wire::Resource(rss_mdm_flow_service::resource_catalog::error::ResourceError::Missing),
-    Missing::Operation=>Wire::Execution(rss_mdm_execution_service::missing::ExecutionError::MissingOperation),
-    Missing::Task=>Wire::Execution(rss_mdm_execution_service::missing::ExecutionError::MissingTask),
-    Missing::SoftwareSource=>Wire::Publication(rss_mdm_software_service::management::publication::error::PublicationError::MissingSource),
-    Missing::SoftwareCandidate=>Wire::Publication(rss_mdm_software_service::management::publication::error::PublicationError::MissingCandidate),
-   },
-  })
+        matches!(
+            self,
+            Self::NotFound
+                | Self::Group(_)
+                | Self::Planning(planning::error::PlanningError::Missing(_))
+                | Self::Resource(resource_catalog::error::ResourceError::Missing)
+                | Self::Execution(_)
+                | Self::Publication(_)
+        )
     }
 }

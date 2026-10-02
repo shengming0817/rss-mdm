@@ -10,10 +10,10 @@ pub mod planning;
 pub mod resource_catalog;
 pub mod transaction;
 pub mod worker_wake;
-pub use diagnostic::{ConfigIssue, Failure};
+pub use diagnostic::Failure;
 pub use error::Error;
 use rss_mdm_authorization_service as authorization;
-use rss_mdm_inventory_service::{assets, collection, compliance};
+use rss_mdm_inventory_service::{assets, compliance};
 use rss_mdm_registration_service::device;
 
 /// Fresh product schema owned by this capability.

@@ -226,7 +226,7 @@ async fn identity_context(
 ) -> Result<Json<IdentityHostContext>, Error> {
     let proof = &auth.proof;
     if tenant != proof.tenant_id() {
-        return Err(Error(rss_mdm_flow_service::Error::Unauthorized));
+        return Err(Error::Unauthorized);
     }
     Ok(Json(IdentityHostContext {
         tenant_id: proof.tenant_id().to_owned(),
@@ -251,15 +251,10 @@ async fn action(
     }
     audit.set_action("device_action");
     let _grant = auth.proof.dangerous(&id)?;
-    if input
-        .map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?
-        .0
-        .action
-        != "wipe"
-    {
-        return Err(Error(rss_mdm_flow_service::Error::Malformed));
+    if input.map_err(|_| Error::Malformed)?.0.action != "wipe" {
+        return Err(Error::Malformed);
     }
-    Err(Error(rss_mdm_flow_service::Error::Unsupported))
+    Err(Error::Unsupported)
 }
 
 async fn collection_run(
@@ -269,8 +264,8 @@ async fn collection_run(
     path: Result<Path<(String, uuid::Uuid)>, axum::extract::rejection::PathRejection>,
     query: Result<Query<Coordinates>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Json<crate::assets::collection::CollectionResponse>, Error> {
-    let Path((device, run)) = path.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
-    let Query(coordinates) = query.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
+    let Path((device, run)) = path.map_err(|_| Error::Malformed)?;
+    let Query(coordinates) = query.map_err(|_| Error::Malformed)?;
     audit.target(&device);
     audit.set_action("collection_read");
     let grant = crate::assets::collection::InventoryRead::new(&auth.proof, &device, coordinates)?;

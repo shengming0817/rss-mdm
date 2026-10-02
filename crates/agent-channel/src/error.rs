@@ -196,58 +196,18 @@ impl From<Error> for rss_mdm_execution_service::channels::Rejection {
         }
     }
 }
-impl From<rss_mdm_certificate::Error> for Error {
-    fn from(error: rss_mdm_certificate::Error) -> Self {
-        use rss_mdm_certificate::Error as Certificate;
+impl From<rss_mdm_content_service::Error> for Error {
+    fn from(error: rss_mdm_content_service::Error) -> Self {
+        use rss_mdm_content_service::Error as Content;
         match error {
-            Certificate::Malformed => Self::Malformed,
-            Certificate::CertificateRequest => Self::CertificateRequest,
-            Certificate::Unauthorized => Self::Unauthorized,
-            Certificate::Conflict => Self::Conflict,
-            Certificate::Expired | Certificate::Signing => Self::Unavailable(Failure::Certificate),
+            Content::Configuration => Self::Unavailable(Failure::ContentConfiguration),
+            Content::Malformed => Self::Malformed,
+            Content::Conflict => Self::Conflict,
+            Content::Storage => Self::Unavailable(Failure::ContentStorage),
+            Content::Invariant => Self::Unavailable(Failure::ContentInvariant),
+            Content::Metadata => Self::Unavailable(Failure::ContentMetadata),
+            Content::Deadline => Self::Unavailable(Failure::ContentDeadline),
+            Content::Cleanup => Self::Unavailable(Failure::ContentCleanup),
         }
-    }
-}
-
-impl From<rss_mdm_apple_mdm::Error> for Error {
-    fn from(e: rss_mdm_apple_mdm::Error) -> Self {
-        match e {
-            rss_mdm_apple_mdm::Error::Malformed => Self::Malformed,
-            rss_mdm_apple_mdm::Error::Unsupported => Self::Unsupported,
-            rss_mdm_apple_mdm::Error::Conflict => Self::Conflict,
-        }
-    }
-}
-
-impl axum::response::IntoResponse for Error {
-    fn into_response(self) -> axum::response::Response {
-        use axum::{Json, http::StatusCode};
-        let (status, code) = match &self {
-            Self::Malformed => (StatusCode::BAD_REQUEST, "malformed_request"),
-            Self::CertificateRequest => (StatusCode::BAD_REQUEST, "invalid_certificate_request"),
-            Self::Unauthorized => (StatusCode::UNAUTHORIZED, "invalid_identity"),
-            Self::Forbidden => (StatusCode::FORBIDDEN, "permission_denied"),
-            Self::Conflict => (StatusCode::CONFLICT, "operation_conflict"),
-            Self::CommitUnknown => (StatusCode::SERVICE_UNAVAILABLE, "operation_unknown"),
-            Self::RollbackFailed => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "operation_rollback_unconfirmed",
-            ),
-            Self::NotFound => (StatusCode::NOT_FOUND, "inventory_not_found"),
-            Self::Missing(m) => (StatusCode::NOT_FOUND, m.code()),
-            Self::Unsupported => (StatusCode::NOT_IMPLEMENTED, "action_not_supported"),
-            Self::Unavailable(Failure::AuditIntegrity) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "audit_integrity_error")
-            }
-            Self::Unavailable(
-                Failure::AuditAdmission | Failure::AuditIsolation | Failure::AuditContract,
-            ) => (StatusCode::INTERNAL_SERVER_ERROR, "audit_contract_error"),
-            Self::Unavailable(_) | Self::Configuration(_) => {
-                (StatusCode::SERVICE_UNAVAILABLE, "service_unavailable")
-            }
-        };
-        let mut response = (status, Json(serde_json::json!({"code":code}))).into_response();
-        response.extensions_mut().insert(self);
-        response
     }
 }

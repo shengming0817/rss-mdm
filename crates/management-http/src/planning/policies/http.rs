@@ -29,7 +29,7 @@ async fn change(
         axum::extract::rejection::JsonRejection,
     >,
 ) -> std::result::Result<Json<Value>, Error> {
-    let Json(input) = input.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
+    let Json(input) = input.map_err(|_| Error::Malformed)?;
     audit.operation(input.operation_id, "management_write");
     audit.target(&id.to_string());
     service
@@ -55,7 +55,7 @@ async fn list(
     Extension(audit): Extension<RequestAudit>,
     page: Result<Query<Page>, axum::extract::rejection::QueryRejection>,
 ) -> std::result::Result<Json<Value>, Error> {
-    let Query(page) = page.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
+    let Query(page) = page.map_err(|_| Error::Malformed)?;
     super::read::list(&service, &auth.proof, &audit, &page)
         .await
         .map(Json)
@@ -72,7 +72,7 @@ async fn rerun(
         axum::extract::rejection::JsonRejection,
     >,
 ) -> std::result::Result<Json<Value>, Error> {
-    let Json(input) = input.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
+    let Json(input) = input.map_err(|_| Error::Malformed)?;
     audit.operation(input.operation_id, "management_write");
     audit.target(&id.to_string());
     service

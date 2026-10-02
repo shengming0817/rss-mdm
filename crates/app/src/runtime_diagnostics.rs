@@ -23,9 +23,7 @@ impl Source for RuntimeDiagnostics {
     ) -> futures::future::BoxFuture<'a, Result<Snapshot, rss_mdm_management_http::Error>> {
         Box::pin(async move {
             if tenant != self.tenant || instance != self.instance {
-                return Err(rss_mdm_management_http::Error(
-                    rss_mdm_flow_service::Error::Forbidden,
-                ));
+                return Err(rss_mdm_management_http::Error::Forbidden);
             }
             Ok(self.collect(deadline, true).await)
         })

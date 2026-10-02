@@ -100,7 +100,7 @@ impl crate::queries::Queries {
             }
             a.check_live()?;s.audit_store.append_request_in(tx,audit,200,"success").await?;
             crate::queries::records::decode(value)
-        }),crate::transaction::TransactionOwner::Execution).await.map_err(Into::into)
+        })).await.map_err(Into::into)
     }
 
     pub async fn directory_capabilities(
@@ -193,8 +193,7 @@ impl crate::queries::Queries {
                     proof.check_live()?;
                     crate::queries::records::decode(json!(result))
                 })
-            },
-            crate::transaction::TransactionOwner::Execution,
+            }
         )
         .await.map_err(Into::into)
     }

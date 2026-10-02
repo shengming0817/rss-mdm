@@ -10,7 +10,7 @@ use x509_cert::{
 };
 
 pub struct Push {
-    clock: std::sync::Arc<dyn rss_mdm_flow_service::clock::Clock>,
+    clock: std::sync::Arc<dyn rss_mdm_inventory_service::clock::Clock>,
     client: reqwest::Client,
     pub configuration: [u8; 32],
     origin: String,
@@ -30,7 +30,7 @@ impl Push {
         topic: String,
         certificate: &[u8],
         private_key: &[u8],
-        clock: std::sync::Arc<dyn rss_mdm_flow_service::clock::Clock>,
+        clock: std::sync::Arc<dyn rss_mdm_inventory_service::clock::Clock>,
     ) -> Result<Self, Error> {
         Self::with_client(
             topic,
@@ -44,7 +44,7 @@ impl Push {
         topic: String,
         certificate: &[u8],
         private_key: &[u8],
-        clock: std::sync::Arc<dyn rss_mdm_flow_service::clock::Clock>,
+        clock: std::sync::Arc<dyn rss_mdm_inventory_service::clock::Clock>,
         client: reqwest::ClientBuilder,
     ) -> Result<Self, Error> {
         if certificate.is_empty()
@@ -54,7 +54,9 @@ impl Push {
         {
             return Err(Error::Configuration(ConfigIssue::AppleApns));
         }
-        let now = clock.unix_seconds()?;
+        let now = clock
+            .unix_seconds()
+            .ok_or(Error::Unavailable(Failure::Clock))?;
         let mut pem = zeroize::Zeroizing::new(certificate.to_vec());
         let configured_topic = topic;
         let leaf = Certificate::from_pem(&pem)
@@ -285,7 +287,7 @@ pub fn registration(
         let mut certificate_levels = [None; 3];
         let mut health = Health::default();
         loop {
-            if let Ok(now) = apple.push.clock.unix_seconds() { apple.report_certificate_health(now, &mut certificate_levels); }
+            if let Some(now) = apple.push.clock.unix_seconds() { apple.report_certificate_health(now, &mut certificate_levels); }
             let result = tokio::select! { biased; ()=token.cancelled()=>return Ok(()), result=cycle(&apple, &execution, &access, &audit_store, &tenant)=>result };
             let health_result = result.as_ref().map(|(_, wake, _)| *wake).map_err(|_| Error::Unavailable(Failure::AppleStorage));
             let (ready, delay) = health.observe(&health_result);
@@ -308,7 +310,10 @@ pub async fn wake(
     let Some(wake) = execution.apple_wake(&push.configuration).await? else {
         return Ok(WakeHealth::Idle);
     };
-    let now = push.clock.unix_seconds()?;
+    let now = push
+        .clock
+        .unix_seconds()
+        .ok_or(Error::Unavailable(Failure::Clock))?;
     let (status, outcome, reason, timestamp, failure) =
         match push.send(wake.id, &wake.token, &wake.magic, now).await {
             Ok(receipt) if receipt.id == wake.id => (
@@ -348,7 +353,11 @@ pub async fn cycle(
     audit_store: &rss_mdm_audit_integration::AuditStore,
     tenant: &str,
 ) -> Result<(usize, WakeHealth, Option<Duration>), Error> {
-    let now = apple.push.clock.unix_seconds()?;
+    let now = apple
+        .push
+        .clock
+        .unix_seconds()
+        .ok_or(Error::Unavailable(Failure::Clock))?;
     let progress = super::renewal::maintain(apple, access, audit_store, tenant, now).await?;
     let wake = wake(&apple.push, execution).await?;
     let nearest = if progress == 0 && matches!(wake, WakeHealth::Idle) {
@@ -365,7 +374,7 @@ impl Push {
         topic: String,
         certificate: &[u8],
         private_key: &[u8],
-        clock: std::sync::Arc<dyn rss_mdm_flow_service::clock::Clock>,
+        clock: std::sync::Arc<dyn rss_mdm_inventory_service::clock::Clock>,
         client: reqwest::ClientBuilder,
         origin: String,
     ) -> Result<Self, Error> {

@@ -25,7 +25,7 @@ async fn corrupt_scope_is_a_storage_failure_not_a_client_error() {
     ));
     assert!(matches!(
         execute(&m, &Command::ScopeRead { id }).await,
-        Err(Error::Service(rss_mdm_flow_service::Error::Unavailable(
+        Err(Error::Flow(rss_mdm_flow_service::Error::Unavailable(
             rss_mdm_flow_service::Failure::PlanningStorage
         )))
     ));
@@ -43,7 +43,7 @@ async fn corrupt_scope_is_a_storage_failure_not_a_client_error() {
     assert!(
         matches!(
             execute(&m, &command).await,
-            Err(Error::Service(rss_mdm_flow_service::Error::Unavailable(
+            Err(Error::Flow(rss_mdm_flow_service::Error::Unavailable(
                 rss_mdm_flow_service::Failure::PlanningStorage
             )))
         ),

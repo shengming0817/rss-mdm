@@ -43,14 +43,10 @@ pub(crate) struct Assembly {
 #[cfg(test)]
 impl Assembly {
     pub(crate) fn apple(&self) -> Result<&Arc<crate::apple::Apple>, Error> {
-        self.apple
-            .as_ref()
-            .ok_or(Error::Service(rss_mdm_flow_service::Error::Unsupported))
+        self.apple.as_ref().ok_or(Error::Unsupported)
     }
     pub(crate) fn windows(&self) -> Result<&Arc<crate::windows::Windows>, Error> {
-        self.windows
-            .as_ref()
-            .ok_or(Error::Service(rss_mdm_flow_service::Error::Unsupported))
+        self.windows.as_ref().ok_or(Error::Unsupported)
     }
 }
 
@@ -88,7 +84,7 @@ pub(crate) async fn application_fixture(
         .open(
             audit_store.clone(),
             rss_request_context::TenantId::parse(&config.identity.tenant_id)
-                .map_err(|_| Error::Service(rss_mdm_flow_service::Error::Malformed))?,
+                .map_err(|_| Error::Malformed)?,
             clock.clone(),
             content.clone(),
             |_| {},
@@ -279,7 +275,7 @@ pub(crate) fn from_state(
         audit_store: state.audit_store.clone(),
         access: state.access.apple_store(),
         apple: state.apple.as_ref().map(|a| a.channel.clone()),
-        clock: Arc::new(crate::clock::FlowClock(state.clock.clone())),
+        clock: Arc::new(crate::clock::InventoryClock(state.clock.clone())),
         execution: state.execution.clone(),
         protection: state.protection.clone(),
         credentials: state.credentials.clone(),
@@ -299,7 +295,7 @@ pub(crate) fn from_state(
         ),
         audit_store: state.audit_store.clone(),
         access: state.access.windows_store(),
-        clock: Arc::new(crate::clock::FlowClock(state.clock.clone())),
+        clock: Arc::new(crate::clock::InventoryClock(state.clock.clone())),
         execution: state.execution.clone(),
         credentials: state.credentials.clone(),
         devices: state.devices.clone(),
