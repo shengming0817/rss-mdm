@@ -69,6 +69,7 @@ pub(crate) async fn open(
     );
     let result = async {
         crate::database::admit_audit_runtime(&runtime, &audit_store, tenant).await?;
+        storage::bind_native_key(&runtime, tenant, protection.id()).await?;
         let outbox = Arc::new(
             PgOutboxStore::new(
                 runtime.clone(),
@@ -143,14 +144,14 @@ pub(crate) async fn open(
             ),
             protection: protection.clone(),
             readiness: Default::default(),
-            software: rss_mdm_software_service::preparation::Preparation::new(
+            software: Arc::new(rss_mdm_software_service::preparation::Preparation::new(
                 rss_mdm_software_service::catalog::Catalog::new(
                     runtime.clone(),
                     tenant,
                     audit_store.clone(),
                 ),
                 exports,
-            ),
+            )),
             agent_installation: config.agent_installation.clone(),
             enrollment_entries: config.enrollment_entries.clone(),
             agent_store: Arc::new(rss_mdm_agent_channel::Bindings),

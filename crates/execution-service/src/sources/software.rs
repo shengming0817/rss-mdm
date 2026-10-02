@@ -24,7 +24,7 @@ pub struct StageCounts {
     pub verified: u64,
     pub unsupported_capability: u64,
 }
-#[derive(Clone, Copy, serde::Serialize)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskAdmissionState {
     Paused,
@@ -47,7 +47,7 @@ pub enum TaskAdmissionState {
     MissingArchitecture,
     Eligible,
 }
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct TaskAdmission {
     state: TaskAdmissionState,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -155,7 +155,7 @@ impl SoftwareExecutionPolicy {
     /// One support decision covers the complete exact dependency closure.
     pub async fn supported_in(
         &self,
-        service: &crate::ExecutionService,
+        service: &crate::queries::Admission,
         tx: &mut PgTransaction<'_>,
         binding: &crate::channels::AgentBinding,
     ) -> Result<bool> {
@@ -202,7 +202,7 @@ impl SoftwareExecutionPolicy {
         &self,
         tx: &mut PgTransaction<'_>,
         index: usize,
-        service: &crate::ExecutionService,
+        service: &crate::queries::Admission,
     ) -> Result<StageCounts> {
         self.counts_in(tx, index, Some(service)).await
     }
@@ -210,7 +210,7 @@ impl SoftwareExecutionPolicy {
         &self,
         tx: &mut PgTransaction<'_>,
         index: usize,
-        service: Option<&crate::ExecutionService>,
+        service: Option<&crate::queries::Admission>,
     ) -> Result<StageCounts> {
         let stages = &self.rollout()?.stages;
         let stage = stages.get(index).ok_or(Error::Malformed)?;
@@ -269,7 +269,7 @@ impl SoftwareExecutionPolicy {
     }
     pub async fn prepared_in(
         &self,
-        service: &crate::ExecutionService,
+        service: &crate::queries::Admission,
         tx: &mut PgTransaction<'_>,
         platform: Platform,
         architecture: Architecture,
@@ -291,7 +291,7 @@ impl SoftwareExecutionPolicy {
     }
     pub async fn artifact_in(
         &self,
-        service: &crate::ExecutionService,
+        service: &crate::queries::Admission,
         tx: &mut PgTransaction<'_>,
         platform: Platform,
         architecture: Architecture,
@@ -313,7 +313,7 @@ impl SoftwareExecutionPolicy {
     }
     pub async fn admitted_in(
         &self,
-        service: &crate::ExecutionService,
+        service: &crate::queries::Admission,
         tx: &mut PgTransaction<'_>,
         platform: Platform,
         architecture: Architecture,
@@ -328,7 +328,7 @@ impl SoftwareExecutionPolicy {
     }
     pub async fn authorized_in(
         &self,
-        service: &crate::ExecutionService,
+        service: &crate::queries::Admission,
         tx: &mut PgTransaction<'_>,
         device: &str,
         platform: Platform,
@@ -350,7 +350,7 @@ impl SoftwareExecutionPolicy {
     /// Management uses the same stage, profile and current approval checks as task admission.
     pub async fn management_state_in(
         &self,
-        service: &crate::ExecutionService,
+        service: &crate::queries::Admission,
         tx: &mut PgTransaction<'_>,
         device: &str,
         now: i64,

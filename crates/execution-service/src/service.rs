@@ -242,26 +242,6 @@ impl ExecutionService {
         crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRecovery).await?;
         Ok(response)
     }
-    pub async fn read(
-        &self,
-        proof: &AuthorizedPrincipal,
-        device: &str,
-        id: Uuid,
-        audit: &RequestAudit,
-    ) -> std::result::Result<Value, Error> {
-        crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,proof,device,id,audit),|ctx,tx|Box::pin(async move {
-            let (service,proof,device,id,audit) = *ctx;
-            storage::authorized(tx,proof,device,Permission::OperationRead).await?;
-            let op=storage::load(tx,&service.protection,id).await?;
-            if op.device!=device{return Err(Error::Forbidden.into());}
-            let command=service.required_command(tx,&op).await?;
-            let now=storage::now(tx).await?;let approved=storage::approval_valid(&service.source, &service.protection,tx,&op,now).await?;
-            let observation=protocol::observation(tx,service,&op,command.status()).await?;
-            let agent_installation=if op.approval.agent_package().is_some(){Some(super::native_installation::installation_observation(tx,service.apple_store.clone(),service.agent_store.clone(),&op).await?)}else{None};
-            service.audit_store.append_request_in(tx,audit,200,"success").await?;
-            Ok(json!({"operationId":op.id,"commandId":op.id,"revision":op.revision,"task":op.request.task.summary()?,"target":op.request.target,"inputVersion":op.request.input_version,"deadline":op.request.deadline,"dispatchFailure":op.dispatch_failure,"authorization":if approved{"approved"}else{"blocked"},"commandStatus":status(command.status()),"observation":observation,"agentInstallation":agent_installation}))
-        }),crate::transaction::TransactionOwner::Execution).await
-    }
     pub async fn change(
         &self,
         proof: &AuthorizedPrincipal,

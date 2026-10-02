@@ -180,13 +180,13 @@ async fn settle_one(s: &ExecutionService, tx: &mut PgTransaction<'_>, id: Uuid) 
 }
 pub async fn observation(
     tx: &mut PgTransaction<'_>,
-    service: &ExecutionService,
+    protection: &rss_mdm_native_protection::Protector,
+    apple_store: Arc<dyn channels::AppleStore>,
     op: &storage::Operation,
     command_status: dc::Status,
 ) -> Result<Value> {
     if matches!(op.request.task, Task::Macos { .. }) {
-        return super::apple::observation(tx, service.apple_store.clone(), op, command_status)
-            .await;
+        return super::apple::observation(tx, apple_store, op, command_status).await;
     }
     let tenant = tx.tenant_id();
     let id = op.id;
@@ -204,7 +204,7 @@ pub async fn observation(
         let value = if sensitive {
             None
         } else {
-            result_value(&service.protection, tenant, op, &row)?
+            result_value(protection, tenant, op, &row)?
         };
         let mut receipt = json!({
             "phase":row.try_get::<String,_>("phase")?,
@@ -228,7 +228,7 @@ pub async fn observation(
         }
         receipts.push(receipt);
     }
-    let assessment = effect_assessment(&service.protection, tx, op).await?;
+    let assessment = effect_assessment(protection, tx, op).await?;
     Ok(
         json!({"protocol":"syncml","observationScope":"native_objects","receipts":receipts,"progress":super::service::status(command_status),"effect":assessment.state,"effectReason":assessment.reason}),
     )

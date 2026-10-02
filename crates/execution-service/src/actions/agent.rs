@@ -94,7 +94,7 @@ impl ExecutionService {
                 let mut run=db::load_run(tx,stored(Uuid::parse_str(&id))?).await?;belongs(&run,p)?;let plan=db::load_source(&service.policy_reader,tx,run.source).await?;
                 let previous=run.state.clone();
                 run.state.expire(now,plan.timeout_seconds());
-                let capable=match &plan { db::ScheduledPolicy::Native(_) => false, db::ScheduledPolicy::Script(script) => script_capable && input.profiles().contains(&script.frozen.executor_profile()), db::ScheduledPolicy::Software(software) => software.supported_in(service,tx,&binding).await?, db::ScheduledPolicy::Enrollment(_) => enrollment_capable };
+                let capable=match &plan { db::ScheduledPolicy::Native(_) => false, db::ScheduledPolicy::Script(script) => script_capable && input.profiles().contains(&script.frozen.executor_profile()), db::ScheduledPolicy::Software(software) => software.supported_in(&service.admission(),tx,&binding).await?, db::ScheduledPolicy::Enrollment(_) => enrollment_capable };
                 let allowed=capable && plan.authorized_in(service,tx,&run.target,now).await?;
                 if plan.withdrawn_in(service,tx,&run.target,now).await?{run.state.cancel();}
                 super::recovery::audit_recovery(service,tx,&run,&previous).await?;
@@ -289,7 +289,7 @@ impl ExecutionService {
                     let (index,local_key)=key.split_once('/').ok_or(Error::Malformed)?;
                     let index:usize=index.parse().map_err(|_|Error::Malformed)?;
                     let (platform, architecture) = db::agent_profile_in(service,tx, run.target.registration).await?.ok_or(Error::Forbidden)?;
-                    let artifact=software.artifact_in(service,tx,platform,architecture,index,local_key).await?;
+                    let artifact=software.artifact_in(&service.admission(),tx,platform,architecture,index,local_key).await?;
                     let tenant=tx.tenant_id().to_string();let attempt_id=attempt.to_string();let run_id=id.to_string();
                     let offer:Value=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT offer FROM mdm_commands.action_attempts WHERE tenant_id=$1::uuid AND id=$2::uuid AND run=$3::uuid").bind(tenant).bind(attempt_id).bind(run_id).fetch_one(c).await})).await?;
                     let signed:wire::SignedTask=stored(serde_json::from_value(offer))?;

@@ -252,8 +252,9 @@ impl Fixture {
                 )
                 .critical(),
             );
-            launch
-                .stage_deferred_task_with_token(execution.registration(signals.flow()).critical());
+            launch.stage_deferred_task_with_token(
+                execution.registration(signals.execution()).critical(),
+            );
             launch.stage_deferred_task_with_token(
                 runtime
                     .registration(signals.handle(crate::worker_wake::Work::Inventory))

@@ -1,12 +1,10 @@
 //! Execution prepares immutable resource inputs without creating a Policy.
-use crate::{
-    Error, ExecutionService, action_contract::*, freeze_inputs::*, frozen::Frozen, transaction::*,
-};
+use crate::{Error, Inputs, action_contract::*, freeze_inputs::*, frozen::Frozen, transaction::*};
 use rss_mdm_policy::{Action, Exit, ResourceBinding, SoftwareIntent};
 use rss_mdm_resource as resource;
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde_json::json;
-impl ExecutionService {
+impl Inputs {
     pub async fn freeze_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -80,7 +78,7 @@ impl ExecutionService {
             ..
         } = action
         {
-            if self.signer.is_none() {
+            if !self.signing_enabled {
                 return Err(Error::Conflict.into());
             }
             let prepared = script(
@@ -245,7 +243,7 @@ pub fn script<'a>(
     Ok(prepared)
 }
 
-impl ExecutionService {
+impl Inputs {
     pub async fn active_version_in(
         &self,
         tx: &mut PgTransaction<'_>,

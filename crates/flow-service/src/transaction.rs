@@ -354,3 +354,16 @@ impl From<rss_mdm_execution_service::transaction::Fault> for Fault {
         }
     }
 }
+
+impl From<rss_mdm_audit_integration::operation_receipts::Error> for Fault {
+    fn from(e: rss_mdm_audit_integration::operation_receipts::Error) -> Self {
+        use rss_mdm_audit_integration::operation_receipts::Error as Receipt;
+        match e {
+            Receipt::Storage(e) => Self::Storage(e),
+            Receipt::Sql(e) => Self::Sql(e),
+            Receipt::Conflict => Error::Conflict.into(),
+            Receipt::Malformed => Error::Malformed.into(),
+            Receipt::Invariant => Error::Unavailable(Failure::FlowStorage).into(),
+        }
+    }
+}

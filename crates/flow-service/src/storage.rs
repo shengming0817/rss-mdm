@@ -158,30 +158,3 @@ pub async fn cursor_key(
     }
     Err(Error::Unavailable(Failure::FlowAdmission))
 }
-
-/// Bind the installation to its configured native data key. Key changes require an explicit
-/// owner re-encryption procedure; a restart must never silently create a second comparison space.
-pub async fn bind_native_key(
-    runtime: &PgRuntime,
-    tenant: TenantId,
-    key_id: &str,
-) -> std::result::Result<(), Error> {
-    let result = runtime.local_tx_with_context(tenant, deadline(), key_id, |key_id,tx| Box::pin(async move {
-        let tenant = tx.tenant_id().to_string();
-        let key_id = key_id.to_owned();
-        tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query("INSERT INTO mdm_flow.native_protection(tenant_id,key_id) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(&tenant).bind(&key_id).execute(&mut *c).await?;
-            let matches: bool = sqlx::query_scalar("SELECT key_id=$2 FROM mdm_flow.native_protection WHERE tenant_id=$1::uuid").bind(tenant).bind(key_id).fetch_one(c).await?;
-            if !matches { return Err(sqlx::Error::Protocol("native protection key mismatch".into())); }
-            Ok(())
-        })).await
-    })).await;
-    result.fold(
-        |_| Ok(()),
-        |_| Err(Error::Unavailable(Failure::NativeProtection)),
-        |_| Err(Error::Unavailable(Failure::NativeProtection)),
-        |_| Err(Error::CommitUnknown),
-        |_| Err(Error::CommitUnknown),
-        |_| Err(Error::Unavailable(Failure::NativeProtection)),
-    )
-}

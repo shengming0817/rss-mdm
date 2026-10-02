@@ -12,7 +12,8 @@
 | `authorization-service` | 当前管理主体、授权规则、授权证明及初始化 |
 | `registration-service` | 注册世代、来源授权、凭据和设备生命周期 |
 | `inventory-service` | 采集质量与持久接收、资产、分组及合规 |
-| `flow-service` | 资源、Scope、Policy、任务与命令编排、持久恢复 |
+| `flow-service` | Group、Scope、Policy 编排；资源目录等非执行余项继续按独立议题收敛 |
+| `execution-service` | 冻结执行输入、命令、Run、Attempt、一次性远程操作、执行存储与交付恢复；独立 Queries 提供类型化读事实 |
 | `content-service` | 内容授权、上传/镜像/回执用例、不可变文件与回收 |
 | `management-http` | 浏览器管理 HTTP、会话与错误投影 |
 | `agent-channel` | Agent 注册、报告、任务和内容协议 |

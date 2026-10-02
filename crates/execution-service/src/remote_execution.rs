@@ -15,7 +15,7 @@ pub async fn active(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool> {
         sqlx::query_scalar("SELECT NOT o.staged OR EXISTS(SELECT 1 FROM mdm_commands.action_runs r WHERE r.tenant_id=o.tenant_id AND r.remote_operation=o.id AND ((r.state->>'execution' IN('not_started','running') AND r.state->>'cancellation'<>'confirmed') OR (o.cancelled AND r.state->>'execution'='unknown' AND r.state->>'cancellation'='none'))) OR EXISTS(SELECT 1 FROM mdm_commands.operations n JOIN rss_device_command.commands d ON d.tenant_id=n.tenant_id AND d.command_id=n.id::text WHERE n.tenant_id=o.tenant_id AND n.remote_operation=o.id AND d.terminal_at IS NULL) FROM mdm_planning.remote_operations o WHERE o.tenant_id=$1::uuid AND o.id=$2").bind(tenant).bind(id).fetch_one(c).await
     })).await?)
 }
-#[derive(Clone, Copy, serde::Serialize)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RemotePhase {
     Preparing,
@@ -42,20 +42,19 @@ fn phase(active: bool, unknown: bool, remote: &Remote, now: i64) -> RemotePhase 
         RemotePhase::Completed
     }
 }
-impl ExecutionService {
-    pub async fn remote_phase_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        operation: &Remote,
-        now: i64,
-    ) -> Result<RemotePhase> {
-        let active = active(tx, operation.id).await?;
-        let tenant = tx.tenant_id().to_string();
-        let id = operation.id;
-        let unknown=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND remote_operation=$2 AND state->>'execution'='unknown')").bind(tenant).bind(id).fetch_one(c).await})).await?;
-        Ok(phase(active, unknown, operation, now))
-    }
+pub async fn remote_phase_in(
+    tx: &mut PgTransaction<'_>,
+    operation: &Remote,
+    now: i64,
+) -> Result<RemotePhase> {
+    let active = active(tx, operation.id).await?;
+    let tenant = tx.tenant_id().to_string();
+    let id = operation.id;
+    let unknown=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND remote_operation=$2 AND state->>'execution'='unknown')").bind(tenant).bind(id).fetch_one(c).await})).await?;
+    Ok(phase(active, unknown, operation, now))
+}
 
+impl ExecutionService {
     pub async fn advance_remote_in(
         &self,
         tx: &mut PgTransaction<'_>,

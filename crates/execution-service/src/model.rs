@@ -154,7 +154,8 @@ pub struct Change {
 mod tests;
 
 /// Native exchange phases; database values are decoded fail-closed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AttemptPhase {
     Prepare,
     Execute,

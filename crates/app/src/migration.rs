@@ -218,6 +218,14 @@ fn units() -> Vec<(&'static str, &'static str)> {
         ),
         ("flow-service-schema-v1", rss_mdm_flow_service::INSTALL_SQL),
         (
+            "execution-service-schema-v1",
+            rss_mdm_execution_service::INSTALL_SQL,
+        ),
+        (
+            "operation-receipts-schema-v1",
+            rss_mdm_audit_integration::OPERATION_RECEIPTS_SQL,
+        ),
+        (
             "agent-channel-schema-v1",
             rss_mdm_agent_channel::INSTALL_SQL,
         ),
@@ -244,6 +252,14 @@ fn units() -> Vec<(&'static str, &'static str)> {
         (
             "content-service-relations-v1",
             rss_mdm_content_service::RELATIONS_SQL,
+        ),
+        (
+            "execution-service-relations-v1",
+            rss_mdm_execution_service::RELATIONS_SQL,
+        ),
+        (
+            "operation-receipts-relations-v1",
+            rss_mdm_audit_integration::OPERATION_RECEIPT_RELATIONS_SQL,
         ),
         (
             "flow-service-relations-v1",

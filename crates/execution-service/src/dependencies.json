@@ -26,7 +26,6 @@
   "mdm_planning.policy_lock(p_policy uuid)": "d37d1882e3cd02200a1615d8647b2daf0edb4b4855f4dfeb8539fdf9d41e0c0a",
   "mdm_planning.remote_operation_targets": "1e73174dbf85223a122d82a088f9c7128dcbf2185601665fc240eae872a72622",
   "mdm_planning.remote_operations": "e5f3ffc5eb895e973aef60c0d391f91058286d91d970312ac348eb51310fa926",
-  "mdm_planning.remote_target_page(p_operation uuid, p_after text, p_limit integer)": "6d0e2229b1c86f520b5c98e693f5089ec815dffb8e3b694a0db91a4b078089d0",
   "mdm_planning.scope_admission(p_scope uuid, p_device text)": "b595ccd9cf4c005ffa526dc1142c22b2a0ca9b8c7b1c02bf56e087cf54c3d3a9",
   "mdm_planning.scope_results": "e1e71e526ce4b01a661624f7125ddcb5ec6a4d85ce79ce61091c5d6c6d560dcf",
   "mdm_planning.scope_runs": "77191de9ab91cb6a8aa5efa2e6868556ea5726e1104fa175789d68072ec3c408",

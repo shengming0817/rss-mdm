@@ -119,7 +119,7 @@ async fn execution_first_scan_failure_recovers_only_after_real_success() -> Resu
     let fixture = Fixture::open().await?;
     let initial = component(&fixture.query().await?, "execution_recovery");
     ensure!(initial["readiness"] == "not_ready" && initial["task"] == "unknown");
-    let signals = Arc::new(rss_mdm_flow_service::worker_wake::Signals::default());
+    let signals = Arc::new(rss_mdm_execution_service::worker_wake::Signals::default());
     let mut stack = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(20))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
@@ -540,7 +540,9 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
             .source
             .execution
             .clone()
-            .registration(signals)
+            .registration(Arc::new(
+                rss_mdm_execution_service::worker_wake::Signals::default(),
+            ))
             .critical(),
     );
     launch.stage_deferred_task_with_token(

@@ -71,7 +71,7 @@ async fn native_template_policy_uses_correlated_get_and_collection_run() -> anyh
         host.app
             .execution
             .clone()
-            .registration(host.notifications.signals.flow())
+            .registration(host.notifications.signals.execution())
             .critical(),
     );
     launch.finish();

@@ -183,7 +183,8 @@ impl Planning {
         let (operation, fingerprint) = storage::identity(command, audit)?;
         if let Some(id) = operation
             && let Some(old) =
-                crate::planning::receipts::replay(tx, audit, id, &fingerprint).await?
+                rss_mdm_audit_integration::operation_receipts::replay(tx, audit, id, &fingerprint)
+                    .await?
         {
             wire::Response::decode(old.clone())?;
             audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
@@ -208,7 +209,14 @@ impl Planning {
         // Reject a projection/schema defect before any mutation can commit.
         wire::Response::decode(value.clone())?;
         if let Some(id) = operation {
-            crate::planning::receipts::receipt(tx, audit, id, &fingerprint, &value).await?;
+            rss_mdm_audit_integration::operation_receipts::receipt(
+                tx,
+                audit,
+                id,
+                &fingerprint,
+                &value,
+            )
+            .await?;
         }
         crate::planning::receipts::audit(
             tx,

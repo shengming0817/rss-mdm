@@ -298,14 +298,14 @@ async fn verify_ledger_privileges(
         .execute(&mut *transaction)
         .await?;
     let actual: String = sqlx::query_scalar(include_str!(
-        "../../../flow-service/src/execution/dependencies.sql"
+        "../../../execution-service/src/dependencies.sql"
     ))
     .fetch_one(&mut *transaction)
     .await?;
     ensure!(
         serde_json::from_str::<serde_json::Value>(&actual)?
             == serde_json::from_str::<serde_json::Value>(include_str!(
-                "../../../flow-service/src/execution/dependencies.json"
+                "../../../execution-service/src/dependencies.json"
             ))?,
         "command dependency admission must support both audit modes"
     );

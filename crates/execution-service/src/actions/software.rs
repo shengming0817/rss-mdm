@@ -22,7 +22,10 @@ pub async fn accept_for_device(
     else {
         return Ok(());
     };
-    if !policy.supported_in(service, tx, &binding).await? {
+    if !policy
+        .supported_in(&service.admission(), tx, &binding)
+        .await?
+    {
         return Ok(());
     }
     let Some((stage, _entry)) = policy
@@ -37,7 +40,7 @@ pub async fn accept_for_device(
         return Ok(());
     };
     if policy
-        .admitted_in(service, tx, platform, architecture)
+        .admitted_in(&service.admission(), tx, platform, architecture)
         .await?
         .is_none()
     {

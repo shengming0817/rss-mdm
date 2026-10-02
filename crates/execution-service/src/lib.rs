@@ -71,7 +71,7 @@ pub struct ExecutionService {
     pub resources: Arc<rss_mdm_resource_postgres::ResourceStore>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub readiness: health::Readiness,
-    pub software: rss_mdm_software_service::preparation::Preparation,
+    pub software: Arc<rss_mdm_software_service::preparation::Preparation>,
     pub agent_installation: crate::agent_install::Config,
     pub enrollment_entries: crate::enrollment::Entries,
     pub agent_store: Arc<dyn channels::Agent>,
@@ -133,3 +133,39 @@ pub const CATALOG_SQL: &str = include_str!("catalog.sql");
 pub const CATALOG_JSON: &str = include_str!("catalog.json");
 pub const DEPENDENCIES_SQL: &str = include_str!("dependencies.sql");
 pub const DEPENDENCIES_JSON: &str = include_str!("dependencies.json");
+
+pub mod queries;
+
+/// Policy publication receives immutable input preparation, never execution readers or workers.
+pub struct Inputs {
+    pub resources: Arc<rss_mdm_resource_postgres::ResourceStore>,
+    pub protection: Arc<rss_mdm_native_protection::Protector>,
+    pub software: Arc<rss_mdm_software_service::preparation::Preparation>,
+    pub agent_installation: crate::agent_install::Config,
+    pub enrollment_entries: crate::enrollment::Entries,
+    pub runtime: Arc<PgRuntime>,
+    pub tenant: TenantId,
+    pub content: Option<Arc<rss_mdm_content_service::Store>>,
+    pub signing_enabled: bool,
+}
+impl ExecutionService {
+    pub fn inputs(&self) -> Arc<Inputs> {
+        Arc::new(Inputs {
+            resources: self.resources.clone(),
+            protection: self.protection.clone(),
+            software: self.software.clone(),
+            agent_installation: self.agent_installation.clone(),
+            enrollment_entries: self.enrollment_entries.clone(),
+            runtime: self.runtime.clone(),
+            tenant: self.tenant,
+            content: self.content.clone(),
+            signing_enabled: self.signer.is_some(),
+        })
+    }
+}
+
+mod agent_preparation;
+pub mod enrollment_preparation;
+
+pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
+pub const RELATIONS_SQL: &str = include_str!("../schema/relations.sql");

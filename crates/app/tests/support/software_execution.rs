@@ -497,7 +497,7 @@ pub(crate) async fn worker_for(
     ));
     let mut launch = startup.commit();
     launch.stage_task_with_token(notifications.registration().critical());
-    launch.stage_deferred_task_with_token(worker.registration(signals.flow()).critical());
+    launch.stage_deferred_task_with_token(worker.registration(signals.execution()).critical());
     launch.finish();
     Ok(Some(stack))
 }

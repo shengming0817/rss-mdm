@@ -345,9 +345,10 @@ pub(crate) fn from_state(
             audit_store: state.audit_store.clone(),
             planning: state.flow.planning.clone(),
             execution: state.execution.clone(),
+            queries: state.execution.queries(),
             policies: Arc::new(rss_mdm_flow_service::planning::policies::Policies {
                 planning: state.flow.planning.clone(),
-                execution: state.execution.clone(),
+                inputs: state.execution.inputs(),
             }),
             assets: state.flow.assets.clone(),
             catalog: state.flow.catalog.clone(),

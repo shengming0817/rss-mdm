@@ -1,8 +1,12 @@
 //! Independent Agent policy for the standard MDM enrollment entry.
-use super::*;
+use crate::{
+    Error,
+    authorization::{Permission, context::AuthorizedPrincipal},
+};
 use rss_mdm_authorization_service::UserGrant;
+use rss_mdm_policy::Action;
 
-use rss_mdm_execution_service::enrollment::{Entries, FrozenEnrollment};
+use crate::enrollment::{Entries, FrozenEnrollment};
 pub fn freeze(
     proof: &AuthorizedPrincipal,
     snapshot: &crate::authorization::Snapshot,

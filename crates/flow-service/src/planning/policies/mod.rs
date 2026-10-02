@@ -11,12 +11,8 @@ use rss_mdm_resource as resource;
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::Row;
 use uuid::Uuid;
 
-pub mod agent_install;
-pub mod enrollment;
-pub mod preview;
 pub mod reconcile;
 pub mod rerun;
 pub mod storage;
@@ -25,7 +21,7 @@ use rss_mdm_execution_service::frozen::Frozen;
 pub use rss_mdm_policy::{Change, Policy};
 pub struct Policies {
     pub planning: std::sync::Arc<super::Planning>,
-    pub execution: std::sync::Arc<rss_mdm_execution_service::ExecutionService>,
+    pub inputs: std::sync::Arc<rss_mdm_execution_service::Inputs>,
 }
 impl Policies {
     pub async fn change(
@@ -108,13 +104,13 @@ impl Policies {
             } = &definition.action
         {
             Some(
-                self.execution
-                    .verify_script(resource, parameters, self.execution.content.as_ref())
+                self.inputs
+                    .verify_script(resource, parameters, self.inputs.content.as_ref())
                     .await?,
             )
         } else if let Some((artifact, class)) = &artifact {
             Some(
-                self.execution
+                self.inputs
                     .content
                     .as_ref()
                     .ok_or(Error::Unsupported)?
@@ -167,11 +163,11 @@ impl Policies {
                     authorize_snapshot(&authorization, p, &policy.definition)?;
                     if changed {
                         let mut frozen = if matches!(policy.definition.action, Action::EnsureAgentInstalled { .. }) {
-                            Frozen::AgentInstall { action: Box::new(s.freeze_agent_in(tx,p,&authorization,&policy.definition.action).await?) }
+                            Frozen::AgentInstall { action: Box::new(s.inputs.freeze_agent_in(tx,p,&authorization,&policy.definition.action).await?) }
                         } else if matches!(policy.definition.action, Action::RequestMdmEnrollment { .. }) {
-                            if s.execution.signer.is_none() { return Err(Error::Unsupported.into()); }
-                            Frozen::MdmEnrollment { action: Box::new(enrollment::freeze(p, &authorization, &policy.definition.action, &s.execution.enrollment_entries)?) }
-                        } else { s.execution
+                            if !s.inputs.signing_enabled { return Err(Error::Unsupported.into()); }
+                            Frozen::MdmEnrollment { action: Box::new(rss_mdm_execution_service::enrollment_preparation::freeze(p, &authorization, &policy.definition.action, &s.inputs.enrollment_entries)?) }
+                        } else { s.inputs
                             .freeze_in(
                                 tx,
                                 &policy.definition.action,
@@ -179,7 +175,7 @@ impl Policies {
                                 Some(rss_mdm_execution_service::configuration::Owner::Policy { policy: policy.id, version: policy.version }),
                             )
                             .await? };
-                        frozen.authorize_native(p,&authorization,None,&s.execution.protection,tx.tenant_id(),Some(rss_mdm_execution_service::configuration::Owner::Policy { policy: policy.id, version: policy.version }))?;
+                        frozen.authorize_native(p,&authorization,None,&s.inputs.protection,tx.tenant_id(),Some(rss_mdm_execution_service::configuration::Owner::Policy { policy: policy.id, version: policy.version }))?;
                         storage::write_in(
                             &s.planning.policy_store,
                             tx,

@@ -1,9 +1,22 @@
-use crate::Error;
-use crate::transaction::*;
-use rss_mdm_audit_integration::RequestAudit;
+use crate::RequestAudit;
+use rss_transactional_messaging_postgres::PgError;
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde_json::Value;
 use sqlx::Row;
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error(transparent)]
+    Storage(#[from] PgError),
+    #[error(transparent)]
+    Sql(#[from] sqlx::Error),
+    #[error("receipt conflict")]
+    Conflict,
+    #[error("receipt actor missing")]
+    Malformed,
+    #[error("stored receipt invariant")]
+    Invariant,
+}
+type Result<T> = std::result::Result<T, Error>;
 use uuid::Uuid;
 pub async fn replay(
     tx: &mut PgTransaction<'_>,
@@ -19,11 +32,12 @@ pub async fn replay(
     })).await?;
     if let Some(row) = row {
         if row.try_get::<Vec<u8>, _>("fingerprint")? != fingerprint {
-            return Err(Error::Conflict.into());
+            return Err(Error::Conflict);
         }
-        return Ok(Some(stored(serde_json::from_str(
-            &row.try_get::<String, _>("response")?,
-        ))?));
+        return Ok(Some(
+            serde_json::from_str(&row.try_get::<String, _>("response")?)
+                .map_err(|_| Error::Invariant)?,
+        ));
     }
     Ok(None)
 }

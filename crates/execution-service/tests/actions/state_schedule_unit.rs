@@ -5,10 +5,7 @@ fn native_schedule_window_is_also_a_run_admission_boundary() {
     let slot = schedule.occurrence(3600, b"device").unwrap().unwrap();
     assert_eq!(slot.available_at, 7200);
     assert_eq!(slot.window_end, Some(10800));
-    let mut run = rss_mdm_execution_service::actions::state::RunState::new(
-        slot.window_end.unwrap(),
-        slot.available_at,
-    )
-    .unwrap();
+    let mut run =
+        crate::actions::state::RunState::new(slot.window_end.unwrap(), slot.available_at).unwrap();
     assert!(run.claim(uuid::Uuid::new_v4(), 10800).is_err());
 }

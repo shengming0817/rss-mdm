@@ -143,8 +143,8 @@ impl Client {
         ensure!(pending == "pending");
         let worker_cancel = tokio_util::sync::CancellationToken::new();
         let signals = crate::worker_wake::Signals::default();
-        let flow_signals = signals.flow();
-        let mut worker = Box::pin(restarted.run_worker(&worker_cancel, &flow_signals));
+        let execution_signals = signals.execution();
+        let mut worker = Box::pin(restarted.run_worker(&worker_cancel, &execution_signals));
         tokio::select! {
             outcome=&mut worker => anyhow::bail!("production worker exited before publication: {outcome:?}"),
             observed=tokio::time::timeout(Duration::from_secs(5),async {

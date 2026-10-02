@@ -70,7 +70,7 @@ fn native_deadlines_and_request_identity_remain_bounded() {
 #[test]
 fn dispatch_v3_matches_its_native_wire_without_old_payload_fallback() {
     let validator = jsonschema::validator_for(
-        &serde_json::from_str(include_str!("../../src/execution/dispatch-v3.json")).unwrap(),
+        &serde_json::from_str(include_str!("../src/dispatch-v3.json")).unwrap(),
     )
     .unwrap();
     let wire = serde_json::to_value(DispatchV3 {
@@ -133,7 +133,7 @@ fn configuration_cannot_withdraw_a_different_native_object_or_claim_a_query() {
     let make = |uri: &str, operation: &str| json!({"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":uri,"instance":[],"operation":operation,"value":null}}});
     let a = "./Device/Vendor/MSFT/Policy/Config/Experience/AllowCortana";
     let b = "./Device/Vendor/MSFT/Policy/Config/Privacy/LetAppsAccessCamera";
-    let invalid: crate::planning::configuration::Configuration = serde_json::from_value(
+    let invalid: crate::configuration::Configuration = serde_json::from_value(
         json!({"target":{"kind":"device"},"apply":make(a,"delete"),"remove":make(b,"delete")}),
     )
     .unwrap();
@@ -141,7 +141,7 @@ fn configuration_cannot_withdraw_a_different_native_object_or_claim_a_query() {
         invalid.validate().is_err(),
         "withdrawal must not touch another owner's object"
     );
-    let query: crate::planning::configuration::Configuration = serde_json::from_value(
+    let query: crate::configuration::Configuration = serde_json::from_value(
         json!({"target":{"kind":"device"},"apply":make(a,"get"),"remove":null}),
     )
     .unwrap();
@@ -152,7 +152,7 @@ fn configuration_cannot_withdraw_a_different_native_object_or_claim_a_query() {
 }
 #[test]
 fn native_configuration_is_not_a_software_admission_bypass() {
-    let input:crate::planning::configuration::Configuration=serde_json::from_value(json!({"target":{"kind":"device"},"apply":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/EnterpriseDesktopAppManagement/MSI/*/DownloadInstall","instance":["{11111111-1111-4111-8111-111111111111}"],"operation":"add","value":{"type":"xml","value":"<MsiInstallJob/>"}}}},"remove":null})).unwrap();
+    let input:crate::configuration::Configuration=serde_json::from_value(json!({"target":{"kind":"device"},"apply":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/EnterpriseDesktopAppManagement/MSI/*/DownloadInstall","instance":["{11111111-1111-4111-8111-111111111111}"],"operation":"add","value":{"type":"xml","value":"<MsiInstallJob/>"}}}},"remove":null})).unwrap();
     assert!(input.validate().is_err());
 }
 
@@ -190,7 +190,7 @@ fn retired_native_task_shapes_are_not_decoded_or_converted() {
 
 #[test]
 fn native_parent_and_child_claims_overlap_only_on_same_scope_and_segment_boundaries() {
-    use crate::planning::configuration::Object;
+    use crate::configuration::Object;
     let object = |key: &str, user: &str| Object {
         platform: "windows".into(),
         kind: "csp".into(),

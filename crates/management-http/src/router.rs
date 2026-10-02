@@ -21,6 +21,7 @@ pub struct Services {
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub planning: Arc<rss_mdm_flow_service::planning::Planning>,
     pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    pub queries: Arc<rss_mdm_execution_service::queries::Queries>,
     pub policies: Arc<rss_mdm_flow_service::planning::policies::Policies>,
     pub assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
     pub catalog: Arc<rss_mdm_flow_service::resource_catalog::ResourceCatalog>,
@@ -43,7 +44,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
     let directory = Arc::new(crate::enrollment::directory::HttpState {
         devices: state.devices.clone(),
         assets: state.assets.clone(),
-        execution: state.execution.clone(),
+        queries: state.queries.clone(),
         windows: state.windows,
         apple: state.apple,
     });
@@ -108,7 +109,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
     let protected_v2 = Router::new()
         .merge(crate::runtime_diagnostics::routes().with_state(state.diagnostics))
         .merge(crate::planning::routes_v2().with_state(planning.clone()))
-        .merge(crate::execution::actions::http::routes().with_state(execution.clone()))
+        .merge(crate::execution::actions::http::routes().with_state(state.queries.clone()))
         .merge(crate::assets::routes().with_state(assets))
         .merge(crate::compliance::http::routes().with_state(Arc::new(state.planning.compliance())))
         .route_layer(middleware::from_fn_with_state(
@@ -124,9 +125,15 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
             crate::authorization::http::protect,
         ));
     let protected_v3 = Router::new()
-        .merge(crate::execution::routes().with_state(execution))
-        .merge(crate::planning::policies::http::routes().with_state(policies.clone()))
-        .merge(crate::remote_operations::routes().with_state(state.execution.clone()))
+        .merge(crate::execution::routes(state.queries.clone()).with_state(execution))
+        .merge(
+            crate::planning::policies::http::routes(state.queries.clone())
+                .with_state(policies.clone()),
+        )
+        .merge(
+            crate::remote_operations::routes(state.queries.clone())
+                .with_state(state.execution.clone()),
+        )
         .merge(crate::software_catalog::routes().with_state(state.software_catalog))
         .merge(crate::content::http::routes().with_state(state.content))
         .merge(crate::enrollment::http::routes().with_state(enrollment))

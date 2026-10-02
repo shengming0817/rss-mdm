@@ -162,7 +162,7 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
                     'crates/inventory-service/src/collection/read.rs'),
  'assets.group_input': ('crates/inventory-service/src/assets/planning.rs',
                         'crates/inventory-service/src/assets/quality.rs'),
- 'planning.onboarding': ('crates/flow-service/src/planning/policies/enrollment.rs', 'crates/execution-service/src/sources/onboarding.rs', 'crates/inventory-service/src/collection/channel.rs', 'crates/execution-service/src/actions/*', 'crates/inventory-service/src/assets/channel.rs', 'crates/agent-channel/src/lib.rs'),
+ 'planning.onboarding': ('crates/execution-service/src/enrollment_preparation.rs', 'crates/execution-service/src/sources/onboarding.rs', 'crates/inventory-service/src/collection/channel.rs', 'crates/execution-service/src/actions/*', 'crates/inventory-service/src/assets/channel.rs', 'crates/agent-channel/src/lib.rs'),
  'planning.assets': ('crates/flow-service/src/planning/sources.rs',
                      'crates/flow-service/src/planning/automation/dispatch.rs',
                      'crates/inventory-service/src/assets/planning.rs'),
@@ -217,7 +217,7 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
  'execution.commands.recovery': ('crates/execution-service/src/recovery.rs',
                                  'crates/execution-service/src/lifecycle.rs'),
  'execution.commands.windows': ('crates/execution-service/src/native.rs',),
- 'execution.commands.onboarding': ('crates/flow-service/src/planning/policies/agent_install.rs','crates/windows-mdm/src/software.rs','crates/execution-service/src/native_installation.rs','crates/execution-service/src/managed_registration.rs','crates/windows-channel/src/agent_collection.rs','crates/agent-channel/src/managed.rs','crates/registration-service/src/enrollment/managed.rs'),
+ 'execution.commands.onboarding': ('crates/execution-service/src/agent_preparation.rs','crates/windows-mdm/src/software.rs','crates/execution-service/src/native_installation.rs','crates/execution-service/src/managed_registration.rs','crates/windows-channel/src/agent_collection.rs','crates/agent-channel/src/managed.rs','crates/registration-service/src/enrollment/managed.rs'),
  'execution.commands.configuration': ('crates/execution-service/src/native_configuration.rs',
                                  'crates/execution-service/src/native.rs'),
  'execution.software.offer': ('crates/execution-service/src/actions/software.rs',
@@ -704,7 +704,7 @@ consume(('crates/agent-wire/schema/managed-registration-request-v5.schema.json',
 # Native onboarding shares one durable installation and managed-registration owner.
 consume(('crates/execution-service/src/native_installation.rs',
          'crates/execution-service/src/managed_registration.rs',
-         'crates/flow-service/src/planning/policies/agent_install.rs',
+         'crates/execution-service/src/agent_preparation.rs',
          'crates/agent-channel/src/managed.rs',
          'crates/registration-service/src/enrollment/managed.rs'),
         'execution.commands.onboarding apple.onboarding')
@@ -1014,11 +1014,11 @@ T1_INPUTS = ('crates/authorization-service/tests/unit.rs','crates/inventory-serv
     'crates/app/tests/enrollment/credentials_unit.rs',
     'crates/app/tests/enrollment/unit.rs',
     'crates/app/tests/error_projection/unit.rs',
-    'crates/app/tests/execution/actions/state_unit.rs',
+    'crates/execution-service/tests/actions/state_unit.rs',
     'crates/execution-service/tests/model_unit.rs',
     'crates/execution-service/tests/model_phase_unit.rs',
     'crates/execution-service/tests/agent_install_unit.rs',
-    'crates/app/tests/execution/recovery_unit.rs',
+    'crates/execution-service/tests/recovery_unit.rs',
     'crates/app/tests/flow/unit.rs',
     'crates/app/tests/config/publication_unit.rs',
     'crates/app/tests/identity/unit.rs',
@@ -1031,8 +1031,8 @@ T1_INPUTS = ('crates/authorization-service/tests/unit.rs','crates/inventory-serv
     'crates/winget-source/tests/publication_schema.rs', 'crates/winget-source/tests/version.rs',
     'crates/app/tests/apple/health_unit.rs',
     'crates/app/tests/execution/model_phase_unit.rs',
-    'crates/app/tests/execution/remote_phase_unit.rs',
-    'crates/app/tests/execution/actions/state_schedule_unit.rs',
+    'crates/execution-service/tests/remote_phase_unit.rs',
+    'crates/execution-service/tests/actions/state_schedule_unit.rs',
     'crates/app/tests/planning/automation/scopes_unit.rs',
     'crates/app/tests/publication.rs',
 )
@@ -1114,3 +1114,5 @@ consume(('crates/execution-service/src/enrollment.rs',), 'planning.onboarding pl
 consume(('crates/execution-service/src/configuration.rs', 'crates/execution-service/src/model.rs', 'crates/execution-service/src/permissions.rs'), 'execution.commands.admission execution.commands.windows execution.commands.configuration execution.commands.onboarding windows.management apple.profile planning.policy planning.remote')
 consume(('crates/execution-service/src/target.rs','crates/execution-service/src/payload.rs'), TASK_CONSUMERS)
 consume(('crates/execution-service/src/lib.rs','crates/execution-service/src/error.rs'), TASK_CONSUMERS + ' execution.commands.admission execution.commands.windows execution.commands.configuration execution.commands.onboarding windows.management apple.profile')
+
+consume(("crates/execution-service/src/*",), " ".join(name for name in MODULES if name.startswith(("execution.","planning.","windows.","apple.","device.","timeline.","agent."))))

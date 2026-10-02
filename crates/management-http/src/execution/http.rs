@@ -8,19 +8,23 @@ use axum::{
 };
 use rss_mdm_execution_service::{Change, Create};
 use serde_json::Value;
-pub fn routes() -> Router<Arc<HttpState>> {
+pub fn routes(queries: Arc<rss_mdm_execution_service::queries::Queries>) -> Router<Arc<HttpState>> {
     Router::new()
-        .route("/operations", get(directory))
+        .merge(
+            Router::new()
+                .route("/operations", get(directory))
+                .route("/devices/{device}/operations/{id}", get(read))
+                .with_state(queries),
+        )
         .route(
             "/devices/{device}/operations",
             post(create).layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024)),
         )
-        .route("/devices/{device}/operations/{id}", get(read))
         .route("/devices/{device}/operations/{id}/cancel", post(cancel))
         .route("/devices/{device}/operations/{id}/approve", post(approve))
 }
 async fn directory(
-    State(s): State<Arc<HttpState>>,
+    State(s): State<Arc<rss_mdm_execution_service::queries::Queries>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     query: std::result::Result<
@@ -30,7 +34,9 @@ async fn directory(
 ) -> std::result::Result<Json<Value>, Error> {
     audit.set_action("command_read");
     let Query(q) = query.map_err(|_| Error(rss_mdm_flow_service::Error::Malformed))?;
-    Ok(Json(s.execution.directory(&auth.proof, &q, &audit).await?))
+    Ok(Json(crate::execution::projection::directory(
+        s.directory(&auth.proof, &q, &audit).await?,
+    )))
 }
 async fn create(
     State(app): State<Arc<HttpState>>,
@@ -60,17 +66,16 @@ async fn create(
         .map_err(Error::from)
 }
 async fn read(
-    State(app): State<Arc<HttpState>>,
+    State(app): State<Arc<rss_mdm_execution_service::queries::Queries>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((device, id)): Path<(String, Uuid)>,
 ) -> std::result::Result<Json<Value>, Error> {
     audit.operation(id, "command_read");
     audit.target(&device);
-    app.execution
-        .read(&auth.proof, &device, id, &audit)
+    app.read(&auth.proof, &device, id, &audit)
         .await
-        .map(Json)
+        .map(|v| Json(serde_json::to_value(v).expect("command facts serialize")))
         .map_err(Error::from)
 }
 async fn cancel(

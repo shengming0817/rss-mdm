@@ -4,7 +4,7 @@ use rss_mdm_inventory::ReportSource;
 use software::{TaskAdmission, TaskAdmissionState as State};
 
 pub async fn state_in(
-    service: &crate::ExecutionService,
+    service: &crate::queries::Admission,
     tx: &mut PgTransaction<'_>,
     device: &str,
     frozen: &Frozen,

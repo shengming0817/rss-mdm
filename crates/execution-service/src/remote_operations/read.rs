@@ -6,16 +6,17 @@ pub struct Cancel {
     pub operation_id: Uuid,
 }
 pub async fn read(
-    s: &ExecutionService,
+    s: &crate::queries::Queries,
     a: &AuthorizedPrincipal,
     audit: &RequestAudit,
     id: Uuid,
     after: Option<String>,
-) -> std::result::Result<Value, Error> {
+) -> std::result::Result<crate::queries::records::RemoteDetail, Error> {
     audit.set_action("management_read");
     audit.target(&id.to_string());
     run(&s.audit_store,&s.runtime,s.tenant,audit,(&s,&a,audit,after),|ctx,tx|Box::pin(async move {
-        let (s,a,audit,after)=ctx;let remote=storage::read_in(tx,id).await?;storage::authorize(a,&remote.snapshot,Permission::OperationRead)?;
+        let (s,a,audit,after)=ctx;let current=crate::action_admission::current(tx,a).await?;let remote=storage::read_in(tx,id).await?;storage::authorize(a,&remote.snapshot,Permission::OperationRead)?;
+        match &remote.snapshot { Snapshot::Devices{devices}=> for device in devices {current.require(a,Permission::OperationRead,Some(device))?;},Snapshot::Scope{..}=>current.require_all_devices(a,Permission::OperationRead)? };
         let tenant=tx.tenant_id().to_string();let after=after.clone();
         let mut rows=tx.with_connection(move|c|Box::pin(async move {
             let mut query=sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT t.device,t.status,t.delivery_id,t.diagnosis,r.state AS agent_state,d.status AS mdm_status,");
@@ -25,9 +26,9 @@ pub async fn read(
         let more=rows.len()>64;rows.truncate(64);let next=if more {rows.last().map(|r|r.try_get::<String,_>("device")).transpose()?}else{None};
         let items=rows.iter().map(|r|Ok::<_,sqlx::Error>(json!({"device":r.try_get::<String,_>("device")?,"status":r.try_get::<String,_>("status")?,"deliveryId":r.try_get::<Option<Uuid>,_>("delivery_id")?,"diagnosis":r.try_get::<Option<String>,_>("diagnosis")?,"agentState":r.try_get::<Option<Value>,_>("agent_state")?,"mdmStatus":r.try_get::<Option<String>,_>("mdm_status")?,"result":r.try_get::<Option<Value>,_>("result_summary")?}))).collect::<std::result::Result<Vec<_>,_>>()?;
         let now=crate::action_admission::now(tx).await?;
-        let phase=s.remote_phase_in(tx,&remote,now).await?;
+        let phase=crate::remote_execution::remote_phase_in(tx,&remote,now).await?;
         s.audit_store.append_request_in(tx,audit,200,"success").await?;
-        Ok(json!({"operationId":id,"deadline":remote.deadline,"snapshot":remote.snapshot,"phase":phase,"cancellationRequested":remote.cancelled,"deadlineElapsed":now>=remote.deadline,"items":items,"nextCursor":next}))
+        crate::queries::records::decode(json!({"operationId":id,"deadline":remote.deadline,"snapshot":remote.snapshot,"phase":phase,"cancellationRequested":remote.cancelled,"deadlineElapsed":now>=remote.deadline,"items":items,"nextCursor":next}))
     }),TransactionOwner::Execution).await
 }
 pub async fn cancel(

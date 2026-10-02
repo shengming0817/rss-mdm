@@ -1,14 +1,19 @@
 //! Policy publication and source authority for Agent installation.
-use super::*;
+use crate::agent_install::{FrozenInstall, Identity, Package};
+use crate::authorization::{self, Permission, context::AuthorizedPrincipal};
+use crate::{Error, Inputs, transaction::*};
 use rss_mdm_authorization_service::UserGrant;
-use rss_mdm_execution_service::agent_install::{FrozenInstall, Identity, Package};
+use rss_mdm_policy::Action;
+use rss_mdm_resource as resource;
+use rss_transactional_messaging_postgres::PgTransaction;
 use std::collections::BTreeMap;
-impl Policies {
+use uuid::Uuid;
+impl Inputs {
     pub async fn freeze_agent_in(
         &self,
         tx: &mut PgTransaction<'_>,
         proof: &AuthorizedPrincipal,
-        snapshot: &crate::authorization::Snapshot,
+        snapshot: &authorization::Snapshot,
         action: &Action,
     ) -> Result<FrozenInstall> {
         let Action::EnsureAgentInstalled {
@@ -20,21 +25,17 @@ impl Policies {
         else {
             return Err(Error::Malformed.into());
         };
-        let config = &self.execution.agent_installation;
+        let config = &self.agent_installation;
         config.validate()?;
         let selection = binding.software().ok_or(Error::Malformed)?;
         let version = self
-            .planning
-            .catalog
             .active_version_in(tx, binding.id(), binding.version())
             .await?;
         let mut packages = BTreeMap::new();
         for (target, key) in &selection.variants {
             let pin = config.packages.get(target).ok_or(Error::Unsupported)?;
-            let (platform, architecture) =
-                rss_mdm_execution_service::agent_install::resource_target(*target);
+            let (platform, architecture) = crate::agent_install::resource_target(*target);
             let selected = self
-                .execution
                 .software
                 .resolve_in(
                     tx,

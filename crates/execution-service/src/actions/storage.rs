@@ -171,7 +171,7 @@ impl ScheduledPolicy {
                 else {
                     return Ok(false);
                 };
-                if !v.supported_in(service, tx, &binding).await? {
+                if !v.supported_in(&service.admission(), tx, &binding).await? {
                     return Ok(false);
                 }
                 let Some((platform, architecture)) =
@@ -179,8 +179,15 @@ impl ScheduledPolicy {
                 else {
                     return Ok(false);
                 };
-                v.authorized_in(service, tx, &target.device, platform, architecture, now)
-                    .await
+                v.authorized_in(
+                    &service.admission(),
+                    tx,
+                    &target.device,
+                    platform,
+                    architecture,
+                    now,
+                )
+                .await
             }
         }
     }
@@ -231,7 +238,7 @@ impl ScheduledPolicy {
                 .ok_or(Error::Forbidden)?;
                 let steps = v
                     .prepared_in(
-                        service,
+                        &service.admission(),
                         tx,
                         platform,
                         architecture,

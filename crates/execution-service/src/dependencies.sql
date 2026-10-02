@@ -21,6 +21,6 @@ WITH relations AS (
  encode(sha256(convert_to(jsonb_build_object('definition',pg_get_functiondef(p.oid),'owner',pg_get_userbyid(p.proowner),
  'acl',(SELECT jsonb_agg(jsonb_build_array(CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee)::text END,a.privilege_type,a.is_grantable) ORDER BY CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee)::text END COLLATE "C",a.privilege_type,a.is_grantable) FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE NOT (n.nspname='rss_ledger' AND pg_get_userbyid(a.grantee)='mdm_identity_audit')))::text,'UTF8')),'hex')
  FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
- WHERE n.nspname IN('mdm_windows','mdm_agent','rss_device_command','rss_reconcile','rss_audit','rss_ledger') OR (n.nspname,p.proname) IN (('mdm_planning','scope_admission'),('mdm_planning','policy_lock'),('mdm_planning','remote_target_page'))
+ WHERE n.nspname IN('mdm_windows','mdm_agent','rss_device_command','rss_reconcile','rss_audit','rss_ledger') OR (n.nspname,p.proname) IN (('mdm_planning','scope_admission'),('mdm_planning','policy_lock'))
 )
 SELECT jsonb_object_agg(name,digest)::text FROM contracts
