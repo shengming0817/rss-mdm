@@ -76,10 +76,57 @@ impl Peer {
         Ok(reply.1)
     }
     pub async fn next(&self, kind: &str) -> Result<(Uuid, plist::Dictionary)> {
+        command(&self.next_bytes(kind).await?, kind)
+    }
+    pub async fn next_bytes(&self, kind: &str) -> Result<Vec<u8>> {
         for _ in 0..100 {
-            let bytes = self.manage("Idle", None, None).await?;
-            if !bytes.is_empty() {
-                return command(&bytes, kind);
+            let mut bytes = self.manage("Idle", None, None).await?;
+            for _ in 0..128 {
+                if bytes.is_empty() {
+                    break;
+                }
+                let dictionary = protocol::decode(&bytes)?;
+                let id = Uuid::parse_str(protocol::text(&dictionary, "CommandUUID")?)?;
+                let payload = dictionary["Command"].as_dictionary().unwrap();
+                let actual = protocol::text(payload, "RequestType")?;
+                if actual == kind {
+                    return Ok(bytes);
+                }
+                let response = match actual {
+                    "DeviceInformation"
+                        if payload.get("Queries")
+                            == Some(&plist::Value::Array(vec![
+                                "OSVersion".into(),
+                                "IsSupervised".into(),
+                            ])) =>
+                    {
+                        (
+                            "QueryResponses",
+                            plist::Value::Dictionary(protocol::dictionary([
+                                ("OSVersion", "15.0".into()),
+                                ("IsSupervised", true.into()),
+                            ])),
+                        )
+                    }
+                    "SecurityInfo" => (
+                        "SecurityInfo",
+                        plist::Value::Dictionary(protocol::dictionary([(
+                            "ManagementStatus",
+                            plist::Value::Dictionary(protocol::dictionary([
+                                ("EnrolledViaDEP", false.into()),
+                                ("UserApprovedEnrollment", true.into()),
+                                ("IsUserEnrollment", false.into()),
+                            ])),
+                        )])),
+                    ),
+                    _ => {
+                        command(&bytes, kind)?;
+                        return Ok(bytes);
+                    }
+                };
+                bytes = self
+                    .manage("Acknowledged", Some(id), Some(response))
+                    .await?;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -104,7 +151,7 @@ impl Fixture {
                 &self.router,
                 Method::GET,
                 &format!(
-                    "/api/v2/devices/{DEVICE}/operations/{id}",
+                    "/api/v3/devices/{DEVICE}/operations/{id}",
                     DEVICE = case_device()
                 ),
                 None,
@@ -113,12 +160,20 @@ impl Fixture {
         ensure!(reply.0 == StatusCode::OK, "operation read: {reply:?}");
         Ok(reply.1)
     }
-    pub(super) async fn create_operation(&mut self, task: Value) -> Result<Uuid> {
-        let id = Uuid::new_v4();
-        let body =
-            json!({"operationId":id,"task":task,"deadline":self.app.clock.unix_seconds()?+300});
+    pub(super) async fn create_operation(
+        &mut self,
+        task: impl FnOnce(Uuid) -> Value,
+    ) -> Result<Uuid> {
+        self.create_operation_at(Uuid::new_v4(), task).await
+    }
+    pub(super) async fn create_operation_at(
+        &mut self,
+        id: Uuid,
+        task: impl FnOnce(Uuid) -> Value,
+    ) -> Result<Uuid> {
+        let body = json!({"operationId":id,"inputVersion":"1","target":{"kind":"device"},"task":task(id),"deadline":self.app.clock.unix_seconds()?+300});
         let path = format!(
-            "/api/v2/devices/{DEVICE}/operations",
+            "/api/v3/devices/{DEVICE}/operations",
             DEVICE = case_device()
         );
         let reply = self

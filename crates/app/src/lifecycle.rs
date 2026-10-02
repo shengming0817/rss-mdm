@@ -188,12 +188,20 @@ pub async fn serve(
                             clock,
                             readiness,
                         ));
-                        let content = crate::flow::execution::open_content(&compiled.config)
-                            .map_err(|e| ProcessError::at("startup.content", e))?;
+                        let protection = compiled
+                            .config
+                            .native_protector()
+                            .map_err(|e| ProcessError::at("startup.native_protection", e))?;
+                        let content = crate::flow::execution::open_content(
+                            &compiled.config,
+                            protection.clone(),
+                        )
+                        .map_err(|e| ProcessError::at("startup.content", e))?;
                         let planning = compiled
                             .config
                             .flow
                             .open(
+                                protection.clone(),
                                 audit_store.clone(),
                                 rss_request_context::TenantId::parse(
                                     &compiled.config.identity.tenant_id,
@@ -213,6 +221,7 @@ pub async fn serve(
                             .map_err(|e| ProcessError::at("startup.flow", e))?;
                         let execution = crate::flow::execution::open(
                             &compiled.config,
+                            protection,
                             audit_store.clone(),
                             content,
                             planning.publications.services.clone(),

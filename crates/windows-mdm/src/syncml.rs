@@ -42,7 +42,7 @@ pub struct Credential {
 pub struct Meta {
     /// Optional `chr`, `int`, `bool`, `b64` or `xml` token; payload values are not coerced.
     pub format: Option<String>,
-    /// Optional `text/plain`, or supported auth type in credential context.
+    /// Native media type, or a supported authentication type in credential context.
     pub media_type: Option<String>,
     /// Optional positive advertised maximum message size in bytes; not a local budget override.
     pub max_message_size: Option<u32>,
@@ -62,19 +62,55 @@ pub struct Message {
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Supported bounded command profile; IDs must be positive and unique per message.
 pub enum Command {
-    /// Fixed Agent installer Add/Exec, never a generic command payload.
-    AgentInstall {
-        /// Positive response-owned command ID.
+    /// Native Add operation; schema applicability and authorization belong to the caller.
+    Add {
+        /// Positive command ID unique within the message.
         id: u32,
-        /// Validated product installation payload.
-        command: crate::agent_install::AgentCommand,
+        /// Optional command metadata.
+        meta: Option<Meta>,
+        /// Nonempty distinct target items, bounded at the codec boundary.
+        items: Vec<Item>,
     },
-    /// Product-selected server write; distinct from device initialization.
+    /// Native Replace operation; schema applicability and authorization belong to the caller.
     Replace {
-        /// Positive ID allocated by the response owner.
+        /// Positive command ID unique within the message.
         id: u32,
-        /// Closed firewall configuration, never arbitrary XML or URI.
-        configuration: crate::configuration::Firewall,
+        /// Optional command metadata.
+        meta: Option<Meta>,
+        /// Nonempty distinct target items, bounded at the codec boundary.
+        items: Vec<Item>,
+    },
+    /// Native Delete operation; schema applicability and authorization belong to the caller.
+    Delete {
+        /// Positive command ID unique within the message.
+        id: u32,
+        /// Optional command metadata.
+        meta: Option<Meta>,
+        /// Nonempty distinct target items, bounded at the codec boundary.
+        items: Vec<Item>,
+    },
+    /// Native Exec operation; schema applicability and authorization belong to the caller.
+    Exec {
+        /// Positive command ID unique within the message.
+        id: u32,
+        /// Optional command metadata.
+        meta: Option<Meta>,
+        /// Nonempty distinct target items, bounded at the codec boundary.
+        items: Vec<Item>,
+    },
+    /// Windows atomic group; no nested Atomic, Get, or Add then Replace of the same node.
+    Atomic {
+        /// Group command ID; shares the message-wide ID namespace with children.
+        id: u32,
+        /// Nonempty ordered native operations.
+        commands: Vec<Command>,
+    },
+    /// Ordered native operations.
+    Sequence {
+        /// Group command ID; shares the message-wide ID namespace with children.
+        id: u32,
+        /// Nonempty ordered native operations.
+        commands: Vec<Command>,
     },
     /// Read requested target URIs; the codec does not execute the reads.
     Get {
@@ -104,11 +140,18 @@ pub enum Command {
         items: Vec<Item>,
     },
 }
-/// Supported initialization alerts. Login state is an untrusted device claim.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Native alerts. Login state and asynchronous results are untrusted device claims.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Alert {
     /// Client-initiated management-session alert (1201).
     ClientInitiated,
+    /// Asynchronous CSP result or management event (1226), independently correlated by its owner.
+    Generic {
+        /// Optional originating operation correlation token.
+        correlator: Option<String>,
+        /// Native source, type and result data; never proof of authentication or effect.
+        items: Vec<Item>,
+    },
     /// Device login-state alert using the supported Microsoft media type.
     LoginStatus {
         /// Untrusted device-reported login state.
@@ -153,9 +196,15 @@ pub struct Item {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 /// Closed protocol command names used in status/result references.
 pub enum CommandName {
-    /// Product node creation.
+    /// Native node creation.
     Add,
-    /// Fixed Agent installation execution.
+    /// Atomic group.
+    Atomic,
+    /// Ordered group.
+    Sequence,
+    /// Native node deletion.
+    Delete,
+    /// Native execution.
     Exec,
     /// Header acknowledgement, paired with command reference zero.
     SyncHdr,
@@ -175,6 +224,9 @@ impl CommandName {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Add => "Add",
+            Self::Sequence => "Sequence",
+            Self::Atomic => "Atomic",
+            Self::Delete => "Delete",
             Self::Exec => "Exec",
             Self::SyncHdr => "SyncHdr",
             Self::Get => "Get",
@@ -187,6 +239,9 @@ impl CommandName {
     fn parse(s: &str) -> Result<Self> {
         match s {
             "Add" => Ok(Self::Add),
+            "Sequence" => Ok(Self::Sequence),
+            "Atomic" => Ok(Self::Atomic),
+            "Delete" => Ok(Self::Delete),
             "Exec" => Ok(Self::Exec),
             "SyncHdr" => Ok(Self::SyncHdr),
             "Get" => Ok(Self::Get),
@@ -250,7 +305,11 @@ impl Command {
     /// Return the command ID; message validation checks positivity and uniqueness.
     pub fn id(&self) -> u32 {
         match self {
-            Self::AgentInstall { id, .. }
+            Self::Atomic { id, .. }
+            | Self::Sequence { id, .. }
+            | Self::Add { id, .. }
+            | Self::Delete { id, .. }
+            | Self::Exec { id, .. }
             | Self::Replace { id, .. }
             | Self::Get { id, .. }
             | Self::Alert { id, .. }
@@ -291,18 +350,38 @@ fn meta(p: &mut Input<'_>) -> Result<Option<Meta>> {
         return Ok(None);
     }
     p.open(NS, "Meta")?;
-    let m = Meta {
-        format: p.optional(META, "Format", p.limits.identifier_bytes)?,
-        media_type: p.optional(META, "Type", p.limits.uri_bytes)?,
-        max_message_size: p
-            .optional(META, "MaxMsgSize", p.limits.identifier_bytes)?
-            .map(|s| number(&s, false))
-            .transpose()?,
-        max_object_size: p
-            .optional(META, "MaxObjSize", p.limits.identifier_bytes)?
-            .map(|s| number(&s, false))
-            .transpose()?,
-    };
+    let mut m = Meta::default();
+    loop {
+        if p.is(META, "Format")? {
+            let value = p.scalar(META, "Format", p.limits.identifier_bytes, false)?;
+            if m.format.replace(value).is_some() {
+                return Err(E::Duplicate);
+            }
+        } else if p.is(META, "Type")? {
+            let value = p.scalar(META, "Type", p.limits.uri_bytes, false)?;
+            if m.media_type.replace(value).is_some() {
+                return Err(E::Duplicate);
+            }
+        } else if p.is(META, "MaxMsgSize")? {
+            let value = number(
+                &p.scalar(META, "MaxMsgSize", p.limits.identifier_bytes, false)?,
+                false,
+            )?;
+            if m.max_message_size.replace(value).is_some() {
+                return Err(E::Duplicate);
+            }
+        } else if p.is(META, "MaxObjSize")? {
+            let value = number(
+                &p.scalar(META, "MaxObjSize", p.limits.identifier_bytes, false)?,
+                false,
+            )?;
+            if m.max_object_size.replace(value).is_some() {
+                return Err(E::Duplicate);
+            }
+        } else {
+            break;
+        }
+    }
     p.end(NS, "Meta")?;
     Ok(Some(m))
 }
@@ -408,143 +487,7 @@ pub fn decode(bytes: &[u8], l: &CodecLimits) -> Result<Message> {
     };
     p.end(NS, "SyncHdr")?;
     p.open(NS, "SyncBody")?;
-    let mut commands = Vec::new();
-    loop {
-        let c = if p.is(NS, "Get")? {
-            p.command()?;
-            p.open(NS, "Get")?;
-            let id = num(&mut p, "CmdID", false)?;
-            let meta = meta(&mut p)?;
-            let items = items(&mut p)?;
-            p.end(NS, "Get")?;
-            Command::Get { id, meta, items }
-        } else if p.is(NS, "Status")? {
-            p.command()?;
-            p.open(NS, "Status")?;
-            let id = num(&mut p, "CmdID", false)?;
-            let message_ref = num(&mut p, "MsgRef", false)?;
-            let command_ref = num(&mut p, "CmdRef", true)?;
-            let command = CommandName::parse(&p.scalar(NS, "Cmd", l.identifier_bytes, false)?)?;
-            let oma = !p.is(NS, "Data")?;
-            let mut target_refs = refs(&mut p, "TargetRef")?;
-            let mut source_refs = refs(&mut p, "SourceRef")?;
-            let credential = read_credential(&mut p)?;
-            let challenge = if p.is(NS, "Chal")? {
-                p.open(NS, "Chal")?;
-                p.open(NS, "Meta")?;
-                let format = p.optional(META, "Format", l.identifier_bytes)?;
-                if format.as_deref().is_some_and(|f| f != "b64") {
-                    return Err(E::Unsupported);
-                }
-                let media_type = p.scalar(META, "Type", l.uri_bytes, false)?;
-                let nonce = p
-                    .optional(META, "NextNonce", l.identifier_bytes)?
-                    .map(Secret);
-                p.end(NS, "Meta")?;
-                p.end(NS, "Chal")?;
-                Some(Challenge { media_type, nonce })
-            } else {
-                None
-            };
-            let code = num(&mut p, "Data", false)?
-                .try_into()
-                .map_err(|_| E::InvalidValue)?;
-            let items = if p.is(NS, "Item")? {
-                items(&mut p)?
-            } else {
-                Vec::new()
-            };
-            // Accept each documented grammar, never a mixture of their reference positions.
-            if !oma {
-                target_refs = refs(&mut p, "TargetRef")?;
-                source_refs = refs(&mut p, "SourceRef")?;
-            }
-            p.end(NS, "Status")?;
-            Command::Status(Status {
-                id,
-                message_ref,
-                command_ref,
-                command,
-                target_refs,
-                source_refs,
-                challenge,
-                credential,
-                code,
-                items,
-            })
-        } else if p.is(NS, "Results")? {
-            p.command()?;
-            p.open(NS, "Results")?;
-            let id = num(&mut p, "CmdID", false)?;
-            let message_ref = p
-                .optional(NS, "MsgRef", l.identifier_bytes)?
-                .map(|s| number(&s, false))
-                .transpose()?;
-            let command_ref = p
-                .optional(NS, "CmdRef", l.identifier_bytes)?
-                .map(|s| number(&s, false))
-                .transpose()?;
-            let command = p
-                .optional(NS, "Cmd", l.identifier_bytes)?
-                .map(|s| CommandName::parse(&s))
-                .transpose()?;
-            let meta = meta(&mut p)?;
-            let items = items(&mut p)?;
-            p.end(NS, "Results")?;
-            Command::Results(Results {
-                id,
-                message_ref,
-                command_ref,
-                command,
-                meta,
-                items,
-            })
-        } else if p.is(NS, "Alert")? {
-            p.command()?;
-            p.open(NS, "Alert")?;
-            let id = num(&mut p, "CmdID", false)?;
-            let alert = match num(&mut p, "Data", false)? {
-                1201 => Alert::ClientInitiated,
-                1224 => read_login_status(&mut p)?,
-                _ => return Err(E::Unsupported),
-            };
-            p.end(NS, "Alert")?;
-            Command::Alert { id, alert }
-        } else if p.is(NS, "Add")? || p.is(NS, "Exec")? {
-            let name = if p.is(NS, "Add")? { "Add" } else { "Exec" };
-            p.command()?;
-            p.open(NS, name)?;
-            let id = num(&mut p, "CmdID", false)?;
-            let meta = meta(&mut p)?;
-            let items = items(&mut p)?;
-            p.end(NS, name)?;
-            Command::AgentInstall {
-                id,
-                command: crate::agent_install::AgentCommand::from_wire(name, meta, &items)?,
-            }
-        } else if p.is(NS, "Replace")? {
-            p.command()?;
-            p.open(NS, "Replace")?;
-            let id = num(&mut p, "CmdID", false)?;
-            let meta = meta(&mut p)?;
-            let items = items(&mut p)?;
-            p.end(NS, "Replace")?;
-            if items.iter().any(|i| i.target.is_some()) {
-                Command::Replace {
-                    id,
-                    configuration: crate::configuration::Firewall::from_wire(meta, &items)?,
-                }
-            } else {
-                if meta.is_some() {
-                    return Err(E::Unsupported);
-                }
-                Command::DevInfo { id, items }
-            }
-        } else {
-            break;
-        };
-        commands.push(c);
-    }
+    let commands = read_commands(&mut p, l, 0)?;
     let final_message = if p.is(NS, "Final")? {
         p.open(NS, "Final")?;
         p.end(NS, "Final")?;
@@ -563,11 +506,134 @@ pub fn decode(bytes: &[u8], l: &CodecLimits) -> Result<Message> {
     validate(&message, l)?;
     Ok(message)
 }
+fn read_commands(p: &mut Input<'_>, l: &CodecLimits, depth: usize) -> Result<Vec<Command>> {
+    bound(depth, l.depth.min(32))?;
+    let mut commands = Vec::new();
+    loop {
+        let c = if p.is(NS, "Atomic")? || p.is(NS, "Sequence")? {
+            let atomic = p.is(NS, "Atomic")?;
+            let name = if atomic { "Atomic" } else { "Sequence" };
+            p.command()?;
+            p.open(NS, name)?;
+            let id = num(p, "CmdID", false)?;
+            let commands = read_commands(p, l, depth + 1)?;
+            p.end(NS, name)?;
+            if atomic {
+                Command::Atomic { id, commands }
+            } else {
+                Command::Sequence { id, commands }
+            }
+        } else if p.is(NS, "Get")? {
+            p.command()?;
+            p.open(NS, "Get")?;
+            let id = num(p, "CmdID", false)?;
+            let meta = meta(p)?;
+            let items = items(p)?;
+            p.end(NS, "Get")?;
+            Command::Get { id, meta, items }
+        } else if p.is(NS, "Status")? {
+            read_status(p, l)?
+        } else if p.is(NS, "Results")? {
+            p.command()?;
+            p.open(NS, "Results")?;
+            let id = num(p, "CmdID", false)?;
+            let message_ref = p
+                .optional(NS, "MsgRef", l.identifier_bytes)?
+                .map(|s| number(&s, false))
+                .transpose()?;
+            let command_ref = p
+                .optional(NS, "CmdRef", l.identifier_bytes)?
+                .map(|s| number(&s, false))
+                .transpose()?;
+            let command = p
+                .optional(NS, "Cmd", l.identifier_bytes)?
+                .map(|s| CommandName::parse(&s))
+                .transpose()?;
+            let meta = meta(p)?;
+            let items = items(p)?;
+            p.end(NS, "Results")?;
+            Command::Results(Results {
+                id,
+                message_ref,
+                command_ref,
+                command,
+                meta,
+                items,
+            })
+        } else if p.is(NS, "Alert")? {
+            p.command()?;
+            p.open(NS, "Alert")?;
+            let id = num(p, "CmdID", false)?;
+            let alert = match num(p, "Data", false)? {
+                1201 => Alert::ClientInitiated,
+                1224 => read_login_status(p)?,
+                1226 => Alert::Generic {
+                    correlator: p.optional(NS, "Correlator", l.identifier_bytes)?,
+                    items: items(p)?,
+                },
+                _ => return Err(E::Unsupported),
+            };
+            p.end(NS, "Alert")?;
+            Command::Alert { id, alert }
+        } else if p.is(NS, "Add")? || p.is(NS, "Exec")? || p.is(NS, "Delete")? {
+            let name = if p.is(NS, "Add")? {
+                "Add"
+            } else if p.is(NS, "Delete")? {
+                "Delete"
+            } else {
+                "Exec"
+            };
+            p.command()?;
+            p.open(NS, name)?;
+            let id = num(p, "CmdID", false)?;
+            let meta = meta(p)?;
+            let items = items(p)?;
+            p.end(NS, name)?;
+            match name {
+                "Add" => Command::Add { id, meta, items },
+                "Delete" => Command::Delete { id, meta, items },
+                _ => Command::Exec { id, meta, items },
+            }
+        } else if p.is(NS, "Replace")? {
+            p.command()?;
+            p.open(NS, "Replace")?;
+            let id = num(p, "CmdID", false)?;
+            let meta = meta(p)?;
+            let items = items(p)?;
+            p.end(NS, "Replace")?;
+            if items.iter().any(|i| i.target.is_some()) {
+                Command::Replace { id, meta, items }
+            } else {
+                if meta.is_some() {
+                    return Err(E::Unsupported);
+                }
+                Command::DevInfo { id, items }
+            }
+        } else {
+            break;
+        };
+        commands.push(c);
+    }
+    Ok(commands)
+}
 fn validate_meta(m: Option<&Meta>, l: &CodecLimits, credential: bool) -> Result<()> {
     if let Some(m) = m {
         if let Some(f) = &m.format {
             text(f, l.identifier_bytes, false)?;
-            if !matches!(f.as_str(), "chr" | "int" | "bool" | "b64" | "xml") {
+            if !matches!(
+                f.as_str(),
+                "chr"
+                    | "int"
+                    | "bool"
+                    | "b64"
+                    | "xml"
+                    | "bin"
+                    | "node"
+                    | "null"
+                    | "date"
+                    | "time"
+                    | "float"
+            ) {
                 return Err(E::Unsupported);
             }
         }
@@ -577,7 +643,10 @@ fn validate_meta(m: Option<&Meta>, l: &CodecLimits, credential: bool) -> Result<
                 if !matches!(t.as_str(), "syncml:auth-basic" | "syncml:auth-md5") {
                     return Err(E::Unsupported);
                 }
-            } else if t != "text/plain" {
+            } else if !t.is_ascii()
+                || t.bytes()
+                    .any(|b| b.is_ascii_whitespace() || b.is_ascii_control())
+            {
                 return Err(E::Unsupported);
             }
         }
@@ -640,6 +709,33 @@ fn validate_items(items: &[Item], l: &CodecLimits, get: bool, devinfo: bool) -> 
     }
     if devinfo && items.len() != 5 {
         return Err(E::Structure);
+    }
+    Ok(())
+}
+fn validate_mutation(command: &Command, items: &[Item], l: &CodecLimits) -> Result<()> {
+    if items.is_empty() {
+        return Err(E::Structure);
+    }
+    bound(items.len(), l.items)?;
+    let mut seen = BTreeSet::new();
+    for item in items {
+        let uri = item.target.as_deref().ok_or(E::Structure)?;
+        text(uri, l.uri_bytes, false)?;
+        if uri.starts_with('/') || item.source.is_some() {
+            return Err(E::Structure);
+        }
+        if !seen.insert(uri) {
+            return Err(E::Duplicate);
+        }
+        validate_meta(item.meta.as_ref(), l, false)?;
+        if matches!(command, Command::Delete { .. }) && item.data.is_some()
+            || matches!(command, Command::Replace { .. }) && item.data.is_none()
+        {
+            return Err(E::Structure);
+        }
+        if let Some(data) = &item.data {
+            text(&data.0, l.field_bytes, true)?;
+        }
     }
     Ok(())
 }
@@ -718,14 +814,22 @@ pub(crate) fn validate(m: &Message, l: &CodecLimits) -> Result<()> {
         validate_meta(Some(&c.meta), l, true)?;
         text(&c.data.0, l.field_bytes, false)?;
     }
-    bound(m.commands.len(), l.commands)?;
-    if m.commands.is_empty() {
+    validate_body(&m.commands, m.final_message, l)
+}
+
+pub(crate) fn validate_body(
+    commands: &[Command],
+    final_message: bool,
+    l: &CodecLimits,
+) -> Result<()> {
+    bound(commands.len(), l.commands)?;
+    if commands.is_empty() {
         return Err(E::Structure);
     }
     let mut ids = BTreeSet::new();
     let mut count = 0usize;
     let mut initialization = false;
-    for c in &m.commands {
+    for c in flattened(commands, l)? {
         if c.id() == 0 {
             return Err(E::InvalidValue);
         }
@@ -733,29 +837,14 @@ pub(crate) fn validate(m: &Message, l: &CodecLimits) -> Result<()> {
             return Err(E::Duplicate);
         }
         match c {
-            Command::AgentInstall { command, .. } => {
-                let item = command.item()?;
-                text(
-                    item.target.as_deref().ok_or(E::Structure)?,
-                    l.uri_bytes,
-                    false,
-                )?;
-                if let Some(data) = item.data {
-                    text(&data.0, l.field_bytes, false)?;
-                }
-                count = count.checked_add(1).ok_or(E::LimitExceeded)?;
-            }
-            Command::Replace { configuration, .. } => {
-                for item in configuration.items() {
-                    text(
-                        item.target.as_deref().ok_or(E::Structure)?,
-                        l.uri_bytes,
-                        false,
-                    )?;
-                    validate_meta(item.meta.as_ref(), l, false)?;
-                    text(&item.data.ok_or(E::Structure)?.0, l.field_bytes, false)?;
-                }
-                count = count.checked_add(1).ok_or(E::LimitExceeded)?;
+            Command::Atomic { .. } | Command::Sequence { .. } => {}
+            Command::Add { meta, items, .. }
+            | Command::Replace { meta, items, .. }
+            | Command::Delete { meta, items, .. }
+            | Command::Exec { meta, items, .. } => {
+                validate_meta(meta.as_ref(), l, false)?;
+                validate_mutation(c, items, l)?;
+                count = count.checked_add(items.len()).ok_or(E::LimitExceeded)?;
             }
             Command::Get { meta, items, .. } => {
                 validate_meta(meta.as_ref(), l, false)?;
@@ -768,7 +857,22 @@ pub(crate) fn validate(m: &Message, l: &CodecLimits) -> Result<()> {
                 count = count.checked_add(items.len()).ok_or(E::LimitExceeded)?;
             }
             Command::Alert { alert, .. } => {
-                initialization = true;
+                initialization |= !matches!(alert, Alert::Generic { .. });
+                if let Alert::Generic { correlator, items } = alert {
+                    if let Some(value) = correlator {
+                        text(value, l.identifier_bytes, false)?;
+                    }
+                    validate_items(items, l, false, false)?;
+                    if items.iter().any(|item| {
+                        item.meta
+                            .as_ref()
+                            .and_then(|m| m.media_type.as_ref())
+                            .is_none()
+                    }) {
+                        return Err(E::Structure);
+                    }
+                    count = count.checked_add(items.len()).ok_or(E::LimitExceeded)?;
+                }
                 if let Alert::LoginStatus {
                     status,
                     explicit_format,
@@ -802,19 +906,24 @@ pub(crate) fn validate(m: &Message, l: &CodecLimits) -> Result<()> {
         bound(count, l.items)?;
     }
     if initialization {
-        let init = m
-            .commands
+        let init = commands
             .iter()
             .filter(|c| !matches!(c, Command::Status(_)))
             .collect::<Vec<_>>();
         if !matches!(
             init.as_slice(),
-            [Command::Alert { .. }, Command::DevInfo { .. }]
-        ) || !m.final_message
+            [
+                Command::Alert {
+                    alert: Alert::ClientInitiated | Alert::LoginStatus { .. },
+                    ..
+                },
+                Command::DevInfo { .. }
+            ]
+        ) || !final_message
         {
             return Err(E::Structure);
         }
-        if m.commands
+        if commands
             .iter()
             .skip_while(|c| matches!(c, Command::Status(_)))
             .any(|c| matches!(c, Command::Status(_)))
@@ -824,6 +933,7 @@ pub(crate) fn validate(m: &Message, l: &CodecLimits) -> Result<()> {
     }
     Ok(())
 }
+
 fn write_meta(w: &mut Output<'_>, m: Option<&Meta>, l: &CodecLimits) -> Result<()> {
     if let Some(m) = m {
         w.start("Meta", &[])?;
@@ -929,77 +1039,7 @@ pub fn encode(m: &Message, l: &CodecLimits) -> Result<Vec<u8>> {
     write_meta(&mut w, m.header.meta.as_ref(), l)?;
     w.end("SyncHdr")?;
     w.start("SyncBody", &[])?;
-    for c in &m.commands {
-        w.command()?;
-        let name = match c {
-            Command::AgentInstall { command, .. } => command.name(),
-            Command::Get { .. } => "Get",
-            Command::Status(_) => "Status",
-            Command::Results(_) => "Results",
-            Command::Alert { .. } => "Alert",
-            Command::DevInfo { .. } | Command::Replace { .. } => "Replace",
-        };
-        w.start(name, &[])?;
-        write_num(&mut w, "CmdID", c.id(), l)?;
-        match c {
-            Command::Get { meta, items, .. } => {
-                write_meta(&mut w, meta.as_ref(), l)?;
-                write_items(&mut w, items, l)?;
-            }
-            Command::AgentInstall { command, .. } => write_items(&mut w, &[command.item()?], l)?,
-            Command::Replace { configuration, .. } => {
-                write_items(&mut w, &configuration.items(), l)?
-            }
-            Command::DevInfo { items, .. } => write_items(&mut w, items, l)?,
-            Command::Alert { alert, .. } => {
-                write_num(
-                    &mut w,
-                    "Data",
-                    if matches!(alert, Alert::ClientInitiated) {
-                        1201
-                    } else {
-                        1224
-                    },
-                    l,
-                )?;
-                if let Alert::LoginStatus {
-                    status,
-                    explicit_format,
-                } = alert
-                {
-                    w.item()?;
-                    w.start("Item", &[])?;
-                    w.start("Meta", &[])?;
-                    w.start("Type", &[("xmlns", META)])?;
-                    w.content(LOGIN_STATUS, l.uri_bytes)?;
-                    w.end("Type")?;
-                    if *explicit_format {
-                        w.start("Format", &[("xmlns", META)])?;
-                        w.content("chr", l.identifier_bytes)?;
-                        w.end("Format")?;
-                    }
-                    w.end("Meta")?;
-                    w.scalar("Data", status.as_str(), l.field_bytes, false)?;
-                    w.end("Item")?;
-                }
-            }
-            Command::Status(s) => write_status(&mut w, s, l)?,
-            Command::Results(r) => {
-                if let Some(v) = r.message_ref {
-                    write_num(&mut w, "MsgRef", v, l)?;
-                }
-                if let Some(v) = r.command_ref {
-                    write_num(&mut w, "CmdRef", v, l)?;
-                }
-                if let Some(v) = r.command {
-                    w.scalar("Cmd", v.as_str(), l.identifier_bytes, false)?;
-                }
-                write_meta(&mut w, r.meta.as_ref(), l)?;
-                write_items(&mut w, &r.items, l)?;
-            }
-        }
-        w.end(name)?;
-    }
+    write_commands(&mut w, &m.commands, l)?;
     if m.final_message {
         w.empty("Final")?;
     }
@@ -1039,4 +1079,210 @@ fn write_refs(w: &mut Output<'_>, s: &Status, l: &CodecLimits) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn write_commands(w: &mut Output<'_>, commands: &[Command], l: &CodecLimits) -> Result<()> {
+    for c in commands {
+        w.command()?;
+        let name = match c {
+            Command::Atomic { .. } => "Atomic",
+            Command::Sequence { .. } => "Sequence",
+            Command::Add { .. } => "Add",
+            Command::Exec { .. } => "Exec",
+            Command::Delete { .. } => "Delete",
+            Command::Get { .. } => "Get",
+            Command::Status(_) => "Status",
+            Command::Results(_) => "Results",
+            Command::Alert { .. } => "Alert",
+            Command::DevInfo { .. } | Command::Replace { .. } => "Replace",
+        };
+        w.start(name, &[])?;
+        write_num(w, "CmdID", c.id(), l)?;
+        match c {
+            Command::Atomic { commands, .. } | Command::Sequence { commands, .. } => {
+                write_commands(w, commands, l)?
+            }
+            Command::Get { meta, items, .. }
+            | Command::Add { meta, items, .. }
+            | Command::Replace { meta, items, .. }
+            | Command::Delete { meta, items, .. }
+            | Command::Exec { meta, items, .. } => {
+                write_meta(w, meta.as_ref(), l)?;
+                write_items(w, items, l)?;
+            }
+            Command::DevInfo { items, .. } => write_items(w, items, l)?,
+            Command::Alert { alert, .. } => {
+                write_num(
+                    w,
+                    "Data",
+                    match alert {
+                        Alert::ClientInitiated => 1201,
+                        Alert::LoginStatus { .. } => 1224,
+                        Alert::Generic { .. } => 1226,
+                    },
+                    l,
+                )?;
+                if let Alert::Generic { correlator, items } = alert {
+                    if let Some(value) = correlator {
+                        w.scalar("Correlator", value, l.identifier_bytes, false)?;
+                    }
+                    write_items(w, items, l)?;
+                }
+                if let Alert::LoginStatus {
+                    status,
+                    explicit_format,
+                } = alert
+                {
+                    w.item()?;
+                    w.start("Item", &[])?;
+                    w.start("Meta", &[])?;
+                    w.start("Type", &[("xmlns", META)])?;
+                    w.content(LOGIN_STATUS, l.uri_bytes)?;
+                    w.end("Type")?;
+                    if *explicit_format {
+                        w.start("Format", &[("xmlns", META)])?;
+                        w.content("chr", l.identifier_bytes)?;
+                        w.end("Format")?;
+                    }
+                    w.end("Meta")?;
+                    w.scalar("Data", status.as_str(), l.field_bytes, false)?;
+                    w.end("Item")?;
+                }
+            }
+            Command::Status(s) => write_status(w, s, l)?,
+            Command::Results(r) => {
+                if let Some(v) = r.message_ref {
+                    write_num(w, "MsgRef", v, l)?;
+                }
+                if let Some(v) = r.command_ref {
+                    write_num(w, "CmdRef", v, l)?;
+                }
+                if let Some(v) = r.command {
+                    w.scalar("Cmd", v.as_str(), l.identifier_bytes, false)?;
+                }
+                write_meta(w, r.meta.as_ref(), l)?;
+                write_items(w, &r.items, l)?;
+            }
+        }
+        w.end(name)?;
+    }
+    Ok(())
+}
+
+/// Flatten after checking the native group constraints and total allocation budget.
+fn flattened<'a>(commands: &'a [Command], l: &CodecLimits) -> Result<Vec<&'a Command>> {
+    use std::collections::BTreeMap;
+    bound(commands.len(), l.commands)?;
+    let mut pending: Vec<_> = commands.iter().rev().map(|c| (c, 0usize, None)).collect();
+    let mut output = Vec::new();
+    let mut additions: BTreeMap<u32, BTreeSet<&str>> = BTreeMap::new();
+    while let Some((command, depth, atomic)) = pending.pop() {
+        bound(depth, l.depth.min(32))?;
+        bound(output.len() + pending.len() + 1, l.commands)?;
+        match command {
+            Command::Atomic { id, commands } | Command::Sequence { id, commands } => {
+                if commands.is_empty() {
+                    return Err(E::Structure);
+                }
+                let next_atomic = if matches!(command, Command::Atomic { .. }) {
+                    if atomic.is_some() {
+                        return Err(E::Unsupported);
+                    }
+                    Some(*id)
+                } else {
+                    atomic
+                };
+                bound(
+                    output.len() + pending.len() + commands.len() + 1,
+                    l.commands,
+                )?;
+                pending.extend(commands.iter().rev().map(|c| (c, depth + 1, next_atomic)));
+            }
+            Command::Get { .. } if atomic.is_some() => return Err(E::Unsupported),
+            Command::Add { items, .. } if atomic.is_some() => {
+                let added = additions.entry(atomic.ok_or(E::Structure)?).or_default();
+                added.extend(items.iter().filter_map(|i| i.target.as_deref()));
+            }
+            Command::Replace { items, .. } if atomic.is_some() => {
+                if additions
+                    .get(&atomic.ok_or(E::Structure)?)
+                    .is_some_and(|added| {
+                        items
+                            .iter()
+                            .filter_map(|i| i.target.as_deref())
+                            .any(|uri| added.contains(uri))
+                    })
+                {
+                    return Err(E::Unsupported);
+                }
+            }
+            Command::Status(_)
+            | Command::Results(_)
+            | Command::Alert { .. }
+            | Command::DevInfo { .. }
+                if depth != 0 =>
+            {
+                return Err(E::Unsupported);
+            }
+            _ => {}
+        }
+        output.push(command);
+    }
+    Ok(output)
+}
+
+fn read_status(p: &mut Input<'_>, l: &CodecLimits) -> Result<Command> {
+    p.command()?;
+    p.open(NS, "Status")?;
+    let id = num(p, "CmdID", false)?;
+    let message_ref = num(p, "MsgRef", false)?;
+    let command_ref = num(p, "CmdRef", true)?;
+    let command = CommandName::parse(&p.scalar(NS, "Cmd", l.identifier_bytes, false)?)?;
+    let oma = !p.is(NS, "Data")?;
+    let mut target_refs = refs(p, "TargetRef")?;
+    let mut source_refs = refs(p, "SourceRef")?;
+    let credential = read_credential(p)?;
+    let challenge = if p.is(NS, "Chal")? {
+        p.open(NS, "Chal")?;
+        p.open(NS, "Meta")?;
+        let format = p.optional(META, "Format", l.identifier_bytes)?;
+        if format.as_deref().is_some_and(|f| f != "b64") {
+            return Err(E::Unsupported);
+        }
+        let media_type = p.scalar(META, "Type", l.uri_bytes, false)?;
+        let nonce = p
+            .optional(META, "NextNonce", l.identifier_bytes)?
+            .map(Secret);
+        p.end(NS, "Meta")?;
+        p.end(NS, "Chal")?;
+        Some(Challenge { media_type, nonce })
+    } else {
+        None
+    };
+    let code = num(p, "Data", false)?
+        .try_into()
+        .map_err(|_| E::InvalidValue)?;
+    let items = if p.is(NS, "Item")? {
+        items(p)?
+    } else {
+        Vec::new()
+    };
+    // Accept each documented grammar, never a mixture of their reference positions.
+    if !oma {
+        target_refs = refs(p, "TargetRef")?;
+        source_refs = refs(p, "SourceRef")?;
+    }
+    p.end(NS, "Status")?;
+    Ok(Command::Status(Status {
+        id,
+        message_ref,
+        command_ref,
+        command,
+        target_refs,
+        source_refs,
+        challenge,
+        credential,
+        code,
+        items,
+    }))
 }

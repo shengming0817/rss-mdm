@@ -9,6 +9,7 @@ mod error_projection;
 pub mod execution;
 pub mod operation;
 pub mod planning;
+mod protection;
 pub mod resource_catalog;
 pub mod software_publication;
 pub mod task_signing;

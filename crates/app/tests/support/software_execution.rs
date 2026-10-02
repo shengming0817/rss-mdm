@@ -141,11 +141,11 @@ async fn upload_fixture(router: &Router, request: Request<Body>) -> Result<()> {
 pub(crate) async fn upload_windows(
     author: &Browser,
     router: &Router,
-    path: &str,
+    resource: Uuid,
     bytes: &[u8],
 ) -> Result<()> {
     let request=Request::builder().method(Method::POST)
-        .uri(format!("{path}/content?version=v1&variant=default&platform=windows&architecture=x86_64&operation={}",Uuid::new_v4()))
+        .uri(format!("/api/v3/resources/{resource}/content?version=v1&variant=default&platform=windows&architecture=x86_64&operation={}",Uuid::new_v4()))
         .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
         .header("x-csrf-token",author.csrf.as_ref().unwrap())
         .header("cookie",author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
@@ -297,7 +297,7 @@ impl Fixture {
         )
         .await?;
         let dependency = Uuid::new_v4();
-        let dependency_path = format!("/api/v3/resources/{dependency}");
+        let dependency_path = format!("/api/v4/resources/{dependency}");
         write(
             &mut author,
             &router,
@@ -315,20 +315,14 @@ impl Fixture {
         let windows_dependency_definition = json!({"source":registered["snapshot"],"package":"Private.WindowsDependency","version":"1","artifacts":{"package":{"reference":"dep-win-installer","length":windows_dependency_bytes.len(),"sha256":windows_dependency_digest}},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
         write(&mut author,&router,&dependency_path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":platform_name,"architecture":architecture,"key":"default","declaration":{"kind":"software","definition":if platform == Platform::MacOs { dependency_definition } else { windows_dependency_definition }}}]})).await?;
         if platform == Platform::MacOs {
-            let request=Request::builder().method(Method::POST).uri(format!("{dependency_path}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
+            let request=Request::builder().method(Method::POST).uri(format!("/api/v3/resources/{dependency}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
         .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
         .header("x-csrf-token",author.csrf.as_ref().unwrap())
         .header("cookie",author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
         .header("content-type","application/octet-stream").body(Body::from(dependency_bytes.to_vec()))?;
             upload_fixture(&router, request).await?;
         } else {
-            upload_windows(
-                &author,
-                &router,
-                &dependency_path,
-                &windows_dependency_bytes,
-            )
-            .await?;
+            upload_windows(&author, &router, dependency, &windows_dependency_bytes).await?;
         }
         write(
             &mut author,
@@ -356,7 +350,7 @@ impl Fixture {
             .await?;
         ensure!(dependency_version.0 == StatusCode::OK);
         let resource = Uuid::new_v4();
-        let path = format!("/api/v3/resources/{resource}");
+        let path = format!("/api/v4/resources/{resource}");
         write(
             &mut author,
             &router,
@@ -375,20 +369,20 @@ impl Fixture {
         let windows_definition = json!({"source":registered["snapshot"],"package":"Private.WindowsControlled","version":"1","artifacts":{"package":{"reference":"win-installer","length":windows_bytes.len(),"sha256":windows_digest}},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[{"resource":dependency,"version":"v1","sha256":dependency_version.1["resourceDigest"]}],"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF}","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
         write(&mut author,&router,&path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":platform_name,"architecture":architecture,"key":"default","declaration":{"kind":"software","definition":if platform == Platform::MacOs { definition } else { windows_definition }}}]})).await?;
         if platform == Platform::MacOs {
-            let request=Request::builder().method(Method::POST).uri(format!("{path}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
+            let request=Request::builder().method(Method::POST).uri(format!("/api/v3/resources/{resource}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
         .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
         .header("x-csrf-token",author.csrf.as_ref().unwrap())
         .header("cookie",author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
         .header("content-type","application/octet-stream").body(Body::from(bytes.to_vec()))?;
             upload_fixture(&router, request).await?;
-            let request=Request::builder().method(Method::POST).uri(format!("{path}/content?version=v1&variant=default&platform=macos&architecture=aarch64&artifact=remover&operation={}",Uuid::new_v4()))
+            let request=Request::builder().method(Method::POST).uri(format!("/api/v3/resources/{resource}/content?version=v1&variant=default&platform=macos&architecture=aarch64&artifact=remover&operation={}",Uuid::new_v4()))
         .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
         .header("x-csrf-token",author.csrf.as_ref().unwrap())
         .header("cookie",author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
         .header("content-type","application/octet-stream").body(Body::from(removal.to_vec()))?;
             upload_fixture(&router, request).await?;
         } else {
-            upload_windows(&author, &router, &path, &windows_bytes).await?;
+            upload_windows(&author, &router, resource, &windows_bytes).await?;
         }
         write(
             &mut author,
@@ -469,6 +463,7 @@ pub(crate) async fn worker(
     let config: Config = serde_json::from_value(base.clone())?;
     let worker = crate::flow::execution::open(
         &config,
+        config.native_protector()?,
         crate::test_support::identity::audit_store(&config).await?,
         content,
         std::collections::BTreeMap::new(),

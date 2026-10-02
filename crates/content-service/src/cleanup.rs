@@ -128,12 +128,21 @@ impl Store {
                     .and_then(|v| v.strip_suffix(".json"))
                     .and_then(|v| Uuid::parse_str(v).ok())
                 {
-                    protected.insert(store.load_upload(id, i64::MIN)?.binding.sha256);
-                } else if name.len() == 64
-                    && name
-                        .bytes()
-                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-                {
+                    let binding = store.load_upload(id, i64::MIN)?.binding;
+                    protected.insert((binding.storage_class, binding.sha256));
+                } else {
+                    let (class, digest) = if let Some(value) = name.strip_prefix("native-") {
+                        (StorageClass::NativeConfiguration, value)
+                    } else {
+                        (StorageClass::Artifact, name.as_ref())
+                    };
+                    if digest.len() != 64
+                        || !digest
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    {
+                        continue;
+                    }
                     let metadata = fs::symlink_metadata(entry.path()).map_err(|_| storage())?;
                     if !metadata.is_file() {
                         continue;
@@ -151,19 +160,20 @@ impl Store {
                     }
                     candidates.push((
                         entry.path(),
-                        rss_mdm_resource::Digest::parse(&name)
+                        class,
+                        rss_mdm_resource::Digest::parse(digest)
                             .map_err(|_| invariant())?
                             .bytes(),
                     ));
                 }
             }
             let mut garbage = Vec::new();
-            for (path, digest) in candidates
+            for (path, class, digest) in candidates
                 .into_iter()
-                .filter(|(_, d)| !protected.contains(d))
+                .filter(|(_, class, d)| !protected.contains(&(*class, *d)))
                 .take(128)
             {
-                match lock(&store.blob_lock(digest)) {
+                match lock(&store.class_lock(digest, class)) {
                     Ok(guard) => garbage.push(Garbage {
                         path,
                         digest,

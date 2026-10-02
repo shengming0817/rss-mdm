@@ -13,7 +13,7 @@ view!(ResourceReceipt {
     storage_revision: u64
 });
 view!(ResourceRead { id: String, revision: u64, kind: String, versions: Vec<ResourceVersion> });
-view!(ResourceVersion { configuration: Option<serde_json::Value>, id: String, digest: [u8;32], state: String, variants: Vec<Variant> });
+view!(ResourceVersion { id: String, digest: [u8;32], state: String, variants: Vec<Variant> });
 
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]

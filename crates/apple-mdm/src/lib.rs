@@ -1,7 +1,9 @@
 //! Bounded Apple MDM wire codecs and the shipped device Profile format.
-pub mod agent_install;
+pub mod applicability;
+pub mod native;
 pub mod profile;
 pub mod protocol;
+pub mod software;
 #[derive(Clone, Copy, Debug, thiserror::Error)]
 pub enum Error {
     #[error("malformed Apple MDM payload")]
@@ -13,5 +15,5 @@ pub enum Error {
 }
 
 #[cfg(test)]
-#[path = "../tests/agent_install.rs"]
-mod agent_install_tests;
+#[path = "../tests/software.rs"]
+mod software_tests;

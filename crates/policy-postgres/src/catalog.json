@@ -361,7 +361,7 @@
       "versions",
       "versions_frozen_check",
       "c",
-      "CHECK ((octet_length((frozen)::text) <= 1048576))",
+      "CHECK ((octet_length((frozen)::text) <= 25165824))",
       true
     ],
     [

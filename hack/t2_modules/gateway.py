@@ -24,7 +24,7 @@ def verify(context):
     # A buffered control proves the fixture distinguishes early delivery from completion.
     locations = ''.join('location = ' + path + ' { limit_rate 512; return 200 "' + stream_body + '"; }' for path in [*stream_paths, buffered_path])
     locations += 'location = /api/unsupported-test { default_type application/json; return 404 \'{"code":"not_found"}\'; }'
-    config=config.rsplit('}',1)[0]+'server { listen 127.0.0.1:8082; client_max_body_size 2m; '+locations+' location / { return 200 "$http_x_forwarded_for"; } }}'
+    config=config.rsplit('}',1)[0]+'server { listen 127.0.0.1:8082; client_max_body_size 32m; '+locations+' location / { return 200 "$http_x_forwarded_for"; } }}'
     with context.gateway(config) as (name,port):
         def request(path,forward='',body=None,method='POST'):
             c=http.client.HTTPConnection('127.0.0.1',port,timeout=3)
@@ -79,6 +79,11 @@ def verify(context):
         if request('/api/agent/v5/tasks/task/events',body=chunk)[0]!=200:raise RuntimeError('valid output chunk blocked by gateway')
         if request('/api/agent/v5/tasks/task/events',body='x'*1114113)[0]!=413:raise RuntimeError('oversized task event accepted')
         if request('/api/agent/v4/tasks/task/events',body=chunk)[0]!=413:raise RuntimeError('legacy route inherited V5 upload budget')
+        for path,limit in [('/api/v3/devices/device/operations',16777216),('/api/v4/resources/resource',8388608)]:
+            if request(path,body=b'x'*limit)[0]!=200:raise RuntimeError('native JSON budget rejected exact boundary: '+path)
+            if request(path,body=b'x'*(limit+1))[0]!=413:raise RuntimeError('native JSON budget exceeded: '+path)
+        for path in ['/api/v3/devices/device/operations/id/cancel','/api/v3/resources/resource']:
+            if request(path,body=b'x'*16385)[0]!=413:raise RuntimeError('unrelated route inherited native body budget: '+path)
         if request('/api/probe',body='x'*16385)[0]!=413:raise RuntimeError('oversized request was not rejected')
         if request('/api/probe?credential=synthetic-sensitive-value')[0]!=200:raise RuntimeError('gateway probe failed')
         held=[]

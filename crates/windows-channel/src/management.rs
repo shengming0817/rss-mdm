@@ -83,6 +83,7 @@ use crate::execution::channels::Reply as ManagementReply;
 pub async fn management_on(
     conn: &mut sqlx::PgConnection,
     windows: &Windows,
+    protection: &rss_mdm_native_protection::Protector,
     principal: &DevicePrincipal,
     message: &syncml::Message,
     bytes: &[u8],
@@ -93,11 +94,30 @@ pub async fn management_on(
     let registration = principal.registration().to_string();
     let session = message.header.session_id.to_string();
     let message_id = i64::from(message.header.message_id);
-    let digest = format!("{:x}", Sha256::digest(bytes));
+    let binding = (
+        principal.registration(),
+        principal.generation(),
+        principal.credential(),
+        &session,
+        message_id,
+    );
+    let digest = protection
+        .mac(
+            bytes,
+            &crate::protection::native_aad(
+                principal.tenant(),
+                "windows.management.incoming",
+                &binding,
+            )?,
+        )
+        .map_err(|_| Error::Unavailable(Failure::Protocol))?
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
     let tx = conn;
     let scope = crate::device::store::revalidate(tx, principal).await?;
     lock_sessions(tx, &tenant, &registration).await?;
-    let stored = match session_decision(tx, principal, message, &digest, audit).await? {
+    let stored = match session_decision(tx, protection, principal, message, &digest, audit).await? {
         SessionDecision::Replay(bytes) => {
             return Ok(ManagementReply { bytes, facts });
         }
@@ -130,7 +150,33 @@ pub async fn management_on(
         .map(|r| r.try_get("nonce").map_err(db))
         .transpose()?
         .unwrap_or(registration_data.try_get("server_nonce").map_err(db)?);
-    let server = authenticate_server(stored.as_ref(), message, nonce)?;
+    let previous_bytes = stored
+        .as_ref()
+        .map(|row| {
+            let previous_id: i64 = row.try_get("last_message").map_err(db)?;
+            let sealed: Vec<u8> = row.try_get("correlation").map_err(db)?;
+            let aad = crate::protection::native_aad(
+                principal.tenant(),
+                "windows.management.response",
+                &(
+                    principal.registration(),
+                    principal.generation(),
+                    principal.credential(),
+                    &session,
+                    previous_id,
+                ),
+            )?;
+            protection
+                .open_bytes(&sealed, &aad)
+                .map_err(|_| Error::Unavailable(Failure::Protocol))
+        })
+        .transpose()?;
+    let previous = previous_bytes
+        .as_ref()
+        .map(|v| std::str::from_utf8(v.expose()).map_err(|_| Error::Unavailable(Failure::Protocol)))
+        .transpose()?
+        .unwrap_or("");
+    let server = authenticate_server(stored.as_ref(), previous, message, nonce)?;
     let initial = initialization(message, authenticated_before)?;
     let authenticated_session = authenticated && server.authenticated;
     let mut response = management_response(
@@ -142,26 +188,26 @@ pub async fn management_on(
         &server.nonce,
         initial,
     )?;
-    let previous = stored
-        .as_ref()
-        .map(|r| r.try_get::<String, _>("correlation").map_err(db))
-        .transpose()?
-        .unwrap_or_default();
     let filtered = crate::execution::native::receive_on(
         tx,
+        protection,
         principal,
         message,
         authenticated_session,
-        &previous,
+        previous,
     )
     .await?;
     let filtered = if authenticated_session {
-        crate::agent_collection::receive(tx, principal, &filtered, &previous, &mut facts).await?
+        crate::agent_collection::receive(tx, protection, principal, &filtered, previous, &mut facts)
+            .await?
     } else {
         filtered
     };
     let filtered = if authenticated_session {
-        crate::template_collection::receive(tx, principal, &filtered, &previous, &mut facts).await?
+        crate::template_collection::receive(
+            tx, protection, principal, &filtered, previous, &mut facts,
+        )
+        .await?
     } else {
         filtered
     };
@@ -170,7 +216,7 @@ pub async fn management_on(
         (&mut facts, audit),
         &scope,
         &filtered,
-        stored.as_ref(),
+        (protection, stored.as_ref(), previous),
         &mut response,
         authenticated_session,
     )
@@ -178,6 +224,7 @@ pub async fn management_on(
     let channel_pending = if authenticated_session {
         crate::agent_collection::send(
             tx,
+            protection,
             principal,
             &mut response,
             windows.agent_identity.as_ref(),
@@ -187,34 +234,47 @@ pub async fn management_on(
         false
     };
     let template_pending = if authenticated_session {
-        crate::template_collection::send(tx, principal, &mut response).await?
+        crate::template_collection::send(tx, protection, principal, &mut response).await?
     } else {
         false
     };
-    let pending =
-        crate::execution::native::send_on(tx, principal, &mut response, authenticated_session)
-            .await?;
+    let pending = crate::execution::native::send_on(
+        tx,
+        protection,
+        principal,
+        &mut response,
+        authenticated_session,
+    )
+    .await?;
     let response = syncml::encode(&response, &CodecLimits::default())
         .map_err(|_| Error::Unavailable(Failure::Protocol))?;
-    let correlation =
-        std::str::from_utf8(&response).map_err(|_| Error::Unavailable(Failure::Protocol))?;
+    let correlation = protection
+        .seal_bytes(
+            &response,
+            &crate::protection::native_aad(
+                principal.tenant(),
+                "windows.management.response",
+                &binding,
+            )?,
+        )
+        .map_err(|_| Error::Unavailable(Failure::Protocol))?;
     let state = session_state(
         complete && !pending && !channel_pending && !template_pending,
         run_id,
     );
     if stored.is_none() {
         sqlx::query("INSERT INTO mdm_access.management_sessions(tenant_id,registration,session_id,generation,credential,state,last_message,client_authenticated,correlation,nonce,expires_at) VALUES($1::uuid,$2::uuid,$3,$4,$5::uuid,$6,$7,$8,$9,$10,clock_timestamp()+interval '15 minutes')")
-                .bind(&tenant).bind(&registration).bind(&session).bind(principal.generation()).bind(principal.credential().to_string()).bind(state).bind(message_id).bind(authenticated).bind(correlation).bind(&server.nonce).execute(&mut *tx).await.map_err(db)?;
+                .bind(&tenant).bind(&registration).bind(&session).bind(principal.generation()).bind(principal.credential().to_string()).bind(state).bind(message_id).bind(authenticated).bind(&correlation).bind(&server.nonce).execute(&mut *tx).await.map_err(db)?;
         notify(tx).await.map_err(db)?;
     } else {
         sqlx::query("UPDATE mdm_access.management_sessions SET state=$4,last_message=$5,client_authenticated=$6,correlation=$7,nonce=$8 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3")
-                .bind(&tenant).bind(&registration).bind(&session).bind(state).bind(message_id).bind(authenticated).bind(correlation).bind(&server.nonce).execute(&mut *tx).await.map_err(db)?;
+                .bind(&tenant).bind(&registration).bind(&session).bind(state).bind(message_id).bind(authenticated).bind(&correlation).bind(&server.nonce).execute(&mut *tx).await.map_err(db)?;
     }
     sqlx::query("UPDATE mdm_access.management_sessions SET run_id=$4::uuid WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3")
             .bind(&tenant).bind(&registration).bind(&session).bind(run_id.map(|id| id.to_string())).execute(&mut *tx).await.map_err(db)?;
     server.persist_nonce(tx, &tenant, request, message).await?;
     sqlx::query("INSERT INTO mdm_access.management_messages(tenant_id,registration,session_id,message_id,digest,response) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6)")
-            .bind(&tenant).bind(&registration).bind(&session).bind(message_id).bind(digest).bind(&response).execute(&mut *tx).await.map_err(db)?;
+            .bind(&tenant).bind(&registration).bind(&session).bind(message_id).bind(digest).bind(&correlation).execute(&mut *tx).await.map_err(db)?;
     Ok(ManagementReply {
         bytes: response,
         facts,
@@ -251,11 +311,16 @@ async fn collect(
     effects: (&mut Vec<rss_mdm_audit_integration::Fact>, &RequestAudit),
     scope: &rss_observation::Scope,
     message: &syncml::Message,
-    stored: Option<&sqlx::postgres::PgRow>,
+    native: (
+        &rss_mdm_native_protection::Protector,
+        Option<&sqlx::postgres::PgRow>,
+        &str,
+    ),
     response: &mut syncml::Message,
     authenticated_session: bool,
 ) -> Result<(Option<Uuid>, bool), Error> {
     let (facts, audit) = effects;
+    let (protection, stored, previous) = native;
     let tenant = scope.tenant().to_string();
     let registration = scope.registration().as_str().to_owned();
     let run_id = stored
@@ -294,12 +359,8 @@ async fn collect(
         if !authenticated_session {
             return Err(Error::Unauthorized);
         }
-        let previous: String = stored
-            .as_ref()
-            .ok_or(Error::Conflict)?
-            .try_get("correlation")
-            .map_err(db)?;
-        complete = crate::collection::accept(tx, facts, &tenant, id, message, &previous).await?;
+        complete = crate::collection::accept(tx, protection, facts, &tenant, id, message, previous)
+            .await?;
         audit.operation(id, "windows_management");
     } else if message
         .commands
@@ -309,7 +370,7 @@ async fn collect(
         return Err(Error::Conflict);
     }
     let run_id = if authenticated_session && run_id.is_none() {
-        let id = crate::collection::create(tx, scope, response).await?;
+        let id = crate::collection::create(tx, protection, scope, response).await?;
         audit.operation(id, "windows_management");
         if message.header.message_id == 8 {
             crate::collection::terminate_session(
@@ -386,13 +447,13 @@ impl ServerAuthentication {
 
 fn authenticate_server(
     stored: Option<&sqlx::postgres::PgRow>,
+    previous: &str,
     message: &syncml::Message,
     mut nonce: Vec<u8>,
 ) -> Result<ServerAuthentication, Error> {
     let mut next_nonce = nonce.clone();
     let mut server_authenticated = false;
     if let Some(row) = stored {
-        let previous: String = row.try_get("correlation").map_err(db)?;
         let previous = syncml::decode(previous.as_bytes(), &CodecLimits::default())
             .map_err(|_| Error::Unavailable(Failure::Protocol))?;
         let (_, sent) = syncml::encode_request(&previous, &CodecLimits::default())
@@ -581,6 +642,7 @@ enum SessionDecision {
 }
 async fn session_decision(
     tx: &mut sqlx::PgConnection,
+    protection: &rss_mdm_native_protection::Protector,
     principal: &DevicePrincipal,
     message: &syncml::Message,
     digest: &str,
@@ -597,10 +659,13 @@ async fn session_decision(
         if let Some(old)=sqlx::query("SELECT digest,response FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3 AND message_id=$4")
             .bind(&tenant).bind(&registration).bind(&session).bind(message_id).fetch_optional(&mut *tx).await.map_err(db)? {
             if old.try_get::<String,_>("digest").map_err(db)?!=digest { return Err(Error::Conflict); }
-            crate::execution::native::replay_on(tx,principal,message).await?;
+            crate::execution::native::replay_on(tx,protection,principal,message).await?;
             audit.operation(Uuid::from_bytes(Sha256::digest(format!("{registration}:{session}:{message_id}")).as_slice()[..16].try_into().expect("digest width")),"windows_management");
             audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
-            return old.try_get("response").map(SessionDecision::Replay).map_err(db);
+            let sealed: Vec<u8> = old.try_get("response").map_err(db)?;
+            let aad = crate::protection::native_aad(principal.tenant(), "windows.management.response", &(principal.registration(), principal.generation(), principal.credential(), &session, message_id))?;
+            let plain = protection.open_bytes(&sealed, &aad).map_err(|_| Error::Unavailable(Failure::Protocol))?;
+            return Ok(SessionDecision::Replay(plain.expose().to_vec()));
         }
         if !matches!(
             row.try_get::<String, _>("state").map_err(db)?.as_str(),
@@ -625,15 +690,18 @@ impl crate::execution::channels::Windows for super::Windows {
     fn exchange<'a>(
         &'a self,
         connection: &'a mut sqlx::PgConnection,
+        protection: &'a rss_mdm_native_protection::Protector,
         principal: &'a crate::device::DevicePrincipal,
         message: &'a rss_mdm_windows_mdm::syncml::Message,
         bytes: &'a [u8],
         audit: &'a RequestAudit,
     ) -> crate::execution::channels::Pending<'a, crate::execution::channels::Reply> {
         Box::pin(async move {
-            management_on(connection, self, principal, message, bytes, audit)
-                .await
-                .map_err(Into::into)
+            management_on(
+                connection, self, protection, principal, message, bytes, audit,
+            )
+            .await
+            .map_err(Into::into)
         })
     }
 }

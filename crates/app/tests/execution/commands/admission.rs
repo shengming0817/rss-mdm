@@ -48,7 +48,7 @@ impl Client {
         let effects = (effects.0, effects.1, effects.2, audits);
         ensure!(effects == (0, 0, 0, 0));
         check.close().await?;
-        let request = json!({"operationId":self.operation,"task":{"kind":"state_verify","field":"model","expectedValue":"Final-Model"},"deadline":self.app.clock.unix_seconds()?+300});
+        let request = json!({"operationId":self.operation,"inputVersion":"1","target":{"kind":"device"},"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./DevInfo/Mod","instance":[],"operation":"get","value":null}}},"deadline":self.app.clock.unix_seconds()?+300});
         let mut malformed = request.clone();
         malformed["unexpected"] = true.into();
         let rejected = self.call(Method::POST, "", Some(malformed)).await?;
@@ -73,6 +73,59 @@ impl Client {
             "acceptance {:?}",
             accepted
         );
+        let mut persisted =
+            sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+                .await?;
+        let (sealed, context): (Vec<u8>, Value) = sqlx::query_as("SELECT request,input_context FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(case_tenant()).bind(self.operation).fetch_one(&mut persisted).await?;
+        ensure!(
+            serde_json::from_slice::<Value>(&sealed).is_err(),
+            "native operation input persisted as JSON"
+        );
+        ensure!(
+            !sealed
+                .windows(b"./DevInfo/Mod".len())
+                .any(|v| v == b"./DevInfo/Mod")
+        );
+        ensure!(context.get("task").is_none() && context["platform"] == "windows");
+        let envelope: Value = sqlx::query_scalar("SELECT envelope FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND message_id=$2")
+            .bind(case_tenant()).bind(format!("dispatch.{}", self.operation)).fetch_one(&mut persisted).await?;
+        let payload: Vec<u8> = serde_json::from_value(envelope["payload"].clone())?;
+        let dispatch: Value = serde_json::from_slice(&payload)?;
+        ensure!(
+            dispatch.get("request").is_none()
+                && dispatch["operationId"] == self.operation.to_string(),
+            "Outbox retained native input"
+        );
+        let mut changed_context = context.clone();
+        changed_context["deadline"] = json!(context["deadline"].as_i64().unwrap() + 1);
+        sqlx::query("UPDATE mdm_commands.operations SET input_context=$3 WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(self.operation).bind(changed_context).execute(&mut persisted).await?;
+        let tampered = self
+            .call(Method::GET, &format!("/{}", self.operation), None)
+            .await?;
+        sqlx::query("UPDATE mdm_commands.operations SET input_context=$3 WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(self.operation).bind(context).execute(&mut persisted).await?;
+        ensure!(
+            tampered.0 == StatusCode::SERVICE_UNAVAILABLE,
+            "tampered native context was accepted"
+        );
+        let other_key = rss_mdm_native_protection::Protector::new(&[93; 32])?;
+        ensure!(
+            rss_mdm_flow_service::storage::bind_native_key(
+                &self.app.flow.planning.runtime,
+                self.app.execution.tenant,
+                other_key.id()
+            )
+            .await
+            .is_err(),
+            "changed native key was silently accepted"
+        );
+        rss_mdm_flow_service::storage::bind_native_key(
+            &self.app.flow.planning.runtime,
+            self.app.execution.tenant,
+            self.app.execution.protection.id(),
+        )
+        .await?;
+        persisted.close().await?;
         for _ in 0..100 {
             if self.app.timeline.catch_up().await? == 0 {
                 break;
@@ -102,7 +155,7 @@ impl Client {
         let replay = self.call(Method::POST, "", Some(request.clone())).await?;
         ensure!(replay == accepted);
         let mut conflict = request.clone();
-        conflict["task"]["expectedValue"] = "other".into();
+        conflict["task"]["request"]["request"]["node"] = "./DevDetail/SwV".into();
         ensure!(self.call(Method::POST, "", Some(conflict)).await?.0 == StatusCode::CONFLICT);
         #[cfg(feature = "integration")]
         self.atomic_failure(&request).await?;
@@ -141,7 +194,7 @@ impl Client {
         body["operationId"] = concurrent.to_string().into();
         let (mut one, mut two) = (self.browser.clone(), self.browser.clone());
         let path = format!(
-            "/api/v2/devices/{DEVICE}/operations",
+            "/api/v3/devices/{DEVICE}/operations",
             DEVICE = case_device()
         );
         let (a, b) = tokio::join!(
@@ -169,7 +222,7 @@ impl Client {
             first["operationId"] = id.to_string().into();
             let mut second = first.clone();
             if different {
-                second["task"]["expectedValue"] = "different-target".into();
+                second["task"]["request"]["request"]["node"] = "./DevDetail/SwV".into();
             }
             let (a, b) = tokio::join!(
                 one.call(&self.router, Method::POST, &path, Some(first)),
@@ -221,7 +274,7 @@ impl Client {
                 &self.router,
                 Method::GET,
                 &format!(
-                    "/api/v2/devices/another-device/operations/{}",
+                    "/api/v3/devices/another-device/operations/{}",
                     self.operation
                 ),
                 None,
@@ -231,11 +284,7 @@ impl Client {
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
-        for relation in [
-            "mdm_planning.firewall_resources",
-            "mdm_policy.requests",
-            "mdm_group.groups",
-        ] {
+        for relation in ["mdm_policy.requests", "mdm_group.groups"] {
             let permitted: bool =
                 sqlx::query_scalar("SELECT has_table_privilege('mdm_command_runtime',$1,'SELECT')")
                     .bind(relation)
@@ -485,14 +534,14 @@ impl Client {
         let subject = crate::test_support::browser_subject(&self.browser, &self.router).await?;
         let mut grants = crate::test_support::identity::device_grants(
             None,
-            &["state_verify", "operation_read", "operation_cancel"],
+            &["inventory_collect", "operation_read", "operation_cancel"],
         )?;
         grants.push(crate::authorization::Grant {
             operation: crate::authorization::Permission::AuthorizationRead,
             scope: crate::authorization::Scope::Tenant,
         });
         crate::test_support::identity::set_grants(case_tenant(), &subject, grants).await?;
-        let request = |id| json!({"operationId":id,"task":{"kind":"state_verify","field":"model","expectedValue":"Final-Model"},"deadline":self.app.clock.unix_seconds().unwrap()+300});
+        let request = |id| json!({"operationId":id,"inputVersion":"1","target":{"kind":"device"},"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./DevInfo/Mod","instance":[],"operation":"get","value":null}}},"deadline":self.app.clock.unix_seconds().unwrap()+300});
         let id = Uuid::new_v4();
         let mut other_browser = crate::test_support::Browser::default();
         let login = other_browser.call(&self.router,Method::POST,&format!("/api/v2/tenants/{}/login",case_tenant()),Some(json!({"login":crate::test_support::case::login("other"),"password":crate::test_support::identity::PASSWORD}))).await?;
@@ -502,7 +551,7 @@ impl Client {
         crate::test_support::identity::set_grants(
             case_tenant(),
             &other_subject,
-            crate::test_support::identity::device_grants(Some(&other), &["state_verify"])?,
+            crate::test_support::identity::device_grants(Some(&other), &["inventory_collect"])?,
         )
         .await?;
         ensure!(
@@ -510,7 +559,7 @@ impl Client {
                 .call(
                     &self.router,
                     Method::POST,
-                    &format!("/api/v2/devices/{other}/operations"),
+                    &format!("/api/v3/devices/{other}/operations"),
                     Some(request(id))
                 )
                 .await?

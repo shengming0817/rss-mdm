@@ -55,6 +55,7 @@ impl Config {
     }
     pub(crate) async fn open(
         &self,
+        protection: Arc<rss_mdm_native_protection::Protector>,
         audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         tenant: TenantId,
         clock: Arc<dyn crate::clock::Clock>,
@@ -99,9 +100,11 @@ impl Config {
             return Err(error);
         }
         storage::admit(&runtime, tenant).await?;
+        storage::bind_native_key(&runtime, tenant, protection.id()).await?;
         let key = storage::cursor_key(&runtime, tenant).await?;
         let catalog = catalog(audit_store.clone(), runtime.clone(), tenant, clock.clone()).await?;
         match Planning::new(
+            protection,
             audit_store.clone(),
             runtime.clone(),
             tenant,
@@ -137,17 +140,15 @@ impl Config {
                     ),
                     publication_runtime: None,
                 };
-                if !self.publication.sources.is_empty() {
-                    let setup = self
-                        .open_publications(tenant, &mut service, content, &mut acquire)
-                        .await;
-                    if let Err(error) = setup {
-                        if let Some(p) = &service.publication_runtime {
-                            p.close().await;
-                        }
-                        runtime.close().await;
-                        return Err(error);
+                let setup = self
+                    .open_publications(tenant, &mut service, content, &mut acquire)
+                    .await;
+                if let Err(error) = setup {
+                    if let Some(p) = &service.publication_runtime {
+                        p.close().await;
                     }
+                    runtime.close().await;
+                    return Err(error);
                 }
                 Ok(Arc::new(service))
             }
@@ -164,6 +165,9 @@ impl Config {
         content: Option<Arc<rss_mdm_content_service::Store>>,
         acquire: &mut impl FnMut(Resource),
     ) -> std::result::Result<(), Error> {
+        if self.publication.sources.is_empty() {
+            return Ok(());
+        }
         use rss_mdm_software_service::publication as p;
         let invalid = || Error::Configuration(crate::ConfigIssue::Publication);
         let db = &self.publication.database;
@@ -290,7 +294,6 @@ pub(crate) async fn catalog(
             runtime,
             tenant,
             Arc::new(crate::clock::FlowClock(clock)),
-            Arc::new(crate::planning::configuration::FirewallAuthor),
             Arc::new(rss_mdm_flow_service::resource_catalog::StoredReferences),
         )
         .await?,

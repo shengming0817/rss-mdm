@@ -79,6 +79,7 @@ fn apply(
 }
 pub async fn create(
     tx: &mut sqlx::PgConnection,
+    protection: &rss_mdm_native_protection::Protector,
     scope: &Scope,
     response: &mut syncml::Message,
 ) -> Result<Uuid, Error> {
@@ -111,6 +112,9 @@ pub async fn create(
     let keys: Vec<_> = NATIVE_FIELDS.iter().map(|(field, _)| *field).collect();
     let definition = store::freeze_in(tx, scope, 1, &keys).await?;
     let id = store::start_in(tx, scope, sequence, definition).await?;
+    let request = protection
+        .seal_bytes(&request, &crate::protection::collection_aad(scope, id)?)
+        .map_err(|_| corrupt())?;
     sqlx::query("INSERT INTO mdm_windows.collections(tenant_id,id,registration,session_id,request_message,first_command,request) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,$6,$7)")
         .bind(scope.tenant().to_string()).bind(id.to_string()).bind(scope.registration().as_str()).bind(response.header.session_id.to_string()).bind(i64::from(response.header.message_id)).bind(first).bind(request)
         .execute(&mut *tx).await.map_err(db)?;
@@ -118,6 +122,7 @@ pub async fn create(
 }
 pub async fn accept(
     tx: &mut sqlx::PgConnection,
+    protection: &rss_mdm_native_protection::Protector,
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     tenant: &str,
     id: Uuid,
@@ -145,7 +150,11 @@ pub async fn accept(
         syncml::Expected::new(sent, message.header.message_id, &limits).map_err(|_| corrupt())?;
     let row = sqlx::query("SELECT request,request_message,first_command FROM mdm_windows.collections WHERE tenant_id=$1::uuid AND id=$2::uuid AND registration=$3::uuid")
         .bind(tenant).bind(id.to_string()).bind(run.scope.registration().as_str()).fetch_one(&mut *tx).await.map_err(db)?;
-    let request: Vec<u8> = row.try_get("request").map_err(db)?;
+    let sealed: Vec<u8> = row.try_get("request").map_err(db)?;
+    let plain = protection
+        .open_bytes(&sealed, &crate::protection::collection_aad(&run.scope, id)?)
+        .map_err(|_| corrupt())?;
+    let request = plain.expose();
     let request_message: u32 = row
         .try_get::<i64, _>("request_message")
         .map_err(db)?
@@ -157,7 +166,7 @@ pub async fn accept(
         .try_into()
         .map_err(|_| corrupt())?;
     if previous.header.message_id != request_message {
-        let sent = syncml::decode(&request, &limits).map_err(|_| corrupt())?;
+        let sent = syncml::decode(request, &limits).map_err(|_| corrupt())?;
         let (_, sent) = syncml::encode_request(&sent, &limits).map_err(|_| corrupt())?;
         expected.record_sent(sent, &limits).map_err(|_| corrupt())?;
     }

@@ -103,10 +103,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         ));
     let protected_v2 = Router::new()
         .merge(crate::runtime_diagnostics::routes().with_state(state.diagnostics))
-        .merge(crate::execution::routes().with_state(execution.clone()))
         .merge(crate::planning::routes_v2().with_state(planning.clone()))
-        .merge(crate::planning::policies::http::routes().with_state(policies.clone()))
-        .merge(crate::planning::remote_operations::routes().with_state(policies))
         .merge(crate::execution::actions::http::routes().with_state(execution.clone()))
         .merge(crate::assets::routes().with_state(assets))
         .merge(crate::compliance::http::routes().with_state(Arc::new(state.planning.compliance())))
@@ -114,10 +111,18 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
             authentication_state.clone(),
             crate::authorization::http::protect,
         ));
-    let protected_v3 = crate::resource_catalog::http::routes()
+    let protected_v4 = crate::resource_catalog::http::routes()
         .with_state(Arc::new(crate::resource_catalog::http::HttpState {
             catalog: state.catalog,
         }))
+        .route_layer(middleware::from_fn_with_state(
+            authentication_state.clone(),
+            crate::authorization::http::protect,
+        ));
+    let protected_v3 = Router::new()
+        .merge(crate::execution::routes().with_state(execution))
+        .merge(crate::planning::policies::http::routes().with_state(policies.clone()))
+        .merge(crate::planning::remote_operations::routes().with_state(policies))
         .merge(crate::software_catalog::routes().with_state(state.software_catalog))
         .merge(crate::content::http::routes().with_state(state.content))
         .merge(crate::enrollment::http::routes().with_state(enrollment))
@@ -149,6 +154,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
             .nest("/api/v1", protected_v1)
             .nest("/api/v2", protected_v2)
             .nest("/api/v3", protected_v3)
+            .nest("/api/v4", protected_v4)
             .layer(axum::extract::DefaultBodyLimit::max(16384)),
         envelope,
     )

@@ -67,7 +67,7 @@ impl ExecutionService {
                         .map_err(Error::from)?;
                     for row in rows {
                         let registration = row.registration;
-                        if !pending(tx, service.apple_store.clone(), registration).await? {
+                        if !pending(service, tx, service.apple_store.clone(), registration).await? {
                             let tenant = service.tenant.to_string();
                             let participant = service.apple_store.clone();
                             tx.with_connection(move |c| {
@@ -168,6 +168,7 @@ impl ExecutionService {
     }
 }
 async fn pending(
+    service: &ExecutionService,
     tx: &mut PgTransaction<'_>,
     participant: Arc<dyn super::channels::AppleStore>,
     registration: Uuid,
@@ -185,17 +186,29 @@ async fn pending(
     }
     let tenant = tx.tenant_id().to_string();
     let rows=tx.with_connection(move|c|Box::pin(async move{
- sqlx::query("SELECT o.request::text,o.approval::text FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.gateway_accepted AND d.status IN ('published','received') AND (o.request->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) ORDER BY o.id LIMIT 64").bind(tenant).bind(registration).fetch_all(c).await
+ sqlx::query("SELECT o.id,o.device,o.registration,o.registration_generation,o.input_context,o.request,o.approval::text FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.gateway_accepted AND d.status IN ('published','received') AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) ORDER BY o.id LIMIT 64").bind(tenant).bind(registration).fetch_all(c).await
  })).await?;
     let remaining = 64 - rows.len();
     let now = storage::now(tx).await?;
     for row in rows {
-        let request: Create = stored(serde_json::from_str(&row.try_get::<String, _>("request")?))?;
+        let request = super::input_storage::open_row(
+            &service.protection,
+            service.tenant,
+            row.try_get("id")?,
+            &row,
+            "request",
+        )?;
         let approval: crate::execution::authority::ExecutionAuthority =
             stored(serde_json::from_str(&row.try_get::<String, _>("approval")?))?;
+        let protection = service.protection.clone();
         if tx
             .with_connection(move |c| {
-                Box::pin(async move { Ok(approval.valid(c, request.task.permission(), now).await) })
+                Box::pin(async move {
+                    Ok(match request.task.permissions() {
+                        Ok(permissions) => approval.valid(c, &protection, &permissions, now).await,
+                        Err(error) => Err(error),
+                    })
+                })
             })
             .await??
         {

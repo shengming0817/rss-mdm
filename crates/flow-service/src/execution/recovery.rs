@@ -329,9 +329,8 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                 let ids=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,String>("SELECT id::text FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND device=$2 AND id>$3::uuid ORDER BY id LIMIT 64").bind(tenant).bind(name).bind(after.to_string()).fetch_all(c).await})).await?;
                 if ids.is_empty(){return Ok(false);}
                 for id in ids {
-                    after=stored(Uuid::parse_str(&id))?;let op=storage::load(tx,after).await?;
+                    after=stored(Uuid::parse_str(&id))?;let op=storage::load(tx,&service.protection,after).await?;
                     if service.required_command(tx,&op).await?.status().is_terminal(){continue;}
-                    if matches!(op.request.task,Task::Firewall{..}) && firewall_finished(tx,&op).await? {continue;}
                     return Ok(true);
                 }
             }
@@ -384,14 +383,14 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                 } else {registration?;}
                 for command in &page.commands {
                     if !command.status().is_terminal(){
-                        let operation=storage::load(tx,stored(Uuid::parse_str(command.spec().id().as_str()))?).await?;
+                        let operation=storage::load(tx,&service.protection,stored(Uuid::parse_str(command.spec().id().as_str()))?).await?;
                         let now=storage::now(tx).await?;
-                        if !storage::approval_valid(tx,&operation,now).await? && service.store.cancel(tx,scope,command.spec().id(),command.spec().coordinate()).await?.outcome==dc::Outcome::OutOfOrder {return Err(Error::Conflict.into());}
+                        if !storage::approval_valid(&service.protection,tx,&operation,now).await? && service.store.cancel(tx,scope,command.spec().id(),command.spec().coordinate()).await?.outcome==dc::Outcome::OutOfOrder {return Err(Error::Conflict.into());}
 
                     }
                 }
                 for (id,version,status) in previous {
-                    let operation=storage::load(tx,stored(Uuid::parse_str(&id))?).await?;
+                    let operation=storage::load(tx,&service.protection,stored(Uuid::parse_str(&id))?).await?;
                     let command=service.required_command(tx,&operation).await?;
                     if command.version()!=version {
                         if command.status().is_terminal() {crate::planning::policies::reconcile::wake_native_in(tx,&operation.device).await?;}
@@ -426,13 +425,3 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
         })
     }
 }
-
-async fn firewall_finished(tx: &mut PgTransaction<'_>, op: &storage::Operation) -> Result<bool> {
-    let tenant = tx.tenant_id().to_string();
-    let id = op.id.to_string();
-    Ok(tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_commands.attempts a WHERE a.tenant_id=$1::uuid AND a.operation=$2::uuid AND a.phase=$3 AND a.status=200 AND a.receipt_accepted) AND EXISTS(SELECT 1 FROM mdm_commands.attempts a WHERE a.tenant_id=$1::uuid AND a.operation=$2::uuid AND a.phase=$4 AND a.receipt_accepted AND ((a.status=200 AND a.value IS NOT NULL) OR a.status>=400))").bind(tenant).bind(id).bind(AttemptPhase::Execute.as_str()).bind(AttemptPhase::Observe.as_str()).fetch_one(c).await})).await?)
-}
-
-#[cfg(test)]
-#[path = "../../tests/execution/recovery_unit.rs"]
-mod tests;

@@ -37,7 +37,7 @@ pub struct Expected {
 pub fn encode_request(message: &Message, l: &CodecLimits) -> Result<(Vec<u8>, SentMessage)> {
     let bytes = encode(message, l)?;
     let mut commands = Vec::new();
-    for command in &message.commands {
+    for command in flattened(&message.commands, l)? {
         let (kind, targets) = match command {
             Command::Get { items, .. } => (
                 CommandName::Get,
@@ -46,14 +46,23 @@ pub fn encode_request(message: &Message, l: &CodecLimits) -> Result<(Vec<u8>, Se
                     .map(|i| i.target.clone().ok_or(E::Structure))
                     .collect::<Result<Vec<_>>>()?,
             ),
-            Command::AgentInstall { command, .. } => (
-                CommandName::parse(command.name())?,
-                vec![command.item()?.target.ok_or(E::Structure)?],
+            Command::Add { items, .. }
+            | Command::Exec { items, .. }
+            | Command::Delete { items, .. }
+            | Command::Replace { items, .. } => (
+                match command {
+                    Command::Add { .. } => CommandName::Add,
+                    Command::Exec { .. } => CommandName::Exec,
+                    Command::Delete { .. } => CommandName::Delete,
+                    _ => CommandName::Replace,
+                },
+                items
+                    .iter()
+                    .map(|i| i.target.clone().ok_or(E::Structure))
+                    .collect::<Result<Vec<_>>>()?,
             ),
-            Command::Replace { .. } => (
-                CommandName::Replace,
-                vec![crate::configuration::FIREWALL_URI.into()],
-            ),
+            Command::Atomic { .. } => (CommandName::Atomic, Vec::new()),
+            Command::Sequence { .. } => (CommandName::Sequence, Vec::new()),
             Command::Status(_) => (CommandName::Status, Vec::new()),
             _ => return Err(E::Unsupported),
         };

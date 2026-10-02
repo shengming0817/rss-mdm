@@ -22,6 +22,13 @@ def result(stdout='', returncode=0):
 
 
 class Selection(unittest.TestCase):
+    def test_native_source_checks_follow_their_actual_owners(self):
+        selection = dict(cargoFull=False, packages=['rss-mdm-winget-source'], toolTests=[])
+        self.assertFalse(ci.selected_gate('native-schema', selection))
+        for owner in ['rss-mdm-apple-mdm', 'rss-mdm-windows-mdm', 'rss-mdm-native-schema']:
+            selection['packages'] = [owner]
+            self.assertTrue(ci.selected_gate('native-schema', selection))
+
     def test_explicit_cargo_full_does_not_expand_integration(self):
         decision = dict(cargoFull=False, t2Full=False,
                         packages=['rss-mdm-resource-postgres'], reasons=['test-input'],

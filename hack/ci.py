@@ -23,6 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
 
 LOCAL_PACKAGES = {
+    "rss-mdm-native-protection": "crates/native-protection",
+    "rss-mdm-native-schema": "crates/native-schema",
     "rss-mdm-timeline-service": "crates/timeline-service",
     "rss-mdm-management-http": "crates/management-http",
     "rss-mdm-apple-channel": "crates/apple-channel",
@@ -248,7 +250,10 @@ def dependency_graphs(pin):
         verify_metadata(json.loads(result.stdout), ROOT, mode, pin)
 
 
-GATE_PACKAGES = {'agent-wire-artifact': {'rss-mdm-agent-wire'}}
+GATE_PACKAGES = {
+    'agent-wire-artifact': {'rss-mdm-agent-wire'},
+    'native-schema': {'rss-mdm-apple-mdm', 'rss-mdm-windows-mdm', 'rss-mdm-native-schema'},
+}
 CARGO_GATES = {"check", "clippy", "t1", "api-boundary"}
 
 
@@ -347,6 +352,7 @@ def fast_gates():
         ("t1",["cargo","test","--locked","--workspace","--lib","--bins","--tests"]),
         ("api-boundary",["cargo","test","--locked","--workspace","--doc"]),
         ("agent-wire-artifact",[sys.executable,"hack/agent_wire_artifact.py"]),
+        ("native-schema",["cargo","run","--locked","-p","rss-mdm-native-schema","--","--check"]),
         ("advisories",["cargo","deny","--locked","check","advisories","licenses","sources"]),
     ]
 

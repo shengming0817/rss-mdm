@@ -95,7 +95,7 @@ impl Client {
             (s.as_ref(), id),
             |ctx, tx| {
                 Box::pin(async move {
-                    let op = storage::load(tx, ctx.1).await?;
+                    let op = storage::load(tx, &ctx.0.protection, ctx.1).await?;
                     let _page = ctx
                         .0
                         .store

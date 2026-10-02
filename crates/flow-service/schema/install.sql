@@ -76,7 +76,7 @@ CREATE FUNCTION mdm_commands.installation_status(p_operation uuid) RETURNS text
  SELECT d.status FROM mdm_commands.operations o
  JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text)
  WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
- AND o.id=p_operation AND o.request->'task'->>'kind'='agent_install';
+ AND o.id=p_operation AND o.approval->>'kind'='agent_install';
 $$;
 REVOKE ALL ON FUNCTION mdm_commands.installation_status(uuid) FROM PUBLIC;
 
@@ -155,6 +155,7 @@ CREATE TABLE mdm_commands.action_runs (
     state jsonb NOT NULL,
     gateway_accepted boolean DEFAULT false NOT NULL,
     dispatch_fingerprint bytea NOT NULL,
+    dispatch_failure jsonb CHECK (dispatch_failure IS NULL OR (jsonb_typeof(dispatch_failure)='object' AND octet_length(dispatch_failure::text)<=8192)),
     result jsonb,
     CONSTRAINT action_runs_available_at_check CHECK ((available_at >= 0)),
     CONSTRAINT action_runs_check CHECK ((((source_kind = 'policy'::text) AND (policy_version IS NOT NULL) AND (remote_operation IS NULL)) OR ((source_kind = 'remote_operation'::text) AND (policy_version IS NULL) AND (remote_operation IS NOT NULL)))),
@@ -170,40 +171,35 @@ CREATE TABLE mdm_commands.action_runs (
 ALTER TABLE ONLY mdm_commands.action_runs FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_commands.apple_profiles (
-    tenant_id uuid NOT NULL,
-    device text NOT NULL,
-    identifier text NOT NULL,
-    profile uuid NOT NULL,
-    operation uuid NOT NULL,
-    registration uuid NOT NULL,
-    version bigint NOT NULL,
-    enabled boolean NOT NULL,
-    CONSTRAINT profiles_version_check CHECK ((version > 0))
+    tenant_id uuid NOT NULL, device text NOT NULL, user_key text NOT NULL,
+    identifier text NOT NULL, profile uuid NOT NULL, operation uuid NOT NULL,
+    registration uuid NOT NULL, version text NOT NULL,
+    CONSTRAINT profiles_version_check CHECK (octet_length(version) BETWEEN 1 AND 128)
 );
 
 ALTER TABLE ONLY mdm_commands.apple_profiles FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_commands.attempts (
-    tenant_id uuid NOT NULL,
-    id uuid NOT NULL,
-    operation uuid NOT NULL,
-    ordinal bigint NOT NULL,
-    credential uuid NOT NULL,
-    session bigint NOT NULL,
-    message bigint NOT NULL,
-    command bigint NOT NULL,
-    phase text NOT NULL,
-    uri text NOT NULL,
-    status integer,
-    value text,
-    received_at bigint,
-    receipt_accepted boolean,
-    request bytea NOT NULL,
-    CONSTRAINT attempts_ordinal_check CHECK ((ordinal > 0)),
-    CONSTRAINT attempts_phase_check CHECK ((phase = ANY (ARRAY['prepare'::text, 'execute'::text, 'observe'::text]))),
-    CONSTRAINT attempts_status_check CHECK (((status IS NULL) OR ((status >= 100) AND (status <= 599)))),
-    CONSTRAINT attempts_value_check CHECK (((value IS NULL) OR (octet_length(value) <= 4096)))
+    tenant_id uuid NOT NULL, id uuid NOT NULL, operation uuid NOT NULL,
+    ordinal bigint NOT NULL, credential uuid NOT NULL, session bigint NOT NULL,
+    message bigint NOT NULL, phase text NOT NULL, request bytea NOT NULL, platform jsonb,
+    CONSTRAINT attempts_ordinal_check CHECK (ordinal > 0),
+    CONSTRAINT attempts_phase_check CHECK (phase IN ('prepare','execute','observe'))
 );
+
+CREATE TABLE mdm_commands.attempt_items (
+    tenant_id uuid NOT NULL, attempt uuid NOT NULL, command bigint NOT NULL,
+    item_ordinal integer NOT NULL, parent_command bigint, kind text NOT NULL, uri text,
+    status integer, value bytea, received_at bigint, receipt_accepted boolean,
+    result_received_at bigint, result_accepted boolean,
+    PRIMARY KEY(tenant_id,attempt,command,item_ordinal),
+    CHECK (command BETWEEN 1 AND 4294967295), CHECK (item_ordinal >= 0),
+    CHECK (kind IN ('get','add','replace','delete','exec','atomic','sequence')),
+    CHECK ((kind IN ('atomic','sequence')) = (uri IS NULL)),
+    CHECK (status IS NULL OR status BETWEEN 100 AND 599),
+    CHECK (value IS NULL OR octet_length(value) BETWEEN 68 AND 16777284)
+);
+ALTER TABLE ONLY mdm_commands.attempt_items FORCE ROW LEVEL SECURITY;
 
 ALTER TABLE ONLY mdm_commands.attempts FORCE ROW LEVEL SECURITY;
 
@@ -256,7 +252,8 @@ CREATE TABLE mdm_commands.operations (
     tenant_id uuid NOT NULL,
     id uuid NOT NULL,
     device text NOT NULL,
-    request jsonb NOT NULL,
+    request bytea NOT NULL,
+    input_context jsonb NOT NULL CHECK (jsonb_typeof(input_context)='object' AND octet_length(input_context::text)<=4096),
     fingerprint bytea NOT NULL,
     registration uuid NOT NULL,
     registration_generation bigint NOT NULL,
@@ -265,6 +262,7 @@ CREATE TABLE mdm_commands.operations (
     approval jsonb NOT NULL,
     revision bigint DEFAULT 1 NOT NULL,
     dispatch_fingerprint bytea NOT NULL,
+    dispatch_failure jsonb CHECK (dispatch_failure IS NULL OR (jsonb_typeof(dispatch_failure)='object' AND octet_length(dispatch_failure::text)<=8192)),
     gateway_accepted boolean DEFAULT false NOT NULL,
     source_kind text DEFAULT 'direct'::text NOT NULL,
     policy_version uuid,
@@ -283,7 +281,7 @@ END, false)),
     CONSTRAINT operations_fingerprint_check CHECK ((octet_length(fingerprint) = 32)),
     CONSTRAINT operations_generation_check CHECK ((generation > 0)),
     CONSTRAINT operations_registration_generation_check CHECK ((registration_generation > 0)),
-    CONSTRAINT operations_request_check CHECK ((octet_length((request)::text) <= 4096)),
+    CONSTRAINT operations_request_check CHECK ((octet_length(request) BETWEEN 68 AND 33554500)),
     CONSTRAINT operations_revision_check CHECK ((revision > 0)),
     CONSTRAINT operations_source_kind_check CHECK ((source_kind = ANY (ARRAY['direct'::text, 'policy'::text, 'remote_operation'::text])))
 );
@@ -310,6 +308,14 @@ CREATE TABLE mdm_commands.requests (
 );
 
 ALTER TABLE ONLY mdm_commands.requests FORCE ROW LEVEL SECURITY;
+
+CREATE TABLE mdm_flow.native_protection (
+    tenant_id uuid PRIMARY KEY,
+    key_id text NOT NULL CHECK (key_id ~ '^[0-9a-f]{64}$')
+);
+ALTER TABLE mdm_flow.native_protection ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_flow.native_protection FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_flow.native_protection USING (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 
 CREATE TABLE mdm_flow.cursor_keys (
     tenant_id uuid NOT NULL,
@@ -340,7 +346,8 @@ CREATE TABLE mdm_planning.configuration_claims (
     policy uuid NOT NULL,
     device text NOT NULL,
     version uuid NOT NULL,
-    operation uuid
+    operation uuid,
+    user_key text NOT NULL, platform text NOT NULL, object_kind text NOT NULL, object_key text NOT NULL
 );
 
 ALTER TABLE ONLY mdm_planning.configuration_claims FORCE ROW LEVEL SECURITY;
@@ -350,26 +357,22 @@ CREATE TABLE mdm_planning.configuration_devices (
     device text NOT NULL,
     input_revision bigint DEFAULT 1 NOT NULL,
     observed_revision bigint DEFAULT 0 NOT NULL,
-    operation uuid,
-    digest bytea,
-    diagnosis text,
-    CONSTRAINT configuration_devices_diagnosis_check CHECK ((diagnosis = ANY (ARRAY['waiting_scope'::text, 'waiting_registration'::text, 'waiting_capability'::text, 'not_applicable'::text, 'configuration_conflict'::text, 'removing'::text, 'unassigned'::text]))),
     CONSTRAINT configuration_devices_input_revision_check CHECK ((input_revision > 0)),
     CONSTRAINT configuration_devices_observed_revision_check CHECK ((observed_revision >= 0))
 );
 
 ALTER TABLE ONLY mdm_planning.configuration_devices FORCE ROW LEVEL SECURITY;
 
-CREATE TABLE mdm_planning.firewall_resources (
-    tenant_id uuid NOT NULL,
-    resource text NOT NULL,
-    version text NOT NULL,
-    enabled boolean NOT NULL,
-    digest bytea NOT NULL,
-    CONSTRAINT firewall_resources_digest_check CHECK ((octet_length(digest) = 32))
+CREATE TABLE mdm_planning.configuration_objects (
+    tenant_id uuid NOT NULL, device text NOT NULL, user_key text NOT NULL,
+    platform text NOT NULL CHECK(platform IN ('windows','macos')),
+    object_kind text NOT NULL CHECK(object_kind IN ('csp','profile','payload','declaration')),
+    object_key text NOT NULL CHECK(octet_length(object_key) BETWEEN 1 AND 2048),
+    operation uuid, digest bytea CHECK(digest IS NULL OR octet_length(digest)=32),
+    diagnosis text CHECK(diagnosis IN ('waiting_scope','waiting_registration','waiting_capability','not_applicable','configuration_conflict','native_group_conflict','removal_blocked_by_shared_unit','removing','unassigned')),
+    PRIMARY KEY(tenant_id,device,user_key,platform,object_kind,object_key)
 );
-
-ALTER TABLE ONLY mdm_planning.firewall_resources FORCE ROW LEVEL SECURITY;
+ALTER TABLE ONLY mdm_planning.configuration_objects FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_planning.operations (
     tenant_id uuid NOT NULL,
@@ -412,7 +415,7 @@ CREATE TABLE mdm_planning.remote_operations (
     cursor text,
     run_after uuid,
     CONSTRAINT remote_operations_check CHECK ((deadline > created_at)),
-    CONSTRAINT remote_operations_frozen_check CHECK ((octet_length((frozen)::text) <= 1048576)),
+    CONSTRAINT remote_operations_frozen_check CHECK ((octet_length((frozen)::text) <= 25165824)),
     CONSTRAINT remote_operations_snapshot_check CHECK ((octet_length((snapshot)::text) <= 4194304))
 );
 
@@ -594,7 +597,7 @@ ALTER TABLE ONLY mdm_commands.policy_recovery
     ADD CONSTRAINT policy_recovery_pkey PRIMARY KEY (tenant_id, policy);
 
 ALTER TABLE ONLY mdm_commands.apple_profiles
-    ADD CONSTRAINT profiles_pkey PRIMARY KEY (tenant_id, device);
+    ADD CONSTRAINT profiles_pkey PRIMARY KEY (tenant_id, device, user_key, identifier);
 
 ALTER TABLE ONLY mdm_commands.apple_profiles
     ADD CONSTRAINT profiles_tenant_id_identifier_key UNIQUE (tenant_id, identifier);
@@ -609,13 +612,11 @@ ALTER TABLE ONLY mdm_planning.asset_dispatch
     ADD CONSTRAINT asset_dispatch_pkey PRIMARY KEY (tenant_id);
 
 ALTER TABLE ONLY mdm_planning.configuration_claims
-    ADD CONSTRAINT configuration_claims_pkey PRIMARY KEY (tenant_id, policy, device);
+    ADD CONSTRAINT configuration_claims_pkey PRIMARY KEY (tenant_id, policy, device, user_key, platform, object_kind, object_key);
 
 ALTER TABLE ONLY mdm_planning.configuration_devices
     ADD CONSTRAINT configuration_devices_pkey PRIMARY KEY (tenant_id, device);
 
-ALTER TABLE ONLY mdm_planning.firewall_resources
-    ADD CONSTRAINT firewall_resources_pkey PRIMARY KEY (tenant_id, resource, version);
 
 ALTER TABLE ONLY mdm_planning.operations
     ADD CONSTRAINT operations_pkey PRIMARY KEY (tenant_id, actor, id);
@@ -659,7 +660,7 @@ CREATE INDEX action_due ON mdm_commands.action_runs USING btree (tenant_id, regi
 
 CREATE INDEX action_runs_software_stage_latest ON mdm_commands.action_runs USING btree (tenant_id, policy_version, device, created_at DESC, id DESC);
 
-CREATE INDEX native_session_receipts ON mdm_commands.attempts USING btree (tenant_id, session, operation) WHERE receipt_accepted;
+CREATE INDEX native_session_receipts ON mdm_commands.attempt_items USING btree (tenant_id, attempt, command) WHERE receipt_accepted;
 
 CREATE UNIQUE INDEX remote_native_once ON mdm_commands.operations USING btree (tenant_id, remote_operation, device) WHERE (remote_operation IS NOT NULL);
 
@@ -731,7 +732,7 @@ ALTER TABLE mdm_planning.configuration_claims ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE mdm_planning.configuration_devices ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE mdm_planning.firewall_resources ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_planning.configuration_objects ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE mdm_planning.operations ENABLE ROW LEVEL SECURITY;
 
@@ -759,7 +760,7 @@ CREATE POLICY tenant ON mdm_planning.configuration_claims USING ((tenant_id = (N
 
 CREATE POLICY tenant ON mdm_planning.configuration_devices USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 
-CREATE POLICY tenant ON mdm_planning.firewall_resources USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
+CREATE POLICY tenant ON mdm_planning.configuration_objects USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 
 CREATE POLICY tenant ON mdm_planning.operations USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 
@@ -798,3 +799,6 @@ ALTER TABLE mdm_commands.output_chunks FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_commands.output_chunks USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_commands.output_chunks FROM PUBLIC;
 COMMIT;
+
+ALTER TABLE mdm_commands.attempt_items ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_commands.attempt_items USING (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);

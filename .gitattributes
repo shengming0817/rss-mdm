@@ -1,0 +1,4 @@
+# Preserve pinned upstream bytes: their exact content is part of source provenance.
+crates/apple-mdm/schema/upstream/** -text -whitespace
+crates/windows-mdm/ddf/upstream/** -text -whitespace
+crates/windows-mdm/schema/upstream/** -text -whitespace

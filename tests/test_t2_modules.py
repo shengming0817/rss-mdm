@@ -86,11 +86,11 @@ class ModuleImpactTests(unittest.TestCase):
     def test_app_helpers_select_all_actual_consumers(self):
         self.assertEqual(self.selected('crates/app/tests/support/software.rs'), {
             'software.http','content.http','content.mirror','content.gc',
-            'planning.software','execution.software.offer','execution.software.content','execution.software.recovery'})
+            'planning.software','planning.policy','planning.http','apple.policy','execution.software.offer','execution.software.content','execution.software.recovery'})
         self.assertEqual(self.selected('crates/app/tests/support/process.rs'),
                          {'inventory.runtime','execution.commands.recovery'})
         self.assertEqual(self.selected('crates/app/tests/execution/support.rs'),
-                         {'execution.commands.'+part for part in ('admission','dispatch','recovery','windows','firewall','onboarding')} | {'windows.commands'})
+                         {'execution.commands.'+part for part in ('admission','dispatch','recovery','windows','configuration','onboarding')} | {'windows.commands'})
         self.assertEqual(self.selected('crates/app/tests/execution/support/native.rs'),
                          self.selected('crates/app/tests/execution/support.rs'))
         device = self.selected('crates/app/tests/device/support.rs')

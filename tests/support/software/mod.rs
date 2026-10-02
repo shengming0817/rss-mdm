@@ -503,6 +503,7 @@ pub async fn seed(
             let upload = uuid::Uuid::new_v4();
             let actor = "publication-fixture";
             let binding = rss_mdm_content_service::Binding {
+                storage_class: rss_mdm_content_service::StorageClass::Artifact,
                 resource: key.as_str().into(),
                 version: version.label().as_str().into(),
                 variant: v.key().as_str().into(),
@@ -806,6 +807,7 @@ pub fn stored_content() -> Arc<rss_mdm_content_service::Store> {
         .get_or_init(|| {
             let dir = tempfile::tempdir().unwrap();
             let store = rss_mdm_content_service::Store::open(
+                Arc::new(rss_mdm_native_protection::Protector::new(&[82; 32]).unwrap()),
                 &rss_mdm_content_service::Config {
                     directory: dir.path().to_owned(),
                     imports: Default::default(),

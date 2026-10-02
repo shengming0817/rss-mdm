@@ -65,7 +65,7 @@ impl Client {
                 &self.router,
                 method,
                 &format!(
-                    "/api/v2/devices/{DEVICE}/operations{suffix}",
+                    "/api/v3/devices/{DEVICE}/operations{suffix}",
                     DEVICE = case_device()
                 ),
                 body,
@@ -75,7 +75,7 @@ impl Client {
     pub(crate) async fn set_authorized(&mut self, enabled: bool) -> anyhow::Result<()> {
         let mut permissions = vec!["operation_read", "operation_cancel"];
         if enabled {
-            permissions.push("state_verify");
+            permissions.push("inventory_collect");
         }
         let grants: Vec<_> = permissions
             .iter()
@@ -102,7 +102,7 @@ impl Client {
             |ctx, tx| {
                 Box::pin(async move {
                     let (service, id) = *ctx;
-                    let operation = storage::load(tx, id).await?;
+                    let operation = storage::load(tx, &service.protection, id).await?;
                     let _page = service
                         .store
                         .recover(tx, operation.scope, dc::BatchLimit::new(64).unwrap(), None)
@@ -119,7 +119,7 @@ impl Client {
     }
     pub(crate) async fn accept_approved(&mut self) -> anyhow::Result<()> {
         self.set_authorized(true).await?;
-        let request = json!({"operationId":self.operation,"task":{"kind":"state_verify","field":"model","expectedValue":"Final-Model"},"deadline":self.app.clock.unix_seconds()?+300});
+        let request = json!({"operationId":self.operation,"inputVersion":"1","target":{"kind":"device"},"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./DevInfo/Mod","instance":[],"operation":"get","value":null}}},"deadline":self.app.clock.unix_seconds()?+300});
         ensure!(self.call(Method::POST, "", Some(request)).await?.0 == StatusCode::ACCEPTED);
         ensure!(
             self.call(
@@ -131,6 +131,27 @@ impl Client {
             .0 == StatusCode::OK
         );
         Ok(())
+    }
+}
+impl Client {
+    pub(crate) fn command_worker(
+        &self,
+        signals: Arc<crate::worker_wake::Signals>,
+    ) -> anyhow::Result<rss_runtime::ShutdownStack> {
+        let mut owner = rss_runtime::ShutdownStack::try_new(
+            rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
+            Arc::new(crate::lifecycle::RuntimeTimer),
+        )?;
+        let mut launch = owner.startup()?.commit();
+        launch.stage_deferred_task_with_token(
+            self.app
+                .execution
+                .clone()
+                .registration(signals.flow())
+                .critical(),
+        );
+        launch.finish();
+        Ok(owner)
     }
 }
 pub(crate) async fn ordinary(
@@ -153,8 +174,9 @@ async fn relay_crash_child() -> anyhow::Result<()> {
     let config = crate::test_support::identity::config(case_tenant())?;
     let service = Box::pin(crate::flow::execution::open(
         &config,
+        config.native_protector()?,
         crate::test_support::identity::audit_store(&config).await?,
-        crate::flow::execution::open_content(&config)?,
+        crate::flow::execution::open_content(&config, config.native_protector()?)?,
         std::collections::BTreeMap::new(),
         rss_device_command_postgres::CommandClock::Postgres,
     ))

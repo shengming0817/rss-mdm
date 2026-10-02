@@ -63,7 +63,7 @@ async fn private_formats(
         ),
     ] {
         let id = Uuid::new_v4();
-        let path = format!("/api/v3/resources/{id}");
+        let path = format!("/api/v4/resources/{id}");
         write(
             user,
             router,
@@ -75,7 +75,7 @@ async fn private_formats(
         let definition = json!({"source":source,"package":format!("Private.{format}"),"version":"1","artifacts":{"package":{"reference":"installer","length":bytes.len(),"sha256":rss_mdm_resource::Digest::of(&bytes).bytes()}},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"behavior":if format == "bundle" {serde_json::json!({"kind":"bundle","archive":"package","manifest":manifest,"install":{"interpreter":executor,"entry":if format=="bundle"{Some("install.ps1")}else{None},"invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"uninstall":null,"detect":if format=="pkg"{json!({"kind":"pkg_receipt","receipt":"com.acme.pkg","version":"1"})}else{json!({"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"})}})} else {serde_json::json!({"kind":format,"installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":if format=="pkg"{json!({"kind":"pkg_receipt","receipt":"com.acme.pkg","version":"1"})}else{json!({"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"})},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}})},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
         write(user,router,&path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":platform,"architecture":"x86_64","key":"default","declaration":{"kind":"software","definition":definition}}]})).await?;
         let upload = Uuid::new_v4();
-        let session = format!("{origin}{path}/uploads/{upload}");
+        let session = format!("{origin}/api/v3/resources/{id}/uploads/{upload}");
         let csrf = user.csrf.as_ref().unwrap().clone();
         let request = |method, url: &str| {
             client

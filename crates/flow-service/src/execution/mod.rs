@@ -9,12 +9,14 @@ mod agent_install;
 mod apple;
 mod apple_push;
 mod configuration;
+mod input_storage;
 mod managed_registration;
 pub use configuration::Diagnosis as ConfigurationDiagnosis;
 pub mod health;
 mod lifecycle;
 pub mod model;
 pub mod native;
+mod permissions;
 mod protocol;
 pub mod recovery;
 mod remote;
@@ -33,7 +35,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const DOMAIN: &str = "mdm.commands.v2";
+const DOMAIN: &str = "mdm.commands.v3";
 pub fn messaging_domain() -> rss_transactional_messaging::message::MessagingDomain {
     rss_transactional_messaging::message::MessagingDomain::parse(DOMAIN).expect("fixed domain")
 }
@@ -42,6 +44,7 @@ pub fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
 }
 
 pub struct ExecutionService {
+    pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub readiness: health::Readiness,
     pub exports: std::collections::BTreeMap<
         String,
@@ -86,8 +89,6 @@ impl ExecutionService {
 use rss_mdm_audit_integration::RequestAudit;
 
 pub mod error;
-
-mod apple_profile_digest;
 
 pub mod authority;
 

@@ -1,14 +1,10 @@
-//! Only the shipped device firewall template is accepted; payload format versions stay at one.
+//! Native enrollment profile and independent installed-profile presence evidence.
 use super::protocol::{dictionary, xml};
 use crate::Error;
 use plist::{Dictionary, Value};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-pub fn identifier(tenant: &str, device: &str) -> String {
-    let digest = Sha256::digest(serde_json::to_vec(&(tenant, device)).expect("scalar identity"));
-    format!("com.rss-mdm.firewall.{digest:x}")
-}
 fn child_uuid(parent: Uuid, kind: &str) -> Uuid {
     let digest = Sha256::digest(serde_json::to_vec(&(parent, kind)).expect("scalar UUID identity"));
     let mut bytes = [0; 16];
@@ -26,20 +22,8 @@ fn payload(kind: &str, id: &str, uuid: Uuid) -> Dictionary {
         ("PayloadScope", "System".into()),
     ])
 }
-pub fn firewall(identifier: &str, uuid: Uuid, enabled: bool) -> Result<Vec<u8>, Error> {
-    let mut inner = payload(
-        "com.apple.security.firewall",
-        &format!("{identifier}.settings"),
-        child_uuid(uuid, "firewall"),
-    );
-    inner.insert("EnableFirewall".into(), enabled.into());
-    let mut profile = payload("Configuration", identifier, uuid);
-    profile.insert("PayloadDisplayName".into(), "RSS Firewall".into());
-    profile.insert("PayloadContent".into(), Value::Array(vec![inner.into()]));
-    xml(profile)
-}
 pub struct EnrollmentProfile<'a> {
-    pub agent_installation: bool,
+    pub access_rights: u16,
     pub scep_url: &'a str,
     pub scep_provisioner: &'a str,
     pub apns_topic: &'a str,
@@ -52,6 +36,13 @@ pub fn enrollment(
     attempt: Uuid,
     challenge: &str,
 ) -> Result<Vec<u8>, Error> {
+    if config.access_rights == 0
+        || config.access_rights > 8191
+        || config.access_rights & 2 != 0 && config.access_rights & 1 == 0
+        || config.access_rights & 128 != 0 && config.access_rights & 64 == 0
+    {
+        return Err(Error::Malformed);
+    }
     let identifier = format!("com.rss-mdm.enrollment.{enrollment}");
     let mut scep = payload(
         "com.apple.security.scep",
@@ -93,15 +84,7 @@ pub fn enrollment(
             "CheckInURL",
             format!("{}/checkin", config.management_origin).into(),
         ),
-        (
-            "AccessRights",
-            (if config.agent_installation {
-                19_i64 | 256 | 4096
-            } else {
-                19_i64
-            })
-            .into(),
-        ),
+        ("AccessRights", i64::from(config.access_rights).into()),
         ("CheckOutWhenRemoved", true.into()),
         ("SignMessage", false.into()),
         ("UseDevelopmentAPNS", false.into()),

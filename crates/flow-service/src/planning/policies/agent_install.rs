@@ -125,6 +125,73 @@ pub struct Package {
     pub content_origin: String,
 }
 impl Package {
+    /// Product admission owns native inputs and the fixed Agent bootstrap arguments.
+    pub fn native_task(
+        &self,
+        operation: Uuid,
+    ) -> std::result::Result<crate::execution::Task, Error> {
+        use crate::execution::Task;
+        Ok(match &self.identity {
+            Identity::Windows { .. } => Task::Windows {
+                request: rss_mdm_windows_mdm::native::Execution::Msi {
+                    job: self.windows_job(operation).map_err(|_| Error::Malformed)?,
+                },
+            },
+            Identity::Macos { bundle, .. } => {
+                use rss_mdm_apple_mdm::native::{
+                    input::{CommandInput, Fields},
+                    request::Request,
+                };
+                let mut body = apple_install(
+                    bundle,
+                    &self.version,
+                    &self.url(operation),
+                    self.artifact.sha256,
+                    operation,
+                )
+                .map_err(|_| Error::Malformed)?;
+                body.remove("RequestType");
+                Task::Macos {
+                    request: Request::Command {
+                        command: CommandInput {
+                            request_type: "InstallEnterpriseApplication".into(),
+                            fields: Fields::from_plist(&body).map_err(|_| Error::Malformed)?,
+                        },
+                    },
+                }
+            }
+        })
+    }
+    pub fn windows_job(
+        &self,
+        operation: Uuid,
+    ) -> std::result::Result<
+        rss_mdm_windows_mdm::software::InstallJob,
+        rss_mdm_windows_mdm::CodecError,
+    > {
+        use rss_mdm_windows_mdm::{
+            native::Scope,
+            software::{Enforcement, InstallJob},
+        };
+        let Identity::Windows { product, .. } = &self.identity else {
+            return Err(rss_mdm_windows_mdm::CodecError::Unsupported);
+        };
+        Ok(InstallJob {
+            product: product.to_string(),
+            version: self.version.clone(),
+            content_urls: vec![self.url(operation)],
+            sha256: self.artifact.sha256,
+            operation: operation.to_string(),
+            scope: Scope::Device,
+            enforcement: Enforcement {
+                command_line: format!("/quiet /norestart RSS_INSTALLATION_OPERATION={operation}"),
+                timeout_minutes: 5,
+                retry_count: 0,
+                retry_interval_minutes: 5,
+                download_from_aad: false,
+            },
+        })
+    }
     pub fn url(&self, operation: Uuid) -> String {
         format!(
             "{}/api/agent/v5/installations/{operation}/package",
@@ -465,3 +532,56 @@ pub async fn dispatch_ready_on(
 #[cfg(test)]
 #[path = "../../../tests/planning/agent_install_unit.rs"]
 mod tests;
+
+fn apple_install(
+    bundle: &str,
+    version: &str,
+    url: &str,
+    hash: [u8; 32],
+    operation: Uuid,
+) -> std::result::Result<plist::Dictionary, rss_mdm_apple_mdm::Error> {
+    use plist::Value;
+    use rss_mdm_apple_mdm::{Error, protocol::dictionary};
+    let bounded = |s: &str| !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control);
+    let location = url::Url::parse(url).map_err(|_| Error::Malformed)?;
+    if !bounded(bundle)
+        || !bounded(version)
+        || hash == [0; 32]
+        || operation.is_nil()
+        || url.len() > 2048
+        || location.scheme() != "https"
+        || location.host_str().is_none()
+        || !location.username().is_empty()
+        || location.password().is_some()
+        || location.fragment().is_some()
+    {
+        return Err(Error::Malformed);
+    }
+    let hash = hash.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let asset = dictionary([
+        ("kind", "software-package".into()),
+        ("url", url.into()),
+        ("sha256", hash.into()),
+    ]);
+    let metadata = dictionary([
+        ("bundle-identifier", bundle.into()),
+        ("bundle-version", version.into()),
+        ("kind", "software".into()),
+        ("title", "RSS Agent".into()),
+    ]);
+    let item = dictionary([
+        ("assets", Value::Array(vec![asset.into()])),
+        ("metadata", metadata.into()),
+    ]);
+    Ok(dictionary([
+        ("RequestType", "InstallEnterpriseApplication".into()),
+        (
+            "Manifest",
+            dictionary([("items", Value::Array(vec![item.into()]))]).into(),
+        ),
+        (
+            "Configuration",
+            dictionary([("RSSInstallationOperation", operation.to_string().into())]).into(),
+        ),
+    ]))
+}

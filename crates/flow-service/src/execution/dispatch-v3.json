@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mdm.command-dispatch/v3",
+  "type": "object",
+  "properties": {
+    "device": {
+      "type": "string",
+      "minLength": 1
+    },
+    "operationId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "epoch": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "required": [
+    "device",
+    "operationId",
+    "generation",
+    "epoch"
+  ],
+  "additionalProperties": false
+}

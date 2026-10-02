@@ -14,7 +14,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
     let scope = fixture.scope;
     let first_operation = fixture.first_operation;
     let future = Uuid::new_v4();
-    let future_path = format!("/api/v2/policies/{future}");
+    let future_path = format!("/api/v3/policies/{future}");
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
     let future_definition = |opens_at: i64, minimum: Option<u8>| json!({"scope":scope,"action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"macos_aarch64":"default"}},"kind":"software","intent":"required_install","delivery":{"kind":"direct"},"admissionOperation":first_operation,"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":empty_scope,"opensAt":0},{"scope":scope,"opensAt":opens_at,"minimumVerifiedPercent":minimum}]}}});
     let future_policy = write(
@@ -30,7 +30,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
         .call(
             &router,
             Method::GET,
-            &format!("/api/v2/policies/{future}/devices"),
+            &format!("/api/v3/policies/{future}/devices"),
             None,
         )
         .await?;
@@ -38,7 +38,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
         device_page.1["items"][0]["taskAdmission"]["state"] == "scheduled",
         "device page misstates execution eligibility: {device_page:?}"
     );
-    let preview=author.call(&router,Method::POST,"/api/v2/policies/previews",Some(json!({"definition":future_definition(now+3600,None),"after":null,"scopeResult":null}))).await?;
+    let preview=author.call(&router,Method::POST,"/api/v3/policies/previews",Some(json!({"definition":future_definition(now+3600,None),"after":null,"scopeResult":null}))).await?;
     ensure!(
         preview.1["items"][0]["taskAdmission"]["state"] == "scheduled",
         "preview misstates execution eligibility: {preview:?}"
@@ -159,7 +159,7 @@ async fn new_approval_changes_execution_version() -> Result<()> {
     let scope = fixture.scope;
     let authored = |intent: &str, operation: &Value| authored(resource, scope, intent, operation);
     let policy = Uuid::new_v4();
-    let policy_path = format!("/api/v2/policies/{policy}");
+    let policy_path = format!("/api/v3/policies/{policy}");
     let published = write(
         &mut author,
         &router,

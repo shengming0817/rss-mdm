@@ -17,6 +17,24 @@
       null,
       "",
       ""
+    ],
+    [
+      "native_protection",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "native_protection",
+      "key_id",
+      "text",
+      true,
+      null,
+      "",
+      ""
     ]
   ],
   "constraints": [
@@ -33,6 +51,20 @@
       "c",
       "CHECK ((octet_length(secret) = 32))",
       true
+    ],
+    [
+      "native_protection",
+      "native_protection_key_id_check",
+      "c",
+      "CHECK ((key_id ~ '^[0-9a-f]{64}$'::text))",
+      true
+    ],
+    [
+      "native_protection",
+      "native_protection_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id)",
+      true
     ]
   ],
   "indexes": [
@@ -40,6 +72,14 @@
       "cursor_keys",
       "cursor_keys_pkey",
       "CREATE UNIQUE INDEX cursor_keys_pkey ON mdm_flow.cursor_keys USING btree (tenant_id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "native_protection",
+      "native_protection_pkey",
+      "CREATE UNIQUE INDEX native_protection_pkey ON mdm_flow.native_protection USING btree (tenant_id)",
       true,
       true,
       true

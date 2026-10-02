@@ -20,7 +20,7 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
     let scope = fixture.scope;
     let authored = |intent: &str, operation: &Value| authored(resource, scope, intent, operation);
     let policy = Uuid::new_v4();
-    let policy_path = format!("/api/v2/policies/{policy}");
+    let policy_path = format!("/api/v3/policies/{policy}");
     let published = write(
         &mut author,
         &router,
@@ -126,7 +126,7 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
     write(
         &mut author,
         &router,
-        &format!("/api/v2/policies/{available}"),
+        &format!("/api/v3/policies/{available}"),
         0,
         json!({"action":"put","enabled":true,"definition":authored("available_install", &first_operation)}),
     )
@@ -199,7 +199,7 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
     write(
         &mut author,
         &router,
-        &format!("/api/v2/policies/{available}"),
+        &format!("/api/v3/policies/{available}"),
         1,
         json!({"action":"disable"}),
     )
@@ -208,7 +208,7 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
     write(
         &mut author,
         &router,
-        &format!("/api/v2/policies/{uninstall}"),
+        &format!("/api/v3/policies/{uninstall}"),
         0,
         json!({"action":"put","enabled":true,"definition":authored("explicit_uninstall", &first_operation)}),
     )
@@ -255,7 +255,7 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
     write(
         &mut author,
         &router,
-        &format!("/api/v2/policies/{uninstall}"),
+        &format!("/api/v3/policies/{uninstall}"),
         1,
         json!({"action":"disable"}),
     )
@@ -277,7 +277,7 @@ async fn windows_variant_delivery_and_detection() -> Result<()> {
     let windows_credential = fixture.credential;
     let first_operation = fixture.first_operation;
     let windows_policy = Uuid::new_v4();
-    write(&mut author,&router,&format!("/api/v2/policies/{windows_policy}"),0,json!({"action":"put","enabled":true,
+    write(&mut author,&router,&format!("/api/v3/policies/{windows_policy}"),0,json!({"action":"put","enabled":true,
         "definition":{"scope":windows_scope,
         "action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"kind":"software","intent":"required_install","delivery":{"kind":"direct"},"admissionOperation":first_operation,"runLifetimeSeconds":600,
         "rollout":{"stages":[{"scope":windows_scope,"opensAt":0}]}}}})).await?;
@@ -285,7 +285,7 @@ async fn windows_variant_delivery_and_detection() -> Result<()> {
         .call(
             &router,
             Method::GET,
-            &format!("/api/v2/policies/{windows_policy}/devices"),
+            &format!("/api/v3/policies/{windows_policy}/devices"),
             None,
         )
         .await?;

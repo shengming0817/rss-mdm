@@ -24,10 +24,16 @@ impl ExecutionService {
         input: &Create,
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
-        if matches!(input.task, Task::AgentInstall { .. }) {
+        if input
+            .task
+            .permissions()?
+            .contains(&Permission::SoftwareDeploy)
+        {
             return Err(Error::Unsupported);
         }
-        proof.require(input.task.permission(), Some(device))?;
+        for permission in input.task.permissions()? {
+            proof.require(permission, Some(device))?;
+        }
         let failure = Mutex::new(None);
         let timer = recovery::Timer::new();
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -94,15 +100,20 @@ impl ExecutionService {
         input: &Create,
         audit: &RequestAudit,
     ) -> Result<Value> {
-        if matches!(input.task, Task::AgentInstall { .. }) {
+        if input
+            .task
+            .permissions()?
+            .contains(&Permission::SoftwareDeploy)
+        {
             return Err(Error::Unsupported.into());
         }
         storage::admit(tx).await?;
         require_tenant(self.tenant, proof)?;
-        let auth = storage::authorized(tx, proof, device, input.task.permission()).await?;
+        let auth =
+            storage::authorized_native(tx, proof, device, &input.task.permissions()?).await?;
         storage::lock(tx, &format!("request:{}", input.operation_id)).await?;
         storage::lock(tx, device).await?;
-        let fingerprint = create_fingerprint(proof, device, input)?;
+        let fingerprint = create_fingerprint(self, proof, device, input)?;
         if let Some(value) = replay(tx, input.operation_id, &fingerprint, audit).await? {
             audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
             let fact = Fact::business(
@@ -121,7 +132,7 @@ impl ExecutionService {
             return Ok(value);
         }
         let approval =
-            ExecutionAuthority::from_proof(&auth, proof, device, input.task.permission())?;
+            ExecutionAuthority::from_proof(&auth, proof, device, &input.task.permissions()?)?;
         let response = self
             .queue_authorized_in(tx, device, input, approval, fingerprint, audit)
             .await?;
@@ -139,6 +150,21 @@ impl ExecutionService {
     ) -> Result<Value> {
         let now = self.store.now(tx).await? / 1_000_000;
         input.validate(now)?;
+        if input
+            .task
+            .permissions()?
+            .contains(&Permission::SoftwareDeploy)
+        {
+            let package = approval.agent_package().ok_or(Error::Unsupported)?;
+            if input.target != NativeTarget::Device
+                || checked_input(serde_json::to_vec(&input.task))?
+                    != checked_input(serde_json::to_vec(
+                        &package.native_task(input.operation_id)?,
+                    ))?
+            {
+                return Err(Error::Unsupported.into());
+            }
+        }
         let (registration, registration_generation) =
             storage::current_registration(tx, device).await?;
         storage::require_source(tx, registration, input.task.source()).await?;
@@ -148,7 +174,7 @@ impl ExecutionService {
             scope,
             checked_input(dc::CommandId::parse(&input.operation_id.to_string()))?,
             coordinate,
-            input.digest(&self.tenant.to_string(), device)?,
+            input.digest(&self.protection, self.tenant, device)?,
             input.deadline * 1_000_000,
         );
         let message = dispatch(self.tenant, device, input, coordinate, now)?;
@@ -157,7 +183,17 @@ impl ExecutionService {
         let tenant = self.tenant.to_string();
         let name = device.to_owned();
         let id = input.operation_id.to_string();
-        let request = checked_input(serde_json::to_string(input))?;
+        let (input_context, request) = super::input_storage::seal(
+            &self.protection,
+            self.tenant,
+            &super::input_storage::Identity {
+                operation: input.operation_id,
+                device,
+                registration,
+                generation: registration_generation,
+            },
+            input,
+        )?;
         let (source, policy_version, remote_operation) = match &approval {
             ExecutionAuthority::User { .. } => ("direct", None, None),
             ExecutionAuthority::AgentInstall { version, .. }
@@ -168,7 +204,7 @@ impl ExecutionService {
         };
         let approval = checked_input(serde_json::to_string(&approval))?;
         let digest = fingerprint.clone();
-        tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_commands.operations(tenant_id,id,device,request,fingerprint,registration,registration_generation,generation,epoch,approval,dispatch_fingerprint,source_kind,policy_version,remote_operation) VALUES($1::uuid,$2::uuid,$3,$4::jsonb,$5,$6::uuid,$7,$8,$9,$10::jsonb,$11,$12,$13,$14)").bind(tenant).bind(id).bind(name).bind(request).bind(digest).bind(registration.to_string()).bind(registration_generation).bind(coordinate.generation()).bind(coordinate.epoch()).bind(approval).bind(dispatch_fingerprint).bind(source).bind(policy_version).bind(remote_operation).execute(c).await?;Ok(())})).await?;
+        tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_commands.operations(tenant_id,id,device,request,fingerprint,registration,registration_generation,generation,epoch,approval,dispatch_fingerprint,source_kind,policy_version,remote_operation,input_context) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6::uuid,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15)").bind(tenant).bind(id).bind(name).bind(request).bind(digest).bind(registration.to_string()).bind(registration_generation).bind(coordinate.generation()).bind(coordinate.epoch()).bind(approval).bind(dispatch_fingerprint).bind(source).bind(policy_version).bind(remote_operation).bind(input_context).execute(c).await?;Ok(())})).await?;
         apple::own(tx, device, registration, input).await?;
         let response = created(
             tx,
@@ -192,13 +228,14 @@ impl ExecutionService {
         crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,proof,device,id,audit),|ctx,tx|Box::pin(async move {
             let (service,proof,device,id,audit) = *ctx;
             storage::authorized(tx,proof,device,Permission::OperationRead).await?;
-            let op=storage::load(tx,id).await?;
+            let op=storage::load(tx,&service.protection,id).await?;
             if op.device!=device{return Err(Error::Forbidden.into());}
             let command=service.required_command(tx,&op).await?;
-            let now=storage::now(tx).await?;let approved=storage::approval_valid(tx,&op,now).await?;
-            let observation=if matches!(op.request.task,Task::AgentInstall{..}) {super::agent_install::installation_observation(tx,service.apple_store.clone(),service.agent_store.clone(),&op).await?}else{protocol::observation(tx,service.apple_store.clone(),&op,command.status()).await?};
+            let now=storage::now(tx).await?;let approved=storage::approval_valid(&service.protection,tx,&op,now).await?;
+            let observation=protocol::observation(tx,service,&op,command.status()).await?;
+            let agent_installation=if op.approval.agent_package().is_some(){Some(super::agent_install::installation_observation(tx,service.apple_store.clone(),service.agent_store.clone(),&op).await?)}else{None};
             service.audit_store.append_request_in(tx,audit,200,"success").await?;
-            Ok(json!({"operationId":op.id,"commandId":op.id,"revision":op.revision,"task":op.request.task,"deadline":op.request.deadline,"authorization":if approved{"approved"}else{"blocked"},"commandStatus":status(command.status()),"observation":observation}))
+            Ok(json!({"operationId":op.id,"commandId":op.id,"revision":op.revision,"task":op.request.task.summary()?,"target":op.request.target,"inputVersion":op.request.input_version,"deadline":op.request.deadline,"dispatchFailure":op.dispatch_failure,"authorization":if approved{"approved"}else{"blocked"},"commandStatus":status(command.status()),"observation":observation,"agentInstallation":agent_installation}))
         }),crate::transaction::TransactionOwner::Execution).await
     }
     pub async fn change(
@@ -215,14 +252,14 @@ impl ExecutionService {
         }
         crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,proof,device,id,change,approve,audit),|ctx,tx|Box::pin(async move {
             let (service,proof,device,id,change,approve,audit) = *ctx;
-            let op=storage::load(tx,id).await?;
-            let permission=if approve {op.request.task.permission()}else{Permission::OperationCancel};
-            let auth=storage::authorized(tx,proof,device,permission).await?;
+            let op=storage::load(tx,&service.protection,id).await?;
+            let permissions=if approve {op.request.task.permissions()?}else{vec![Permission::OperationCancel]};
+            let auth=storage::authorized_native(tx,proof,device,&permissions).await?;
             storage::lock(tx,&format!("request:{}",change.request_id)).await?;storage::lock(tx,device).await?;
-            let fingerprint=Sha256::digest(checked_input(serde_json::to_vec(&("mdm.command-change/v2",proof.user(),device,id,change,approve)))?).to_vec();
+            let fingerprint=Sha256::digest(checked_input(serde_json::to_vec(&("mdm.command-change/v3",proof.user(),device,id,change,approve)))?).to_vec();
             let event_key = format!("command-change:{}:{}", audit.snapshot().actor.ok_or(Error::Malformed)?, change.request_id);
             if let Some(value)=replay(tx,change.request_id,&fingerprint,audit).await? {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);let fact = Fact::business(audit, &event_key, &fingerprint, 200, "success", None)?; service.audit_store.append_in(tx, &fact, true).await?;return Ok(value);}
-            let op=storage::load(tx,id).await?;
+            let op=storage::load(tx,&service.protection,id).await?;
             if op.device!=device{return Err(Error::Forbidden.into());}
             if op.revision!=change.expected_revision{return Err(Error::Conflict.into());}
             let command=service.required_command(tx,&op).await?;
@@ -231,7 +268,7 @@ impl ExecutionService {
             let approval=if approve {
                 if !matches!(op.approval,ExecutionAuthority::User {..}) {return Err(Error::Conflict.into());}
                 if storage::current_registration(tx,device).await? != (op.registration,op.registration_generation) {return Err(Error::Conflict.into());}
-                ExecutionAuthority::from_proof(&auth,proof,device,op.request.task.permission())?
+                ExecutionAuthority::from_proof(&auth,proof,device,&op.request.task.permissions()?)?
             } else {
                 let transition=service.store.cancel(tx,op.scope,&op.command_id()?,op.coordinate).await?;
                 if transition.outcome==dc::Outcome::OutOfOrder {return Err(Error::Conflict.into());}
@@ -301,9 +338,9 @@ fn dispatch(
     coordinate: dc::Coordinate,
     now: i64,
 ) -> Result<PendingMessage<Vec<u8>>> {
-    let payload = checked_input(serde_json::to_vec(&DispatchV2 {
+    let payload = checked_input(serde_json::to_vec(&DispatchV3 {
         device: device.into(),
-        request: input.clone(),
+        operation_id: input.operation_id,
         generation: coordinate.generation(),
         epoch: coordinate.epoch(),
     }))?;
@@ -320,10 +357,10 @@ fn dispatch(
                 checked_input(MessageRoute::parse("device.command"))?,
                 ContractIdentity::new(
                     checked_input(ContractId::parse("mdm.command-dispatch"))?,
-                    checked_input(ContractVersion::from_major(2))?,
+                    checked_input(ContractVersion::from_major(3))?,
                     checked_input(SchemaDigest::parse(&format!(
                         "sha256:{:x}",
-                        Sha256::digest(include_bytes!("dispatch-v2.json"))
+                        Sha256::digest(include_bytes!("dispatch-v3.json"))
                     )))?,
                 ),
             ),
@@ -346,17 +383,18 @@ pub fn status(status: dc::Status) -> &'static str {
 }
 
 fn create_fingerprint(
+    service: &ExecutionService,
     proof: &AuthorizedPrincipal,
     device: &str,
     input: &Create,
 ) -> Result<Vec<u8>> {
-    Ok(Sha256::digest(checked_input(serde_json::to_vec(&(
-        "mdm.command-create/v2",
-        proof.user(),
+    Ok(crate::protection::fingerprint(
+        &service.protection,
+        service.tenant,
         device,
-        input,
-    )))?)
-    .to_vec())
+        "command-create/v3",
+        &(proof.user(), input),
+    )?)
 }
 
 fn require_tenant(

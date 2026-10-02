@@ -95,6 +95,7 @@ impl Fixture {
         let management = config
             .flow
             .open(
+                config.native_protector()?,
                 access
                     .audit_store(&crate::config::AuditConfig::Plain)
                     .await?,
@@ -106,10 +107,11 @@ impl Fixture {
             .await?;
         let execution = crate::flow::execution::open(
             config,
+            config.native_protector()?,
             access
                 .audit_store(&crate::config::AuditConfig::Plain)
                 .await?,
-            crate::flow::execution::open_content(config)?,
+            crate::flow::execution::open_content(config, config.native_protector()?)?,
             std::collections::BTreeMap::new(),
             rss_device_command_postgres::CommandClock::Postgres,
         )
@@ -153,6 +155,7 @@ impl Fixture {
             devices,
             windows: None,
             apple: Some(Arc::new(Apple::load(
+                execution.protection.clone(),
                 config.native_protocols.apple.unwrap(),
                 crate::clock::SystemClock.unix_seconds()?,
                 execution
@@ -268,7 +271,7 @@ impl Fixture {
                     "credentials",
                     "inventory_read",
                     "inventory_collect",
-                    "firewall_write",
+                    "configuration_write",
                     "operation_read",
                     "operation_cancel",
                 ],
@@ -367,7 +370,12 @@ fn startup_diagnostics(root: &std::path::Path) -> Result<()> {
         let mut input = original.clone();
         *input.pointer_mut(pointer).unwrap() = json!("private-material-path-must-not-be-logged");
         let config = serde_json::from_value(input)?;
-        match Apple::load(config, crate::clock::SystemClock.unix_seconds()?, None) {
+        match Apple::load(
+            crate::test_support::identity::config(case_tenant())?.native_protector()?,
+            config,
+            crate::clock::SystemClock.unix_seconds()?,
+            None,
+        ) {
             Err(crate::Error::Configuration(issue)) => ensure!(
                 format!("{issue:?}") == category,
                 "wrong startup category for {pointer}"
@@ -376,6 +384,7 @@ fn startup_diagnostics(root: &std::path::Path) -> Result<()> {
         }
     }
     let apple = Apple::load(
+        crate::test_support::identity::config(case_tenant())?.native_protector()?,
         serde_json::from_value(original)?,
         crate::clock::SystemClock.unix_seconds()?,
         None,
@@ -572,4 +581,12 @@ impl Fixture {
         }
         Ok(())
     }
+}
+
+const NATIVE_PROFILE: &str = "org.example.native-profile";
+fn profile_task(id: Uuid, enabled: bool) -> serde_json::Value {
+    json!({"platform":"macos","request":{"kind":"install_profile","profile":{"identifier":NATIVE_PROFILE,"uuid":id,"metadata":{},"payloads":[{"schema":"mdm/profiles/com.apple.security.firewall.yaml","identifier":"org.example.native-profile.settings","uuid":Uuid::new_v4(),"metadata":{},"fields":{"EnableFirewall":{"type":"boolean","value":enabled}}}]}}})
+}
+fn remove_profile_task(profile: Uuid) -> serde_json::Value {
+    json!({"platform":"macos","request":{"kind":"remove_profile","identifier":NATIVE_PROFILE,"uuid":profile}})
 }

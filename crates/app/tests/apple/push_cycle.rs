@@ -14,9 +14,7 @@ async fn state(pg: &mut PgConnection) -> Result<serde_json::Value> {
 }
 impl Fixture {
     pub async fn push_cycle(&mut self, peer: &lifecycle::Peer) -> Result<()> {
-        let operation = self
-            .create_operation(json!({"kind":"profile_install","enabled":true}))
-            .await?;
+        let operation = self.create_operation(|id| profile_task(id, true)).await?;
         let mut pg =
             PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
@@ -124,7 +122,7 @@ impl Fixture {
         recovered.close().await?;
         pg.close().await?;
         let operation_state = self.operation(operation).await?;
-        let cancelled=self.browser.call(&self.router,Method::POST,&format!("/api/v2/devices/{DEVICE}/operations/{operation}/cancel", DEVICE = case_device()),Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":operation_state["revision"]}))).await?;
+        let cancelled=self.browser.call(&self.router,Method::POST,&format!("/api/v3/devices/{DEVICE}/operations/{operation}/cancel", DEVICE = case_device()),Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":operation_state["revision"]}))).await?;
         ensure!(cancelled.0 == StatusCode::OK);
         Ok(())
     }

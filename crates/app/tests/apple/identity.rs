@@ -184,16 +184,12 @@ impl Fixture {
             )
             .await?;
         ensure!(wrong.0 == StatusCode::UNAUTHORIZED);
-        let rejected = self
-            .create_operation(json!({"kind":"profile_install","enabled":false}))
-            .await?;
+        let rejected = self.create_operation(|id| profile_task(id, false)).await?;
         let (id, _) = peer.next("InstallProfile").await?;
         peer.manage("CommandFormatError", Some(id), None).await?;
         ensure!(self.operation(rejected).await?["commandStatus"] == "rejected");
         // Token revision fences a late APNs 410 from an earlier token.
-        let queued = self
-            .create_operation(json!({"kind":"profile_install","enabled":true}))
-            .await?;
+        let queued = self.create_operation(|id| profile_task(id, true)).await?;
         peer.token_value(43).await?;
         let mut token_observer =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)

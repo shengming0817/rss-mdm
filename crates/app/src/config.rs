@@ -103,6 +103,7 @@ fn enabled<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    pub native_protection_key_file: PathBuf,
     pub audit: AuditConfig,
     pub listen: SocketAddr,
     pub product_origin: String,
@@ -127,6 +128,14 @@ pub(crate) struct Compiled {
         Arc<crate::authorization::identity_management::IdentityManagementPolicy>,
 }
 impl Config {
+    pub(crate) fn native_protector(
+        &self,
+    ) -> Result<Arc<rss_mdm_native_protection::Protector>, Error> {
+        let key = read(&self.native_protection_key_file, 32, true)?;
+        rss_mdm_native_protection::Protector::new(&key)
+            .map(Arc::new)
+            .map_err(|_| Error::Configuration(ConfigIssue::NativeProtection))
+    }
     pub(crate) fn compile(mut self) -> Result<Compiled, Error> {
         if !self.listen.ip().is_loopback() {
             return Err(Error::Configuration(ConfigIssue::Listen));

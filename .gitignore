@@ -72,3 +72,9 @@ bak/
 /worktrees/
 
 __pycache__/
+
+# Fixed machine schemas are tracked as ZIPs; expanded copies and Learn text are caches.
+/crates/windows-mdm/ddf/upstream/
+/crates/windows-mdm/schema/upstream/admx/
+/crates/windows-mdm/schema/upstream/learn/
+/crates/apple-mdm/schema/upstream/

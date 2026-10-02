@@ -2,10 +2,8 @@
 use crate::{ConfigIssue, Error, Failure, enrollment};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use md5::{Digest, Md5};
-use ring::{
-    aead,
-    rand::{SecureRandom, SystemRandom},
-};
+use ring::rand::{SecureRandom, SystemRandom};
+use rss_mdm_native_protection::{DerivedAad, ProtectionContext, Protector};
 use serde::{Deserialize, Serialize};
 
 use uuid::Uuid;
@@ -31,56 +29,47 @@ impl Secrets {
     }
 }
 pub struct Protection {
-    key: aead::LessSafeKey,
+    protector: Protector,
     pub id: String,
 }
 impl Protection {
     pub fn from_bytes(key: &[u8]) -> Result<Self, Error> {
-        let id = crate::enrollment::digest(&("mdm.protocol.key.v1", key));
+        let protector =
+            Protector::new(key).map_err(|_| Error::Configuration(ConfigIssue::ProtocolKey))?;
         Ok(Self {
-            key: aead::LessSafeKey::new(
-                aead::UnboundKey::new(&aead::AES_256_GCM, key)
-                    .map_err(|_| Error::Configuration(ConfigIssue::ProtocolKey))?,
-            ),
-            id,
+            id: protector.id().to_owned(),
+            protector,
         })
     }
-    fn aad(tenant: &str, request: Uuid) -> Vec<u8> {
-        serde_json::to_vec(&("mdm.protocol.secrets.v1", tenant, request)).expect("closed AAD")
+    fn aad(tenant: &str, request: Uuid) -> Result<DerivedAad, Error> {
+        let tenant = rss_request_context::TenantId::parse(tenant)
+            .map_err(|_| Error::Unavailable(Failure::Protocol))?;
+        ProtectionContext::new(
+            tenant,
+            &request.to_string(),
+            "windows.registration-secrets",
+            1,
+        )
+        .map(|context| context.derive())
+        .map_err(|_| Error::Unavailable(Failure::Protocol))
     }
     pub fn seal(&self, tenant: &str, request: Uuid, secrets: &Secrets) -> Result<Vec<u8>, Error> {
-        let mut bytes = Zeroizing::new(
+        let bytes = Zeroizing::new(
             serde_json::to_vec(secrets).map_err(|_| Error::Unavailable(Failure::Protocol))?,
         );
-        let mut nonce = [0; 12];
-        SystemRandom::new()
-            .fill(&mut nonce)
-            .map_err(|_| Error::Unavailable(Failure::Protocol))?;
-        self.key
-            .seal_in_place_append_tag(
-                aead::Nonce::assume_unique_for_key(nonce),
-                aead::Aad::from(Self::aad(tenant, request)),
-                &mut *bytes,
-            )
-            .map_err(|_| Error::Unavailable(Failure::Protocol))?;
-        Ok([nonce.as_slice(), bytes.as_slice()].concat())
+        self.protector
+            .seal_bytes(&bytes, &Self::aad(tenant, request)?)
+            .map_err(|_| Error::Unavailable(Failure::Protocol))
     }
     pub fn open(&self, tenant: &str, request: Uuid, sealed: &[u8]) -> Result<Secrets, Error> {
-        if !(28..=4096).contains(&sealed.len()) {
+        if sealed.len() > 8192 {
             return Err(Error::Unavailable(Failure::Protocol));
         }
-        let nonce = aead::Nonce::try_assume_unique_for_key(&sealed[..12])
-            .map_err(|_| Error::Unavailable(Failure::Protocol))?;
-        let mut bytes = Zeroizing::new(sealed[12..].to_vec());
         let plain = self
-            .key
-            .open_in_place(
-                nonce,
-                aead::Aad::from(Self::aad(tenant, request)),
-                &mut bytes,
-            )
+            .protector
+            .open_bytes(sealed, &Self::aad(tenant, request)?)
             .map_err(|_| Error::Unavailable(Failure::Protocol))?;
-        serde_json::from_slice(plain).map_err(|_| Error::Unavailable(Failure::Protocol))
+        serde_json::from_slice(plain.expose()).map_err(|_| Error::Unavailable(Failure::Protocol))
     }
 }
 /// OMA DM 1.2.1 security §5.3.1.2: nonce contributes raw octets, not its XML base64.
@@ -92,4 +81,25 @@ pub fn digest(name: &str, password: &str, nonce: &[u8]) -> String {
     hash.update(b":");
     hash.update(nonce);
     STANDARD.encode(hash.finalize())
+}
+
+pub(crate) fn native_aad(
+    tenant: rss_request_context::TenantId,
+    purpose: &str,
+    identity: &impl Serialize,
+) -> Result<DerivedAad, Error> {
+    let owner = serde_json::to_string(identity).map_err(|_| Error::Malformed)?;
+    ProtectionContext::new(tenant, &owner, purpose, 1)
+        .map(|c| c.derive())
+        .map_err(|_| Error::Malformed)
+}
+pub(crate) fn collection_aad(
+    scope: &rss_observation::Scope,
+    id: Uuid,
+) -> Result<DerivedAad, Error> {
+    native_aad(
+        scope.tenant(),
+        "windows.collection.request",
+        &(scope.registration().as_str(), scope.epoch().as_str(), id),
+    )
 }

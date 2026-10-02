@@ -1,0 +1,19 @@
+[package]
+name = "rss-mdm-native-schema"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+yaml-rust2 = { version = "=0.13.0", default-features = false }
+quick-xml.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+regex.workspace = true
+msi = "=0.10.0"
+cab = "=0.6.0"
+
+[lints]
+workspace = true

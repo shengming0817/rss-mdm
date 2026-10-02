@@ -108,10 +108,6 @@ fn all_kinds_are_data_and_boundaries_do_not_mutate_state() {
         },
         Declaration::Configuration {
             artifact: Artifact::new(id("payload"), 3, Digest::of(b"abc")).unwrap(),
-            schema: id("profile-v1"),
-            apply: id("apply-profile"),
-            detect: id("observe-profile"),
-            remove: Some(id("remove-profile")),
         },
     ] {
         declaration.artifact().verify(b"abc").unwrap();
@@ -156,50 +152,28 @@ fn all_kinds_are_data_and_boundaries_do_not_mutate_state() {
 }
 
 #[test]
-fn v1_digest_goldens_cover_declarations_and_optional_tags() {
-    // Fixed vectors computed independently with Python hashlib/struct from the V1 encoding.
-    // Domain bytes, UUID octets, big-endian lengths, tags and field order are persistent identity.
+fn native_configuration_digest_binds_only_immutable_content_and_variant_identity() {
+    // Independent Python hashlib/struct vector, using the native-configuration domain separator.
     let artifact = Artifact::new(id("payload"), 3, Digest::from_bytes([0xa5; 32])).unwrap();
-    for (declaration, expected) in [
-        (
-            Declaration::Configuration {
-                artifact: artifact.clone(),
-                schema: id("schema"),
-                apply: id("apply"),
-                detect: id("detect"),
-                remove: None,
-            },
-            "aa852259d17921b4fb2ca529ad8c163e7b746f38b5a15d79fdc263adadbab265",
-        ),
-        (
-            Declaration::Configuration {
-                artifact: artifact.clone(),
-                schema: id("schema"),
-                apply: id("apply"),
-                detect: id("detect"),
-                remove: Some(id("remove")),
-            },
-            "22f34d4f621bf28e19abd175570820418fc113cf1070fdef76170f3a3b2c20df",
-        ),
-    ] {
-        let version = Version::new(
-            tenant(),
-            id("item"),
-            id("v1"),
-            declaration.kind(),
-            vec![Variant::new(
-                Platform::MacOS,
-                Architecture::Aarch64,
-                id("native"),
-                declaration,
-            )],
-        )
-        .unwrap();
-        assert_eq!(
-            version.digest().bytes(),
-            Digest::parse(expected).unwrap().bytes()
-        );
-    }
+    let version = Version::new(
+        tenant(),
+        id("item"),
+        id("v1"),
+        Kind::Configuration,
+        vec![Variant::new(
+            Platform::MacOS,
+            Architecture::Aarch64,
+            id("native"),
+            Declaration::Configuration { artifact },
+        )],
+    )
+    .unwrap();
+    assert_eq!(
+        version.digest().bytes(),
+        Digest::parse("435ae0aac8b4fbb565082834a6cd79beac983ccc01bbdfafaa3d324b463823aa")
+            .unwrap()
+            .bytes()
+    );
 }
 
 fn script() -> ScriptDefinition {

@@ -1,8 +1,8 @@
 # 与 RSS 一致的扁平 workspace；产品实现按职责放在 crates/ 下。
 [workspace]
 resolver = "3"
-members = ["crates/timeline-service", "crates/management-http", "crates/apple-channel", "crates/windows-channel", "crates/agent-channel", "crates/flow-service", "crates/inventory-service", "crates/registration-service", "crates/authorization-service", "crates/content-service", "crates/certificate", "crates/apple-mdm", "crates/software-service", "crates/compliance", "crates/compliance-postgres", "crates/audit-integration", "crates/agent-wire", "crates/backend-postgres-support", "crates/resource", "crates/winget-source", "crates/brew-source", "crates/app", "crates/windows-mdm", "crates/inventory", "crates/inventory-postgres", "crates/examples", "crates/group", "crates/group-postgres", "crates/scope", "crates/policy", "crates/software-release", "crates/policy-postgres", "crates/resource-postgres", "crates/software-release-postgres"]
-default-members = ["crates/timeline-service", "crates/management-http", "crates/apple-channel", "crates/windows-channel", "crates/agent-channel", "crates/flow-service", "crates/inventory-service", "crates/registration-service", "crates/authorization-service", "crates/content-service", "crates/certificate", "crates/apple-mdm", "crates/software-service", "crates/compliance", "crates/compliance-postgres", "crates/audit-integration", "crates/agent-wire", "crates/backend-postgres-support", "crates/resource", "crates/winget-source", "crates/brew-source", "crates/app", "crates/windows-mdm", "crates/inventory", "crates/inventory-postgres", "crates/examples", "crates/group", "crates/group-postgres", "crates/scope", "crates/policy", "crates/software-release", "crates/policy-postgres", "crates/resource-postgres", "crates/software-release-postgres"]
+members = ["crates/native-protection", "crates/native-schema", "crates/timeline-service", "crates/management-http", "crates/apple-channel", "crates/windows-channel", "crates/agent-channel", "crates/flow-service", "crates/inventory-service", "crates/registration-service", "crates/authorization-service", "crates/content-service", "crates/certificate", "crates/apple-mdm", "crates/software-service", "crates/compliance", "crates/compliance-postgres", "crates/audit-integration", "crates/agent-wire", "crates/backend-postgres-support", "crates/resource", "crates/winget-source", "crates/brew-source", "crates/app", "crates/windows-mdm", "crates/inventory", "crates/inventory-postgres", "crates/examples", "crates/group", "crates/group-postgres", "crates/scope", "crates/policy", "crates/software-release", "crates/policy-postgres", "crates/resource-postgres", "crates/software-release-postgres"]
+default-members = ["crates/native-protection", "crates/timeline-service", "crates/management-http", "crates/apple-channel", "crates/windows-channel", "crates/agent-channel", "crates/flow-service", "crates/inventory-service", "crates/registration-service", "crates/authorization-service", "crates/content-service", "crates/certificate", "crates/apple-mdm", "crates/software-service", "crates/compliance", "crates/compliance-postgres", "crates/audit-integration", "crates/agent-wire", "crates/backend-postgres-support", "crates/resource", "crates/winget-source", "crates/brew-source", "crates/app", "crates/windows-mdm", "crates/inventory", "crates/inventory-postgres", "crates/examples", "crates/group", "crates/group-postgres", "crates/scope", "crates/policy", "crates/software-release", "crates/policy-postgres", "crates/resource-postgres", "crates/software-release-postgres"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,6 +11,8 @@ rust-version = "1.96"
 publish = false
 
 [workspace.dependencies]
+rss-mdm-native-protection = { path = "crates/native-protection" }
+rss-data-protection = { git = "https://dev.azure.com/shengming0923/rss/_git/rss", rev = "c83978d9b43d40f6663dc923c3e2afb3e9f51895", default-features = false }
 rss-mdm-timeline-service = { path = "crates/timeline-service" }
 rss-mdm-management-http = { path = "crates/management-http" }
 rss-mdm-apple-channel = { path = "crates/apple-channel" }
@@ -71,6 +73,7 @@ rss-runtime = { git = "https://dev.azure.com/shengming0923/rss/_git/rss", rev = 
 rss-axum = { git = "https://dev.azure.com/shengming0923/rss/_git/rss", rev = "c83978d9b43d40f6663dc923c3e2afb3e9f51895", default-features = false, features = ["http1"] }
 rss-mdm-windows-mdm = { path = "crates/windows-mdm" }
 quick-xml = { version = "=0.42.0", default-features = false }
+regex = "=1.13.1"
 base64 = "=0.22.1"
 time = { version = "=0.3.55", default-features = false, features = ["parsing"] }
 rss-mdm-inventory = { path = "crates/inventory" }

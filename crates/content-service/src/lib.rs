@@ -6,6 +6,7 @@ mod bundle;
 mod cleanup;
 mod native;
 pub use cleanup::Garbage;
+mod protected;
 #[cfg(test)]
 #[path = "../tests/unit.rs"]
 mod tests;
@@ -40,7 +41,16 @@ pub struct Config {
     pub max_bundle_entries: usize,
     pub max_expansion_ratio: u64,
 }
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageClass {
+    #[default]
+    Artifact,
+    NativeConfiguration,
+}
 pub struct Store {
+    protection: Arc<rss_mdm_native_protection::Protector>,
+    tenant: rss_request_context::TenantId,
     directory: PathBuf,
     pub config: Config,
     transfers: Arc<Semaphore>,
@@ -94,7 +104,12 @@ fn sync_dir(path: &Path) -> Result<(), Error> {
 }
 /// A shared file lock stays alive until the response body is dropped.
 pub struct Verified {
-    pub file: File,
+    file: File,
+    native: Option<(
+        Arc<rss_mdm_native_protection::Protector>,
+        rss_request_context::TenantId,
+    )>,
+    timer: Arc<dyn Clock>,
     pub artifact: Artifact,
     _guard: File,
     _permit: Option<OwnedSemaphorePermit>,
@@ -117,6 +132,9 @@ impl Verified {
         use tokio::io::AsyncReadExt;
         if start >= end || end > self.artifact.length() {
             return Err(Error::Malformed);
+        }
+        if self.native.is_some() {
+            return self.native_stream(start, end).await;
         }
         self.file
             .seek(SeekFrom::Start(start))
@@ -149,11 +167,14 @@ impl Verified {
     }
 }
 impl Store {
-    pub fn open(config: &Config, tenant: &str, timer: Arc<dyn Clock>) -> Result<Arc<Self>, Error> {
+    pub fn open(
+        protection: Arc<rss_mdm_native_protection::Protector>,
+        config: &Config,
+        tenant: &str,
+        timer: Arc<dyn Clock>,
+    ) -> Result<Arc<Self>, Error> {
         let bad = || Error::Configuration;
-        let tenant = rss_request_context::TenantId::parse(tenant)
-            .map_err(|_| bad())?
-            .to_string();
+        let tenant = rss_request_context::TenantId::parse(tenant).map_err(|_| bad())?;
         if !config.directory.is_absolute()
             || !config.directory.is_dir()
             || fs::symlink_metadata(&config.directory)
@@ -186,7 +207,7 @@ impl Store {
             )
             .map_err(|_| bad())?;
         }
-        let directory = config.directory.join(tenant);
+        let directory = config.directory.join(tenant.to_string());
         fs::create_dir_all(&directory).map_err(|_| bad())?;
         if fs::symlink_metadata(&directory)
             .map_err(|_| bad())?
@@ -196,6 +217,8 @@ impl Store {
             return Err(bad());
         }
         let store = Self {
+            protection,
+            tenant,
             directory,
             config: config.clone(),
             transfers: Arc::new(Semaphore::new(config.max_uploads)),
@@ -290,6 +313,8 @@ impl Store {
         verify_file(&mut file, artifact, self.timer.as_ref(), deadline)?;
         Ok(Verified {
             file,
+            native: None,
+            timer: self.timer.clone(),
             artifact: artifact.clone(),
             _guard: guard,
             _permit: None,

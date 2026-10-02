@@ -29,16 +29,14 @@ pub async fn preview(
         let binding=input.definition.action.resource();
         let version=if let Some(binding)=binding {Some(s.resource_in(tx,binding).await?)}else{None};
         let software=if matches!(input.definition.action, Action::Software { .. }) {
-            let Frozen::Software { action }=s.freeze_in(tx, &input.definition.action, None).await? else {return Err(Error::Malformed.into());};
+            let Frozen::Software { action }=s.freeze_in(tx, &input.definition.action, None, None).await? else {return Err(Error::Malformed.into());};
             Some(software::SoftwareExecutionPolicy::draft(input.definition.clone(),*action))
         } else if agent.is_some() {None} else if let Some(version)=version {
             let selected=variant(&version,binding.ok_or(Error::Malformed)?)?;
             match (&input.definition.action,selected.declaration()) {
                 (Action::Execution {parameters,..},resource::Declaration::Script {definition,..})=>checked_input(definition.validate_parameters(parameters))?,
                 (Action::NativeCollection{..},resource::Declaration::NativeCollection{..})=>(),
-                (Action::Configuration {exit,..},resource::Declaration::Configuration {remove,..})=>{
-                    if matches!(exit,Exit::Remove) && remove.is_none(){return Err(Error::Unsupported.into());}
-                },
+                (Action::Configuration {..},resource::Declaration::Configuration {..})=>(),
                 _=>return Err(Error::Malformed.into()),
             }
             None

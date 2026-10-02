@@ -48,7 +48,7 @@ async fn started_execution_becomes_unknown_and_disabled_policy_cancels() -> Resu
     post(
         &mut author,
         &router,
-        &format!("/api/v2/policies/{unknown_policy}"),
+        &format!("/api/v3/policies/{unknown_policy}"),
         json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"disable"}}),
     )
     .await?;

@@ -1,5 +1,8 @@
 use super::*;
 use uuid::Uuid;
+fn protection() -> Arc<rss_mdm_native_protection::Protector> {
+    Arc::new(rss_mdm_native_protection::Protector::new(&[39; 32]).unwrap())
+}
 fn config(directory: PathBuf) -> Config {
     Config {
         directory,
@@ -54,6 +57,7 @@ fn msix_content_identity_must_match_the_approved_definition() {
 }
 fn binding(bytes: &[u8]) -> Binding {
     Binding {
+        storage_class: StorageClass::Artifact,
         resource: "app".into(),
         version: "1".into(),
         variant: "default".into(),
@@ -73,7 +77,7 @@ async fn large_upload_resumes_after_restart_and_publishes_only_complete_hash() {
     let dir = tempfile::tempdir().unwrap();
     let config = config(dir.path().to_owned());
     let tenant = "10000000-0000-0000-0000-000000000001";
-    let store = Store::open(&config, tenant, Arc::new(RuntimeTimer)).unwrap();
+    let store = Store::open(protection(), &config, tenant, Arc::new(RuntimeTimer)).unwrap();
     let bytes = vec![9u8; 16_777_217];
     let binding = binding(&bytes);
     let artifact = binding.artifact().unwrap();
@@ -85,7 +89,7 @@ async fn large_upload_resumes_after_restart_and_publishes_only_complete_hash() {
         .unwrap();
     assert!(!store.path(&artifact).exists());
     drop(store);
-    let store = Store::open(&config, tenant, Arc::new(RuntimeTimer)).unwrap();
+    let store = Store::open(protection(), &config, tenant, Arc::new(RuntimeTimer)).unwrap();
     assert_eq!(
         store.status("user", id, 101).await.unwrap().offset,
         1_000_000
@@ -105,6 +109,7 @@ async fn large_upload_resumes_after_restart_and_publishes_only_complete_hash() {
     drop(verified);
     assert!(
         Store::open(
+            protection(),
             &config,
             "20000000-0000-0000-0000-000000000001",
             Arc::new(RuntimeTimer)
@@ -119,6 +124,7 @@ async fn large_upload_resumes_after_restart_and_publishes_only_complete_hash() {
 async fn wrong_bytes_and_interrupted_tail_never_publish() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(
+        protection(),
         &config(dir.path().to_owned()),
         "10000000-0000-0000-0000-000000000001",
         Arc::new(RuntimeTimer),
@@ -210,6 +216,7 @@ async fn garbage_never_removes_a_pinned_stream_or_live_upload() {
     let dir = tempfile::tempdir().unwrap();
     let config = config(dir.path().to_owned());
     let store = Store::open(
+        protection(),
         &config,
         "10000000-0000-0000-0000-000000000001",
         Arc::new(RuntimeTimer),
@@ -238,6 +245,7 @@ async fn garbage_never_removes_a_pinned_stream_or_live_upload() {
 async fn concurrent_equal_uploads_share_one_blob_and_release_temporary_space() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(
+        protection(),
         &config(directory.path().to_owned()),
         "10000000-0000-0000-0000-000000000001",
         Arc::new(RuntimeTimer),
@@ -285,16 +293,16 @@ fn startup_rejects_corrupt_upload_metadata_and_busy_recovery_lock() {
     let directory = tempfile::tempdir().unwrap();
     let config = config(directory.path().to_owned());
     let tenant = "10000000-0000-0000-0000-000000000001";
-    let store = Store::open(&config, tenant, Arc::new(RuntimeTimer)).unwrap();
+    let store = Store::open(protection(), &config, tenant, Arc::new(RuntimeTimer)).unwrap();
     let guard = lock(&store.directory.join(".upload.lock")).unwrap();
-    assert!(Store::open(&config, tenant, Arc::new(RuntimeTimer)).is_err());
+    assert!(Store::open(protection(), &config, tenant, Arc::new(RuntimeTimer)).is_err());
     drop(guard);
     fs::write(
         store.upload_path(Uuid::new_v4(), "json"),
         b"broken metadata",
     )
     .unwrap();
-    let error = Store::open(&config, tenant, Arc::new(RuntimeTimer))
+    let error = Store::open(protection(), &config, tenant, Arc::new(RuntimeTimer))
         .err()
         .expect("corrupt metadata must reject startup");
     let diagnostic = serde_json::to_string(&error).unwrap();
@@ -308,7 +316,7 @@ async fn startup_reclaims_completed_tails_and_preserves_resumable_sessions() {
     let directory = tempfile::tempdir().unwrap();
     let config = config(directory.path().to_owned());
     let tenant = "10000000-0000-0000-0000-000000000001";
-    let store = Store::open(&config, tenant, Arc::new(RuntimeTimer)).unwrap();
+    let store = Store::open(protection(), &config, tenant, Arc::new(RuntimeTimer)).unwrap();
     let completed = Uuid::new_v4();
     store.begin(completed, binding(b"abc"), 100).await.unwrap();
     store
@@ -335,7 +343,7 @@ async fn startup_reclaims_completed_tails_and_preserves_resumable_sessions() {
     )
     .unwrap();
     drop(store);
-    let reopened = Store::open(&config, tenant, Arc::new(RuntimeTimer)).unwrap();
+    let reopened = Store::open(protection(), &config, tenant, Arc::new(RuntimeTimer)).unwrap();
     assert!(
         !reopened
             .upload_path(upload::storage_key("user", completed), "part")
@@ -356,6 +364,7 @@ async fn startup_reclaims_completed_tails_and_preserves_resumable_sessions() {
 fn content_lock_files_remain_bounded_across_unique_artifacts() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(
+        protection(),
         &config(directory.path().to_owned()),
         "10000000-0000-0000-0000-000000000001",
         Arc::new(RuntimeTimer),
@@ -506,6 +515,7 @@ fn bundle_rejects_unsafe_zip_structure_and_small_budget_overruns() {
 async fn expired_partial_cleanup_tolerates_entries_removed_earlier_in_the_scan() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(
+        protection(),
         &config(directory.path().to_owned()),
         "10000000-0000-0000-0000-000000000001",
         Arc::new(RuntimeTimer),
@@ -539,6 +549,7 @@ impl rss_request_context::Clock for RuntimeTimer {
 async fn upload_operation_is_scoped_to_actor() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(
+        protection(),
         &config(dir.path().to_owned()),
         "10000000-0000-0000-0000-000000000001",
         Arc::new(RuntimeTimer),
@@ -633,7 +644,13 @@ async fn msix_nested_material_shares_the_pending_upload_disk_budget() {
     cfg.max_temporary_bytes = 1024 * 1024;
     let tenant =
         rss_request_context::TenantId::parse("10000000-0000-0000-0000-000000000001").unwrap();
-    let store = Store::open(&cfg, &tenant.to_string(), Arc::new(RuntimeTimer)).unwrap();
+    let store = Store::open(
+        protection(),
+        &cfg,
+        &tenant.to_string(),
+        Arc::new(RuntimeTimer),
+    )
+    .unwrap();
     let id = Uuid::new_v4();
     store.begin(id, binding(&bytes), 100).await.unwrap();
     store
@@ -698,4 +715,292 @@ fn xml_reads_bound_actual_output_even_when_zip_length_is_forged() {
             .is_err()
     );
     assert!(reader.position() <= 8192);
+}
+
+#[tokio::test]
+async fn native_configuration_keeps_acknowledged_tail_encrypted_and_ranges_plaintext() {
+    use futures::TryStreamExt;
+    let root = tempfile::tempdir().unwrap();
+    let cfg = config(root.path().to_owned());
+    let tenant = "10000000-0000-0000-0000-000000000001";
+    let key = protection();
+    let store = Store::open(key.clone(), &cfg, tenant, Arc::new(RuntimeTimer)).unwrap();
+    let bytes = b"native-secret-canary-0123456789".repeat(6000);
+    let mut input = binding(&bytes);
+    input.storage_class = StorageClass::NativeConfiguration;
+    let artifact = input.artifact().unwrap();
+    let id = Uuid::new_v4();
+    store.begin(id, input.clone(), 100).await.unwrap();
+    let mut offset = 0;
+    for count in [1, 63 * 1024, 2049, 65536] {
+        let end = (offset + count).min(bytes.len());
+        store
+            .append("user", id, offset as u64, 100, &bytes[offset..end])
+            .await
+            .unwrap();
+        offset = end;
+    }
+    let stage = store.upload_path(upload::storage_key("user", id), "part");
+    // Unacknowledged ciphertext bytes cannot displace the sealed tail in the checkpoint.
+    use std::io::Write;
+    options()
+        .append(true)
+        .open(&stage)
+        .unwrap()
+        .write_all(b"unacknowledged-tail")
+        .unwrap();
+    drop(store);
+    let store = Store::open(key.clone(), &cfg, tenant, Arc::new(RuntimeTimer)).unwrap();
+    assert_eq!(
+        store.status("user", id, 101).await.unwrap().offset,
+        offset as u64
+    );
+    store
+        .append("user", id, offset as u64, 101, &bytes[offset..])
+        .await
+        .unwrap();
+    for entry in fs::read_dir(&store.directory).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_file() {
+            let data = fs::read(path).unwrap();
+            assert!(
+                !data
+                    .windows(b"native-secret-canary".len())
+                    .any(|v| v == b"native-secret-canary")
+            );
+        }
+    }
+    store.finish("user", id, 102).await.unwrap();
+    store.finish("user", id, 102).await.unwrap();
+    let checkpoint_path = store.upload_path(upload::storage_key("user", id), "json");
+    let checkpoint: serde_json::Value =
+        serde_json::from_slice(&fs::read(&checkpoint_path).unwrap()).unwrap();
+    assert!(
+        checkpoint["native"]["tail"].is_null(),
+        "completed upload retained its large sealed tail"
+    );
+    assert!(
+        store
+            .native_temporary_space(cfg.max_temporary_bytes)
+            .is_err(),
+        "completed native checkpoints bypassed the disk budget"
+    );
+    assert!(
+        store.verify(&artifact).await.is_err(),
+        "protected content fell back to the plain class"
+    );
+    let verified = store
+        .verify_class(&artifact, StorageClass::NativeConfiguration)
+        .await
+        .unwrap();
+    assert_eq!(&*verified.read_plaintext(bytes.len()).unwrap(), &bytes);
+    let mut stream = verified.stream(65_530, 131_080).await.unwrap();
+    let mut range = Vec::new();
+    while let Some(chunk) = stream.try_next().await.unwrap() {
+        range.extend_from_slice(&chunk);
+    }
+    assert_eq!(range, bytes[65_530..131_080]);
+    drop(stream);
+    let public = Uuid::new_v4();
+    store.begin(public, binding(&bytes), 103).await.unwrap();
+    store
+        .append("user", public, 0, 103, bytes.as_slice())
+        .await
+        .unwrap();
+    store.finish("user", public, 103).await.unwrap();
+    assert!(store.verify(&artifact).await.is_ok());
+    let native_path = store.path_class(&artifact, StorageClass::NativeConfiguration);
+    fs::remove_file(&native_path).unwrap();
+    assert!(
+        store
+            .verify_class(&artifact, StorageClass::NativeConfiguration)
+            .await
+            .is_err(),
+        "same-SHA public bytes satisfied a protected read"
+    );
+}
+
+#[tokio::test]
+async fn native_finish_recovers_a_published_hard_link_without_truncating_it() {
+    let root = tempfile::tempdir().unwrap();
+    let cfg = config(root.path().to_owned());
+    let tenant = "10000000-0000-0000-0000-000000000001";
+    let store = Store::open(protection(), &cfg, tenant, Arc::new(RuntimeTimer)).unwrap();
+    let bytes = b"durable-native-content".repeat(5000);
+    let mut input = binding(&bytes);
+    input.storage_class = StorageClass::NativeConfiguration;
+    let artifact = input.artifact().unwrap();
+    let id = Uuid::new_v4();
+    store.begin(id, input, 100).await.unwrap();
+    store
+        .append("user", id, 0, 100, bytes.as_slice())
+        .await
+        .unwrap();
+    let key = upload::storage_key("user", id);
+    let checkpoint = fs::read(store.upload_path(key, "json")).unwrap();
+    store.finish("user", id, 101).await.unwrap();
+    let blob = store.path_class(&artifact, StorageClass::NativeConfiguration);
+    let persisted = fs::read(&blob).unwrap();
+    // Reconstruct the actual crash point: linked and synced blob, old pre-finish checkpoint.
+    fs::hard_link(&blob, store.upload_path(key, "part")).unwrap();
+    fs::write(store.upload_path(key, "json"), checkpoint).unwrap();
+    assert!(
+        store
+            .append("user", id, bytes.len() as u64, 102, &b"x"[..])
+            .await
+            .is_err()
+    );
+    assert_eq!(fs::read(&blob).unwrap(), persisted);
+    drop(store);
+    let store = Store::open(protection(), &cfg, tenant, Arc::new(RuntimeTimer)).unwrap();
+    store.finish("user", id, 102).await.unwrap();
+    assert_eq!(fs::read(&blob).unwrap(), persisted);
+    let verified = store
+        .verify_class(&artifact, StorageClass::NativeConfiguration)
+        .await
+        .unwrap();
+    assert_eq!(&*verified.read_plaintext(bytes.len()).unwrap(), &bytes);
+}
+
+#[tokio::test]
+async fn native_metadata_and_records_reject_tamper_and_budget_includes_encryption() {
+    use std::io::Write;
+    let root = tempfile::tempdir().unwrap();
+    let mut cfg = config(root.path().to_owned());
+    let tenant = "10000000-0000-0000-0000-000000000001";
+    let bytes = vec![17; 70000];
+    let mut input = binding(&bytes);
+    input.storage_class = StorageClass::NativeConfiguration;
+    let reserved = protected::reservation(&input).unwrap();
+    cfg.max_artifact_bytes = bytes.len() as u64;
+    cfg.max_temporary_bytes = reserved - 1;
+    let store = Store::open(protection(), &cfg, tenant, Arc::new(RuntimeTimer)).unwrap();
+    assert!(matches!(
+        store.begin(Uuid::new_v4(), input.clone(), 100).await,
+        Err(Error::Conflict)
+    ));
+    drop(store);
+    cfg.max_temporary_bytes = reserved;
+    let store = Store::open(protection(), &cfg, tenant, Arc::new(RuntimeTimer)).unwrap();
+    let id = Uuid::new_v4();
+    store.begin(id, input.clone(), 100).await.unwrap();
+    store
+        .append("user", id, 0, 100, bytes.as_slice())
+        .await
+        .unwrap();
+    let key = upload::storage_key("user", id);
+    let meta = store.upload_path(key, "json");
+    let original = fs::read(&meta).unwrap();
+    let mut tampered: serde_json::Value = serde_json::from_slice(&original).unwrap();
+    tampered["upload"]["offset"] = serde_json::json!(1);
+    fs::write(&meta, serde_json::to_vec(&tampered).unwrap()).unwrap();
+    assert!(store.status("user", id, 100).await.is_err());
+    fs::write(&meta, &original).unwrap();
+    let wrong = Arc::new(rss_mdm_native_protection::Protector::new(&[40; 32]).unwrap());
+    assert!(Store::open(wrong, &cfg, tenant, Arc::new(RuntimeTimer)).is_err());
+    let part = store.upload_path(key, "part");
+    let original = fs::read(&part).unwrap();
+    let mut corrupt = original.clone();
+    corrupt[80] ^= 1;
+    options()
+        .truncate(true)
+        .open(&part)
+        .unwrap()
+        .write_all(&corrupt)
+        .unwrap();
+    assert!(store.finish("user", id, 101).await.is_err());
+    fs::write(&part, &original).unwrap();
+    store.finish("user", id, 101).await.unwrap();
+    let artifact = input.artifact().unwrap();
+    let path = store.path_class(&artifact, StorageClass::NativeConfiguration);
+    let mut corrupt = fs::read(&path).unwrap();
+    corrupt.pop();
+    fs::write(&path, corrupt).unwrap();
+    assert!(
+        store
+            .verify_class(&artifact, StorageClass::NativeConfiguration)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn native_failed_body_and_uncommitted_checkpoint_keep_the_acknowledged_frontier() {
+    let root = tempfile::tempdir().unwrap();
+    let cfg = config(root.path().to_owned());
+    let tenant = "10000000-0000-0000-0000-000000000001";
+    let mut store = Store::open(protection(), &cfg, tenant, Arc::new(RuntimeTimer)).unwrap();
+    let bytes = b"checkpoint-native-canary".repeat(8000);
+    let mut input = binding(&bytes);
+    input.storage_class = StorageClass::NativeConfiguration;
+    let artifact = input.artifact().unwrap();
+    let id = Uuid::new_v4();
+    store.begin(id, input.clone(), 100).await.unwrap();
+    store.append("user", id, 0, 100, &bytes[..1]).await.unwrap();
+    let interrupted = futures::stream::iter(vec![
+        Ok(bytes::Bytes::copy_from_slice(&bytes[1..70000])),
+        Err(std::io::Error::other("fixture interrupted body")),
+    ]);
+    assert!(
+        store
+            .append(
+                "user",
+                id,
+                1,
+                101,
+                tokio_util::io::StreamReader::new(interrupted)
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(store.status("user", id, 101).await.unwrap().offset, 1);
+    let key = upload::storage_key("user", id);
+    let old = fs::read(store.upload_path(key, "json")).unwrap();
+    store
+        .append("user", id, 1, 102, &bytes[1..70000])
+        .await
+        .unwrap();
+    let pending = fs::read(store.upload_path(key, "json")).unwrap();
+    fs::write(store.upload_path(key, "next"), pending).unwrap();
+    fs::write(store.upload_path(key, "json"), old).unwrap();
+    let occupied: u64 = fs::read_dir(&store.directory)
+        .unwrap()
+        .filter_map(|e| {
+            let e = e.unwrap();
+            e.file_name()
+                .to_string_lossy()
+                .starts_with(".upload-")
+                .then(|| e.metadata().unwrap().len())
+        })
+        .sum();
+    assert!(occupied <= protected::reservation(&input).unwrap());
+    drop(store);
+    store = Store::open(protection(), &cfg, tenant, Arc::new(RuntimeTimer)).unwrap();
+    assert_eq!(store.status("user", id, 103).await.unwrap().offset, 1);
+    store.append("user", id, 1, 103, &bytes[1..]).await.unwrap();
+    store.finish("user", id, 104).await.unwrap();
+    let verified = store
+        .verify_class(&artifact, StorageClass::NativeConfiguration)
+        .await
+        .unwrap();
+    assert_eq!(&*verified.read_plaintext(bytes.len()).unwrap(), &bytes);
+    let other = Store::open(
+        protection(),
+        &cfg,
+        "20000000-0000-0000-0000-000000000001",
+        Arc::new(RuntimeTimer),
+    )
+    .unwrap();
+    fs::copy(
+        store.path_class(&artifact, StorageClass::NativeConfiguration),
+        other.path_class(&artifact, StorageClass::NativeConfiguration),
+    )
+    .unwrap();
+    assert!(
+        other
+            .verify_class(&artifact, StorageClass::NativeConfiguration)
+            .await
+            .is_err(),
+        "native blob lost tenant binding"
+    );
 }

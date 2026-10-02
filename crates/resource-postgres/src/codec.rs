@@ -18,13 +18,6 @@ fn n(v: &Value) -> Result<u64, PgError> {
 fn id(v: &Value) -> Result<Id, PgError> {
     crate::error::decode_domain("codec::id", Id::new(s(v)?))
 }
-fn optional(v: &Value) -> Result<Option<Id>, PgError> {
-    if v.is_null() {
-        Ok(None)
-    } else {
-        Ok(Some(id(v)?))
-    }
-}
 pub(crate) fn kind(k: Kind) -> u8 {
     match k {
         Kind::Software => 0,
@@ -69,20 +62,7 @@ fn declaration(d: &Declaration) -> Value {
             artifact: a,
             definition,
         } => json!([3, artifact(a), definition]),
-        Declaration::Configuration {
-            artifact: a,
-            schema,
-            apply,
-            detect,
-            remove,
-        } => json!([
-            2,
-            artifact(a),
-            schema.as_str(),
-            apply.as_str(),
-            detect.as_str(),
-            remove.as_ref().map(Id::as_str)
-        ]),
+        Declaration::Configuration { artifact: a } => json!([6, artifact(a)]),
     }
 }
 fn read_declaration(v: &Value) -> Result<Declaration, PgError> {
@@ -117,14 +97,10 @@ fn read_declaration(v: &Value) -> Result<Declaration, PgError> {
                 definition: STORAGE.json("codec::script", serde_json::from_value(a[2].clone()))?,
             })
         }
-        2 => {
-            let a = array(v, 6)?;
+        6 => {
+            let a = array(v, 2)?;
             Ok(Declaration::Configuration {
                 artifact: read_artifact(&a[1])?,
-                schema: id(&a[2])?,
-                apply: id(&a[3])?,
-                detect: id(&a[4])?,
-                remove: optional(&a[5])?,
             })
         }
         _ => Err(STORAGE.fault("codec::read_declaration")),
@@ -135,7 +111,7 @@ pub(crate) fn version(v: &Version) -> Result<Vec<u8>, PgError> {
         match v.kind() {
             Kind::Software => 3,
             Kind::Script => 2,
-            Kind::Configuration => 1,
+            Kind::Configuration => 5,
             Kind::NativeCollection => 4,
         },
         v.tenant().to_string(),
@@ -167,7 +143,7 @@ pub(crate) fn read_version(bytes: &[u8]) -> Result<Version, PgError> {
         != match read_kind(&a[4])? {
             Kind::Software => 3,
             Kind::Script => 2,
-            Kind::Configuration => 1,
+            Kind::Configuration => 5,
             Kind::NativeCollection => 4,
         }
     {

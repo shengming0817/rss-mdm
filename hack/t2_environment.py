@@ -281,7 +281,11 @@ class Environment:
             private(directory/(role+'-password'),passwords.get(role,'runtime-fixture'))
             return dict(host='postgres' if mode=='container' else 'localhost',port=5432 if mode=='container' else self.port(),
                         name='mdm_dev',user=role,password_file=path(directory,role+'-password'),ca_file=path(directory,'ca.crt'))
+        native_key=runtime/'native-data.key'
+        if not native_key.exists():
+            private(native_key,'').write_bytes(secrets.token_bytes(32))
         config=json.loads((ROOT/'fixtures/mdm-config.example.json').read_text())
+        config['native_protection_key_file']=path(runtime,'native-data.key')
         config.update(listen=f'127.0.0.1:{backend_port}',product_origin=origin,trusted_gateway='127.0.0.1',native_protocols={})
         config['access_database']=database(runtime,'mdm_access');config['runtime_database']=database(runtime,'mdm_runtime')
         config['identity']['database']=database(runtime,'mdm_identity_runtime');config['identity']['audit_worker']=database(runtime,'mdm_identity_audit')

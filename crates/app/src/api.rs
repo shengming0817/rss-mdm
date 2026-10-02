@@ -77,10 +77,12 @@ pub(crate) async fn application_fixture(
             .await?,
     )
     .await?;
-    let content = crate::flow::execution::open_content(&config)?;
+    let protection = config.native_protector()?;
+    let content = crate::flow::execution::open_content(&config, protection.clone())?;
     let planning = config
         .flow
         .open(
+            protection.clone(),
             audit_store.clone(),
             rss_request_context::TenantId::parse(&config.identity.tenant_id)
                 .map_err(|_| Error::Service(rss_mdm_flow_service::Error::Malformed))?,
@@ -91,6 +93,7 @@ pub(crate) async fn application_fixture(
         .await?;
     let execution = crate::flow::execution::open(
         &config,
+        protection,
         audit_store.clone(),
         content,
         planning.publications.services.clone(),
@@ -195,6 +198,7 @@ pub(crate) fn from_compiled(
         .apple
         .map(|config| {
             crate::apple::Apple::load(
+                execution.protection.clone(),
                 config,
                 clock.unix_seconds()?,
                 native_agent
@@ -390,7 +394,9 @@ pub(crate) fn from_state(
                 audit_store: state.audit_store.clone(),
                 tenant: state.identity.tenant,
                 participant: state.apple.as_ref().map(|_| {
-                    Arc::new(rss_mdm_apple_channel::collection::Participant)
+                    Arc::new(rss_mdm_apple_channel::collection::Participant {
+                        protection: state.execution.protection.clone(),
+                    })
                         as Arc<dyn rss_mdm_inventory_service::apple_collection::Participant>
                 }),
             },

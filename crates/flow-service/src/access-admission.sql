@@ -2,6 +2,7 @@
 WITH expected(name) AS (VALUES
  ('mdm_commands.operations'),
  ('mdm_commands.attempts'),
+ ('mdm_commands.attempt_items'),
  ('mdm_policy.policies'),
  ('mdm_policy.versions'),
  ('mdm_resource.aggregates'),

@@ -183,7 +183,11 @@ async fn body(request: Request, next: Next, requests: Arc<tokio::sync::Semaphore
     {
         return next.run(request).await;
     }
-    let limit = if route == "/api/v3/resources/{id}" {
+    let limit = if route == "/api/v3/devices/{device}/operations"
+        && request.method() == axum::http::Method::POST
+    {
+        16 * 1024 * 1024
+    } else if route == "/api/v4/resources/{id}" {
         8 * 1024 * 1024
     } else {
         2 * 1024 * 1024

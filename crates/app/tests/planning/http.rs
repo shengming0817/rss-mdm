@@ -17,7 +17,7 @@ async fn console_collection_routes_reuse_current_policy() -> Result<()> {
         json!(["group_read", "scope_read", "policy_read", "resource_read"]),
     )
     .await?;
-    for path in ["/api/v2/groups", "/api/v2/scopes", "/api/v3/resources"] {
+    for path in ["/api/v2/groups", "/api/v2/scopes", "/api/v4/resources"] {
         let (status, page) = browser.call(&router, Method::GET, path, None).await?;
         ensure!(
             status == StatusCode::OK,
@@ -40,7 +40,7 @@ async fn console_collection_routes_reuse_current_policy() -> Result<()> {
         );
     }
     set_management_grants(&subject, json!([])).await?;
-    for path in ["/api/v2/groups", "/api/v2/scopes", "/api/v3/resources"] {
+    for path in ["/api/v2/groups", "/api/v2/scopes", "/api/v4/resources"] {
         ensure!(browser.call(&router, Method::GET, path, None).await?.0 == StatusCode::FORBIDDEN);
     }
     Ok(())
@@ -375,7 +375,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
     call(
         &mut browser,
         &router,
-        &format!("/api/v3/resources/{resource}"),
+        &format!("/api/v4/resources/{resource}"),
         0,
         json!({"action":"create","kind":"script"}),
     )
@@ -384,7 +384,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
         .call(
             &router,
             Method::GET,
-            "/api/v3/resources?kind=script&active=false",
+            "/api/v4/resources?kind=script&active=false",
             None,
         )
         .await?;
@@ -395,9 +395,9 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
     );
     for path in [
         "/api/v2/groups?kind=wrong",
-        "/api/v3/resources?kind=wrong",
-        "/api/v2/policies?limit=0",
-        "/api/v2/policies?action=wrong",
+        "/api/v4/resources?kind=wrong",
+        "/api/v3/policies?limit=0",
+        "/api/v3/policies?action=wrong",
         "/api/v2/scopes?limit=1001",
     ] {
         ensure!(
@@ -720,33 +720,18 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
         .await?;
     }
     let scope_receipt = call(&mut browser,&router,&format!("/api/v2/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":target_group}],"limitations":[{"kind":"group","id":limit_group}],"exclusions":[{"kind":"device","id":second}]}})).await?;
-    let resource_path = format!("/api/v3/resources/{resource}");
-    call(
+    native_configuration_resource(
         &mut browser,
         &router,
-        &resource_path,
-        0,
-        json!({"action":"create","kind":"configuration"}),
+        resource,
+        "windows",
+        "x86_64",
+        windows_configuration(),
     )
     .await?;
-    call(
-        &mut browser,
-        &router,
-        &resource_path,
-        1,
-        json!({"action":"firewall_version","version":"v1","enabled":true}),
-    )
-    .await?;
-    call(
-        &mut browser,
-        &router,
-        &resource_path,
-        2,
-        json!({"action":"activate","version":"v1"}),
-    )
-    .await?;
-    let policy_path = format!("/api/v2/policies/{policy}");
-    let definition = json!({"scope":scope,"action": {"resource": {"id":resource,"version":"v1","platform":"windows","architecture":"x86_64","variant":"domain-firewall"},"kind":"configuration","exit":"retain"}});
+    let resource_path = format!("/api/v4/resources/{resource}");
+    let policy_path = format!("/api/v3/policies/{policy}");
+    let definition = json!({"scope":scope,"action": {"resource": {"id":resource,"version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"kind":"configuration","exit":"retain"}});
     let mut assigned = definition.clone();
     let empty_scope = uuid::Uuid::new_v4();
     let empty = call(
@@ -767,8 +752,10 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
     )
     .await?;
     assigned["scope"] = json!(empty_scope);
-    let mut grants =
-        crate::test_support::identity::device_grants(None, &["inventory_read", "firewall_write"])?;
+    let mut grants = crate::test_support::identity::device_grants(
+        None,
+        &["inventory_read", "configuration_write"],
+    )?;
     for p in [
         "group_read",
         "group_write",

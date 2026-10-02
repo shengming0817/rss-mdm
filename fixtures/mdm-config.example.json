@@ -1,4 +1,5 @@
 {
+  "native_protection_key_file": "/run/mdm/native-data.key",
   "listen": "127.0.0.1:8081",
   "product_origin": "https://mdm.example.test",
   "identity": {

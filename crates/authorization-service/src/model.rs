@@ -18,8 +18,12 @@ pub enum Permission {
     Enrollment,
     Credentials,
     DeviceWipe,
-    StateVerify,
-    FirewallWrite,
+    ConfigurationWrite,
+    DeviceControl,
+    DeviceUpdate,
+    AccountWrite,
+    SecurityOperate,
+    DeviceDiagnostics,
     ScriptExecute,
     SoftwareDeploy,
     OperationRead,
@@ -61,8 +65,12 @@ impl Permission {
             | Self::Enrollment
             | Self::Credentials
             | Self::DeviceWipe
-            | Self::StateVerify
-            | Self::FirewallWrite
+            | Self::DeviceControl
+            | Self::DeviceUpdate
+            | Self::AccountWrite
+            | Self::SecurityOperate
+            | Self::DeviceDiagnostics
+            | Self::ConfigurationWrite
             | Self::ScriptExecute
             | Self::SoftwareDeploy
             | Self::OperationRead

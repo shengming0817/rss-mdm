@@ -109,11 +109,8 @@ fn reply(initial: &s::Message, response: &s::Message, installed: bool) -> s::Mes
                     }));
                 }
             }
-            s::Command::AgentInstall { id, command } => {
-                let command = if matches!(
-                    command,
-                    rss_mdm_windows_mdm::agent_install::AgentCommand::Prepare { .. }
-                ) {
+            s::Command::Add { id, .. } | s::Command::Exec { id, .. } => {
+                let command = if matches!(c, s::Command::Add { .. }) {
                     s::CommandName::Add
                 } else {
                     s::CommandName::Exec
@@ -144,7 +141,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
         setup::diagnosis(&mut client.browser, &client.router, policy, case_device()).await?;
     ensure!(
         state["taskAdmission"]["state"] == "eligible"
-            && state["operationId"] == operation.to_string(),
+            && state["operationIds"] == json!([operation]),
         "{state}"
     );
     let (initial, execute) = execute(&peer).await?;
@@ -262,14 +259,14 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
         !observe
             .commands
             .iter()
-            .any(|c| matches!(c, s::Command::AgentInstall { .. }))
+            .any(|c| matches!(c, s::Command::Add { .. } | s::Command::Exec { .. }))
     );
     post(&peer, &reply(&initial, &observe, true)).await?;
     let mut installed = client
         .call(Method::GET, &format!("/{operation}"), None)
         .await?;
     for _ in 0..100 {
-        if installed.1["observation"]["installation"] == "installed" {
+        if installed.1["agentInstallation"]["installation"] == "installed" {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -278,10 +275,12 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
             .await?;
     }
     ensure!(
-        installed.1["observation"]["installation"] == "installed",
+        installed.1["agentInstallation"]["installation"] == "installed",
         "{installed:?}"
     );
-    ensure!(installed.1["observation"]["agentRegistration"]["deviceId"] == receipt["deviceId"]);
+    ensure!(
+        installed.1["agentInstallation"]["agentRegistration"]["deviceId"] == receipt["deviceId"]
+    );
     ensure!(commands.shutdown().join().await?.is_clean());
     let subject = browser_subject(&client.browser, &client.router).await?;
     identity::set_grants(case_tenant(), &subject, vec![]).await?;
@@ -428,15 +427,11 @@ async fn execute(peer: &crate::windows::test_support::Peer) -> Result<(s::Messag
     let mut next = post(peer, &reply(&initial, &prepare, false)).await?;
     let mut initial = initial;
     for index in 0..30 {
-        if next.commands.iter().any(|c| {
-            matches!(
-                c,
-                s::Command::AgentInstall {
-                    command: rss_mdm_windows_mdm::agent_install::AgentCommand::Install(_),
-                    ..
-                }
-            )
-        }) {
+        if next
+            .commands
+            .iter()
+            .any(|c| matches!(c, s::Command::Exec { .. }))
+        {
             return Ok((initial, next));
         }
         // Admission can finish after the first exchange. A newly delivered Prepare still needs its ACK.
@@ -446,15 +441,11 @@ async fn execute(peer: &crate::windows::test_support::Peer) -> Result<(s::Messag
             .any(|command| !matches!(command, s::Command::Status(_)))
         {
             next = post(peer, &reply(&initial, &next, false)).await?;
-            if next.commands.iter().any(|command| {
-                matches!(
-                    command,
-                    s::Command::AgentInstall {
-                        command: rss_mdm_windows_mdm::agent_install::AgentCommand::Install(_),
-                        ..
-                    }
-                )
-            }) {
+            if next
+                .commands
+                .iter()
+                .any(|command| matches!(command, s::Command::Exec { .. }))
+            {
                 return Ok((initial, next));
             }
         }
@@ -482,13 +473,14 @@ async fn failed_prepare_rejects_without_dispatching_installation() -> Result<()>
         !next
             .commands
             .iter()
-            .any(|c| matches!(c, s::Command::AgentInstall { .. }))
+            .any(|c| matches!(c, s::Command::Add { .. } | s::Command::Exec { .. }))
     );
     let state = client
         .call(Method::GET, &format!("/{operation}"), None)
         .await?;
     ensure!(
-        state.1["commandStatus"] == "rejected" && state.1["observation"]["delivery"] == "rejected",
+        state.1["commandStatus"] == "rejected"
+            && state.1["agentInstallation"]["delivery"] == "rejected",
         "{state:?}"
     );
     ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.attempts WHERE operation='{operation}' AND phase='execute'"))?.trim()=="0");
@@ -519,7 +511,7 @@ async fn native_enforcement_failure_is_separate_from_delivery_and_never_reinstal
         .call(Method::GET, &format!("/{operation}"), None)
         .await?;
     for _ in 0..100 {
-        if state.1["observation"]["installation"] == "failed" {
+        if state.1["agentInstallation"]["installation"] == "failed" {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -528,8 +520,8 @@ async fn native_enforcement_failure_is_separate_from_delivery_and_never_reinstal
             .await?;
     }
     ensure!(
-        state.1["observation"]["installation"] == "failed"
-            && state.1["observation"]["delivery"] == "acknowledged",
+        state.1["agentInstallation"]["installation"] == "failed"
+            && state.1["agentInstallation"]["delivery"] == "acknowledged",
         "{state:?}"
     );
     let (_, query) = begin(&peer, 904).await?;
@@ -537,7 +529,7 @@ async fn native_enforcement_failure_is_separate_from_delivery_and_never_reinstal
         !query
             .commands
             .iter()
-            .any(|c| matches!(c, s::Command::AgentInstall { .. }))
+            .any(|c| matches!(c, s::Command::Add { .. } | s::Command::Exec { .. }))
     );
     ensure!(
         client
@@ -575,7 +567,7 @@ async fn cancellation_blocks_registration_and_preserves_uncertain_native_effect(
         .await?;
     ensure!(
         state.1["commandStatus"] == "cancelled"
-            && state.1["observation"]["installation"] == "unknown",
+            && state.1["agentInstallation"]["installation"] == "unknown",
         "{state:?}"
     );
     ensure!(commands.shutdown().join().await?.is_clean());
@@ -616,7 +608,7 @@ async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -
         .call(Method::GET, &format!("/{operation}"), None)
         .await?;
     ensure!(
-        state.1["observation"]["installation"] == "unknown",
+        state.1["agentInstallation"]["installation"] == "unknown",
         "expiry is not a failed installation: {state:?}"
     );
     ensure!(commands.shutdown().join().await?.is_clean());
@@ -659,11 +651,11 @@ async fn replacement_rejects_old_installation_and_requires_current_epoch_absence
         !query
             .commands
             .iter()
-            .any(|c| matches!(c, s::Command::AgentInstall { .. }))
+            .any(|c| matches!(c, s::Command::Add { .. } | s::Command::Exec { .. }))
     );
     let count = || {
         pg(&format!(
-            "SELECT count(*) FROM mdm_commands.operations WHERE tenant_id='{}' AND request->'task'->>'kind'='agent_install'",
+            "SELECT count(*) FROM mdm_commands.operations WHERE tenant_id='{}' AND approval->>'kind'='agent_install'",
             case_tenant()
         ))
     };
@@ -700,7 +692,7 @@ async fn scope_exit_preserves_dispatched_installation_authority_until_its_deadli
         .call(
             &client.router,
             Method::GET,
-            &format!("/api/v2/policies/{policy}"),
+            &format!("/api/v3/policies/{policy}"),
             None,
         )
         .await?;

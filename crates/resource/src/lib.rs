@@ -222,14 +222,6 @@ pub enum Declaration {
     Configuration {
         /// Expected immutable artifact; construction does not load its bytes.
         artifact: Artifact,
-        /// Consumer-owned configuration schema identity.
-        schema: Id,
-        /// Consumer-owned configuration application identity.
-        apply: Id,
-        /// Consumer-owned detection operation identity.
-        detect: Id,
-        /// Optional configuration removal identity; `None` declares none.
-        remove: Option<Id>,
     },
 }
 impl Declaration {
@@ -450,7 +442,7 @@ impl Version {
         } else if self.kind == Kind::NativeCollection {
             b"rss-mdm-resource-native-collection-v1\0".to_vec()
         } else {
-            b"rss-mdm-resource-v1\0".to_vec()
+            b"rss-mdm-resource-native-configuration-v1\0".to_vec()
         });
         e.0.extend(self.tenant.octets());
         e.id(&self.resource);
@@ -492,18 +484,7 @@ impl Version {
                     e.0.extend((bytes.len() as u32).to_be_bytes());
                     e.0.extend(bytes);
                 }
-                Declaration::Configuration {
-                    schema,
-                    apply,
-                    detect,
-                    remove,
-                    ..
-                } => {
-                    e.id(schema);
-                    e.id(apply);
-                    e.id(detect);
-                    e.optional(remove);
-                }
+                Declaration::Configuration { .. } => {}
             }
         }
         e.0
@@ -514,12 +495,6 @@ impl Encoding {
     fn id(&mut self, id: &Id) {
         self.0.extend((id.0.len() as u32).to_be_bytes());
         self.0.extend(id.0.as_bytes());
-    }
-    fn optional(&mut self, id: &Option<Id>) {
-        self.0.push(u8::from(id.is_some()));
-        if let Some(id) = id {
-            self.id(id)
-        }
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

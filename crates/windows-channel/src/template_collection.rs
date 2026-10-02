@@ -20,6 +20,7 @@ fn refs(command: &Command) -> Option<(u32, u32)> {
 }
 pub async fn send(
     c: &mut PgConnection,
+    protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     response: &mut s::Message,
 ) -> Result<bool, Error> {
@@ -57,6 +58,10 @@ pub async fn send(
             final_message: true,
         };
         let bytes = s::encode(&request, &CodecLimits::default()).map_err(|_| corrupt())?;
+        let run = store::load_on(c, &p.tenant().to_string(), id).await?;
+        let bytes = protection
+            .seal_bytes(&bytes, &crate::protection::collection_aad(&run.scope, id)?)
+            .map_err(|_| corrupt())?;
         sqlx::query("INSERT INTO mdm_windows.collections(tenant_id,id,registration,session_id,request_message,first_command,request) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)")
             .bind(p.tenant().to_string()).bind(id).bind(p.registration()).bind(response.header.session_id.to_string()).bind(i64::from(response.header.message_id)).bind(i64::from(first)).bind(bytes).execute(&mut *c).await.map_err(db)?;
         crate::execution::actions::native_collection::sent(c, &p.tenant().to_string(), id).await?;
@@ -67,6 +72,7 @@ pub async fn send(
 }
 pub async fn receive(
     c: &mut PgConnection,
+    protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     message: &s::Message,
     previous: &str,
@@ -103,8 +109,11 @@ pub async fn receive(
             continue;
         }
         let limits = CodecLimits::default();
-        let original = s::decode(&row.try_get::<Vec<u8>, _>("request").map_err(db)?, &limits)
+        let sealed: Vec<u8> = row.try_get("request").map_err(db)?;
+        let plain = protection
+            .open_bytes(&sealed, &crate::protection::collection_aad(&run.scope, id)?)
             .map_err(|_| corrupt())?;
+        let original = s::decode(plain.expose(), &limits).map_err(|_| corrupt())?;
         let (_, sent) = s::encode_request(&original, &limits).map_err(|_| corrupt())?;
         let mut expected =
             s::Expected::new(sent, message.header.message_id, &limits).map_err(|_| corrupt())?;

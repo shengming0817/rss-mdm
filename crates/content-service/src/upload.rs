@@ -6,6 +6,8 @@ use uuid::Uuid;
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UploadBinding {
+    #[serde(skip)]
+    pub storage_class: StorageClass,
     pub resource: String,
     pub version: String,
     pub variant: String,
@@ -32,6 +34,8 @@ impl UploadBinding {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Upload {
+    #[serde(skip)]
+    pub(super) native: Option<super::protected::Checkpoint>,
     pub id: Uuid,
     pub binding: UploadBinding,
     pub offset: u64,
@@ -47,7 +51,7 @@ pub(super) fn storage_key(actor: &str, id: Uuid) -> Uuid {
     Uuid::from_bytes(digest[..16].try_into().expect("digest prefix"))
 }
 impl Upload {
-    fn storage_key(&self) -> Uuid {
+    pub(super) fn storage_key(&self) -> Uuid {
         storage_key(&self.binding.actor, self.id)
     }
 }
@@ -59,23 +63,26 @@ impl Store {
         let path = self.upload_path(id, "json");
         regular(&path)?;
         let file = options().open(path).map_err(|_| Error::Metadata)?;
-        if file.metadata().map_err(|_| Error::Metadata)?.len() > 16_384 {
+        if file.metadata().map_err(|_| Error::Metadata)?.len() > 131_072 {
             return Err(Error::Metadata);
         }
-        let upload: Upload = serde_json::from_reader(file).map_err(|_| Error::Metadata)?;
+        let saved: super::protected::Saved =
+            serde_json::from_reader(file).map_err(|_| Error::Metadata)?;
+        let upload = saved.open(self)?;
         if upload.storage_key() != id || upload.expires <= now {
             return Err(Error::Conflict);
         }
         Ok(upload)
     }
-    fn save_upload(&self, upload: &Upload) -> Result<(), Error> {
+    pub(super) fn save_upload(&self, upload: &Upload) -> Result<(), Error> {
         let temporary = self.upload_path(upload.storage_key(), "next");
         let mut file = options()
             .create(true)
             .truncate(true)
             .open(&temporary)
             .map_err(|_| storage())?;
-        serde_json::to_writer(&mut file, upload).map_err(|_| storage())?;
+        serde_json::to_writer(&mut file, &super::protected::Saved::new(self, upload)?)
+            .map_err(|_| storage())?;
         file.flush().map_err(|_| storage())?;
         file.sync_all().map_err(|_| storage())?;
         fs::rename(temporary, self.upload_path(upload.storage_key(), "json"))
@@ -96,6 +103,7 @@ impl Store {
             return Err(Error::Malformed);
         }
         binding.artifact()?;
+        let reservation = super::protected::reservation(&binding)?;
         let key = storage_key(&binding.actor, id);
         let store = self.clone();
         tokio::task::spawn_blocking(move || {
@@ -111,12 +119,13 @@ impl Store {
             let (reserved, count) = store.temporary_usage_locked()?;
             if count >= store.config.max_uploads
                 || reserved
-                    .checked_add(binding.length)
+                    .checked_add(reservation)
                     .is_none_or(|n| n > store.config.max_temporary_bytes)
             {
                 return Err(Error::Conflict);
             }
-            let upload = Upload {
+            let mut upload = Upload {
+                native: None,
                 id,
                 binding,
                 offset: 0,
@@ -125,6 +134,9 @@ impl Store {
                     .ok_or(Error::Malformed)?,
                 complete: false,
             };
+            if upload.binding.storage_class == StorageClass::NativeConfiguration {
+                upload.native = Some(super::protected::Checkpoint::empty());
+            }
             let file = options()
                 .create(true)
                 .truncate(true)
@@ -174,6 +186,9 @@ impl Store {
             if upload.complete || upload.offset != expected {
                 return Err(Error::Conflict);
             }
+            if upload.binding.storage_class == StorageClass::NativeConfiguration {
+                return Ok((upload, file));
+            }
             if file.metadata().map_err(|_| storage())?.len() < expected {
                 return Err(invariant());
             }
@@ -185,6 +200,9 @@ impl Store {
         })
         .await
         .map_err(|_| storage())??;
+        if upload.binding.storage_class == StorageClass::NativeConfiguration {
+            return self.append_native(upload, file, body).await;
+        }
         let mut file = tokio::fs::File::from_std(file);
         tokio::time::timeout(
             std::time::Duration::from_secs(self.config.transfer_seconds),
@@ -243,15 +261,22 @@ impl Store {
             let _permit = permit;
             let old = s.load_upload(id, now)?;
             if old.complete {
-                s.verify_sync(&old.binding.artifact()?, deadline)?;
+                s.verify_class_sync(
+                    &old.binding.artifact()?,
+                    old.binding.storage_class,
+                    deadline,
+                )?;
                 return Ok(old);
             }
             let mut file = lock(&s.upload_path(id, "part"))?;
             let mut upload = s.load_upload(id, now)?;
             let artifact = upload.binding.artifact()?;
             if upload.complete {
-                s.verify_sync(&artifact, deadline)?;
+                s.verify_class_sync(&artifact, upload.binding.storage_class, deadline)?;
                 return Ok(upload);
+            }
+            if upload.binding.storage_class == StorageClass::NativeConfiguration {
+                return s.finish_native(upload, file, deadline);
             }
             let _blob = lock(&s.blob_lock(artifact.digest().bytes()))?;
             if upload.offset != upload.binding.length {
@@ -303,9 +328,17 @@ impl Store {
             let value = self.load_upload(other, i64::MIN)?;
             if !value.complete || self.upload_path(other, "part").exists() {
                 reserved = reserved
-                    .checked_add(value.binding.length)
+                    .checked_add(super::protected::reservation(&value.binding)?)
                     .ok_or_else(invariant)?;
                 count += 1;
+            } else if value.binding.storage_class == StorageClass::NativeConfiguration {
+                reserved = reserved
+                    .checked_add(
+                        fs::metadata(self.upload_path(other, "json"))
+                            .map_err(|_| storage())?
+                            .len(),
+                    )
+                    .ok_or_else(invariant)?;
             }
         }
         Ok((reserved, count))

@@ -33,6 +33,8 @@ class RunFixtures:
         self.gateway_owner = Environment(group='t2-gateway')
         self.cert_directory = tempfile.TemporaryDirectory(prefix='mdm-t2-run-')
         self.root = Path(self.cert_directory.name)
+        self.native_key = private(self.root / 'native-data.key', '')
+        self.native_key.write_bytes(os.urandom(32))
         self.certificates = Environment(group='t2-certificates')
         self.certificates.root = self.root / 'certificates'
         self.lock = threading.RLock()
@@ -119,6 +121,7 @@ class RunFixtures:
         config['flow']['publication']['database'] = db(root, database, 'mdm_software_driver', 'runtime-fixture')
         config['identity']['tenant_id'] = tenant
         config['native_protocols'] = {}
+        config['native_protection_key_file'] = str(self.native_key)
         config['identity_management'] = [dict(tenant_id=tenant, instance_id=INSTANCE, principal_id=ADMIN,
                                                permissions=['accounts', 'providers'])]
         return config
