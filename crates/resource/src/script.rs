@@ -1,5 +1,5 @@
 //! Frozen execution interface. Values are arguments, never shell command fragments.
-use crate::{Error, Platform};
+use crate::{Architecture, Artifact, Declaration, Error, Id, Platform, Variant, Version};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -96,6 +96,77 @@ pub struct ScriptSpec {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "ScriptSpec", into = "ScriptSpec")]
 pub struct ScriptDefinition(ScriptSpec);
+
+/// One exact script selection whose arguments and immutable content metadata are checked.
+/// This pure result does not prove content availability, device eligibility or authorization.
+pub struct PreparedScript<'a> {
+    version: &'a Version,
+    variant: &'a Variant,
+    definition: &'a ScriptDefinition,
+    artifact: &'a Artifact,
+    parameters: &'a Value,
+}
+impl<'a> PreparedScript<'a> {
+    /// Borrow the immutable resource version.
+    pub fn version(&self) -> &'a Version {
+        self.version
+    }
+    /// Borrow the exact selected variant.
+    pub fn variant(&self) -> &'a Variant {
+        self.variant
+    }
+    /// Borrow the checked execution interface.
+    pub fn definition(&self) -> &'a ScriptDefinition {
+        self.definition
+    }
+    /// Borrow content coordinates; a content owner must still verify the actual bytes.
+    pub fn artifact(&self) -> &'a Artifact {
+        self.artifact
+    }
+    /// Borrow the checked literal arguments.
+    pub fn parameters(&self) -> &'a Value {
+        self.parameters
+    }
+}
+impl Version {
+    /// Prepare one exact script without storage, authorization or execution effects.
+    /// Parameters, profile/platform, the 16 MiB artifact budget and SQL content identity
+    /// are checked here. The consumer separately binds a live content proof.
+    pub fn prepare_script<'a>(
+        &'a self,
+        platform: Platform,
+        architecture: Architecture,
+        variant: &Id,
+        parameters: &'a Value,
+    ) -> Result<PreparedScript<'a>, Error> {
+        let variant = self.resolve(platform, architecture, variant)?;
+        let Declaration::Script {
+            artifact,
+            definition,
+        } = variant.declaration()
+        else {
+            return Err(Error::KindMismatch);
+        };
+        definition.validate_platform(platform)?;
+        definition.validate_parameters(parameters)?;
+        if artifact.length() > 16_777_216 {
+            return Err(Error::InvalidInput);
+        }
+        if let Some(sql) = &definition.spec().sql
+            && (artifact.digest() != crate::Digest::of(sql.query().as_bytes())
+                || artifact.length() != sql.query().len() as u64)
+        {
+            return Err(Error::InvalidDigest);
+        }
+        Ok(PreparedScript {
+            version: self,
+            variant,
+            definition,
+            artifact,
+            parameters,
+        })
+    }
+}
 impl From<ScriptDefinition> for ScriptSpec {
     fn from(value: ScriptDefinition) -> Self {
         value.0

@@ -1,4 +1,6 @@
-use rss_mdm_resource::{Platform, ScriptDefinition};
+use rss_mdm_resource::{
+    Architecture, Artifact, Digest, Error, Id, Platform, ScriptDefinition, Version,
+};
 use serde_json::{Value, json};
 
 fn definition() -> Value {
@@ -59,6 +61,13 @@ fn script_contract_rejects_legacy_external_schema_and_hidden_arguments() {
 }
 
 fn version(value: Value) -> rss_mdm_resource::Version {
+    version_with_artifact(
+        value,
+        Artifact::new(Id::new("content").unwrap(), 3, Digest::of(b"abc")).unwrap(),
+    )
+}
+
+fn version_with_artifact(value: Value, artifact: Artifact) -> Version {
     use rss_mdm_resource::*;
     Version::new(
         rss_request_context::TenantId::parse("10000000-0000-0000-0000-000000000001").unwrap(),
@@ -70,8 +79,7 @@ fn version(value: Value) -> rss_mdm_resource::Version {
             Architecture::Aarch64,
             Id::new("native").unwrap(),
             Declaration::Script {
-                artifact: Artifact::new(Id::new("content").unwrap(), 3, Digest::of(b"abc"))
-                    .unwrap(),
+                artifact,
                 definition: serde_json::from_value(value).unwrap(),
             },
         )],
@@ -170,4 +178,98 @@ fn collection_mapping_accepts_registered_extension_identities_without_a_field_en
             .validate_output(&json!({"version":"build-123"}))
             .is_ok()
     );
+}
+
+#[test]
+fn prepared_script_binds_exact_selection_and_checked_arguments() {
+    let version = version(definition());
+    let parameters = json!({"name":"literal; value"});
+    let key = Id::new("native").unwrap();
+    let prepared = version
+        .prepare_script(Platform::MacOS, Architecture::Aarch64, &key, &parameters)
+        .unwrap();
+    assert_eq!(prepared.version().digest(), version.digest());
+    assert_eq!(prepared.variant().key(), &key);
+    assert_eq!(prepared.parameters(), &parameters);
+    assert_eq!(prepared.artifact().digest(), Digest::of(b"abc"));
+    for (platform, architecture, variant) in [
+        (Platform::Windows, Architecture::Aarch64, key.clone()),
+        (Platform::MacOS, Architecture::X86_64, key.clone()),
+        (
+            Platform::MacOS,
+            Architecture::Aarch64,
+            Id::new("missing").unwrap(),
+        ),
+    ] {
+        assert!(matches!(
+            version.prepare_script(platform, architecture, &variant, &parameters),
+            Err(Error::MissingVariant)
+        ));
+    }
+    for bad in [
+        json!({}),
+        json!({"name":7}),
+        json!({"name":"a","extra":true}),
+        json!({"name":"a\0b"}),
+    ] {
+        assert!(matches!(
+            version.prepare_script(Platform::MacOS, Architecture::Aarch64, &key, &bad),
+            Err(Error::InvalidInput)
+        ));
+    }
+}
+
+#[test]
+fn preparation_enforces_artifact_budget_at_the_boundary() {
+    for (length, accepted) in [(16_777_216, true), (16_777_217, false)] {
+        let version = version_with_artifact(
+            definition(),
+            Artifact::new(Id::new("content").unwrap(), length, Digest::of(b"abc")).unwrap(),
+        );
+        assert_eq!(
+            version
+                .prepare_script(
+                    Platform::MacOS,
+                    Architecture::Aarch64,
+                    &Id::new("native").unwrap(),
+                    &json!({"name":"a"})
+                )
+                .is_ok(),
+            accepted
+        );
+    }
+}
+
+#[test]
+fn sql_preparation_requires_canonical_digest_and_length() {
+    let sql = rss_mdm_resource::SqlTemplate::new(
+        "SELECT version FROM osquery_info WHERE version = :name",
+    )
+    .unwrap();
+    let mut definition = definition();
+    definition["profile"] = json!("osquery");
+    definition["bindings"] = json!({});
+    definition["sql"] = json!(sql.query());
+    let digest = Digest::of(sql.query().as_bytes());
+    for (length, digest, accepted) in [
+        (sql.query().len() as u64, digest, true),
+        (sql.query().len() as u64 + 1, digest, false),
+        (sql.query().len() as u64, Digest::of(b"other"), false),
+    ] {
+        let version = version_with_artifact(
+            definition.clone(),
+            Artifact::new(Id::new("content").unwrap(), length, digest).unwrap(),
+        );
+        let parameters = json!({"name":"1.2"});
+        let result = version.prepare_script(
+            Platform::MacOS,
+            Architecture::Aarch64,
+            &Id::new("native").unwrap(),
+            &parameters,
+        );
+        assert_eq!(result.is_ok(), accepted);
+        if !accepted {
+            assert!(matches!(result, Err(Error::InvalidDigest)));
+        }
+    }
 }
