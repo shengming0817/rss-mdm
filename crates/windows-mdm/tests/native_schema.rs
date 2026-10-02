@@ -250,7 +250,7 @@ fn mutation_readback_requires_native_results_instead_of_an_acknowledgement() {
         operation: Verb::Replace,
         value: Some(Value::Integer(1)),
     };
-    let verification = request.verification(context).unwrap().unwrap();
+    let verification = request.effect_plan(context).unwrap().into_readback().unwrap();
     let goal = verification.expected.values().next().unwrap();
     assert!(!goal.matches(Some(200), None));
     assert!(!goal.matches(Some(200), Some("0")));

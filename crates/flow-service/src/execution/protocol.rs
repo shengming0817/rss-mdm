@@ -162,7 +162,7 @@ async fn settle_one(s: &ExecutionService, tx: &mut PgTransaction<'_>, id: Uuid) 
     }
     if !rejected
         && ((complete && query && has_query && values)
-            || (values && observed(&s.protection, tx, &op).await?))
+            || (values && effect_assessment(&s.protection, tx, &op).await?.state == rss_mdm_windows_mdm::native::verification::EffectState::Verified))
         && !result.command.status().is_terminal()
     {
         report.event =
@@ -224,9 +224,8 @@ pub async fn observation(
         }
         receipts.push(receipt);
     }
-    Ok(
-        json!({"protocol":"syncml","observationScope":"native_objects","receipts":receipts,"progress":super::service::status(command_status),"effect":"unverified"}),
-    )
+    let assessment = effect_assessment(&service.protection, tx, op).await?;
+    Ok(json!({"protocol":"syncml","observationScope":"native_objects","receipts":receipts,"progress":super::service::status(command_status),"effect":assessment.state,"effectReason":assessment.reason}))
 }
 fn result_value(
     protection: &rss_mdm_native_protection::Protector,
@@ -253,57 +252,35 @@ fn result_value(
     ))
 }
 
-async fn observed(
+async fn effect_assessment(
     protection: &rss_mdm_native_protection::Protector,
     tx: &mut PgTransaction<'_>,
     op: &storage::Operation,
-) -> Result<bool> {
-    use rss_mdm_windows_mdm::native::{Context, Execution};
-    let Task::Windows {
-        request: Execution::SyncMl { request },
-    } = &op.request.task
-    else {
-        return Ok(false);
+) -> Result<rss_mdm_windows_mdm::native::verification::EffectAssessment> {
+    use rss_mdm_windows_mdm::native::{Context, Execution, verification::{EffectAssessment, EffectFact, EffectState}};
+    let Task::Windows { request: Execution::SyncMl { request } } = &op.request.task else {
+        return Ok(EffectAssessment { state: EffectState::Unverifiable, reason: Some("software_requires_installation_evidence") });
     };
     let tenant = tx.tenant_id().to_string();
     let id = op.id;
     let state=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Option<Value>>("SELECT platform FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute' ORDER BY ordinal DESC LIMIT 1").bind(tenant).bind(id).fetch_optional(c).await})).await?.flatten();
-    let Some(state) = state else {
-        return Ok(false);
-    };
+    let Some(state) = state else { return Ok(EffectAssessment::waiting("missing_target_evidence")); };
     let context: Context = stored(serde_json::from_value(state))?;
-    let Some(verification) = request
-        .verification(context)
-        .map_err(|_| Error::Unsupported)?
-    else {
-        return Ok(false);
-    };
+    let plan = request.effect_plan(context).map_err(|_| Error::Unsupported)?;
+    if plan.readback().is_none() { return Ok(plan.assess(&[])); }
     let tenant = tx.tenant_id().to_string();
     let rows=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT a.id AS attempt,i.command,i.item_ordinal,i.kind,i.uri,i.status,i.value,i.receipt_accepted,i.result_accepted FROM mdm_commands.attempt_items i JOIN mdm_commands.attempts a ON(a.tenant_id,a.id)=(i.tenant_id,i.attempt) WHERE a.tenant_id=$1::uuid AND a.operation=$2 AND a.phase='observe' AND a.ordinal=(SELECT max(ordinal) FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='observe') ORDER BY i.command,i.item_ordinal").bind(tenant).bind(id).fetch_all(c).await})).await?;
-    let mut matched = std::collections::BTreeSet::new();
+    let mut facts = Vec::new();
     for row in rows {
-        if row.try_get::<Option<bool>, _>("receipt_accepted")? != Some(true) {
-            return Ok(false);
-        }
-        let status: Option<i32> = row.try_get("status")?;
-        let Some(uri) = row.try_get::<Option<String>, _>("uri")? else {
-            if status != Some(200) {
-                return Ok(false);
-            }
-            continue;
-        };
-        let Some(expected) = verification.expected.get(&uri) else {
-            return Err(Error::Malformed.into());
-        };
-        let value = result_value(protection, tx.tenant_id(), op, &row)?;
-        if (value.is_some() && row.try_get::<Option<bool>, _>("result_accepted")? != Some(true))
-            || !expected.matches(status, value.as_deref())
-        {
-            return Ok(false);
-        }
-        matched.insert(uri);
+        facts.push(EffectFact {
+            uri: row.try_get::<Option<String>, _>("uri")?.unwrap_or_default(),
+            status: row.try_get("status")?,
+            value: result_value(protection, tx.tenant_id(), op, &row)?,
+            receipt_accepted: row.try_get::<Option<bool>, _>("receipt_accepted")? == Some(true),
+            result_accepted: row.try_get::<Option<bool>, _>("result_accepted")? == Some(true),
+        });
     }
-    Ok(matched.len() == verification.expected.len())
+    Ok(plan.assess(&facts))
 }
 
 /// A server-side native validation failure cancels dispatch; it is never a device rejection.
