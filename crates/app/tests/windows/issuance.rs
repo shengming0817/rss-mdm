@@ -916,7 +916,7 @@ async fn native_renewal_preserves_registration_and_activates_only_after_new_tls_
             .send()
             .await?
             .status()
-            == axum::http::StatusCode::UNAUTHORIZED,
+            == axum::http::StatusCode::FORBIDDEN,
         "old credential survived activation"
     );
     let scope = host
