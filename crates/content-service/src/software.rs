@@ -28,25 +28,31 @@ impl catalog::ContentPort for SoftwareContent {
         self.store.as_ref().verify(version)
     }
 }
-/// A single uploaded original and its verified file pin, retained through transaction settlement.
-pub struct ImportEvidence {
+/// Uploaded originals awaiting batch verification.
+pub struct StagedImport {
     upload: Upload,
-    _pin: Verified,
+    artifact: rss_mdm_resource::Artifact,
+}
+/// All uploaded originals and verified pins retained through transaction settlement.
+pub struct ImportEvidence {
+    uploads: Vec<Upload>,
+    _pins: Vec<Verified>,
 }
 impl ImportedContent for ImportEvidence {
     async fn bind_in<'a>(&'a self, tx: &'a mut PgTransaction<'_>) -> Result<(), Fault> {
-        bindings::bind_in(tx, &self.upload)
-            .await
-            .map(|_| ())
-            .map_err(|e| match e {
+        for upload in &self.uploads {
+            bindings::bind_in(tx, upload).await.map_err(|e| match e {
                 bindings::Error::Content(e) => Fault::Request(error(e)),
                 bindings::Error::Storage(e) => Fault::Storage(e),
                 bindings::Error::Sql(e) => Fault::Sql(e),
-            })
+            })?;
+        }
+        Ok(())
     }
 }
 impl ManagementContentPort for SoftwareContent {
     type Download = Verified;
+    type StagedImport = StagedImport;
     type ImportEvidence = ImportEvidence;
     async fn verify_artifact(
         &self,
@@ -54,7 +60,7 @@ impl ManagementContentPort for SoftwareContent {
     ) -> Result<Verified, Error> {
         self.store.verify(artifact).await.map_err(error)
     }
-    async fn stage_import(&self, input: StageImport<'_>) -> Result<ImportEvidence, Error> {
+    async fn stage_import(&self, input: StageImport<'_>) -> Result<StagedImport, Error> {
         if input.version.tenant() != self.store.tenant {
             return Err(Error::Forbidden);
         }
@@ -100,8 +106,22 @@ impl ManagementContentPort for SoftwareContent {
             .finish(input.actor, input.upload, self.now()?)
             .await
             .map_err(error)?;
-        let pin = self.store.verify(&artifact).await.map_err(error)?;
-        Ok(ImportEvidence { upload, _pin: pin })
+        Ok(StagedImport { upload, artifact })
+    }
+    async fn pin_imports(&self, staged: Vec<StagedImport>) -> Result<ImportEvidence, Error> {
+        let artifacts = staged
+            .iter()
+            .map(|s| s.artifact.clone())
+            .collect::<Vec<_>>();
+        let pins = self
+            .store
+            .verify_materials(&artifacts)
+            .await
+            .map_err(error)?;
+        Ok(ImportEvidence {
+            uploads: staged.into_iter().map(|s| s.upload).collect(),
+            _pins: pins,
+        })
     }
 }
 fn error(error: crate::Error) -> software::Error {

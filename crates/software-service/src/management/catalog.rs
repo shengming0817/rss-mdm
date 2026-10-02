@@ -325,7 +325,7 @@ pub async fn import<C: ManagementContentPort>(
         TransactionOwner::SoftwareCatalog,
     )
     .await?;
-    let mut retained = Vec::new();
+    let mut retained = None;
     let prepared = if let Some(source) = source {
         let content = app.content.as_ref().ok_or(Error::Unsupported)?;
         let origins = app
@@ -350,6 +350,7 @@ pub async fn import<C: ManagementContentPort>(
         let prepared =
             imports::prepare(app.tenant, &source, &op.input, &documents).map_err(import_failure)?;
         let actor = format!("{}:{}", auth.instance_id(), auth.principal_id());
+        let mut staged = Vec::new();
         for (artifact, bytes) in &prepared.originals {
             auth.check_live()?;
             let hash = Sha256::digest(
@@ -361,7 +362,7 @@ pub async fn import<C: ManagementContentPort>(
                 .concat(),
             );
             let upload = uuid::Uuid::from_bytes(hash[..16].try_into().expect("digest prefix"));
-            retained.push(
+            staged.push(
                 content
                     .stage_import(StageImport {
                         upload,
@@ -377,6 +378,7 @@ pub async fn import<C: ManagementContentPort>(
                     .await?,
             );
         }
+        retained = Some(content.pin_imports(staged).await?);
         Some(prepared)
     } else {
         None

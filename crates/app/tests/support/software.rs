@@ -54,8 +54,17 @@ impl Fixture {
         Self::with_peer(peer).await
     }
     pub(crate) async fn with_peer(peer: Option<publication_support::Server>) -> Result<Self> {
+        Self::with_peer_and_uploads(peer, None).await
+    }
+    pub(crate) async fn with_peer_and_uploads(
+        peer: Option<publication_support::Server>,
+        max_uploads: Option<u64>,
+    ) -> Result<Self> {
         let mut base: Value =
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+        if let Some(max_uploads) = max_uploads {
+            base["content"]["max_uploads"] = json!(max_uploads);
+        }
         let directory = std::path::PathBuf::from(base["content"]["directory"].as_str().unwrap());
         if let Some(peer) = &peer {
             base["content"]["imports"][&peer.logical] = json!([{"base":format!("{}artifacts/",peer.base),"addresses":[peer.address],"private_ca":peer.ca}]);

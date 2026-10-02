@@ -243,7 +243,7 @@ impl Policies {
             let selected = self
                 .execution
                 .software
-                .recheck_in(
+                .resolve_in(
                     tx,
                     &rss_mdm_software_service::preparation::Selection {
                         resource: binding.id(),
@@ -258,8 +258,7 @@ impl Policies {
                         architecture,
                     },
                 )
-                .await?
-                .ok_or(Error::Conflict)?;
+                .await?;
             let variant = selected
                 .version()
                 .resolve(

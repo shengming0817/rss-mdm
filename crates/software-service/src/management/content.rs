@@ -18,6 +18,7 @@ pub struct StageImport<'a> {
 }
 pub trait ManagementContentPort: ContentPort {
     type Download: Send;
+    type StagedImport: Send;
     type ImportEvidence: ImportedContent;
     fn verify_artifact(
         &self,
@@ -26,6 +27,11 @@ pub trait ManagementContentPort: ContentPort {
     fn stage_import(
         &self,
         input: StageImport<'_>,
+    ) -> impl Future<Output = Result<Self::StagedImport, Error>> + Send;
+    /// Pin all staged originals under one transfer permit through transaction settlement.
+    fn pin_imports(
+        &self,
+        staged: Vec<Self::StagedImport>,
     ) -> impl Future<Output = Result<Self::ImportEvidence, Error>> + Send;
 }
 /// Pins live until the caller settles the borrowed binding transaction.

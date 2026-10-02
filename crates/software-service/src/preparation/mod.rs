@@ -78,22 +78,7 @@ impl Preparation {
                 variant,
                 uninstall,
             };
-            let selected = self
-                .catalog
-                .resolve_admitted_in(
-                    tx,
-                    resource,
-                    version,
-                    target.platform,
-                    target.architecture,
-                    &r::Id::new(variant).map_err(|_| Error::Input)?,
-                )
-                .await?;
-            if selected.version().digest().bytes() != digest
-                || selected.admission().operation != admission
-            {
-                return Err(Error::Conflict);
-            }
+            let selected = self.resolve_in(tx, &binding, *target).await?;
             if uninstall && !definition(&selected)?.behavior.supports_removal() {
                 return Err(Error::Unsupported);
             }
@@ -105,13 +90,13 @@ impl Preparation {
         }
         Ok(())
     }
-    /// Missing or withdrawn approval is local ineligibility, not a failed claim page.
-    pub async fn recheck_in(
+    /// Resolve an authored binding strictly, preserving rejection and identity mismatch errors.
+    pub async fn resolve_in(
         &self,
         tx: &mut PgTransaction<'_>,
         binding: &Selection<'_>,
         target: Target,
-    ) -> Result<Option<FrozenSoftware>> {
+    ) -> Result<FrozenSoftware> {
         let selected = self
             .catalog
             .resolve_admitted_in(
@@ -122,18 +107,26 @@ impl Preparation {
                 target.architecture,
                 &r::Id::new(binding.variant).map_err(|_| Error::Input)?,
             )
-            .await;
-        let selected = match selected {
-            Ok(v) => v,
-            Err(Error::Missing | Error::NotAdmitted) => return Ok(None),
-            Err(e) => return Err(e),
-        };
+            .await?;
         if selected.version().digest().bytes() != binding.digest
             || selected.admission().operation != binding.admission
         {
-            return Ok(None);
+            return Err(Error::Conflict);
         }
-        Ok(Some(selected))
+        Ok(selected)
+    }
+    /// Missing, withdrawn or superseded approval is local execution ineligibility.
+    pub async fn recheck_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        binding: &Selection<'_>,
+        target: Target,
+    ) -> Result<Option<FrozenSoftware>> {
+        match self.resolve_in(tx, binding, target).await {
+            Ok(selected) => Ok(Some(selected)),
+            Err(Error::Missing | Error::NotAdmitted | Error::Conflict) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
     /// All software steps are bound to the explicitly supplied execution context.
     /// The consumer must still verify live device profiles and registration authority.

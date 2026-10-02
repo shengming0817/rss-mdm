@@ -456,7 +456,11 @@ async fn dependency_admission_uses_exact_current_approval() -> Result<()> {
         |ctx, tx| {
             Box::pin(async move {
                 let (preparation, binding, context) = *ctx;
-                ensure_catalog(preparation.recheck_in(tx, binding, target).await?.is_some())?;
+                ensure_catalog(matches!(
+                    preparation.resolve_in(tx, binding, target).await,
+                    Err(catalog::Error::NotAdmitted)
+                ))?;
+                ensure_catalog(preparation.recheck_in(tx, binding, target).await?.is_none())?;
                 ensure_catalog(
                     preparation
                         .prepare_in(tx, binding, target, &Delivery::Direct, context)
