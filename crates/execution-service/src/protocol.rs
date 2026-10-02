@@ -52,10 +52,9 @@ impl ExecutionService {
                         .with_connection(move |c| {
                             Box::pin(async move {
                                 Ok(manage_on(
-                                    source.as_ref(),
                                     c,
                                     w,
-                                    &protection,
+                                    (source.as_ref(), &protection),
                                     &principal,
                                     &message,
                                     &bytes,
@@ -92,15 +91,18 @@ impl ExecutionService {
     }
 }
 async fn manage_on(
-    source: &dyn crate::source_authority::SourceAuthority,
     c: &mut sqlx::PgConnection,
     windows: Arc<dyn channels::Windows>,
-    key: &rss_mdm_native_protection::Protector,
+    authority: (
+        &dyn crate::source_authority::SourceAuthority,
+        &rss_mdm_native_protection::Protector,
+    ),
     p: &DevicePrincipal,
     raw: &rss_mdm_windows_mdm::syncml::Message,
     bytes: &[u8],
     audit: &RequestAudit,
 ) -> std::result::Result<(channels::Reply, channels::PackageState), Error> {
+    let (source, key) = authority;
     use channels::{PackageState as P, WindowsReception};
     use rss_mdm_windows_mdm::syncml::{self as sm, Alert, Command};
     let (mut prepared, authenticated) = match windows

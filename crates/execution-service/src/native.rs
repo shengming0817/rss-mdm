@@ -675,8 +675,7 @@ pub async fn send_on(
                 attempt,
                 response.header.message_id,
                 command.id(),
-                0,
-                frame.end,
+                0..frame.end,
                 total,
             )
             .await?;

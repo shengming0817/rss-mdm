@@ -24,12 +24,11 @@ pub(super) async fn record(
     attempt: Uuid,
     message: u32,
     command: u32,
-    start: usize,
-    end: usize,
+    range: std::ops::Range<usize>,
     total: usize,
 ) -> Result<(), Error> {
     sqlx::query("INSERT INTO mdm_commands.attempt_frames(tenant_id,attempt,message,command,start_byte,end_byte,total_bytes) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)")
-        .bind(p.tenant().to_string()).bind(attempt).bind(i64::from(message)).bind(i64::from(command)).bind(start as i32).bind(end as i32).bind(total as i32).execute(c).await.map_err(db)?;
+        .bind(p.tenant().to_string()).bind(attempt).bind(i64::from(message)).bind(i64::from(command)).bind(range.start as i32).bind(range.end as i32).bind(total as i32).execute(c).await.map_err(db)?;
     Ok(())
 }
 
@@ -178,8 +177,7 @@ pub async fn continue_on(
         attempt,
         response.header.message_id,
         id,
-        end,
-        frame.end,
+        end..frame.end,
         total,
     )
     .await?;

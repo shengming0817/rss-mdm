@@ -107,13 +107,13 @@ async fn collect(
         &rss_mdm_native_protection::Protector,
         Option<&sqlx::postgres::PgRow>,
         Option<&syncml::Expected>,
+        bool,
     ),
     response: &mut syncml::Message,
-    authenticated_session: bool,
     dispatch: bool,
 ) -> Result<(Option<Uuid>, bool), Error> {
     let (facts, audit) = effects;
-    let (protection, stored, history) = native;
+    let (protection, stored, history, authenticated_session) = native;
     let tenant = scope.tenant().to_string();
     let registration = scope.registration().as_str().to_owned();
     let run_id = stored

@@ -55,10 +55,10 @@ impl Assembly {
         limits: &CodecLimits,
     ) -> Result<Frame, Fault> {
         let required = self.partial.as_ref().map(|p| p.reference.clone());
-        if let Some(p) = &self.partial {
-            if p.next != raw.header.message_id {
-                return Err(Fault::Interrupted(p.reference.clone()));
-            }
+        if let Some(p) = &self.partial
+            && p.next != raw.header.message_id
+        {
+            return Err(Fault::Interrupted(p.reference.clone()));
         }
         let mut touched = false;
         let mut output = raw.clone();
@@ -76,23 +76,20 @@ impl Assembly {
                 continue;
             }
             let Command::Results(result) = command else {
-                if self.partial.is_some() {
-                    return Err(Fault::Interrupted(
-                        self.partial.as_ref().unwrap().reference.clone(),
-                    ));
+                if let Some(partial) = &self.partial {
+                    return Err(Fault::Interrupted(partial.reference.clone()));
                 }
                 continue;
             };
             let mut items = Vec::new();
             for item in &result.items {
-                if let Some(partial) = &self.partial {
-                    if partial.next != raw.header.message_id
+                if let Some(partial) = &self.partial
+                    && (partial.next != raw.header.message_id
                         || result.message_ref.unwrap_or(1) != partial.reference.message_id
                         || result.command_ref.unwrap_or(1) != partial.reference.command_id
-                        || item.source.as_deref() != Some(partial.reference.uri.as_str())
-                    {
-                        return Err(Fault::Interrupted(partial.reference.clone()));
-                    }
+                        || item.source.as_deref() != Some(partial.reference.uri.as_str()))
+                {
+                    return Err(Fault::Interrupted(partial.reference.clone()));
                 }
                 let reference = expected
                     .get_reference(
@@ -211,10 +208,8 @@ impl Assembly {
                 result.meta = None;
             }
         }
-        if !touched {
-            if let Some(reference) = required {
-                return Err(Fault::Interrupted(reference));
-            }
+        if !touched && let Some(reference) = required {
+            return Err(Fault::Interrupted(reference));
         }
         output
             .commands
@@ -383,15 +378,15 @@ mod tests {
             a.feed(&packet(2, 7, "YWJ", true, Some(8)), &expected, &limits)
                 .unwrap();
             let mut next = packet(3, 9, "jZA==", false, None);
-            if kind == 0 {
-                if let Command::Results(r) = &mut next.commands[1] {
-                    r.items[0].source = Some("./two".into());
-                }
+            if kind == 0
+                && let Command::Results(r) = &mut next.commands[1]
+            {
+                r.items[0].source = Some("./two".into());
             }
-            if kind == 3 {
-                if let Command::Results(r) = &mut next.commands[1] {
-                    r.items[0].source = Some("./unknown".into());
-                }
+            if kind == 3
+                && let Command::Results(r) = &mut next.commands[1]
+            {
+                r.items[0].source = Some("./unknown".into());
             }
             if kind == 4 {
                 next.header.message_id = 4;
@@ -399,10 +394,10 @@ mod tests {
             if kind == 1 {
                 next.commands.truncate(1);
             }
-            if kind == 2 {
-                if let Command::Results(r) = &mut next.commands[1] {
-                    r.items[0].meta.as_mut().unwrap().size = Some(8);
-                }
+            if kind == 2
+                && let Command::Results(r) = &mut next.commands[1]
+            {
+                r.items[0].meta.as_mut().unwrap().size = Some(8);
             }
             assert!(matches!(
                 a.feed(&next, &expected, &limits),

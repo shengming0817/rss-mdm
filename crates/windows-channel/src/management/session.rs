@@ -287,9 +287,8 @@ impl WindowsSession for Session {
                     (&mut self.facts, &self.audit),
                     &self.scope,
                     &filtered,
-                    (key, self.stored.as_ref(), history),
+                    (key, self.stored.as_ref(), history, self.authenticated),
                     response,
-                    self.authenticated,
                     dispatch,
                 )
                 .await?;

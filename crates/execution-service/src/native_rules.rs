@@ -26,7 +26,7 @@ pub(crate) fn compatible_receipt(
             && new.is_some_and(|new| {
                 old != new && !(atomic && matches!(new, 216 | 516) && successful_status(kind, old))
             })
-    }) && !old_value.is_some_and(|old| new_value.is_some_and(|new| old != new))
+    }) && old_value.is_none_or(|old| new_value.is_none_or(|new| old == new))
 }
 
 pub(crate) fn accepts_frame(code: i32, accepted: bool, end: i32, total: i32) -> bool {
