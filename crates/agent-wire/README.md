@@ -1,5 +1,9 @@
-# rss-mdm-agent-wire
+# Agent 协议
 
-服务端与独立 Agent 共享的闭合 wire 协议。公共契约由 [源码与 rustdoc](src/lib.rs) 持有，使用流程见 [任务指南](../../docs/guides/agent-integration.md)。
+`enroll` 持有 `/api/agent/enroll/v1` 生命周期 DTO、schema 清单和指纹；`runtime` 持有 `/api/agent/runtime/v1` 消费的运行 JSON。HTTP API 各自版本为 1，运行 payloadVersion 保持 6，capability 和签名域仍为 v6。
 
-版本化 JSON schema、规范样本和指纹由 [schemas](schema) 及 tests 持有。软件任务的 `task-payload-v6.schema.json` 是其嵌入形态的单一 schema 来源；修改后运行 `python3 hack/agent_wire_artifact.py --write` 生成三处嵌入和指纹，再运行无参数检查。仅共享协议值类型，不依赖服务端 domain/PG；生产者和接收者都执行闭合输入检查。
+只有当前合同，没有旧模块别名或版本解码。秘密只用于一次性授权，业务认证由服务端真实 mTLS 证据持有。运行绑定回执使用 `runtime::BindingProfile`，包含 server-owned DeviceId、registration、generation、epoch 和冻结 collections；生命周期激活回执嵌入该 profile。
+
+`hack/agent_wire_artifact.py --write` 刷新嵌入的任务定义及两个独立 schema 指纹；不带参数验证清单、覆盖和规范嵌入。Rust T1 验证严格字段、版本、签名域和 schema 消费。
+
+详见[Agent 接入指南](../../docs/guides/agent-integration.md)。

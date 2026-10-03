@@ -1,5 +1,5 @@
 //! Current locally reported execution context, distinct from capabilities and scope.
-use crate::{
+use crate::runtime::{
     ExecutionIdentity, SoftwareTaskAction, SoftwareTaskBehavior, SoftwareTaskDetection,
     SoftwareTaskMsixDeployment, SoftwareTaskUser, TaskPlatform, WireError,
 };
@@ -32,7 +32,7 @@ pub struct SoftwareInteractiveUser {
     /// Windows SID or macOS numeric UID.
     pub identity: String,
     /// Changes on logoff/login; identical account names cannot reuse a previous session.
-    #[serde(with = "crate::strict_uuid")]
+    #[serde(with = "crate::runtime::strict_uuid")]
     pub session_id: Uuid,
     /// Privilege needed by the exact native profile, not a generic authorization grant.
     pub administrator: bool,
@@ -130,7 +130,7 @@ pub enum SoftwareExecutionTarget {
         /// Exact SID/UID.
         identity: String,
         /// Exact login generation.
-        #[serde(with = "crate::strict_uuid")]
+        #[serde(with = "crate::runtime::strict_uuid")]
         session_id: Uuid,
     },
 }

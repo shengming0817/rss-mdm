@@ -8,9 +8,9 @@ import sys
 import copy
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMAS = ROOT / "crates/agent-wire/schema"
+SCHEMAS = ROOT / "crates/agent-wire/schema/runtime"
 MANIFEST = SCHEMAS / "agent-v6.schema-manifest.json"
-LIB = ROOT / "crates/agent-wire/src/lib.rs"
+LIB = ROOT / "crates/agent-wire/src/runtime.rs"
 EMBEDDED = {
     "signed-task-v6.schema.json": ("properties", "payload"),
     "task-claim-response-v6.schema.json": ("properties", "task", "oneOf", 1, "properties", "payload"),
@@ -54,7 +54,7 @@ def collection_definitions():
 
 
 def write_collections():
-    for name in ["report-request-v6.schema.json","registration-receipt-v6.schema.json"]:
+    for name in ["report-request-v6.schema.json","binding-profile-v6.schema.json"]:
         path=SCHEMAS/name
         schema=json.loads(path.read_text())
         schema.setdefault("$defs",{}).update(collection_definitions())
@@ -104,7 +104,7 @@ def write():
 
 def check():
     manifest = json.loads(MANIFEST.read_text())
-    if manifest.get("wireVersion") != 6:
+    if manifest.get("wireVersion") != 6 or manifest.get("apiVersion") != 1:
         raise ValueError("manifest must declare Agent V6")
     files = [entry["file"] for entry in manifest["schemas"]]
     if len(files) != len(set(files)) or not files or any(not name.endswith("-v6.schema.json") for name in files):
@@ -112,7 +112,7 @@ def check():
     actual = {path.name for path in SCHEMAS.glob("*.json")}
     if actual != set(files) | {MANIFEST.name}:
         raise ValueError("schema directory differs from the V6 manifest")
-    for name in ["report-request-v6.schema.json","registration-receipt-v6.schema.json"]:
+    for name in ["report-request-v6.schema.json","binding-profile-v6.schema.json"]:
         definitions=json.loads((SCHEMAS/name).read_text()).get("$defs",{})
         if any(definitions.get(key)!=value for key,value in collection_definitions().items()):
             raise ValueError(f"{name}: collection contracts differ from their canonical schema")
@@ -128,7 +128,7 @@ def check():
     for name in files:
         data = (SCHEMAS / name).read_bytes()
         schema = json.loads(data)
-        if "/agent/v6/" not in schema.get("$id", ""):
+        if "/agent/runtime/v1/payload/v6/" not in schema.get("$id", ""):
             raise ValueError(f"{name}: non-V6 schema identifier")
         digest.update(data)
     expected = re.search(r'pub const SCHEMA_FINGERPRINT: &str =\s*"([0-9a-f]{64})"', LIB.read_text())
@@ -136,17 +136,56 @@ def check():
         raise ValueError("schema fingerprint differs from the declared V6 artifact")
 
 
+ENROLL=ROOT / "crates/agent-wire/schema/enroll"
+ENROLL_LIB=ROOT / "crates/agent-wire/src/enroll.rs"
+def enrollment(write=False):
+    manifest=json.loads((ENROLL/"manifest.json").read_text())
+    if manifest.get("apiVersion")!=1:raise ValueError("enrollment manifest version")
+    files=[entry["file"] for entry in manifest["schemas"]]
+    if len(files)!=len(set(files)) or {p.name for p in ENROLL.glob("*.json")}!=set(files)|{"manifest.json"}:raise ValueError("enrollment schema directory differs from manifest")
+    binding=json.loads((SCHEMAS/"binding-profile-v6.schema.json").read_text())
+    binding_shape={k:v for k,v in binding.items() if k not in ("$schema","$id","$defs")}
+    task=json.loads((SCHEMAS/"task-payload-v6.schema.json").read_text())
+    canonical_defs={**binding["$defs"],"SoftwareExecutionContext":task["$defs"]["SoftwareExecutionContext"]}
+    digest=hashlib.sha256()
+    for name in files:
+        schema=json.loads((ENROLL/name).read_text())
+        profile=schema.get("properties",{}).get("runtime",{})
+        if "capabilities" in profile.get("properties",{}):
+            if write:profile["properties"]["capabilities"]=copy.deepcopy(binding["properties"]["capabilities"])
+            elif profile["properties"]["capabilities"]!=binding["properties"]["capabilities"]:raise ValueError(f"{name}: runtime capabilities drift")
+        definitions=schema.get("$defs",{})
+        if "bindingProfile" in definitions:
+            if write:definitions["bindingProfile"]=copy.deepcopy(binding_shape)
+            elif definitions["bindingProfile"]!=binding_shape:raise ValueError(f"{name}: runtime binding drift")
+        for key in definitions.keys() & canonical_defs.keys():
+            if write:definitions[key]=copy.deepcopy(canonical_defs[key])
+            elif definitions[key]!=canonical_defs[key]:raise ValueError(f"{name}: runtime definition drift: {key}")
+        if write:(ENROLL/name).write_text(json.dumps(schema,indent=2,ensure_ascii=False)+"\n")
+        data=(ENROLL/name).read_bytes()
+        if "/agent/enroll/v1/" not in json.loads(data).get("$id",""):raise ValueError("enrollment schema identity")
+        digest.update(data)
+    source=ENROLL_LIB.read_text()
+    pattern=r'(pub const SCHEMA_FINGERPRINT:\s*&str\s*=\s*")[0-9a-f]{64}(";)'
+    if write:
+        source,count=re.subn(pattern,lambda m:m[1]+digest.hexdigest()+m[2],source)
+        if count!=1:raise ValueError("enrollment fingerprint declaration")
+        ENROLL_LIB.write_text(source)
+    elif digest.hexdigest() not in source:raise ValueError("enrollment schema fingerprint")
+
 def main():
     try:
         if sys.argv[1:] == ["--write"]:
             write()
+            enrollment(True)
         elif len(sys.argv) != 1:
             raise ValueError("usage: agent_wire_artifact.py [--write]")
         check()
+        enrollment()
     except (ValueError, OSError, KeyError, TypeError) as error:
         print(f"agent-wire artifact: {error}", file=sys.stderr)
         return 1
-    print("Agent V6 manifest and schemas are complete")
+    print("Agent enrollment V1 and runtime V1 / payload V6 artifacts are complete")
     return 0
 
 

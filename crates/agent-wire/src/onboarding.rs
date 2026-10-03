@@ -1,5 +1,5 @@
 //! V6 channel enrollment contracts. Device identity is derived from transport proof.
-use crate::{Capability, Secret, TaskArchitecture, TaskPlatform, WireError, strict_uuid};
+use crate::runtime::{TaskArchitecture, TaskPlatform, WireError, strict_uuid};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -27,60 +27,6 @@ impl MdmEnrollmentState {
         }
     }
 }
-/// Unattended registration submitted on the native MDM TLS listener.
-/// The operation is a public coordinate, never a bearer credential or device identity claim.
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ManagedRegistrationRequest {
-    /// Exact protocol major.
-    #[serde(deserialize_with = "crate::tasks::version")]
-    pub wire_version: u8,
-    /// Stable Agent-selected retry identity.
-    #[serde(with = "strict_uuid")]
-    pub operation_id: Uuid,
-    /// Native installation operation that authorized this one registration.
-    #[serde(with = "strict_uuid")]
-    pub installation_operation: Uuid,
-    /// Agent-generated long-term credential; never embedded in the installer.
-    pub credential: Secret,
-    /// Supported ordered capability profile.
-    #[serde(deserialize_with = "capabilities")]
-    pub capabilities: Vec<Capability>,
-    /// Locally verified operating system.
-    pub platform: TaskPlatform,
-    /// Locally verified processor architecture.
-    pub architecture: TaskArchitecture,
-    /// Current locally reported environment, required even when no software profile is installed.
-    pub execution_context: crate::SoftwareExecutionContext,
-}
-impl ManagedRegistrationRequest {
-    /// Decode the closed request with the same negotiation errors as regular registration.
-    pub fn decode(body: &[u8]) -> Result<Self, crate::ErrorCode> {
-        crate::decode_registration(body)
-    }
-
-    /// Validate producer-created values as well as strict decoded values.
-    pub fn validate(&self) -> Result<(), WireError> {
-        if self.wire_version != crate::WIRE_VERSION
-            || self.operation_id.is_nil()
-            || self.installation_operation.is_nil()
-            || !crate::supported_capabilities(&self.capabilities)
-        {
-            return Err(WireError::InvalidValue);
-        }
-        self.execution_context.validate_for(self.platform)?;
-        Ok(())
-    }
-}
-
-fn capabilities<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Capability>, D::Error> {
-    let value = Vec::<Capability>::deserialize(d)?;
-    if !crate::supported_capabilities(&value) {
-        return Err(serde::de::Error::custom(WireError::InvalidValue));
-    }
-    Ok(value)
-}
-
 /// Platform-owned enrollment entry; opening it never proves enrollment completed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -148,7 +94,7 @@ pub struct EnrollmentTaskSpec {
     #[serde(with = "strict_uuid")]
     pub attempt_id: Uuid,
     /// Offer or explicit start permission.
-    pub permit: crate::TaskPermit,
+    pub permit: crate::runtime::TaskPermit,
     /// Expiry of this signed permission.
     pub expires_at: i64,
     /// Target organization, fixed by server configuration and Policy publication.
@@ -161,7 +107,7 @@ impl EnrollmentTaskSpec {
     /// Canonical signature domain, bound to every identity and enrollment input.
     pub fn signing_bytes(&self, key_id: &str) -> Result<Vec<u8>, WireError> {
         self.entry.validate(self.platform)?;
-        if self.wire_version != crate::WIRE_VERSION
+        if self.wire_version != crate::runtime::PAYLOAD_VERSION
             || self.tenant_id.is_nil()
             || self.organization != self.tenant_id
             || self.registration_id.is_nil()

@@ -1,4 +1,4 @@
-use rss_mdm_agent_wire::{TaskEvent, TaskEventRequest};
+use rss_mdm_agent_wire::runtime::{TaskEvent, TaskEventRequest};
 use serde_json::json;
 use uuid::Uuid;
 #[test]
@@ -33,7 +33,7 @@ fn signatures_bind_attempt_artifact_and_permission_and_fail_closed() {
         rand::SystemRandom,
         signature::{Ed25519KeyPair, KeyPair},
     };
-    use rss_mdm_agent_wire::*;
+    use rss_mdm_agent_wire::runtime::*;
     let document = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
     let key = Ed25519KeyPair::from_pkcs8(document.as_ref()).unwrap();
     let id = Uuid::new_v4();
@@ -160,7 +160,7 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
         rand::SystemRandom,
         signature::{Ed25519KeyPair, KeyPair},
     };
-    use rss_mdm_agent_wire::*;
+    use rss_mdm_agent_wire::runtime::*;
     let id = Uuid::new_v4();
     let steps = vec![SoftwareTaskStep {
         action: serde_json::from_value(json!({"package":"acme.editor","version":"2","reboot":"report","downgrade":"deny","behavior":{"kind":"msi","installer":"installer","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"2"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[]})).unwrap(),
@@ -178,7 +178,7 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
             .try_into()
             .unwrap();
     let spec = SoftwareTaskSpec {
-        execution_context: rss_mdm_agent_wire::SoftwareExecutionContext {
+        execution_context: rss_mdm_agent_wire::runtime::SoftwareExecutionContext {
             revision: 1,
             os_version: [14, 0, 0, 0],
             system_broker: true,
@@ -204,8 +204,10 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
         start_mode: SoftwareStartMode::Automatic,
     };
     let payload: TaskPayload = spec.clone().try_into().unwrap();
-    let schema: serde_json::Value =
-        serde_json::from_str(include_str!("../schema/task-payload-v6.schema.json")).unwrap();
+    let schema: serde_json::Value = serde_json::from_str(include_str!(
+        "../schema/runtime/task-payload-v6.schema.json"
+    ))
+    .unwrap();
     let validator = jsonschema::draft202012::new(&schema).unwrap();
     assert!(validator.is_valid(&serde_json::to_value(&payload).unwrap()));
     for change in [
@@ -269,14 +271,14 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
 
 #[test]
 fn task_response_schemas_and_rust_reject_unknown_major_and_authority() {
-    use rss_mdm_agent_wire::{MAX_TASK_CANCELLATIONS, TaskClaimResponse, TaskEventAck};
+    use rss_mdm_agent_wire::runtime::{MAX_TASK_CANCELLATIONS, TaskClaimResponse, TaskEventAck};
     let samples = [
         (
-            include_str!("../schema/task-claim-response-v6.schema.json"),
+            include_str!("../schema/runtime/task-claim-response-v6.schema.json"),
             json!({"wireVersion":6,"task":null,"cancellations":[]}),
         ),
         (
-            include_str!("../schema/task-event-ack-v6.schema.json"),
+            include_str!("../schema/runtime/task-event-ack-v6.schema.json"),
             json!({"wireVersion":6,"accepted":true,"permit":null,"cancelRequested":false}),
         ),
     ];
@@ -312,8 +314,10 @@ fn task_response_schemas_and_rust_reject_unknown_major_and_authority() {
         "task":null,
         "cancellations":vec![cancellation.clone(); MAX_TASK_CANCELLATIONS]
     });
-    let schema: serde_json::Value =
-        serde_json::from_str(include_str!("../schema/task-claim-response-v6.schema.json")).unwrap();
+    let schema: serde_json::Value = serde_json::from_str(include_str!(
+        "../schema/runtime/task-claim-response-v6.schema.json"
+    ))
+    .unwrap();
     let validator = jsonschema::draft202012::new(&schema).unwrap();
     assert!(validator.is_valid(&boundary));
     assert!(serde_json::from_value::<TaskClaimResponse>(boundary).is_ok());
@@ -328,7 +332,7 @@ fn task_response_schemas_and_rust_reject_unknown_major_and_authority() {
 
 #[test]
 fn task_response_producers_can_only_construct_valid_shapes() {
-    use rss_mdm_agent_wire::{
+    use rss_mdm_agent_wire::runtime::{
         MAX_TASK_CANCELLATIONS, TaskCancellation, TaskClaimResponse, TaskEventAck, WireError,
     };
 
@@ -366,7 +370,9 @@ fn task_response_producers_can_only_construct_valid_shapes() {
 
 #[test]
 fn task_results_require_bounded_coherent_diagnostics() {
-    use rss_mdm_agent_wire::{OutputQuality, TaskDiagnostics, TaskFailure, TaskResult, WireError};
+    use rss_mdm_agent_wire::runtime::{
+        OutputQuality, TaskDiagnostics, TaskFailure, TaskResult, WireError,
+    };
 
     let diagnostics = TaskDiagnostics::new("stdout".into(), "stderr".into(), 42, 1, None)
         .expect("bounded diagnostics");
@@ -390,7 +396,7 @@ fn task_results_require_bounded_coherent_diagnostics() {
         Uuid::new_v4(),
         Uuid::new_v4(),
         TaskEvent::Result(result),
-        rss_mdm_agent_wire::SoftwareExecutionContext {
+        rss_mdm_agent_wire::runtime::SoftwareExecutionContext {
             revision: 1,
             os_version: [14, 0, 0, 0],
             system_broker: true,
@@ -404,8 +410,10 @@ fn task_results_require_bounded_coherent_diagnostics() {
     let encoded = serde_json::to_value(&request).unwrap();
     assert_eq!(encoded["event"]["kind"], "result");
     assert_eq!(encoded["event"]["diagnostics"]["durationMs"], 42);
-    let schema: serde_json::Value =
-        serde_json::from_str(include_str!("../schema/task-event-request-v6.schema.json")).unwrap();
+    let schema: serde_json::Value = serde_json::from_str(include_str!(
+        "../schema/runtime/task-event-request-v6.schema.json"
+    ))
+    .unwrap();
     assert!(
         jsonschema::draft202012::new(&schema)
             .unwrap()
@@ -539,7 +547,7 @@ fn task_results_require_bounded_coherent_diagnostics() {
             Uuid::new_v4(),
             Uuid::new_v4(),
             TaskEvent::Result(expanded),
-            rss_mdm_agent_wire::SoftwareExecutionContext {
+            rss_mdm_agent_wire::runtime::SoftwareExecutionContext {
                 revision: 1,
                 os_version: [14, 0, 0, 0],
                 system_broker: true,
@@ -555,7 +563,7 @@ fn task_results_require_bounded_coherent_diagnostics() {
 
 #[test]
 fn claims_require_current_unique_executor_profiles() {
-    use rss_mdm_agent_wire::TaskClaimRequest;
+    use rss_mdm_agent_wire::runtime::TaskClaimRequest;
     let base = json!({"wireVersion":6,"executionContext":{"revision":1,"osVersion":[14,0,0,0],"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false},"operationId":Uuid::new_v4(),"profiles":["osquery"]});
     assert!(serde_json::from_value::<TaskClaimRequest>(base.clone()).is_ok());
     for profiles in [json!([]), json!(["posix_sh", "osquery"])] {
@@ -575,7 +583,7 @@ fn claims_require_current_unique_executor_profiles() {
 
 #[test]
 fn software_support_is_a_closed_format_scope_context_profile() {
-    use rss_mdm_agent_wire::Capability;
+    use rss_mdm_agent_wire::runtime::Capability;
     for name in [
         "software.msi.system.v6",
         "software.exe.user.v6",

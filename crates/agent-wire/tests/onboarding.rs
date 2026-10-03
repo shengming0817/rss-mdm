@@ -1,10 +1,12 @@
-use rss_mdm_agent_wire::{ManagedRegistrationRequest, ReportRequest};
+use rss_mdm_agent_wire::runtime::ReportRequest;
 use serde_json::json;
 use uuid::Uuid;
 #[test]
 fn enrollment_reports_keep_unknown_and_third_party_distinct_from_unenrolled() {
-    let schema: serde_json::Value =
-        serde_json::from_str(include_str!("../schema/report-request-v6.schema.json")).unwrap();
+    let schema: serde_json::Value = serde_json::from_str(include_str!(
+        "../schema/runtime/report-request-v6.schema.json"
+    ))
+    .unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
     for state in [
         "unenrolled",
@@ -23,40 +25,12 @@ fn enrollment_reports_keep_unknown_and_third_party_distinct_from_unenrolled() {
     }
 }
 #[test]
-fn managed_registration_has_no_device_identity_or_bearer_claim() {
+fn enrollment_schema_and_signing_agree_on_text_and_expiry_boundaries() {
+    use rss_mdm_agent_wire::runtime::EnrollmentTaskSpec;
     let schema: serde_json::Value = serde_json::from_str(include_str!(
-        "../schema/managed-registration-request-v6.schema.json"
+        "../schema/runtime/task-payload-v6.schema.json"
     ))
     .unwrap();
-    let validator = jsonschema::validator_for(&schema).unwrap();
-    let value = json!({"wireVersion":6,"operationId":Uuid::new_v4(),"installationOperation":Uuid::new_v4(),"credential":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","capabilities":["inventory.collect.v6"],"platform":"windows","architecture":"x86_64","executionContext":{"revision":1,"osVersion":[10,0,22621,0],"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false}});
-    serde_json::from_value::<ManagedRegistrationRequest>(value.clone())
-        .unwrap()
-        .validate()
-        .unwrap();
-    assert!(validator.is_valid(&value));
-    for key in [
-        "deviceId",
-        "tenantId",
-        "registrationId",
-        "password",
-        "serialNumber",
-    ] {
-        let mut invalid = value.clone();
-        invalid[key] = json!("untrusted");
-        assert!(serde_json::from_value::<ManagedRegistrationRequest>(invalid.clone()).is_err());
-        assert!(!validator.is_valid(&invalid));
-    }
-    let mut invalid = value;
-    invalid["capabilities"] = json!(["inventory.collect.v6", "inventory.collect.v6"]);
-    assert!(serde_json::from_value::<ManagedRegistrationRequest>(invalid).is_err());
-}
-
-#[test]
-fn enrollment_schema_and_signing_agree_on_text_and_expiry_boundaries() {
-    use rss_mdm_agent_wire::EnrollmentTaskSpec;
-    let schema: serde_json::Value =
-        serde_json::from_str(include_str!("../schema/task-payload-v6.schema.json")).unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
     let tenant = Uuid::new_v4();
     let base = json!({"wireVersion":6,"tenantId":tenant,"deviceId":"agent","platform":"macos","architecture":"aarch64","registrationId":Uuid::new_v4(),"generation":1,"taskId":Uuid::new_v4(),"attemptId":Uuid::new_v4(),"permit":"offer","expiresAt":1,"organization":tenant,"entry":{"kind":"macos","url":"https://mdm.example.test/enroll"}});
@@ -80,8 +54,8 @@ fn enrollment_schema_and_signing_agree_on_text_and_expiry_boundaries() {
     }
 }
 
-fn enrollment_collection() -> rss_mdm_agent_wire::CollectionDefinition {
-    rss_mdm_agent_wire::CollectionDefinition::new(
+fn enrollment_collection() -> rss_mdm_agent_wire::runtime::CollectionDefinition {
+    rss_mdm_agent_wire::runtime::CollectionDefinition::new(
         "channel.mdm.enrollment",
         1,
         rss_mdm_inventory::Source::AgentBuiltin,

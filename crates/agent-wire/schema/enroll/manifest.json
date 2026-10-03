@@ -1,0 +1,53 @@
+{
+  "apiVersion": 1,
+  "schemas": [
+    {
+      "type": "GrantRequest",
+      "file": "grant-request-v1.schema.json"
+    },
+    {
+      "type": "CertificateRequest",
+      "file": "certificate-request-v1.schema.json"
+    },
+    {
+      "type": "ActivationRequest",
+      "file": "activation-request-v1.schema.json"
+    },
+    {
+      "type": "StatusRequest",
+      "file": "status-request-v1.schema.json"
+    },
+    {
+      "type": "GrantReceipt",
+      "file": "grant-receipt-v1.schema.json"
+    },
+    {
+      "type": "Candidate",
+      "file": "candidate-v1.schema.json"
+    },
+    {
+      "type": "ActivationReceipt",
+      "file": "activation-receipt-v1.schema.json"
+    },
+    {
+      "type": "Progress",
+      "file": "progress-v1.schema.json"
+    },
+    {
+      "type": "RecoverIssuance",
+      "file": "recover-issuance-v1.schema.json"
+    },
+    {
+      "type": "NativeGrantRequest",
+      "file": "native-grant-request-v1.schema.json"
+    },
+    {
+      "type": "ErrorBody",
+      "file": "error-body-v1.schema.json"
+    },
+    {
+      "type": "AuthorizationRequest",
+      "file": "authorization-request-v1.schema.json"
+    }
+  ]
+}

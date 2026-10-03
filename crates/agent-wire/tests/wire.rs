@@ -1,8 +1,7 @@
-use rss_mdm_agent_wire::{
-    Capability, CollectedValue, ErrorBody, ErrorCode, FailureCode, IntakeStatus, ObservationStatus,
-    ProjectionStatus, RegistrationReceipt, RegistrationRequest, ReportAck, ReportBody,
-    ReportRequest, ReportSource, ReportStatus, SCHEMA_FINGERPRINT, SCHEMA_MANIFEST, Secret,
-    TaskArchitecture, TaskPlatform, WireError,
+use rss_mdm_agent_wire::runtime::{
+    BindingProfile, Capability, CollectedValue, ErrorBody, ErrorCode, FailureCode, IntakeStatus,
+    ObservationStatus, ProjectionStatus, ReportAck, ReportBody, ReportRequest, ReportSource,
+    ReportStatus, SCHEMA_FINGERPRINT, SCHEMA_MANIFEST, Secret, WireError,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -12,212 +11,13 @@ fn secret() -> String {
     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into()
 }
 
-fn registration() -> Value {
-    json!({
-        "wireVersion": 6,
-        "operationId": Uuid::nil(),
-        "enrollmentId": "8cc2fb40-21a1-4390-b4ec-702087c284b5",
-        "password": secret(),
-        "credential": secret(),
-        "capabilities": ["inventory.collect.v6"],
-        "platform": "macos", "architecture": "aarch64",
-        "executionContext":{"revision":1,"osVersion":[14,0,0,0],"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false}
-    })
-}
-
-#[test]
-fn registration_is_strict_and_secrets_are_redacted() {
-    let mut value = registration();
-    value["operationId"] = json!(Uuid::new_v4());
-    let request: RegistrationRequest = serde_json::from_value(value.clone()).unwrap();
-    assert_eq!(request.capabilities(), &[Capability::InventoryCollectionV6]);
-    assert_eq!(format!("{:?}", request.password()), "[REDACTED]");
-    assert_eq!(format!("{:?}", request.credential()), "[REDACTED]");
-    assert_eq!(request.password().expose(), secret());
-
-    value["unknown"] = json!(true);
-    assert!(serde_json::from_value::<RegistrationRequest>(value).is_err());
-    let mut wrong = registration();
-    wrong["wireVersion"] = json!(1);
-    assert!(serde_json::from_value::<RegistrationRequest>(wrong).is_err());
-    let mut unknown = registration();
-    unknown["capabilities"] = json!(["inventory.collect.v6", "future"]);
-    assert!(serde_json::from_value::<RegistrationRequest>(unknown).is_err());
-}
-
-#[test]
-fn producers_construct_the_only_supported_shape() {
-    let request = RegistrationRequest::new(
-        Uuid::new_v4(),
-        Uuid::new_v4(),
-        Secret::parse(&secret()).unwrap(),
-        Secret::parse(&secret()).unwrap(),
-        vec![Capability::InventoryCollectionV6],
-        TaskPlatform::Macos,
-        TaskArchitecture::Aarch64,
-        rss_mdm_agent_wire::SoftwareExecutionContext {
-            revision: 1,
-            os_version: [14, 0, 0, 0],
-            system_broker: true,
-            interactive_user: None,
-            source_credentials: vec![],
-            msix_sideload: false,
-            msix_unsigned: false,
-        },
-    )
-    .unwrap();
-    assert_eq!(serde_json::to_value(request).unwrap()["wireVersion"], 6);
-    assert!(matches!(
-        RegistrationRequest::new(
-            Uuid::nil(),
-            Uuid::new_v4(),
-            Secret::parse(&secret()).unwrap(),
-            Secret::parse(&secret()).unwrap(),
-            vec![Capability::InventoryCollectionV6],
-            TaskPlatform::Macos,
-            TaskArchitecture::Aarch64,
-            rss_mdm_agent_wire::SoftwareExecutionContext {
-                revision: 1,
-                os_version: [14, 0, 0, 0],
-                system_broker: true,
-                interactive_user: None,
-                source_credentials: vec![],
-                msix_sideload: false,
-                msix_unsigned: false
-            }
-        ),
-        Err(WireError::InvalidValue)
-    ));
-    assert!(
-        ReportRequest::new(
-            Uuid::new_v4(),
-            1,
-            1,
-            collection(),
-            ReportBody::Snapshot(vec![])
-        )
-        .is_ok()
-    );
-    let task_capable = RegistrationRequest::new(
-        Uuid::new_v4(),
-        Uuid::new_v4(),
-        Secret::parse(&secret()).unwrap(),
-        Secret::parse(&secret()).unwrap(),
-        vec![Capability::InventoryCollectionV6, Capability::TaskExecuteV6],
-        TaskPlatform::Macos,
-        TaskArchitecture::Aarch64,
-        rss_mdm_agent_wire::SoftwareExecutionContext {
-            revision: 1,
-            os_version: [14, 0, 0, 0],
-            system_broker: true,
-            interactive_user: None,
-            source_credentials: vec![],
-            msix_sideload: false,
-            msix_unsigned: false,
-        },
-    )
-    .unwrap();
-    assert_eq!(
-        task_capable.capabilities(),
-        &[Capability::InventoryCollectionV6, Capability::TaskExecuteV6]
-    );
-    assert!(
-        RegistrationRequest::new(
-            Uuid::new_v4(),
-            Uuid::new_v4(),
-            Secret::parse(&secret()).unwrap(),
-            Secret::parse(&secret()).unwrap(),
-            vec![Capability::TaskExecuteV6],
-            TaskPlatform::Macos,
-            TaskArchitecture::Aarch64,
-            rss_mdm_agent_wire::SoftwareExecutionContext {
-                revision: 1,
-                os_version: [14, 0, 0, 0],
-                system_broker: true,
-                interactive_user: None,
-                source_credentials: vec![],
-                msix_sideload: false,
-                msix_unsigned: false
-            }
-        )
-        .is_err()
-    );
-    assert_eq!(
-        ReportRequest::new(
-            Uuid::new_v4(),
-            i64::MAX as u64 + 1,
-            1,
-            collection(),
-            ReportBody::Snapshot(vec![])
-        )
-        .unwrap_err(),
-        WireError::InvalidValue
-    );
-}
-
 #[test]
 fn published_schemas_match_wire_rejections() {
-    let registration_schema: Value = serde_json::from_str(include_str!(
-        "../schema/registration-request-v6.schema.json"
+    let report_schema: Value = serde_json::from_str(include_str!(
+        "../schema/runtime/report-request-v6.schema.json"
     ))
     .unwrap();
-    let registration_validator = jsonschema::validator_for(&registration_schema).unwrap();
-    let report_schema: Value =
-        serde_json::from_str(include_str!("../schema/report-request-v6.schema.json")).unwrap();
     let report_validator = jsonschema::validator_for(&report_schema).unwrap();
-
-    let mut valid_registration = registration();
-    valid_registration["operationId"] = json!(Uuid::new_v4());
-    for invalid in [
-        registration(),
-        {
-            let mut value = valid_registration.clone();
-            value["operationId"] = json!("not-a-uuid");
-            value
-        },
-        {
-            let mut value = valid_registration.clone();
-            value["credential"] = json!("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-            value
-        },
-        {
-            let mut value = valid_registration.clone();
-            value["unknown"] = json!(true);
-            value
-        },
-    ] {
-        assert!(!registration_validator.is_valid(&invalid));
-        assert!(serde_json::from_value::<RegistrationRequest>(invalid).is_err());
-    }
-    assert!(registration_validator.is_valid(&valid_registration));
-    assert!(serde_json::from_value::<RegistrationRequest>(valid_registration).is_ok());
-
-    let mut task_capable = registration();
-    task_capable["operationId"] = json!(Uuid::new_v4());
-    task_capable["capabilities"] = json!(["inventory.collect.v6", "task.execute.v6"]);
-    assert!(registration_validator.is_valid(&task_capable));
-    assert!(serde_json::from_value::<RegistrationRequest>(task_capable.clone()).is_ok());
-    for capabilities in [
-        json!(["task.execute.v6"]),
-        json!(["task.execute.v6", "inventory.collect.v6"]),
-        json!(["inventory.collect.v6", "task.execute.v6", "task.execute.v6"]),
-    ] {
-        let mut invalid = task_capable.clone();
-        invalid["capabilities"] = capabilities;
-        assert!(!registration_validator.is_valid(&invalid));
-        assert!(serde_json::from_value::<RegistrationRequest>(invalid).is_err());
-    }
-
-    for operation in [
-        "8CC2FB40-21A1-4390-B4EC-702087C284B5",
-        "8cc2fb4021a14390b4ec702087c284b5",
-    ] {
-        let mut invalid = registration();
-        invalid["operationId"] = json!(operation);
-        assert!(!registration_validator.is_valid(&invalid));
-        assert!(serde_json::from_value::<RegistrationRequest>(invalid).is_err());
-    }
-
     let valid_report = serde_json::to_value(
         ReportRequest::new(
             Uuid::new_v4(),
@@ -255,8 +55,7 @@ fn manifest_covers_and_fingerprints_every_public_shape() {
             .map(|entry| entry["type"].as_str().unwrap())
             .collect::<Vec<_>>(),
         [
-            "RegistrationRequest",
-            "RegistrationReceipt",
+            "BindingProfile",
             "ReportRequest",
             "ReportAck",
             "ReportStatus",
@@ -267,23 +66,20 @@ fn manifest_covers_and_fingerprints_every_public_shape() {
             "SignedTask",
             "TaskClaimResponse",
             "TaskEventAck",
-            "ManagedRegistrationRequest"
         ]
     );
     let schemas = [
-        include_bytes!("../schema/registration-request-v6.schema.json").as_slice(),
-        include_bytes!("../schema/registration-receipt-v6.schema.json").as_slice(),
-        include_bytes!("../schema/report-request-v6.schema.json").as_slice(),
-        include_bytes!("../schema/report-ack-v6.schema.json").as_slice(),
-        include_bytes!("../schema/report-status-v6.schema.json").as_slice(),
-        include_bytes!("../schema/error-body-v6.schema.json").as_slice(),
-        include_bytes!("../schema/task-claim-request-v6.schema.json").as_slice(),
-        include_bytes!("../schema/task-event-request-v6.schema.json").as_slice(),
-        include_bytes!("../schema/task-payload-v6.schema.json").as_slice(),
-        include_bytes!("../schema/signed-task-v6.schema.json").as_slice(),
-        include_bytes!("../schema/task-claim-response-v6.schema.json").as_slice(),
-        include_bytes!("../schema/task-event-ack-v6.schema.json").as_slice(),
-        include_bytes!("../schema/managed-registration-request-v6.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/binding-profile-v6.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/report-request-v6.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/report-ack-v6.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/report-status-v6.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/error-body-v6.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/task-claim-request-v6.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/task-event-request-v6.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/task-payload-v6.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/signed-task-v6.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/task-claim-response-v6.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/task-event-ack-v6.schema.json").as_slice(),
     ];
     let mut digest = Sha256::new();
     for schema in schemas {
@@ -298,7 +94,7 @@ fn response_and_error_schemas_match_strict_consumers() {
     let registration = Uuid::new_v4();
     let epoch = Uuid::new_v4();
     let report = Uuid::new_v4();
-    let receipt = RegistrationReceipt {
+    let receipt = BindingProfile {
         wire_version: 6,
         operation_id: operation,
         device_id: "device-1".into(),
@@ -323,22 +119,22 @@ fn response_and_error_schemas_match_strict_consumers() {
     let values: [(Value, &str); 4] = [
         (
             serde_json::to_value(receipt).unwrap(),
-            include_str!("../schema/registration-receipt-v6.schema.json"),
+            include_str!("../schema/runtime/binding-profile-v6.schema.json"),
         ),
         (
             serde_json::to_value(ack).unwrap(),
-            include_str!("../schema/report-ack-v6.schema.json"),
+            include_str!("../schema/runtime/report-ack-v6.schema.json"),
         ),
         (
             serde_json::to_value(status).unwrap(),
-            include_str!("../schema/report-status-v6.schema.json"),
+            include_str!("../schema/runtime/report-status-v6.schema.json"),
         ),
         (
             serde_json::to_value(ErrorBody {
                 code: ErrorCode::OperationUnknown,
             })
             .unwrap(),
-            include_str!("../schema/error-body-v6.schema.json"),
+            include_str!("../schema/runtime/error-body-v6.schema.json"),
         ),
     ];
     for (value, schema) in values {
@@ -351,7 +147,7 @@ fn response_and_error_schemas_match_strict_consumers() {
         "receivedAt":1,"intake":"durable"
     });
     let schema: Value =
-        serde_json::from_str(include_str!("../schema/report-ack-v6.schema.json")).unwrap();
+        serde_json::from_str(include_str!("../schema/runtime/report-ack-v6.schema.json")).unwrap();
     assert!(
         !jsonschema::validator_for(&schema)
             .unwrap()
@@ -435,8 +231,8 @@ fn failed_reports_and_error_codes_are_closed() {
     assert!(serde_json::from_value::<ErrorCode>(json!("future_error")).is_err());
 }
 
-fn collection() -> rss_mdm_agent_wire::CollectionDefinition {
-    rss_mdm_agent_wire::CollectionDefinition::new(
+fn collection() -> rss_mdm_agent_wire::runtime::CollectionDefinition {
+    rss_mdm_agent_wire::runtime::CollectionDefinition::new(
         "inventory",
         1,
         rss_mdm_inventory::Source::AgentBuiltin,

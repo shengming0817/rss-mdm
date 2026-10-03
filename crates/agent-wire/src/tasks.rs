@@ -1,6 +1,7 @@
 //! Strict task messages. Authentication and durable authority remain server responsibilities.
+#[path = "tasks/context.rs"]
 mod context;
-use super::{WIRE_VERSION, WireError, strict_uuid};
+use super::{PAYLOAD_VERSION, WireError, strict_uuid};
 use base64::Engine;
 pub use context::{
     SoftwareExecutionContext, SoftwareExecutionTarget, SoftwareInteractiveUser,
@@ -22,7 +23,7 @@ pub const MAX_TASK_DURATION_MS: u64 = 604_800_000;
 
 pub(crate) fn version<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
     let value = u8::deserialize(d)?;
-    if value != WIRE_VERSION {
+    if value != PAYLOAD_VERSION {
         return Err(serde::de::Error::custom("unsupported wire version"));
     }
     Ok(value)
@@ -108,7 +109,7 @@ impl TaskClaimResponse {
             return Err(WireError::InvalidValue);
         }
         Ok(Self {
-            wire_version: WIRE_VERSION,
+            wire_version: PAYLOAD_VERSION,
             task,
             cancellations,
         })
@@ -146,7 +147,7 @@ impl TaskEventAck {
     /// Construct a durable accepted receipt with the fixed wire version.
     pub const fn new(permit: Option<SignedTask>, cancel_requested: bool) -> Self {
         Self {
-            wire_version: WIRE_VERSION,
+            wire_version: PAYLOAD_VERSION,
             accepted: true,
             permit,
             cancel_requested,
@@ -187,19 +188,21 @@ pub enum TaskEvent {
     /// Process evidence. Successful exit alone does not prove the requested side effect.
     Result(TaskResult),
     /// A bounded fragment of a collection output; never a terminal snapshot.
-    OutputChunk(crate::OutputChunk),
+    OutputChunk(crate::runtime::OutputChunk),
     /// Terminal evidence whose output must be fully assembled and verified.
-    ChunkedResult(crate::ChunkedTaskResult),
+    ChunkedResult(crate::runtime::ChunkedTaskResult),
     /// Independent software detection evidence after local software-plan execution.
     SoftwareResult(SoftwareTaskResult),
     /// Only the enrollment UI outcome; active MDM registration is server-owned.
     EnrollmentResult {
         /// Closed platform outcome.
-        outcome: crate::EnrollmentEntryOutcome,
+        outcome: crate::runtime::EnrollmentEntryOutcome,
     },
 }
+#[path = "tasks/export.rs"]
 mod export;
 pub use export::*;
+#[path = "tasks/results.rs"]
 mod results;
 pub use results::*;
 /// Output completeness controls whether collection facts may be accepted.
@@ -363,7 +366,7 @@ impl TaskResult {
             || serde_json::to_vec(&output)
                 .map_err(|_| WireError::InvalidValue)?
                 .len()
-                > crate::OUTPUT_MAX_BYTES
+                > crate::runtime::OUTPUT_MAX_BYTES
         {
             return Err(WireError::InvalidValue);
         }
@@ -414,7 +417,7 @@ impl From<TaskEventRequest> for EventInput {
 impl TryFrom<EventInput> for TaskEventRequest {
     type Error = WireError;
     fn try_from(v: EventInput) -> Result<Self, WireError> {
-        if v.wire_version != WIRE_VERSION {
+        if v.wire_version != PAYLOAD_VERSION {
             return Err(WireError::InvalidValue);
         }
         Self::new(v.operation_id, v.attempt_id, v.event, v.execution_context)
@@ -436,7 +439,7 @@ impl TaskEventRequest {
             result.validate()?;
         }
         let input = EventInput {
-            wire_version: WIRE_VERSION,
+            wire_version: PAYLOAD_VERSION,
             operation_id,
             attempt_id,
             event,
@@ -489,7 +492,7 @@ impl From<TaskClaimRequest> for ClaimInput {
 impl TryFrom<ClaimInput> for TaskClaimRequest {
     type Error = WireError;
     fn try_from(v: ClaimInput) -> Result<Self, WireError> {
-        if v.wire_version != WIRE_VERSION {
+        if v.wire_version != PAYLOAD_VERSION {
             return Err(WireError::InvalidValue);
         }
         Self::new(v.operation_id, v.profiles, v.execution_context)
@@ -513,7 +516,7 @@ impl TaskClaimRequest {
             return Err(WireError::InvalidValue);
         }
         Ok(Self(ClaimInput {
-            wire_version: WIRE_VERSION,
+            wire_version: PAYLOAD_VERSION,
             operation_id,
             profiles,
             execution_context,
@@ -626,7 +629,7 @@ pub struct TaskSpec {
 impl TaskSpec {
     /// Validate the signed closed profile without authenticating it.
     pub fn validate(&self) -> Result<(), WireError> {
-        if self.wire_version != WIRE_VERSION
+        if self.wire_version != PAYLOAD_VERSION
             || self.tenant_id.is_nil()
             || self.registration_id.is_nil()
             || self.task_id.is_nil()
@@ -743,6 +746,7 @@ pub struct SoftwareTaskArtifact {
     pub sha256: [u8; 32],
 }
 /// Current executable values are maintained by the sole software wire owner.
+#[path = "tasks/software.rs"]
 mod software;
 pub use software::*;
 /// Permitted reboot handling.
@@ -932,7 +936,7 @@ impl SoftwareTaskSpec {
                 && s.split('/')
                     .all(|part| !part.is_empty() && part != "." && part != "..")
         };
-        if self.wire_version != WIRE_VERSION
+        if self.wire_version != PAYLOAD_VERSION
             || self.tenant_id.is_nil()
             || self.registration_id.is_nil()
             || self.task_id.is_nil()
@@ -1010,7 +1014,7 @@ enum RawTaskPayload {
     Script(TaskSpec),
     Software(SoftwareTaskSpec),
     /// Standard MDM enrollment entry.
-    Enrollment(crate::EnrollmentTaskSpec),
+    Enrollment(crate::runtime::EnrollmentTaskSpec),
 }
 /// Validated immutable script or software task payload.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1021,7 +1025,7 @@ pub enum TaskPayload {
     /// Approved software task.
     Software(SoftwareTaskSpec),
     /// Standard MDM enrollment entry.
-    Enrollment(crate::EnrollmentTaskSpec),
+    Enrollment(crate::runtime::EnrollmentTaskSpec),
 }
 impl TryFrom<RawTaskPayload> for TaskPayload {
     type Error = WireError;
@@ -1065,9 +1069,9 @@ impl TryFrom<SoftwareTaskSpec> for TaskPayload {
         Ok(Self::Software(value))
     }
 }
-impl TryFrom<crate::EnrollmentTaskSpec> for TaskPayload {
+impl TryFrom<crate::runtime::EnrollmentTaskSpec> for TaskPayload {
     type Error = WireError;
-    fn try_from(value: crate::EnrollmentTaskSpec) -> Result<Self, Self::Error> {
+    fn try_from(value: crate::runtime::EnrollmentTaskSpec) -> Result<Self, Self::Error> {
         value.signing_bytes("validation")?;
         Ok(Self::Enrollment(value))
     }

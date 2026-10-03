@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/mdm/agent/v6/error-body.schema.json",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v6/error-body.schema.json",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -19,7 +19,10 @@
         "service_unavailable",
         "permission_denied",
         "task_not_found",
-        "range_not_satisfiable"
+        "range_not_satisfiable",
+        "credential_revoked",
+        "certificate_expired",
+        "credential_retired"
       ]
     }
   }

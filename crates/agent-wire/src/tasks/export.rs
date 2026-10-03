@@ -41,7 +41,7 @@ pub struct SoftwareExportBinding {
     /// Exact logical output source, distinct from imported provenance.
     pub source: String,
     /// Publication tenant from the signed task.
-    #[serde(with = "crate::strict_uuid")]
+    #[serde(with = "crate::runtime::strict_uuid")]
     pub tenant_id: Uuid,
     /// Exact release environment.
     pub ring: SoftwareExportRing,
