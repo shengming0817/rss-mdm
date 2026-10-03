@@ -313,7 +313,7 @@ impl channels::AppleResults for Store {
         tenant: String,
         operation: Uuid,
         native_values: bool,
-    ) -> Pending<'a, Option<serde_json::Value>> {
+    ) -> Pending<'a, Option<rss_mdm_apple_mdm::native::evidence::DeclarationEvidence>> {
         Box::pin(async move {
             crate::ddm::observation(c, &self.protection, &tenant, operation, native_values)
                 .await
@@ -328,7 +328,7 @@ impl channels::AppleResults for Store {
         operation: Uuid,
         request: rss_mdm_apple_mdm::native::request::Request,
         native_values: bool,
-    ) -> Pending<'a, Vec<channels::Observation>> {
+    ) -> Pending<'a, Vec<rss_mdm_apple_mdm::native::evidence::Observation>> {
         Box::pin(async move {
             crate::evidence::observations(
                 c,

@@ -80,7 +80,7 @@ pub(super) async fn receive(
         };
         let code = i32::from(status.code);
         let old: Option<i32> = frame.try_get("status").map_err(db)?;
-        if old.is_some_and(|old| terminal_status(old) && old != code) {
+        if !receipt::compatible_frame(old, code) {
             return Err(Error::Conflict);
         }
         let old_accept = if old == Some(code) {
@@ -91,14 +91,12 @@ pub(super) async fn receive(
         let accepted = receipt_acceptance(source, c, key, p, &input, row, true, old_accept).await?;
         sqlx::query("UPDATE mdm_commands.attempt_frames SET status=$5,accepted=$6,received_at=coalesce(received_at,floor(extract(epoch FROM clock_timestamp()))::bigint) WHERE tenant_id=$1::uuid AND attempt=$2 AND message=$3 AND command=$4")
             .bind(p.tenant().to_string()).bind(attempt).bind(msg).bind(command).bind(code).bind(accepted).execute(&mut *c).await.map_err(db)?;
-        if terminal_status(code) {
-            // A native error is evidence even before the object closes. Success is not.
-            let logical_accept = native_rules::accepts_frame(
-                code,
-                accepted == Some(true),
-                frame.try_get("end_byte").map_err(db)?,
-                total,
-            );
+        if let Some(logical_accept) = receipt::frame_receipt(
+            code,
+            accepted == Some(true),
+            frame.try_get::<i32, _>("end_byte").map_err(db)? as usize,
+            total as usize,
+        ) {
             sqlx::query("UPDATE mdm_commands.attempt_items SET status=$4,receipt_accepted=$5,received_at=floor(extract(epoch FROM clock_timestamp()))::bigint WHERE tenant_id=$1::uuid AND attempt=$2 AND command=$3")
                 .bind(p.tenant().to_string()).bind(attempt).bind(command).bind(code).bind(logical_accept).execute(&mut *c).await.map_err(db)?;
         }
@@ -135,18 +133,19 @@ pub async fn continue_on(
     let status: Option<i32> = row.try_get("status").map_err(db)?;
     let end = row.try_get::<i32, _>("end_byte").map_err(db)? as usize;
     let total = row.try_get::<i32, _>("total_bytes").map_err(db)? as usize;
-    if status.is_some_and(terminal_status) && end < total {
-        return Ok(Continuation::Abort);
-    };
     if total > peer_limits.object_bytes {
         return Ok(Continuation::Abort);
     }
-    if end == total || status != Some(213) {
-        return Ok(Continuation::Waiting);
-    };
-    if row.try_get::<Option<bool>, _>("accepted").map_err(db)? != Some(true) {
-        return Ok(Continuation::Abort);
-    };
+    match receipt::frame_continuation(
+        status,
+        row.try_get::<Option<bool>, _>("accepted").map_err(db)? == Some(true),
+        end,
+        total,
+    ) {
+        receipt::FrameContinuation::Wait => return Ok(Continuation::Waiting),
+        receipt::FrameContinuation::Abort => return Ok(Continuation::Abort),
+        receipt::FrameContinuation::Continue => {}
+    }
     let Task::Windows {
         request: W::SyncMl { request },
     } = &input.task

@@ -197,33 +197,31 @@ impl ExecutionService {
                     })).await?;
                     let signed:wire::SignedTask=stored(serde_json::from_value(offer))?;
                     let wire::TaskPayload::Software(spec)=signed.payload else { return Err(Error::Malformed.into()); };
-                    result.validate_for(&spec).map_err(|_|Error::Malformed)?;
+                    let assessment=result.assess_for(&spec).map_err(|_|Error::Malformed)?;
                     let intended=match software.intent() {
                         rss_mdm_policy::SoftwareIntent::RequiredInstall | rss_mdm_policy::SoftwareIntent::AvailableInstall => wire::SoftwareTaskIntent::Install,
                         rss_mdm_policy::SoftwareIntent::ExplicitUninstall => wire::SoftwareTaskIntent::Uninstall,
                     };
-                    if result.intent!=intended || spec.intent!=intended
-                        || spec.definition_digest!=result.definition_digest { return Err(Error::Malformed.into()); }
+                    if spec.intent!=intended { return Err(Error::Malformed.into()); }
                     let late_detection=matches!(run.state.execution,Execution::Unknown | Execution::WaitingReboot)
                         && run.state.attempt()==Some(input.attempt_id())
                         && run.state.cancellation==Cancellation::None;
                     let target_context=spec.steps.iter().all(|step|step.action.execution_target(spec.platform,input.execution_context()).is_ok_and(|current|current==step.target));
                     let trusted=allowed && target_context && (run.state.trusts_result(now,plan.timeout_seconds()) || late_detection);
-                    let matches_intent=result.steps.iter().zip(&spec.steps).enumerate().all(|(index,(result,step))| {
-                        let intent=if index+1==spec.steps.len(){spec.intent}else{wire::SoftwareTaskIntent::Install};
-                        result.after.satisfies(intent,&step.action.detected_version())
-                    });
-                    let unknown=result.steps.iter().any(|step|step.after.is_unknown());
-                    let reboot=result.steps.iter().any(|step|step.reboot_required);
-                    let reboot_allowed=result.steps.iter().zip(&spec.steps).all(|(result,step)|!result.reboot_required||step.action.reboot==wire::SoftwareTaskReboot::Report);
-                    let effect=if !trusted || unknown {
-                        run.state.uncertain_result(input.attempt_id())?;"unknown"
-                    } else if reboot && reboot_allowed {
-                        run.state.waiting_reboot(input.attempt_id())?;"waiting_reboot"
-                    } else if matches_intent && !reboot {
-                        run.state.result(input.attempt_id(),true)?;"verified"
-                    } else {
-                        run.state.result(input.attempt_id(),false)?;"failed"
+                    use wire::SoftwareEvidenceAssessment as Assessment;
+                    let effect=match (trusted,assessment) {
+                        (false,_) | (_,Assessment::Unknown) => {
+                            run.state.uncertain_result(input.attempt_id())?;"unknown"
+                        }
+                        (true,Assessment::RebootPending) => {
+                            run.state.waiting_reboot(input.attempt_id())?;"waiting_reboot"
+                        }
+                        (true,Assessment::Satisfied) => {
+                            run.state.result(input.attempt_id(),true)?;"verified"
+                        }
+                        (true,Assessment::Unsatisfied) => {
+                            run.state.result(input.attempt_id(),false)?;"failed"
+                        }
                     };
                     let previous_effect=run.result.as_ref().and_then(|v|v["effect"].as_str()).map(str::to_owned);
                     let evidence=checked_input(serde_json::to_value(result))?;

@@ -98,38 +98,38 @@ fn result(task: &SoftwareTaskSpec) -> SoftwareTaskResult {
 fn another_user_login_package_or_provisioning_receipt_cannot_satisfy_registration() {
     let task = task();
     let good = result(&task);
-    good.validate_for(&task).unwrap();
+    good.assess_for(&task).unwrap();
     let mut wrong = good.clone();
     wrong.steps[0].target = SoftwareExecutionTarget::Device;
-    assert!(wrong.validate_for(&task).is_err());
+    assert!(wrong.assess_for(&task).is_err());
     let mut wrong = good.clone();
     if let SoftwareExecutionTarget::User { session_id, .. } = &mut wrong.steps[0].target {
         *session_id = uuid::Uuid::new_v4();
     }
-    assert!(wrong.validate_for(&task).is_err());
+    assert!(wrong.assess_for(&task).is_err());
     let mut wrong = good.clone();
     let SoftwareObservedIdentity::MsixRegistration { identity } = wrong.steps[0].identity.clone()
     else {
         unreachable!()
     };
     wrong.steps[0].identity = SoftwareObservedIdentity::MsixProvisioning { identity };
-    assert!(wrong.validate_for(&task).is_err());
+    assert!(wrong.assess_for(&task).is_err());
     let mut wrong = good.clone();
     wrong.steps[0].step_digest = [9; 32];
-    assert!(wrong.validate_for(&task).is_err());
+    assert!(wrong.assess_for(&task).is_err());
     let mut wrong = good.clone();
     wrong.steps[0].package = "Another.Package".into();
-    assert!(wrong.validate_for(&task).is_err());
+    assert!(wrong.assess_for(&task).is_err());
     let mut wrong = good.clone();
     wrong.steps.clear();
-    assert!(wrong.validate_for(&task).is_err());
+    assert!(wrong.assess_for(&task).is_err());
     let mut wrong = good;
     wrong.steps[0].after = SoftwareDetectionObservation::Present {
         version: "1.0.0.0".into(),
         evidence_sha256: [4; 32],
         observed_at: 101,
     };
-    wrong.validate_for(&task).unwrap();
+    wrong.assess_for(&task).unwrap();
     assert!(!wrong.steps[0].after.satisfies(task.intent, "2.0.0.0"));
 }
 #[test]
@@ -141,10 +141,64 @@ fn a_successful_process_without_independent_material_evidence_is_rejected() {
         evidence_sha256: [0; 32],
         observed_at: 101,
     };
-    assert!(result.validate_for(&task).is_err());
+    assert!(result.assess_for(&task).is_err());
     result.steps[0].after = SoftwareDetectionObservation::Unknown {
         diagnostic: "query timed out".into(),
     };
-    result.validate_for(&task).unwrap();
+    result.assess_for(&task).unwrap();
     assert!(!result.steps[0].after.satisfies(task.intent, "2.0.0.0"));
+}
+
+#[test]
+fn assessment_uses_detection_and_keeps_reboot_and_unknown_distinct() {
+    use SoftwareEvidenceAssessment as A;
+    let mut task = task();
+    let mut evidence = result(&task);
+    evidence.steps[0].process = SoftwareProcessObservation::NotRun;
+    assert_eq!(evidence.assess_for(&task).unwrap(), A::Satisfied);
+    evidence.steps[0].after = SoftwareDetectionObservation::Absent {
+        evidence_sha256: [4; 32],
+        observed_at: 101,
+    };
+    assert_eq!(evidence.assess_for(&task).unwrap(), A::Unsatisfied);
+    evidence.steps[0].reboot_required = true;
+    assert_eq!(evidence.assess_for(&task).unwrap(), A::RebootPending);
+    task.steps[0].action.reboot = SoftwareTaskReboot::Forbid;
+    evidence.steps[0].step_digest = task.steps[0].digest().unwrap();
+    assert_eq!(evidence.assess_for(&task).unwrap(), A::Unsatisfied);
+    evidence.steps[0].after = SoftwareDetectionObservation::Unknown {
+        diagnostic: "native detection unavailable".into(),
+    };
+    assert_eq!(evidence.assess_for(&task).unwrap(), A::Unknown);
+}
+#[test]
+fn root_uninstall_requires_absence_while_dependencies_require_exact_installation() {
+    use SoftwareEvidenceAssessment as A;
+    let mut task = task();
+    task.intent = SoftwareTaskIntent::Uninstall;
+    let mut dependency = task.steps[0].clone();
+    dependency.action.package = "Acme.Dependency".into();
+    task.steps.insert(0, dependency);
+    let mut evidence = result(&task);
+    evidence.steps.push(evidence.steps[0].clone());
+    let step = &task.steps[1];
+    evidence.steps[1].index = 1;
+    evidence.steps[1].step_digest = step.digest().unwrap();
+    evidence.steps[1].package = step.action.package.clone();
+    evidence.steps[1].after = SoftwareDetectionObservation::Absent {
+        evidence_sha256: [4; 32],
+        observed_at: 101,
+    };
+    assert_eq!(evidence.assess_for(&task).unwrap(), A::Satisfied);
+    evidence.steps[0].after = SoftwareDetectionObservation::Absent {
+        evidence_sha256: [4; 32],
+        observed_at: 101,
+    };
+    assert_eq!(evidence.assess_for(&task).unwrap(), A::Unsatisfied);
+    evidence.steps[0].after = SoftwareDetectionObservation::Present {
+        version: "1.0.0.0".into(),
+        evidence_sha256: [4; 32],
+        observed_at: 101,
+    };
+    assert_eq!(evidence.assess_for(&task).unwrap(), A::Unsatisfied);
 }

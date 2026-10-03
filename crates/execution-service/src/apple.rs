@@ -1,11 +1,8 @@
 //! Apple tasks share the command reducer, approval, outbox and operation authority.
 use super::*;
 use crate::device::DevicePrincipal;
-use rss_mdm_apple_mdm::native::{
-    evidence::{Phase, ReceiptState, Settlement},
-    profiles::Verification,
-};
-use serde_json::{Value, json};
+use rss_mdm_apple_mdm::native::evidence::Settlement;
+use serde_json::json;
 
 /// Freeze old and new object authority under the existing device/authorization locks.
 pub async fn required(
@@ -101,17 +98,17 @@ pub async fn observation(
     op: &storage::Operation,
     status: dc::Status,
     native_values: bool,
-) -> Result<Value> {
+) -> Result<crate::queries::records::NativeObservation> {
+    use crate::queries::records::NativeObservation;
+    use rss_mdm_apple_mdm::native::{evidence, request::Request};
     let tenant = tx.tenant_id().to_string();
     let operation = op.id;
     let Task::Macos { request } = &op.request.task else {
         return Err(Error::Malformed.into());
     };
-    if matches!(
-        request,
-        rss_mdm_apple_mdm::native::request::Request::Declarations { .. }
-    ) {
-        let observation = tx
+    let progress = super::service::status(status).to_owned();
+    if matches!(request, Request::Declarations { .. }) {
+        let facts = tx
             .with_connection(move |c| {
                 Box::pin(async move {
                     Ok(apple_results
@@ -121,10 +118,9 @@ pub async fn observation(
             })
             .await?
             .map_err(Error::from)?;
-        let mut value=observation.unwrap_or_else(||json!({"protocol":"mdm.apple","observationScope":"declarations","synchronization":"unpublished","nativeStatus":null,"effect":"unverified","compliance":"unknown"}));
-        value["progress"] = json!(super::service::status(status));
-        return Ok(value);
+        return Ok(NativeObservation::Declarations { facts, progress });
     }
+    let profile = op.request.profile_target().is_some();
     let request = request.clone();
     let rows = tx
         .with_connection(move |c| {
@@ -136,58 +132,13 @@ pub async fn observation(
         })
         .await?
         .map_err(Error::from)?;
-    let receipts = rows.iter().map(|r| {
-        let mut receipt = json!({"phase":r.phase,"state":r.state,"receivedAt":r.received_at,"accepted":r.accepted,"outcome":r.native_outcome});
-        if let Some(fields) = &r.fields { receipt["fields"] = json!(fields); }
-        receipt
-    }).collect::<Vec<_>>();
-    if op.request.profile_target().is_none() {
-        let mut value = json!({"protocol":"mdm.apple","observationScope":"native_command","receipts":receipts,"progress":super::service::status(status),"effect":"unverified"});
-        if let Some(row) = rows
-            .iter()
-            .rev()
-            .find(|r| r.accepted && r.native_outcome.is_some() && !r.phase.prerequisite())
-        {
-            value["result"] = json!(row.native_outcome);
-            if let Some(fields) = &row.fields {
-                value["fields"] = json!(fields);
-            }
-            if row.state == ReceiptState::Error
-                && let Some(error) = &row.error
-            {
-                value["error"] = json!(error);
-            }
-        }
-        return Ok(value);
-    }
-    let mut value = json!({"protocol":"mdm.apple","observationScope":"profile_presence","receipts":receipts,"result":"unknown","effect":"unknown","progress":"unknown"});
-    if let Some(row) = rows
-        .iter()
-        .rev()
-        .find(|r| r.phase == Phase::Execute && r.accepted)
-    {
-        value["progress"] = json!(match row.state {
-            ReceiptState::Acknowledged => "succeeded",
-            ReceiptState::Error => "failed",
-            _ => "unknown",
-        });
-    }
-    if let Some(row) = rows.iter().rev().find(|r| r.phase == Phase::Observe) {
-        value["result"] = json!(match row.profile {
-            Some(Verification::Matched) if status == dc::Status::Applied => "matched",
-            Some(Verification::Mismatched | Verification::Failed) => "mismatched",
-            _ => "unknown",
-        });
-        value["nativeStatus"] = json!(match row.state {
-            ReceiptState::Acknowledged => Some("Acknowledged"),
-            ReceiptState::Error => Some("Error"),
-            ReceiptState::NotNow => Some("NotNow"),
-            _ => None,
-        });
-        value["receivedAt"] = json!(row.received_at);
-    }
-    Ok(value)
+    Ok(NativeObservation::Apple {
+        facts: evidence::summarize(rows, profile),
+        progress,
+        effect_confirmed: status == dc::Status::Applied,
+    })
 }
+
 impl ExecutionService {
     pub async fn apple_management(
         &self,

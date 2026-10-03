@@ -200,6 +200,18 @@ pub struct SoftwareTaskResult {
     /// One result for every signed step, in execution order; skipped steps remain explicit.
     pub steps: Vec<SoftwareStepResult>,
 }
+/// Pure evidence assessment. This grants neither execution trust nor inventory/ownership facts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SoftwareEvidenceAssessment {
+    /// Every independently detected postcondition satisfies the signed task.
+    Satisfied,
+    /// Detection contradicts the task or reports a forbidden reboot.
+    Unsatisfied,
+    /// At least one independent observation remains unresolved.
+    Unknown,
+    /// Reboot is permitted and requires a later independent detection.
+    RebootPending,
+}
 impl SoftwareTaskResult {
     /// Reject malformed or incoherent observations before product projection.
     pub fn validate(&self) -> Result<(), WireError> {
@@ -242,8 +254,51 @@ impl SoftwareTaskResult {
         }
         Ok(())
     }
+    /// Validate exact task association, then assess all independently detected postconditions.
+    /// Current authorization, cancellation, deadlines and late-result eligibility belong to Execution.
+    pub fn assess_for(
+        &self,
+        task: &SoftwareTaskSpec,
+    ) -> Result<SoftwareEvidenceAssessment, WireError> {
+        use SoftwareEvidenceAssessment as A;
+        self.validate_association(task)?;
+        if self.steps.iter().any(|step| step.after.is_unknown()) {
+            return Ok(A::Unknown);
+        }
+        let reboot = self.steps.iter().any(|step| step.reboot_required);
+        let reboot_allowed = self.steps.iter().zip(&task.steps).all(|(result, step)| {
+            !result.reboot_required || step.action.reboot == SoftwareTaskReboot::Report
+        });
+        if reboot {
+            return Ok(if reboot_allowed {
+                A::RebootPending
+            } else {
+                A::Unsatisfied
+            });
+        }
+        let matches =
+            self.steps
+                .iter()
+                .zip(&task.steps)
+                .enumerate()
+                .all(|(index, (result, step))| {
+                    let intent = if index + 1 == task.steps.len() {
+                        task.intent
+                    } else {
+                        SoftwareTaskIntent::Install
+                    };
+                    result
+                        .after
+                        .satisfies(intent, &step.action.detected_version())
+                });
+        Ok(if matches {
+            A::Satisfied
+        } else {
+            A::Unsatisfied
+        })
+    }
     /// Evidence from another step, target, package or native scope cannot satisfy this task.
-    pub fn validate_for(&self, task: &SoftwareTaskSpec) -> Result<(), WireError> {
+    fn validate_association(&self, task: &SoftwareTaskSpec) -> Result<(), WireError> {
         self.validate()?;
         if self.definition_digest != task.definition_digest
             || self.intent != task.intent

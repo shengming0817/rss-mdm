@@ -190,6 +190,15 @@ pub enum AttemptPhase {
     Observe,
 }
 impl AttemptPhase {
+    pub(crate) fn receipt_role(self) -> rss_mdm_windows_mdm::native::receipt::ReceiptRole {
+        use rss_mdm_windows_mdm::native::receipt::ReceiptRole;
+        match self {
+            Self::Prepare => ReceiptRole::Prepare,
+            Self::Execute => ReceiptRole::Execute,
+            Self::Observe => ReceiptRole::Observe,
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Prepare => "prepare",

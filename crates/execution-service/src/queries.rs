@@ -1,6 +1,5 @@
 //! Independently assembled execution reads. No writer, outbox, recovery store or signing key.
 use crate::*;
-use serde_json::json;
 #[derive(Clone)]
 pub struct Admission {
     pub(crate) source: Arc<dyn source_authority::SourceAuthority>,
@@ -84,37 +83,105 @@ impl Queries {
         id: Uuid,
         audit: &RequestAudit,
     ) -> std::result::Result<records::CommandDetail, QueryError> {
-        crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,proof,device,id,audit),|ctx,tx|Box::pin(async move {
-            let (service,proof,device,id,audit) = *ctx;
-            storage::authorized(tx,proof,device,Permission::OperationRead).await?;
-            let op=storage::load(tx,&service.protection,id).await?;
-            if op.device!=device{return Err(Error::Forbidden.into());}
-            let command=service.command_status(tx,&op).await?;
-            let now=storage::now(tx).await?;let approved=storage::approval_valid(&service.source, &service.protection,tx,&op,now).await?;
-            let mut native_values=true;
-            if matches!(op.request.task, Task::Macos { request:rss_mdm_apple_mdm::native::request::Request::Command{..} | rss_mdm_apple_mdm::native::request::Request::Declarations{..} }) {
-                let mut required=op.request.task.permissions()?;required.extend_from_slice(op.approval.required());required.sort();required.dedup();
-                storage::authorized_native(tx,proof,device,&required).await?;
-            }
-            if op.request.profile_target().is_some() {
-                let mut required=op.request.task.permissions()?;
-                required.extend_from_slice(op.approval.required());
-                required.push(Permission::InventoryCollect);
-                required.sort(); required.dedup();
-                let snapshot=crate::action_admission::current(tx,proof).await?;
-                for permission in required {
-                    match snapshot.require(proof,permission,permission.device().then_some(device)) {
-                        Ok(()) => {},
-                        Err(crate::authorization::error::AuthorizationError::Forbidden) => native_values=false,
-                        Err(error) => return Err(Error::from(error).into()),
+        crate::transaction::run(
+            &self.audit_store,
+            &self.runtime,
+            self.tenant,
+            audit,
+            (self, proof, device, id, audit),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (service, proof, device, id, audit) = *ctx;
+                    storage::authorized(tx, proof, device, Permission::OperationRead).await?;
+                    let op = storage::load(tx, &service.protection, id).await?;
+                    if op.device != device {
+                        return Err(Error::Forbidden.into());
                     }
-                }
-            }
-            let observation=protocol::observation(tx,&service.protection,service.apple_results.clone(),&op,command,native_values).await?;
-            let agent_installation=if op.approval.agent_package().is_some(){Some(super::native_installation::installation_observation(tx,service.apple_results.clone(),service.agent_store.clone(),&op).await?)}else{None};
-            service.audit_store.append_request_in(tx,audit,200,"success").await?;
-            records::decode(json!({"operationId":op.id,"commandId":op.id,"revision":op.revision,"task":op.request.task.summary()?,"target":op.request.target,"inputVersion":op.request.input_version,"deadline":op.request.deadline,"dispatchFailure":op.dispatch_failure,"authorization":if approved{"approved"}else{"blocked"},"commandStatus":crate::service::status(command),"observation":observation,"agentInstallation":agent_installation}))
-        })).await.map_err(Into::into)
+                    let command = service.command_status(tx, &op).await?;
+                    let now = storage::now(tx).await?;
+                    let approved =
+                        storage::approval_valid(&service.source, &service.protection, tx, &op, now)
+                            .await?;
+                    let mut native_values = true;
+                    if matches!(
+                        op.request.task,
+                        Task::Macos {
+                            request: rss_mdm_apple_mdm::native::request::Request::Command { .. }
+                                | rss_mdm_apple_mdm::native::request::Request::Declarations { .. }
+                        }
+                    ) {
+                        let mut required = op.request.task.permissions()?;
+                        required.extend_from_slice(op.approval.required());
+                        required.sort();
+                        required.dedup();
+                        storage::authorized_native(tx, proof, device, &required).await?;
+                    }
+                    if op.request.profile_target().is_some() {
+                        let mut required = op.request.task.permissions()?;
+                        required.extend_from_slice(op.approval.required());
+                        required.push(Permission::InventoryCollect);
+                        required.sort();
+                        required.dedup();
+                        let snapshot = crate::action_admission::current(tx, proof).await?;
+                        for permission in required {
+                            match snapshot.require(
+                                proof,
+                                permission,
+                                permission.device().then_some(device),
+                            ) {
+                                Ok(()) => {}
+                                Err(crate::authorization::error::AuthorizationError::Forbidden) => {
+                                    native_values = false
+                                }
+                                Err(error) => return Err(Error::from(error).into()),
+                            }
+                        }
+                    }
+                    let observation = protocol::observation(
+                        tx,
+                        &service.protection,
+                        service.apple_results.clone(),
+                        &op,
+                        command,
+                        native_values,
+                    )
+                    .await?;
+                    let agent_installation = if op.approval.agent_package().is_some() {
+                        Some(
+                            super::native_installation::installation_observation(
+                                tx,
+                                service.apple_results.clone(),
+                                service.agent_store.clone(),
+                                &op,
+                            )
+                            .await?,
+                        )
+                    } else {
+                        None
+                    };
+                    service
+                        .audit_store
+                        .append_request_in(tx, audit, 200, "success")
+                        .await?;
+                    Ok(records::CommandDetail {
+                        operation_id: op.id,
+                        command_id: op.id,
+                        revision: op.revision,
+                        task: op.request.task.summary()?,
+                        target: op.request.target,
+                        input_version: op.request.input_version,
+                        deadline: op.request.deadline,
+                        dispatch_failure: op.dispatch_failure,
+                        authorization: if approved { "approved" } else { "blocked" }.into(),
+                        command_status: crate::service::status(command).into(),
+                        observation,
+                        agent_installation: agent_installation.map(records::decode).transpose()?,
+                    })
+                })
+            },
+        )
+        .await
+        .map_err(Into::into)
     }
 }
 

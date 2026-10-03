@@ -202,3 +202,64 @@ fn current_summary_can_accompany_the_native_initialization_package() {
         .retain(|c| !matches!(c, Command::DevInfo { .. }));
     assert!(syncml::encode(&packet, &limits).is_err());
 }
+
+#[test]
+fn summary_versions_are_bound_and_only_schedule_full_reads() {
+    use rss_mdm_windows_mdm::native::declared::Summary;
+    let effect = request(Verb::Replace).effect_plan(context()).unwrap();
+    let plan = effect.readback().unwrap();
+    let summary = Summary {
+        id: uuid::Uuid::parse_str(ID).unwrap(),
+        scope: Scope::Device,
+        checksum: "version-1".into(),
+        result_checksum: "result-1".into(),
+        state: 20,
+    };
+    let versions = plan
+        .declared_versions(std::slice::from_ref(&summary))
+        .unwrap();
+    let uri = plan.expected.keys().next().unwrap();
+    assert_eq!(
+        serde_json::to_value(&versions).unwrap(),
+        serde_json::json!({uri:["result-1",20]})
+    );
+    for wrong in [
+        Summary {
+            scope: Scope::User,
+            ..summary.clone()
+        },
+        Summary {
+            checksum: "stale".into(),
+            ..summary.clone()
+        },
+        Summary {
+            id: uuid::Uuid::new_v4(),
+            ..summary.clone()
+        },
+    ] {
+        assert_eq!(
+            serde_json::to_value(plan.declared_versions(&[wrong]).unwrap()).unwrap(),
+            serde_json::json!({})
+        );
+    }
+    assert_eq!(effect.assess(&[]).state, EffectState::Waiting);
+    assert!(!plan.declared_query_needed(&[], None, &versions, true));
+    assert!(plan.declared_query_needed(&[], None, &versions, false));
+    let fact = |value| EffectFact {
+        uri: uri.clone(),
+        status: Some(200),
+        value: Some(value),
+        receipt_accepted: true,
+        result_accepted: true,
+    };
+    assert!(!plan.declared_query_needed(&[fact(result("Set", 20))], None, &versions, true));
+    let next = plan
+        .declared_versions(&[Summary {
+            result_checksum: "result-2".into(),
+            state: 40,
+            ..summary
+        }])
+        .unwrap();
+    assert!(plan.declared_query_needed(&[fact(result("Set", 20))], Some(&versions), &next, true));
+    assert!(!plan.declared_query_needed(&[fact(result("Set", 60))], Some(&versions), &next, true));
+}

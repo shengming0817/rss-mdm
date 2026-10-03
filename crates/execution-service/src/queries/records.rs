@@ -55,7 +55,7 @@ pub enum Origin {
 }
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ExecutionSummary {
+pub struct ExecutionMetadata {
     pub id: Uuid,
     pub kind: ExecutionKind,
     pub device: String,
@@ -66,26 +66,38 @@ pub struct ExecutionSummary {
     pub remote_operation: Option<Uuid>,
     deadline: i64,
     status: String,
-    evidence: ExecutionEvidence,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(Serialize)]
+pub struct ExecutionSummary {
+    #[serde(flatten)]
+    pub metadata: ExecutionMetadata,
+    pub evidence: ExecutionEvidence,
+}
+#[derive(Deserialize)]
+pub(crate) struct DirectoryItem {
+    #[serde(flatten)]
+    pub metadata: ExecutionMetadata,
+    pub evidence: Value,
+}
+#[derive(Serialize)]
 #[serde(untagged)]
-enum ExecutionEvidence {
+pub enum ExecutionEvidence {
     Command(Box<CommandEvidence>),
     Run(RunEvidence),
 }
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CommandEvidence {
-    command_status: String,
-    observation: NativeObservation,
-    dispatch_failure: Option<Value>,
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandEvidence {
+    pub command_status: String,
+    #[serde(skip)]
+    pub observation: NativeObservation,
+    pub dispatch_failure: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    agent_installation: Option<InstallationObservation>,
+    pub agent_installation: Option<InstallationObservation>,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct RunEvidence {
+pub struct RunEvidence {
     state: RunState,
     effect: String,
     result: Option<SummaryResult>,
@@ -160,109 +172,83 @@ pub struct RunDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     operation_id: Option<Uuid>,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandDetail {
-    operation_id: Uuid,
-    command_id: Uuid,
-    revision: i64,
-    task: Value,
-    target: crate::NativeTarget,
-    input_version: String,
-    deadline: i64,
-    dispatch_failure: Option<Value>,
-    authorization: String,
-    command_status: String,
-    observation: NativeObservation,
-    agent_installation: Option<InstallationObservation>,
+    pub operation_id: Uuid,
+    pub command_id: Uuid,
+    pub revision: i64,
+    pub task: Value,
+    pub target: crate::NativeTarget,
+    pub input_version: String,
+    pub deadline: i64,
+    pub dispatch_failure: Option<Value>,
+    pub authorization: String,
+    pub command_status: String,
+    #[serde(skip)]
+    pub observation: NativeObservation,
+    pub agent_installation: Option<InstallationObservation>,
+}
+pub enum NativeObservation {
+    Apple {
+        facts: rss_mdm_apple_mdm::native::evidence::ReadEvidence,
+        progress: String,
+        effect_confirmed: bool,
+    },
+    Declarations {
+        facts: Option<rss_mdm_apple_mdm::native::evidence::DeclarationEvidence>,
+        progress: String,
+    },
+    Windows {
+        receipts: Vec<WindowsReceipt>,
+        progress: String,
+        effect: rss_mdm_windows_mdm::native::verification::EffectState,
+        reason: Option<&'static str>,
+    },
+}
+impl NativeObservation {
+    pub(crate) fn redact_values(&mut self) {
+        if let Self::Windows { receipts, .. } = self {
+            for receipt in receipts {
+                receipt.value = None;
+                receipt.redacted = true;
+            }
+        }
+    }
 }
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct NativeObservation {
-    protocol: String,
-    observation_scope: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    receipts: Option<Vec<NativeReceipt>>,
-    progress: String,
-    effect: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    effect_reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    native_status: Option<NativeStatus>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    input_version: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    expected: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    synchronization: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    compliance: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    fields: Option<rss_mdm_apple_mdm::native::input::Fields>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<rss_mdm_apple_mdm::native::input::Fields>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    received_at: Option<i64>,
-}
-#[derive(Deserialize, Serialize)]
-#[serde(untagged)]
-enum NativeStatus {
-    Command(String),
-    Declarations(rss_mdm_apple_mdm::native::ddm::StatusProjection),
-}
-#[derive(Deserialize, Serialize)]
-#[serde(untagged)]
-enum NativeReceipt {
-    Windows(WindowsReceipt),
-    Apple(AppleReceipt),
-}
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WindowsReceipt {
-    phase: crate::AttemptPhase,
-    ordinal: i64,
-    session: i64,
-    message: i64,
-    command: i64,
-    parent_command: Option<i64>,
-    item: i32,
-    kind: String,
-    uri: Option<String>,
-    status: Option<i32>,
-    value: Option<String>,
-    accepted: Option<bool>,
-    received_at: Option<i64>,
-    result_accepted: Option<bool>,
-    result_received_at: Option<i64>,
-    frames: Vec<WindowsFrame>,
+pub struct WindowsReceipt {
+    pub phase: crate::AttemptPhase,
+    pub ordinal: i64,
+    pub session: i64,
+    pub message: i64,
+    pub command: i64,
+    pub parent_command: Option<i64>,
+    pub item: i32,
+    pub kind: String,
+    pub uri: Option<String>,
+    pub status: Option<i32>,
+    pub value: Option<String>,
+    pub accepted: Option<bool>,
+    pub received_at: Option<i64>,
+    pub result_accepted: Option<bool>,
+    pub result_received_at: Option<i64>,
+    pub frames: Vec<WindowsFrame>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    redacted: bool,
+    pub redacted: bool,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct WindowsFrame {
-    message: i64,
-    command: i64,
-    start_byte: i64,
-    end_byte: i64,
-    total_bytes: i64,
-    status: Option<i32>,
-    accepted: Option<bool>,
-    received_at: Option<i64>,
-}
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AppleReceipt {
-    accepted: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    outcome: Option<rss_mdm_apple_mdm::native::outcome::Outcome>,
-    phase: String,
-    state: String,
-    received_at: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    fields: Option<rss_mdm_apple_mdm::native::input::Fields>,
+pub struct WindowsFrame {
+    pub message: i64,
+    pub command: i64,
+    pub start_byte: i64,
+    pub end_byte: i64,
+    pub total_bytes: i64,
+    pub status: Option<i32>,
+    pub accepted: Option<bool>,
+    pub received_at: Option<i64>,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
