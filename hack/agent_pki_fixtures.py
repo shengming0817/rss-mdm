@@ -47,10 +47,21 @@ def prepare(root, configuration, password):
         ('server', 'rsa:2048', '/CN=rss-mdm-agent', ['-addext', 'extendedKeyUsage=serverAuth']),
     ]:
         openssl('req', '-new', '-newkey', algorithm, '-nodes', '-subj', subject,
-                '-keyout', root/(name+'.key'), '-outform', 'DER', '-out', root/(name+'.der'), *extra)
-        (root/(name+'.key')).chmod(0o600)
-    openssl('pkcs8', '-topk8', '-nocrypt', '-in', root/'agent.key', '-outform', 'DER', '-out', root/'agent.pk8')
+                '-keyout', root/('agent-csr-'+name+'.key'), '-outform', 'DER', '-out', root/(name+'.der'), *extra)
+        (root/('agent-csr-'+name+'.key')).chmod(0o600)
+    openssl('pkcs8', '-topk8', '-nocrypt', '-in', root/'agent-csr-agent.key', '-outform', 'DER', '-out', root/'agent.pk8')
     (root/'agent.pk8').chmod(0o600)
+
+    # A same-DN subordinate is a valid WebPKI path under this direct issuer,
+    # but must never become another Agent signer through chain delegation.
+    openssl('genpkey', '-algorithm', 'RSA', '-pkeyopt', 'rsa_keygen_bits:2048', '-out', root/'agent-subordinate.key')
+    (root/'agent-subordinate.key').chmod(0o600)
+    openssl('x509', '-x509toreq', '-in', intermediate, '-signkey', root/'agent-subordinate.key', '-out', root/'agent-subordinate.csr')
+    openssl('x509', '-req', '-in', root/'agent-subordinate.csr', '-CA', intermediate, '-CAkey', key,
+            '-passin', 'file:'+str(password), '-days', '3651', '-set_serial', str(secrets.randbits(120)),
+            '-extfile', extensions, '-out', root/'agent-subordinate.crt')
+    openssl('pkcs8', '-topk8', '-nocrypt', '-in', root/'agent-subordinate.key', '-outform', 'DER', '-out', root/'agent-subordinate.pk8')
+    (root/'agent-subordinate.pk8').chmod(0o600)
 
 
 def install(root, cli, admin, origin):

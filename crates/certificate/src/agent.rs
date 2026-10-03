@@ -301,10 +301,12 @@ impl AgentTrust {
         {
             return Err(Error::Unauthorized);
         }
+        // The configured anchor is the direct signer; auxiliary chain members
+        // cannot delegate this Agent purpose to a same-name subordinate CA.
         self.verifier
             .verify_client_cert(
                 &chain[0],
-                &chain[1..],
+                &[],
                 UnixTime::since_unix_epoch(Duration::from_secs(now as u64)),
             )
             .map_err(|_| Error::Unauthorized)?;

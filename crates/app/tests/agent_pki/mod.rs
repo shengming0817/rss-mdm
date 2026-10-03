@@ -31,7 +31,7 @@ use tokio_rustls::{
     },
 };
 use uuid::Uuid;
-use x509_cert::der::{DecodePem, Encode};
+use x509_cert::der::{Decode, DecodePem, Encode};
 
 fn root() -> PathBuf {
     PathBuf::from(std::env::var("MDM_APPLE_FIXTURES").unwrap())
@@ -223,6 +223,36 @@ async fn restored_ca_signs_only_live_authorized_agent_csrs_and_tls_preserves_pur
             .verify_peer(&evidence, issuer.trust().expires())
             .is_err()
     );
+    // Copy the legitimate profile/marker but sign with a same-DN subordinate.
+    // WebPKI's CA path remains valid; Agent's direct signer policy must reject.
+    let mut delegated = x509_cert::Certificate::from_der(&c.chain[0])?;
+    let algorithm = x509_cert::spki::AlgorithmIdentifierOwned {
+        oid: x509_cert::der::asn1::ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.11"),
+        parameters: Some(x509_cert::der::asn1::Any::null()),
+    };
+    delegated.tbs_certificate.signature = algorithm.clone();
+    delegated.signature_algorithm = algorithm;
+    let subordinate = ring::signature::RsaKeyPair::from_pkcs8(&std::fs::read(
+        root().join("agent-subordinate.pk8"),
+    )?)
+    .unwrap();
+    let mut signature = vec![0; subordinate.public().modulus_len()];
+    subordinate
+        .sign(
+            &ring::signature::RSA_PKCS1_SHA256,
+            &ring::rand::SystemRandom::new(),
+            &delegated.tbs_certificate.to_der()?,
+            &mut signature,
+        )
+        .unwrap();
+    delegated.signature = x509_cert::der::asn1::BitString::from_bytes(&signature)?;
+    let delegated_chain = vec![
+        delegated.to_der()?,
+        x509_cert::Certificate::from_pem(&std::fs::read(root().join("agent-subordinate.crt"))?)?
+            .to_der()?,
+    ];
+    let delegated_peer = peer(issuer.trust(), &delegated_chain, &root()).await?;
+    assert!(issuer.trust().verify_peer(&delegated_peer, now()).is_err());
     let apple = rss_mdm_certificate::apple::AppleDeviceTrust::from_bytes(
         &std::fs::read(root().join("step/certs/intermediate_ca.crt"))?,
         now(),
@@ -381,7 +411,7 @@ async fn provisioner_rejects_substituted_csr_and_consumed_token() -> anyhow::Res
     // rejects substitution. step-ca consumes the token before CSR validation.
     // Another valid Agent CSR uses an independent SHA256 RSA key.
     let other = x509_cert::request::CertReq::from_der(&std::fs::read(root().join("other.der"))?)?;
-    use x509_cert::der::{Decode, EncodePem, pem::LineEnding};
+    use x509_cert::der::{EncodePem, pem::LineEnding};
     let substituted = other.to_pem(LineEnding::LF)?;
     let response = client
         .post(&url)

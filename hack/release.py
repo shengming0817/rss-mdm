@@ -76,7 +76,7 @@ def build(out, header, web_image=None):
     print("candidate: " + str(out / "candidate.json"))
 
 ROLE_NAMES = ("software-publication", "flow", "identity", "commands", "audit")
-DEPLOYMENT_FILES = ("mdm-config.example.json", "deployment/nginx.conf", *(
+DEPLOYMENT_FILES = ('deployment/agent-leaf.tpl', "mdm-config.example.json", "deployment/nginx.conf", *(
     f"deployment/{name}-roles.sql" for name in ROLE_NAMES))
 
 

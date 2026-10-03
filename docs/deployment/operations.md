@@ -130,7 +130,7 @@ Compose 中 PostgreSQL 启动期每秒检查，稳定运行后每十秒检查。
 
 ## Agent CA 与签发恢复
 
-`agent_certificate_health` 在直接签发者状态变化时报告 healthy、renew_soon（30 天）、critical（7 天）、expired 或 clock_unavailable；过期及剩余期限不足均拒绝新签发。按公开 issuer 摘要核对信任锚，不在故障时另建 CA 或静默缩短叶证书期限。Agent 证书元数据包含 purpose/profile、服务端 tenant/device URI、issuer/SPKI/证书/CSR 摘要、serial 和绝对有效期。颁发输出只表示候选证书；只有实际完成的 TLS 握手可产生 peer evidence，且业务 owner 仍须逐次检查当前注册和撤销状态。
+`agent_certificate_health` 在直接签发者状态变化时报告 healthy、renew_soon（完整签发窗口余量 30 天）、critical（余量 7 天）、issuance_unavailable（仍有效但不足一个完整叶证书窗口）、expired 或 clock_unavailable；过期及剩余期限不足均拒绝新签发。按公开 issuer 摘要核对信任锚，不在故障时另建 CA 或静默缩短叶证书期限。Agent 证书元数据包含 purpose/profile、服务端 tenant/device URI、issuer/SPKI/证书/CSR 摘要、serial 和绝对有效期。颁发输出只表示候选证书；只有实际完成的 TLS 握手可产生 peer evidence，且业务 owner 仍须逐次检查当前注册和撤销状态。
 
 每次签发先提交 `agent-pki:<attempt>:authorized` 审计，离开数据库事务后请求 CA，严格验证返回证书后提交 `:result` 审计，完成后才返回候选。网络、CA、返回校验或结果审计不确定统一保留 attempt 并报告 issuance_unknown；step-ca 的 `/sign` 不提供幂等回执，token 单次消耗不能证明未签发。禁止自动换 jti、重新授权或另签证书来掩盖未知结果；由 #2630 的 grant/candidate owner 与 CA 持久签发记录协调恢复。拒绝前没有签发请求时可按明确授权失败修正原因。日志及支持导出仅含分类和摘要，不含口令、CSR 私钥或 JWT；step-ca 原生日志可能含 ott，必须作为受限秘密日志保存，禁止直接纳入通用日志聚合。
 

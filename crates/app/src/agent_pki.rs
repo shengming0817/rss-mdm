@@ -38,6 +38,7 @@ impl Lifetime {
 pub(crate) struct AgentPki {
     pub issuer: Arc<AgentIssuer>,
     clock: Arc<dyn crate::clock::Clock>,
+    required_seconds: i64,
 }
 impl Config {
     pub(crate) fn load(
@@ -86,6 +87,7 @@ impl Config {
         Ok(Some(Arc::new(AgentPki {
             issuer: Arc::new(issuer),
             clock,
+            required_seconds: i64::from(days) * 86400,
         })))
     }
 }
@@ -101,16 +103,58 @@ impl AgentPki {
     pub(crate) fn registration(self: Arc<Self>) -> rss_runtime::ManagedTaskRegistration {
         let (task, _) =
             rss_runtime::ManagedTask::prepare("agent-pki-expiry", Duration::from_secs(2));
-        task.into_registration(move |token|async move {
-            let mut previous=None;
+        task.into_registration(move |token| async move {
+            let mut previous = None;
             loop {
-                let level=match self.clock.unix_seconds() {
-                    Ok(now)=>{let seconds=self.issuer.trust().expires()-now; if seconds<=0 {"expired"} else if seconds<=7*86400 {"critical"} else if seconds<=30*86400 {"renew_soon"} else {"healthy"}},
-                    Err(_)=>"clock_unavailable",
+                let level = match self.clock.unix_seconds() {
+                    Ok(now) => health(self.issuer.trust().expires(), now, self.required_seconds),
+                    Err(_) => "clock_unavailable",
                 };
-                if previous!=Some(level) { eprintln!("{}",serde_json::json!({"event":"agent_certificate_health","purpose":"issuer","level":level}));previous=Some(level); }
-                tokio::select! { biased; ()=token.cancelled()=>return Ok(()), ()=tokio::time::sleep(Duration::from_secs(60))=>{} }
+                if previous != Some(level) {
+                    eprintln!("{}", serde_json::json!({"event":"agent_certificate_health","purpose":"issuer","level":level}));
+                    previous = Some(level);
+                }
+                tokio::select! {
+                    biased;
+                    () = token.cancelled() => return Ok(()),
+                    () = tokio::time::sleep(Duration::from_secs(60)) => {}
+                }
             }
         })
+    }
+}
+fn health(expires: i64, now: i64, required: i64) -> &'static str {
+    let remaining = expires.saturating_sub(now);
+    let margin = remaining.saturating_sub(required);
+    if remaining <= 0 {
+        "expired"
+    } else if margin < 0 {
+        "issuance_unavailable"
+    } else if margin <= 7 * 86400 {
+        "critical"
+    } else if margin <= 30 * 86400 {
+        "renew_soon"
+    } else {
+        "healthy"
+    }
+}
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn health_warns_before_the_last_full_issuance_window() {
+        for days in [365, 3650] {
+            let required = days * 86400;
+            assert_eq!(
+                super::health(required + 200 * 86400, 1, required),
+                "healthy"
+            );
+            assert_eq!(
+                super::health(required + 30 * 86400, 1, required),
+                "renew_soon"
+            );
+            assert_eq!(super::health(required + 7 * 86400, 1, required), "critical");
+            assert_eq!(super::health(required, 1, required), "issuance_unavailable");
+            assert_eq!(super::health(1, 1, required), "expired");
+        }
     }
 }
