@@ -378,6 +378,23 @@ impl ResultDocument {
             resources: resources.into_values().collect(),
         })
     }
+    /// A correlated native lifecycle state can remain pending without proving success.
+    pub fn in_progress(&self, desired: &Document, operation: &str) -> bool {
+        self.identity == desired.identity
+            && self.operation == operation
+            && matches!(self.state, 0..=3 | 10..=11 | 20..=21 | 40)
+            && self.resources.iter().all(|r| {
+                desired.resources.contains_key(&r.identity)
+                    && r.status.is_none_or(|status| status == 200)
+                    && r.state.is_none_or(|state| {
+                        matches!(state, 0..=3 | 10..=11 | 20..=21 | 40)
+                            || matches!(
+                                (operation, state),
+                                ("Set", 60 | 63) | ("Delete", 70) | ("Get", 80)
+                            )
+                    })
+            })
+    }
     /// Success requires the original identity/version and every requested resource.
     pub fn converged(&self, desired: &Document, operation: &str) -> bool {
         let success = match operation {

@@ -327,6 +327,16 @@ impl ExecutionService {
         let (registration, _generation) =
             match storage::current_registration(tx, device, purpose).await {
                 Ok(v) => v,
+                Err(Fault::Request(Error::WindowsDeclaredEnrollmentNotReady)) => {
+                    return record_target(
+                        tx,
+                        id,
+                        device,
+                        None,
+                        Some("windows_declared_enrollment_not_ready"),
+                    )
+                    .await;
+                }
                 Err(Fault::Request(Error::Conflict)) => {
                     return record_target(tx, id, device, None, Some("mdm_unavailable")).await;
                 }

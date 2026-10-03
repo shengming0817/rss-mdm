@@ -270,6 +270,7 @@ impl From<rss_mdm_execution_service::Error> for Error {
             E::Malformed => Self::Malformed,
             E::CertificateRequest => Self::CertificateRequest,
             E::Conflict => Self::Conflict,
+            E::WindowsDeclaredEnrollmentNotReady => Self::WindowsDeclaredEnrollmentNotReady,
             E::CommitUnknown => Self::CommitUnknown,
             E::RollbackFailed => Self::RollbackFailed,
             E::Unauthorized => Self::Unauthorized,
@@ -450,6 +451,7 @@ impl From<rss_mdm_execution_service::queries::QueryError> for Error {
         use rss_mdm_execution_service::queries::{Missing, QueryError as Q};
         match e {
             Q::Malformed => Self::Malformed, Q::Unauthorized => Self::Unauthorized, Q::Forbidden => Self::Forbidden, Q::Conflict => Self::Conflict,
+            Q::WindowsDeclaredEnrollmentNotReady => Self::WindowsDeclaredEnrollmentNotReady,
             Q::Unsupported => Self::Unsupported, Q::CommitUnknown => Self::CommitUnknown, Q::RollbackFailed => Self::RollbackFailed,
             Q::Unavailable(f) => rss_mdm_execution_service::Error::Unavailable(f).into(),
             Q::Missing(m) => match m {

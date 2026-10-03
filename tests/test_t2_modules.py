@@ -43,7 +43,7 @@ class ModuleImpactTests(unittest.TestCase):
             self.assertFalse(selected.full)
             self.assertEqual(set(selected.modules), {
                 'execution.agent.history', 'execution.commands.windows', 'planning.http',
-                'planning.agent_policy', 'planning.remote', 'planning.software'})
+                'planning.agent_policy', 'planning.remote', 'planning.software'} | ({'windows.declared'} if path.endswith('/error.rs') else set()))
 
     def test_script_preparation_selects_all_script_entrances(self):
         for path in ('crates/resource/src/script.rs',
@@ -58,6 +58,10 @@ class ModuleImpactTests(unittest.TestCase):
     def test_native_rules_select_configuration_consumer(self):
         for path in ('crates/windows-mdm/src/native/request.rs', 'crates/windows-mdm/src/native/verification.rs'):
             self.assertIn('execution.commands.configuration', self.selected(path), path)
+
+    def test_declared_protocol_consumers_select_linked_end_to_end_proof(self):
+        for path in MODULES['windows.declared'].production_inputs:
+            self.assertIn('windows.declared', self.selected(path), path)
 
     def test_console_projection_inputs_select_their_http_consumers(self):
         for path in ('crates/resource-postgres/src/codec.rs',
@@ -81,7 +85,7 @@ class ModuleImpactTests(unittest.TestCase):
             'execution.software.content', 'execution.software.recovery'})
         self.assertEqual(self.selected('crates/windows-channel/src/lib.rs'), {
             'windows.enrollment', 'windows.issuance', 'windows.management',
-            'windows.commands', 'windows.retention', 'windows.limits'})
+            'windows.commands', 'windows.retention', 'windows.limits', 'windows.declared'})
 
     def test_runtime_diagnostics_has_exact_tests_and_live_owner_inputs(self):
         self.assertEqual(self.selected('crates/app/tests/api/runtime_diagnostics.rs'), {'diagnostics.http'})
@@ -130,7 +134,8 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertEqual(self.selected('crates/app/tests/support/process.rs'),
                          {'inventory.runtime','execution.commands.recovery'})
         self.assertEqual(self.selected('crates/app/tests/execution/support.rs'),
-                         {'execution.commands.'+part for part in ('admission','dispatch','recovery','windows','configuration','onboarding')} | {'windows.commands'})
+                         {'execution.commands.'+part for part in ('admission','dispatch','recovery','windows','configuration','onboarding')} | {'windows.commands','windows.declared'})
+        self.assertEqual(self.selected('crates/app/tests/execution/support/configuration.rs'), {'execution.commands.configuration','windows.declared'})
         self.assertEqual(self.selected('crates/app/tests/execution/support/native.rs'),
                          self.selected('crates/app/tests/execution/support.rs'))
         device = self.selected('crates/app/tests/device/support.rs')

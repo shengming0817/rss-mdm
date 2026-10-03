@@ -262,6 +262,7 @@ pub enum OwnerDiagnostic {
     Audit(rss_mdm_audit_integration::ErrorClass),
     ExecutionConfiguration(rss_mdm_execution_service::ConfigIssue),
     ExecutionDependency(rss_mdm_execution_service::Failure),
+    WindowsDeclaredEnrollmentNotReady,
     Inventory(rss_mdm_inventory_service::Failure),
     Software(rss_mdm_software_service::management::Failure),
     Content(rss_mdm_content_service::Error),
@@ -281,6 +282,7 @@ impl From<rss_mdm_execution_service::Error> for OwnerDiagnostic {
         match e {
             E::Malformed | E::CertificateRequest => Self::Malformed,
             E::Conflict => Self::Conflict,
+            E::WindowsDeclaredEnrollmentNotReady => Self::WindowsDeclaredEnrollmentNotReady,
             E::Unauthorized => Self::Unauthorized,
             E::Forbidden => Self::Forbidden,
             E::CommitUnknown => Self::CommitUnknown,

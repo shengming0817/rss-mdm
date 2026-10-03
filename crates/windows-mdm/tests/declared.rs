@@ -114,8 +114,21 @@ fn full_results_bind_version_resources_and_operation_including_delete() {
                 .state,
             EffectState::Diverged
         );
+        for pending in [0, 1, 2, 3, 10, 11, 20, 21, 40] {
+            let assessment = effect.assess(&[fact(result(operation, pending))]);
+            assert_eq!(assessment.state, EffectState::Waiting);
+            assert_eq!(assessment.reason, Some("declared_operation_in_progress"));
+        }
+        for failure in [61, 62, 71, 72, 81, 82] {
+            assert_eq!(
+                effect.assess(&[fact(result(operation, failure))]).state,
+                EffectState::Diverged
+            );
+        }
         assert_eq!(
-            effect.assess(&[fact(result(operation, 20))]).state,
+            effect
+                .assess(&[fact(result(operation, 20).replace("version-1", "stale"))])
+                .state,
             EffectState::Diverged
         );
         assert_eq!(effect.assess(&[]).state, EffectState::Waiting);

@@ -1934,3 +1934,91 @@ async fn device_profile_never_grants_an_enrolled_user_scope() -> anyhow::Result<
     ensure!(device.gets.iter().any(|(_, u)| u == "./DevInfo/Mod"));
     host.close().await
 }
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=execution.commands.windows"]
+async fn unsupported_config_refresh_does_not_abort_other_management_tasks() -> anyhow::Result<()> {
+    let mut host = crate::windows::test_support::Host::open().await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    let warm = begin(
+        &peer.mutual,
+        &peer.url,
+        &peer.message,
+        &peer.ack,
+        1910,
+        None,
+    )
+    .await?;
+    ensure!(
+        post(
+            &peer.mutual,
+            &peer.url,
+            &report(&warm.first, &warm.gets, "10.0.22631.1", 200)
+        )
+        .await?
+        .status()
+            == StatusCode::OK
+    );
+    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    client.accept_approved().await?;
+    client.publish_operation(client.operation).await?;
+    let unsupported = Uuid::new_v4();
+    let input = json!({"operationId":unsupported,"inputVersion":"1","target":{"kind":"device"},"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/DMClient/Provider/*/ConfigRefresh/Enabled","instance":[host.app.windows()?.channel.provider_id],"operation":"get","value":null}}},"deadline":host.app.clock.unix_seconds()?+300});
+    ensure!(client.call(Method::POST, "", Some(input)).await?.0 == StatusCode::ACCEPTED);
+    ensure!(
+        client
+            .call(
+                Method::POST,
+                &format!("/{unsupported}/approve"),
+                Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":1}))
+            )
+            .await?
+            .0
+            == StatusCode::OK
+    );
+    client.publish_operation(unsupported).await?;
+    let exchange = begin(
+        &peer.mutual,
+        &peer.url,
+        &peer.message,
+        &peer.ack,
+        1911,
+        Some("./DevInfo/Mod"),
+    )
+    .await?;
+    ensure!(
+        exchange
+            .gets
+            .iter()
+            .all(|(_, uri)| !uri.contains("ConfigRefresh")),
+        "unsupported task sent"
+    );
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let failure: Option<Value> = sqlx::query_scalar(
+        "SELECT dispatch_failure FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(case_tenant())
+    .bind(unsupported)
+    .fetch_one(&mut pg)
+    .await?;
+    ensure!(
+        failure
+            .as_ref()
+            .is_some_and(|value| value["phase"] == "prepare"),
+        "per-operation rejection absent: {failure:?}"
+    );
+    let attempts: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2",
+    )
+    .bind(case_tenant())
+    .bind(client.operation)
+    .fetch_one(&mut pg)
+    .await?;
+    ensure!(attempts > 0, "eligible ordinary task was blocked");
+    pg.close().await?;
+    host.close().await?;
+    Ok(())
+}

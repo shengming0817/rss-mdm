@@ -612,6 +612,20 @@ pub(crate) async fn send_on(
             .map(|v| serde_json::from_value::<Context>(v).map_err(|_| protocol()))
             .transpose()?;
         let platform = frozen.or(fresh);
+        let prepared = match (request, platform) {
+            (W::SyncMl { request }, Some(platform)) => {
+                match request.resolve().and_then(|r| r.prepare(platform)) {
+                    Ok(prepared) => Some(prepared),
+                    Err(error) => {
+                        let failure = serde_json::json!({"platform":"windows","phase":"prepare","reason":error.to_string(),"context":platform});
+                        sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
+                        .bind(&tenant).bind(op.operation_id).bind(failure).execute(&mut *c).await.map_err(db)?;
+                        continue;
+                    }
+                }
+            }
+            _ => None,
+        };
         let binding = match (request, platform) {
             (W::SyncMl { request }, Some(platform)) => request
                 .enrollment_binding(provider_id, platform)
@@ -661,12 +675,9 @@ pub(crate) async fn send_on(
                 continue;
             }
         }
-        let summary_changed = if let (W::SyncMl { request }, Some(platform)) = (request, platform) {
-            request
-                .effect_plan(platform)
-                .map_err(|_| Error::Unsupported)?
-                .readback()
-                .is_some_and(|plan| {
+        let summary_changed = !declared_summaries.is_empty()
+            && prepared.as_ref().is_some_and(|prepared| {
+                prepared.effect.readback().is_some_and(|plan| {
                     plan.expected.values().any(|expected| match expected {
                         rss_mdm_windows_mdm::native::verification::Expected::Declared {
                             document,
@@ -679,9 +690,7 @@ pub(crate) async fn send_on(
                         _ => false,
                     })
                 })
-        } else {
-            false
-        };
+            });
         let (ordinal, phase) = match (&old, request) {
             (None, W::SyncMl { .. }) if binding.is_some() => (1, AttemptPhase::Prepare),
             (Some(old), W::SyncMl { .. })
@@ -734,9 +743,9 @@ pub(crate) async fn send_on(
                         && (old.try_get::<i64, _>("session").map_err(db)? != session
                             || summary_changed)) =>
             {
-                let Some(platform) = platform else {
+                if platform.is_none() {
                     continue;
-                };
+                }
                 if !request
                     .management_addresses()
                     .map_err(|_| Error::Malformed)?
@@ -745,11 +754,9 @@ pub(crate) async fn send_on(
                 {
                     continue;
                 }
-                if request
-                    .effect_plan(platform)
-                    .map_err(|_| Error::Unsupported)?
-                    .readback()
-                    .is_none()
+                if prepared
+                    .as_ref()
+                    .is_none_or(|prepared| prepared.effect.readback().is_none())
                 {
                     continue;
                 }
@@ -767,18 +774,9 @@ pub(crate) async fn send_on(
             continue;
         }
         let readback = if phase == AttemptPhase::Prepare && binding.is_some() {
-            binding
+            binding.as_ref()
         } else if phase == AttemptPhase::Observe {
-            let W::SyncMl { request } = request else {
-                return Err(protocol());
-            };
-            Some(
-                request
-                    .effect_plan(platform.ok_or_else(protocol)?)
-                    .map_err(|_| Error::Unsupported)?
-                    .into_readback()
-                    .ok_or_else(protocol)?,
-            )
+            prepared.as_ref().and_then(|p| p.effect.readback())
         } else {
             None
         };
@@ -789,16 +787,17 @@ pub(crate) async fn send_on(
         };
         let id = crate::device::store::allocate_commands_in(c, p, i64::from(count)).await?;
         let command = match request {
-            W::SyncMl { request } => {
+            W::SyncMl { .. } => {
                 let Some(platform) = platform else {
                     continue;
                 };
-                match readback
-                    .as_ref()
-                    .map(|v| &v.request)
-                    .unwrap_or(request)
-                    .compile(platform, id)
-                {
+                match if let Some(readback) = readback {
+                    readback.request.compile(platform, id)
+                } else if let Some(prepared) = prepared.as_ref() {
+                    prepared.command(id)
+                } else {
+                    continue;
+                } {
                     Ok(compiled) => compiled.command,
                     Err(error) => {
                         let failure = serde_json::json!({"platform":"windows","phase":phase.as_str(),"reason":error.to_string(),"context":platform});

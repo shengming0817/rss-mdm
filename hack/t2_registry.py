@@ -71,6 +71,8 @@ class Module:
             result.add('docker')
         if self.postgres or set(self.fixtures) & {'tls', 'windows', 'apple', 'scep', 'apns'}:
             result.add('openssl')
+        if self.id == 'windows.declared':
+            result.add('xmlsec1')
         if 'homebrew' in self.fixtures:
             result.add('brew')
         if 'git' in self.fixtures:
@@ -230,7 +232,30 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
  'content.http': ('crates/management-http/src/content/http.rs', 'crates/content-service/src/upload.rs'),
  'content.mirror': ('crates/management-http/src/content/http.rs', 'crates/content-service/src/upload.rs'),
  'content.gc': ('crates/content-service/src/cleanup.rs', 'crates/content-service/src/event.rs'),
- 'windows.declared': ('crates/windows-channel/src/linked.rs', 'crates/certificate/src/windows/linked.rs', 'crates/registration-service/src/device/linked.rs', 'crates/registration-service/src/device/management.rs', 'crates/execution-service/src/native.rs', 'crates/windows-mdm/src/native/resolved.rs'),
+ 'windows.declared': (
+     'crates/windows-channel/src/lib.rs', 'crates/windows-channel/src/linked.rs',
+     'crates/windows-channel/src/boundary.rs', 'crates/windows-channel/src/management.rs',
+     'crates/windows-channel/src/management/session.rs', 'crates/windows-channel/src/renewal.rs',
+     'crates/certificate/src/windows/linked.rs',
+     'crates/registration-service/src/device/linked.rs',
+     'crates/registration-service/src/device/management.rs',
+     'crates/registration-service/src/device/store.rs',
+     'crates/registration-service/src/device/read.rs',
+     'crates/registration-service/src/device.rs',
+     'crates/execution-service/src/native.rs',
+     'crates/execution-service/src/storage.rs',
+     'crates/execution-service/src/error.rs',
+     'crates/execution-service/src/queries/error.rs',
+     'crates/execution-service/src/remote_execution.rs',
+     'crates/management-http/src/error.rs',
+     'crates/management-http/src/error_projection.rs',
+     'crates/management-http/src/response.rs',
+     'crates/execution-service/src/native_configuration.rs',
+     'crates/windows-mdm/src/native/resolved.rs',
+     'crates/windows-mdm/src/native/request.rs',
+     'crates/windows-mdm/src/native/declared.rs',
+     'crates/windows-mdm/src/native/verification.rs',
+     'crates/windows-mdm/src/syncml.rs'),
  'windows.issuance': ('crates/windows-channel/src/issuance.rs', 'crates/certificate/src/windows.rs'),
  'windows.enrollment': ('crates/windows-channel/src/lib.rs',),
  'windows.management': ('crates/windows-channel/src/management.rs',
@@ -370,7 +395,7 @@ app_family('execution.commands',
            namespace='execution::t2::commands')
 for name in ('execution.commands.admission','execution.commands.dispatch','execution.commands.recovery','execution.commands.windows','execution.commands.configuration','execution.commands.onboarding'):
     MODULES[name] = replace(MODULES[name], fixtures=MODULES[name].fixtures+('windows',),
-        support_inputs=MODULES[name].support_inputs+('crates/app/tests/execution/support/*', 'crates/app/tests/windows/support.rs',))
+        support_inputs=MODULES[name].support_inputs+('crates/app/tests/execution/support/native.rs', 'crates/app/tests/windows/support.rs',))
 app_family('execution.software',
            namespace='execution::t2::software')
 for name in ('execution.software.offer', 'execution.software.content', 'execution.software.recovery', 'planning.software'):
@@ -418,7 +443,7 @@ add('native.tls', selectors=('native::tls::tests::',), profile='product', fixtur
     tests=('crates/app/tests/native/tls.rs',))
 app_family('windows',
            fixtures=('windows',), namespace='windows::t2')
-MODULES['windows.declared'] = replace(MODULES['windows.declared'], support_inputs=(*MODULES['windows.declared'].support_inputs, 'crates/app/tests/windows/support.rs', 'crates/app/tests/enrollment/support.rs', 'crates/app/tests/execution/support.rs', 'crates/app/tests/execution/support/native.rs'), db_mode='fresh', scope='objects')
+MODULES['windows.declared'] = replace(MODULES['windows.declared'], support_inputs=(*MODULES['windows.declared'].support_inputs, 'crates/app/tests/windows/support.rs', 'crates/app/tests/device/support.rs', 'crates/app/tests/enrollment/support.rs', 'crates/app/tests/execution/support.rs', 'crates/app/tests/execution/support/native.rs', 'crates/app/tests/execution/support/configuration.rs'), db_mode='fresh', scope='objects')
 for name in ('windows.issuance','windows.enrollment','windows.management','windows.commands','windows.retention','windows.limits','execution.commands.windows','execution.commands.configuration','execution.commands.onboarding'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs + ('crates/app/tests/windows/support.rs',))
 for name in ('enrollment.recovery','windows.issuance','windows.enrollment','windows.management','windows.commands','windows.retention','windows.limits','execution.commands.admission','execution.commands.dispatch','execution.commands.recovery','execution.commands.windows','execution.commands.configuration','execution.commands.onboarding'):
@@ -911,7 +936,7 @@ APP_HELPER_CONSUMERS = {
     'support/process.rs': ('inventory.runtime','execution.commands.recovery'),
     'execution/support.rs': (
         'execution.commands.admission','execution.commands.dispatch','execution.commands.recovery',
-        'execution.commands.windows','execution.commands.configuration','execution.commands.onboarding','windows.commands'),
+        'execution.commands.windows','execution.commands.configuration','execution.commands.onboarding','windows.commands','windows.declared'),
     'device/support.rs': (
         'diagnostics.http',
         'device.binding','device.revocation','device.recovery','device.admission',
@@ -920,7 +945,7 @@ APP_HELPER_CONSUMERS = {
         'planning.http','software.http','execution.software.offer','execution.software.content',
         'execution.software.recovery','execution.commands.admission','execution.commands.dispatch',
         'execution.commands.recovery','execution.commands.windows','execution.commands.configuration','execution.commands.onboarding',
-        'windows.commands','windows.enrollment','windows.issuance','windows.limits','windows.management','windows.retention',
+        'windows.commands','windows.enrollment','windows.issuance','windows.limits','windows.management','windows.retention','windows.declared',
         'apple.collection','apple.profile','apple.policy','apple.onboarding','apple.renewal','apple.identity','apple.push',
         'apple.fairness','apple.host','apple.scep'),
     'support/audit.rs': (
@@ -933,6 +958,7 @@ APP_HELPER_CONSUMERS = {
         'enrollment.http','content.http','compliance.http','compliance.recovery','compliance.group_input',
         'authorization.capacity','authorization.rules','execution.agent.history','execution.agent.content','software.http'),
 }
+APP_HELPER_CONSUMERS['execution/support/configuration.rs'] = ('execution.commands.configuration', 'windows.declared')
 APP_HELPER_CONSUMERS['execution/support/native.rs'] = APP_HELPER_CONSUMERS['execution/support.rs']
 for relative, consumers in APP_HELPER_CONSUMERS.items():
     path = 'crates/app/tests/' + relative

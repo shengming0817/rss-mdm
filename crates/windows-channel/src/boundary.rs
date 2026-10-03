@@ -174,7 +174,7 @@ fn route_action(route: &str) -> &'static str {
         "/EnrollmentServer/LinkedEnrollment.svc" | "/EnrollmentServer/Enrollment.svc" => {
             "enrollment_issue"
         }
-        "/ManagementServer/MDM.svc" => "windows_management",
+        "/ManagementServer/MDM.svc" | "/ManagementServer/Declared.svc" => "windows_management",
         _ => "protected_request",
     }
 }

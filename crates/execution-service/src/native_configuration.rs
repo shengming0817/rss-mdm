@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub enum Diagnosis {
     WaitingScope,
     WaitingRegistration,
+    WindowsDeclaredEnrollmentNotReady,
     WaitingCapability,
     NotApplicable,
     Conflict,
@@ -23,6 +24,7 @@ impl Diagnosis {
         match self {
             Self::WaitingScope => "waiting_scope",
             Self::WaitingRegistration => "waiting_registration",
+            Self::WindowsDeclaredEnrollmentNotReady => "windows_declared_enrollment_not_ready",
             Self::WaitingCapability => "waiting_capability",
             Self::NotApplicable => "not_applicable",
             Self::Conflict => "configuration_conflict",
@@ -195,17 +197,23 @@ impl ExecutionService {
                 storage::now(tx).await? + 3600,
                 false,
             )?;
-            if matches!(
-                storage::current_registration(tx, device, probe.task.purpose()?).await,
-                Err(Fault::Request(Error::Conflict))
-            ) {
+            let unavailable =
+                match storage::current_registration(tx, device, probe.task.purpose()?).await {
+                    Ok(_) => None,
+                    Err(Fault::Request(Error::Conflict)) => Some(Diagnosis::WaitingRegistration),
+                    Err(Fault::Request(Error::WindowsDeclaredEnrollmentNotReady)) => {
+                        Some(Diagnosis::WindowsDeclaredEnrollmentNotReady)
+                    }
+                    Err(error) => return Err(error),
+                };
+            if let Some(diagnosis) = unavailable {
                 save_objects(
                     tx,
                     device,
                     &input.objects,
                     state,
                     Some(&input.object_digests),
-                    Some(Diagnosis::WaitingRegistration),
+                    Some(diagnosis),
                 )
                 .await?;
                 desired_claims(tx, device, &input.objects, &inputs, &owners, state).await?;
@@ -363,37 +371,40 @@ impl ExecutionService {
                     operation = Some(id);
                 }
             }
-            let id = if let Some(id) = operation {
-                id
-            } else {
+            let id = operation.unwrap_or_else(Uuid::new_v4);
+            let deadline = storage::now(tx)
+                .await?
+                .checked_add(3600)
+                .ok_or(Error::Malformed)?;
+            let request = old
+                .native
+                .request(id, policy.version.to_string(), deadline, true)?;
+            let unavailable =
+                match storage::current_registration(tx, device, request.task.purpose()?).await {
+                    Ok(_) => None,
+                    Err(Fault::Request(Error::Conflict)) => Some(Diagnosis::WaitingRegistration),
+                    Err(Fault::Request(Error::WindowsDeclaredEnrollmentNotReady)) => {
+                        Some(Diagnosis::WindowsDeclaredEnrollmentNotReady)
+                    }
+                    Err(error) => return Err(error),
+                };
+            if let Some(diagnosis) = unavailable {
+                save_objects(
+                    tx,
+                    device,
+                    &old.objects,
+                    state,
+                    Some(&old.object_digests),
+                    Some(diagnosis),
+                )
+                .await?;
+                continue;
+            }
+            if operation.is_none() {
                 cancel_objects(self, tx, device, &old.objects).await?;
-                let id = Uuid::new_v4();
-                let deadline = storage::now(tx)
-                    .await?
-                    .checked_add(3600)
-                    .ok_or(Error::Malformed)?;
-                let request = old
-                    .native
-                    .request(id, policy.version.to_string(), deadline, true)?;
-                if matches!(
-                    storage::current_registration(tx, device, request.task.purpose()?).await,
-                    Err(Fault::Request(Error::Conflict))
-                ) {
-                    save_objects(
-                        tx,
-                        device,
-                        &old.objects,
-                        state,
-                        Some(&old.object_digests),
-                        Some(Diagnosis::WaitingRegistration),
-                    )
-                    .await?;
-                    continue;
-                }
                 self.queue_policy_configuration(tx, device, policy, &request, true, audit)
                     .await?;
-                id
-            };
+            }
             save_objects(
                 tx,
                 device,

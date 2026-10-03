@@ -5,81 +5,65 @@ use crate::windows::*;
 use anyhow::ensure;
 use axum::http::StatusCode;
 use base64::{Engine, engine::general_purpose::STANDARD};
-use libxml::{
-    parser::Parser,
-    tree::c14n::{CanonicalizationMode, CanonicalizationOptions},
-};
-use ring::{
-    rand::SystemRandom,
-    signature::{self},
-};
 use rss_mdm_registration_service::Purpose;
 use rss_mdm_windows_mdm::{
     CodecLimits, Secret,
     soap::{self, Body, Operation},
     syncml,
 };
-use sha2::{Digest, Sha256};
 use sqlx::{Connection, PgConnection, Row};
 use uuid::Uuid;
 use x509_cert::der::{Decode, EncodePem, pem::LineEnding};
 
-// Sign the complete original SOAP document. Reference URI="" and the native single
-// enveloped transform use inclusive C14N; SignedInfo uses exclusive C14N.
-fn signed(message: &soap::Message, key: &[u8]) -> anyhow::Result<Vec<u8>> {
-    let xml = String::from_utf8(soap::encode(message, &CodecLimits::default())?)?;
-    let doc = Parser::default().parse_string(&xml)?;
-    let canonical = doc
-        .canonicalize(
-            CanonicalizationOptions {
-                mode: CanonicalizationMode::Canonical1_0,
-                ..Default::default()
-            },
-            None,
-        )
-        .map_err(|_| anyhow::anyhow!("fixture document canonicalization"))?;
-    let digest = STANDARD.encode(Sha256::digest(canonical.as_bytes()));
-    let signature = format!(
-        r##"<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/><ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/><ds:Reference URI=""><ds:Transforms><ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/></ds:Transforms><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><ds:DigestValue>{digest}</ds:DigestValue></ds:Reference></ds:SignedInfo><ds:SignatureValue>SIGNATURE</ds:SignatureValue><ds:KeyInfo><o:SecurityTokenReference><o:Reference URI="#parent-cert" ValueType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509"/></o:SecurityTokenReference></ds:KeyInfo></ds:Signature>"##
-    );
-    let xml = xml.replace("</o:Security>", &(signature + "</o:Security>"));
-    let doc = Parser::default().parse_string(&xml)?;
-    let header = doc
-        .get_root_element()
-        .unwrap()
-        .get_child_elements()
-        .into_iter()
-        .find(|n| n.get_name() == "Header")
-        .unwrap();
-    let security = header
-        .get_child_elements()
-        .into_iter()
-        .find(|n| n.get_name() == "Security")
-        .unwrap();
-    let sig = security
-        .get_child_elements()
-        .into_iter()
-        .find(|n| n.get_name() == "Signature")
-        .unwrap();
-    let mut info = sig
-        .get_child_elements()
-        .into_iter()
-        .find(|n| n.get_name() == "SignedInfo")
-        .unwrap();
-    let canonical = info
-        .canonicalize(CanonicalizationOptions::default())
-        .map_err(|_| anyhow::anyhow!("fixture SignedInfo canonicalization"))?;
-    let key = signature::RsaKeyPair::from_pkcs8(key).map_err(|_| anyhow::anyhow!("fixture key"))?;
-    let mut bytes = vec![0; key.public().modulus_len()];
-    key.sign(
-        &signature::RSA_PKCS1_SHA256,
-        &SystemRandom::new(),
-        canonical.as_bytes(),
-        &mut bytes,
+// xmlsec1 is an independent implementation of the native XMLDSIG profile.
+// Every private key and signed document lives in a disposable local fixture.
+async fn signed(message: &soap::Message, key: &std::path::Path) -> anyhow::Result<Vec<u8>> {
+    sign_xml(
+        String::from_utf8(soap::encode(message, &CodecLimits::default())?)?,
+        key,
     )
-    .map_err(|_| anyhow::anyhow!("fixture signature"))?;
-    Ok(xml
-        .replace("SIGNATURE", &STANDARD.encode(bytes))
+    .await
+}
+async fn sign_xml(xml: String, key: &std::path::Path) -> anyhow::Result<Vec<u8>> {
+    let signature = r##"<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:SignedInfo><ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/><ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/><ds:Reference URI=""><ds:Transforms><ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/></ds:Transforms><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><ds:DigestValue/></ds:Reference></ds:SignedInfo><ds:SignatureValue/><ds:KeyInfo><ds:KeyName>fixture</ds:KeyName><o:SecurityTokenReference><o:Reference URI="#parent-cert" ValueType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509"/></o:SecurityTokenReference></ds:KeyInfo></ds:Signature>"##;
+    let xml = xml.replace("</o:Security>", &(signature.to_owned() + "</o:Security>"));
+    let temp = tempfile::tempdir()?;
+    let template = temp.path().join("template.xml");
+    let output = temp.path().join("signed.xml");
+    std::fs::write(&template, xml)?;
+    let mut process = tokio::process::Command::new("xmlsec1")
+        .args([
+            "--sign",
+            "--enabled-reference-uris",
+            "empty",
+            "--privkey-pem:fixture",
+        ])
+        .arg(key)
+        .arg("--output")
+        .arg(&output)
+        .arg(&template)
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    let status =
+        match tokio::time::timeout(std::time::Duration::from_secs(30), process.wait()).await {
+            Ok(status) => status?,
+            Err(error) => {
+                process.kill().await?;
+                process.wait().await?;
+                return Err(error.into());
+            }
+        };
+    ensure!(
+        status.success(),
+        "independent XMLDSIG fixture signing failed"
+    );
+    // KeyName only selects the supplied fixture key for the independent tool.
+    // The enveloped transform excludes the whole Signature; removing this unsigned
+    // fixture selector preserves both digests and leaves the exact WS-Security profile.
+    Ok(std::fs::read_to_string(output)?
+        .replace("<ds:KeyName>fixture</ds:KeyName>", "")
         .into_bytes())
 }
 
@@ -172,8 +156,8 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
         )
         .is_ok()
     );
-    let key = std::fs::read(host.root.join("device.pk8"))?;
-    let wire = signed(&issue, &key)?;
+    let key = host.root.join("device.key");
+    let wire = signed(&issue, &key).await?;
     let proof = w.ca.linked_proof(&wire, at)?;
     ensure!(proof.fingerprint() == w.ca.verify(&[parent_cert.into()], at)?.fingerprint());
     ensure!(w.ca.linked_proof(&wire, at + 301).is_err());
@@ -186,6 +170,49 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
         )
         .is_err()
     );
+    let original = String::from_utf8(wire.clone())?;
+    let reference = r#"URI="""#;
+    let negative = [
+        original.replace("</s:Envelope>", "<s:Body/></s:Envelope>"),
+        original.replace("</o:Security>", "<ds:Signature xmlns:ds=\"http://www.w3.org/2000/09/xmldsig#\"/></o:Security>"),
+        original.replace("linked-time", "parent-cert"),
+        original.replace(reference, r#"URI="https://invalid.example/reference""#),
+        original.replace("URI=\"#parent-cert\"", "URI=\"#linked-time\""),
+        original.replace("rsa-sha256", "rsa-sha1"),
+        original.replace("enveloped-signature", "xpath"),
+        original.replace("</ds:Transforms>", "<ds:Transform Algorithm=\"http://www.w3.org/2000/09/xmldsig#enveloped-signature\"/></ds:Transforms>"),
+        original.replace("</ds:SignedInfo>", "<ds:Reference URI=\"\"/></ds:SignedInfo>"),
+        format!("<?fixture prohibited?>{original}"),
+        original.replace("<s:Envelope", "<!DOCTYPE s:Envelope [<!ENTITY malicious SYSTEM 'file:///etc/passwd'>]><s:Envelope"),
+        original.replace("</s:Body>", &format!("{}{} </s:Body>", "<nested>".repeat(65), "</nested>".repeat(65))),
+        original.replace("</s:Body>", &("<node/>".repeat(4097) + "</s:Body>")),
+    ];
+    for (index, invalid) in negative.into_iter().enumerate() {
+        ensure!(
+            invalid != original,
+            "negative fixture mutation {index} did not apply"
+        );
+        ensure!(
+            w.ca.linked_proof(invalid.as_bytes(), at).is_err(),
+            "unsafe signature shape {index} accepted"
+        );
+    }
+    // Prefix spelling and attribute order are not identity. Sign an equivalent
+    // representation independently before passing the original bytes to verification.
+    let equivalent = String::from_utf8(soap::encode(&issue, &CodecLimits::default())?)?
+        .replace("<s:", "<env:")
+        .replace("</s:", "</env:")
+        .replace(" s:", " env:")
+        .replace("xmlns:s=", "xmlns:env=");
+    let attributes = r#"xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:a="http://www.w3.org/2005/08/addressing""#;
+    let reordered = original.replace(attributes, r#"xmlns:a="http://www.w3.org/2005/08/addressing" xmlns:s="http://www.w3.org/2003/05/soap-envelope""#);
+    ensure!(
+        reordered != original,
+        "attribute order fixture did not apply"
+    );
+    ensure!(w.ca.linked_proof(reordered.as_bytes(), at)?.fingerprint() == proof.fingerprint());
+    let equivalent = sign_xml(equivalent, &key).await?;
+    ensure!(w.ca.linked_proof(&equivalent, at)?.fingerprint() == proof.fingerprint());
     let post = |wire: Vec<u8>| {
         host.client
             .post(path)
@@ -199,6 +226,13 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
             .status()
             .is_success(),
         "exported BST must not authenticate"
+    );
+    host.app
+        .audit_store
+        .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+    ensure!(
+        post(wire.clone()).send().await?.status() == StatusCode::SERVICE_UNAVAILABLE,
+        "linked issuance did not expose unknown commit"
     );
     let response = post(wire.clone()).send().await?;
     ensure!(
@@ -223,7 +257,7 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
         body.context = Some("changed".into());
     }
     ensure!(
-        !post(signed(&changed, &key)?)
+        !post(signed(&changed, &key).await?)
             .send()
             .await?
             .status()
@@ -562,5 +596,911 @@ async fn mi_effect(
         detail.1["commandStatus"] == "applied",
         "full result did not settle: {detail:?}"
     );
+    Ok(())
+}
+
+struct LinkedPeer {
+    id: Uuid,
+    generation: i64,
+    certificate: Vec<u8>,
+    mutual: reqwest::Client,
+    message: syncml::Message,
+    url: String,
+    issue: soap::Message,
+    wire: Vec<u8>,
+}
+fn identity_client(
+    host: &Host,
+    certificate: &[u8],
+    key: &std::path::Path,
+) -> anyhow::Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .no_proxy()
+        .add_root_certificate(host.root_cert.clone())
+        .identity(reqwest::Identity::from_pem(
+            &[
+                x509_cert::Certificate::from_der(certificate)?
+                    .to_pem(LineEnding::LF)?
+                    .as_bytes(),
+                &std::fs::read(key)?,
+            ]
+            .concat(),
+        )?)
+        .timeout(std::time::Duration::from_secs(12))
+        .build()?)
+}
+async fn linked_peer(
+    host: &Host,
+    parent: &Peer,
+    certificate: &[u8],
+    key: &std::path::Path,
+) -> anyhow::Result<LinkedPeer> {
+    let w = &host.app.windows()?.channel;
+    let mut issue = parent.issue.clone();
+    issue.header.to = Some(format!(
+        "{}/EnrollmentServer/LinkedEnrollment.svc",
+        w.enrollment_origin
+    ));
+    issue.header.message_id = Some(format!("urn:uuid:{}", Uuid::new_v4()));
+    let format_time = |at| {
+        time::OffsetDateTime::from_unix_timestamp(at)
+            .unwrap()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap()
+    };
+    issue.header.security = Some(soap::Security {
+        timestamp: Some(soap::Timestamp {
+            id: "linked-time".into(),
+            created: format_time(now()),
+            expires: format_time(now() + 300),
+        }),
+        username: None,
+        certificate: Some(soap::CertificateToken {
+            id: "parent-cert".into(),
+            certificate: Secret(certificate.to_vec()),
+        }),
+        signature: false,
+    });
+    let Body::Issue(input) = &mut issue.body else {
+        unreachable!()
+    };
+    input.request = soap::CertificateRequest::Pkcs10(Secret(std::fs::read(
+        host.root.join("renew-device.csr"),
+    )?));
+    let wire = signed(&issue, key).await?;
+    let response = host
+        .client
+        .post(issue.header.to.as_ref().unwrap())
+        .header("content-type", "application/soap+xml")
+        .body(wire.clone())
+        .send()
+        .await?;
+    ensure!(
+        response.status() == StatusCode::OK,
+        "linked enrollment: {}",
+        response.status()
+    );
+    let response =
+        soap::decode_response(&issue, &response.bytes().await?, &CodecLimits::default())?;
+    ensure!(matches!(response.body, Body::IssueResponse(_)));
+    let mut pg = PgConnection::connect_with(&options("postgres")?).await?;
+    let row = sqlx::query("SELECT r.id,r.generation,r.request_id,i.secrets,e.certificate FROM mdm_access.registrations r JOIN mdm_access.enrollment_intents i ON(i.tenant_id,i.request_id)=(r.tenant_id,r.request_id) JOIN mdm_access.enrollment_certificates e ON(e.tenant_id,e.request_id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=$1::uuid AND r.parent_id=$2 AND r.purpose='windows_declared' AND r.state='active'")
+        .bind(case_tenant()).bind(parent.intent.registration).fetch_one(&mut pg).await?;
+    let id: Uuid = row.try_get("id")?;
+    let certificate: Vec<u8> = row.try_get("certificate")?;
+    let secrets = w.open_secrets_fixture(
+        case_tenant(),
+        row.try_get("request_id")?,
+        &row.try_get::<Vec<u8>, _>("secrets")?,
+    )?;
+    let url = w.management_url(Purpose::WindowsDeclared);
+    let mut message = parent.message.clone();
+    message.header.target = url.clone();
+    message.header.credential.as_mut().unwrap().data =
+        Secret(STANDARD.encode(format!("{}:{}", id, secrets.client_password.as_str())));
+    let mutual = identity_client(host, &certificate, &host.root.join("renew-device.key"))?;
+    let result = LinkedPeer {
+        id,
+        generation: row.try_get("generation")?,
+        certificate,
+        mutual,
+        message,
+        url,
+        issue,
+        wire,
+    };
+    pg.close().await?;
+    Ok(result)
+}
+async fn manage(
+    client: &reqwest::Client,
+    url: &str,
+    message: &syncml::Message,
+) -> anyhow::Result<StatusCode> {
+    Ok(client
+        .post(url)
+        .header("content-type", "application/vnd.syncml.dm+xml")
+        .body(syncml::encode(message, &CodecLimits::default())?)
+        .send()
+        .await?
+        .status())
+}
+async fn fixture_command(program: &str, arguments: &[&std::ffi::OsStr]) -> anyhow::Result<()> {
+    let mut process = tokio::process::Command::new(program)
+        .args(arguments)
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    let status =
+        match tokio::time::timeout(std::time::Duration::from_secs(30), process.wait()).await {
+            Ok(status) => status?,
+            Err(error) => {
+                process.kill().await?;
+                process.wait().await?;
+                return Err(error.into());
+            }
+        };
+    ensure!(status.success(), "{program} fixture command failed");
+    Ok(())
+}
+struct Renewed {
+    _temporary: tempfile::TempDir,
+    key: std::path::PathBuf,
+    certificate: Vec<u8>,
+    mutual: reqwest::Client,
+}
+async fn renew(
+    host: &Host,
+    issue: &soap::Message,
+    client: &reqwest::Client,
+    certificate: &[u8],
+    key: &std::path::Path,
+) -> anyhow::Result<Renewed> {
+    let temporary = tempfile::tempdir()?;
+    let new_key = temporary.path().join("new.key");
+    let csr = temporary.path().join("new.csr");
+    fixture_command(
+        "openssl",
+        &[
+            "req".as_ref(),
+            "-new".as_ref(),
+            "-newkey".as_ref(),
+            "rsa:2048".as_ref(),
+            "-nodes".as_ref(),
+            "-subj".as_ref(),
+            "/CN=Independent renewed channel".as_ref(),
+            "-outform".as_ref(),
+            "DER".as_ref(),
+            "-keyout".as_ref(),
+            new_key.as_os_str(),
+            "-out".as_ref(),
+            csr.as_os_str(),
+        ],
+    )
+    .await?;
+    let signer = temporary.path().join("signer.pem");
+    std::fs::write(
+        &signer,
+        x509_cert::Certificate::from_der(certificate)?.to_pem(LineEnding::LF)?,
+    )?;
+    let cms = temporary.path().join("renew.p7");
+    fixture_command(
+        "openssl",
+        &[
+            "cms".as_ref(),
+            "-sign".as_ref(),
+            "-binary".as_ref(),
+            "-nodetach".as_ref(),
+            "-nosmimecap".as_ref(),
+            "-md".as_ref(),
+            "sha256".as_ref(),
+            "-outform".as_ref(),
+            "DER".as_ref(),
+            "-in".as_ref(),
+            csr.as_os_str(),
+            "-signer".as_ref(),
+            signer.as_os_str(),
+            "-inkey".as_ref(),
+            key.as_os_str(),
+            "-out".as_ref(),
+            cms.as_os_str(),
+        ],
+    )
+    .await?;
+    let mut request = issue.clone();
+    request.header.security = None;
+    request.header.message_id = Some(format!("urn:uuid:{}", Uuid::new_v4()));
+    let Body::Issue(body) = &mut request.body else {
+        unreachable!()
+    };
+    body.request = soap::CertificateRequest::RenewalPkcs7(Secret(std::fs::read(cms)?));
+    body.additional_context.0.clear();
+    let wire = soap::encode(&request, &CodecLimits::default())?;
+    let send = || {
+        client
+            .post(request.header.to.as_ref().unwrap())
+            .header("content-type", "application/soap+xml")
+            .body(wire.clone())
+            .send()
+    };
+    let response = send().await?;
+    ensure!(
+        response.status() == StatusCode::OK,
+        "renewal: {}",
+        response.status()
+    );
+    let response =
+        soap::decode_response(&request, &response.bytes().await?, &CodecLimits::default())?;
+    let replay = soap::decode_response(
+        &request,
+        &send().await?.bytes().await?,
+        &CodecLimits::default(),
+    )?;
+    let (Body::IssueResponse(first), Body::IssueResponse(replay)) = (response.body, replay.body)
+    else {
+        anyhow::bail!("renewal response");
+    };
+    ensure!(
+        first.provisioning == replay.provisioning,
+        "renewal replay changed certificate"
+    );
+    let xml = String::from_utf8(first.provisioning.0)?;
+    let encoded = xml
+        .split("name=\"EncodedCertificate\" value=\"")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .ok_or_else(|| anyhow::anyhow!("renewal certificate missing"))?;
+    let certificate = STANDARD.decode(encoded)?;
+    let mutual = identity_client(host, &certificate, &new_key)?;
+    Ok(Renewed {
+        _temporary: temporary,
+        key: new_key,
+        certificate,
+        mutual,
+    })
+}
+#[tokio::test]
+#[ignore = "make t2 MODULE=windows.declared"]
+async fn linked_renewal_and_parent_child_supersession() -> anyhow::Result<()> {
+    let mut host = Host::renewal_window().await?;
+    host.listen().await?;
+    let parent = host.peer().await?;
+    let ca = &host.app.windows()?.channel.ca;
+    let certificate = ca.sign(&ca.restore_intent(
+        &parent.intent.tbs,
+        &certificate::Csr::verify(&parent.intent.csr)?,
+        parent.intent.registration,
+    )?)?;
+    let child = linked_peer(&host, &parent, &certificate, &host.root.join("device.key")).await?;
+    ensure!(manage(&child.mutual, &child.url, &child.message).await? == StatusCode::OK);
+    let renewed_child = renew(
+        &host,
+        &child.issue,
+        &child.mutual,
+        &child.certificate,
+        &host.root.join("renew-device.key"),
+    )
+    .await?;
+    let mut message = child.message.clone();
+    message.header.session_id += 120;
+    ensure!(
+        manage(&child.mutual, &child.url, &message).await? == StatusCode::OK,
+        "old child disabled before proof"
+    );
+    message.header.session_id += 1;
+    ensure!(manage(&renewed_child.mutual, &child.url, &message).await? == StatusCode::OK);
+    message.header.session_id += 1;
+    ensure!(manage(&child.mutual, &child.url, &message).await? == StatusCode::UNAUTHORIZED);
+    let renewed_parent = renew(
+        &host,
+        &parent.issue,
+        &parent.mutual,
+        &certificate,
+        &host.root.join("device.key"),
+    )
+    .await?;
+    let mut parent_message = parent.message.clone();
+    parent_message.header.session_id += 130;
+    ensure!(manage(&renewed_parent.mutual, &parent.url, &parent_message).await? == StatusCode::OK);
+    message.header.session_id += 1;
+    ensure!(
+        manage(&renewed_child.mutual, &child.url, &message).await? == StatusCode::OK,
+        "parent renewal retired child"
+    );
+    let mut pg = PgConnection::connect_with(&options("postgres")?).await?;
+    let row=sqlx::query("SELECT generation,parent_id,state,(SELECT count(*) FROM mdm_access.report_sources s WHERE (s.tenant_id,s.registration)=(r.tenant_id,r.id)) AS sources FROM mdm_access.registrations r WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(child.id).fetch_one(&mut pg).await?;
+    ensure!(
+        row.try_get::<i64, _>("generation")? == child.generation
+            && row.try_get::<Uuid, _>("parent_id")? == parent.intent.registration
+            && row.try_get::<String, _>("state")? == "active"
+            && row.try_get::<i64, _>("sources")? == 0
+    );
+    let old = host
+        .client
+        .post(child.issue.header.to.as_ref().unwrap())
+        .header("content-type", "application/soap+xml")
+        .body(child.wire.clone())
+        .send()
+        .await?;
+    ensure!(
+        !old.status().is_success(),
+        "old parent certificate replay revived child"
+    );
+    let next = linked_peer(
+        &host,
+        &parent,
+        &renewed_parent.certificate,
+        &renewed_parent.key,
+    )
+    .await?;
+    ensure!(next.id != child.id && next.generation > child.generation);
+    message.header.session_id += 1;
+    ensure!(manage(&renewed_child.mutual, &child.url, &message).await? == StatusCode::UNAUTHORIZED);
+    ensure!(manage(&next.mutual, &next.url, &next.message).await? == StatusCode::OK);
+    host.replace(&parent).await?;
+    let states: Vec<String> = sqlx::query_scalar(
+        "SELECT state FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=ANY($2)",
+    )
+    .bind(case_tenant())
+    .bind(vec![child.id, next.id])
+    .fetch_all(&mut pg)
+    .await?;
+    ensure!(states.len() == 2 && states.iter().all(|s| s == "superseded"));
+    let mut next_message = next.message.clone();
+    next_message.header.session_id += 140;
+    ensure!(manage(&next.mutual, &next.url, &next_message).await? == StatusCode::UNAUTHORIZED);
+    ensure!(
+        !host
+            .client
+            .post(next.issue.header.to.as_ref().unwrap())
+            .header("content-type", "application/soap+xml")
+            .body(next.wire)
+            .send()
+            .await?
+            .status()
+            .is_success()
+    );
+    pg.close().await?;
+    host.close().await?;
+    Ok(())
+}
+
+#[cfg(feature = "integration")]
+async fn claim_count(pg: &mut PgConnection, policy: Uuid) -> anyhow::Result<i64> {
+    Ok(sqlx::query_scalar("SELECT count(*) FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND policy=$2").bind(case_tenant()).bind(policy).fetch_one(pg).await?)
+}
+#[cfg(feature = "integration")]
+async fn automation(host: &Host) -> anyhow::Result<rss_runtime::ShutdownStack> {
+    use std::time::Duration;
+    let service = crate::automation::Automation::connect(
+        host.app.flow.planning.clone(),
+        host.app.flow.assets.clone(),
+        host.app.flow.compliance.clone(),
+        options("mdm_flow_runtime")?.password("runtime-fixture"),
+    )
+    .await?;
+    let mut owner = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
+        std::sync::Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    let mut startup = owner.startup()?;
+    startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+        crate::automation::Resource(service.clone()),
+    ));
+    let mut launch = startup.commit();
+    launch.stage_deferred_task_with_token(
+        service
+            .registration(host.notifications.signals.flow())
+            .critical(),
+    );
+    launch.finish();
+    Ok(owner)
+}
+#[cfg(feature = "integration")]
+fn result_packet(
+    first: &syncml::Message,
+    sent: &syncml::Message,
+    value: Option<&str>,
+) -> syncml::Message {
+    use syncml::{Command, CommandName, Item, Results, Status};
+    let mut commands = Vec::new();
+    let status = |id, command_ref, command| {
+        Command::Status(Status {
+            id,
+            message_ref: sent.header.message_id,
+            command_ref,
+            command,
+            target_refs: vec![],
+            source_refs: vec![],
+            code: 200,
+            items: vec![],
+            challenge: None,
+            credential: None,
+        })
+    };
+    commands.push(status(1, 0, CommandName::SyncHdr));
+    for command in &sent.commands {
+        let (kind, items) = match command {
+            Command::Replace { items, .. } => (CommandName::Replace, items),
+            Command::Delete { items, .. } => (CommandName::Delete, items),
+            Command::Get { items, .. } => (CommandName::Get, items),
+            _ => continue,
+        };
+        commands.push(status(commands.len() as u32 + 1, command.id(), kind));
+        if kind == CommandName::Get {
+            for item in items {
+                let uri = item.target.as_deref().unwrap();
+                let value = if uri.ends_with("/SwV") {
+                    Some("10.0.22631.3958")
+                } else if uri.ends_with("/Edition") {
+                    Some("48")
+                } else {
+                    value
+                };
+                if let Some(value) = value {
+                    commands.push(Command::Results(Results {
+                        id: commands.len() as u32 + 1,
+                        message_ref: Some(sent.header.message_id),
+                        command_ref: Some(command.id()),
+                        command: Some(CommandName::Get),
+                        meta: None,
+                        items: vec![Item {
+                            source: Some(uri.into()),
+                            target: None,
+                            meta: None,
+                            data: Some(Secret(value.into())),
+                            more_data: false,
+                        }],
+                    }));
+                }
+            }
+        }
+    }
+    syncml::Message {
+        header: syncml::Header {
+            message_id: sent.header.message_id + 1,
+            credential: None,
+            ..first.header.clone()
+        },
+        commands,
+        final_message: true,
+    }
+}
+#[cfg(feature = "integration")]
+async fn begin_declared(
+    child: &LinkedPeer,
+    parent_ack: &syncml::Message,
+    session: u32,
+) -> anyhow::Result<(syncml::Message, syncml::Message)> {
+    use crate::execution::test_support::native;
+    let mut first = child.message.clone();
+    first.header.session_id = session;
+    ensure!(
+        native::post(&child.mutual, &child.url, &first)
+            .await?
+            .status()
+            == StatusCode::OK
+    );
+    let mut ack = parent_ack.clone();
+    ack.header.target = child.url.clone();
+    ack.header.session_id = session;
+    if let syncml::Command::Status(status) = &mut ack.commands[0] {
+        status.challenge.as_mut().unwrap().nonce =
+            Some(Secret(STANDARD.encode([session as u8; 16])));
+    }
+    let response = native::post(&child.mutual, &child.url, &ack).await?;
+    ensure!(response.status() == StatusCode::OK);
+    let sent = syncml::decode(&response.bytes().await?, &CodecLimits::default())?;
+    Ok((first, sent))
+}
+#[cfg(feature = "integration")]
+fn native_result(document: &str, operation: &str, state: u32) -> String {
+    document
+        .replace("DeclaredConfiguration", "DeclaredConfigurationResult")
+        .replace(
+            " checksum=",
+            &format!(
+                r#" result_checksum="result-v1" operation="{operation}" state="{state}" checksum="#
+            ),
+        )
+        .replace(
+            "className=",
+            &format!(r#"status="200" state="{state}" className="#),
+        )
+}
+#[cfg(feature = "integration")]
+#[tokio::test]
+#[ignore = "make t2 MODULE=windows.declared"]
+async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::Result<()> {
+    use crate::execution::test_support::{
+        Client,
+        configuration::{change, published, resource_input, wait_diagnosis},
+        native,
+    };
+    use axum::http::Method;
+    use serde_json::json;
+    let mut host = Host::open().await?;
+    host.listen().await?;
+    let parent = host.peer().await?;
+    let ca = &host.app.windows()?.channel.ca;
+    let certificate = ca.sign(&ca.restore_intent(
+        &parent.intent.tbs,
+        &certificate::Csr::verify(&parent.intent.csr)?,
+        parent.intent.registration,
+    )?)?;
+    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    let mut grants = [
+        "resource_read",
+        "resource_write",
+        "policy_read",
+        "policy_write",
+        "scope_read",
+        "scope_write",
+    ]
+    .into_iter()
+    .map(|operation| json!({"operation":operation,"scope":{"kind":"tenant"}}))
+    .collect::<Vec<_>>();
+    grants.extend(
+        [
+            "windows_mi_execute",
+            "configuration_write",
+            "inventory_read",
+            "operation_read",
+            "operation_cancel",
+        ]
+        .into_iter()
+        .map(|operation| json!({"operation":operation,"scope":{"kind":"all_devices"}})),
+    );
+    let rule=client.browser.call(&client.router,Method::PUT,&format!("/api/v1/authorization/rules/{}",Uuid::new_v4()),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"value":{"subject":{"kind":"user","user":crate::test_support::identity::user(case_tenant(),crate::test_support::case::admin())},"grants":grants}}))).await?;
+    ensure!(rule.0 == StatusCode::OK, "policy grants: {rule:?}");
+    let worker = automation(&host).await?;
+    let commands = client.command_worker(host.notifications.signals.clone())?;
+    let scope = Uuid::new_v4();
+    let created=change(&mut client,&format!("/api/v2/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":crate::test_support::case::name("tls-device")}],"limitations":null,"exclusions":[]}})).await?;
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let read = client
+                .browser
+                .call(
+                    &client.router,
+                    Method::GET,
+                    &format!(
+                        "/api/v2/scopes/{scope}/tasks/{}",
+                        created["task"].as_str().unwrap()
+                    ),
+                    None,
+                )
+                .await?;
+            if read.1["status"] == "completed" {
+                return Ok::<_, anyhow::Error>(());
+            }
+            ensure!(read.1["status"] != "failed", "Scope failed: {read:?}");
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await??;
+    let id = Uuid::new_v4();
+    let document = format!(
+        r#"<DeclaredConfiguration schema="1.0" context="Device" id="{id}" checksum="policy-v1" osdefinedscenario="MSFTExtensibilityMIProviderConfig"><DSC namespace="root/test" className="ExampleProvider"><Key name="Name">resource</Key><Value name="Text">first-value</Value></DSC></DeclaredConfiguration>"#
+    );
+    let task = |id: Uuid, document: &str, operation: &str| json!({"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/DeclaredConfiguration/Host/Complete/Documents/*/Document","instance":[id],"operation":operation,"value":{"type":"xml","value":document}}}});
+    let resource=resource_input(&mut client,json!({"target":{"kind":"device"},"apply":task(id,&document,"replace"),"remove":task(id,&document,"delete")}),&["first-value"]).await?;
+    let first = Uuid::new_v4();
+    let definition = |resource: &str| json!({"scope":scope,"action":{"kind":"configuration","resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"remove"}});
+    change(
+        &mut client,
+        &format!("/api/v3/policies/{first}"),
+        0,
+        json!({"action":"put","enabled":true,"definition":definition(&resource)}),
+    )
+    .await?;
+    wait_diagnosis(&mut client, first, "windows_declared_enrollment_not_ready").await?;
+    remote_not_ready(&mut client, &resource).await?;
+    let child = linked_peer(&host, &parent, &certificate, &host.root.join("device.key")).await?;
+    wait_diagnosis(&mut client, first, "windows_declared_enrollment_not_ready").await?;
+    remote_not_ready(&mut client, &resource).await?;
+    ensure!(manage(&child.mutual, &child.url, &child.message).await? == StatusCode::OK);
+    let apply = published(&mut client, first).await?;
+    ensure!(apply.len() == 1);
+    let (initial, mut sent) = begin_declared(&child, &parent.ack, 1800).await?;
+    let mut writes = 0;
+    for _ in 0..6 {
+        writes += sent
+            .commands
+            .iter()
+            .filter(|c| matches!(c, syncml::Command::Replace { .. }))
+            .count();
+        if sent
+            .commands
+            .iter()
+            .all(|c| matches!(c, syncml::Command::Status(_)))
+        {
+            break;
+        }
+        let packet = result_packet(&initial, &sent, Some(&native_result(&document, "Set", 60)));
+        let response = native::post(&child.mutual, &child.url, &packet).await?;
+        ensure!(response.status() == StatusCode::OK);
+        sent = syncml::decode(&response.bytes().await?, &CodecLimits::default())?;
+    }
+    ensure!(
+        writes == 1
+            && client
+                .call(Method::GET, &format!("/{}", apply[0]), None)
+                .await?
+                .1["commandStatus"]
+                == "applied"
+    );
+    let other_id = Uuid::new_v4();
+    let other_document = document
+        .replace(&id.to_string(), &other_id.to_string())
+        .replace("first-value", "competing-value");
+    let other_resource=resource_input(&mut client,json!({"target":{"kind":"device"},"apply":task(other_id,&other_document,"replace"),"remove":task(other_id,&other_document,"delete")}),&["competing-value"]).await?;
+    let second = Uuid::new_v4();
+    change(
+        &mut client,
+        &format!("/api/v3/policies/{second}"),
+        0,
+        json!({"action":"put","enabled":true,"definition":definition(&other_resource)}),
+    )
+    .await?;
+    wait_diagnosis(&mut client, second, "configuration_conflict").await?;
+    change(
+        &mut client,
+        &format!("/api/v3/policies/{second}"),
+        1,
+        json!({"action":"disable"}),
+    )
+    .await?;
+    change(
+        &mut client,
+        &format!("/api/v3/policies/{first}"),
+        1,
+        json!({"action":"disable"}),
+    )
+    .await?;
+    let removed = published(&mut client, first).await?;
+    ensure!(removed.len() == 1 && removed != apply);
+    let (initial, mut sent) = begin_declared(&child, &parent.ack, 1801).await?;
+    let mut deletes = 0;
+    for _ in 0..6 {
+        if sent.commands.iter().any(|c|matches!(c,syncml::Command::Get{items,..} if items.iter().any(|i|i.target.as_ref().is_some_and(|u|u.contains("/Results/"))))){break;}
+        deletes += sent
+            .commands
+            .iter()
+            .filter(|c| matches!(c, syncml::Command::Delete { .. }))
+            .count();
+        let response = native::post(
+            &child.mutual,
+            &child.url,
+            &result_packet(&initial, &sent, None),
+        )
+        .await?;
+        ensure!(response.status() == StatusCode::OK);
+        sent = syncml::decode(&response.bytes().await?, &CodecLimits::default())?;
+    }
+    ensure!(deletes == 1, "Delete dispatch count {deletes}");
+    let mut pg = PgConnection::connect_with(&options("postgres")?).await?;
+
+    ensure!(
+        claim_count(&mut pg, first).await? > 0,
+        "ACK released claims"
+    );
+    ensure!(
+        client
+            .call(Method::GET, &format!("/{}", removed[0]), None)
+            .await?
+            .1["commandStatus"]
+            != "applied"
+    );
+    let partial = result_packet(
+        &initial,
+        &sent,
+        Some(&native_result(&document, "Delete", 10)),
+    );
+    let response = native::post(&child.mutual, &child.url, &partial).await?;
+    ensure!(response.status() == StatusCode::OK);
+    ensure!(
+        claim_count(&mut pg, first).await? > 0,
+        "pending Delete released claims"
+    );
+    // A fresh session retrieves the same operation's Observe plan after uncertainty.
+    let (initial, mut sent) = begin_declared(&child, &parent.ack, 1802).await?;
+    for _ in 0..6 {
+        if sent.commands.iter().any(|c|matches!(c,syncml::Command::Get{items,..} if items.iter().any(|i|i.target.as_ref().is_some_and(|u|u.contains("/Results/"))))){break;}
+        let response = native::post(
+            &child.mutual,
+            &child.url,
+            &result_packet(&initial, &sent, None),
+        )
+        .await?;
+        ensure!(response.status() == StatusCode::OK);
+        sent = syncml::decode(&response.bytes().await?, &CodecLimits::default())?;
+    }
+    let packet = result_packet(
+        &initial,
+        &sent,
+        Some(&native_result(&document, "Delete", 70)),
+    );
+    let wire = syncml::encode(&packet, &CodecLimits::default())?;
+    host.app.execution.inject_fault(
+        rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+    );
+    let response = native::post(&child.mutual, &child.url, &packet).await?;
+    ensure!(
+        response.status() == StatusCode::SERVICE_UNAVAILABLE,
+        "commit unknown: {}",
+        response.status()
+    );
+    ensure!(commands.shutdown().join().await?.is_clean());
+    ensure!(worker.shutdown().join().await?.is_clean());
+    drop(client);
+    host = host.restart().await?;
+    let response = child
+        .mutual
+        .post(&child.url)
+        .header("content-type", "application/vnd.syncml.dm+xml")
+        .body(wire.clone())
+        .send()
+        .await?;
+    ensure!(
+        response.status() == StatusCode::OK,
+        "restart exact replay: {}",
+        response.status()
+    );
+    let stable = response.bytes().await?;
+    let replay = child
+        .mutual
+        .post(&child.url)
+        .header("content-type", "application/vnd.syncml.dm+xml")
+        .body(wire)
+        .send()
+        .await?;
+    ensure!(
+        replay.status() == StatusCode::OK && replay.bytes().await? == stable,
+        "replay response changed"
+    );
+    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    let worker = automation(&host).await?;
+    let commands = client.command_worker(host.notifications.signals.clone())?;
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            if claim_count(&mut pg, first).await? == 0 {
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await??;
+    ensure!(
+        client
+            .call(Method::GET, &format!("/{}", removed[0]), None)
+            .await?
+            .1["commandStatus"]
+            == "applied"
+    );
+    change(
+        &mut client,
+        &format!("/api/v3/policies/{second}"),
+        2,
+        json!({"action":"put","enabled":true,"definition":definition(&other_resource)}),
+    )
+    .await?;
+    ensure!(
+        published(&mut client, second).await?.len() == 1,
+        "released class could not be claimed"
+    );
+    let delete_attempts:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute'").bind(case_tenant()).bind(removed[0]).fetch_one(&mut pg).await?;
+    ensure!(delete_attempts == 1, "recovery reissued Delete");
+    pg.close().await?;
+    ensure!(commands.shutdown().join().await?.is_clean());
+    ensure!(worker.shutdown().join().await?.is_clean());
+    host.close().await?;
+    Ok(())
+}
+
+#[cfg(feature = "integration")]
+async fn remote_not_ready(
+    client: &mut crate::execution::test_support::Client,
+    resource: &str,
+) -> anyhow::Result<()> {
+    use axum::http::Method;
+    use serde_json::json;
+    let operation = Uuid::new_v4();
+    let response=client.browser.call(&client.router,Method::POST,"/api/v3/remote-operations",Some(json!({"operationId":operation,"resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"targets":{"kind":"devices","devices":[crate::test_support::case::name("tls-device")]},"action":{"kind":"apply_configuration"},"deadline":now()+600}))).await?;
+    ensure!(
+        response.0 == StatusCode::OK,
+        "remote native input: {response:?}"
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let read = client
+                .browser
+                .call(
+                    &client.router,
+                    Method::GET,
+                    &format!("/api/v3/remote-operations/{operation}"),
+                    None,
+                )
+                .await?;
+            ensure!(read.0 == StatusCode::OK, "remote read: {read:?}");
+            if !read.1["items"].as_array().unwrap().is_empty() {
+                ensure!(
+                    read.1["items"][0]["diagnosis"] == "windows_declared_enrollment_not_ready"
+                        && read.1["items"][0]["status"] == "blocked",
+                    "wrong remote diagnosis: {read:?}"
+                );
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await??;
+    Ok(())
+}
+#[cfg(feature = "integration")]
+#[tokio::test]
+#[ignore = "make t2 MODULE=windows.declared"]
+async fn declared_readiness_has_closed_http_diagnosis_and_primary_remains_available()
+-> anyhow::Result<()> {
+    use crate::execution::test_support::Client;
+    use axum::http::Method;
+    use serde_json::json;
+    let mut host = Host::open().await?;
+    host.listen().await?;
+    let parent = host.peer().await?;
+    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    client.set_authorized(true).await?;
+    let grants=["windows_mi_execute"].into_iter().map(|operation|json!({"operation":operation,"scope":{"kind":"device","id":crate::test_support::case::name("tls-device")}})).collect::<Vec<_>>();
+    let rule=client.browser.call(&client.router,Method::PUT,&format!("/api/v1/authorization/rules/{}",Uuid::new_v4()),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"value":{"subject":{"kind":"user","user":crate::test_support::identity::user(case_tenant(),crate::test_support::case::admin())},"grants":grants}}))).await?;
+    ensure!(rule.0 == StatusCode::OK);
+    let id = Uuid::new_v4();
+    let document = format!(
+        r#"<DeclaredConfiguration schema="1.0" context="Device" id="{id}" checksum="readiness-v1" osdefinedscenario="MSFTExtensibilityMIProviderConfig"><DSC namespace="root/test" className="ExampleProvider"><Key name="Name">resource</Key><Value name="Text">value</Value></DSC></DeclaredConfiguration>"#
+    );
+    let input = || json!({"operationId":Uuid::new_v4(),"inputVersion":"1","deadline":now()+300,"target":{"kind":"device"},"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/DeclaredConfiguration/Host/Complete/Documents/*/Document","instance":[id],"operation":"replace","value":{"type":"xml","value":document}}}}});
+    let missing = client.call(Method::POST, "", Some(input())).await?;
+    ensure!(
+        missing.0 == StatusCode::CONFLICT
+            && missing.1["code"] == "windows_declared_enrollment_not_ready",
+        "missing: {missing:?}"
+    );
+    let ordinary = json!({"operationId":Uuid::new_v4(),"inputVersion":"1","deadline":now()+300,"target":{"kind":"device"},"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/DMClient/Provider/*/ConfigRefresh/Enabled","instance":[host.app.windows()?.channel.provider_id],"operation":"get","value":null}}}});
+    let primary = client.call(Method::POST, "", Some(ordinary)).await?;
+    ensure!(
+        primary.0 == StatusCode::ACCEPTED,
+        "Primary depended on child: {primary:?}"
+    );
+    let ca = &host.app.windows()?.channel.ca;
+    let certificate = ca.sign(&ca.restore_intent(
+        &parent.intent.tbs,
+        &certificate::Csr::verify(&parent.intent.csr)?,
+        parent.intent.registration,
+    )?)?;
+    let child = linked_peer(&host, &parent, &certificate, &host.root.join("device.key")).await?;
+    let unready = client.call(Method::POST, "", Some(input())).await?;
+    ensure!(
+        unready.0 == StatusCode::CONFLICT
+            && unready.1["code"] == "windows_declared_enrollment_not_ready",
+        "unready: {unready:?}"
+    );
+    ensure!(manage(&child.mutual, &child.url, &child.message).await? == StatusCode::OK);
+    ensure!(client.call(Method::POST, "", Some(input())).await?.0 == StatusCode::ACCEPTED);
+    host.app
+        .devices
+        .revoke(
+            &parent.proof,
+            crate::test_support::case::name("tls-device"),
+            parent.intent.registration,
+            Uuid::new_v4(),
+        )
+        .await?;
+    let retired = client.call(Method::POST, "", Some(input())).await?;
+    ensure!(
+        retired.0 == StatusCode::CONFLICT
+            && retired.1["code"] == "windows_declared_enrollment_not_ready",
+        "parent retirement: {retired:?}"
+    );
+    host.close().await?;
     Ok(())
 }

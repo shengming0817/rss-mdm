@@ -59,7 +59,9 @@ pub async fn approval_valid(
 ) -> Result<bool> {
     match current_registration(tx, &operation.device, operation.request.task.purpose()?).await {
         Ok(current) if current == (operation.registration, operation.registration_generation) => {}
-        Ok(_) | Err(Fault::Request(Error::Conflict)) => return Ok(false),
+        Ok(_) | Err(Fault::Request(Error::Conflict | Error::WindowsDeclaredEnrollmentNotReady)) => {
+            return Ok(false);
+        }
         Err(e) => return Err(e),
     }
     let key = key.clone();
@@ -106,7 +108,14 @@ pub async fn current_registration(
         })
         .await?;
     if rows.len() != 1 {
-        return Err(Error::Conflict.into());
+        return Err(
+            if purpose == rss_mdm_registration_service::Purpose::WindowsDeclared {
+                Error::WindowsDeclaredEnrollmentNotReady
+            } else {
+                Error::Conflict
+            }
+            .into(),
+        );
     }
     Ok((rows[0].1, rows[0].2))
 }

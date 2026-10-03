@@ -93,7 +93,27 @@ impl EffectPlan {
             {
                 return EffectAssessment::waiting("ineligible_or_incomplete_evidence");
             }
-            if !expected.matches(fact.status, fact.value.as_deref()) {
+            let matches = if let Expected::Declared {
+                document,
+                operation,
+            } = expected
+            {
+                let result = fact
+                    .value
+                    .as_deref()
+                    .filter(|_| fact.status == Some(200))
+                    .and_then(|xml| super::declared::ResultDocument::parse(xml).ok());
+                if result
+                    .as_ref()
+                    .is_some_and(|result| result.in_progress(document, operation))
+                {
+                    return EffectAssessment::waiting("declared_operation_in_progress");
+                }
+                result.is_some_and(|result| result.converged(document, operation))
+            } else {
+                expected.matches(fact.status, fact.value.as_deref())
+            };
+            if !matches {
                 return EffectAssessment {
                     state: EffectState::Diverged,
                     reason: Some("native_value_mismatch"),
