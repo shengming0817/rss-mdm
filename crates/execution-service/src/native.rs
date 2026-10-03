@@ -926,17 +926,16 @@ fn declared_versions(
     for (uri, expected) in &plan.expected {
         if let rss_mdm_windows_mdm::native::verification::Expected::Declared { document, .. } =
             expected
-        {
-            if let Some(summary) = summaries.iter().find(|s| {
+            && let Some(summary) = summaries.iter().find(|s| {
                 s.id == document.identity.id
                     && s.scope == document.identity.scope
                     && s.checksum == document.identity.checksum
-            }) {
-                versions.insert(
-                    uri.clone(),
-                    serde_json::json!([summary.result_checksum, summary.state]),
-                );
-            }
+            })
+        {
+            versions.insert(
+                uri.clone(),
+                serde_json::json!([summary.result_checksum, summary.state]),
+            );
         }
     }
     serde_json::Value::Object(versions)

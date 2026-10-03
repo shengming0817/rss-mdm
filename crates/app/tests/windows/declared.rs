@@ -492,7 +492,6 @@ async fn mi_effect(
 ) -> anyhow::Result<()> {
     use crate::execution::test_support::native;
     use axum::http::Method;
-    use syncml::Command;
     let MiOperation {
         mut client,
         operation,
@@ -502,7 +501,7 @@ async fn mi_effect(
     let observed = native::post(child, url, &result_packet(initial, &response, None)).await?;
     ensure!(observed.status() == StatusCode::OK);
     let observed = syncml::decode(&observed.bytes().await?, &CodecLimits::default())?;
-    ensure!(observed.commands.iter().any(|c|matches!(c,Command::Get{items,..} if items[0].target.as_ref().unwrap().contains("/Results/"))));
+    ensure!(has_declared_query(&observed));
     ensure!(
         client
             .call(Method::GET, &format!("/{operation}"), None)
@@ -511,20 +510,7 @@ async fn mi_effect(
             != "applied",
         "ACK became effect"
     );
-    let result = |state| {
-        document
-            .replace("DeclaredConfiguration", "DeclaredConfigurationResult")
-            .replace(
-                " checksum=",
-                &format!(
-                    r#" result_checksum="result-v1" operation="Set" state="{state}" checksum="#
-                ),
-            )
-            .replace(
-                "className=",
-                &format!(r#"status="200" state="{state}" className="#),
-            )
-    };
+    let result = |state| native_result(&document, "Set", state);
     let partial = native::post(
         child,
         url,
@@ -547,23 +533,33 @@ async fn mi_effect(
     );
     // More duplicate summaries than the attempt budget must not spend a single retry.
     let mut previous = syncml::decode(&partial.bytes().await?, &CodecLimits::default())?;
-    for _ in 0..35 {
-        let packet = with_summary(
-            result_packet(initial, &previous, None),
-            &document,
-            "result-v1",
-            20,
-        )?;
-        let response = native::post(child, url, &packet).await?;
-        ensure!(response.status() == StatusCode::OK);
-        previous = syncml::decode(&response.bytes().await?, &CodecLimits::default())?;
-        ensure!(
-            !has_declared_query(&previous),
-            "unchanged consumed summary created another query"
-        );
-    }
+    previous =
+        repeated_summaries(child, url, initial, previous, &document, "result-v1", 20).await?;
+    ensure!(!has_declared_query(&previous));
+    mi_version_changes(
+        &mut client,
+        operation,
+        &document,
+        child,
+        url,
+        initial,
+        parent_ack,
+    )
+    .await
+}
+#[cfg(feature = "integration")]
+async fn mi_version_changes(
+    client: &mut crate::execution::test_support::Client,
+    operation: Uuid,
+    document: &str,
+    child: &reqwest::Client,
+    url: &str,
+    initial: &syncml::Message,
+    parent_ack: &syncml::Message,
+) -> anyhow::Result<()> {
+    use crate::execution::test_support::native;
     client.publish_operation(operation).await?;
-    let mut initial = with_summary(initial.clone(), &document, "result-v1", 20)?;
+    let mut initial = with_summary(initial.clone(), document, "result-v1", 20)?;
     initial.header.session_id += 1;
     let response = authenticate_child(child, url, &initial, parent_ack).await?;
     ensure!(
@@ -572,7 +568,7 @@ async fn mi_effect(
     );
     let mut notice = with_summary(
         result_packet(&initial, &response, None),
-        &document,
+        document,
         "result-v2",
         20,
     )?;
@@ -583,10 +579,10 @@ async fn mi_effect(
         has_declared_query(&queried),
         "changed result checksum did not trigger full Results"
     );
-    let progress = result(20).replace("result-v1", "result-v2");
+    let progress = native_result(document, "Set", 20).replace("result-v1", "result-v2");
     notice = with_summary(
         result_packet(&initial, &queried, Some(&progress)),
-        &document,
+        document,
         "result-v2",
         20,
     )?;
@@ -599,7 +595,7 @@ async fn mi_effect(
     );
     notice = with_summary(
         result_packet(&initial, &response, None),
-        &document,
+        document,
         "result-v2",
         60,
     )?;
@@ -610,6 +606,20 @@ async fn mi_effect(
         has_declared_query(&queried),
         "changed state did not trigger full Results"
     );
+    mi_complete(child, url, &initial, &queried, document, client, operation).await
+}
+#[cfg(feature = "integration")]
+async fn mi_complete(
+    child: &reqwest::Client,
+    url: &str,
+    initial: &syncml::Message,
+    queried: &syncml::Message,
+    document: &str,
+    client: &mut crate::execution::test_support::Client,
+    operation: Uuid,
+) -> anyhow::Result<()> {
+    use crate::execution::test_support::native;
+    use axum::http::Method;
     ensure!(
         client
             .call(Method::GET, &format!("/{operation}"), None)
@@ -618,29 +628,16 @@ async fn mi_effect(
             != "applied",
         "summary became effect"
     );
-    previous = queried.clone();
-    for _ in 0..35 {
-        let packet = with_summary(
-            result_packet(&initial, &previous, None),
-            &document,
-            "result-v2",
-            60,
-        )?;
-        let response = native::post(child, url, &packet).await?;
-        ensure!(response.status() == StatusCode::OK);
-        previous = syncml::decode(&response.bytes().await?, &CodecLimits::default())?;
-        ensure!(
-            !has_declared_query(&previous),
-            "in-flight query was replaced"
-        );
-    }
+    let previous = queried.clone();
+    let previous =
+        repeated_summaries(child, url, initial, previous, document, "result-v2", 60).await?;
     let mut packet = with_summary(
         result_packet(
-            &initial,
-            &queried,
-            Some(&result(60).replace("result-v1", "result-v2")),
+            initial,
+            queried,
+            Some(&native_result(document, "Set", 60).replace("result-v1", "result-v2")),
         ),
-        &document,
+        document,
         "result-v2",
         60,
     )?;
@@ -668,6 +665,34 @@ async fn mi_effect(
         "full result did not settle: {detail:?}"
     );
     Ok(())
+}
+
+#[cfg(feature = "integration")]
+async fn repeated_summaries(
+    child: &reqwest::Client,
+    url: &str,
+    initial: &syncml::Message,
+    mut previous: syncml::Message,
+    document: &str,
+    version: &str,
+    state: u32,
+) -> anyhow::Result<syncml::Message> {
+    for _ in 0..35 {
+        let packet = with_summary(
+            result_packet(initial, &previous, None),
+            document,
+            version,
+            state,
+        )?;
+        let response = crate::execution::test_support::native::post(child, url, &packet).await?;
+        ensure!(response.status() == StatusCode::OK);
+        previous = syncml::decode(&response.bytes().await?, &CodecLimits::default())?;
+        ensure!(
+            !has_declared_query(&previous),
+            "duplicate summary created another query"
+        );
+    }
+    Ok(previous)
 }
 
 struct LinkedPeer {
