@@ -387,6 +387,15 @@ def selected(
     t2_mode='affected',
     removed=(),
 ):
+    reasons = [
+        {
+            key: sorted(set(value))
+            if key in {'modules', 'packages', 'tools'}
+            else value
+            for key, value in reason.items()
+        }
+        for reason in reasons
+    ]
     return dict(
         status='selected',
         cargo=dict(mode=cargo_mode, packages=sorted(set(cargo))),

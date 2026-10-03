@@ -225,6 +225,15 @@ DEPENDENCY_POLICIES = {}
         self._last_result = result
         raw = result.stdout
         decision = json.loads(raw)
+        if decision['status'] == 'selected':
+            from ci_impact import validate_selection
+
+            validate_selection(
+                decision,
+                decision['cargo']['packages'],
+                decision['t2']['modules'],
+                [path.stem for path in (self.root / 'tests').glob('test_*.py')],
+            )
         if result.returncode != int(decision['status'] == 'failed'):
             raise AssertionError(
                 f'inconsistent selector exit: {result.stderr!r} {decision!r}'
