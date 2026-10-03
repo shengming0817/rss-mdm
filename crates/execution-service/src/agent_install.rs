@@ -1,7 +1,7 @@
 //! Frozen Agent installation contracts and checked native package inputs.
 use crate::Error;
 use rss_mdm_authorization_service::UserGrant;
-use rss_mdm_policy::{Platform, ResourceBinding};
+use rss_mdm_policy::{Platform, SoftwareResourceBinding};
 use rss_mdm_policy::{SoftwareTarget, schedule::Schedule};
 use rss_mdm_resource as resource;
 use serde::{Deserialize, Serialize};
@@ -203,7 +203,7 @@ impl Package {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrozenInstall {
-    pub resource: ResourceBinding,
+    pub resource: SoftwareResourceBinding,
     pub resource_digest: [u8; 32],
     pub admission_operation: Uuid,
     pub schedule: Schedule,
@@ -350,8 +350,8 @@ pub(crate) async fn authorized_on(
     rss_mdm_software_service::catalog::admitted_on(
         c,
         rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
-        action.resource.id(),
-        action.resource.version(),
+        action.resource.id.as_str(),
+        action.resource.version.as_str(),
         action.resource_digest,
         action.admission_operation,
         &action

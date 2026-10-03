@@ -59,14 +59,14 @@ pub(crate) async fn freeze_script_in(
     })
 }
 
-pub(crate) async fn freeze_collection<'a>(
+pub(crate) async fn prepare_collection_in<'a>(
     tx: &mut PgTransaction<'_>,
     tenant: rss_request_context::TenantId,
     version: &r::Version,
     variant: &r::Variant,
     source: rss_mdm_inventory::Source,
     keys: impl Iterator<Item = &'a String>,
-) -> crate::transaction::Result<rss_mdm_inventory::CollectionDefinition> {
+) -> crate::transaction::Result<(rss_mdm_inventory::CollectionDefinition, bool)> {
     use crate::transaction::{Result, checked_input};
     use sha2::{Digest, Sha256};
     let dataset = format!(
@@ -90,7 +90,7 @@ pub(crate) async fn freeze_collection<'a>(
         })
         .await?;
     if let Some(existing) = existing {
-        return Ok(existing);
+        return Ok((existing, true));
     }
     let catalog = crate::assets::catalog_in(tx, tenant, i64::MAX).await?;
     let fields = keys
@@ -105,6 +105,22 @@ pub(crate) async fn freeze_collection<'a>(
     let definition = checked_input(rss_mdm_inventory::CollectionDefinition::new(
         &dataset, template, source, fields,
     ))?;
+    Ok((definition, false))
+}
+
+pub(crate) async fn freeze_collection<'a>(
+    tx: &mut PgTransaction<'_>,
+    tenant: rss_request_context::TenantId,
+    version: &r::Version,
+    variant: &r::Variant,
+    source: rss_mdm_inventory::Source,
+    keys: impl Iterator<Item = &'a String>,
+) -> crate::transaction::Result<rss_mdm_inventory::CollectionDefinition> {
+    let (definition, published) =
+        prepare_collection_in(tx, tenant, version, variant, source, keys).await?;
+    if published {
+        return Ok(definition);
+    }
     let frozen = definition.clone();
     tx.with_connection(move |c| {
         Box::pin(async move {

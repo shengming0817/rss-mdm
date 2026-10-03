@@ -7,15 +7,6 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
-/// Opaque immutable resource selection, resolved by the product composition.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(untagged)]
-pub enum ResourceBinding {
-    /// One exact script or configuration variant.
-    Exact(ExactResourceBinding),
-    /// One logical software version with exact target variants.
-    Software(SoftwareResourceBinding),
-}
 /// Exact selection for a script or native configuration.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -143,7 +134,7 @@ pub enum Action {
     /// A side-effecting or collection action admitted on Agent check-in.
     Execution {
         /// Exact immutable script resource.
-        resource: ResourceBinding,
+        resource: ExactResourceBinding,
         /// Literal parameters validated against the selected script.
         parameters: Value,
         #[serde(default = "default_schedule")]
@@ -158,7 +149,7 @@ pub enum Action {
     /// A native MDM read template using the same schedule and membership frequency.
     NativeCollection {
         /// Exact immutable native template.
-        resource: ResourceBinding,
+        resource: ExactResourceBinding,
         #[serde(default = "default_schedule")]
         /// Calendar and check-in trigger.
         schedule: Schedule,
@@ -171,7 +162,7 @@ pub enum Action {
     /// A persistent native configuration without a script schedule.
     Configuration {
         /// Exact immutable native configuration resource.
-        resource: ResourceBinding,
+        resource: ExactResourceBinding,
         #[serde(default)]
         /// What to do when this configuration no longer has an owner.
         exit: Exit,
@@ -181,7 +172,7 @@ pub enum Action {
         /// Explicit content or frozen native-source delivery authority.
         delivery: SoftwareDelivery,
         /// Approved logical software release and exact platform variants.
-        resource: ResourceBinding,
+        resource: SoftwareResourceBinding,
         /// Required, self-service, or explicit removal semantics.
         intent: SoftwareIntent,
         /// Exact enterprise approval to freeze into this execution version.
@@ -197,7 +188,7 @@ pub enum Action {
     /// Install only the product's approved Agent through the source MDM channel.
     EnsureAgentInstalled {
         /// Exact approved Agent release; product identity is checked at publication.
-        resource: ResourceBinding,
+        resource: SoftwareResourceBinding,
         /// Exact approval operation, rechecked before any side effect.
         admission_operation: Uuid,
         /// Source-channel scheduling and cooldown.
@@ -298,107 +289,111 @@ impl Definition {
     }
 }
 
-impl ResourceBinding {
-    /// Resource identity shared by both binding kinds.
-    pub fn id(&self) -> &str {
-        match self {
-            Self::Exact(v) => &v.id,
-            Self::Software(v) => &v.id,
+/// Borrowed resource coordinates for reference and authorization checks.
+/// This identity deliberately has no serialization: execution semantics use the full selection.
+#[derive(Clone, Copy, Debug)]
+pub struct ResourceIdentity<'a> {
+    id: &'a str,
+    version: &'a str,
+}
+impl<'a> ResourceIdentity<'a> {
+    /// Logical resource identity.
+    pub fn id(self) -> &'a str {
+        self.id
+    }
+    /// Immutable resource version.
+    pub fn version(self) -> &'a str {
+        self.version
+    }
+}
+impl ExactResourceBinding {
+    /// Borrow opaque identity coordinates without the platform selection.
+    pub fn identity(&self) -> ResourceIdentity<'_> {
+        ResourceIdentity {
+            id: &self.id,
+            version: &self.version,
         }
     }
-    /// Immutable version identity shared by both binding kinds.
-    pub fn version(&self) -> &str {
-        match self {
-            Self::Exact(v) => &v.version,
-            Self::Software(v) => &v.version,
-        }
-    }
-    /// Exact script or configuration binding, when applicable.
-    pub fn exact(&self) -> Option<&ExactResourceBinding> {
-        match self {
-            Self::Exact(v) => Some(v),
-            Self::Software(_) => None,
-        }
-    }
-    /// Software binding, when applicable.
-    pub fn software(&self) -> Option<&SoftwareResourceBinding> {
-        match self {
-            Self::Software(v) => Some(v),
-            Self::Exact(_) => None,
-        }
-    }
-    /// Exact variant for a platform and architecture, if assigned.
-    pub fn variant_for(&self, platform: Platform, architecture: Architecture) -> Option<&str> {
-        match self {
-            Self::Exact(v) => (v.platform == platform && v.architecture == architecture)
-                .then_some(v.variant.as_str()),
-            Self::Software(v) => v
-                .variants
-                .get(&SoftwareTarget::new(platform, architecture))
-                .map(String::as_str),
-        }
-    }
-    /// Validate opaque immutable resource coordinates.
+    /// Validate the exact resource and variant coordinates.
     pub fn validate(&self) -> Result<(), Error> {
-        let mut ids = vec![self.id(), self.version()];
-        match self {
-            Self::Exact(v) => ids.push(&v.variant),
-            Self::Software(v) => {
-                if v.variants.is_empty() || v.variants.len() > 4 {
-                    return Err(Error::Malformed);
-                }
-                ids.extend(v.variants.values().map(String::as_str));
-            }
-        }
-        for id in ids {
-            if id.is_empty()
-                || id.len() > 128
-                || !id
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"._-/".contains(&b))
-                || id.split('/').any(|s| s.is_empty() || s == "." || s == "..")
-            {
-                return Err(Error::Malformed);
-            }
-        }
-        Ok(())
+        validate_ids([
+            self.id.as_str(),
+            self.version.as_str(),
+            self.variant.as_str(),
+        ])
     }
+}
+impl SoftwareResourceBinding {
+    /// Borrow opaque identity coordinates without the target selections.
+    pub fn identity(&self) -> ResourceIdentity<'_> {
+        ResourceIdentity {
+            id: &self.id,
+            version: &self.version,
+        }
+    }
+    /// Validate one immutable software version and its nonempty bounded target set.
+    pub fn validate(&self) -> Result<(), Error> {
+        if self.variants.is_empty() || self.variants.len() > 4 {
+            return Err(Error::Malformed);
+        }
+        validate_ids(
+            [self.id.as_str(), self.version.as_str()]
+                .into_iter()
+                .chain(self.variants.values().map(String::as_str)),
+        )
+    }
+}
+fn validate_ids<'a>(ids: impl IntoIterator<Item = &'a str>) -> Result<(), Error> {
+    for id in ids {
+        if id.is_empty()
+            || id.len() > 128
+            || !id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-/".contains(&b))
+            || id
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+        {
+            return Err(Error::Malformed);
+        }
+    }
+    Ok(())
 }
 impl Action {
     /// Closed action identity persisted alongside its optional resource coordinates.
-    pub const fn kind(&self) -> &'static str {
+    pub const fn kind(&self) -> crate::ActionKind {
         match self {
-            Self::Execution { .. } => "execution",
-            Self::NativeCollection { .. } => "native_collection",
-            Self::Configuration { .. } => "configuration",
-            Self::Software { .. } => "software",
-            Self::EnsureAgentInstalled { .. } => "ensure_agent_installed",
-            Self::RequestMdmEnrollment { .. } => "request_mdm_enrollment",
+            Self::Execution { .. } => crate::ActionKind::Execution,
+            Self::NativeCollection { .. } => crate::ActionKind::NativeCollection,
+            Self::Configuration { .. } => crate::ActionKind::Configuration,
+            Self::Software { .. } => crate::ActionKind::Software,
+            Self::EnsureAgentInstalled { .. } => crate::ActionKind::EnsureAgentInstalled,
+            Self::RequestMdmEnrollment { .. } => crate::ActionKind::RequestMdmEnrollment,
         }
     }
 
-    /// Resource reference only for actions that actually consume a resource.
-    pub fn resource(&self) -> Option<&ResourceBinding> {
+    /// Borrow resource coordinates only for actions that actually consume a resource.
+    pub fn resource(&self) -> Option<ResourceIdentity<'_>> {
         match self {
             Self::NativeCollection { resource, .. }
             | Self::Execution { resource, .. }
-            | Self::Configuration { resource, .. }
-            | Self::Software { resource, .. }
-            | Self::EnsureAgentInstalled { resource, .. } => Some(resource),
+            | Self::Configuration { resource, .. } => Some(resource.identity()),
+            Self::Software { resource, .. } | Self::EnsureAgentInstalled { resource, .. } => {
+                Some(resource.identity())
+            }
             Self::RequestMdmEnrollment { .. } => None,
         }
     }
     /// Validate calendar and lifetime semantics without owning any targets.
     pub fn validate(&self) -> Result<(), Error> {
-        if let Some(resource) = self.resource() {
-            resource.validate()?;
-            let software = matches!(
-                self,
-                Self::Software { .. } | Self::EnsureAgentInstalled { .. }
-            );
-            if software != resource.software().is_some() {
-                return Err(Error::Malformed);
+        match self {
+            Self::Execution { resource, .. }
+            | Self::NativeCollection { resource, .. }
+            | Self::Configuration { resource, .. } => resource.validate()?,
+            Self::Software { resource, .. } | Self::EnsureAgentInstalled { resource, .. } => {
+                resource.validate()?
             }
+            Self::RequestMdmEnrollment { .. } => (),
         }
         match self {
             Action::Execution {
@@ -553,28 +548,34 @@ mod tests {
         });
         let policy: Definition = serde_json::from_value(value).unwrap();
         policy.validate().unwrap();
+        let Action::Software { resource, .. } = &policy.action else {
+            panic!()
+        };
         assert_eq!(
-            policy
-                .action
-                .resource()
-                .unwrap()
-                .variant_for(Platform::Windows, Architecture::X86_64),
+            resource
+                .variants
+                .get(&SoftwareTarget::new(
+                    Platform::Windows,
+                    Architecture::X86_64
+                ))
+                .map(String::as_str),
             Some("msi-x64")
         );
         assert_eq!(
-            policy
-                .action
-                .resource()
-                .unwrap()
-                .variant_for(Platform::Macos, Architecture::Aarch64),
+            resource
+                .variants
+                .get(&SoftwareTarget::new(Platform::Macos, Architecture::Aarch64))
+                .map(String::as_str),
             Some("pkg-arm64")
         );
         assert_eq!(
-            policy
-                .action
-                .resource()
-                .unwrap()
-                .variant_for(Platform::Windows, Architecture::Aarch64),
+            resource
+                .variants
+                .get(&SoftwareTarget::new(
+                    Platform::Windows,
+                    Architecture::Aarch64
+                ))
+                .map(String::as_str),
             None
         );
     }

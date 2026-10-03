@@ -501,15 +501,19 @@ def optional_active(graph, key, dep, alias, kind, module, explicit):
     return False
 
 
-def dependency_consumers(graph, registry, key, dep, kind):
+def dependency_consumers(graph, registry, key, dep, kind, registrations=()):
     manifest = graph.manifests[key]
     alias = dependency_alias(graph, key, dep, kind)
+    # A dependency seam can be registered in the same change that moves/removes
+    # its implementation. Merge explicit ownership across revisions, as for paths;
+    # retain only modules present in this revision and still fail unknown seams.
     explicit = {
         name
-        for name, m in registry.modules.items()
-        if any(
+        for source in (registry, *registrations)
+        for name, module in source.modules.items()
+        if name in registry.modules and any(
             d['owner_manifest'] == manifest and d['dependency'] == alias and d['kind'] == kind
-            for d in m['dependency_inputs']
+            for d in module['dependency_inputs']
         )
     }
     policy = registry.dependencies.get(manifest, {}).get(kind + ':' + alias)
@@ -675,23 +679,7 @@ def analyze_dependencies(oldroot, root, changes, graphs, registries):
                     )
                     if not changed_declaration and not resolved_change:
                         continue
-                    # Ownership declarations may be completed in the same change.
-                    # Retain both revisions, as for renamed source paths, without
-                    # permitting a dependency unowned by either registry.
-                    consumers, owned_tools = set(), set()
-                    owned = False
-                    for owner_registry in registries:
-                        try:
-                            names, checks = dependency_consumers(g, owner_registry, key, dep, kind)
-                        except SelectionError as error:
-                            if error.code != 'unowned-dependency':
-                                raise
-                            continue
-                        owned = True
-                        consumers.update(names)
-                        owned_tools.update(checks)
-                    if not owned:
-                        raise SelectionError('unowned-dependency', manifest, kind + ':' + alias)
+                    consumers, owned_tools = dependency_consumers(g, reg, key, dep, kind, registries)
                     seeds.add(key)
                     modules.update(consumers)
                     tools.update(owned_tools)

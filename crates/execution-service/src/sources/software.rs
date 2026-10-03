@@ -10,9 +10,15 @@ use rss_mdm_software_service::{
 pub struct SoftwareExecutionPolicy {
     pub id: Uuid,
     pub owner: Uuid,
+    pub assignment: SoftwareAssignment,
+}
+/// Shared assignment data; a draft has no persisted version or authored Policy identity.
+pub struct SoftwareAssignment {
     pub frozen: FrozenSoftwareAction,
-    pub active: bool,
-    policy: Policy,
+    active: bool,
+    scope: Uuid,
+    rollout: SoftwareRollout,
+    version: Option<Uuid>,
 }
 pub struct StageCounts {
     pub total: u64,
@@ -71,43 +77,56 @@ pub async fn read_in(
     let Frozen::Software { action } = frozen else {
         return Err(Error::Unsupported.into());
     };
+    let Action::Software { rollout, .. } = policy.definition.action else {
+        return Err(Error::Malformed.into());
+    };
     Ok(SoftwareExecutionPolicy {
         id,
         owner: policy.id,
-        active: policy.enabled && policy.version == id,
-        frozen: *action,
-        policy,
+        assignment: SoftwareAssignment {
+            active: policy.enabled && policy.version == id,
+            frozen: *action,
+            scope: policy.definition.scope,
+            rollout,
+            version: Some(id),
+        },
     })
 }
-impl SoftwareExecutionPolicy {
-    pub fn draft(definition: rss_mdm_policy::Definition, frozen: FrozenSoftwareAction) -> Self {
-        let id = Uuid::nil();
+impl SoftwareAssignment {
+    pub(crate) fn draft(
+        scope: Uuid,
+        rollout: SoftwareRollout,
+        frozen: FrozenSoftwareAction,
+    ) -> Self {
         Self {
-            id,
-            owner: id,
+            scope,
+            rollout,
             frozen,
             active: true,
-            policy: Policy {
-                id,
-                revision: 0,
-                version: id,
-                number: 0,
-                enabled: true,
-                definition,
-            },
+            version: None,
         }
+    }
+    async fn eligible_in(
+        &self,
+        source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
+        tx: &mut PgTransaction<'_>,
+        device: &str,
+    ) -> Result<Option<i64>> {
+        if !self.active {
+            return Ok(None);
+        }
+        Ok(
+            match storage::admission_in(source, tx, self.scope, device).await? {
+                crate::source_authority::ScopeAdmission::Eligible { entry } => Some(entry),
+                _ => None,
+            },
+        )
     }
     pub fn intent(&self) -> SoftwareIntent {
         self.frozen.intent
     }
-    fn rollout(&self) -> Result<&SoftwareRollout> {
-        match &self.policy.definition.action {
-            Action::Software { rollout, .. } => Ok(rollout),
-            _ => Err(Error::Malformed.into()),
-        }
-    }
-    pub fn stages(&self) -> Result<&[rss_mdm_policy::SoftwareRolloutStage]> {
-        Ok(&self.rollout()?.stages)
+    pub fn stages(&self) -> &[rss_mdm_policy::SoftwareRolloutStage] {
+        &self.rollout.stages
     }
     pub fn variant(&self, platform: Platform, architecture: Architecture) -> Option<&str> {
         self.frozen
@@ -129,10 +148,10 @@ impl SoftwareExecutionPolicy {
         {
             return Ok(None);
         }
-        let Some(entry) = storage::eligible_in(source, tx, &self.policy, device).await? else {
+        let Some(entry) = self.eligible_in(source, tx, device).await? else {
             return Ok(None);
         };
-        let stages = &self.rollout()?.stages;
+        let stages = &self.rollout.stages;
         for (index, stage) in stages.iter().enumerate() {
             let scope = stage.scope;
             let admission = storage::admission_in(source, tx, scope, device).await?;
@@ -212,13 +231,13 @@ impl SoftwareExecutionPolicy {
         index: usize,
         service: Option<&crate::queries::Admission>,
     ) -> Result<StageCounts> {
-        let stages = &self.rollout()?.stages;
+        let stages = &self.rollout.stages;
         let stage = stages.get(index).ok_or(Error::Malformed)?;
         let scope = stage.scope;
-        let root = self.policy.definition.scope;
+        let root = self.scope;
         let earlier: Vec<Uuid> = stages[..index].iter().map(|s| s.scope).collect();
         let tenant = tx.tenant_id().to_string();
-        let version = self.id;
+        let version = self.version;
         let prefix = format!("software:stage:{}:%", stage.scope);
         let optional = matches!(self.intent(), SoftwareIntent::AvailableInstall);
         let now = crate::storage::now(tx).await?;
@@ -361,14 +380,15 @@ impl SoftwareExecutionPolicy {
         if now < self.frozen.schedule.not_before || now >= self.frozen.schedule.ends_at() {
             return Ok(TaskAdmission::new(TaskAdmissionState::OutsideWindow, None));
         }
-        if storage::eligible_in(&service.source, tx, &self.policy, device)
+        if self
+            .eligible_in(&service.source, tx, device)
             .await?
             .is_none()
         {
             return Ok(TaskAdmission::new(TaskAdmissionState::OutsideScope, None));
         }
         let mut stage_index = None;
-        for (index, stage) in self.stages()?.iter().enumerate() {
+        for (index, stage) in self.stages().iter().enumerate() {
             let scope = stage.scope;
             let state = storage::admission_in(&service.source, tx, scope, device).await?;
             match state {
@@ -388,7 +408,7 @@ impl SoftwareExecutionPolicy {
         let Some(index) = stage_index else {
             return Ok(TaskAdmission::new(TaskAdmissionState::OutsideStage, None));
         };
-        let stage = &self.stages()?[index];
+        let stage = &self.stages()[index];
         if now < stage.opens_at {
             return Ok(TaskAdmission::new(
                 TaskAdmissionState::Scheduled,

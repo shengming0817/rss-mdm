@@ -79,9 +79,10 @@ impl SourceAuthority for ExecutionSource {
         tenant: TenantId,
         device: &'a str,
     ) -> Pending<'a, bool> {
+        let kinds = rss_mdm_policy::AssignmentBehavior::NativeDesired.kinds();
         Box::pin(async move {
-            Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.enabled AND p.definition->'action'->>'kind' IN('configuration','ensure_agent_installed') AND mdm_planning.scope_admission((p.definition->>'scope')::uuid,$2)->>'state'<>'excluded')")
-                .bind(tenant.to_string()).bind(device).fetch_one(connection).await?)
+            Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.enabled AND p.definition->'action'->>'kind' = ANY($3::text[]) AND mdm_planning.scope_admission((p.definition->>'scope')::uuid,$2)->>'state'<>'excluded')")
+                .bind(tenant.to_string()).bind(device).bind(kinds).fetch_one(connection).await?)
         })
     }
     fn admission_on<'a>(

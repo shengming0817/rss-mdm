@@ -23,12 +23,14 @@ pub async fn accept_for_device(
         return Ok(());
     };
     if !policy
+        .assignment
         .supported_in(&service.admission(), tx, &binding)
         .await?
     {
         return Ok(());
     }
     let Some((stage, _entry)) = policy
+        .assignment
         .entry_in(&service.source, tx, &target.device, now)
         .await?
     else {
@@ -40,6 +42,7 @@ pub async fn accept_for_device(
         return Ok(());
     };
     if policy
+        .assignment
         .admitted_in(&service.admission(), tx, platform, architecture)
         .await?
         .is_none()
@@ -47,10 +50,10 @@ pub async fn accept_for_device(
         return Ok(());
     }
     let tenant = tx.tenant_id().to_string();
-    let resource = policy.frozen.resource.clone();
+    let resource = policy.assignment.frozen.resource.clone();
     let device = target.device.clone();
     let version = policy.id;
-    let stage_scope = policy.stages()?[stage].scope;
+    let stage_scope = policy.assignment.stages()[stage].scope;
     let prefix = format!("software:stage:{stage_scope}:%");
     let (pending, last, verified, failures, attempts): (bool, Option<i64>, bool, i64, i64) = tx.with_connection(move |c| Box::pin(async move {
         sqlx::query_as("SELECT coalesce(bool_or(r.state->>'execution' IN ('unknown','waiting_reboot') OR ((r.state->>'execution'='running' OR (r.state->>'execution'='not_started' AND r.deadline>$5)) AND r.state->>'cancellation'<>'confirmed')),false),max(r.created_at) FILTER(WHERE r.policy_version=$4::uuid AND r.occurrence LIKE $6),coalesce(bool_or(r.policy_version=$4::uuid AND r.result->>'effect'='verified'),false),count(*) FILTER(WHERE r.policy_version=$4::uuid AND r.result->>'effect'='failed'),count(*) FILTER(WHERE r.policy_version=$4::uuid AND r.occurrence LIKE $6) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON (p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND v.resource=$2 AND r.device=$3")
@@ -59,7 +62,7 @@ pub async fn accept_for_device(
     if pending || verified || failures >= 3 {
         return Ok(());
     }
-    let schedule = &policy.frozen.schedule;
+    let schedule = &policy.assignment.frozen.schedule;
     let coordinate = match &schedule.trigger {
         Trigger::Manual => return Ok(()),
         Trigger::CheckIn { minimum_seconds } => {
@@ -82,7 +85,7 @@ pub async fn accept_for_device(
     };
     let available = slot.available_at.max(now);
     let deadline = available
-        .checked_add(i64::from(policy.frozen.run_lifetime_seconds))
+        .checked_add(i64::from(policy.assignment.frozen.run_lifetime_seconds))
         .ok_or(Error::Malformed)?
         .min(schedule.ends_at())
         .min(slot.window_end.unwrap_or(i64::MAX));

@@ -1,0 +1,176 @@
+//! Borrowed execution requests. No Policy identity, Scope, rollout or wire DTO.
+use rss_mdm_policy::{
+    Action, ExactResourceBinding, Exit, Frequency, SoftwareDelivery, SoftwareIntent,
+    SoftwareResourceBinding, schedule::Schedule,
+};
+use serde_json::Value;
+use uuid::Uuid;
+
+/// Resource-only preflight input, usable by persistent and immediate callers.
+#[derive(Clone, Copy)]
+pub enum ResourcePreparation<'a> {
+    Script {
+        binding: &'a ExactResourceBinding,
+        parameters: &'a Value,
+    },
+    NativeCollection {
+        binding: &'a ExactResourceBinding,
+    },
+    Configuration {
+        binding: &'a ExactResourceBinding,
+    },
+    Software {
+        binding: &'a SoftwareResourceBinding,
+    },
+}
+impl ResourcePreparation<'_> {
+    pub(super) fn identity(&self) -> rss_mdm_policy::ResourceIdentity<'_> {
+        match self {
+            Self::Script { binding, .. }
+            | Self::NativeCollection { binding }
+            | Self::Configuration { binding } => binding.identity(),
+            Self::Software { binding } => binding.identity(),
+        }
+    }
+}
+
+/// Material to freeze inside the caller's original transaction.
+pub enum PublicationInput<'a> {
+    Script {
+        binding: &'a ExactResourceBinding,
+        parameters: &'a Value,
+        schedule: &'a Schedule,
+        frequency: Frequency,
+        lifetime: u32,
+    },
+    NativeCollection {
+        binding: &'a ExactResourceBinding,
+        schedule: &'a Schedule,
+        frequency: Frequency,
+        lifetime: u32,
+    },
+    Configuration {
+        binding: &'a ExactResourceBinding,
+        exit: Exit,
+    },
+    Software {
+        binding: &'a SoftwareResourceBinding,
+        delivery: &'a SoftwareDelivery,
+        intent: SoftwareIntent,
+        admission: Uuid,
+        schedule: &'a Schedule,
+        lifetime: u32,
+    },
+    AgentInstall {
+        binding: &'a SoftwareResourceBinding,
+        admission: Uuid,
+        schedule: &'a Schedule,
+        lifetime: u32,
+    },
+    Enrollment {
+        organization: Uuid,
+        schedule: &'a Schedule,
+        lifetime: u32,
+    },
+}
+impl<'a> PublicationInput<'a> {
+    /// Resource preflight input; enrollment has no resource.
+    pub fn resource(&self) -> Option<ResourcePreparation<'a>> {
+        Some(match self {
+            Self::Script {
+                binding,
+                parameters,
+                ..
+            } => ResourcePreparation::Script {
+                binding,
+                parameters,
+            },
+            Self::NativeCollection { binding, .. } => {
+                ResourcePreparation::NativeCollection { binding }
+            }
+            Self::Configuration { binding, .. } => ResourcePreparation::Configuration { binding },
+            Self::Software { binding, .. } | Self::AgentInstall { binding, .. } => {
+                ResourcePreparation::Software { binding }
+            }
+            Self::Enrollment { .. } => return None,
+        })
+    }
+}
+impl<'a> From<&'a Action> for PublicationInput<'a> {
+    fn from(action: &'a Action) -> Self {
+        match action {
+            Action::Execution {
+                resource,
+                parameters,
+                schedule,
+                frequency,
+                run_lifetime_seconds,
+            } => Self::Script {
+                binding: resource,
+                parameters,
+                schedule,
+                frequency: *frequency,
+                lifetime: *run_lifetime_seconds,
+            },
+            Action::NativeCollection {
+                resource,
+                schedule,
+                frequency,
+                run_lifetime_seconds,
+            } => Self::NativeCollection {
+                binding: resource,
+                schedule,
+                frequency: *frequency,
+                lifetime: *run_lifetime_seconds,
+            },
+            Action::Configuration { resource, exit } => Self::Configuration {
+                binding: resource,
+                exit: *exit,
+            },
+            Action::Software {
+                resource,
+                delivery,
+                intent,
+                admission_operation,
+                schedule,
+                run_lifetime_seconds,
+                ..
+            } => Self::Software {
+                binding: resource,
+                delivery,
+                intent: *intent,
+                admission: *admission_operation,
+                schedule,
+                lifetime: *run_lifetime_seconds,
+            },
+            Action::EnsureAgentInstalled {
+                resource,
+                admission_operation,
+                schedule,
+                run_lifetime_seconds,
+            } => Self::AgentInstall {
+                binding: resource,
+                admission: *admission_operation,
+                schedule,
+                lifetime: *run_lifetime_seconds,
+            },
+            Action::RequestMdmEnrollment {
+                organization,
+                schedule,
+                run_lifetime_seconds,
+            } => Self::Enrollment {
+                organization: *organization,
+                schedule,
+                lifetime: *run_lifetime_seconds,
+            },
+        }
+    }
+}
+
+/// Native grants are bound to the exact current authority and persisted owner identity.
+pub struct PublicationAuthority<'a> {
+    pub proof: &'a rss_mdm_authorization_service::context::AuthorizedPrincipal,
+    pub snapshot: &'a rss_mdm_authorization_service::Snapshot,
+    pub owner: crate::configuration::Owner,
+    pub devices: Option<&'a std::collections::BTreeSet<String>>,
+}

@@ -37,7 +37,7 @@ pub async fn devices(
             let device:String=row.try_get("device")?;
             let eligible=crate::sources::storage::eligible_in(&s.source, tx,&p,&device).await?.is_some();
             let withdrawn=crate::sources::storage::withdrawn_in(&s.source, tx,&p,&device).await?;
-            let task_admission=if let Some(software)=&software {let now=crate::storage::now(tx).await?;Some(software.management_state_in(&s.admission,tx,&device,now).await?)}else if let Some(frozen)=&onboarding {Some(onboarding::state_in(&s.admission,tx,&device,frozen).await?)}else{None};
+            let task_admission=if let Some(software)=&software {let now=crate::storage::now(tx).await?;Some(software.assignment.management_state_in(&s.admission,tx,&device,now).await?)}else if let Some(frozen)=&onboarding {Some(onboarding::state_in(&s.admission,tx,&device,frozen).await?)}else{None};
             let runnable=task_admission.as_ref().is_none_or(software::TaskAdmission::is_eligible);
             items.push(json!({"device":device,"assignment":if eligible && runnable{"eligible"}else if withdrawn{"excluded"}else{"pending"},"taskAdmission":task_admission,"operationIds":row.try_get::<Vec<Uuid>,_>("operations")?,"diagnoses":row.try_get::<Vec<String>,_>("diagnoses")?}));
         }

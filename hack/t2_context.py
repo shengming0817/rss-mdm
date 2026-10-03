@@ -28,8 +28,8 @@ def contexts(run_id, jobs):
 def installation(values):
     config = product_installation()
     config['tenants'] = sorted({value[key] for value in values for key in ('tenant', 'peer')})
-    if not 0 < len(config['tenants']) <= 128:
-        raise ValueError('T2 installation requires between 1 and 128 planned tenants')
+    if not 0 < len(config['tenants']) <= 1024:
+        raise ValueError('T2 installation requires between 1 and 1024 planned tenants')
     return config
 
 

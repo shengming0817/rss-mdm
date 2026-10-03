@@ -3324,7 +3324,6 @@ dependencies = [
  "rss-contract",
  "rss-mdm-audit-integration",
  "rss-mdm-authorization-service",
- "rss-mdm-content-service",
  "rss-mdm-execution-service",
  "rss-mdm-group-postgres",
  "rss-mdm-inventory",

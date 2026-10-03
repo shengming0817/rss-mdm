@@ -144,6 +144,32 @@ async fn template_flow(
     let policy = Uuid::new_v4();
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
     post(&mut f.browser,&f.router,&format!("/api/v3/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"native_collection","frequency":"every_trigger","schedule":{"trigger":{"kind":"interval","anchor":now-7200,"seconds":3600},"notBefore":0,"jitterSeconds":0,"misfire":{"kind":"coalesce_one"}},"resource":{"id":id,"version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"runLifetimeSeconds":300}}}})).await?;
+    let directory = f
+        .browser
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("/api/v3/policies?action=native_collection&resource={id}"),
+            None,
+        )
+        .await?;
+    ensure!(directory.0 == StatusCode::OK, "{directory:?}");
+    ensure!(
+        directory.1["items"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item["id"] == policy.to_string())),
+        "native collection missing from directory: {directory:?}"
+    );
+    let invalid = f
+        .browser
+        .call(
+            &f.router,
+            Method::GET,
+            "/api/v3/policies?action=plugin",
+            None,
+        )
+        .await?;
+    ensure!(invalid.0 == StatusCode::BAD_REQUEST, "{invalid:?}");
     // The existing outbox accepts the action before its native read can be sent.
     use sqlx::Connection;
     let mut pg =

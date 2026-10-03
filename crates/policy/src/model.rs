@@ -138,8 +138,14 @@ impl Policy {
 impl Definition {
     /// Resource/execution semantics, excluding Scope and the enabled flag.
     pub fn semantic(&self) -> Result<[u8; 32], Error> {
-        let bytes = match &self.action {
-            crate::Action::Software {
+        Ok(Sha256::digest(self.action.semantic_bytes()?).into())
+    }
+}
+impl crate::Action {
+    pub(crate) fn semantic_bytes(&self) -> Result<Vec<u8>, Error> {
+        match self {
+            Self::Software {
+                resource,
                 delivery,
                 intent,
                 admission_operation,
@@ -147,16 +153,15 @@ impl Definition {
                 run_lifetime_seconds,
                 ..
             } => serde_json::to_vec(&(
-                self.action.resource(),
+                Some(resource),
                 delivery,
                 intent,
                 admission_operation,
                 schedule,
                 run_lifetime_seconds,
             )),
-            _ => serde_json::to_vec(&self.action),
+            _ => serde_json::to_vec(self),
         }
-        .map_err(|_| Error::Malformed)?;
-        Ok(Sha256::digest(bytes).into())
+        .map_err(|_| Error::Malformed)
     }
 }

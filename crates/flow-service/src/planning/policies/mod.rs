@@ -5,7 +5,6 @@ use crate::{
     transaction::*,
 };
 use rss_mdm_audit_integration::{Fact, RequestAudit};
-use rss_mdm_execution_service::action_contract::{Architecture, Platform};
 use rss_mdm_policy::Action;
 use rss_mdm_resource as resource;
 use rss_transactional_messaging_postgres::PgTransaction;
@@ -17,14 +16,17 @@ pub mod reconcile;
 pub mod rerun;
 pub mod storage;
 
-use rss_mdm_execution_service::{authorize_policy_snapshot, frozen::Frozen};
+use rss_mdm_execution_service::{
+    authorize_policy_snapshot,
+    frozen::Frozen,
+    input_preparation::{PublicationAuthority, PublicationInput},
+};
 pub use rss_mdm_policy::{Change, Policy};
 pub struct Policies {
     runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
     audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
     tenant: rss_request_context::TenantId,
     policy_store: std::sync::Arc<rss_mdm_policy_postgres::PolicyStore>,
-    resources: crate::resource_catalog::VersionReader,
     inputs: std::sync::Arc<rss_mdm_execution_service::Inputs>,
 }
 impl Policies {
@@ -33,7 +35,6 @@ impl Policies {
         audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
         tenant: rss_request_context::TenantId,
         policy_store: std::sync::Arc<rss_mdm_policy_postgres::PolicyStore>,
-        resources: crate::resource_catalog::VersionReader,
         inputs: std::sync::Arc<rss_mdm_execution_service::Inputs>,
     ) -> Self {
         Self {
@@ -41,7 +42,6 @@ impl Policies {
             audit_store,
             tenant,
             policy_store,
-            resources,
             inputs,
         }
     }
@@ -58,76 +58,16 @@ impl Policies {
         }
         proof.manage(Permission::PolicyWrite)?;
         // Verify content outside the database transaction, then bind that proof again at publication.
-        let artifact = if let Change::Put { definition, .. } = &op.input {
+        let verified = if let Change::Put { definition, .. } = &op.input {
             if definition.action.resource().is_some() {
                 proof.manage(Permission::ResourceRead)?;
             }
             definition.validate()?;
             authorize_policy_snapshot(proof.authorization()?, proof, definition)
                 .map_err(Error::from)?;
-            if matches!(definition.action, Action::Execution { .. }) {
-                None
-            } else {
-                inspect(
-                    &self.runtime,
-                    self.tenant,
-                    (self, definition),
-                    |ctx, tx| {
-                        Box::pin(async move {
-                            let (s, d) = *ctx;
-                            let Some(binding) = d.action.resource() else {
-                                return Ok(None);
-                            };
-                            let version = s
-                                .resources
-                                .active_version_in(tx, binding.id(), binding.version())
-                                .await?;
-                            if matches!(
-                                d.action,
-                                Action::Software { .. } | Action::EnsureAgentInstalled { .. }
-                            ) {
-                                if binding.software().is_none()
-                                    || version.kind() != resource::Kind::Software
-                                {
-                                    return Err(Error::Malformed.into());
-                                }
-                                Ok(None)
-                            } else {
-                                let variant = variant(&version, binding)?;
-                                Ok(match variant.declaration() {
-                                    resource::Declaration::Configuration { artifact } => Some((
-                                        artifact.clone(),
-                                        rss_mdm_content_service::StorageClass::NativeConfiguration,
-                                    )),
-                                    resource::Declaration::Script { artifact, .. }
-                                    | resource::Declaration::NativeCollection {
-                                        artifact, ..
-                                    } => Some((
-                                        artifact.clone(),
-                                        rss_mdm_content_service::StorageClass::Artifact,
-                                    )),
-                                    _ => None,
-                                })
-                            }
-                        })
-                    },
-                    TransactionOwner::Planning,
-                )
+            self.inputs
+                .prepare_resource(PublicationInput::from(&definition.action).resource())
                 .await?
-            }
-        } else {
-            None
-        };
-        let verified = if let Change::Put { definition, .. } = &op.input
-            && let Action::Execution {
-                resource,
-                parameters,
-                ..
-            } = &definition.action
-        {
-            Some(self.inputs.verify_script(resource, parameters).await?)
-        } else if let Some((artifact, class)) = &artifact {
-            Some(self.inputs.verify_artifact(artifact, *class).await?)
         } else {
             None
         };
@@ -168,29 +108,20 @@ impl Policies {
                         &op.input,
                         Uuid::new_v4(),
                     )?;
-                    let semantic = changed_policy.semantic.to_vec();
                     let changed = changed_policy.semantic_changed;
                     let policy = changed_policy.policy;
                     authorize_policy_snapshot(&authorization, p, &policy.definition).map_err(Error::from)?;
                     if changed {
-                        let mut frozen = if matches!(policy.definition.action, Action::EnsureAgentInstalled { .. }) {
-                            Frozen::AgentInstall { action: Box::new(s.inputs.freeze_agent_in(tx,p,&authorization,&policy.definition.action).await?) }
-                        } else if matches!(policy.definition.action, Action::RequestMdmEnrollment { .. }) {
-                            Frozen::MdmEnrollment { action: Box::new(s.inputs.freeze_enrollment(p, &authorization, &policy.definition.action)?) }
-                        } else { s.inputs
-                            .freeze_in(
-                                tx,
-                                &policy.definition.action,
-                                verified,
-                                Some(rss_mdm_execution_service::configuration::Owner::Policy { policy: policy.id, version: policy.version }),
-                            )
-                            .await? };
-                        s.inputs.authorize_native(&mut frozen,p,&authorization,None,Some(rss_mdm_execution_service::configuration::Owner::Policy { policy: policy.id, version: policy.version }))?;
+                        let frozen = s.inputs.publish_in(tx, &PublicationInput::from(&policy.definition.action), verified, &PublicationAuthority {
+                            proof: p, snapshot: &authorization,
+                            owner: rss_mdm_execution_service::configuration::Owner::Policy { policy: policy.id, version: policy.version },
+                            devices: None,
+                        }).await?;
                         storage::write_in(
                             &s.policy_store,
                             tx,
                             &policy,
-                            Some((&frozen, &semantic)),
+                            Some(&frozen),
                             p,
                             now,
                         )
@@ -224,24 +155,6 @@ impl Policies {
         )
         .await
     }
-}
-
-pub fn variant<'a>(
-    version: &'a resource::Version,
-    binding: &rss_mdm_policy::ResourceBinding,
-) -> Result<&'a resource::Variant> {
-    let exact = binding.exact().ok_or(Error::Malformed)?;
-    checked_input(version.resolve(
-        match exact.platform {
-            Platform::Windows => resource::Platform::Windows,
-            Platform::Macos => resource::Platform::MacOS,
-        },
-        match exact.architecture {
-            Architecture::X86_64 => resource::Architecture::X86_64,
-            Architecture::Aarch64 => resource::Architecture::Aarch64,
-        },
-        &checked_input(resource::Id::new(&exact.variant))?,
-    ))
 }
 
 pub mod read;

@@ -36,8 +36,8 @@ impl Queries {
             let now=storage::now(tx).await?;
             let mut stages=Vec::new();
             let mut prior=(0,0);
-            for (index,stage) in software.stages()?.iter().enumerate() {
-                let counts=software.stage_counts_in(tx,index,&service.admission).await?;
+            for (index,stage) in software.assignment.stages().iter().enumerate() {
+                let counts=software.assignment.stage_counts_in(tx,index,&service.admission).await?;
                 stages.push(json!({"scope":stage.scope,"opensAt":stage.opens_at,
                     "minimumVerifiedPercent":stage.minimum_verified_percent,
                     "open":policy.enabled && stage.open(now,prior.0,prior.1),
@@ -127,7 +127,7 @@ impl Queries {
 
             store.append_request_in(tx,audit,200,"success").await?;
             let effect=run.result.as_ref().and_then(|r|r["effect"].as_str()).unwrap_or("unverified").to_owned();
-            let user_action=if matches!(plan,db::ScheduledPolicy::Software(ref software) if matches!(software.intent(),rss_mdm_policy::SoftwareIntent::AvailableInstall)) && run.state.awaits_user(storage::now(tx).await?) {Some("waiting_user")}else{None};
+            let user_action=if matches!(plan,db::ScheduledPolicy::Software(ref software) if matches!(software.assignment.intent(),rss_mdm_policy::SoftwareIntent::AvailableInstall)) && run.state.awaits_user(storage::now(tx).await?) {Some("waiting_user")}else{None};
             let mut value=json!({"taskId":id,"device":run.target.device,"registrationId":run.target.registration,"generation":run.target.generation,"availableAt":run.available_at,"deadline":run.deadline,"state":run.state,"effect":effect,"userAction":user_action,"result":run.result});
             value[field]=json!(parent);crate::queries::records::decode(value)
         })).await.map_err(Into::into)

@@ -392,7 +392,6 @@ pub(crate) fn from_state(
                 state.audit_store.clone(),
                 state.identity.tenant,
                 state.flow.planning.policy_store.clone(),
-                rss_mdm_flow_service::resource_catalog::VersionReader::new(state.identity.tenant),
                 state.inputs.clone(),
             )),
             assets: state.flow.assets.clone(),

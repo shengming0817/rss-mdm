@@ -4,6 +4,8 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 mod assignment;
+mod behavior;
+pub use behavior::*;
 mod model;
 /// Calendar, window and late-checkin decisions over an explicit clock value.
 pub mod schedule;
