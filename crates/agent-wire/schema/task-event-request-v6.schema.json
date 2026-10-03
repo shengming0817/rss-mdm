@@ -1,100 +1,285 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/mdm/agent/v5/signed-task.schema.json",
+  "$id": "https://rss.example/mdm/agent/v6/task-event-request.schema.json",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "payload",
-    "keyId",
-    "signature"
+    "wireVersion",
+    "operationId",
+    "attemptId",
+    "event",
+    "executionContext"
   ],
   "properties": {
-    "payload": {
+    "wireVersion": {
+      "const": 6
+    },
+    "operationId": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    "attemptId": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    "event": {
       "oneOf": [
         {
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "wireVersion",
-            "tenantId",
-            "deviceId",
-            "registrationId",
-            "generation",
-            "taskId",
-            "attemptId",
-            "permit",
-            "expiresAt",
-            "resourceDigest",
-            "content",
-            "profile",
-            "runAs",
-            "arguments",
-            "environment",
-            "timeoutSeconds",
-            "outputBytes",
-            "maxRows",
-            "platform",
-            "architecture"
+            "kind"
           ],
           "properties": {
-            "wireVersion": {
-              "const": 5
+            "kind": {
+              "const": "received"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "start"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "cancelled"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "exitCode",
+            "quality",
+            "output",
+            "diagnostics"
+          ],
+          "properties": {
+            "kind": {
+              "const": "result"
             },
-            "tenantId": {
-              "type": "string",
-              "format": "uuid",
-              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-              "not": {
-                "const": "00000000-0000-0000-0000-000000000000"
-              }
-            },
-            "deviceId": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\p{Cc}]+$"
-            },
-            "registrationId": {
-              "type": "string",
-              "format": "uuid",
-              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-              "not": {
-                "const": "00000000-0000-0000-0000-000000000000"
-              }
-            },
-            "generation": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 9223372036854775807
-            },
-            "taskId": {
-              "type": "string",
-              "format": "uuid",
-              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-              "not": {
-                "const": "00000000-0000-0000-0000-000000000000"
-              }
-            },
-            "attemptId": {
-              "type": "string",
-              "format": "uuid",
-              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-              "not": {
-                "const": "00000000-0000-0000-0000-000000000000"
-              }
-            },
-            "permit": {
-              "enum": [
-                "offer",
-                "start"
+            "exitCode": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "integer",
+                  "minimum": -2147483648,
+                  "maximum": 2147483647
+                }
               ]
             },
-            "expiresAt": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 9223372036854775807
+            "quality": {
+              "enum": [
+                "complete",
+                "partial",
+                "truncated",
+                "failed"
+              ]
             },
-            "resourceDigest": {
+            "output": {},
+            "diagnostics": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "stdout",
+                "stderr",
+                "durationMs",
+                "executedAt",
+                "failure"
+              ],
+              "properties": {
+                "stdout": {
+                  "type": "string",
+                  "maxLength": 16384,
+                  "pattern": "^[^\\u0000]*$"
+                },
+                "stderr": {
+                  "type": "string",
+                  "maxLength": 16384,
+                  "pattern": "^[^\\u0000]*$"
+                },
+                "durationMs": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 604800000
+                },
+                "executedAt": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9223372036854775807
+                },
+                "failure": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "enum": [
+                        "launch_failed",
+                        "timed_out",
+                        "cancelled",
+                        "non_zero_exit",
+                        "output_limit",
+                        "capture_failed"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "quality": {
+                    "const": "complete"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "exitCode": {
+                    "const": 0
+                  },
+                  "diagnostics": {
+                    "properties": {
+                      "failure": {
+                        "type": "null"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "diagnostics": {
+                    "properties": {
+                      "failure": {
+                        "const": "non_zero_exit"
+                      }
+                    }
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "exitCode": {
+                    "type": "integer",
+                    "not": {
+                      "const": 0
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "diagnostics": {
+                    "properties": {
+                      "failure": {
+                        "const": "launch_failed"
+                      }
+                    }
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "exitCode": {
+                    "type": "null"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "quality": {
+                    "const": "failed"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "diagnostics": {
+                    "properties": {
+                      "failure": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "quality": {
+                    "const": "truncated"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "diagnostics": {
+                    "properties": {
+                      "failure": {
+                        "const": "output_limit"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "intent",
+            "definitionDigest",
+            "steps"
+          ],
+          "properties": {
+            "kind": {
+              "const": "software_result"
+            },
+            "intent": {
+              "$ref": "#/$defs/SoftwareTaskIntent"
+            },
+            "definitionDigest": {
               "type": "array",
               "minItems": 32,
               "maxItems": 32,
@@ -102,17 +287,99 @@
                 "type": "integer",
                 "minimum": 0,
                 "maximum": 255
+              },
+              "not": {
+                "const": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ]
               }
             },
-            "content": {
+            "steps": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 32,
+              "items": {
+                "$ref": "#/$defs/SoftwareStepResult"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "outcome"
+          ],
+          "properties": {
+            "kind": {
+              "const": "enrollment_result"
+            },
+            "outcome": {
+              "enum": [
+                "opened",
+                "user_required",
+                "third_party_conflict",
+                "unsupported",
+                "failed",
+                "unknown"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "manifest",
+            "index",
+            "data"
+          ],
+          "properties": {
+            "kind": {
+              "const": "output_chunk"
+            },
+            "manifest": {
               "type": "object",
               "additionalProperties": false,
               "required": [
-                "length",
+                "bytes",
                 "sha256"
               ],
               "properties": {
-                "length": {
+                "bytes": {
                   "type": "integer",
                   "minimum": 1,
                   "maximum": 16777216
@@ -129,101 +396,126 @@
                 }
               }
             },
-            "profile": {
-              "enum": [
-                "power_shell7",
-                "posix_sh",
-                "bash",
-                "osquery"
+            "index": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 63
+            },
+            "data": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 349526,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "exitCode",
+            "quality",
+            "diagnostics",
+            "manifest"
+          ],
+          "properties": {
+            "kind": {
+              "const": "chunked_result"
+            },
+            "exitCode": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "integer",
+                  "minimum": -2147483648,
+                  "maximum": 2147483647
+                }
               ]
             },
-            "runAs": {
+            "quality": {
               "enum": [
-                "system",
-                "logged_in_user"
+                "complete",
+                "partial",
+                "truncated",
+                "failed"
               ]
             },
-            "arguments": {
-              "type": "array",
-              "maxItems": 64,
-              "items": {
-                "type": "string",
-                "minLength": 0,
-                "maxLength": 65536,
-                "pattern": "^[^\\u0000]*$"
-              }
-            },
-            "environment": {
+            "diagnostics": {
               "type": "object",
-              "maxProperties": 32,
-              "propertyNames": {
-                "type": "string",
-                "minLength": 11,
-                "maxLength": 64,
-                "pattern": "^RSS_PARAM_[A-Za-z0-9_]+$"
-              },
-              "additionalProperties": {
-                "type": "string",
-                "minLength": 0,
-                "maxLength": 65536,
-                "pattern": "^[^\\u0000]*$"
+              "additionalProperties": false,
+              "required": [
+                "stdout",
+                "stderr",
+                "durationMs",
+                "executedAt",
+                "failure"
+              ],
+              "properties": {
+                "stdout": {
+                  "type": "string",
+                  "maxLength": 16384,
+                  "pattern": "^[^\\u0000]*$"
+                },
+                "stderr": {
+                  "type": "string",
+                  "maxLength": 16384,
+                  "pattern": "^[^\\u0000]*$"
+                },
+                "durationMs": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 604800000
+                },
+                "executedAt": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9223372036854775807
+                },
+                "failure": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "enum": [
+                        "launch_failed",
+                        "timed_out",
+                        "cancelled",
+                        "non_zero_exit",
+                        "output_limit",
+                        "capture_failed"
+                      ]
+                    }
+                  ]
+                }
               }
             },
-            "timeoutSeconds": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 3600
-            },
-            "outputBytes": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 16777216
-            },
-            "maxRows": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 65535
-            },
-            "platform": {
-              "enum": [
-                "windows",
-                "macos"
-              ]
-            },
-            "architecture": {
-              "enum": [
-                "x86_64",
-                "aarch64"
-              ]
-            },
-            "sqlParameters": {
-              "type": [
-                "object",
-                "null"
+            "manifest": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "bytes",
+                "sha256"
               ],
-              "maxProperties": 32,
-              "propertyNames": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 64,
-                "pattern": "^[a-zA-Z0-9_]+$"
-              },
-              "additionalProperties": {
-                "oneOf": [
-                  {
-                    "type": "string",
-                    "maxLength": 4096,
-                    "pattern": "^[^\\u0000]*$"
-                  },
-                  {
-                    "type": "boolean"
-                  },
-                  {
+              "properties": {
+                "bytes": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 16777216
+                },
+                "sha256": {
+                  "type": "array",
+                  "minItems": 32,
+                  "maxItems": 32,
+                  "items": {
                     "type": "integer",
-                    "minimum": -9223372036854775808,
-                    "maximum": 9223372036854775807
+                    "minimum": 0,
+                    "maximum": 255
                   }
-                ]
+                }
               }
             }
           },
@@ -231,370 +523,115 @@
             {
               "if": {
                 "properties": {
-                  "profile": {
-                    "const": "osquery"
+                  "quality": {
+                    "const": "complete"
                   }
                 }
               },
               "then": {
-                "required": [
-                  "sqlParameters"
-                ],
                 "properties": {
-                  "arguments": {
-                    "maxItems": 0
+                  "exitCode": {
+                    "const": 0
                   },
-                  "environment": {
-                    "maxProperties": 0
-                  },
-                  "runAs": {
-                    "const": "system"
-                  },
-                  "sqlParameters": {
-                    "type": "object"
+                  "diagnostics": {
+                    "properties": {
+                      "failure": {
+                        "type": "null"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "diagnostics": {
+                    "properties": {
+                      "failure": {
+                        "const": "non_zero_exit"
+                      }
+                    }
                   }
                 }
               },
-              "else": {
+              "then": {
                 "properties": {
-                  "sqlParameters": {
+                  "exitCode": {
+                    "type": "integer",
+                    "not": {
+                      "const": 0
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "diagnostics": {
+                    "properties": {
+                      "failure": {
+                        "const": "launch_failed"
+                      }
+                    }
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "exitCode": {
                     "type": "null"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "quality": {
+                    "const": "failed"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "diagnostics": {
+                    "properties": {
+                      "failure": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "quality": {
+                    "const": "truncated"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "diagnostics": {
+                    "properties": {
+                      "failure": {
+                        "const": "output_limit"
+                      }
+                    }
                   }
                 }
               }
             }
           ]
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "wireVersion",
-            "tenantId",
-            "deviceId",
-            "registrationId",
-            "generation",
-            "taskId",
-            "attemptId",
-            "permit",
-            "expiresAt",
-            "definitionDigest",
-            "intent",
-            "platform",
-            "architecture",
-            "startMode",
-            "steps",
-            "executionContext"
-          ],
-          "properties": {
-            "wireVersion": {
-              "const": 5
-            },
-            "tenantId": {
-              "type": "string",
-              "format": "uuid",
-              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-              "not": {
-                "const": "00000000-0000-0000-0000-000000000000"
-              }
-            },
-            "deviceId": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\p{Cc}]+$"
-            },
-            "registrationId": {
-              "type": "string",
-              "format": "uuid",
-              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-              "not": {
-                "const": "00000000-0000-0000-0000-000000000000"
-              }
-            },
-            "generation": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 9223372036854775807
-            },
-            "taskId": {
-              "type": "string",
-              "format": "uuid",
-              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-              "not": {
-                "const": "00000000-0000-0000-0000-000000000000"
-              }
-            },
-            "attemptId": {
-              "type": "string",
-              "format": "uuid",
-              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-              "not": {
-                "const": "00000000-0000-0000-0000-000000000000"
-              }
-            },
-            "permit": {
-              "enum": [
-                "offer",
-                "start"
-              ]
-            },
-            "expiresAt": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 9223372036854775807
-            },
-            "platform": {
-              "enum": [
-                "windows",
-                "macos"
-              ]
-            },
-            "architecture": {
-              "enum": [
-                "x86_64",
-                "aarch64"
-              ]
-            },
-            "definitionDigest": {
-              "type": "array",
-              "minItems": 32,
-              "maxItems": 32,
-              "items": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 255
-              }
-            },
-            "intent": {
-              "enum": [
-                "install",
-                "detect",
-                "uninstall"
-              ]
-            },
-            "startMode": {
-              "enum": [
-                "automatic",
-                "user_initiated"
-              ]
-            },
-            "steps": {
-              "type": "array",
-              "minItems": 1,
-              "maxItems": 32,
-              "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "action",
-                  "artifacts",
-                  "export",
-                  "target"
-                ],
-                "properties": {
-                  "action": {
-                    "$ref": "#/$defs/SoftwareTaskAction"
-                  },
-                  "artifacts": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": 64,
-                    "items": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "required": [
-                        "key",
-                        "length",
-                        "sha256"
-                      ],
-                      "properties": {
-                        "key": {
-                          "type": "string",
-                          "minLength": 1,
-                          "maxLength": 132,
-                          "pattern": "^(?!\\.{1,2}(?:/|$))(?!.*\\/\\.{1,2}(?:/|$))[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
-                        },
-                        "length": {
-                          "type": "integer",
-                          "minimum": 1,
-                          "maximum": 1099511627776
-                        },
-                        "sha256": {
-                          "type": "array",
-                          "minItems": 32,
-                          "maxItems": 32,
-                          "items": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 255
-                          }
-                        }
-                      }
-                    }
-                  },
-                  "target": {
-                    "$ref": "#/$defs/SoftwareExecutionTarget"
-                  },
-                  "export": {
-                    "$ref": "#/$defs/SoftwareTaskExport"
-                  }
-                }
-              }
-            },
-            "executionContext": {
-              "$ref": "#/$defs/SoftwareExecutionContext"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "wireVersion",
-            "tenantId",
-            "deviceId",
-            "registrationId",
-            "generation",
-            "taskId",
-            "attemptId",
-            "permit",
-            "expiresAt",
-            "platform",
-            "architecture",
-            "organization",
-            "entry"
-          ],
-          "properties": {
-            "wireVersion": {
-              "const": 5
-            },
-            "tenantId": {
-              "type": "string",
-              "format": "uuid",
-              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-              "not": {
-                "const": "00000000-0000-0000-0000-000000000000"
-              }
-            },
-            "deviceId": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 256,
-              "pattern": "^[^\\p{Cc}]+$"
-            },
-            "registrationId": {
-              "type": "string",
-              "format": "uuid",
-              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-              "not": {
-                "const": "00000000-0000-0000-0000-000000000000"
-              }
-            },
-            "generation": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 9223372036854775807
-            },
-            "taskId": {
-              "type": "string",
-              "format": "uuid",
-              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-              "not": {
-                "const": "00000000-0000-0000-0000-000000000000"
-              }
-            },
-            "attemptId": {
-              "type": "string",
-              "format": "uuid",
-              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-              "not": {
-                "const": "00000000-0000-0000-0000-000000000000"
-              }
-            },
-            "permit": {
-              "enum": [
-                "offer",
-                "start"
-              ]
-            },
-            "expiresAt": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 9223372036854775807
-            },
-            "platform": {
-              "enum": [
-                "windows",
-                "macos"
-              ]
-            },
-            "architecture": {
-              "enum": [
-                "x86_64",
-                "aarch64"
-              ]
-            },
-            "organization": {
-              "type": "string",
-              "format": "uuid",
-              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-              "not": {
-                "const": "00000000-0000-0000-0000-000000000000"
-              }
-            },
-            "entry": {
-              "oneOf": [
-                {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": [
-                    "kind",
-                    "server"
-                  ],
-                  "properties": {
-                    "kind": {
-                      "const": "windows"
-                    },
-                    "server": {
-                      "type": "string",
-                      "maxLength": 2048,
-                      "pattern": "^https://[^/@?#\\s]+/?$"
-                    }
-                  }
-                },
-                {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": [
-                    "kind",
-                    "url"
-                  ],
-                  "properties": {
-                    "kind": {
-                      "const": "macos"
-                    },
-                    "url": {
-                      "type": "string",
-                      "maxLength": 2048,
-                      "pattern": "^https://[^/@?#\\s]+(?:/[^#\\s]*)?$"
-                    }
-                  }
-                }
-              ]
-            }
-          }
         }
       ]
     },
-    "keyId": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 128
-    },
-    "signature": {
-      "type": "string",
-      "pattern": "^[A-Za-z0-9_-]{85}[AQgw]$"
+    "executionContext": {
+      "$ref": "#/$defs/SoftwareExecutionContext"
     }
   },
   "$defs": {

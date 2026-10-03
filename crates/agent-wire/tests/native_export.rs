@@ -80,7 +80,7 @@ fn frozen_source_binds_tenant_material_and_scoped_credentials_without_a_token_fi
 #[test]
 fn invocation_schema_matches_literal_argument_and_environment_validation() {
     let canonical: serde_json::Value =
-        serde_json::from_str(include_str!("../schema/task-payload-v5.schema.json")).unwrap();
+        serde_json::from_str(include_str!("../schema/task-payload-v6.schema.json")).unwrap();
     let schema =
         serde_json::json!({"$ref":"#/$defs/SoftwareTaskInvocation","$defs":canonical["$defs"]});
     let validator = jsonschema::draft202012::new(&schema).unwrap();
@@ -106,7 +106,7 @@ fn invocation_schema_matches_literal_argument_and_environment_validation() {
         }];
         use sha2::{Digest, Sha256};
         let spec = SoftwareTaskSpec {
-            wire_version: 5,
+            wire_version: 6,
             tenant_id: id,
             device_id: "device".into(),
             platform: TaskPlatform::Windows,

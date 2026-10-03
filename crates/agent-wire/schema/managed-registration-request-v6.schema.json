@@ -1,13 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/mdm/agent/v5/registration-request.schema.json",
+  "$id": "https://rss.example/mdm/agent/v6/managed-registration-request.schema.json",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "wireVersion",
     "operationId",
-    "enrollmentId",
-    "password",
+    "installationOperation",
     "credential",
     "capabilities",
     "platform",
@@ -16,16 +15,10 @@
   ],
   "properties": {
     "wireVersion": {
-      "const": 5
+      "const": 6
     },
     "operationId": {
       "$ref": "#/$defs/nonNilUuid"
-    },
-    "enrollmentId": {
-      "$ref": "#/$defs/nonNilUuid"
-    },
-    "password": {
-      "$ref": "#/$defs/secret"
     },
     "credential": {
       "$ref": "#/$defs/secret"
@@ -37,31 +30,31 @@
       "uniqueItems": true,
       "prefixItems": [
         {
-          "const": "inventory.collect.v5"
+          "const": "inventory.collect.v6"
         }
       ],
       "items": {
         "enum": [
-          "inventory.collect.v5",
-          "task.execute.v5",
-          "software.msi.system.v5",
-          "software.msi.user.v5",
-          "software.pkg.system.v5",
-          "software.bundle.windows.system.v5",
-          "software.bundle.windows.user.v5",
-          "software.bundle.macos.system.v5",
-          "software.bundle.macos.user.v5",
-          "software.winget.system.v5",
-          "software.winget.user.v5",
-          "software.brew.bottle.user.v5",
-          "software.exe.system.v5",
-          "software.exe.user.v5",
-          "software.dmg.app.system.v5",
-          "software.dmg.app.user.v5",
-          "software.dmg.pkg.system.v5",
-          "software.msix.registration.user.v5",
-          "software.msix.provisioning.system.v5",
-          "mdm.enrollment.v5"
+          "inventory.collect.v6",
+          "task.execute.v6",
+          "software.msi.system.v6",
+          "software.msi.user.v6",
+          "software.pkg.system.v6",
+          "software.bundle.windows.system.v6",
+          "software.bundle.windows.user.v6",
+          "software.bundle.macos.system.v6",
+          "software.bundle.macos.user.v6",
+          "software.winget.system.v6",
+          "software.winget.user.v6",
+          "software.brew.bottle.user.v6",
+          "software.exe.system.v6",
+          "software.exe.user.v6",
+          "software.dmg.app.system.v6",
+          "software.dmg.app.user.v6",
+          "software.dmg.pkg.system.v6",
+          "software.msix.registration.user.v6",
+          "software.msix.provisioning.system.v6",
+          "mdm.enrollment.v6"
         ]
       }
     },
@@ -76,6 +69,9 @@
         "x86_64",
         "aarch64"
       ]
+    },
+    "installationOperation": {
+      "$ref": "#/$defs/nonNilUuid"
     },
     "executionContext": {
       "$ref": "#/$defs/SoftwareExecutionContext"

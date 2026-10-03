@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/mdm/agent/v5/report-ack.schema.json",
+  "$id": "https://rss.example/mdm/agent/v6/report-ack.schema.json",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -11,7 +11,7 @@
   ],
   "properties": {
     "wireVersion": {
-      "const": 5
+      "const": 6
     },
     "reportId": {
       "$ref": "#/$defs/nonNilUuid"

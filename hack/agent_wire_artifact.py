@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Task payload schema is canonical; derive embeddings, then verify the V5 artifact."""
+"""Task payload schema is canonical; derive embeddings, then verify the V6 artifact."""
 import hashlib
 import json
 from pathlib import Path
@@ -9,12 +9,12 @@ import copy
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMAS = ROOT / "crates/agent-wire/schema"
-MANIFEST = SCHEMAS / "agent-v5.schema-manifest.json"
+MANIFEST = SCHEMAS / "agent-v6.schema-manifest.json"
 LIB = ROOT / "crates/agent-wire/src/lib.rs"
 EMBEDDED = {
-    "signed-task-v5.schema.json": ("properties", "payload"),
-    "task-claim-response-v5.schema.json": ("properties", "task", "oneOf", 1, "properties", "payload"),
-    "task-event-ack-v5.schema.json": ("properties", "permit", "oneOf", 1, "properties", "payload"),
+    "signed-task-v6.schema.json": ("properties", "payload"),
+    "task-claim-response-v6.schema.json": ("properties", "task", "oneOf", 1, "properties", "payload"),
+    "task-event-ack-v6.schema.json": ("properties", "permit", "oneOf", 1, "properties", "payload"),
 }
 
 
@@ -54,7 +54,7 @@ def collection_definitions():
 
 
 def write_collections():
-    for name in ["report-request-v5.schema.json","registration-receipt-v5.schema.json"]:
+    for name in ["report-request-v6.schema.json","registration-receipt-v6.schema.json"]:
         path=SCHEMAS/name
         schema=json.loads(path.read_text())
         schema.setdefault("$defs",{}).update(collection_definitions())
@@ -78,14 +78,14 @@ def event_variant(schema):
 
 def write():
     write_collections()
-    payload = json.loads((SCHEMAS / "task-payload-v5.schema.json").read_text())
+    payload = json.loads((SCHEMAS / "task-payload-v6.schema.json").read_text())
     for name, path in EMBEDDED.items():
         file = SCHEMAS / name
         schema = json.loads(file.read_text())
         embedded(schema, path)["oneOf"] = copy.deepcopy(payload["oneOf"])
         schema["$defs"] = copy.deepcopy(payload["$defs"])
         file.write_text(json.dumps(schema, indent=2, ensure_ascii=False) + "\n")
-    event_file=SCHEMAS / "task-event-request-v5.schema.json"
+    event_file=SCHEMAS / "task-event-request-v6.schema.json"
     event_schema=json.loads(event_file.read_text())
     variant=event_variant(event_schema);variant.clear();variant.update(software_result_event(payload))
     event_schema["$defs"]=copy.deepcopy(payload["$defs"])
@@ -104,36 +104,36 @@ def write():
 
 def check():
     manifest = json.loads(MANIFEST.read_text())
-    if manifest.get("wireVersion") != 5:
-        raise ValueError("manifest must declare Agent V5")
+    if manifest.get("wireVersion") != 6:
+        raise ValueError("manifest must declare Agent V6")
     files = [entry["file"] for entry in manifest["schemas"]]
-    if len(files) != len(set(files)) or not files or any(not name.endswith("-v5.schema.json") for name in files):
-        raise ValueError("manifest has duplicate or non-V5 schema entries")
+    if len(files) != len(set(files)) or not files or any(not name.endswith("-v6.schema.json") for name in files):
+        raise ValueError("manifest has duplicate or non-V6 schema entries")
     actual = {path.name for path in SCHEMAS.glob("*.json")}
     if actual != set(files) | {MANIFEST.name}:
-        raise ValueError("schema directory differs from the V5 manifest")
-    for name in ["report-request-v5.schema.json","registration-receipt-v5.schema.json"]:
+        raise ValueError("schema directory differs from the V6 manifest")
+    for name in ["report-request-v6.schema.json","registration-receipt-v6.schema.json"]:
         definitions=json.loads((SCHEMAS/name).read_text()).get("$defs",{})
         if any(definitions.get(key)!=value for key,value in collection_definitions().items()):
             raise ValueError(f"{name}: collection contracts differ from their canonical schema")
-    payload = json.loads((SCHEMAS / "task-payload-v5.schema.json").read_text())
+    payload = json.loads((SCHEMAS / "task-payload-v6.schema.json").read_text())
     for name, path in EMBEDDED.items():
         schema = json.loads((SCHEMAS / name).read_text())
         if embedded(schema, path)["oneOf"] != payload["oneOf"] or schema.get("$defs") != payload["$defs"]:
             raise ValueError(f"{name}: embedded task contract differs from the canonical payload")
-    event=json.loads((SCHEMAS / "task-event-request-v5.schema.json").read_text())
+    event=json.loads((SCHEMAS / "task-event-request-v6.schema.json").read_text())
     if event_variant(event)!=software_result_event(payload) or event.get("$defs")!=payload["$defs"]:
-        raise ValueError("task-event-request-v5.schema.json: software result differs from the canonical contract")
+        raise ValueError("task-event-request-v6.schema.json: software result differs from the canonical contract")
     digest = hashlib.sha256()
     for name in files:
         data = (SCHEMAS / name).read_bytes()
         schema = json.loads(data)
-        if "/agent/v5/" not in schema.get("$id", ""):
-            raise ValueError(f"{name}: non-V5 schema identifier")
+        if "/agent/v6/" not in schema.get("$id", ""):
+            raise ValueError(f"{name}: non-V6 schema identifier")
         digest.update(data)
     expected = re.search(r'pub const SCHEMA_FINGERPRINT: &str =\s*"([0-9a-f]{64})"', LIB.read_text())
     if expected is None or expected.group(1) != digest.hexdigest():
-        raise ValueError("schema fingerprint differs from the declared V5 artifact")
+        raise ValueError("schema fingerprint differs from the declared V6 artifact")
 
 
 def main():
@@ -146,7 +146,7 @@ def main():
     except (ValueError, OSError, KeyError, TypeError) as error:
         print(f"agent-wire artifact: {error}", file=sys.stderr)
         return 1
-    print("Agent V5 manifest and schemas are complete")
+    print("Agent V6 manifest and schemas are complete")
     return 0
 
 

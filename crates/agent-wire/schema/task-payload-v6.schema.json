@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/mdm/agent/v5/task-payload.schema.json",
+  "$id": "https://rss.example/mdm/agent/v6/task-payload.schema.json",
   "oneOf": [
     {
       "type": "object",
@@ -29,7 +29,7 @@
       ],
       "properties": {
         "wireVersion": {
-          "const": 5
+          "const": 6
         },
         "tenantId": {
           "type": "string",
@@ -279,7 +279,7 @@
       ],
       "properties": {
         "wireVersion": {
-          "const": 5
+          "const": 6
         },
         "tenantId": {
           "type": "string",
@@ -458,7 +458,7 @@
       ],
       "properties": {
         "wireVersion": {
-          "const": 5
+          "const": 6
         },
         "tenantId": {
           "type": "string",

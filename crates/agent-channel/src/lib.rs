@@ -1,4 +1,4 @@
-//! Agent V5 ingress; request fields carry no tenant or registration authority.
+//! Agent V6 ingress; request fields carry no tenant or registration authority.
 use rss_mdm_authorization_service as authorization;
 mod diagnostic;
 mod error;

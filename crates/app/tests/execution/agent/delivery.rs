@@ -17,18 +17,18 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
     )
     .await?;
     author.operation = None;
-    let registration=agent_call(&router,Method::POST,"/api/agent/v5/registrations",None,Some(json!({"wireVersion":5,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_inventory_credential(),"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v5"]}))).await?;
+    let registration=agent_call(&router,Method::POST,"/api/agent/v6/registrations",None,Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_inventory_credential(),"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v6"]}))).await?;
     ensure!(
         registration.0 == StatusCode::CREATED
-            && registration.1["capabilities"] == json!(["inventory.collect.v5"]),
+            && registration.1["capabilities"] == json!(["inventory.collect.v6"]),
         "registration: {registration:?}"
     );
     let taskless = agent_call(
         &router,
         Method::POST,
-        "/api/agent/v5/tasks/claim",
+        "/api/agent/v6/tasks/claim",
         Some(case_inventory_credential()),
-        Some(json!({"wireVersion":5,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
+        Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(
@@ -44,10 +44,10 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
     )
     .await?;
     author.operation = None;
-    let registration=agent_call(&router,Method::POST,"/api/agent/v5/registrations",None,Some(json!({"wireVersion":5,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_credential(),"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v5","task.execute.v5"]}))).await?;
+    let registration=agent_call(&router,Method::POST,"/api/agent/v6/registrations",None,Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_credential(),"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v6","task.execute.v6"]}))).await?;
     ensure!(
         registration.0 == StatusCode::CREATED
-            && registration.1["capabilities"] == json!(["inventory.collect.v5", "task.execute.v5"]),
+            && registration.1["capabilities"] == json!(["inventory.collect.v6", "task.execute.v6"]),
         "task registration: {registration:?}"
     );
     // Legacy URL and major cannot enter task intake.
@@ -66,7 +66,7 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
         agent_call(
             &router,
             Method::POST,
-            "/api/agent/v5/tasks/claim",
+            "/api/agent/v6/tasks/claim",
             Some(case_credential()),
             Some(json!({"wireVersion":2,"operationId":Uuid::new_v4()}))
         )

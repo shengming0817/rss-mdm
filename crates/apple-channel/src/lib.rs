@@ -132,7 +132,7 @@ pub fn router(app: Arc<HttpState>, envelope: boundary::Envelope) -> axum::Router
             .route("/checkin", put(checkin::checkin))
             .route("/mdm", put(checkin::manage))
             .route(
-                "/api/agent/v5/managed-registrations",
+                "/api/agent/v6/managed-registrations",
                 axum::routing::post(checkin::register_agent),
             )
             .with_state(app)

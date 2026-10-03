@@ -1,4 +1,4 @@
-//! V5 channel enrollment contracts. Device identity is derived from transport proof.
+//! V6 channel enrollment contracts. Device identity is derived from transport proof.
 use crate::{Capability, Secret, TaskArchitecture, TaskPlatform, WireError, strict_uuid};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -179,7 +179,7 @@ impl EnrollmentTaskSpec {
         {
             return Err(WireError::InvalidValue);
         }
-        let mut bytes = b"rss-mdm-agent-mdm-enrollment-v5-ed25519\0".to_vec();
+        let mut bytes = b"rss-mdm-agent-mdm-enrollment-v6-ed25519\0".to_vec();
         bytes.extend(serde_json::to_vec(&(key_id, self)).map_err(|_| WireError::InvalidValue)?);
         Ok(bytes)
     }
