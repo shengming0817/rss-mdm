@@ -2,7 +2,7 @@
 use crate::{ConfigIssue, Error};
 use base64::Engine;
 use ring::signature::{Ed25519KeyPair, KeyPair};
-use rss_mdm_agent_wire::{SignedTask, TaskPayload};
+use rss_mdm_agent_wire::runtime::{SignedTask, TaskPayload};
 use std::collections::BTreeMap;
 pub struct Signer {
     key_id: String,

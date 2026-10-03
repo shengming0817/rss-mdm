@@ -61,7 +61,7 @@ pub(crate) async fn issue(
                 rss_mdm_inventory::ReportSource::MdmWindows,
                 purpose,
             )
-            .credential(proof.fingerprint()),
+            .credential(proof.fingerprint())?,
         )
         .await?;
     if let Some((parent, _)) = principal.parent() {
@@ -266,7 +266,7 @@ async fn activate_on(
             rss_mdm_inventory::ReportSource::MdmWindows,
             purpose,
         )
-        .credential(leaf.fingerprint()),
+        .credential(leaf.fingerprint())?,
     )
     .await?;
     sqlx::query(

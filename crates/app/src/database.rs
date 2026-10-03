@@ -229,10 +229,6 @@ pub(crate) async fn admit_audit_runtime(
 
 impl Database {
     pub(crate) fn agent_store(&self) -> rss_mdm_agent_channel::Store {
-        rss_mdm_agent_channel::Store::from_pool(
-            self.pool.clone(),
-            self.registration.clone(),
-            self.authorization.clone(),
-        )
+        rss_mdm_agent_channel::Store::from_pool(self.pool.clone())
     }
 }

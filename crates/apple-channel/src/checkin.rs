@@ -43,7 +43,7 @@ pub async fn checkin(
     if let Some(udid) = udid {
         super::renewal::activate(&app, &leaf, udid).await?;
     }
-    let credential = app.mount.credential(leaf.fingerprint());
+    let credential = app.mount.credential(leaf.fingerprint())?;
     if matches!(input, CheckIn::Authenticate { .. })
         && authenticate(&app, &leaf, udid.ok_or(Error::Malformed)?, &audit).await?
     {
@@ -348,7 +348,7 @@ pub async fn manage(
     if message.user.is_none() {
         super::renewal::activate(&app, &leaf, message.udid).await?;
     }
-    let credential = app.mount.credential(leaf.fingerprint());
+    let credential = app.mount.credential(leaf.fingerprint())?;
     bound(&app, &leaf).await?;
     let principal = app.devices.management_principal(&credential).await?;
     audit.identify_device(principal.registration());
@@ -453,15 +453,18 @@ pub async fn register_agent(
     bound(&app, &leaf).await?;
     let principal = app
         .devices
-        .management_principal(&app.mount.credential(leaf.fingerprint()))
+        .management_principal(&app.mount.credential(leaf.fingerprint())?)
         .await?;
-    let input = match rss_mdm_agent_wire::ManagedRegistrationRequest::decode(&bytes) {
+    let input = match rss_mdm_agent_wire::enroll::NativeGrantRequest::decode(&bytes) {
         Ok(input) => input,
         Err(code) => {
             let mut response = Error::Malformed.into_response();
             response
                 .extensions_mut()
-                .insert(rss_mdm_agent_wire::ErrorBody { code });
+                .insert(rss_mdm_agent_wire::enroll::ErrorBody {
+                    code,
+                    issuance_id: None,
+                });
             return Ok(response);
         }
     };
@@ -471,6 +474,7 @@ pub async fn register_agent(
             &principal,
             rss_mdm_inventory::ReportSource::MdmApple,
             &input,
+            app.agent_policy.as_ref().ok_or(Error::Unsupported)?,
             &audit,
         )
         .await?;

@@ -1,7 +1,7 @@
 use crate::Error;
 use crate::Target;
 use crate::action_contract::*;
-use rss_mdm_agent_wire as wire;
+use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_resource as r;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -50,7 +50,7 @@ impl FrozenAction {
         }
         arguments.extend(positional.into_values());
         wire::TaskSpec {
-            wire_version: wire::WIRE_VERSION,
+            wire_version: wire::PAYLOAD_VERSION,
             tenant_id: tenant,
             device_id: target.device.clone(),
             platform: match self.input.platform {

@@ -11,6 +11,7 @@ use rss_mdm_registration_service::device::coordinates::Coordinates;
 use serde::Deserialize;
 use std::sync::Arc;
 pub struct Services {
+    pub agent_enrollment: Option<Arc<rss_mdm_registration_service::agent::Service>>,
     pub certificate_archive: Arc<rss_mdm_certificate_archive_service::Archive>,
     pub timeline: Arc<rss_mdm_timeline_service::Timeline>,
     pub diagnostics: Arc<dyn crate::runtime_diagnostics::Source>,
@@ -130,6 +131,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
             crate::authorization::http::protect,
         ));
     let protected_v3 = Router::new()
+        .merge(crate::agent_enrollment::routes(state.agent_enrollment))
         .merge(crate::execution::routes(state.queries.clone()).with_state(execution))
         .merge(
             crate::planning::policies::http::routes(state.queries.clone())

@@ -1,5 +1,4 @@
-//! Agent V6 ingress; request fields carry no tenant or registration authority.
-use rss_mdm_authorization_service as authorization;
+//! Agent runtime V1 ingress; request fields carry no tenant or registration authority.
 mod diagnostic;
 mod error;
 pub use diagnostic::{ConfigIssue, Failure};
@@ -9,7 +8,7 @@ use rss_mdm_inventory_service::collection;
 use rss_mdm_registration_service::{device, enrollment};
 mod bindings;
 mod database;
-mod managed;
+pub mod enroll;
 pub use bindings::Bindings;
 pub use database::Store;
 mod content;
@@ -23,13 +22,7 @@ pub fn task_router(state: Arc<TaskState>, envelope: boundary::Envelope) -> Route
 }
 pub use tasks::TaskState;
 
-use crate::{
-    database::db,
-    device::{BindRegistration, VerifiedChannelCredential},
-    enrollment::Password,
-    operations::Actor,
-    operations::Operation,
-};
+use crate::database::db;
 use axum::{
     Extension, Json, Router,
     body::Bytes,
@@ -38,19 +31,17 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use rss_mdm_agent_wire as wire;
+use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_inventory::ReportSource as InventorySource;
 use rss_observation::{Batch, Body, Change, Id};
 use rss_request_context::TenantId;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::{future::Future, sync::Arc, time::Duration};
 use uuid::Uuid;
 
 fn routes() -> Router<Arc<HttpState>> {
     Router::new()
-        .route("/registrations", post(register))
         .route("/reports", post(report))
         .route("/reports/{id}", get(status))
 }
@@ -58,6 +49,7 @@ fn routes() -> Router<Arc<HttpState>> {
 #[derive(Clone)]
 pub(crate) enum AgentError {
     Wire(wire::ErrorCode),
+    Enrollment(rss_mdm_agent_wire::enroll::ErrorCode),
     Service(Error),
 }
 impl From<Error> for AgentError {
@@ -67,10 +59,15 @@ impl From<Error> for AgentError {
 }
 impl IntoResponse for AgentError {
     fn into_response(self) -> Response {
+        if let Self::Enrollment(code) | Self::Service(Error::Agent(code)) = self {
+            return credential_response(code);
+        }
         let (status, code, app_error) = match self {
+            Self::Enrollment(_) => unreachable!(),
             Self::Wire(code) => (status_for(code), code, None),
             Self::Service(error) => {
                 let code = match error {
+                    Error::Agent(_) => unreachable!(),
                     Error::Malformed | Error::CertificateRequest => {
                         wire::ErrorCode::MalformedRequest
                     }
@@ -89,6 +86,7 @@ impl IntoResponse for AgentError {
             }
         };
         let mut response = (status, Json(wire::ErrorBody { code })).into_response();
+        response.extensions_mut().insert(wire::ErrorBody { code });
         if let Some(error) = app_error {
             response.extensions_mut().insert(error);
         }
@@ -100,7 +98,10 @@ fn status_for(code: wire::ErrorCode) -> StatusCode {
         wire::ErrorCode::MalformedRequest
         | wire::ErrorCode::UnsupportedWire
         | wire::ErrorCode::UnsupportedCapability => StatusCode::BAD_REQUEST,
-        wire::ErrorCode::InvalidIdentity => StatusCode::UNAUTHORIZED,
+        wire::ErrorCode::InvalidIdentity
+        | wire::ErrorCode::CredentialRevoked
+        | wire::ErrorCode::CertificateExpired
+        | wire::ErrorCode::CredentialRetired => StatusCode::UNAUTHORIZED,
         wire::ErrorCode::ReportNotFound | wire::ErrorCode::TaskNotFound => StatusCode::NOT_FOUND,
         wire::ErrorCode::PermissionDenied => StatusCode::FORBIDDEN,
         wire::ErrorCode::RangeNotSatisfiable => StatusCode::RANGE_NOT_SATISFIABLE,
@@ -129,249 +130,40 @@ pub fn ingress_error(code: wire::ErrorCode) -> Response {
     AgentError::Wire(code).into_response()
 }
 
-async fn register(
-    State(app): State<Arc<HttpState>>,
-    Extension(audit): Extension<RequestAudit>,
-    headers: HeaderMap,
-    body: Result<Bytes, BytesRejection>,
-) -> Result<(StatusCode, Json<wire::RegistrationReceipt>), AgentError> {
-    json_content_type(&headers)?;
-    let body = body.map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
-    bounded(register_inner(&app, &audit, body)).await
-}
-async fn register_inner(
-    app: &HttpState,
-    audit: &RequestAudit,
-    body: Bytes,
-) -> Result<(StatusCode, Json<wire::RegistrationReceipt>), AgentError> {
-    let input = parse_registration(&body)?;
-    audit.set_action("agent_registration");
-    audit.operation(input.operation_id(), "agent_registration");
-    let password = Password::new(input.password().expose().to_owned())?;
-    let auth = crate::enrollment::store::enrollment_authorization(
-        &app.access.registration(),
-        &app.identity.tenant().to_string(),
-        input.enrollment_id(),
-        &password,
-    )
-    .await?;
-    if auth.source != InventorySource::AgentBuiltin {
-        return Err(Error::Unauthorized.into());
-    }
-    let proof = app
-        .identity
-        .authenticate(
-            &app.access.authorization,
-            app.credentials.get(auth.credential_ref)?,
-        )
-        .await?;
-    if proof.principal_id() != auth.actor || proof.instance_id() != auth.instance {
-        return Err(Error::Unauthorized.into());
-    }
-    proof.enrollment(&auth.device)?;
-    proof.bind_audit(audit)?;
-    audit.target(&auth.device);
-    let credential = credential(&app.mount, input.credential());
-    let digest = registration_digest(&input);
-    let operation = Operation {
-        actor: Actor::from_authorized(&proof),
-        key: input.operation_id(),
-        digest: &digest,
-    };
-    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(2));
-    let control = budget.control();
-    let attempt = app
-        .audit_store
-        .write(
-            TenantId::parse(proof.tenant_id()).map_err(|_| Error::Malformed)?,
-            &control,
-            (
-                &app.audit_store,
-                RegistrationInputs {
-                    devices: &app.devices,
-                    proof: &proof,
-                    auth: &auth,
-                    input: &input,
-                    credential: &credential,
-                    operation: &operation,
-                    audit,
-                    facts: Vec::new(),
-                },
-            ),
-            |(store, inputs), tx| {
-                Box::pin(async move {
-                    let (receipt, replayed) = tx
-                        .with_connection_context(inputs, |inputs, c| {
-                            Box::pin(register_on(c, inputs))
-                        })
-                        .await?;
-                    for fact in &inputs.facts {
-                        store.append(tx, fact, false).await.map_err(Error::from)?;
-                    }
-                    let fact = rss_mdm_audit_integration::Fact::business(
-                        inputs.audit,
-                        &format!(
-                            "agent-registration:{}:{}",
-                            inputs.proof.principal_id(),
-                            inputs.operation.key
-                        ),
-                        inputs.operation.digest.as_bytes(),
-                        201,
-                        "success",
-                        Some(inputs.auth.id),
-                    )
-                    .map_err(Error::from)?;
-                    store
-                        .append(tx, &fact, replayed)
-                        .await
-                        .map_err(Error::from)?;
-                    if replayed {
-                        inputs.audit.management_result(
-                            rss_mdm_audit_integration::ManagementResult::Replayed,
-                        );
-                    }
-                    inputs.audit.mark_commit_started();
-                    Ok((
-                        if replayed {
-                            StatusCode::OK
-                        } else {
-                            StatusCode::CREATED
-                        },
-                        receipt,
-                    ))
-                })
-            },
-        )
-        .await;
-    let (status, receipt) = crate::operations::settle(attempt, audit)?;
-    Ok((status, Json(receipt)))
-}
-
-struct RegistrationInputs<'a> {
-    devices: &'a crate::device::DeviceService,
-    proof: &'a crate::authorization::context::AuthorizedPrincipal,
-    auth: &'a crate::enrollment::Authorization,
-    input: &'a wire::RegistrationRequest,
-    credential: &'a VerifiedChannelCredential,
-    operation: &'a Operation<'a>,
-    audit: &'a RequestAudit,
-    facts: Vec<rss_mdm_audit_integration::Fact>,
-}
-async fn register_on(
-    tx: &mut sqlx::PgConnection,
-    context: &mut RegistrationInputs<'_>,
-) -> Result<(wire::RegistrationReceipt, bool), Error> {
-    let RegistrationInputs {
-        devices,
-        proof,
-        auth,
-        input,
-        credential,
-        operation,
-        audit,
-        facts,
-    } = context;
-    let proof = *proof;
-    let auth = *auth;
-    let input = *input;
-    let credential = *credential;
-    let audit = *audit;
-    let operation = *operation;
-    if let Some(old) = crate::operations::replay(tx, operation).await? {
-        let receipt: wire::RegistrationReceipt =
-            serde_json::from_str(&old).map_err(|_| Error::Unavailable(Failure::Database))?;
-        if crate::enrollment::store::active_registration(tx, proof.tenant_id(), auth.id).await?
-            != receipt.registration_id
-        {
-            return Err(Error::Conflict);
-        }
-        proof.enrollment(&auth.device)?;
-        audit.registration(receipt.registration_id);
-        return Ok((receipt, true));
-    }
-    let receipt = devices
-        .bind_in(
-            tx,
-            proof,
-            credential,
-            &BindRegistration {
-                operation_id: input.operation_id(),
-                request_id: input.enrollment_id(),
-                expected_generation: auth.expected_generation,
-                source: InventorySource::AgentBuiltin,
-            },
-            auth.device.clone(),
-            [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()],
-            facts,
-        )
-        .await?;
-    let capabilities = serde_json::to_string(input.capabilities())
-        .map_err(|_| Error::Unavailable(Failure::Database))?;
-    crate::bindings::bind_agent_in(
-        tx,
-        proof.tenant_id(),
-        receipt.registration,
-        &capabilities,
-        input.platform(),
-        input.architecture(),
-        input.execution_context(),
-    )
-    .await?;
-    crate::enrollment::store::mark_bound_in(tx, proof.tenant_id(), auth, true).await?;
-    proof.enrollment(&auth.device)?;
-    audit.registration(receipt.registration);
-    let output = wire::RegistrationReceipt {
-        wire_version: wire::WIRE_VERSION,
-        operation_id: input.operation_id(),
-        device_id: receipt.device,
-        registration_id: receipt.registration,
-        generation: receipt
-            .generation
-            .try_into()
-            .map_err(|_| Error::Unavailable(Failure::Database))?,
-        source: wire::ReportSource::AgentBuiltin,
-        epoch: receipt.epoch,
-        capabilities: input.capabilities().to_vec(),
-        collections: builtin_collections(
-            tx,
-            TenantId::parse(proof.tenant_id()).map_err(|_| Error::Malformed)?,
-            receipt.registration,
-            receipt.epoch,
-        )
-        .await?,
-    };
-    crate::operations::save(
-        tx,
-        operation,
-        &serde_json::to_string(&output).expect("closed receipt"),
-        audit,
-    )
-    .await?;
-    Ok((output, false))
-}
-
 async fn report(
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
+    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<(StatusCode, Json<wire::ReportAck>), AgentError> {
     json_content_type(&headers)?;
     let body = body.map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
-    bounded(report_inner(&app, &audit, &headers, body)).await
+    bounded(report_inner(
+        &app,
+        &audit,
+        &headers,
+        peer.as_ref().map(|p| &p.0),
+        body,
+    ))
+    .await
 }
 async fn report_inner(
     app: &HttpState,
     audit: &RequestAudit,
     headers: &HeaderMap,
+    peer: Option<&rss_mdm_certificate::HandshakePeer>,
     body: Bytes,
 ) -> Result<(StatusCode, Json<wire::ReportAck>), AgentError> {
     let input = parse_report(&body)?;
-    let credential = agent_credential(&app.mount, headers)?;
-    let (principal, scope) = app
-        .devices
-        .authorize_report(&credential, InventorySource::AgentBuiltin)
-        .await?;
+    let principal = authenticate(&app.enrollment, headers, peer).await?;
+    let scope = device::scope(
+        principal.tenant(),
+        principal.registration(),
+        InventorySource::AgentBuiltin.as_str(),
+        principal.epoch(),
+    )
+    .map_err(Error::from)?;
     audit.set_action("agent_report");
     audit.identify_device(principal.registration());
     audit.registration(principal.registration());
@@ -414,27 +206,39 @@ async fn report_inner(
 async fn status(
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
+    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<wire::ReportStatus>, AgentError> {
     let id =
         Uuid::parse_str(&id).map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
-    bounded(status_inner(&app, &audit, &headers, id)).await
+    bounded(status_inner(
+        &app,
+        &audit,
+        &headers,
+        peer.as_ref().map(|p| &p.0),
+        id,
+    ))
+    .await
 }
 async fn status_inner(
     app: &HttpState,
     audit: &RequestAudit,
     headers: &HeaderMap,
+    peer: Option<&rss_mdm_certificate::HandshakePeer>,
     id: Uuid,
 ) -> Result<Json<wire::ReportStatus>, AgentError> {
     if id.is_nil() {
         return Err(Error::Malformed.into());
     }
-    let credential = agent_credential(&app.mount, headers)?;
-    let (principal, scope) = app
-        .devices
-        .authorize_report(&credential, InventorySource::AgentBuiltin)
-        .await?;
+    let principal = authenticate(&app.enrollment, headers, peer).await?;
+    let scope = device::scope(
+        principal.tenant(),
+        principal.registration(),
+        InventorySource::AgentBuiltin.as_str(),
+        principal.epoch(),
+    )
+    .map_err(Error::from)?;
     audit.set_action("agent_report_read");
     audit.identify_device(principal.registration());
     audit.registration(principal.registration());
@@ -485,9 +289,6 @@ async fn status_inner(
     }))
 }
 
-fn parse_registration(body: &[u8]) -> Result<wire::RegistrationRequest, AgentError> {
-    wire::RegistrationRequest::decode(body).map_err(AgentError::Wire)
-}
 fn json_content_type(headers: &HeaderMap) -> Result<(), AgentError> {
     if headers.get_all(header::CONTENT_TYPE).iter().count() != 1
         || headers
@@ -506,28 +307,23 @@ fn parse_report(body: &[u8]) -> Result<wire::ReportRequest, AgentError> {
         .get("wireVersion")
         .and_then(Value::as_u64)
         .ok_or(AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
-    if version != u64::from(wire::WIRE_VERSION) {
+    if version != u64::from(wire::PAYLOAD_VERSION) {
         return Err(AgentError::Wire(wire::ErrorCode::UnsupportedWire));
     }
     serde_json::from_value(value).map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))
 }
-pub(crate) fn agent_credential(
-    mount: &crate::device::ChannelMount,
+pub(crate) async fn authenticate(
+    service: &rss_mdm_registration_service::agent::Service,
     headers: &HeaderMap,
-) -> Result<VerifiedChannelCredential, AgentError> {
-    if headers.get_all(header::AUTHORIZATION).iter().count() != 1 {
+    peer: Option<&rss_mdm_certificate::HandshakePeer>,
+) -> Result<device::DevicePrincipal, AgentError> {
+    if headers.contains_key(header::AUTHORIZATION) {
         return Err(Error::Unauthorized.into());
     }
-    let raw = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .ok_or(Error::Unauthorized)?;
-    let secret = raw.strip_prefix("Bearer ").ok_or(Error::Unauthorized)?;
-    if secret.contains(char::is_whitespace) {
-        return Err(Error::Unauthorized.into());
-    }
-    let secret = wire::Secret::parse(secret).map_err(|_| Error::Unauthorized)?;
-    Ok(credential(mount, &secret))
+    service
+        .authenticate(peer.ok_or(Error::Unauthorized)?)
+        .await
+        .map_err(|e| AgentError::Enrollment(e.code))
 }
 fn batch(input: &wire::ReportRequest) -> Result<Batch, AgentError> {
     let changes = input
@@ -569,37 +365,9 @@ fn batch(input: &wire::ReportRequest) -> Result<Batch, AgentError> {
     .map_err(|_| Error::Malformed.into())
 }
 
-fn hex(bytes: impl AsRef<[u8]>) -> String {
-    bytes.as_ref().iter().map(|b| format!("{b:02x}")).collect()
-}
-fn registration_digest(input: &wire::RegistrationRequest) -> String {
-    let mut hash = Sha256::new();
-    let capabilities = serde_json::to_string(input.capabilities()).expect("validated capabilities");
-    for value in [
-        "rss-mdm.agent.registration.v1",
-        &input.operation_id().to_string(),
-        &input.enrollment_id().to_string(),
-        input.password().expose(),
-        input.credential().expose(),
-        capabilities.as_str(),
-        &serde_json::to_string(input.execution_context()).expect("validated execution context"),
-        match input.platform() {
-            wire::TaskPlatform::Windows => "windows",
-            wire::TaskPlatform::Macos => "macos",
-        },
-        match input.architecture() {
-            wire::TaskArchitecture::X86_64 => "x86_64",
-            wire::TaskArchitecture::Aarch64 => "aarch64",
-        },
-    ] {
-        hash.update(value.len().to_be_bytes());
-        hash.update(value.as_bytes());
-    }
-    hex(hash.finalize())
-}
 fn ack(report_id: Uuid, received_at: i64) -> wire::ReportAck {
     wire::ReportAck {
-        wire_version: wire::WIRE_VERSION,
+        wire_version: wire::PAYLOAD_VERSION,
         report_id,
         received_at,
         intake: wire::IntakeStatus::Durable,
@@ -607,14 +375,10 @@ fn ack(report_id: Uuid, received_at: i64) -> wire::ReportAck {
 }
 
 pub struct HttpState {
-    pub mount: crate::device::ChannelMount,
+    pub enrollment: Arc<rss_mdm_registration_service::agent::Service>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-    pub access: std::sync::Arc<crate::database::Store>,
-    pub identity: std::sync::Arc<rss_mdm_authorization_service::session::SessionAuthority>,
-    pub credentials: std::sync::Arc<crate::enrollment::credentials::Credentials>,
-    pub devices: std::sync::Arc<crate::device::DeviceService>,
-    pub collection:
-        std::sync::Arc<rss_mdm_inventory_service::collection_service::CollectionService>,
+    pub access: Arc<crate::database::Store>,
+    pub collection: Arc<rss_mdm_inventory_service::collection_service::CollectionService>,
 }
 
 impl From<crate::enrollment::EnrollmentError> for AgentError {
@@ -637,18 +401,6 @@ impl From<rss_mdm_registration_service::Error> for AgentError {
     fn from(e: rss_mdm_registration_service::Error) -> Self {
         Self::from(Error::from(e))
     }
-}
-
-fn credential(
-    mount: &crate::device::ChannelMount,
-    secret: &wire::Secret,
-) -> VerifiedChannelCredential {
-    let mut hash = Sha256::new();
-    hash.update(b"rss-mdm.agent.credential.v1\0");
-    hash.update(mount.tenant().to_string().as_bytes());
-    hash.update(b"\0");
-    hash.update(secret.expose().as_bytes());
-    mount.credential(hash.finalize().into())
 }
 
 impl From<rss_mdm_inventory_service::Error> for AgentError {
@@ -709,4 +461,17 @@ impl IntoResponse for Error {
     fn into_response(self) -> Response {
         AgentError::Service(self).into_response()
     }
+}
+
+fn credential_response(code: rss_mdm_agent_wire::enroll::ErrorCode) -> Response {
+    use rss_mdm_agent_wire::enroll::ErrorCode as C;
+    let code = match code {
+        C::CredentialRevoked => wire::ErrorCode::CredentialRevoked,
+        C::CertificateExpired => wire::ErrorCode::CertificateExpired,
+        C::CredentialRetired => wire::ErrorCode::CredentialRetired,
+        C::PermissionDenied => wire::ErrorCode::PermissionDenied,
+        C::ServiceUnavailable | C::ActivationUnknown => wire::ErrorCode::ServiceUnavailable,
+        _ => wire::ErrorCode::InvalidIdentity,
+    };
+    (status_for(code), Json(wire::ErrorBody { code })).into_response()
 }

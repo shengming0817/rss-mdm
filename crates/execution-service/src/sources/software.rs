@@ -273,8 +273,8 @@ impl SoftwareExecutionPolicy {
         tx: &mut PgTransaction<'_>,
         platform: Platform,
         architecture: Architecture,
-        context: &rss_mdm_agent_wire::SoftwareExecutionContext,
-    ) -> Result<Option<Vec<rss_mdm_agent_wire::SoftwareTaskStep>>> {
+        context: &rss_mdm_agent_wire::runtime::SoftwareExecutionContext,
+    ) -> Result<Option<Vec<rss_mdm_agent_wire::runtime::SoftwareTaskStep>>> {
         let Some(selection) = self.selection(platform, architecture) else {
             return Ok(None);
         };
@@ -477,10 +477,10 @@ pub(crate) fn target(platform: Platform, architecture: Architecture) -> Target {
         },
     }
 }
-fn task_platform(platform: Platform) -> rss_mdm_agent_wire::TaskPlatform {
+fn task_platform(platform: Platform) -> rss_mdm_agent_wire::runtime::TaskPlatform {
     match platform {
-        Platform::Windows => rss_mdm_agent_wire::TaskPlatform::Windows,
-        Platform::Macos => rss_mdm_agent_wire::TaskPlatform::Macos,
+        Platform::Windows => rss_mdm_agent_wire::runtime::TaskPlatform::Windows,
+        Platform::Macos => rss_mdm_agent_wire::runtime::TaskPlatform::Macos,
     }
 }
 fn delivery(input: &rss_mdm_policy::SoftwareDelivery) -> Delivery<'_> {

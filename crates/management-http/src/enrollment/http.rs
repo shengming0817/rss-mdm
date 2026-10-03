@@ -24,7 +24,7 @@ async fn create_enrollment(
         rss_mdm_inventory::ReportSource::MdmApple => {
             app.apple()?;
         }
-        rss_mdm_inventory::ReportSource::AgentBuiltin => {}
+        rss_mdm_inventory::ReportSource::AgentBuiltin => return Err(Error::Malformed),
     }
     app.service
         .create(&auth.proof, &input, continuation.secret(), key, &audit)

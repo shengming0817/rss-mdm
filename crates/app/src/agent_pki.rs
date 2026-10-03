@@ -8,6 +8,9 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 pub enum Config {
     Disabled {},
     StepCa {
+        endpoint: crate::native::TlsEndpoint,
+        #[serde(default)]
+        policy: rss_mdm_registration_service::agent::Policy,
         ca_url: String,
         tls_root_file: PathBuf,
         issuer_certificate_file: PathBuf,
@@ -39,16 +42,23 @@ impl Lifetime {
 }
 pub(crate) struct AgentPki {
     pub issuer: Arc<AgentIssuer>,
+    pub listen: std::net::SocketAddr,
+    pub origin: String,
+    pub tls: Arc<tokio_rustls::rustls::ServerConfig>,
+    pub policy: rss_mdm_registration_service::agent::Policy,
+    pub pki_clock: Arc<dyn rss_mdm_registration_service::agent_pki::Clock>,
     clock: Arc<dyn crate::clock::Clock>,
     required_seconds: i64,
 }
 impl Config {
     pub(crate) fn load(
         &self,
-        audit: Arc<rss_mdm_audit_integration::AuditStore>,
+        _audit: Arc<rss_mdm_audit_integration::AuditStore>,
         clock: Arc<dyn crate::clock::Clock>,
     ) -> Result<Option<Arc<AgentPki>>, Error> {
         let Self::StepCa {
+            endpoint,
+            policy,
             ca_url,
             tls_root_file,
             issuer_certificate_file,
@@ -60,6 +70,15 @@ impl Config {
             return Ok(None);
         };
         let invalid = || Error::Configuration(ConfigIssue::AgentPki);
+        let origin = url::Url::parse(&endpoint.origin).map_err(|_| invalid())?;
+        if origin.scheme() != "https"
+            || origin.origin().ascii_serialization() != endpoint.origin
+            || !origin.username().is_empty()
+            || origin.password().is_some()
+        {
+            return Err(invalid());
+        }
+        policy.validate().map_err(|_| invalid())?;
         let days = lifetime.days()?;
         let trust = Arc::new(
             rss_mdm_certificate::agent::AgentTrust::from_pem(
@@ -83,10 +102,18 @@ impl Config {
             &crate::config::read(provisioner_key_file, 32768, true).map_err(|_| invalid())?,
             trust,
             Arc::new(PkiClock(clock.clone())),
-            audit,
         )
         .map_err(|_| invalid())?;
+        let tls = crate::native::tls::configuration(
+            endpoint,
+            Some(issuer.trust().enrollment_verifier()),
+        )?;
         Ok(Some(Arc::new(AgentPki {
+            listen: endpoint.listen,
+            origin: endpoint.origin.clone(),
+            tls,
+            policy: policy.clone(),
+            pki_clock: Arc::new(PkiClock(clock.clone())),
             issuer: Arc::new(issuer),
             clock,
             required_seconds: i64::from(days) * 86400,

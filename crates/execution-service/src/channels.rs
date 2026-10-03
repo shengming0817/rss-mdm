@@ -361,19 +361,19 @@ impl PushOutcome {
 
 #[derive(Clone)]
 pub struct AgentBinding {
-    pub execution_context: rss_mdm_agent_wire::SoftwareExecutionContext,
+    pub execution_context: rss_mdm_agent_wire::runtime::SoftwareExecutionContext,
     pub platform: String,
     pub architecture: String,
-    pub capabilities: Vec<rss_mdm_agent_wire::Capability>,
+    pub capabilities: Vec<rss_mdm_agent_wire::runtime::Capability>,
 }
 impl AgentBinding {
     pub fn inventory(&self) -> bool {
         self.capabilities
-            .contains(&rss_mdm_agent_wire::Capability::InventoryCollectionV6)
+            .contains(&rss_mdm_agent_wire::runtime::Capability::InventoryCollectionV6)
     }
     pub fn script(&self) -> bool {
         self.capabilities
-            .contains(&rss_mdm_agent_wire::Capability::TaskExecuteV6)
+            .contains(&rss_mdm_agent_wire::runtime::Capability::TaskExecuteV6)
     }
     pub fn software(&self) -> bool {
         self.capabilities
@@ -382,7 +382,7 @@ impl AgentBinding {
     }
     pub fn enrollment(&self) -> bool {
         self.capabilities
-            .contains(&rss_mdm_agent_wire::Capability::MdmEnrollmentV6)
+            .contains(&rss_mdm_agent_wire::runtime::Capability::MdmEnrollmentV6)
     }
     pub fn task(&self) -> bool {
         self.script() || self.software() || self.enrollment()
@@ -394,23 +394,8 @@ pub trait Agent: Send + Sync {
         c: &'a mut PgConnection,
         tenant: String,
         registration: Uuid,
-        context: &'a rss_mdm_agent_wire::SoftwareExecutionContext,
+        context: &'a rss_mdm_agent_wire::runtime::SoftwareExecutionContext,
     ) -> Pending<'a, ()>;
-    fn managed_replay<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        p: &'a DevicePrincipal,
-        input: &'a rss_mdm_agent_wire::ManagedRegistrationRequest,
-        audit: &'a RequestAudit,
-    ) -> Pending<'a, Option<rss_mdm_agent_wire::RegistrationReceipt>>;
-    fn managed_register<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        authority: rss_mdm_registration_service::enrollment::managed::Authority,
-        input: &'a rss_mdm_agent_wire::ManagedRegistrationRequest,
-        audit: &'a RequestAudit,
-    ) -> Pending<'a, rss_mdm_agent_wire::RegistrationReceipt>;
-
     fn bindings<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -449,7 +434,7 @@ pub async fn agent_context_in(
     tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
     store: std::sync::Arc<dyn Agent>,
     registration: Uuid,
-    context: &rss_mdm_agent_wire::SoftwareExecutionContext,
+    context: &rss_mdm_agent_wire::runtime::SoftwareExecutionContext,
 ) -> crate::transaction::Result<()> {
     let tenant = tx.tenant_id().to_string();
     let context = context.clone();
@@ -515,8 +500,8 @@ pub async fn agent_targets_in(
 
 impl Rejection {
     /// The native registration endpoint speaks the same closed Agent V6 errors.
-    pub fn agent_error(self) -> (u16, rss_mdm_agent_wire::ErrorBody) {
-        use rss_mdm_agent_wire::ErrorCode as C;
+    pub fn agent_error(self) -> (u16, rss_mdm_agent_wire::runtime::ErrorBody) {
+        use rss_mdm_agent_wire::runtime::ErrorCode as C;
         let (status, code) = match self {
             Self::Malformed => (400, C::MalformedRequest),
             Self::Unauthorized => (401, C::InvalidIdentity),
@@ -525,7 +510,7 @@ impl Rejection {
             Self::CommitUnknown | Self::RollbackFailed => (503, C::OperationUnknown),
             _ => (503, C::ServiceUnavailable),
         };
-        (status, rss_mdm_agent_wire::ErrorBody { code })
+        (status, rss_mdm_agent_wire::runtime::ErrorBody { code })
     }
 }
 

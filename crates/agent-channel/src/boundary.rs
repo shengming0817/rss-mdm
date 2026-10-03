@@ -22,7 +22,36 @@ pub struct Envelope {
     pub tenant: String,
 }
 pub fn wrap(router: Router, envelope: Envelope) -> Router {
-    router.layer(middleware::from_fn_with_state(envelope, admit))
+    router.layer(middleware::from_fn_with_state((envelope, false), admit))
+}
+pub(crate) fn wrap_enroll(router: Router, envelope: Envelope) -> Router {
+    router.layer(middleware::from_fn_with_state((envelope, true), admit))
+}
+fn family(response: Response, enrollment: bool) -> Response {
+    if !enrollment {
+        return response;
+    }
+    let Some(body) = response
+        .extensions()
+        .get::<rss_mdm_agent_wire::runtime::ErrorBody>()
+        .copied()
+    else {
+        return response;
+    };
+    use rss_mdm_agent_wire::{enroll::ErrorCode as C, runtime::ErrorCode as R};
+    let code = match body.code {
+        R::MalformedRequest => C::MalformedRequest,
+        R::InvalidIdentity => C::InvalidIdentity,
+        R::PermissionDenied => C::PermissionDenied,
+        R::OperationConflict => C::OperationConflict,
+        R::OperationUnknown => C::ActivationUnknown,
+        _ => C::ServiceUnavailable,
+    };
+    let (parts, _) = response.into_parts();
+    let mut output = crate::enroll::failure_response(code, None);
+    output.extensions_mut().extend(parts.extensions);
+    output.headers_mut().extend(parts.headers);
+    output
 }
 fn classify(error: Option<&Error>) -> Option<ResponseFailure> {
     match error {
@@ -38,7 +67,11 @@ fn classify(error: Option<&Error>) -> Option<ResponseFailure> {
         _ => None,
     }
 }
-pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next: Next) -> Response {
+pub async fn admit(
+    State((envelope, enrollment)): State<(Envelope, bool)>,
+    mut request: Request,
+    next: Next,
+) -> Response {
     let started = envelope.clock.now();
     let route = request
         .extensions()
@@ -51,7 +84,7 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
         Ok(p) => p,
         Err(_) => {
             audit.finalize(None);
-            return limited(id);
+            return family(limited(id), enrollment);
         }
     };
     request.extensions_mut().insert(audit.clone());
@@ -94,7 +127,7 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
         "{}",
         serde_json::json!({"event":"mdm_request","request_id":id,"operation_id":snapshot.operation_id,"status":response.status().as_u16(),"latency_ms":envelope.clock.now().saturating_duration_since(started).as_millis(),"error":response.extensions().get::<Error>()})
     );
-    secure(response, id)
+    secure(family(response, enrollment), id)
 }
 fn secure(mut response: Response, id: uuid::Uuid) -> Response {
     response.headers_mut().insert(
@@ -115,7 +148,8 @@ fn secure(mut response: Response, id: uuid::Uuid) -> Response {
     response
 }
 fn limited(id: uuid::Uuid) -> Response {
-    let mut response = crate::ingress_error(rss_mdm_agent_wire::ErrorCode::ServiceUnavailable);
+    let mut response =
+        crate::ingress_error(rss_mdm_agent_wire::runtime::ErrorCode::ServiceUnavailable);
     response
         .headers_mut()
         .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
@@ -124,7 +158,11 @@ fn limited(id: uuid::Uuid) -> Response {
 async fn body(request: Request, next: Next, requests: Arc<tokio::sync::Semaphore>) -> Response {
     let _permit = match requests.try_acquire_owned() {
         Ok(p) => p,
-        Err(_) => return crate::ingress_error(rss_mdm_agent_wire::ErrorCode::ServiceUnavailable),
+        Err(_) => {
+            return crate::ingress_error(
+                rss_mdm_agent_wire::runtime::ErrorCode::ServiceUnavailable,
+            );
+        }
     };
     let route = request
         .extensions()
@@ -132,9 +170,11 @@ async fn body(request: Request, next: Next, requests: Arc<tokio::sync::Semaphore
         .map(|p| p.as_str())
         .unwrap_or("");
     let limit = if route.ends_with("/tasks/{id}/events") {
-        rss_mdm_agent_wire::MAX_TASK_REQUEST_BYTES
+        rss_mdm_agent_wire::runtime::MAX_TASK_REQUEST_BYTES
+    } else if request.uri().path().contains("/enroll/") {
+        65536
     } else {
-        rss_mdm_agent_wire::MAX_REQUEST_BYTES
+        rss_mdm_agent_wire::runtime::MAX_REQUEST_BYTES
     };
     let (parts, body) = request.into_parts();
     match tokio::time::timeout(Duration::from_secs(8), axum::body::to_bytes(body, limit)).await {
@@ -142,7 +182,9 @@ async fn body(request: Request, next: Next, requests: Arc<tokio::sync::Semaphore
             next.run(Request::from_parts(parts, axum::body::Body::from(bytes)))
                 .await
         }
-        Ok(Err(_)) => crate::ingress_error(rss_mdm_agent_wire::ErrorCode::MalformedRequest),
+        Ok(Err(_)) => {
+            crate::ingress_error(rss_mdm_agent_wire::runtime::ErrorCode::MalformedRequest)
+        }
         Err(_) => project(Error::Unavailable(Failure::RequestDeadline)),
     }
 }
@@ -151,9 +193,10 @@ fn project(error: Error) -> Response {
 }
 fn route_action(route: &str) -> &'static str {
     match route {
-        "/api/agent/v6/registrations" | "/registrations" => "agent_registration",
-        "/api/agent/v6/reports" | "/reports" => "agent_report",
-        "/api/agent/v6/reports/{id}" | "/reports/{id}" => "agent_report_read",
+        "/api/agent/enroll/v1/certificates" | "/certificates" => "agent_certificate_authorize",
+        "/api/agent/enroll/v1/activate" | "/activate" => "agent_certificate_activate",
+        "/api/agent/runtime/v1/reports" | "/reports" => "agent_report",
+        "/api/agent/runtime/v1/reports/{id}" | "/reports/{id}" => "agent_report_read",
         _ => "protected_request",
     }
 }
@@ -164,8 +207,8 @@ mod tests {
     #[test]
     fn registration_rejections_keep_the_agent_action() {
         assert_eq!(
-            route_action("/api/agent/v6/registrations"),
-            "agent_registration"
+            route_action("/api/agent/enroll/v1/activate"),
+            "agent_certificate_activate"
         );
     }
 }

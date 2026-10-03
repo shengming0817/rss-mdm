@@ -6,7 +6,7 @@ use axum::{
     response::Response,
     routing::{get, post},
 };
-use rss_mdm_agent_wire as wire;
+use rss_mdm_agent_wire::runtime as wire;
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
@@ -28,14 +28,10 @@ pub(crate) fn routes() -> Router<Arc<TaskState>> {
 async fn authenticate(
     app: &TaskState,
     headers: &HeaderMap,
+    peer: Option<&rss_mdm_certificate::HandshakePeer>,
     audit: &RequestAudit,
 ) -> Result<crate::device::DevicePrincipal, crate::AgentError> {
-    let credential = crate::agent_credential(&app.mount, headers)?;
-    let (principal, _) = app
-        .devices
-        .authorize_report(&credential, rss_mdm_inventory::ReportSource::AgentBuiltin)
-        .await
-        .map_err(task_error)?;
+    let principal = crate::authenticate(&app.enrollment, headers, peer).await?;
     let mut tx = app.access.begin(&principal.tenant().to_string()).await?;
     use rss_mdm_execution_service::channels::Agent;
     let binding = crate::Bindings
@@ -65,12 +61,13 @@ fn task_error(error: impl Into<Error>) -> crate::AgentError {
 async fn claim(
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
+    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
     headers: HeaderMap,
     input: Body<wire::TaskClaimRequest>,
 ) -> Result<Json<Value>, crate::AgentError> {
     crate::bounded(async {
         let input = body(input)?;
-        let principal = authenticate(&app, &headers, &audit).await?;
+        let principal = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
         audit.operation(input.operation_id(), "command_read");
         Ok(Json(
             app.execution
@@ -84,13 +81,14 @@ async fn claim(
 async fn event(
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
+    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
     input: Body<wire::TaskEventRequest>,
 ) -> Result<Json<Value>, crate::AgentError> {
     crate::bounded(async {
         let input = body(input)?;
-        let principal = authenticate(&app, &headers, &audit).await?;
+        let principal = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
         audit.operation(input.operation_id(), "command_accept");
         Ok(Json(
             app.execution
@@ -110,12 +108,13 @@ struct Download {
 async fn download(
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
+    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
     Query(query): Query<Download>,
 ) -> Result<Response, crate::AgentError> {
     crate::bounded(async {
-        let principal = authenticate(&app, &headers, &audit).await?;
+        let principal = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
         audit.operation(id, "command_read");
         let content = app
             .execution
@@ -139,8 +138,7 @@ use rss_mdm_audit_integration::RequestAudit;
 
 pub struct TaskState {
     pub access: Arc<crate::Store>,
-    pub mount: crate::device::ChannelMount,
-    pub devices: Arc<crate::device::DeviceService>,
+    pub enrollment: Arc<rss_mdm_registration_service::agent::Service>,
     pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
 }
 

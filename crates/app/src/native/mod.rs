@@ -14,6 +14,7 @@ pub struct TlsEndpoint {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NativeListenerKind {
+    Agent,
     WindowsEnrollment,
     WindowsManagement,
     AppleManagement,
@@ -23,6 +24,7 @@ pub(crate) enum NativeListenerKind {
 impl NativeListenerKind {
     pub(crate) const fn name(self) -> &'static str {
         match self {
+            Self::Agent => "agent-tls",
             Self::WindowsEnrollment => "mdm-enrollment-tls",
             Self::WindowsManagement => "mdm-management-tls",
             Self::AppleManagement => "apple-management-tls",
@@ -32,6 +34,7 @@ impl NativeListenerKind {
     }
     pub(crate) const fn audit_action(self) -> &'static str {
         match self {
+            Self::Agent => "agent_request",
             Self::WindowsEnrollment => "protected_request",
             Self::WindowsManagement => "windows_management",
             Self::AppleManagement => "apple_management",
@@ -42,7 +45,7 @@ impl NativeListenerKind {
     pub(crate) const fn windows_retention(self) -> bool {
         match self {
             Self::WindowsManagement => true,
-            Self::WindowsEnrollment | Self::AppleManagement => false,
+            Self::Agent | Self::WindowsEnrollment | Self::AppleManagement => false,
             #[cfg(test)]
             Self::AppleWebhookFixture => false,
         }

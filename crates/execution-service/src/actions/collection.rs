@@ -186,11 +186,11 @@ pub async fn finish(
     tx: &mut PgTransaction<'_>,
     frozen: &FrozenAction,
     run: &mut Run,
-    result: &rss_mdm_agent_wire::TaskResult,
+    result: &rss_mdm_agent_wire::runtime::TaskResult,
     allowed: bool,
     now: i64,
 ) -> Result<()> {
-    use rss_mdm_agent_wire::OutputQuality;
+    use rss_mdm_agent_wire::runtime::OutputQuality;
     use sha2::{Digest, Sha256};
     let output = result.output();
     let bytes = stored(serde_json::to_vec(output))?;

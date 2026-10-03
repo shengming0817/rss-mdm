@@ -4,7 +4,7 @@ use crate::{
     catalog::FrozenSoftware,
     publication::{NativeExport, NativeExportProtocol},
 };
-use rss_mdm_agent_wire as w;
+use rss_mdm_agent_wire::runtime as w;
 use rss_transactional_messaging_postgres::PgTransaction;
 impl Preparation {
     pub(super) async fn export_in(

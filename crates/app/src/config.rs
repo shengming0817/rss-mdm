@@ -206,6 +206,30 @@ impl Config {
                 return Err(Error::Configuration(ConfigIssue::AppleListeners));
             }
         }
+        if let crate::agent_pki::Config::StepCa {
+            endpoint, policy, ..
+        } = &self.agent_pki
+        {
+            let origin = https_url(&endpoint.origin)
+                .map_err(|_| Error::Configuration(ConfigIssue::AgentPki))?;
+            if origin.origin().ascii_serialization() != endpoint.origin
+                || endpoint.origin == self.product_origin
+                || endpoint.listen == self.listen
+                || self.native_protocols.windows.as_ref().is_some_and(|w| {
+                    [&w.enrollment, &w.management]
+                        .into_iter()
+                        .any(|e| e.listen == endpoint.listen || e.origin == endpoint.origin)
+                })
+                || self.native_protocols.apple.as_ref().is_some_and(|a| {
+                    a.management.listen == endpoint.listen || a.management.origin == endpoint.origin
+                })
+            {
+                return Err(Error::Configuration(ConfigIssue::AgentPki));
+            }
+            policy
+                .validate()
+                .map_err(|_| Error::Configuration(ConfigIssue::AgentPki))?;
+        }
         let identity_management =
             crate::authorization::identity_management::IdentityManagementPolicy::new(
                 &self.identity.tenant_id,

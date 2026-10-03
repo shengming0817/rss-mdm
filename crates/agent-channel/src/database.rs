@@ -1,25 +1,11 @@
 use crate::{Error, Failure};
 use sqlx::{PgPool, Postgres, Transaction};
-use std::sync::Arc;
 pub struct Store {
     pool: PgPool,
-    pub(crate) registration: Arc<rss_mdm_registration_service::Store>,
-    pub(crate) authorization: Arc<rss_mdm_authorization_service::Store>,
 }
 impl Store {
-    pub fn from_pool(
-        pool: PgPool,
-        registration: Arc<rss_mdm_registration_service::Store>,
-        authorization: Arc<rss_mdm_authorization_service::Store>,
-    ) -> Self {
-        Self {
-            pool,
-            registration,
-            authorization,
-        }
-    }
-    pub(crate) fn registration(&self) -> Arc<rss_mdm_registration_service::Store> {
-        self.registration.clone()
+    pub fn from_pool(pool: PgPool) -> Self {
+        Self { pool }
     }
     pub(crate) async fn begin(&self, tenant: &str) -> Result<Transaction<'_, Postgres>, Error> {
         let mut tx = self.pool.begin().await.map_err(db)?;

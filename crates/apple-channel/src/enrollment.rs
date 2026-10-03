@@ -486,7 +486,7 @@ async fn bind_on(tx: &mut sqlx::PgConnection, inputs: &mut BindInputs<'_>) -> Re
     {
         return Err(Error::Unauthorized);
     }
-    let credential = app.mount.credential(leaf.fingerprint());
+    let credential = app.mount.credential(leaf.fingerprint())?;
     let receipt = app
         .devices
         .bind_in(
@@ -510,8 +510,7 @@ async fn bind_on(tx: &mut sqlx::PgConnection, inputs: &mut BindInputs<'_>) -> Re
     sqlx::query("INSERT INTO mdm_apple.devices(tenant_id,registration,udid,state,access_rights) SELECT $1::uuid,$2::uuid,$3,'pending_token',access_rights FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND id=$4")
         .bind(&tenant).bind(receipt.registration.to_string()).bind(udid).bind(leaf.attempt()).execute(&mut *tx).await.map_err(db)?;
     crate::notify(tx, "apple").await.map_err(db)?;
-    rss_mdm_registration_service::enrollment::store::mark_bound_in(tx, &tenant, auth, false)
-        .await?;
+    rss_mdm_registration_service::enrollment::store::mark_bound_in(tx, &tenant, auth).await?;
     proof.bind_audit(audit)?;
     audit.target(&auth.device);
     audit.registration(receipt.registration);

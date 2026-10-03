@@ -1,5 +1,5 @@
 //! Sole explicit Resource → executable software wire projection.
-use rss_mdm_agent_wire as w;
+use rss_mdm_agent_wire::runtime as w;
 use rss_mdm_resource as r;
 
 pub(crate) fn software_action(spec: &r::SoftwareSpec) -> w::SoftwareTaskAction {
