@@ -146,7 +146,7 @@ async fn four_families_assets_recovery_and_withdrawal() -> Result<()> {
             "deadline":f.app.clock.unix_seconds()?+300})),
     ).await?;
     ensure!(
-        denied.0 == StatusCode::UNPROCESSABLE_ENTITY,
+        denied.0 == StatusCode::NOT_IMPLEMENTED,
         "interactive must fail admission: {denied:?}"
     );
     let resource = Uuid::new_v4();
