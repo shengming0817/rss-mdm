@@ -523,7 +523,9 @@ async fn forward(
             );
         }
     }
-    let mut output = hyper::Response::new(axum::body::Body::from(bytes));
+    let mut output = hyper::Response::new(axum::body::Body::from_stream(futures::stream::once(
+        async { Ok::<_, std::io::Error>(bytes) },
+    )));
     *output.status_mut() = status;
     *output.headers_mut() = headers;
     Ok(output)
@@ -608,7 +610,10 @@ async fn lost_initiation_part_and_complete_preserve_original_identity() -> TestR
         a.begin(&write, budget()?).await?,
         Mutation::Unknown(_)
     ));
-    let found = a.candidates(write.target(), budget()?).await?;
+    let found = a
+        .candidates(write.target(), budget()?)
+        .await
+        .map_err(|e| format!("lost initiation candidates: {e}"))?;
     assert_eq!(found.ids.len(), 1);
     // Explicit selection, not automatic adapter adoption.
     let upload = a.upload(write.clone(), &found.ids[0])?;
@@ -625,7 +630,11 @@ async fn lost_initiation_part_and_complete_preserve_original_identity() -> TestR
         Mutation::Unknown(_)
     ));
     let b = f.connect(config, false).await?;
-    let parts = match b.status(&upload, budget()?).await? {
+    let parts = match b
+        .status(&upload, budget()?)
+        .await
+        .map_err(|e| format!("lost part status: {e}"))?
+    {
         UploadState::Active(parts) => parts,
         _ => return Err(Error::Missing.into()),
     };

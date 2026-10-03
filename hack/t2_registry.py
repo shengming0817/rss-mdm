@@ -1406,9 +1406,21 @@ consume_dependencies(
     normal='plist cms',
 )
 
-# Flow's dev-only schema compiler has no external T2 carrier; Cargo checks own it.
-DEPENDENCY_POLICIES['crates/flow-service/Cargo.toml'] = {
-    'dev:jsonschema': {'cargoOnly': True},
+# Embedded unit tests have Cargo carriers and no external T2 inputs.
+for owner, dependencies in {
+    'audit-integration': 'tokio',
+    'flow-service': 'jsonschema tempfile',
+    'timeline-service': 'rss-contract',
+    'apple-channel': 'anyhow',
+    'windows-channel': 'anyhow',
+}.items():
+    DEPENDENCY_POLICIES[f'crates/{owner}/Cargo.toml'] = {
+        'dev:' + dependency: {'cargoOnly': True} for dependency in dependencies.split()
+    }
+# Offline schema dependencies are checked by the native-schema Cargo gate.
+DEPENDENCY_POLICIES['crates/native-schema/Cargo.toml'] = {
+    'normal:' + dependency: {'cargoOnly': True}
+    for dependency in 'cab msi quick-xml regex serde serde_json sha2 yaml-rust2'.split()
 }
 
 DEPENDENCY_POLICIES['crates/app/Cargo.toml'] = {

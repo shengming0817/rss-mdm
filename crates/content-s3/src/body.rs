@@ -120,7 +120,7 @@ pub(crate) fn upload(source: ByteStreamInput, content: Content, budget: Budget) 
         },
     );
     ByteStream::from_body_1_x(InputBody {
-        stream: Mutex::new(Box::pin(checked)),
+        stream: Mutex::new(Box::pin(checked.fuse())),
         length: content.length,
     })
 }
