@@ -148,6 +148,7 @@ pub fn interpret(
             .get("ManagedApplicationList")
             .and_then(Value::as_dictionary)
             .ok_or(Error::Field)?;
+        let mut outcome = Outcome::QueryResult;
         for value in apps.values() {
             let status = value
                 .as_dictionary()
@@ -158,10 +159,10 @@ pub fn interpret(
                 status,
                 "UserRejected" | "UpdateRejected" | "ManagementRejected" | "Failed"
             ) {
-                return Ok(Outcome::Rejected);
+                outcome = merge(outcome, Outcome::Rejected);
             }
             if status == "Unknown" {
-                return Ok(Outcome::Unknown);
+                outcome = merge(outcome, Outcome::Unknown);
             }
             if matches!(
                 status,
@@ -179,9 +180,10 @@ pub fn interpret(
                     | "PromptingForManagement"
                     | "ValidatingUpdate"
             ) {
-                return Ok(Outcome::InProgress);
+                outcome = merge(outcome, Outcome::InProgress);
             }
         }
+        return Ok(outcome);
     }
     if command.request_type == "ScheduleOSUpdate" {
         let items = fields
@@ -191,6 +193,7 @@ pub fn interpret(
         if items.is_empty() {
             return Ok(Outcome::Unknown);
         }
+        let mut outcome = Outcome::InProgress;
         for value in items {
             let item = value.as_dictionary().ok_or(Error::Field)?;
             if item.get("InstallAction").and_then(Value::as_string) == Some("Error")
@@ -204,31 +207,35 @@ pub fn interpret(
                             || status == "DownloadRequiresComputer"
                     })
             {
-                return Ok(Outcome::Rejected);
+                outcome = merge(outcome, Outcome::Rejected);
             }
             if item.get("InstallAction").and_then(Value::as_string) == Some("InstallLater") {
-                return Ok(Outcome::Deferred);
+                outcome = merge(outcome, Outcome::Deferred);
             }
         }
-        return Ok(Outcome::InProgress);
+        return Ok(outcome);
     }
     if command.request_type == "OSUpdateStatus" {
         let items = fields
             .get("OSUpdateStatus")
             .and_then(Value::as_array)
             .ok_or(Error::Field)?;
+        let mut outcome = Outcome::QueryResult;
         for value in items {
             let item = value.as_dictionary().ok_or(Error::Field)?;
-            if item.contains_key("NextScheduledInstall") {
-                return Ok(Outcome::Deferred);
-            }
-            match item.get("Status").and_then(Value::as_string) {
-                Some("Installing" | "Downloading" | "Idle") => return Ok(Outcome::InProgress),
-                Some("Failed") => return Ok(Outcome::Rejected),
-                Some(_) => return Ok(Outcome::Unknown),
-                None => (),
-            }
+            let result = match item.get("Status").and_then(Value::as_string) {
+                Some("Failed") => Outcome::Rejected,
+                Some("Installing" | "Downloading" | "Idle")
+                    if item.contains_key("NextScheduledInstall") =>
+                {
+                    Outcome::Deferred
+                }
+                Some("Installing" | "Downloading" | "Idle") => Outcome::InProgress,
+                _ => Outcome::Unknown,
+            };
+            outcome = merge(outcome, result);
         }
+        return Ok(outcome);
     }
     if matches!(
         command.request_type.as_str(),
@@ -270,21 +277,20 @@ pub fn interpret(
     {
         return Ok(Outcome::Rejected);
     }
-    if command.request_type == "Settings"
-        && let Some(items) = fields.get("Settings").and_then(Value::as_array)
-    {
-        for value in items {
-            match value
-                .as_dictionary()
-                .and_then(|d| d.get("Status"))
+    if command.request_type == "Settings" {
+        return Ok(
+            match fields
+                .get("Settings")
+                .and_then(Value::as_dictionary)
+                .and_then(|item| item.get("Status"))
                 .and_then(Value::as_string)
             {
-                Some("Error" | "CommandFormatError") => return Ok(Outcome::Rejected),
-                Some("NotNow") => return Ok(Outcome::Deferred),
-                Some("Acknowledged") => (),
-                _ => return Ok(Outcome::Unknown),
-            }
-        }
+                Some("Error" | "CommandFormatError") => Outcome::Rejected,
+                Some("NotNow") => Outcome::Deferred,
+                Some("Acknowledged") => Outcome::Acknowledged,
+                _ => Outcome::Unknown,
+            },
+        );
     }
     if matches!(
         command.request_type.as_str(),
@@ -300,6 +306,22 @@ pub fn interpret(
     } else {
         Outcome::Acknowledged
     })
+}
+// Complete collections have an order-independent, conservative summary. Raw receipts
+// remain authoritative; a rejected item never claims other items had no side effects.
+fn merge(left: Outcome, right: Outcome) -> Outcome {
+    let rank = |value| match value {
+        Outcome::Rejected => 5,
+        Outcome::Unknown => 4,
+        Outcome::Deferred => 3,
+        Outcome::InProgress => 2,
+        _ => 1,
+    };
+    if rank(right) > rank(left) {
+        right
+    } else {
+        left
+    }
 }
 /// Independent bounded reads reuse the existing attempt stream; absence never authorizes mutation replay.
 pub fn follow_up(command: &CommandInput) -> Result<Option<CommandInput>, Error> {

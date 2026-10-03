@@ -34,6 +34,22 @@ async fn native_families_keep_results_separate_from_effects() -> Result<()> {
             && result["observation"]["effect"] == "unverified",
         "query {result}"
     );
+    let settings = f.create_operation(|_| task("Settings", json!({"Settings":{"type":"array","value":[{"type":"dictionary","value":{"Item":{"type":"string","value":"HostName"},"HostName":{"type":"string","value":"fixture.local"}}}]}}))).await?;
+    let (id, _) = peer.next("Settings").await?;
+    peer.manage(
+        "Acknowledged",
+        Some(id),
+        Some((
+            "Settings",
+            plist::Value::Dictionary(protocol::dictionary([("Status", "Error".into())])),
+        )),
+    )
+    .await?;
+    let result = f.operation(settings).await?;
+    ensure!(
+        result["commandStatus"] == "rejected" && result["observation"]["result"] == "rejected",
+        "Settings inner Error {result}"
+    );
     let security = f
         .create_operation(|_| {
             task(

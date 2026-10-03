@@ -1034,3 +1034,146 @@ fn lom_inner_failure_is_rejected_despite_outer_acknowledgement() {
         );
     }
 }
+
+#[test]
+fn settings_dictionary_status_is_not_the_outer_acknowledgement() {
+    use crate::protocol::{Status, dictionary};
+    use outcome::Outcome;
+    let ctx = context();
+    let target = Target {
+        context: &ctx,
+        access_rights: &["AllowSettings"],
+    };
+    let command = input::CommandInput {
+        request_type: "Settings".into(),
+        fields: input::Fields::from_plist(&dictionary([(
+            "Settings",
+            Value::Array(vec![Value::Dictionary(dictionary([
+                ("Item", "HostName".into()),
+                ("HostName", "fixture.local".into()),
+            ]))]),
+        )]))
+        .unwrap(),
+    };
+    for (status, expected) in [
+        ("Error", Outcome::Rejected),
+        ("Acknowledged", Outcome::Acknowledged),
+        ("NotNow", Outcome::Deferred),
+        ("CommandFormatError", Outcome::Rejected),
+    ] {
+        let response = dictionary([(
+            "Settings",
+            Value::Dictionary(dictionary([("Status", status.into())])),
+        )]);
+        assert_eq!(
+            outcome::interpret(&command, &response, Status::Acknowledged, &target).unwrap(),
+            expected
+        );
+    }
+    assert_eq!(
+        outcome::interpret(&command, &Dictionary::new(), Status::Acknowledged, &target).unwrap(),
+        Outcome::Unknown
+    );
+}
+
+#[test]
+fn mixed_native_results_do_not_hide_failures_when_reordered() {
+    use crate::protocol::{Status, dictionary};
+    use outcome::Outcome;
+    let ctx = context();
+    let target = Target {
+        context: &ctx,
+        access_rights: &["AllowAppInstallation"],
+    };
+    let update = input::CommandInput {
+        request_type: "ScheduleOSUpdate".into(),
+        fields: input::Fields::from_plist(&dictionary([(
+            "Updates",
+            Value::Array(vec![Value::Dictionary(dictionary([
+                ("ProductKey", "fixture".into()),
+                ("InstallAction", "InstallLater".into()),
+            ]))]),
+        )]))
+        .unwrap(),
+    };
+    let update_result = |action: &str, status: &str| {
+        Value::Dictionary(dictionary([
+            ("ProductKey", "fixture".into()),
+            ("InstallAction", action.into()),
+            ("Status", status.into()),
+        ]))
+    };
+    for items in [
+        vec![
+            update_result("InstallLater", "Idle"),
+            update_result("Error", "InstallFailed"),
+        ],
+        vec![
+            update_result("Error", "InstallFailed"),
+            update_result("InstallLater", "Idle"),
+        ],
+    ] {
+        assert_eq!(
+            outcome::interpret(
+                &update,
+                &dictionary([("UpdateResults", Value::Array(items))]),
+                Status::Acknowledged,
+                &target
+            )
+            .unwrap(),
+            Outcome::Rejected
+        );
+    }
+    let apps = input::CommandInput {
+        request_type: "ManagedApplicationList".into(),
+        fields: Default::default(),
+    };
+    for first in ["Unknown", "Installing"] {
+        for statuses in [[first, "Failed"], ["Failed", first]] {
+            let response = dictionary([(
+                "ManagedApplicationList",
+                Value::Dictionary(dictionary([
+                    (
+                        "org.example.first",
+                        Value::Dictionary(dictionary([("Status", statuses[0].into())])),
+                    ),
+                    (
+                        "org.example.second",
+                        Value::Dictionary(dictionary([("Status", statuses[1].into())])),
+                    ),
+                ])),
+            )]);
+            assert_eq!(
+                outcome::interpret(&apps, &response, Status::Acknowledged, &target).unwrap(),
+                Outcome::Rejected
+            );
+        }
+    }
+    let query = input::CommandInput {
+        request_type: "OSUpdateStatus".into(),
+        fields: Default::default(),
+    };
+    let item = |status: &str| {
+        Value::Dictionary(dictionary([
+            ("ProductKey", "fixture".into()),
+            ("IsDownloaded", true.into()),
+            ("DownloadPercentComplete", Value::Real(1.0)),
+            ("Status", status.into()),
+        ]))
+    };
+    for items in [
+        vec![item("Idle"), item("Failed")],
+        vec![item("Failed"), item("Idle")],
+    ] {
+        assert_eq!(
+            outcome::interpret(
+                &query,
+                &dictionary([("OSUpdateStatus", Value::Array(items))]),
+                Status::Acknowledged,
+                &target
+            )
+            .unwrap(),
+            Outcome::Rejected
+        );
+    }
+}
