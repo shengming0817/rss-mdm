@@ -7,7 +7,8 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'hack'))
 from t2_execution import Builds, Case, Processes, file_stamp, parse_listing, validate_ownership, verify_case, strict_json
-from t2_registry import MODULES, Module
+from t2_registry import MODULES
+from t2_model import Module
 
 
 class ExecutionProof(unittest.TestCase):

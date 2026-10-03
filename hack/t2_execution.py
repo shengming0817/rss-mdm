@@ -18,7 +18,8 @@ import time
 import xml.etree.ElementTree as ET
 
 from build_run import lease_fds, require_lease
-from t2_registry import ROOT, APP, MODULES, IDENTITY_SETUP, Build, Module
+from t2_registry import APP, MODULES, IDENTITY_SETUP
+from t2_model import ROOT, Build, Module
 from verification_result import require
 
 

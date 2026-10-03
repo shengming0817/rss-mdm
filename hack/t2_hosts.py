@@ -6,7 +6,7 @@ import time
 import urllib.request
 from urllib.parse import urlsplit
 from t2_environment import private
-from t2_registry import ROOT
+from t2_model import ROOT
 from verification_result import require
 
 

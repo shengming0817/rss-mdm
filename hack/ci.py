@@ -16,7 +16,9 @@ import tomllib
 from urllib.parse import urlsplit
 
 from build_run import lease_fds, require_lease
-from t2_registry import MODULES, all_tools
+from t2_registry import MODULES
+from t2_model import all_tools
+from ci_impact import SelectionError, strict_json, validate_selection, explicit_selection, failure
 from verification_result import result as stage_result, publish
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -260,41 +262,43 @@ CARGO_GATES = {"check", "clippy", "t1", "api-boundary"}
 
 
 def select_impact(head, base=None):
-    base = base or os.environ.get("CI_BASE", "origin/develop")
-    selection = {"cargoFull": True, "t2Full": True, "packages": [],
-                 "modules": sorted(MODULES), "toolTests": all_tools(),
-                 "reasons": [], "base": base, "head": head}
+    base = base or os.environ.get('CI_BASE', 'origin/develop')
+    if os.environ.get('CI_FULL', '0') != '0' and os.environ.get('CI_T2', 'none') == 'all':
+        return {**explicit_selection(LOCAL_PACKAGES, MODULES, all_tools()), 'head': head}
+    merge = command(['/usr/bin/git', 'merge-base', base, head])
+    if merge.returncode != 0 or not merge.stdout.strip():
+        raise SelectionError('base-unavailable', base)
+    result = command([sys.executable, 'hack/ci-impact.py', '--base', merge.stdout.strip()], separate_stderr=True)
     try:
-        merge = command(["/usr/bin/git", "merge-base", base, head])
-        require(merge.returncode == 0, "base-unavailable")
-        selection["mergeBase"] = merge.stdout.strip()
-        result = command([sys.executable, "hack/ci-impact.py", "--base", selection["mergeBase"]], separate_stderr=True)
-        require(result.returncode == 0, "selector-failed")
-        decision = json.loads(result.stdout)
-        require(type(decision["cargoFull"]) is bool and type(decision["t2Full"]) is bool
-                and isinstance(decision["packages"], list)
-                and set(decision["packages"]) <= set(LOCAL_PACKAGES)
-                and isinstance(decision["reasons"], list), "invalid selection")
-        require(isinstance(decision["modules"], list) and set(decision["modules"]) <= set(MODULES), "invalid modules")
-        require(isinstance(decision["toolTests"], list) and set(decision["toolTests"]) <= set(all_tools()), "invalid tool tests")
-        require(not decision["t2Full"] or set(decision["modules"]) == set(MODULES), "incomplete full integration selection")
-        selection.update(decision)
-        if result.stderr.strip():
-            selection["diagnostic"] = result.stderr.strip()
-    except Exception as error:
-        selection.update(cargoFull=True, t2Full=True, packages=[], modules=sorted(MODULES),
-                         toolTests=all_tools(), reasons=["selection-unavailable: " + str(error)])
-    if os.environ.get("CI_FULL", "0") != "0":
-        selection.update(cargoFull=True, packages=[], reasons=[*selection["reasons"], "explicit-cargo-full"])
-    return selection
+        decision = strict_json(result.stdout)
+    except (ValueError, TypeError) as error:
+        raise SelectionError('selection-invalid') from error
+    validate_selection(decision, LOCAL_PACKAGES, MODULES, all_tools())
+    if result.returncode:
+        raise SelectionError('selector-failed')
+    if os.environ.get('CI_FULL', '0') != '0':
+        decision['cargo'] = {'mode': 'all', 'packages': sorted(LOCAL_PACKAGES)}
+        decision['reasons'].append({'kind': 'explicit-full', 'input': 'CI_FULL', 'packages': sorted(LOCAL_PACKAGES), 'modules': []})
+    if os.environ.get('CI_T2', 'none') == 'all':
+        decision['t2'] = {'mode': 'all', 'modules': sorted(MODULES)}
+        decision['reasons'].append({'kind': 'explicit-full', 'input': 'CI_T2', 'packages': [], 'modules': sorted(MODULES)})
+    decision.update(base=base, head=head, mergeBase=merge.stdout.strip())
+    if result.stderr.strip():
+        decision['diagnostic'] = result.stderr.strip()
+    return decision
 
 
 def selected_gate(name, selection):
     if name=="agent-wire-artifact" and "test_agent_wire_artifact" in selection["toolTests"]:return True
     if name == "script-tests":return bool(selection["toolTests"])
-    if selection["cargoFull"] or name == "fmt":
+    policy_inputs = {r['input'] for r in selection['reasons'] if isinstance(r, dict)}
+    if name == 'advisories' and 'deny.toml' in policy_inputs:
         return True
-    packages = set(selection["packages"])
+    if name == 'clippy' and 'clippy.toml' in policy_inputs:
+        return True
+    if (selection["cargo"]["mode"] == "all") or name == "fmt":
+        return True
+    packages = set(selection["cargo"]["packages"])
     if name == "advisories":
         return False
     return bool(packages & GATE_PACKAGES.get(name, packages))
@@ -302,8 +306,8 @@ def selected_gate(name, selection):
 
 def gate_command(name, args, selection):
     if name == "script-tests":return [sys.executable,"-O","-m","unittest", *selection["toolTests"]]
-    if name in CARGO_GATES and not selection["cargoFull"]:
-        flags = [arg for package in selection["packages"] for arg in ("-p", package)]
+    if name in CARGO_GATES and selection["cargo"]["packages"] and not (selection["cargo"]["mode"] == "all"):
+        flags = [arg for package in selection["cargo"]["packages"] for arg in ("-p", package)]
         index = args.index("--workspace")
         return args[:index] + flags + args[index + 1:]
     return args
@@ -401,7 +405,7 @@ def execute_ci():
     started=time.monotonic()
     try:
         pin = workspace_pin(ROOT)
-        if selection["cargoFull"] or selection["packages"]:
+        if (selection["cargo"]["mode"] == "all") or selection["cargo"]["packages"]:
             dependency_graphs(pin)
         results["pin"] = stage_result("passed",started)
     except Exception as error:
@@ -437,7 +441,8 @@ def execute_ci():
         (OUT / "source-stability.log").write_text(str(error))
         results["source-stability"] = stage_result("failed",started)
     evidence = {"selection":selection, "source":{"kind":"current-working-tree", "baseRevision":start_head, "startStateSha256":source_state}, "rssRevision":pin[1] if pin else None,"rssGitUrl":pin[0] if pin else None,"cargoLockSha256":hashlib.sha256((ROOT/"Cargo.lock").read_bytes()).hexdigest(),"utc":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"gates":results,"remoteCI":False,"T3":"not run"}
-    evidence['recommendedT2'] = {'modules':selection['modules'],'status':('executed' if t2_mode == 'all' else 'not-run') if selection['modules'] else 'not-selected'}
+    evidence['toolVerification'] = {name:results.get('script-tests', {}).get('status', 'not-run') for name in selection['toolTests']}
+    evidence['recommendedT2'] = {'modules':selection['t2']['modules'],'status':('executed' if t2_mode == 'all' else 'not-run') if selection['t2']['modules'] else 'not-selected'}
     evidence['t2'] = integration
     identity_url,identity_revision=identity_pin(tomllib.loads((ROOT/'Cargo.toml').read_text()))
     evidence.update(identityGitUrl=identity_url,identityRevision=identity_revision)
@@ -446,7 +451,13 @@ def execute_ci():
     return int(any(value["status"] == "failed" for value in results.values()) or any(value["status"] == "failed" for value in integration.values()))
 
 def main():
-    if os.environ.get('CI_PLAN','0')=='1':return execute_ci()
+    if os.environ.get('CI_PLAN','0')=='1':
+        try:
+            return execute_ci()
+        except SelectionError as error:
+            OUT.mkdir(parents=True, exist_ok=True)
+            publish(OUT/'plan.json', {'selection':failure(error, 'selection')})
+            raise
     require_lease(ROOT)
     if OUT.is_symlink():raise RuntimeError('CI output directory cannot be a symlink')
     OUT.mkdir(parents=True,exist_ok=True)
@@ -458,7 +469,11 @@ def main():
         if getattr(error, 'evidence', None):
             execution.update(error.evidence)
             execution['log'] = 't2/' + error.evidence['log']
-        publish(OUT/'result.json',{'status':'failed','gates':{'execution':execution}})
+        evidence = {'status':'failed','gates':{'execution':execution}}
+        if isinstance(error, SelectionError):
+            evidence['selection'] = failure(error, 'selection')
+            publish(OUT/'selection.json', {'selection': evidence['selection']})
+        publish(OUT/'result.json', evidence)
         raise
 
 if __name__ == "__main__": sys.exit(main())

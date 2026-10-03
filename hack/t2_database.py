@@ -11,7 +11,7 @@ import threading
 import time
 import uuid
 from t2_environment import Environment, private, run
-from t2_registry import ROOT
+from t2_model import ROOT
 from verification_result import require
 
 

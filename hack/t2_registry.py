@@ -5,116 +5,13 @@ ref: meilisearch tests/integration.rs@909ef7fef5ba264dc914c4778d6328c5edca5ca7
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from fnmatch import fnmatchcase
+from dataclasses import replace
 from pathlib import Path
+from t2_model import Build, Module, CasePolicy, DependencyInput
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-@dataclass(frozen=True, order=True)
-class Build:
-    package: str
-    kind: str = 'lib'
-    target: str = ''
-    features: tuple[str, ...] = ()
-
-    def cargo_args(self):
-        args = ['--locked', '-p', self.package]
-        args += ['--lib'] if self.kind == 'lib' else ['--' + self.kind, self.target]
-        if self.features:
-            args += ['--features', ','.join(self.features)]
-        return args
-
-
 APP = Build('rss-mdm-app', features=('integration',))
 
-
-@dataclass(frozen=True)
-class CasePolicy:
-    selector: str
-    db_mode: str | None
-    scope: str | None
-    fixtures: tuple[str, ...] | None = None
-
-    def matches(self, name):
-        return name.startswith(self.selector) if self.selector.endswith('::') else name == self.selector
-
-
-@dataclass(frozen=True)
-class Module:
-    id: str
-    build: Build | None
-    selectors: tuple[str, ...]
-    profile: str = 'product'
-    fixtures: tuple[str, ...] = ()
-    production_inputs: tuple[str, ...] = ()
-    test_inputs: tuple[str, ...] = ()
-    support_inputs: tuple[str, ...] = ()
-    db_mode: str | None = 'reuse'
-    scope: str | None = 'objects'
-    policies: tuple[CasePolicy, ...] = ()
-    python: str | None = None
-    children: tuple[str, ...] = ()
-    expected_cases: int | None = None
-
-    @property
-    def postgres(self):
-        return self.profile != 'none'
-
-    @property
-    def tools(self):
-        result = {'python3'}
-        if self.build:
-            result.update(('cargo', 'cargo-nextest'))
-        if self.postgres or 'gateway' in self.fixtures or 'idp' in self.fixtures:
-            result.add('docker')
-        if self.postgres or set(self.fixtures) & {'tls', 'windows', 'apple', 'scep', 'apns'}:
-            result.add('openssl')
-        if self.id == 'windows.declared':
-            result.add('xmlsec1')
-        if 'homebrew' in self.fixtures:
-            result.add('brew')
-        if 'git' in self.fixtures:
-            result.add('/usr/bin/git')
-        if set(self.fixtures) & {'scep', 'oracle'}:
-            result.add('go')
-        return tuple(sorted(result))
-
-    def includes(self, test):
-        return any(not item or (test.startswith(item) if item.endswith('::') else test == item)
-                   for item in self.selectors)
-
-
-
-def resolve_cases(module, names):
-    """Resolve the discovered set before selection, so stale exceptions never disappear."""
-    for policy in module.policies:
-        if not any(policy.matches(name) for name in names):
-            raise ValueError('stale case policy: ' + module.id + ': ' + policy.selector)
-    resolved = []
-    for name in names:
-        matches = [policy for policy in module.policies if policy.matches(name)]
-        if len(matches) > 1:
-            raise ValueError('overlapping case policies: ' + module.id + ': ' + name)
-        value = module
-        if matches:
-            policy = matches[0]
-            value = replace(module, db_mode=policy.db_mode, scope=policy.scope,
-                            fixtures=module.fixtures if policy.fixtures is None else policy.fixtures)
-        if value.profile == 'none':
-            valid = value.db_mode is None and value.scope is None
-        else:
-            valid = (value.db_mode in {'reuse', 'fresh', 'instance'} and
-                     value.scope in {'objects', 'tenant', 'pair'} and
-                     (value.profile != 'empty' or value.db_mode == 'fresh'))
-        if not valid:
-            raise ValueError('invalid database policy: ' + module.id + ': ' + name)
-        if ('local_worker' in value.fixtures and value.db_mode == 'reuse' and value.scope == 'objects'
-                or {'local_worker', 'shared_worker'} <= set(value.fixtures)):
-            raise ValueError('conflicting consumer ownership: ' + module.id + ': ' + name)
-        resolved.append(replace(value, policies=()))
-    return resolved
 
 # One fixture-owned preparation target. Names are discovered, not copied here.
 IDENTITY_SETUP = Module('identity-setup', APP, ('test_support::identity::',), expected_cases=1)
@@ -856,7 +753,7 @@ for name, module in tuple(MODULES.items()):
         MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs,'crates/app/tests/fixtures/error.rs'))
         MODULES[name] = replace(MODULES[name], production_inputs=MODULES[name].production_inputs +
                                 ('crates/app/src/lib.rs', 'crates/app/src/config.rs'))
-    support = ('hack/t2_environment.py', 'hack/t2_fixtures.py')
+    support = ()
     if 'tls' in module.fixtures:
         support += ('hack/source_fixtures.py',)
     if 'identity' in module.fixtures or name == 'installation.migration':
@@ -938,10 +835,6 @@ for family in ('agent','assets','authorization','collection','compliance','conte
 MODULES['apple.cms']=replace(MODULES['apple.cms'],support_inputs=(*MODULES['apple.cms'].support_inputs,'crates/app/tests/apple/certificate_support.rs'))
 MODULES['apple.apns']=replace(MODULES['apple.apns'],support_inputs=(*MODULES['apple.apns'].support_inputs,'crates/app/tests/apple/push_support.rs'))
 
-def all_tools():
-    return sorted(path.stem for path in (ROOT / 'tests').glob('test_*.py'))
-
-
 # These carrier files compose exactly these test children, not production consumers.
 for name, module in list(MODULES.items()):
     carrier = ('crates/app/tests/api/mod.rs' if name in ('api.identity_context','diagnostics.http') else
@@ -1016,12 +909,15 @@ MODULES['execution.agent.history'] = replace(MODULES['execution.agent.history'],
     'crates/execution-service/src/directory.rs', 'crates/management-http/src/execution/http.rs'))
 
 TOOL_INPUTS = {
+    'tests/fixtures/t2-impact-2642.json.gz': ('test_ci_impact',),
     'hack/t2_context.py': ('test_t2_context', 'test_t2_fixtures'),
     'hack/t2_database.py': ('test_t2_fixtures',),
     'hack/t2_hosts.py': ('test_t2_hosts',),
     'hack/t2_modules/installation.py': ('test_t2_guards',),
     'hack/t2_python.py': ('test_t2_execution', 'test_t2_runner'),
     'hack/rust_test_layout.py': ('test_audit_surface','test_foundation_boundaries','test_flow_boundaries'),
+    'hack/t2_model.py': ('test_t2_policy', 'test_t2_modules', 'test_t2_execution', 'test_t2_runner'),
+    'hack/ci_impact.py': ('test_ci_impact', 'test_ci_selection', 'test_t2_modules'),
     'hack/t2_registry.py': ('test_app_test_layout', 'test_t2_policy', 'test_t2_modules', 'test_t2_runner', 'test_ci_selection', 'test_ci_impact'),
     'hack/t2.py': ('test_t2_modules', 'test_t2_runner', 'test_t2_guards'),
     'hack/t2_execution.py': ('test_t2_execution', 'test_t2_runner'),
@@ -1042,16 +938,6 @@ TOOL_INPUTS = {
     'hack/candidate_runtime.py': ('test_candidate_smoke',),
     'hack/candidate_smoke.py': ('test_candidate_smoke',),
 }
-EXECUTION_INPUTS = {'hack/t2_python.py', 'hack/t2.py', 'hack/t2_registry.py', 'hack/t2_environment.py',
-                    'hack/t2_fixtures.py', 'hack/t2_context.py', 'hack/t2_database.py', 'hack/t2_hosts.py', 'hack/t2_execution.py', 'hack/t2_processes.py', 'hack/verification_result.py'}
-GLOBAL_INPUTS = {'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'Makefile', 'hack/build_run.py'}
-POLICY_INPUTS = {'deny.toml', 'clippy.toml'}
-
-
-def matches(path, patterns):
-    return any(fnmatchcase(path, pattern) for pattern in patterns)
-
-
 T1_INPUTS = ('crates/app/tests/agent_pki/health.rs','crates/certificate/tests/agent.rs','crates/certificate-archive-service/tests/behavior.rs','crates/authorization-service/tests/unit.rs','crates/inventory-service/tests/runtime.rs','crates/software-service/tests/management/*') + tuple(f'crates/{name}/tests/*' for name in (
     'inventory', 'group', 'scope', 'policy', 'resource', 'software-release',
     'compliance', 'agent-wire', 'windows-mdm', 'apple-mdm', 'content-service')) + (
@@ -1092,59 +978,6 @@ T1_INPUTS = ('crates/app/tests/agent_pki/health.rs','crates/certificate/tests/ag
     'crates/app/tests/publication.rs',
 )
 
-
-@dataclass(frozen=True)
-class Impact:
-    full: bool
-    modules: tuple[str, ...]
-    tools: tuple[str, ...]
-    reasons: tuple[str, ...]
-
-
-def select_paths(paths):
-    modules, tools, reasons = set(), set(), set()
-    full = False
-    for path in sorted(set(paths)):
-        if path.startswith('docs/') or path.endswith('.md') or path in {'LICENSE', '.gitignore'}:
-            continue
-        if path.startswith('tests/test_') and path.endswith('.py'):
-            tools.add(Path(path).stem)
-            continue
-        tools.update(TOOL_INPUTS.get(path, ()))
-        if path in GLOBAL_INPUTS or path in EXECUTION_INPUTS or path.startswith('.cargo/'):
-            full = True
-            reasons.add('integration-global:' + path)
-            continue
-        if path in POLICY_INPUTS:
-            tools.add('test_ci')
-            continue
-        support = {name for name, module in MODULES.items() if matches(path, module.support_inputs)}
-        tests = {name for name, module in MODULES.items() if matches(path, module.test_inputs)}
-        if support or tests:
-            modules.update(support | tests)
-            reasons.add('test-input:' + path)
-            continue
-        if matches(path, T1_INPUTS):
-            # Only known T1 carriers are exempt. Unknown tests/helpers fail full.
-            reasons.add('unit-test:' + path)
-            continue
-        found = {name for name, module in MODULES.items() if matches(path, module.production_inputs)}
-        if path.endswith('/Cargo.toml'):
-            package_root = path.removesuffix('Cargo.toml')
-            found |= {name for name, module in MODULES.items()
-                      if any(pattern.startswith(package_root) for pattern in module.production_inputs)}
-        if found:
-            modules.update(found)
-            reasons.add('production:' + path)
-            continue
-        if path in TOOL_INPUTS:
-            continue
-        full = True
-        reasons.add('integration-unmapped:' + path)
-    if full:
-        modules.update(MODULES)
-        tools.update(all_tools())
-    return Impact(full, tuple(sorted(modules)), tuple(sorted(tools)), tuple(sorted(reasons)))
 
 MODULES['execution.commands.windows'] = replace(MODULES['execution.commands.windows'], production_inputs=(*MODULES['execution.commands.windows'].production_inputs, 'crates/execution-service/src/directory.rs', 'crates/management-http/src/execution/http.rs'), support_inputs=(*MODULES['execution.commands.windows'].support_inputs, 'crates/app/tests/support/agent_execution.rs'))
 
@@ -1254,3 +1087,552 @@ consume(('crates/windows-mdm/src/native/receipt.rs',),
         'windows.declared execution.commands.onboarding')
 consume(('crates/management-http/src/execution/projection.rs',),
         QUERY_CONSUMERS + ' execution.commands.configuration apple.profile apple.users apple.commands apple.ddm apple.status')
+
+# Non-business inputs have explicit verification owners, never a full fallback.
+CONTROL_INPUTS = {
+    'Makefile': {
+        'format': 'make',
+        'tools': ['test_ci_selection', 'test_build_run', 'test_t2_runner'],
+    },
+    'deny.toml': {'format': 'tools', 'tools': ['test_ci']},
+    'clippy.toml': {'format': 'tools', 'tools': ['test_ci']},
+    '.cargo/config.toml': {
+        'format': 'toml',
+        'tools': ['test_build_environment'],
+        'fields': {
+            'net': 'tools',
+            'build.target-dir': 'tools',
+            'build.jobs': 'tools',
+            'build.rustflags': 'runtime',
+            'build.rustc': 'runtime',
+            'build.target': 'runtime',
+            'target': 'runtime',
+            'source': 'runtime',
+            'patch': 'runtime',
+            'env': 'runtime',
+        },
+    },
+    'rust-toolchain.toml': {
+        'format': 'toml',
+        'tools': ['test_build_environment'],
+        'fields': {
+            'toolchain.channel': 'runtime',
+            'toolchain.targets': 'runtime',
+            'toolchain.profile': 'tools',
+            'toolchain.components': 'tools',
+        },
+    },
+}
+DEPENDENCY_POLICIES = {}
+
+# Cargo cannot distinguish App seams. Supplemental dependency declarations
+# reuse the same owners; they never traverse App's entire dependency graph.
+PG_CONSUMERS = {n for n, m in MODULES.items() if m.postgres}
+APP_CONSUMERS = {n for n, m in MODULES.items() if m.build == APP}
+
+
+def consume_dependencies(names, entries):
+    for name in sorted(names):
+        MODULES[name] = replace(
+            MODULES[name],
+            dependency_inputs=(
+                *MODULES[name].dependency_inputs,
+                *(
+                    DependencyInput('crates/app/Cargo.toml', alias, kind)
+                    for alias, kind in entries
+                ),
+            ),
+        )
+
+
+consume_dependencies(
+    PG_CONSUMERS,
+    (
+        ('rss-audit-postgres', 'normal'),
+        ('rss-ledger-postgres', 'normal'),
+        ('rss-identity-postgres', 'normal'),
+        ('rss-observation-postgres', 'normal'),
+        ('rss-projection-postgres', 'normal'),
+        ('rss-request-context', 'normal'),
+        ('sha2', 'normal'),
+        ('sqlx', 'normal'),
+        ('rss-transactional-messaging', 'normal'),
+        ('rss-transactional-messaging-postgres', 'normal'),
+        ('rss-device-command-postgres', 'normal'),
+        ('rss-reconcile-postgres', 'normal'),
+    ),
+)
+
+consume_dependencies(
+    APP_CONSUMERS,
+    (
+        ('rss-ledger', 'normal'),
+        ('url', 'normal'),
+        ('zeroize', 'normal'),
+        ('libc', 'normal'),
+    ),
+)
+
+consume_dependencies(
+    PG_CONSUMERS | {'apple.cms', 'apple.apns'},
+    (
+        ('rss-identity-core', 'normal'),
+        ('thiserror', 'normal'),
+        ('serde', 'normal'),
+        ('serde_json', 'normal'),
+    ),
+)
+
+consume_dependencies(
+    (APP_CONSUMERS | {'host.lifecycle'})
+    - {
+        'audit.receipts',
+        'worker.wake',
+        'apple.cms',
+        'api.diagnostics',
+        'audit.budget',
+        'audit.integrity',
+        'native.tls',
+        'apple.apns',
+        'audit.recovery',
+    },
+    (
+        ('rss-identity-http-axum', 'normal'),
+        ('rand', 'normal'),
+        ('base64', 'normal'),
+        ('http-body-util', 'dev'),
+    ),
+)
+
+consume_dependencies(
+    (
+        APP_CONSUMERS
+        | {
+            'inventory.process',
+            'inventory.reader',
+            'inventory.recovery',
+            'inventory.manual',
+            'inventory.projection',
+            'host.lifecycle',
+        }
+    )
+    - {
+        'audit.receipts',
+        'worker.wake',
+        'apple.cms',
+        'audit.budget',
+        'audit.integrity',
+        'apple.apns',
+        'audit.recovery',
+    },
+    (('rss-observation', 'normal'),),
+)
+
+consume_dependencies(
+    (APP_CONSUMERS | {'host.lifecycle'})
+    - {'audit.receipts', 'apple.cms', 'audit.budget', 'apple.apns', 'audit.recovery'},
+    (('rss-runtime', 'normal'),),
+)
+
+consume_dependencies(
+    APP_CONSUMERS | {'host.lifecycle'},
+    (('axum', 'normal'), ('uuid', 'normal'), ('anyhow', 'normal')),
+)
+
+consume_dependencies(
+    (APP_CONSUMERS | {'host.lifecycle'})
+    - {
+        'audit.receipts',
+        'worker.wake',
+        'apple.cms',
+        'api.diagnostics',
+        'audit.budget',
+        'audit.integrity',
+        'native.tls',
+        'audit.recovery',
+    },
+    (('reqwest', 'normal'), ('reqwest', 'dev')),
+)
+
+consume_dependencies(
+    (APP_CONSUMERS | {'host.lifecycle'})
+    - {
+        'audit.receipts',
+        'worker.wake',
+        'apple.cms',
+        'api.diagnostics',
+        'audit.budget',
+        'audit.recovery',
+    },
+    (('ring', 'normal'),),
+)
+
+consume_dependencies(
+    (
+        'agent.pki',
+        'apple.collection',
+        'apple.commands',
+        'apple.ddm',
+        'apple.fairness',
+        'apple.host',
+        'apple.identity',
+        'apple.onboarding',
+        'apple.policy',
+        'apple.profile',
+        'apple.push',
+        'apple.renewal',
+        'apple.scep',
+        'apple.status',
+        'apple.users',
+        'execution.commands.admission',
+        'execution.commands.configuration',
+        'execution.commands.dispatch',
+        'execution.commands.onboarding',
+        'execution.commands.recovery',
+        'execution.commands.windows',
+        'windows.commands',
+        'windows.declared',
+        'windows.enrollment',
+        'windows.issuance',
+        'windows.limits',
+        'windows.management',
+        'windows.retention',
+    ),
+    (('x509-cert', 'normal'),),
+)
+
+consume_dependencies(
+    (
+        'agent.pki',
+        'apple.apns',
+        'apple.collection',
+        'apple.commands',
+        'apple.ddm',
+        'apple.fairness',
+        'apple.host',
+        'apple.identity',
+        'apple.onboarding',
+        'apple.policy',
+        'apple.profile',
+        'apple.push',
+        'apple.renewal',
+        'apple.scep',
+        'apple.status',
+        'apple.users',
+        'execution.commands.admission',
+        'execution.commands.configuration',
+        'execution.commands.dispatch',
+        'execution.commands.onboarding',
+        'execution.commands.recovery',
+        'execution.commands.windows',
+        'native.tls',
+        'windows.commands',
+        'windows.declared',
+        'windows.enrollment',
+        'windows.issuance',
+        'windows.limits',
+        'windows.management',
+        'windows.retention',
+    ),
+    (('tokio-rustls', 'normal'),),
+)
+
+consume_dependencies(
+    PG_CONSUMERS | {'apple.apns'},
+    (('time', 'normal'), ('tokio', 'normal'), ('time', 'dev'), ('tokio', 'dev')),
+)
+
+consume_dependencies(
+    (APP_CONSUMERS | {'host.lifecycle'})
+    - {
+        'audit.receipts',
+        'worker.wake',
+        'apple.cms',
+        'audit.budget',
+        'audit.integrity',
+        'native.tls',
+        'apple.apns',
+        'audit.recovery',
+    },
+    (('tower', 'normal'), ('tower', 'dev')),
+)
+
+consume_dependencies(
+    (
+        'apple.apns',
+        'apple.cms',
+        'apple.collection',
+        'apple.commands',
+        'apple.ddm',
+        'apple.fairness',
+        'apple.host',
+        'apple.identity',
+        'apple.onboarding',
+        'apple.policy',
+        'apple.profile',
+        'apple.push',
+        'apple.renewal',
+        'apple.scep',
+        'apple.status',
+        'apple.users',
+        'certificate-archive.http',
+        'identity.sso',
+        'windows.declared',
+        'windows.issuance',
+    ),
+    (('tempfile', 'dev'),),
+)
+
+consume_dependencies(
+    (
+        'api.diagnostics',
+        'apple.identity',
+        'apple.policy',
+        'assets.http',
+        'audit.budget',
+        'audit.integrity',
+        'audit.receipts',
+        'audit.recovery',
+        'authorization.capacity',
+        'authorization.rules',
+        'compliance.group_input',
+        'compliance.http',
+        'compliance.recovery',
+        'content.http',
+        'device.recovery',
+        'device.revocation',
+        'diagnostics.http',
+        'enrollment.http',
+        'execution.agent.content',
+        'execution.agent.history',
+        'execution.commands.admission',
+        'execution.commands.dispatch',
+        'execution.commands.onboarding',
+        'planning.agent_policy',
+        'planning.assets',
+        'planning.group_scope',
+        'planning.recovery',
+        'planning.resource_archive',
+        'planning.scope',
+        'software.http',
+        'timeline.http',
+        'windows.enrollment',
+        'windows.issuance',
+        'windows.limits',
+        'windows.management',
+    ),
+    (('rss-audit-core', 'normal'),),
+)
+
+consume_dependencies(
+    ('content.gc', 'timeline.http'),
+    (('rss-contract', 'normal'), ('rss-contract', 'dev')),
+)
+
+consume_dependencies(
+    (
+        'api.diagnostics',
+        'apple.apns',
+        'apple.host',
+        'apple.identity',
+        'apple.policy',
+        'apple.push',
+        'assets.http',
+        'audit.budget',
+        'audit.integrity',
+        'audit.receipts',
+        'audit.recovery',
+        'authorization.capacity',
+        'authorization.rules',
+        'compliance.group_input',
+        'compliance.http',
+        'compliance.recovery',
+        'content.http',
+        'device.recovery',
+        'device.revocation',
+        'diagnostics.http',
+        'enrollment.http',
+        'execution.agent.content',
+        'execution.agent.history',
+        'execution.commands.admission',
+        'execution.commands.configuration',
+        'execution.commands.dispatch',
+        'execution.commands.onboarding',
+        'execution.commands.recovery',
+        'host.lifecycle',
+        'identity.audit',
+        'inventory.manual',
+        'inventory.process',
+        'inventory.projection',
+        'inventory.reader',
+        'inventory.recovery',
+        'inventory.runtime',
+        'planning.agent_policy',
+        'planning.assets',
+        'planning.group_scope',
+        'planning.recovery',
+        'planning.resource_archive',
+        'planning.scope',
+        'software.http',
+        'windows.enrollment',
+        'windows.issuance',
+        'windows.limits',
+        'windows.management',
+        'worker.wake',
+    ),
+    (('tokio-util', 'normal'),),
+)
+
+consume_dependencies(
+    (
+        'assets.http',
+        'audit.integrity',
+        'diagnostics.http',
+        'execution.commands.configuration',
+        'execution.commands.recovery',
+        'planning.assets',
+        'planning.group_scope',
+        'planning.recovery',
+        'planning.resource_archive',
+        'planning.scope',
+    ),
+    (('rss-reconcile', 'normal'),),
+)
+
+consume_dependencies(
+    (
+        'api.identity_context',
+        'diagnostics.http',
+        'identity.audit',
+        'identity.local',
+        'identity.sso',
+    ),
+    (('rss-identity-oidc', 'normal'),),
+)
+
+consume_dependencies(
+    (
+        'api.diagnostics',
+        'api.identity_context',
+        'diagnostics.http',
+        'execution.commands.admission',
+        'execution.commands.configuration',
+        'execution.commands.dispatch',
+        'execution.commands.onboarding',
+        'execution.commands.recovery',
+        'execution.commands.windows',
+        'host.lifecycle',
+        'identity.audit',
+        'identity.local',
+        'identity.sso',
+        'native.tls',
+        'windows.commands',
+        'windows.declared',
+        'windows.enrollment',
+        'windows.issuance',
+        'windows.limits',
+        'windows.management',
+        'windows.retention',
+    ),
+    (('rss-axum', 'normal'),),
+)
+
+consume_dependencies(
+    ('diagnostics.http', 'identity.audit'),
+    (('rss-transactional-messaging-runtime', 'normal'),),
+)
+
+consume_dependencies(
+    (
+        'apple.collection',
+        'apple.commands',
+        'apple.ddm',
+        'apple.fairness',
+        'apple.host',
+        'apple.identity',
+        'apple.onboarding',
+        'apple.policy',
+        'apple.profile',
+        'apple.push',
+        'apple.renewal',
+        'apple.scep',
+        'apple.status',
+        'apple.users',
+        'diagnostics.http',
+        'host.lifecycle',
+        'inventory.manual',
+        'inventory.process',
+        'inventory.projection',
+        'inventory.reader',
+        'inventory.recovery',
+        'inventory.runtime',
+    ),
+    (('rss-projection', 'normal'),),
+)
+
+consume_dependencies(
+    ('content.http', 'diagnostics.http', 'worker.wake'), (('futures', 'normal'),)
+)
+
+consume_dependencies(('api.diagnostics',), (('tracing-subscriber', 'normal'),))
+
+consume_dependencies(
+    ('execution.software.offer', 'software.http'), (('zip', 'normal'),)
+)
+
+consume_dependencies(('native.tls',), (('tracing', 'normal'),))
+
+consume_dependencies(
+    ('apple.apns', 'apple.host', 'apple.push', 'windows.management'), (('h2', 'dev'),)
+)
+
+consume_dependencies(
+    (
+        'apple.collection',
+        'apple.commands',
+        'apple.ddm',
+        'apple.fairness',
+        'apple.host',
+        'apple.identity',
+        'apple.onboarding',
+        'apple.policy',
+        'apple.profile',
+        'apple.push',
+        'apple.renewal',
+        'apple.scep',
+        'apple.status',
+        'apple.users',
+    ),
+    (('plist', 'normal'), ('cms', 'normal')),
+)
+
+DEPENDENCY_POLICIES['crates/app/Cargo.toml'] = {
+    'normal:jiff': {'cargoOnly': True},
+    'normal:subtle': {'cargoOnly': True},
+    'normal:md-5': {'cargoOnly': True},
+    'normal:rss-device-command': {'cargoOnly': True},
+    'dev:jsonschema': {'cargoOnly': True},
+}
+
+# Execution mechanism owns its behavior proof. These paths are not business
+# helper inputs even when historical descriptions listed them as shared support.
+TOOL_ONLY_INPUTS = (
+    'hack/t2_model.py',
+    'hack/t2_registry.py',
+    'hack/ci_impact.py',
+    'hack/ci-impact.py',
+    'hack/t2.py',
+    'hack/t2_execution.py',
+    'hack/t2_python.py',
+    'hack/t2_processes.py',
+    'hack/t2_environment.py',
+    'hack/t2_fixtures.py',
+    'hack/t2_database.py',
+    'hack/t2_context.py',
+    'hack/t2_hosts.py',
+    'hack/verification_result.py',
+)
+
+# Add only the existing modules needed when a tool change alters a real execution
+# seam; this change adjusts selection/error handling, not fixture execution.
+REPRESENTATIVE_INPUTS = {}
