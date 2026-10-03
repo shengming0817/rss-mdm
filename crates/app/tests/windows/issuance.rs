@@ -164,8 +164,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         .verify(&[CertificateDer::from(cert.as_slice())], now())?;
     let credential = crate::device::ChannelMount::new(
         rss_request_context::TenantId::parse(case_tenant())?,
-        rss_mdm_inventory::ReportSource::MdmWindows,
-    )
+        rss_mdm_inventory::ReportSource::MdmWindows, rss_mdm_registration_service::Purpose::Primary)
     .credential(checked.fingerprint());
     let access = Arc::new(store);
     let audit_store = access

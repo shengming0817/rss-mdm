@@ -18,8 +18,10 @@ BEGIN
   k='device'; i=r->>'id'; dev=i; d=jsonb_build_object('id',i);
  WHEN 'registrations' THEN
   k='registration'; i=r->>'id'; reg=i::uuid; dev=r->>'device';
-  d=jsonb_build_object('id',i,'device',dev,'channel',r->>'channel','generation',r->'generation','state',r->>'state');
+  d=jsonb_build_object('id',i,'device',dev,'channel',r->>'channel','purpose',r->>'purpose','generation',r->'generation','state',r->>'state');
+  IF previous IS NOT NULL AND d=jsonb_build_object('id',previous->>'id','device',previous->>'device','channel',previous->>'channel','purpose',previous->>'purpose','generation',previous->'generation','state',previous->>'state') THEN RETURN NULL; END IF;
  WHEN 'report_sources' THEN
+  IF NOT EXISTS(SELECT 1 FROM mdm_access.registrations WHERE tenant_id=t AND id=(r->>'registration')::uuid AND purpose='primary') THEN RAISE EXCEPTION 'report source requires primary registration'; END IF;
   k='source'; reg=(r->>'registration')::uuid;
   i=jsonb_build_array(r->>'registration',r->>'source')::text;
   d=jsonb_build_object('registration',reg,'source',r->>'source','epoch',r->>'epoch','enabled',r->'enabled');
@@ -110,6 +112,13 @@ CREATE TABLE mdm_access.registration_operations (
 ALTER TABLE ONLY mdm_access.registration_operations FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_access.registrations (
+    purpose text NOT NULL CHECK(purpose IN('primary','windows_declared')),
+    epoch uuid NOT NULL,
+    next_command bigint DEFAULT 1024 NOT NULL CHECK(next_command BETWEEN 1024 AND 4294967296),
+    parent_id uuid,
+    parent_generation bigint,
+    ready boolean NOT NULL DEFAULT false,
+    CONSTRAINT linked_shape CHECK((purpose='primary' AND parent_id IS NULL AND parent_generation IS NULL) OR (purpose='windows_declared' AND channel='mdm' AND parent_id IS NOT NULL AND parent_generation IS NOT NULL AND parent_generation>0)),
     tenant_id uuid NOT NULL,
     id uuid NOT NULL,
     device text NOT NULL,
@@ -130,9 +139,7 @@ CREATE TABLE mdm_access.report_sources (
     source text NOT NULL,
     epoch uuid NOT NULL,
     enabled boolean NOT NULL,
-    next_command bigint DEFAULT 1024 NOT NULL,
     next_sequence bigint DEFAULT 0 NOT NULL,
-    CONSTRAINT report_sources_next_command_check CHECK (((next_command >= 1024) AND (next_command <= '4294967296'::bigint))),
     CONSTRAINT report_sources_next_sequence_check CHECK ((next_sequence >= 0)),
     CONSTRAINT report_sources_source_check CHECK (((length(source) >= 1) AND (length(source) <= 255)))
 );
@@ -140,10 +147,13 @@ CREATE TABLE mdm_access.report_sources (
 ALTER TABLE ONLY mdm_access.report_sources FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_access.requests (
-    authority_kind text NOT NULL DEFAULT 'password' CHECK(authority_kind IN('password','managed_installation')),
+    authority_kind text NOT NULL DEFAULT 'password' CHECK(authority_kind IN('password','managed_installation','parent_certificate')),
     tenant_id uuid NOT NULL,
     id uuid NOT NULL,
-    grant_id uuid NOT NULL,
+    grant_id uuid,
+    parent_id uuid,
+    parent_generation bigint,
+    parent_credential uuid,
     state text DEFAULT 'cancelled'::text NOT NULL,
     expected_generation bigint,
     password_digest text,
@@ -154,13 +164,15 @@ CREATE TABLE mdm_access.requests (
     source text NOT NULL,
     windows_profile text,
     CONSTRAINT requests_windows_profile_check CHECK ((source='mdm.windows' AND windows_profile IS NOT NULL AND windows_profile IN ('Full','Device')) OR (source<>'mdm.windows' AND windows_profile IS NULL)),
-    CONSTRAINT enrollment_shape CHECK ((state = 'cancelled') OR (expected_generation IS NOT NULL AND expires_at IS NOT NULL AND issuance_operation IS NOT NULL AND ((authority_kind='password' AND password_digest IS NOT NULL AND password_version>0 AND credential_ref IS NOT NULL) OR (authority_kind='managed_installation' AND source='agent.builtin' AND expected_generation=0 AND password_digest IS NULL AND password_version=0 AND credential_ref IS NULL)))),
+    CONSTRAINT enrollment_shape CHECK ((state = 'cancelled') OR (expected_generation IS NOT NULL AND expires_at IS NOT NULL AND issuance_operation IS NOT NULL AND ((authority_kind='password' AND grant_id IS NOT NULL AND parent_id IS NULL AND password_digest IS NOT NULL AND password_version>0 AND credential_ref IS NOT NULL) OR (authority_kind='managed_installation' AND grant_id IS NOT NULL AND parent_id IS NULL AND source='agent.builtin' AND expected_generation=0 AND password_digest IS NULL AND password_version=0 AND credential_ref IS NULL) OR (authority_kind='parent_certificate' AND grant_id IS NULL AND source='mdm.windows' AND parent_id IS NOT NULL AND parent_generation IS NOT NULL AND parent_generation>0 AND parent_credential IS NOT NULL AND password_digest IS NULL AND password_version=0 AND credential_ref IS NULL)))),
     CONSTRAINT requests_expected_generation_check CHECK ((expected_generation >= 0)),
     CONSTRAINT requests_password_digest_check CHECK ((password_digest ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT requests_password_version_check CHECK ((password_version >= 0)),
     CONSTRAINT requests_source_check CHECK ((source = ANY (ARRAY['agent.builtin'::text, 'mdm.windows'::text, 'mdm.apple'::text]))),
     CONSTRAINT requests_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'bound'::text, 'cancelled'::text])))
 );
+
+CREATE UNIQUE INDEX parent_certificate_enrollment ON mdm_access.requests(tenant_id,issuance_operation) WHERE authority_kind='parent_certificate';
 
 CREATE UNIQUE INDEX managed_installation_enrollment ON mdm_access.requests(tenant_id,issuance_operation) WHERE authority_kind='managed_installation';
 
@@ -187,11 +199,13 @@ ALTER TABLE ONLY mdm_access.grants
 ALTER TABLE ONLY mdm_access.registration_operations
     ADD CONSTRAINT operations_pkey PRIMARY KEY (tenant_id, actor, operation_id);
 
+ALTER TABLE ONLY mdm_access.registrations ADD CONSTRAINT registration_generation_identity UNIQUE(tenant_id,id,generation);
+
 ALTER TABLE ONLY mdm_access.registrations
     ADD CONSTRAINT registrations_pkey PRIMARY KEY (tenant_id, id);
 
 ALTER TABLE ONLY mdm_access.registrations
-    ADD CONSTRAINT registrations_tenant_id_device_channel_generation_key UNIQUE (tenant_id, device, channel, generation);
+    ADD CONSTRAINT registrations_tenant_id_device_channel_generation_key UNIQUE (tenant_id, device, channel, purpose, generation);
 
 ALTER TABLE ONLY mdm_access.registrations
     ADD CONSTRAINT registrations_tenant_id_id_channel_key UNIQUE (tenant_id, id, channel);
@@ -218,7 +232,7 @@ CREATE INDEX asset_authority_device_watermark ON mdm_access.asset_authority_hist
 
 CREATE UNIQUE INDEX one_active_credential ON mdm_access.credentials USING btree (tenant_id, registration) WHERE (state = 'active'::text);
 
-CREATE UNIQUE INDEX one_active_registration ON mdm_access.registrations USING btree (tenant_id, device, channel) WHERE (state = 'active'::text);
+CREATE UNIQUE INDEX one_active_registration ON mdm_access.registrations USING btree (tenant_id, device, channel, purpose) WHERE (state = 'active'::text);
 
 CREATE INDEX registration_control_page ON mdm_access.registrations USING btree (tenant_id, device, id);
 

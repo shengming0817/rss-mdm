@@ -255,8 +255,7 @@ pub(crate) fn from_state(
     let agent = Arc::new(crate::agent::HttpState {
         mount: crate::device::ChannelMount::new(
             state.identity.tenant,
-            rss_mdm_inventory::ReportSource::AgentBuiltin,
-        ),
+            rss_mdm_inventory::ReportSource::AgentBuiltin, rss_mdm_registration_service::Purpose::Primary),
         audit_store: state.audit_store.clone(),
         access: Arc::new(state.access.agent_store()),
         identity: Arc::new(
@@ -272,8 +271,7 @@ pub(crate) fn from_state(
     let apple_state = Arc::new(rss_mdm_apple_channel::HttpState {
         mount: crate::device::ChannelMount::new(
             state.identity.tenant,
-            rss_mdm_inventory::ReportSource::MdmApple,
-        ),
+            rss_mdm_inventory::ReportSource::MdmApple, rss_mdm_registration_service::Purpose::Primary),
         audit_store: state.audit_store.clone(),
         access: state.access.apple_store(),
         apple: state.apple.as_ref().map(|a| a.channel.clone()),
@@ -294,8 +292,7 @@ pub(crate) fn from_state(
         protection: state.protection.clone(),
         mount: crate::device::ChannelMount::new(
             state.identity.tenant,
-            rss_mdm_inventory::ReportSource::MdmWindows,
-        ),
+            rss_mdm_inventory::ReportSource::MdmWindows, rss_mdm_registration_service::Purpose::Primary),
         audit_store: state.audit_store.clone(),
         access: state.access.windows_store(),
         clock: Arc::new(crate::clock::InventoryClock(state.clock.clone())),
@@ -484,8 +481,7 @@ pub(crate) fn from_state(
                         access: Arc::new(state.access.agent_store()),
                         mount: crate::device::ChannelMount::new(
                             state.identity.tenant,
-                            rss_mdm_inventory::ReportSource::AgentBuiltin,
-                        ),
+                            rss_mdm_inventory::ReportSource::AgentBuiltin, rss_mdm_registration_service::Purpose::Primary),
                         devices: state.devices.clone(),
                         execution: state.execution.clone(),
                     }),

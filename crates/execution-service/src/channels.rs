@@ -416,8 +416,7 @@ pub async fn agent_targets_in(
                     c,
                     tenant,
                     devices,
-                    rss_mdm_inventory::Channel::Agent,
-                )
+                    rss_mdm_inventory::Channel::Agent, rss_mdm_registration_service::Purpose::Primary)
                 .await
             })
         })

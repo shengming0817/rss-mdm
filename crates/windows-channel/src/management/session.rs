@@ -4,7 +4,6 @@ use rss_mdm_execution_service::channels::{PreparedWindows, WindowsReception, Win
 
 struct Session {
     windows: Arc<Windows>,
-    scope: rss_observation::Scope,
     stored: Option<sqlx::postgres::PgRow>,
     raw: syncml::Message,
     bytes: Vec<u8>,
@@ -64,7 +63,7 @@ async fn prepare(
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
-    let scope = crate::device::store::revalidate(c, p).await?;
+    crate::device::store::revalidate_management(c, p).await?;
     lock_sessions(c, &tenant, &registration).await?;
     let stored = match session_decision(c, key, p, raw, &digest, audit).await? {
         SessionDecision::Replay(reply, package) => {
@@ -210,7 +209,6 @@ async fn prepare(
         package,
         session: Box::new(Session {
             windows,
-            scope,
             stored,
             raw: raw.clone(),
             bytes: bytes.to_vec(),
@@ -297,6 +295,15 @@ impl WindowsSession for Session {
     ) -> rss_mdm_execution_service::channels::Pending<'a, bool> {
         Box::pin(async move {
             let result: Result<bool, Error> = async {
+                if p.purpose() == rss_mdm_registration_service::Purpose::WindowsDeclared {
+                    self.collection_complete = true;
+                    return Ok(false);
+                }
+                if !crate::device::store::active_source_in(c, &p.tenant().to_string(), p.registration(), rss_mdm_inventory::ReportSource::MdmWindows).await? {
+                    self.collection_complete = true;
+                    return Ok(false);
+                }
+                let scope = crate::device::store::revalidate_source(c,p,rss_mdm_inventory::ReportSource::MdmWindows).await?;
                 let filtered = if self.authenticated {
                     let history = history.ok_or(Error::Conflict)?;
                     let input = crate::push_channel::receive(
@@ -335,7 +342,7 @@ impl WindowsSession for Session {
                 let (run_id, complete) = collect(
                     c,
                     (&mut self.facts, &self.audit),
-                    &self.scope,
+                    &scope,
                     &filtered,
                     (key, self.stored.as_ref(), history, self.authenticated),
                     response,

@@ -53,8 +53,7 @@ pub(super) async fn complete(
         now(),
         &crate::device::ChannelMount::new(
             rss_request_context::TenantId::parse(proof.tenant_id()).unwrap(),
-            rss_mdm_inventory::ReportSource::MdmWindows,
-        ),
+            rss_mdm_inventory::ReportSource::MdmWindows, rss_mdm_registration_service::Purpose::Primary),
         &crate::registration_lifecycle::Bridge,
     )
     .await;

@@ -6,7 +6,7 @@ mod error;
 mod lifecycle;
 mod operations;
 pub use database::Store;
-pub use device::{ChannelMount, DevicePrincipal, DeviceService, VerifiedChannelCredential};
+pub use device::{ChannelMount, Purpose, DevicePrincipal, DeviceService, VerifiedChannelCredential};
 pub use error::Error;
 pub use lifecycle::{Retirement, retire};
 use rss_mdm_authorization_service as authorization;

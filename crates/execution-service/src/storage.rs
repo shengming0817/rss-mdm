@@ -91,8 +91,7 @@ pub async fn current_registration(tx: &mut PgTransaction<'_>, device: &str) -> R
                 c,
                 tenant,
                 vec![device],
-                rss_mdm_inventory::Channel::Mdm,
-            ))
+                rss_mdm_inventory::Channel::Mdm, rss_mdm_registration_service::Purpose::Primary))
         })
         .await?;
     if rows.len() != 1 {

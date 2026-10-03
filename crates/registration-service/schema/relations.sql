@@ -59,6 +59,8 @@ GRANT SELECT,INSERT ON TABLE mdm_access.registrations TO mdm_access;
 GRANT SELECT ON TABLE mdm_access.registrations TO mdm_flow_runtime;
 GRANT SELECT ON TABLE mdm_access.registrations TO mdm_command_runtime;
 
+GRANT UPDATE(ready) ON TABLE mdm_access.registrations TO mdm_access;
+GRANT UPDATE(ready) ON TABLE mdm_access.registrations TO mdm_command_runtime;
 GRANT UPDATE(state) ON TABLE mdm_access.registrations TO mdm_access;
 
 GRANT SELECT,INSERT ON TABLE mdm_access.report_sources TO mdm_access;
@@ -67,8 +69,8 @@ GRANT SELECT ON TABLE mdm_access.report_sources TO mdm_command_runtime;
 
 GRANT UPDATE(enabled) ON TABLE mdm_access.report_sources TO mdm_access;
 
-GRANT UPDATE(next_command) ON TABLE mdm_access.report_sources TO mdm_access;
-GRANT UPDATE(next_command) ON TABLE mdm_access.report_sources TO mdm_command_runtime;
+GRANT UPDATE(next_command) ON TABLE mdm_access.registrations TO mdm_access;
+GRANT UPDATE(next_command) ON TABLE mdm_access.registrations TO mdm_command_runtime;
 
 GRANT UPDATE(next_sequence) ON TABLE mdm_access.report_sources TO mdm_access;
 GRANT UPDATE(next_sequence) ON TABLE mdm_access.report_sources TO mdm_command_runtime;
@@ -85,4 +87,7 @@ GRANT UPDATE(password_version) ON TABLE mdm_access.requests TO mdm_access;
 GRANT UPDATE(credential_ref) ON TABLE mdm_access.requests TO mdm_access;
 
 GRANT UPDATE(expires_at) ON TABLE mdm_access.requests TO mdm_access;
+ALTER TABLE mdm_access.registrations ADD CONSTRAINT registration_parent FOREIGN KEY(tenant_id,parent_id,parent_generation) REFERENCES mdm_access.registrations(tenant_id,id,generation);
+ALTER TABLE mdm_access.requests ADD CONSTRAINT request_parent FOREIGN KEY(tenant_id,parent_id,parent_generation) REFERENCES mdm_access.registrations(tenant_id,id,generation);
+ALTER TABLE mdm_access.requests ADD CONSTRAINT request_parent_credential FOREIGN KEY(tenant_id,parent_credential) REFERENCES mdm_access.credentials(tenant_id,id);
 COMMIT;

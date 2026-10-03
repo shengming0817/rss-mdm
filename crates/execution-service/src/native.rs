@@ -474,7 +474,7 @@ pub(crate) async fn send_on(
     let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.capability_queries WHERE tenant_id=$1::uuid AND registration=$2 AND session=$3)").bind(&tenant).bind(p.registration()).bind(session).fetch_one(&mut *c).await.map_err(db)?;
     let mut pending = false;
     if !exists {
-        let id = crate::collection::store::allocate_commands_in(c, p, 2).await?;
+        let id = crate::device::store::allocate_commands_in(c, p, 2).await?;
         let mut request = response.clone();
         request.commands = vec![get(id, VERSION), get(id + 1, EDITION)];
         let Some(_) = admit_response(response, &request.commands).map_err(|_| protocol())? else {
@@ -749,7 +749,7 @@ pub(crate) async fn send_on(
             (W::SyncMl { request }, _) => request.command_count().map_err(|_| protocol())?,
             (W::Msi { .. }, _) => 1,
         };
-        let id = crate::collection::store::allocate_commands_in(c, p, i64::from(count)).await?;
+        let id = crate::device::store::allocate_commands_in(c, p, i64::from(count)).await?;
         let command = match request {
             W::SyncMl { request } => {
                 let Some(platform) = platform else {

@@ -139,8 +139,7 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
     );
     let credential = rss_mdm_registration_service::ChannelMount::new(
         rss_request_context::TenantId::parse(case_tenant())?,
-        rss_mdm_inventory::ReportSource::AgentBuiltin,
-    )
+        rss_mdm_inventory::ReportSource::AgentBuiltin, rss_mdm_registration_service::Purpose::Primary)
     .credential(crate::test_support::secret("console-agent"));
     let (_, receipt) =
         crate::device::test_support::bind(&service, &principal, &credential, revoked, 0).await?;
@@ -854,7 +853,7 @@ fn seed_management_device(device: &str) -> Result<()> {
     let request = uuid::Uuid::new_v4();
     let registration = uuid::Uuid::new_v4();
     pg(&format!(
-        "INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','{grant}','fixture','{INSTANCE}','{device}','enrollment','consumed',clock_timestamp()+interval '200 seconds');INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source,windows_profile) VALUES('{TENANT}','{request}','{grant}','mdm.windows','Device');INSERT INTO mdm_access.devices VALUES('{TENANT}','{device}');INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','{device}','mdm',1,'{request}','active'); INSERT INTO mdm_access.credentials VALUES('{TENANT}',gen_random_uuid(),'{registration}','mdm',md5('{registration}')||md5('{registration}'),'active'); INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES('{TENANT}','{registration}','mdm.windows','77777777-7777-4777-8777-777777777777',true);",
+        "INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','{grant}','fixture','{INSTANCE}','{device}','enrollment','consumed',clock_timestamp()+interval '200 seconds');INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source,windows_profile) VALUES('{TENANT}','{request}','{grant}','mdm.windows','Device');INSERT INTO mdm_access.devices VALUES('{TENANT}','{device}');INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state,purpose,epoch) VALUES('{TENANT}','{registration}','{device}','mdm',1,'{request}','active','primary',gen_random_uuid()); INSERT INTO mdm_access.credentials VALUES('{TENANT}',gen_random_uuid(),'{registration}','mdm',md5('{registration}')||md5('{registration}'),'active'); INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES('{TENANT}','{registration}','mdm.windows','77777777-7777-4777-8777-777777777777',true);",
         TENANT = case_tenant()
     ))?;
     Ok(())

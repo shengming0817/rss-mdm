@@ -199,7 +199,7 @@ impl DeviceService {
         credential: &VerifiedChannelCredential,
         source: ReportSource,
     ) -> Result<(DevicePrincipal, Scope), Error> {
-        if source != credential.source || self.tenant != credential.tenant.to_string() {
+        if credential.purpose != Purpose::Primary || source != credential.source || self.tenant != credential.tenant.to_string() {
             return Err(Error::Forbidden);
         }
         let tenant = credential.tenant.to_string();
@@ -209,7 +209,7 @@ impl DeviceService {
         let row=sqlx::query("SELECT registration::text AS id FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND channel=$2 AND locator=$3")
             .bind(&tenant).bind(credential.channel.as_str()).bind(locator(credential)).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
         let registration = uuid(&row, "id")?;
-        let row=sqlx::query("SELECT r.device,r.generation,r.channel,q.windows_profile FROM mdm_access.registrations r JOIN mdm_access.requests q ON (q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND r.channel=$3 AND r.state='active' FOR SHARE OF r")
+        let row=sqlx::query("SELECT r.device,r.generation,r.channel,r.epoch::text,q.windows_profile FROM mdm_access.registrations r JOIN mdm_access.requests q ON (q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND r.channel=$3 AND r.purpose='primary' AND r.state='active' FOR SHARE OF r")
             .bind(&tenant).bind(registration.to_string()).bind(credential.channel.as_str()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
         let child=sqlx::query("SELECT c.id::text AS id,s.epoch::text AS epoch FROM mdm_access.credentials c JOIN mdm_access.report_sources s ON (s.tenant_id,s.registration)=(c.tenant_id,c.registration) WHERE c.tenant_id=$1::uuid AND c.registration=$2::uuid AND c.channel=$3 AND c.locator=$4 AND c.state='active' AND s.source=$5 AND s.enabled FOR SHARE OF c,s")
             .bind(&tenant).bind(registration.to_string()).bind(credential.channel.as_str()).bind(locator(credential)).bind(source.as_str()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
@@ -219,6 +219,9 @@ impl DeviceService {
             registration,
             generation: row.try_get("generation").map_err(db)?,
             channel: channel(&row)?,
+            purpose: Purpose::Primary,
+            parent: None,
+            epoch: uuid(&row, "epoch")?,
             credential: uuid(&child, "id")?,
             user_context: (source == ReportSource::MdmWindows
                 && row
@@ -342,7 +345,7 @@ pub(crate) async fn bind_authorized_in(
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     retirement: Option<&dyn crate::Retirement>,
 ) -> Result<RegistrationReceipt, Error> {
-    if credential.tenant.to_string() != tenant {
+    if credential.purpose != Purpose::Primary || credential.tenant.to_string() != tenant {
         return Err(Error::Forbidden);
     }
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2348))")
@@ -365,7 +368,7 @@ pub(crate) async fn bind_authorized_in(
         return Err(Error::Forbidden);
     }
     lock_channel(tx, tenant, &device, credential.channel).await?;
-    let current:i64 = sqlx::query_scalar("SELECT coalesce(max(generation),0) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel=$3")
+    let current:i64 = sqlx::query_scalar("SELECT coalesce(max(generation),0) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel=$3 AND purpose='primary'")
             .bind(tenant).bind(&device).bind(credential.channel.as_str()).fetch_one(&mut *tx).await.map_err(db)?;
     if current != command.expected_generation {
         return Err(Error::Conflict);
@@ -374,7 +377,7 @@ pub(crate) async fn bind_authorized_in(
     if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND channel=$2 AND locator=$3)")
             .bind(tenant).bind(credential.channel.as_str()).bind(locator(credential)).fetch_one(&mut *tx).await.map_err(db)? { return Err(Error::Conflict); }
     // Registration row locks serialize authorization and replacement in a consistent order.
-    let active = sqlx::query("SELECT id::text AS id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel=$3 AND state='active' FOR UPDATE")
+    let active = sqlx::query("SELECT id::text AS id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel=$3 AND purpose='primary' AND state='active' FOR UPDATE")
             .bind(tenant).bind(&device).bind(credential.channel.as_str()).fetch_optional(&mut *tx).await.map_err(db)?;
     if let Some(row) = active {
         crate::lifecycle::retire(
@@ -405,8 +408,8 @@ pub(crate) async fn bind_authorized_in(
         credential: ids[1],
         epoch: ids[2],
     };
-    sqlx::query("INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6::uuid,'active')")
-            .bind(tenant).bind(receipt.registration.to_string()).bind(&receipt.device).bind(receipt.channel.as_str()).bind(generation).bind(command.request_id.to_string()).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state,purpose,epoch) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6::uuid,'active','primary',$7::uuid)")
+            .bind(tenant).bind(receipt.registration.to_string()).bind(&receipt.device).bind(receipt.channel.as_str()).bind(generation).bind(command.request_id.to_string()).bind(receipt.epoch).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,'active')")
             .bind(tenant).bind(receipt.credential.to_string()).bind(receipt.registration.to_string()).bind(receipt.channel.as_str()).bind(locator(credential)).execute(&mut *tx).await.map_err(unique_or_db)?;
     sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES($1::uuid,$2::uuid,$3,$4::uuid,true)")
@@ -443,18 +446,12 @@ pub async fn replace_mdm_credential_in(
     Ok(())
 }
 
-pub async fn revalidate(
-    tx: &mut sqlx::PgConnection,
-    principal: &DevicePrincipal,
-) -> Result<Scope, Error> {
-    revalidate_source(tx, principal, rss_mdm_inventory::ReportSource::MdmWindows).await
-}
 pub async fn revalidate_source(
     tx: &mut sqlx::PgConnection,
     principal: &DevicePrincipal,
     source: rss_mdm_inventory::ReportSource,
 ) -> Result<Scope, Error> {
-    if principal.channel() != source.channel() {
+    if principal.purpose() != Purpose::Primary || principal.channel() != source.channel() {
         return Err(Error::Forbidden);
     }
     let tenant = principal.tenant().to_string();
@@ -687,7 +684,7 @@ pub async fn allocate_report_in(
     if count < 1 || maximum < count {
         return Err(sqlx::Error::Protocol("invalid report allocation".into()));
     }
-    sqlx::query_as("UPDATE mdm_access.report_sources SET next_sequence=next_sequence+1,next_command=next_command+$5 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND epoch=$4::uuid AND enabled AND next_sequence<9223372036854775807 AND next_command<=$6 RETURNING next_sequence-1,next_command-$5").bind(tenant).bind(registration).bind(source.as_str()).bind(epoch).bind(count).bind(maximum-count+1).fetch_optional(c).await
+    sqlx::query_as("WITH locked AS MATERIALIZED (SELECT r.id FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND r.purpose='primary' AND r.state='active' AND s.source=$3 AND s.epoch=$4::uuid AND s.enabled AND s.next_sequence<9223372036854775807 AND r.next_command<=$6 FOR UPDATE OF r,s), ids AS (UPDATE mdm_access.registrations r SET next_command=next_command+$5 FROM locked WHERE r.tenant_id=$1::uuid AND r.id=locked.id RETURNING r.id,r.next_command-$5 AS first), seq AS (UPDATE mdm_access.report_sources s SET next_sequence=next_sequence+1 FROM ids WHERE s.tenant_id=$1::uuid AND s.registration=ids.id AND s.source=$3 RETURNING s.next_sequence-1 AS sequence) SELECT sequence,first FROM seq CROSS JOIN ids").bind(tenant).bind(registration).bind(source.as_str()).bind(epoch).bind(count).bind(maximum-count+1).fetch_optional(c).await
 }
 pub async fn allocate_task_report_in(
     c: &mut sqlx::PgConnection,
@@ -705,17 +702,13 @@ pub async fn allocate_task_report_in(
     }
     sqlx::query_as("UPDATE mdm_access.report_sources SET next_sequence=next_sequence+1 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND enabled AND next_sequence<9223372036854775807 RETURNING epoch::text,next_sequence-1").bind(tenant).bind(registration).bind(source.as_str()).fetch_one(c).await
 }
-pub async fn allocate_request_ids_in(
-    c: &mut sqlx::PgConnection,
-    p: &crate::DevicePrincipal,
-    source: rss_mdm_inventory::ReportSource,
-    count: i64,
-    maximum: i64,
-) -> Result<i64, sqlx::Error> {
-    if count < 1 || maximum < count {
-        return Err(sqlx::Error::Protocol("invalid request allocation".into()));
-    }
-    sqlx::query_scalar("UPDATE mdm_access.report_sources SET next_command=next_command+$4 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND enabled AND next_command<=$5 RETURNING next_command-$4").bind(p.tenant().to_string()).bind(p.registration()).bind(source.as_str()).bind(count).bind(maximum-count).fetch_one(c).await
+/// Allocate protocol identities independently of Inventory sources; caller revalidates first.
+pub async fn allocate_commands_in(c: &mut sqlx::PgConnection, p: &DevicePrincipal, count: i64) -> Result<u32, Error> {
+    if count < 1 || count > i64::from(u32::MAX) { return Err(Error::Malformed); }
+    revalidate_management(c, p).await?;
+    let first: i64 = sqlx::query_scalar("UPDATE mdm_access.registrations SET next_command=next_command+$5 WHERE tenant_id=$1::uuid AND id=$2 AND purpose=$3 AND generation=$4 AND state='active' AND next_command<=4294967296-$5 RETURNING next_command-$5")
+        .bind(p.tenant().to_string()).bind(p.registration()).bind(p.purpose().as_str()).bind(p.generation()).bind(count).fetch_one(c).await.map_err(db)?;
+    first.try_into().map_err(|_| Error::Storage)
 }
 
 pub async fn activate_renewed_mdm_in(
@@ -740,4 +733,12 @@ pub async fn activate_renewed_mdm_in(
         return Err(Error::Unauthorized);
     }
     replace_mdm_credential_in(c, tenant, &registration.to_string(), &locator(credential)).await
+}
+
+/// Current management authority; this does not authorize publishing an observation.
+pub async fn management_in(c: &mut sqlx::PgConnection, credential: &VerifiedChannelCredential) -> Result<DevicePrincipal, Error> {
+    super::management::authenticate(c, credential).await
+}
+pub async fn revalidate_management(c: &mut sqlx::PgConnection, p: &DevicePrincipal) -> Result<(), Error> {
+    super::management::revalidate(c,p).await
 }

@@ -18,8 +18,7 @@ pub(crate) fn proof(tenant: &str, channel: Channel, key: u8) -> VerifiedChannelC
         match channel {
             Channel::Agent => ReportSource::AgentBuiltin,
             Channel::Mdm => ReportSource::MdmWindows,
-        },
-    )
+        }, rss_mdm_registration_service::Purpose::Primary)
     .credential(crate::test_support::secret(&format!("channel-proof-{key}")))
 }
 pub(crate) async fn admin(tenant: &str, token: &str) -> anyhow::Result<AuthorizedPrincipal> {

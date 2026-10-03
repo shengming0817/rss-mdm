@@ -367,7 +367,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     crate::test_support::stop_worker(owner).await?;
 
     // Explicit CmdID exhaustion fails without allocating a new run or wrapping to old IDs.
-    sqlx::query("UPDATE mdm_access.report_sources SET next_command=4294967296 WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(case_a()).bind(registration.registration.to_string()).execute(&mut root).await?;
+    sqlx::query("UPDATE mdm_access.registrations SET next_command=4294967296 WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(case_a()).bind(registration.registration.to_string()).execute(&mut root).await?;
     ensure!(
         report(&service, &access, &newer, [Some("wrap"), Some("13")])
             .await
