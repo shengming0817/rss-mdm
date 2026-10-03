@@ -94,7 +94,7 @@ impl Inputs {
             authority.devices,
             &self.protection,
             tx.tenant_id(),
-            Some(authority.owner),
+            authority.owner,
         )?;
         Ok(frozen)
     }

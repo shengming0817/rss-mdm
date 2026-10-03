@@ -94,6 +94,12 @@ class ModuleImpactTests(unittest.TestCase):
             selected = select_inputs([path])
             self.assertTrue({'planning.agent_policy', 'planning.remote'} <= set(selected.modules), path)
         self.assertIn('execution.agent.recovery', self.selected('crates/resource/src/script.rs'))
+        for path in ('crates/execution-service/src/input_preparation.rs',
+                     'crates/execution-service/src/input_preparation/publication.rs'):
+            self.assertTrue({'planning.frequency', 'execution.agent.delivery',
+                             'execution.agent.content', 'execution.agent.recovery'}
+                            <= set(self.selected(path)), path)
+
 
     def test_native_rules_select_configuration_consumer(self):
         for path in ('crates/windows-mdm/src/native/request.rs', 'crates/windows-mdm/src/native/verification.rs'):

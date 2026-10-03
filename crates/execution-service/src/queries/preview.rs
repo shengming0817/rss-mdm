@@ -40,6 +40,8 @@ pub async fn preview(
     run(&s.audit_store,&s.runtime,s.tenant,audit,(s,proof,audit,input,verified.as_ref()),|ctx,tx|Box::pin(async move {
         let (s,proof,audit,input,verified)=*ctx;
         let authorization=crate::action_admission::current(tx,proof).await?;
+        authorization.require(proof,Permission::PolicyRead,None)?;
+        if input.definition.action.resource().is_some() { authorization.require(proof,Permission::ResourceRead,None)?; }
         authorize_policy_snapshot(&authorization,proof,&input.definition)?;
         let prepared = s.inputs.preview_in(tx, &PublicationInput::from(&input.definition.action), verified, proof, &authorization).await?;
         let software = if let PreviewInputs::Software(action) = &prepared {

@@ -331,12 +331,6 @@ impl SoftwareResourceBinding {
             version: &self.version,
         }
     }
-    /// Exact variant for the requested software target, when authored.
-    pub fn variant_for(&self, platform: Platform, architecture: Architecture) -> Option<&str> {
-        self.variants
-            .get(&SoftwareTarget::new(platform, architecture))
-            .map(String::as_str)
-    }
     /// Validate one immutable software version and its nonempty bounded target set.
     pub fn validate(&self) -> Result<(), Error> {
         if self.variants.is_empty() || self.variants.len() > 4 {
@@ -558,15 +552,30 @@ mod tests {
             panic!()
         };
         assert_eq!(
-            resource.variant_for(Platform::Windows, Architecture::X86_64),
+            resource
+                .variants
+                .get(&SoftwareTarget::new(
+                    Platform::Windows,
+                    Architecture::X86_64
+                ))
+                .map(String::as_str),
             Some("msi-x64")
         );
         assert_eq!(
-            resource.variant_for(Platform::Macos, Architecture::Aarch64),
+            resource
+                .variants
+                .get(&SoftwareTarget::new(Platform::Macos, Architecture::Aarch64))
+                .map(String::as_str),
             Some("pkg-arm64")
         );
         assert_eq!(
-            resource.variant_for(Platform::Windows, Architecture::Aarch64),
+            resource
+                .variants
+                .get(&SoftwareTarget::new(
+                    Platform::Windows,
+                    Architecture::Aarch64
+                ))
+                .map(String::as_str),
             None
         );
     }

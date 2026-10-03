@@ -538,7 +538,6 @@ impl References for StoredReferences {
     }
 }
 
-/// Locked resource version access for Policy preparation; owns no management service.
 pub const CATALOG_SQL: &str = include_str!("catalog.sql");
 
 pub const CATALOG_JSON: &str = include_str!("catalog.json");

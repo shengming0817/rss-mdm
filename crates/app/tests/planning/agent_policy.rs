@@ -66,6 +66,63 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
             json!([{"kind":"device","id":case_device_id()}]),
         )
         .await?;
+    let identity = crate::test_support::identity::identity(case_tenant()).await?;
+    let access = database(&fixture.base).await?;
+    let stale = crate::authorization::context::AuthorizedPrincipal::new(
+        identity
+            .authority
+            .inspect_session(
+                identity.tenant,
+                rss_identity_core::session::SessionSecret::parse(
+                    fixture.author.cookies["__Host-identity-session"].clone(),
+                )?,
+                crate::identity::deadline(),
+            )
+            .await?,
+    )?
+    .load_authorization(access.authorization())
+    .await?;
+    for permission in [
+        crate::authorization::Permission::PolicyRead,
+        crate::authorization::Permission::ResourceRead,
+    ] {
+        let grants = fixture
+            .grants
+            .iter()
+            .filter(|grant| grant.operation != permission)
+            .cloned()
+            .collect();
+        crate::test_support::identity::set_grants(case_tenant(), &fixture.author_id, grants)
+            .await?;
+        let audit =
+            rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(), "management_read");
+        stale.bind_audit(&audit)?;
+        let result = rss_mdm_execution_service::queries::preview::preview(
+            &fixture.queries,
+            &stale,
+            &audit,
+            &rss_mdm_execution_service::queries::preview::Preview {
+                definition: serde_json::from_value(policy_definition(id, case_task_scope()))?,
+                after: None,
+                scope_result: None,
+            },
+        )
+        .await;
+        crate::test_support::identity::set_grants(
+            case_tenant(),
+            &fixture.author_id,
+            fixture.grants.clone(),
+        )
+        .await?;
+        ensure!(
+            matches!(
+                result,
+                Err(rss_mdm_execution_service::queries::QueryError::Forbidden)
+            ),
+            "cached preview proof admitted revoked {permission:?}"
+        );
+    }
+    access.close().await;
     let router = fixture.router;
     let plan_runtime = fixture.plan_runtime;
     let mut author = fixture.author;
