@@ -493,9 +493,11 @@ def dependency_consumers(graph, registry, key, dep, kind):
         for name in claimed
         if optional_active(graph, key, dep, alias, kind, registry.modules[name], name in explicit)
     }
-    if not claimed and policy is None:
+    owned_tools = policy.get('tools', ()) if isinstance(policy, dict) else ()
+    cargo_only = isinstance(policy, dict) and policy.get('cargoOnly') is True
+    if not claimed and not (cargo_only or owned_tools):
         raise SelectionError('unowned-dependency', manifest, kind + ':' + alias)
-    return consumers, set(policy.get('tools', ())) if policy else set()
+    return consumers, set(owned_tools)
 
 
 def lock_entries(root):

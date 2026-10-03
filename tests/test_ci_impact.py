@@ -690,6 +690,13 @@ class DependencyOwnership(unittest.TestCase):
             registry = Registry({}, (), {}, {}, {}, (), {})
             with self.assertRaisesRegex(SelectionError, 'unowned-dependency'):
                 dependency_consumers(graph, registry, 'app', dependency, 'normal')
+            for invalid in ({}, False, {'cargoOnly': False}, {'tools': []}):
+                with self.subTest(policy=invalid):
+                    registry = Registry({}, (), {},
+                                        {'crates/app/Cargo.toml': {'normal:db_driver': invalid}},
+                                        {}, (), {})
+                    with self.assertRaisesRegex(SelectionError, 'unowned-dependency'):
+                        dependency_consumers(graph, registry, 'app', dependency, 'normal')
             registry = Registry(
                 {},
                 (),
