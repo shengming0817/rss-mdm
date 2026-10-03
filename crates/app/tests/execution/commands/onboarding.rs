@@ -145,7 +145,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
             && state["operationIds"] == json!([operation]),
         "{state}"
     );
-    let (initial, execute) = execute(&peer).await?;
+    let (initial, execute) = execute(&peer, &mut client, policy).await?;
     let url = peer.url.replace(
         "/ManagementServer/MDM.svc",
         "/api/agent/v6/managed-registrations",
@@ -420,39 +420,58 @@ async fn start_fixture_until(
     let operation = setup::operation(policy).await?;
     Ok((host, client, peer, commands, owner, policy, operation))
 }
-async fn execute(peer: &crate::windows::test_support::Peer) -> Result<(s::Message, s::Message)> {
-    let (initial, prepare) = begin(peer, 902).await?;
-    let mut next = post(peer, &reply(&initial, &prepare, false)).await?;
-    let mut initial = initial;
-    for index in 0..30 {
-        if next
-            .commands
-            .iter()
-            .any(|c| matches!(c, s::Command::Exec { .. }))
-        {
-            return Ok((initial, next));
-        }
-        // Admission can finish after the first exchange. A newly delivered Prepare still needs its ACK.
-        if next
-            .commands
-            .iter()
-            .any(|command| !matches!(command, s::Command::Status(_)))
-        {
-            next = post(peer, &reply(&initial, &next, false)).await?;
+async fn execute(
+    peer: &crate::windows::test_support::Peer,
+    client: &mut Client,
+    policy: Uuid,
+) -> Result<(s::Message, s::Message)> {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let (mut initial, mut next) = begin(peer, 902).await?;
+        let mut session = 910;
+        loop {
             if next
                 .commands
                 .iter()
-                .any(|command| matches!(command, s::Command::Exec { .. }))
+                .any(|c| matches!(c, s::Command::Exec { .. }))
             {
                 return Ok((initial, next));
             }
+            // A newly delivered Prepare still needs its ACK and any correlated Get results.
+            if next
+                .commands
+                .iter()
+                .any(|c| !matches!(c, s::Command::Status(_)))
+            {
+                next = post(peer, &reply(&initial, &next, false)).await?;
+                if next
+                    .commands
+                    .iter()
+                    .any(|c| matches!(c, s::Command::Exec { .. }))
+                {
+                    return Ok((initial, next));
+                }
+            }
+            // Read-side synchronization keeps the latest sealed report stable while
+            // Inventory and Scope catch up; another exchange would create a new report.
+            loop {
+                let state =
+                    setup::diagnosis(&mut client.browser, &client.router, policy, case_device())
+                        .await?;
+                if state["assignment"] == "eligible"
+                    && state["taskAdmission"]["state"] == "eligible"
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            (initial, next) = begin(peer, session).await?;
+            session += 1;
         }
-        // The just-sealed normal report may still be awaiting Inventory/Scope projection.
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        (initial, next) = begin(peer, 910 + index).await?;
-    }
-    anyhow::bail!("install was not released after projection: {next:?}")
+    })
+    .await
+    .context("installation execution did not become ready")?
 }
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn failed_prepare_rejects_without_dispatching_installation() -> Result<()> {
@@ -490,8 +509,8 @@ async fn failed_prepare_rejects_without_dispatching_installation() -> Result<()>
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn native_enforcement_failure_is_separate_from_delivery_and_never_reinstalled() -> Result<()>
 {
-    let (host, mut client, peer, commands, owner, _, operation) = start_fixture().await?;
-    let (initial, execute) = execute(&peer).await?;
+    let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
+    let (initial, execute) = execute(&peer, &mut client, policy).await?;
     post(&peer, &reply(&initial, &execute, false)).await?;
     let (initial, query) = begin(&peer, 903).await?;
     let mut response = reply(&initial, &query, true);
@@ -560,8 +579,8 @@ async fn native_enforcement_failure_is_separate_from_delivery_and_never_reinstal
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn cancellation_blocks_registration_and_preserves_uncertain_native_effect() -> Result<()> {
-    let (host, mut client, peer, commands, owner, _, operation) = start_fixture().await?;
-    execute(&peer).await?;
+    let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
+    execute(&peer, &mut client, policy).await?;
     let result = client
         .call(
             Method::POST,
@@ -595,9 +614,9 @@ async fn cancellation_blocks_registration_and_preserves_uncertain_native_effect(
 async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -> Result<()> {
     use crate::clock::Clock;
     let until = crate::clock::SystemClock.unix_seconds()? + 20;
-    let (host, mut client, peer, commands, owner, _, operation) =
+    let (host, mut client, peer, commands, owner, policy, operation) =
         start_fixture_until(Some(until)).await?;
-    execute(&peer).await?;
+    execute(&peer, &mut client, policy).await?;
     ensure!(
         client
             .call(Method::GET, &format!("/{operation}"), None)
@@ -635,7 +654,7 @@ async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn replacement_rejects_old_installation_and_requires_current_epoch_absence() -> Result<()> {
     let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
-    execute(&peer).await?;
+    execute(&peer, &mut client, policy).await?;
     let current = host.peer().await?;
     let url = peer.url.replace(
         "/ManagementServer/MDM.svc",
@@ -701,7 +720,7 @@ async fn replacement_rejects_old_installation_and_requires_current_epoch_absence
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn scope_exit_preserves_dispatched_installation_authority_until_its_deadline() -> Result<()> {
     let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
-    execute(&peer).await?;
+    execute(&peer, &mut client, policy).await?;
     let policy_view = client
         .browser
         .call(

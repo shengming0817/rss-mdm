@@ -158,6 +158,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
         }
     }
     write(&mut f.author,&f.router,&path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":os,"architecture":arch,"key":"default","declaration":{"kind":"software","definition":definition}}]})).await?;
+    let content_setup = crate::test_support::software::content_setup_guard().await?;
     let request = Request::builder().method(Method::POST)
         .uri(format!("/api/v3/resources/{resource}/content?version=v1&variant=default&platform={os}&architecture={arch}&operation={}",Uuid::new_v4()))
         .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
@@ -186,6 +187,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
         json!({"action":"approve","evidence":["hash-only enterprise review"]}),
     )
     .await?;
+    drop(content_setup);
     let policy = Uuid::new_v4();
     let policy_path = format!("/api/v3/policies/{policy}");
     write(&mut f.author,&f.router,&policy_path,0,json!({"action":"put","enabled":true,"definition":{"scope":f.scope,"action":{"kind":"software","resource":{"kind":"software","id":resource,"version":"v1","variants":{selector:"default"}},"intent":"required_install","delivery":{"kind":"direct"},"admissionOperation":admitted["admission"]["operation"],"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":f.scope,"opensAt":0}]}}}})).await?;

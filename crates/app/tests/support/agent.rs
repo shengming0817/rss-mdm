@@ -140,7 +140,7 @@ INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enable
  JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(s.tenant_id,s.registration)
  WHERE r.tenant_id='{TENANT}' AND r.device='{canonical_sql}' AND r.channel='agent' AND r.state='active' AND s.enabled;
 INSERT INTO mdm_agent.bindings(tenant_id,registration,wire_version,capabilities,platform,architecture,execution_context)
- SELECT '{TENANT}',registration,5,'["inventory.collect.v6","task.execute.v6"]','macos','aarch64','{execution_context}'::jsonb FROM task_targets;
+ SELECT '{TENANT}',registration,6,'["inventory.collect.v6","task.execute.v6"]','macos','aarch64','{execution_context}'::jsonb FROM task_targets;
 DO $$ BEGIN
  IF (SELECT count(*) FROM task_targets t JOIN mdm_access.registrations r ON r.id=t.registration
      JOIN mdm_agent.bindings b ON b.registration=r.id
