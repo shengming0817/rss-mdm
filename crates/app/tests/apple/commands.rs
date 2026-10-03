@@ -128,7 +128,9 @@ async fn native_families_keep_results_separate_from_effects() -> Result<()> {
     ensure!(
         payload["ManifestURL"].as_string() == Some("https://packages.example.test/manifest.plist")
     );
-    peer.manage("Acknowledged", Some(id), None).await?;
+    let next = peer.manage("Acknowledged", Some(id), None).await?;
+    let (observe, _) = command(&next, "InstalledApplicationList")?;
+    peer.manage("Error", Some(observe), None).await?;
     let result = f.operation(pkg).await?;
     ensure!(
         result["commandStatus"] == "received" && result["observation"]["effect"] == "unverified",
@@ -150,7 +152,7 @@ async fn native_families_keep_results_separate_from_effects() -> Result<()> {
             )),
         )
         .await?;
-    command(&next, "OSUpdateStatus")?;
+    let (observe, _) = command(&next, "OSUpdateStatus")?;
     let result = f.operation(update).await?;
     ensure!(
         result["commandStatus"] == "received" && result["observation"]["result"] == "deferred",
@@ -162,6 +164,12 @@ async fn native_families_keep_results_separate_from_effects() -> Result<()> {
             .unwrap()
             .iter()
             .any(|r| r["phase"] == "execute" && r["fields"].get("UpdateResults").is_some())
+    );
+    peer.manage("Error", Some(observe), None).await?;
+    let result = f.operation(update).await?;
+    ensure!(
+        result["commandStatus"] == "received" && result["observation"]["effect"] == "unverified",
+        "query error rejected pending update {result}"
     );
     drop(device);
     f.close().await

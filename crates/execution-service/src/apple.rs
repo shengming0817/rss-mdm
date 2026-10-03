@@ -378,7 +378,8 @@ async fn receive(
             service.tenant,
             &op.device,
         )?)
-    } else if outcome == Some(rss_mdm_apple_mdm::native::outcome::Outcome::Rejected)
+    } else if phase == "execute"
+        && outcome == Some(rss_mdm_apple_mdm::native::outcome::Outcome::Rejected)
         && op.request.profile_target().is_none()
     {
         dc::DeviceEvent::Rejected
@@ -392,7 +393,8 @@ async fn receive(
                 // query presence, but this receipt never authorizes another mutation.
                 return Ok(());
             }
-            ("observe", wire::Status::Error) if software => {
+            ("observe", wire::Status::Error) => {
+                // Failure of a read-only recovery query does not prove the mutation failed.
                 return Ok(());
             }
             (_, wire::Status::Error) => dc::DeviceEvent::Rejected,

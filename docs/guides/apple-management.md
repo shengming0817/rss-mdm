@@ -53,7 +53,7 @@ Profile 使用 `request.kind:"install_profile"` 和 `profile`，其中根及每�
 | 完整且接受的 ProfileList 匹配 | applied，仅证明原生对象存在性 |
 | Error 后完整反向证据 | rejected，仅释放本次失败预留，保留旧安装 guards |
 
-不重投已发送且结果未知的变更；只读恢复复用现有 attempt 流并有次数与期限上限。Profile 存在、OS 设置效果及合规分别记录，`effect:"unknown"` 不证明防火墙或其他设置已生效。查询、取消和重新批准沿用 [Execution](device-operations.md) 的 requestId 与 expectedRevision 契约。
+不重投已发送且结果未知的变更；只读恢复复用现有 attempt 流并有次数与期限上限。只读观测查询的错误不证明原变更被拒绝，仍保留其不确定性。Profile 存在、OS 设置效果及合规分别记录，`effect:"unknown"` 不证明防火墙或其他设置已生效。查询、取消和重新批准沿用 [Execution](device-operations.md) 的 requestId 与 expectedRevision 契约。
 
 APNs 使用证书认证 HTTPS/HTTP2，token revision 和持久唤醒 lease 隔离过期回执。410 使对应当前 token 回到 pending_token；旧 revision 的 410 不撤销新 token。429 和网络失败按 30、60、120 秒递增退避，5xx 至少等待 900 秒，均封顶 960 秒，不改变命令结果。按闭合 APNs reason 判定 token 失效、配置拒绝或暂时故障；未知/畸形响应可重试，配置拒绝暂停当前 token revision/APNs 证书组合；TokenUpdate 或更换有效 APNs 证书并重启后可恢复。失效授权的采集会延后检查，不能持续占据有界队列前页。
 
