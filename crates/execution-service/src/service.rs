@@ -335,7 +335,6 @@ impl ExecutionService {
             crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Apple).await?;
             let result=json!({"operationId":id,"revision":op.revision+1});
             let fact = Fact::business(audit, &event_key, &fingerprint, 200, "success", None)?;
-            let fact=if cancel_pending {fact.with_details(json!({"diagnosticTransfer":"abandoned","reason":"diagnostic_cancelled"}))?}else{fact};
             service.audit_store.append_in(tx, &fact, false).await?;receipt(tx,change.request_id,id,fingerprint,&result,audit).await?;proof.check_live()?;Ok(result)
         })).await
     }
