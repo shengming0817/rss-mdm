@@ -195,6 +195,7 @@ pub struct DiagnosticObservation {
     pub step: rss_mdm_windows_mdm::native::diagnostic::Step,
     pub block_count: Option<u32>,
     pub received_bytes: u64,
+    pub expires_at: Option<i64>,
     pub transfer: String,
     pub reason: Option<String>,
     pub artifact: Option<rss_mdm_content_service::diagnostic::Metadata>,

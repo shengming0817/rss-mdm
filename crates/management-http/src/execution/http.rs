@@ -140,9 +140,7 @@ async fn diagnostic_artifact(
     let content = app
         .diagnostic_artifact(&auth.proof, &device, id, &audit)
         .await?;
-    let length = content.artifact.length();
-    let etag = content.etag();
-    let stream = content.stream(0, length).await?;
+    let length = content.metadata.length;
     axum::http::Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/octet-stream")
@@ -152,8 +150,8 @@ async fn diagnostic_artifact(
         )
         .header("cache-control", "no-store")
         .header("content-length", length)
-        .header("etag", etag)
+        .header("etag", content.etag)
         .header("x-content-type-options", "nosniff")
-        .body(axum::body::Body::from_stream(stream))
+        .body(axum::body::Body::from_stream(content.stream))
         .map_err(|_| Error::Malformed)
 }

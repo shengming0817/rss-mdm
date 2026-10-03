@@ -66,7 +66,7 @@ Windows 已登记的 DiagnosticLog Provider、Collector 或 Channel 可沿现有
 
 服务端接受完整块数、逐块索引/数据和最终块数核对后，设备命令才完成。`-1`、`-2` 块数保持等待；错序、缺块、大小超限、原生拒绝或完整性失败保留明确的停止原因。日志 trigger 的受理、设备输出完成与文件转存是独立事实，不证明配置效果或合规。原生 trigger 结果未知时不会重新触发；读取可在新会话重新选择同一块。
 
-普通 operation 查询仅投影诊断阶段、长度和受限制品元数据，隐藏所有诊断 Results 原文。文件完成转存及不可变关联后，元数据给出 `downloadUrl`，指向 `GET /api/v3/devices/{device}/operations/{operation}/diagnostic-artifact`。每次下载都核验当前 `operation_read` 与 `device_diagnostics`、租户、设备、当前注册世代及保留期限；文件校验前后分别检查，响应禁止缓存。
+普通 operation 查询仅投影诊断阶段、长度和受限制品元数据，隐藏所有诊断 Results 原文。文件完成转存及不可变关联后，元数据给出 `downloadUrl`，指向 `GET /api/v3/devices/{device}/operations/{operation}/diagnostic-artifact`。每次下载都核验当前 `operation_read` 与 `device_diagnostics`、租户、设备、当前注册世代及保留期限；全部文件读取和响应内容准备前后分别检查，响应禁止缓存。保留期结束后查询显示 `transfer: expired`、`reason: diagnostic_retention_expired`，并保留固定的 `expiresAt`；持久化的已完成转存事实不变。
 
 转存沿现有命令恢复 worker 运行：先提交接受事实，事务外完成加密文件 I/O，再在原租约保护的短事务内重新核验资格、登记关联与审计。重复及重启恢复使用相同物理上传身份；转存重试不会延长保留期。取消、到期、旧世代或当前授权失效时停止新的取块、转存和关联，保留既有事实；重新授权不会自动恢复已停止的文件。无引用的孤儿文件由现有 content 清理回收，已下载响应与正在关联的文件使用同一保护锁。
 

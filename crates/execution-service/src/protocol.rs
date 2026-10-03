@@ -498,6 +498,7 @@ pub async fn observation(
         receipts.push(receipt);
     }
     let diagnostic = if native::diagnostic::input(&op.request.task).is_some() {
+        let now = storage::now(tx).await?;
         let tenant = tx.tenant_id();
         let id = op.id;
         let state = tx
@@ -522,12 +523,23 @@ pub async fn observation(
             })
             .await?
             .map_err(Error::from)?;
+        let expired = matches!(state.transfer, native::diagnostic::Transfer::Ready)
+            && state.expires_at.is_some_and(|expiry| expiry <= now);
         Some(crate::queries::records::DiagnosticObservation {
             step: state.native.step,
             block_count: state.native.count,
             received_bytes: state.native.length,
-            transfer: format!("{:?}", state.transfer).to_lowercase(),
-            reason: state.reason,
+            expires_at: state.expires_at,
+            transfer: if expired {
+                "expired".into()
+            } else {
+                format!("{:?}", state.transfer).to_lowercase()
+            },
+            reason: if expired {
+                Some("diagnostic_retention_expired".into())
+            } else {
+                state.reason
+            },
             artifact,
         })
     } else {

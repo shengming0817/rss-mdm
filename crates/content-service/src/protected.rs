@@ -115,9 +115,14 @@ fn chunk_aad(
     let owner =
         serde_json::to_string(&(artifact.digest().bytes(), artifact.length(), offset, count))
             .map_err(|_| invariant())?;
-    ProtectionContext::new(tenant, &owner, &format!("content.{class:?}.chunk/v1"), 1)
-        .map(|v| v.derive())
-        .map_err(|_| invariant())
+    ProtectionContext::new(
+        tenant,
+        &owner,
+        &format!("{}.chunk/v1", class.protection_domain()),
+        1,
+    )
+    .map(|v| v.derive())
+    .map_err(|_| invariant())
 }
 fn read_records(
     file: &mut File,
@@ -169,7 +174,10 @@ impl Store {
         let aad = ProtectionContext::new(
             self.tenant,
             &upload.storage_key().to_string(),
-            &format!("content.{:?}.checkpoint/v1", upload.binding.class()),
+            &format!(
+                "{}.checkpoint/v1",
+                upload.binding.class().protection_domain()
+            ),
             1,
         )
         .map_err(|_| invariant())?

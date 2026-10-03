@@ -51,6 +51,13 @@ pub enum StorageClass {
     NativeDiagnostic,
 }
 impl StorageClass {
+    fn protection_domain(self) -> &'static str {
+        match self {
+            Self::Artifact => "content.artifact",
+            Self::NativeConfiguration => "content.native_configuration",
+            Self::NativeDiagnostic => "content.native_diagnostic",
+        }
+    }
     fn protected(self) -> bool {
         self != Self::Artifact
     }

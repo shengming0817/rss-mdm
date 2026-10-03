@@ -1,14 +1,33 @@
 //! Downloads repeat current authorization after verified file work outside PG.
 use super::*;
-use rss_mdm_content_service::{Verified, diagnostic::Metadata};
+use rss_mdm_content_service::diagnostic::Metadata;
+/// Response content prepared before the final current-qualification check.
+/// Its stream owns the verified file pin and performs no further file reads.
+pub struct Download {
+    pub metadata: Metadata,
+    pub etag: String,
+    pub stream:
+        futures::stream::BoxStream<'static, std::result::Result<bytes::Bytes, std::io::Error>>,
+}
 impl Queries {
+    #[cfg(feature = "integration")]
+    pub fn pause_diagnostic_download_after_file_work(
+        &self,
+        ready: Arc<tokio::sync::Notify>,
+        resume: Arc<tokio::sync::Notify>,
+    ) {
+        *self
+            .diagnostic_download_gate
+            .lock()
+            .expect("diagnostic download gate") = Some((ready, resume));
+    }
     pub async fn diagnostic_artifact(
         &self,
         proof: &AuthorizedPrincipal,
         device: &str,
         id: Uuid,
         audit: &RequestAudit,
-    ) -> std::result::Result<Verified, QueryError> {
+    ) -> std::result::Result<Download, QueryError> {
         let reader = self
             .diagnostic_reader
             .as_ref()
@@ -26,9 +45,31 @@ impl Queries {
             .await
             .map_err(crate::Error::from)
             .map_err(QueryError::from)?;
+        let etag = verified.etag();
+        let stream = verified
+            .stream(0, metadata.length)
+            .await
+            .map_err(crate::Error::from)
+            .map_err(QueryError::from)?;
+        #[cfg(feature = "integration")]
+        {
+            let gate = self
+                .diagnostic_download_gate
+                .lock()
+                .expect("diagnostic download gate")
+                .take();
+            if let Some((ready, resume)) = gate {
+                ready.notify_one();
+                resume.notified().await;
+            }
+        }
         self.diagnostic_metadata(proof, device, id, audit, Some(&metadata))
             .await?;
-        Ok(verified)
+        Ok(Download {
+            metadata,
+            etag,
+            stream,
+        })
     }
     async fn diagnostic_metadata(
         &self,

@@ -257,3 +257,135 @@ async fn inherited_delete_privilege_fails_admission() -> Result<()> {
     crate::flow::admit_storage(&fixture.runtime, tenant).await?;
     Ok(())
 }
+
+async fn reclaim_diagnostic(
+    fixture: &Fixture,
+    artifact: &rss_mdm_resource::Artifact,
+) -> Result<bool> {
+    let candidate = fixture
+        .content
+        .as_ref()
+        .unwrap()
+        .garbage(i64::MAX / 2)
+        .await?
+        .into_iter()
+        .find(|c| {
+            c.class == rss_mdm_content_service::StorageClass::NativeDiagnostic
+                && c.digest == artifact.digest().bytes()
+        })
+        .ok_or_else(|| anyhow::anyhow!("aged diagnostic candidate missing"))?;
+    let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+    Ok(fixture
+        .runtime
+        .local_tx_with_context(
+            tenant,
+            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                Duration::from_secs(5),
+            ),
+            Some(candidate),
+            |candidate, tx| {
+                Box::pin(async move {
+                    rss_mdm_content_service::service::reclaim_in(
+                        tx,
+                        candidate.take().unwrap(),
+                        || Ok(()),
+                    )
+                    .await
+                    .map_err(|_| {
+                        rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol(
+                            "diagnostic reclaim fixture".into(),
+                        ))
+                    })
+                })
+            },
+        )
+        .await
+        .fold(Ok, Err, Err, Err, Err, Err)?)
+}
+
+#[tokio::test]
+#[ignore = "MODULE=content.gc: diagnostic associations and real protected orphan deletion"]
+async fn diagnostic_gc_preserves_live_associations_and_reclaims_expired_orphans() -> Result<()> {
+    use rss_mdm_content_service::diagnostic::{Identity, record_in};
+    use sqlx::Connection;
+    let fixture = Fixture::open(false).await?;
+    let store = fixture.content.as_ref().unwrap();
+    let bytes = case::name("diagnostic-gc-private-bytes").as_bytes();
+    let retained_resource = fixture.seed_content(bytes).await?;
+    let now = crate::windows::test_support::now();
+    let identity = Identity {
+        operation: Uuid::new_v4(),
+        registration: Uuid::new_v4(),
+        generation: 1,
+        input_version: "diagnostic-gc-1".into(),
+        input_digest: [1; 32],
+        sources_digest: [2; 32],
+        accepted_at: now,
+        expires_at: now + 600,
+    };
+    let verified = store.promote_diagnostic(&identity, bytes, now).await?;
+    let artifact = verified.artifact.clone();
+    let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let mut tx = pg.begin().await?;
+    sqlx::query("SET LOCAL ROLE mdm_command_runtime")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
+    record_in(&mut tx, tenant, &identity, &artifact).await?;
+    tx.commit().await?;
+    ensure!(
+        store
+            .garbage(i64::MAX / 2)
+            .await?
+            .into_iter()
+            .all(
+                |c| c.class != rss_mdm_content_service::StorageClass::NativeDiagnostic
+                    || c.digest != artifact.digest().bytes()
+            ),
+        "live response pin allowed reclamation"
+    );
+    drop(verified);
+    ensure!(
+        !reclaim_diagnostic(&fixture, &artifact).await?,
+        "live association was deleted"
+    );
+    drop(store.diagnostic_reader().verify(&artifact).await?);
+    sqlx::query("UPDATE mdm_content.diagnostic_artifacts SET expires_at=1 WHERE tenant_id=$1::uuid AND operation=$2").bind(case_tenant()).bind(identity.operation).execute(&mut pg).await?;
+    ensure!(reclaim_diagnostic(&fixture, &artifact).await?);
+    ensure!(
+        store.diagnostic_reader().verify(&artifact).await.is_err(),
+        "expired diagnostic bytes survived unlink"
+    );
+    // Equal bytes in the Resource class retain their independent references and physical file.
+    drop(store.verify(&retained_resource).await?);
+    let orphan_identity = Identity {
+        operation: Uuid::new_v4(),
+        ..identity
+    };
+    let orphan = store
+        .promote_diagnostic(
+            &orphan_identity,
+            case::name("unassociated diagnostic").as_bytes(),
+            now,
+        )
+        .await?;
+    let orphan_artifact = orphan.artifact.clone();
+    drop(orphan);
+    ensure!(reclaim_diagnostic(&fixture, &orphan_artifact).await?);
+    ensure!(
+        store
+            .diagnostic_reader()
+            .verify(&orphan_artifact)
+            .await
+            .is_err(),
+        "orphan diagnostic bytes survived unlink"
+    );
+    pg.close().await?;
+    Ok(())
+}

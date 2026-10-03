@@ -35,7 +35,10 @@ async fn grants(
     Ok(())
 }
 async fn create(client: &mut Client) -> anyhow::Result<()> {
-    client.operation = Uuid::new_v4();
+    create_with_id(client, Uuid::new_v4()).await
+}
+async fn create_with_id(client: &mut Client, id: Uuid) -> anyhow::Result<()> {
+    client.operation = id;
     let accepted=client.call(Method::POST,"",Some(json!({"operationId":client.operation,"inputVersion":"diagnostic-1","deadline":crate::windows::test_support::now()+300,"target":{"kind":"device"},"task":{"platform":"windows","request":{"kind":"diagnostic_log","request":{"trigger":null,"fileContext":"DeviceManagement","blockSizeKb":1,"maxBytes":4096}}}}))).await?;
     ensure!(
         accepted.0 == StatusCode::ACCEPTED,
@@ -337,15 +340,87 @@ async fn complete_file_restarts_replays_downloads_and_stops_after_revocation() -
             .await?;
     let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_content.diagnostic_artifacts WHERE tenant_id=$1::uuid AND operation=$2").bind(case_tenant()).bind(id).fetch_one(&mut pg).await?;
     ensure!(count == 1, "duplicate association");
+    #[cfg(feature = "integration")]
+    let waiting_download = {
+        let ready = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        client
+            .app
+            .queries
+            .pause_diagnostic_download_after_file_work(ready.clone(), resume.clone());
+        let waiting_client = Client::with_browser(
+            client.router.clone(),
+            client.app.clone(),
+            client.browser.clone(),
+        );
+        let path = path.to_owned();
+        let task = tokio::spawn(async move { download(&waiting_client, &path).await });
+        tokio::time::timeout(Duration::from_secs(5), ready.notified()).await?;
+        (task, resume)
+    };
     grants(&mut client, rule, 1, false).await?;
+    #[cfg(feature = "integration")]
+    {
+        waiting_download.1.notify_one();
+        ensure!(
+            waiting_download.0.await??.0 == StatusCode::FORBIDDEN,
+            "file prepared before revocation was served after revocation"
+        );
+    }
     ensure!(download(&client, path).await?.0 == StatusCode::FORBIDDEN);
     grants(&mut client, rule, 2, true).await?;
+    let expires_at = artifact["expiresAt"].clone();
     sqlx::query("UPDATE mdm_content.diagnostic_artifacts SET expires_at=1 WHERE tenant_id=$1::uuid AND operation=$2").bind(case_tenant()).bind(id).execute(&mut pg).await?;
+    sqlx::query("UPDATE mdm_commands.operations SET diagnostic_progress=jsonb_set(diagnostic_progress,'{expiresAt}','1'::jsonb) WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(id).execute(&mut pg).await?;
     ensure!(
         download(&client, path).await?.0 == StatusCode::CONFLICT,
         "expired artifact was served"
     );
+    let expired = operation(&mut client).await?;
+    ensure!(
+        expired["observation"]["diagnostic"]["transfer"] == "expired"
+            && expired["observation"]["diagnostic"]["reason"] == "diagnostic_retention_expired"
+            && expired["observation"]["diagnostic"]["expiresAt"] == 1
+            && expires_at.is_number()
+    );
     pg.close().await?;
+    host.close().await?;
+    Ok(())
+}
+#[tokio::test]
+#[ignore = "make t2 MODULE=execution.commands.windows"]
+async fn waiting_first_page_does_not_hide_a_complete_file() -> anyhow::Result<()> {
+    let mut host = crate::windows::test_support::Host::open().await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    warm(&peer, 1340).await?;
+    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    grants(&mut client, Uuid::new_v4(), 0, true).await?;
+    let complete = Uuid::from_u128(Uuid::new_v4().as_u128() | (0xff << 120));
+    create_with_id(&mut client, complete).await?;
+    let bytes = collect(&peer, &mut client, 1341, false).await?;
+    for _ in 0..64 {
+        create_with_id(
+            &mut client,
+            Uuid::from_u128(Uuid::new_v4().as_u128() & ((1 << 120) - 1)),
+        )
+        .await?;
+    }
+    client.operation = complete;
+    recover(&client).await?;
+    let detail = operation(&mut client).await?;
+    ensure!(
+        download(
+            &client,
+            detail["observation"]["diagnostic"]["artifact"]["downloadUrl"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!(
+                    "complete file hidden behind pending page: {detail}"
+                ))?
+        )
+        .await?
+        .1 == bytes
+    );
     host.close().await?;
     Ok(())
 }

@@ -729,7 +729,9 @@ consume(('crates/windows-channel/src/collection.rs', 'crates/windows-channel/src
 consume(('crates/app/src/assembly/windows/*',), 'windows.enrollment windows.issuance windows.management windows.retention windows.limits native.tls')
 consume(('crates/inventory-service/src/collection*',), 'agent.reports windows.management windows.retention apple.collection apple.renewal inventory.runtime')
 consume(('crates/inventory-service/src/groups/*',), 'planning.http planning.group_scope assets.group_input compliance.group_input')
-consume(('crates/content-service/src/lib.rs', 'crates/content-service/src/bindings.rs', 'crates/content-service/src/service*', 'crates/content-service/src/transaction.rs'), 'content.http content.mirror content.gc execution.agent.content execution.software.content software.http')
+consume(('crates/content-service/src/lib.rs', 'crates/content-service/src/bindings.rs', 'crates/content-service/src/service*', 'crates/content-service/src/transaction.rs', 'crates/content-service/src/admission.sql'), 'content.http content.mirror content.gc execution.agent.content execution.software.content software.http')
+consume(('crates/content-service/src/catalog.sql', 'crates/content-service/src/catalog.json'),
+        'catalog.contract content.http content.mirror content.gc execution.agent.content execution.software.content software.http')
 consume(('crates/flow-service/src/storage*',), 'planning.recovery assets.http compliance.http planning.http software.http content.http')
 consume(('crates/apple-channel/src/boundary.rs',), 'apple.scep apple.collection apple.profile apple.renewal apple.identity apple.host')
 
@@ -1042,6 +1044,8 @@ consume(('crates/execution-service/src/lib.rs','crates/execution-service/src/err
 # Execution owner inputs follow their real read, write and channel consumers.
 QUERY_CONSUMERS = 'execution.agent.history execution.commands.windows planning.http planning.agent_policy planning.remote planning.software'
 COMMAND_CONSUMERS = 'execution.commands.admission execution.commands.dispatch execution.commands.recovery execution.commands.windows execution.commands.configuration execution.commands.onboarding windows.management windows.commands apple.profile apple.onboarding'
+consume(('crates/app/src/execution_assembly.rs',),
+        TASK_CONSUMERS + ' ' + COMMAND_CONSUMERS + ' ' + QUERY_CONSUMERS + ' content.http content.mirror content.gc software.http host.lifecycle')
 consume(('crates/execution-service/src/queries.rs',
          'crates/execution-service/src/queries/records.rs',
          'crates/execution-service/src/queries/error.rs'), QUERY_CONSUMERS)

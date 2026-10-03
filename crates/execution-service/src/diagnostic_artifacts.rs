@@ -199,91 +199,101 @@ async fn advance(
 ) -> Result<Option<Snapshot>> {
     storage::admit(tx).await?;
     let tenant = service.tenant;
-    let entity = entity.to_owned();
-    let ids=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_scalar::<_,Uuid>("SELECT o.id FROM mdm_commands.operations o WHERE o.tenant_id=$1::uuid AND encode(sha256(convert_to(o.device,'UTF8')),'hex')=$2 AND o.diagnostic_progress->>'transfer'='pending' ORDER BY o.id LIMIT 64")
-            .bind(tenant.to_string()).bind(entity).fetch_all(c).await
-    })).await?;
-    for id in ids {
-        if publication.is_some_and(|v| v.snapshot().identity.operation != id) {
-            continue;
+    let mut after = Uuid::nil();
+    loop {
+        let entity = entity.to_owned();
+        let target = publication.map(|v| v.snapshot().identity.operation);
+        // Snapshot discovery advances through waiting requests. Association always targets
+        // its original operation, even when new lower UUIDs arrive during file work.
+        let ids=tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query_scalar::<_,Uuid>("SELECT o.id FROM mdm_commands.operations o WHERE o.tenant_id=$1::uuid AND encode(sha256(convert_to(o.device,'UTF8')),'hex')=$2 AND o.diagnostic_progress->>'transfer'='pending' AND (($3::uuid IS NOT NULL AND o.id=$3) OR ($3::uuid IS NULL AND o.id>$4)) ORDER BY o.id LIMIT 64")
+                .bind(tenant.to_string()).bind(entity).bind(target).bind(after).fetch_all(c).await
+        })).await?;
+        if ids.is_empty() {
+            return Ok(None);
         }
-        let op = storage::load(tx, &service.protection, id).await?;
-        storage::lock(tx, &op.device).await?;
-        let mut state = tx
-            .with_connection(move |c| {
-                Box::pin(async move { Ok(native::diagnostic::load(c, tenant, id).await) })
-            })
-            .await??;
-        if !state.pending() {
-            continue;
-        }
-        let command = service.required_command(tx, &op).await?;
-        let now = storage::now(tx).await?;
-        let eligible = matches!(
-            command.status(),
-            dc::Status::Published | dc::Status::Received | dc::Status::Applied
-        ) && now < op.request.deadline
-            && state.expires_at.is_none_or(|expiry| expiry > now)
-            && storage::approval_valid(&service.source, &service.protection, tx, &op, now).await?;
-        if !eligible {
-            state.transfer = Transfer::Abandoned;
-            state.reason = Some("diagnostic_no_longer_eligible".into());
-            save(tx, tenant, id, &state).await?;
-            fact(service, tx, audit, &op, &state, false).await?;
-            continue;
-        }
-        if state.native.step != Step::Complete || command.status() != dc::Status::Applied {
-            continue;
-        }
-        let snapshot = match snapshot(service, tx, &op, &state, now).await {
-            Ok(v) => v,
-            Err(Fault::Request(Error::Unavailable(Failure::NativeInputIntegrity))) => {
-                state.transfer = Transfer::Blocked;
-                state.reason = Some("diagnostic_source_integrity".into());
+        for id in ids {
+            after = id;
+            let op = storage::load(tx, &service.protection, id).await?;
+            storage::lock(tx, &op.device).await?;
+            let mut state = tx
+                .with_connection(move |c| {
+                    Box::pin(async move { Ok(native::diagnostic::load(c, tenant, id).await) })
+                })
+                .await??;
+            if !state.pending() {
+                continue;
+            }
+            let command = service.required_command(tx, &op).await?;
+            let now = storage::now(tx).await?;
+            let eligible = matches!(
+                command.status(),
+                dc::Status::Published | dc::Status::Received | dc::Status::Applied
+            ) && now < op.request.deadline
+                && state.expires_at.is_none_or(|expiry| expiry > now)
+                && storage::approval_valid(&service.source, &service.protection, tx, &op, now)
+                    .await?;
+            if !eligible {
+                state.transfer = Transfer::Abandoned;
+                state.reason = Some("diagnostic_no_longer_eligible".into());
                 save(tx, tenant, id, &state).await?;
                 fact(service, tx, audit, &op, &state, false).await?;
                 continue;
             }
-            Err(e) => return Err(e),
-        };
-        if let Some(publication) = publication {
-            let expected = publication.snapshot();
-            if snapshot.identity != expected.identity || snapshot.length != expected.length {
-                return Err(Error::Conflict.into());
+            if state.native.step != Step::Complete || command.status() != dc::Status::Applied {
+                continue;
             }
-            if let Publication::Failed(_, reason) = publication {
-                state.transfer = Transfer::Blocked;
-                state.reason = Some(reason.into());
+            let snapshot = match snapshot(service, tx, &op, &state, now).await {
+                Ok(v) => v,
+                Err(Fault::Request(Error::Unavailable(Failure::NativeInputIntegrity))) => {
+                    state.transfer = Transfer::Blocked;
+                    state.reason = Some("diagnostic_source_integrity".into());
+                    save(tx, tenant, id, &state).await?;
+                    fact(service, tx, audit, &op, &state, false).await?;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+            if let Some(publication) = publication {
+                let expected = publication.snapshot();
+                if snapshot.identity != expected.identity || snapshot.length != expected.length {
+                    return Err(Error::Conflict.into());
+                }
+                if let Publication::Failed(_, reason) = publication {
+                    state.transfer = Transfer::Blocked;
+                    state.reason = Some(reason.into());
+                    save(tx, tenant, id, &state).await?;
+                    fact(service, tx, audit, &op, &state, false).await?;
+                    return Ok(None);
+                }
+                let Publication::Ready(_, verified) = publication else {
+                    unreachable!("failure settled above")
+                };
+                let identity = snapshot.identity.clone();
+                let artifact = verified.artifact.clone();
+                let (_, fresh) = tx
+                    .with_connection(move |c| {
+                        Box::pin(async move {
+                            Ok(rss_mdm_content_service::diagnostic::record_in(
+                                c, tenant, &identity, &artifact,
+                            )
+                            .await)
+                        })
+                    })
+                    .await?
+                    .map_err(content)?;
+                state.transfer = Transfer::Ready;
+                state.reason = None;
                 save(tx, tenant, id, &state).await?;
-                fact(service, tx, audit, &op, &state, false).await?;
+                fact(service, tx, audit, &op, &state, !fresh).await?;
                 return Ok(None);
             }
-            let Publication::Ready(_, verified) = publication else {
-                unreachable!("failure settled above")
-            };
-            let identity = snapshot.identity.clone();
-            let artifact = verified.artifact.clone();
-            let (_, fresh) = tx
-                .with_connection(move |c| {
-                    Box::pin(async move {
-                        Ok(rss_mdm_content_service::diagnostic::record_in(
-                            c, tenant, &identity, &artifact,
-                        )
-                        .await)
-                    })
-                })
-                .await?
-                .map_err(content)?;
-            state.transfer = Transfer::Ready;
-            state.reason = None;
-            save(tx, tenant, id, &state).await?;
-            fact(service, tx, audit, &op, &state, !fresh).await?;
+            return Ok(Some(snapshot));
+        }
+        if publication.is_some() {
             return Ok(None);
         }
-        return Ok(Some(snapshot));
     }
-    Ok(None)
 }
 async fn save(tx: &mut PgTransaction<'_>, tenant: TenantId, id: Uuid, state: &State) -> Result<()> {
     let state = state.clone();
