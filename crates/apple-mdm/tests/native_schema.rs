@@ -1303,12 +1303,7 @@ fn ddm_projection_separates_native_versions_from_unassociated_status_quality() {
     )
     .unwrap();
     assert!(stable.synchronized);
-    assert!(
-        stable
-            .items
-            .get("device.operating-system.version")
-            .is_none()
-    );
+    assert!(!stable.items.contains_key("device.operating-system.version"));
     assert!(
         stable
             .unknown_items
@@ -1336,7 +1331,7 @@ fn ddm_projection_separates_native_versions_from_unassociated_status_quality() {
         restored.observe(&unassociated).unwrap();
         let value = restored.finish().unwrap();
         assert!(value.synchronized);
-        assert!(value.items.get("device.operating-system.version").is_none());
+        assert!(!value.items.contains_key("device.operating-system.version"));
         assert!(
             value
                 .unknown_items
