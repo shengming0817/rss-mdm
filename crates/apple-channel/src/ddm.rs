@@ -23,6 +23,7 @@ pub(crate) use reports::{observation, withdrawal_published};
 
 #[derive(Serialize, Deserialize)]
 struct Publication {
+    input_version: String,
     version: String,
     owner: String,
     inputs: Vec<DeclarationInput>,
@@ -216,7 +217,8 @@ pub(crate) async fn publish(
         command.operation,
         command.owner.clone(),
         Publication {
-            version: command.input_version.clone(),
+            input_version: command.input_version.clone(),
+            version: command.operation.to_string(),
             owner: command.owner.clone(),
             inputs,
             assets: command.assets.clone(),

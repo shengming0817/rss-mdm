@@ -283,7 +283,7 @@ pub(crate) async fn observation(
         }
     }
     Ok(Some(
-        serde_json::json!({"protocol":"mdm.apple","observationScope":"declarations","inputVersion":publication.version,"expected":set.manifest()["Declarations"],"synchronization":if retired.is_some(){"withdrawn"}else{"published"},"receivedAt":received_at,"nativeStatus":projection,"effect":"unverified","compliance":"unknown"}),
+        serde_json::json!({"protocol":"mdm.apple","observationScope":"declarations","inputVersion":publication.input_version,"expected":set.manifest()["Declarations"],"synchronization":if retired.is_some(){"withdrawn"}else{"published"},"receivedAt":received_at,"nativeStatus":projection,"effect":"unverified","compliance":"unknown"}),
     ))
 }
 
