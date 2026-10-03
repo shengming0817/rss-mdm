@@ -153,24 +153,28 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
             && state["commandStatus"] != "applied",
         "unverified bundle promoted to installed: {state}"
     );
-    let input = json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("managed-apple-agent"),"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v6","mdm.enrollment.v6"]});
-    let url = format!("{}/api/agent/v6/managed-registrations", peer.origin);
+    let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("managed-apple-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v6","mdm.enrollment.v6"]}});
+    let url = format!("{}/api/agent/enroll/v1/native-grants", peer.origin);
     for (field, value, code) in [
-        ("wireVersion", json!(3), "unsupported_wire"),
+        ("wireVersion", json!(3), "malformed_request"),
         (
             "capabilities",
             json!(["inventory.basic.v3"]),
-            "unsupported_capability",
+            "malformed_request",
         ),
         (
             "capabilities",
             json!(["inventory.collect.v6", "inventory.collect.v6"]),
-            "unsupported_capability",
+            "malformed_request",
         ),
         ("deviceId", json!("untrusted"), "malformed_request"),
     ] {
         let mut invalid = input.clone();
-        invalid[field] = value;
+        if field == "capabilities" {
+            invalid["runtime"][field] = value;
+        } else {
+            invalid[field] = value;
+        }
         let response = peer.client.post(&url).json(&invalid).send().await?;
         ensure!(response.status() == StatusCode::BAD_REQUEST);
         ensure!(response.json::<serde_json::Value>().await?["code"] == code);
@@ -182,11 +186,20 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         status == StatusCode::CREATED,
         "register {status}: {receipt}"
     );
-    ensure!(receipt["deviceId"] != case_device());
+    ensure!(receipt["state"] == "available");
     let response = peer.client.post(&url).json(&input).send().await?;
     ensure!(response.status() == StatusCode::OK);
     ensure!(response.json::<serde_json::Value>().await? == receipt);
     ensure!(pg(&format!("SELECT count(*) FROM mdm_apple.attempts WHERE tenant_id='{}' AND operation='{operation}' AND phase='execute'",case_tenant()))?.trim()=="1");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.agent_grants WHERE tenant_id='{}' AND source='native' AND (native_authority ? 'secret' OR native_authority ? 'input')",case_tenant()))?.trim()=="0", "native authority must not persist bootstrap secrets");
+    let receipt = crate::test_support::agent::complete_grant(
+        f.app.agent_enrollment.as_ref().unwrap(),
+        &receipt,
+        &input,
+        &credential("managed-apple-agent"),
+    )
+    .await?;
+    ensure!(receipt["deviceId"] != case_device());
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id='{}' AND channel='agent'",case_tenant()))?.trim()=="1");
     let state = f.operation(operation).await?;
     ensure!(

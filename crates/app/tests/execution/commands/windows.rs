@@ -1790,7 +1790,7 @@ async fn full_user_context_is_exact_and_login_availability_is_session_local() ->
                 rss_mdm_inventory::ReportSource::MdmWindows,
                 rss_mdm_registration_service::Purpose::Primary,
             )
-            .credential(credential.fingerprint()),
+            .credential(credential.fingerprint())?,
         )
         .await?;
     ensure!(principal.user_context() == Some(peer.intent.registration));

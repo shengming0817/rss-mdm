@@ -61,7 +61,7 @@ async fn console_pending_directory_and_permission_changes() -> Result<()> {
     )
     .await?;
     browser.operation = Some(uuid::Uuid::new_v4());
-    let (status, enrollment) = browser.call(&router, Method::POST, "/api/v3/enrollments", Some(json!({"deviceId":device,"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"agent.builtin"}))).await?;
+    let (status, enrollment) = browser.call(&router, Method::POST, "/api/v3/enrollments", Some(json!({"deviceId":device,"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows","windowsProfile":"Device"}))).await?;
     ensure!(
         status == StatusCode::OK,
         "enrollment: {status} {enrollment}"
@@ -130,7 +130,7 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
     let revoked = case::name("b-revoked");
     let registered = case::name("c-registered");
     browser.operation = Some(Uuid::new_v4());
-    ensure!(browser.call(&router,Method::POST,"/api/v3/enrollments",Some(json!({"deviceId":pending,"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"agent.builtin"}))).await?.0==StatusCode::OK);
+    ensure!(browser.call(&router,Method::POST,"/api/v3/enrollments",Some(json!({"deviceId":pending,"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows","windowsProfile":"Device"}))).await?.0==StatusCode::OK);
     let principal = crate::device::test_support::admin(case_tenant(), "other-a").await?;
     let service = rss_mdm_registration_service::DeviceService::new(
         fixture.access.registration(),
@@ -139,10 +139,10 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
     );
     let credential = rss_mdm_registration_service::ChannelMount::new(
         rss_request_context::TenantId::parse(case_tenant())?,
-        rss_mdm_inventory::ReportSource::AgentBuiltin,
+        rss_mdm_inventory::ReportSource::MdmWindows,
         rss_mdm_registration_service::Purpose::Primary,
     )
-    .credential(crate::test_support::secret("console-agent"));
+    .credential(crate::test_support::secret("console-agent"))?;
     let (_, receipt) =
         crate::device::test_support::bind(&service, &principal, &credential, revoked, 0).await?;
     service

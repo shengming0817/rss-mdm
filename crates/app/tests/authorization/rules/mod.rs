@@ -356,7 +356,7 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
         )?,
     )
     .await?;
-    let payload = json!({"deviceId":"foundation-device","password":crate::enrollment::random(),"source":"agent.builtin"});
+    let payload = json!({"deviceId":"foundation-device","password":crate::enrollment::random(),"source":"mdm.windows","windowsProfile":"Device"});
     member.operation = Some(Uuid::new_v4());
     let created = member
         .call(

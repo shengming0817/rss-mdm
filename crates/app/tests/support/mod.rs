@@ -417,9 +417,13 @@ pub(crate) async fn agent_call(
     let mut request = Request::builder()
         .method(method)
         .uri(path)
-        .header("host", "mdm.example.test");
-    if let Some(secret) = bearer {
-        request = request.header("authorization", format!("Bearer {secret}"));
+        .header("host", "mdm.example.test:9445");
+    if let Some(label) = bearer {
+        if let Some(peer) = agent::evidence(label) {
+            request = request.extension(peer)
+        } else {
+            request = request.header("authorization", format!("Bearer {label}"))
+        }
     }
     let body = if let Some(value) = body {
         request = request.header("content-type", "application/json");
@@ -468,7 +472,7 @@ pub(crate) async fn wait_agent_status(
             let (status, body) = agent_call(
                 router,
                 Method::GET,
-                &format!("/api/agent/v6/reports/{report_id}"),
+                &format!("/api/agent/runtime/v1/reports/{report_id}"),
                 Some(credential),
                 None,
             )

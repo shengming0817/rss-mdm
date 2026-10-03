@@ -42,7 +42,7 @@ async fn report(f: &Fixture, sequence: u64, state: &str) -> Result<()> {
     let response = agent_call(
         &f.router,
         Method::POST,
-        "/api/agent/v6/reports",
+        "/api/agent/runtime/v1/reports",
         Some(case_credential()),
         Some(input.clone()),
     )
@@ -53,7 +53,7 @@ async fn report(f: &Fixture, sequence: u64, state: &str) -> Result<()> {
             == agent_call(
                 &f.router,
                 Method::POST,
-                "/api/agent/v6/reports",
+                "/api/agent/runtime/v1/reports",
                 Some(case_credential()),
                 Some(input)
             )

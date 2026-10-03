@@ -226,6 +226,7 @@ impl Host {
         let original: serde_json::Value =
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
         value["content"] = original["content"].clone();
+        value["agent_pki"] = original["agent_pki"].clone();
         value["native_protection_key_file"] = original["native_protection_key_file"].clone();
         if let Some(agent) = agent {
             value["agent_installation"] = agent;
@@ -299,8 +300,22 @@ impl Host {
         )
         .await
         .map_err(|e| anyhow::anyhow!("command startup: {e:?}"))?;
+        let agent_audit = command_audit.clone();
+        let agent_pki = config.agent_pki.load(agent_audit.clone(), clock.clone())?;
+        let agent_enrollment = agent_pki
+            .as_ref()
+            .map(|pki| {
+                crate::test_support::agent::application_service(
+                    pki,
+                    &store,
+                    agent_audit.clone(),
+                    execution.service.clone(),
+                )
+            })
+            .transpose()?;
         let app = Arc::new(Assembly {
-            agent_pki: None,
+            agent_enrollment,
+            agent_pki,
             certificate_archive: crate::certificate_archive::assemble(
                 &store,
                 command_audit.clone(),
@@ -345,12 +360,20 @@ impl Host {
         });
         let ingress_clock = IngressClock::new();
         let crate::native::Routers {
-            browser, listeners, ..
+            mut browser,
+            mut listeners,
+            ..
         } = crate::api::from_state(
             app.clone(),
             "mdm.example.test".into(),
             ingress_clock.clone(),
         );
+        if let Some(i) = listeners
+            .iter()
+            .position(|(kind, _)| *kind == crate::native::NativeListenerKind::Agent)
+        {
+            browser = browser.merge(listeners.remove(i).1.router);
+        }
         let root_cert = reqwest::Certificate::from_pem(&std::fs::read(root.join("ca.crt"))?)?;
         let client = reqwest::Client::builder()
             .no_proxy()

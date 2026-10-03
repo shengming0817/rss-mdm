@@ -9,7 +9,7 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
     let (access, service, admin_a, mut root) = fixture().await?;
     let other = admin(case_a(), "other-a").await?;
     let mdm = proof(case_a(), Channel::Mdm, 1);
-    let agent = proof(case_a(), Channel::Agent, 1);
+    let independent = proof(case_a(), Channel::Mdm, 20);
     bind(
         &service,
         &admin_a,
@@ -21,13 +21,12 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
     let (_, other_channel) = bind(
         &service,
         &admin_a,
-        &agent,
-        crate::test_support::case::name("same-serial"),
+        &independent,
+        crate::test_support::case::name("independent-native"),
         0,
     )
     .await?;
-    sqlx::query("INSERT INTO mdm_agent.bindings(tenant_id,registration,wire_version,capabilities,platform,architecture,execution_context) VALUES($1::uuid,$2::uuid,6,'[\"inventory.collect.v6\"]','macos','aarch64',$3::jsonb)")
-        .bind(case_a()).bind(other_channel.registration.to_string()).bind(serde_json::json!({"revision":1,"osVersion":[14,0,0,0],"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false})).execute(&mut root).await?;
+
     let newer = proof(case_a(), Channel::Mdm, 2);
     let (next, second) = bind(
         &service,
@@ -159,7 +158,7 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
         service
             .revoke(
                 &admin_a,
-                crate::test_support::case::name("same-serial"),
+                crate::test_support::case::name("independent-native"),
                 other_channel.registration,
                 Uuid::new_v4()
             )
@@ -170,7 +169,7 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
         .await?;
     assert!(
         service
-            .authorize_report(&agent, ReportSource::AgentBuiltin)
+            .authorize_report(&independent, ReportSource::AgentBuiltin)
             .await
             .is_ok()
     );
@@ -287,7 +286,7 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
     );
     assert_eq!(
         restart
-            .authorize_report(&agent, ReportSource::AgentBuiltin)
+            .authorize_report(&independent, ReportSource::AgentBuiltin)
             .await?
             .0
             .registration(),

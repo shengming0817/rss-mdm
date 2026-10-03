@@ -316,7 +316,7 @@ app_family('execution.software',
 for name in ('execution.software.offer', 'execution.software.content', 'execution.software.recovery', 'planning.software'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs +
         ('crates/app/tests/support/software_execution.rs',))
-for name in ('execution.agent.delivery', 'execution.agent.content', 'execution.agent.history', 'execution.agent.poll', 'execution.agent.recovery', 'planning.agent_policy', 'planning.frequency', 'planning.remote', 'planning.onboarding'):
+for name in ('execution.agent.delivery', 'execution.agent.content', 'execution.agent.history', 'execution.agent.poll', 'execution.agent.recovery', 'planning.agent_policy', 'planning.frequency', 'planning.remote', 'planning.onboarding','execution.commands.onboarding','apple.onboarding'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs +
         ('crates/app/tests/support/agent_execution.rs',))
 add('software.catalog', build=Build('rss-mdm-software-service', 'test', 'catalog_t2'), selectors=('',),
@@ -641,16 +641,16 @@ consume(('crates/resource/src/script.rs', 'crates/execution-service/src/input_pr
 consume(('crates/execution-service/src/freeze_inputs.rs', 'crates/flow-service/src/resource_catalog/mod.rs'),
         'planning.agent_policy planning.remote planning.onboarding')
 TASK_CONSUMERS = 'planning.onboarding planning.policy planning.agent_policy planning.frequency planning.remote planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
-consume(('crates/agent-wire/src/tasks.rs', 'crates/agent-wire/schema/task-*.json',
-         'crates/agent-wire/schema/signed-task-v6.schema.json', 'crates/execution-service/src/task_signing.rs'), TASK_CONSUMERS)
+consume(('crates/agent-wire/src/tasks.rs', 'crates/agent-wire/schema/runtime/task-*.json',
+         'crates/agent-wire/schema/runtime/signed-task-v6.schema.json', 'crates/execution-service/src/task_signing.rs'), TASK_CONSUMERS)
 # lib.rs owns shared identities, capability, errors, registration and report shapes.
-consume(('crates/agent-wire/src/lib.rs','crates/agent-wire/schema/error-body-v6.schema.json',
-         'crates/agent-wire/schema/agent-v6.schema-manifest.json'), TASK_CONSUMERS + ' agent.registration agent.reports execution.commands.onboarding apple.onboarding')
-consume(('crates/agent-wire/schema/registration-*.json',), 'agent.registration')
-consume(('crates/agent-wire/schema/report-*.json',), 'agent.reports planning.onboarding')
+consume(('crates/agent-wire/src/lib.rs','crates/agent-wire/src/runtime.rs','crates/agent-wire/schema/runtime/error-body-v6.schema.json',
+         'crates/agent-wire/schema/runtime/agent-v6.schema-manifest.json'), TASK_CONSUMERS + ' agent.registration agent.reports execution.commands.onboarding apple.onboarding')
+consume(('crates/agent-wire/schema/runtime/binding-profile-*.json',), 'agent.registration')
+consume(('crates/agent-wire/schema/runtime/report-*.json',), 'agent.reports planning.onboarding')
 consume(('crates/agent-wire/src/onboarding.rs',),
         'agent.reports planning.onboarding execution.commands.onboarding apple.onboarding execution.agent.delivery execution.agent.poll execution.agent.recovery')
-consume(('crates/agent-wire/schema/managed-registration-request-v6.schema.json',),
+consume(('crates/agent-wire/schema/enroll/native-grant-request.schema.json',),
         'execution.commands.onboarding apple.onboarding')
 # Native onboarding shares one durable installation and managed-registration owner.
 consume(('crates/execution-service/src/native_installation.rs',
@@ -1398,3 +1398,9 @@ REPRESENTATIVE_INPUTS = {
     'hack/t2_context.py': PG_REPRESENTATIVES,
     'hack/t2_hosts.py': ('host.lifecycle',),
 }
+
+# Every runtime fixture signs a durable candidate and obtains real TLS possession evidence.
+for name in ('agent.registration','agent.reports','execution.agent.delivery','execution.agent.poll','execution.agent.content','execution.agent.recovery','execution.agent.history','execution.software.offer','execution.software.content','execution.software.recovery','planning.onboarding','execution.commands.onboarding','apple.onboarding'):
+    if name in MODULES:
+        MODULES[name]=replace(MODULES[name],fixtures=tuple(dict.fromkeys((*MODULES[name].fixtures,'identity','apple','scep','windows','agent_pki'))))
+consume(('crates/registration-service/src/agent*','crates/agent-wire/schema/enroll/*','crates/agent-channel/src/enroll.rs'), 'agent.pki agent.registration agent.reports execution.agent.delivery')
