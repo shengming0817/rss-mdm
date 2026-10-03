@@ -641,6 +641,11 @@ consume(('crates/resource/src/script.rs',),
 consume(('crates/execution-service/src/input_preparation.rs',
          'crates/execution-service/src/input_preparation/*'),
         'planning.policy planning.agent_policy planning.remote planning.software planning.onboarding planning.frequency execution.agent.delivery execution.agent.content execution.agent.recovery execution.commands.onboarding windows.management apple.collection')
+consume(('crates/execution-service/src/input_preparation.rs',
+         'crates/execution-service/src/input_preparation/request.rs',
+         'crates/execution-service/src/input_preparation/native.rs',
+         'crates/execution-service/src/input_preparation/publication.rs'),
+        'execution.commands.configuration')
 consume(('crates/execution-service/src/freeze_inputs.rs', 'crates/flow-service/src/resource_catalog/mod.rs'),
         'planning.agent_policy planning.remote planning.onboarding')
 TASK_CONSUMERS = 'planning.onboarding planning.policy planning.agent_policy planning.frequency planning.remote planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'

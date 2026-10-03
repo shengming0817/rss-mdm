@@ -101,6 +101,18 @@ class ModuleImpactTests(unittest.TestCase):
                             <= set(self.selected(path)), path)
 
 
+    def test_configuration_preparation_selects_lifecycle_consumer(self):
+        for path in ('crates/execution-service/src/input_preparation.rs',
+                     'crates/execution-service/src/input_preparation/request.rs',
+                     'crates/execution-service/src/input_preparation/native.rs',
+                     'crates/execution-service/src/input_preparation/publication.rs'):
+            with self.subTest(path=path):
+                self.assertIn('execution.commands.configuration', self.selected(path))
+        for path in ('crates/execution-service/src/input_preparation/preview.rs',
+                     'crates/execution-service/src/input_preparation/software.rs'):
+            with self.subTest(path=path):
+                self.assertNotIn('execution.commands.configuration', self.selected(path))
+
     def test_native_rules_select_configuration_consumer(self):
         for path in ('crates/windows-mdm/src/native/request.rs', 'crates/windows-mdm/src/native/verification.rs'):
             self.assertIn('execution.commands.configuration', self.selected(path), path)
