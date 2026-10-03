@@ -53,6 +53,7 @@ pub enum WindowsReception {
 }
 /// Protocol preparation retains adapter-private session state without transferring its owner.
 pub struct PreparedWindows {
+    pub declared_summaries: Vec<rss_mdm_windows_mdm::native::declared::Summary>,
     pub provider_id: String,
     pub management_urls: Vec<String>,
     pub user_available: bool,

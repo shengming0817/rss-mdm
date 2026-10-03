@@ -196,7 +196,16 @@ async fn prepare(
     } else {
         vec![]
     };
+    let mut declared_summaries = Vec::new();
+    if authenticated {
+        for command in &raw.commands {
+            if let Command::Alert { alert: syncml::Alert::DeclaredConfiguration { summary, .. }, .. } = command {
+                declared_summaries.extend(rss_mdm_windows_mdm::native::declared::summaries(&summary.0).map_err(|_| Error::Malformed)?);
+            }
+        }
+    }
     let prepared = PreparedWindows {
+        declared_summaries,
         user_available: authenticated && login_user,
         provider_id: windows.provider(p.purpose()),
         management_urls: windows.management_urls(p.purpose()),

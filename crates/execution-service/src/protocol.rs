@@ -192,19 +192,6 @@ async fn manage_on(
             alert: Alert::SessionAbort,
         });
     }
-    let mut declared_summaries = Vec::new();
-    for command in raw.commands.iter().filter(|_| authenticated) {
-        if let Command::Alert {
-            alert: Alert::DeclaredConfiguration { summary, .. },
-            ..
-        } = command
-        {
-            declared_summaries.extend(
-                rss_mdm_windows_mdm::native::declared::summaries(&summary.0)
-                    .map_err(|_| Error::Malformed)?,
-            );
-        }
-    }
     let command_pending = native::send_on(
         source,
         c,
@@ -217,7 +204,7 @@ async fn manage_on(
             provider_id: &prepared.provider_id,
             management_urls: &prepared.management_urls,
             limits: &prepared.limits,
-            declared_summaries: &declared_summaries,
+            declared_summaries: &prepared.declared_summaries,
         },
     )
     .await?;
@@ -332,9 +319,9 @@ async fn settle_one(
     let evidence = rows
         .into_iter()
         .map(|row| {
-            Ok(crate::native_rules::ItemEvidence {
-                phase: AttemptPhase::parse(&row.try_get::<String, _>("phase")?)?,
-                kind: row.try_get("kind")?,
+            Ok(rss_mdm_windows_mdm::native::receipt::ItemEvidence {
+                phase: AttemptPhase::parse(&row.try_get::<String, _>("phase")?)?.receipt_role(),
+                kind: rss_mdm_windows_mdm::native::receipt::CommandKind::parse(&row.try_get::<String,_>("kind")?).map_err(|_|Error::Malformed)?,
                 status: row.try_get("status")?,
                 receipt_accepted: row.try_get::<Option<bool>, _>("receipt_accepted")? == Some(true),
                 has_value: row.try_get::<Option<Vec<u8>>, _>("value")?.is_some(),
@@ -343,11 +330,11 @@ async fn settle_one(
         })
         .collect::<Result<Vec<_>>>()?;
     let decision =
-        crate::native_rules::settle(&evidence, package == channels::PackageState::Complete);
+        rss_mdm_windows_mdm::native::receipt::settle(&evidence, package == channels::PackageState::Complete);
     let (event, query_complete, values_complete) = match decision {
-        crate::native_rules::Settlement::Wait => return Ok(()),
-        crate::native_rules::Settlement::Reject => (dc::DeviceEvent::Rejected, false, false),
-        crate::native_rules::Settlement::Receive {
+        rss_mdm_windows_mdm::native::receipt::Settlement::Wait => return Ok(()),
+        rss_mdm_windows_mdm::native::receipt::Settlement::Reject => (dc::DeviceEvent::Rejected, false, false),
+        rss_mdm_windows_mdm::native::receipt::Settlement::Receive {
             query_complete,
             values_complete,
         } => (dc::DeviceEvent::Received, query_complete, values_complete),
@@ -481,8 +468,7 @@ async fn effect_assessment(
     if plan.readback().is_none() {
         return Ok(plan.assess(&[]));
     }
-    let tenant = tx.tenant_id().to_string();
-    let rows=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT a.id AS attempt,i.command,i.item_ordinal,i.kind,i.uri,i.status,i.value,i.receipt_accepted,i.result_accepted FROM mdm_commands.attempt_items i JOIN mdm_commands.attempts a ON(a.tenant_id,a.id)=(i.tenant_id,i.attempt) WHERE a.tenant_id=$1::uuid AND a.operation=$2 AND a.phase='observe' AND a.ordinal=(SELECT max(ordinal) FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='observe' AND NOT EXISTS(SELECT 1 FROM mdm_commands.attempt_items pending WHERE (pending.tenant_id,pending.attempt)=(mdm_commands.attempts.tenant_id,mdm_commands.attempts.id) AND (pending.receipt_accepted IS DISTINCT FROM true OR pending.status IS NULL OR pending.status IN (101,202,206,213) OR (pending.kind='get' AND pending.status IN (200,214) AND (pending.value IS NULL OR pending.result_accepted IS DISTINCT FROM true))))) ORDER BY i.command,i.item_ordinal").bind(tenant).bind(id).fetch_all(c).await})).await?;
+    let rows = completed_observation(tx, id).await?;
     let addresses = request
         .management_addresses()
         .map_err(|_| Error::Malformed)?;
@@ -574,4 +560,30 @@ pub(super) async fn settle_dispatch_failures(
         crate::wake::wake_native_in(service.source.clone(), tx, &op.device).await?;
     }
     Ok(())
+}
+
+/// Storage selects identity/order; the Windows owner decides native completeness.
+async fn completed_observation(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Vec<sqlx::postgres::PgRow>> {
+    use rss_mdm_windows_mdm::native::receipt::{ReceiptRole, ItemEvidence};
+    let mut before = i64::MAX;
+    loop {
+        let tenant = tx.tenant_id().to_string();
+        let candidates = tx.with_connection(move |c|Box::pin(async move {
+            sqlx::query("SELECT id,ordinal FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='observe' AND ordinal<$3 ORDER BY ordinal DESC LIMIT 64")
+                .bind(tenant).bind(id).bind(before).fetch_all(c).await
+        })).await?;
+        if candidates.is_empty() { return Ok(Vec::new()); }
+        for candidate in candidates {
+            before = candidate.try_get("ordinal")?;
+            let attempt:Uuid = candidate.try_get("id")?;
+            let tenant = tx.tenant_id().to_string();
+            let rows = tx.with_connection(move |c|Box::pin(async move {
+                sqlx::query("SELECT a.id AS attempt,i.command,i.item_ordinal,i.kind,i.uri,i.status,i.value,i.receipt_accepted,i.result_accepted FROM mdm_commands.attempt_items i JOIN mdm_commands.attempts a ON(a.tenant_id,a.id)=(i.tenant_id,i.attempt) WHERE a.tenant_id=$1::uuid AND a.id=$2 ORDER BY i.command,i.item_ordinal")
+                    .bind(tenant).bind(attempt).fetch_all(c).await
+            })).await?;
+            let evidence = rows.iter().map(|r|native::item_evidence(r,ReceiptRole::Observe))
+                .collect::<std::result::Result<Vec<_>,_>>()?;
+            if !evidence.is_empty() && evidence.iter().all(ItemEvidence::complete) { return Ok(rows); }
+        }
+    }
 }

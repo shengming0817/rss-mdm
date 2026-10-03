@@ -13,4 +13,3 @@ fn summary_keeps_execution_evidence_and_strips_nested_output_streams() {
     );
     assert!(!value.to_string().contains("canary"));
 }
-

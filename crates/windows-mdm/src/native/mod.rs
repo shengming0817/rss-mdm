@@ -16,6 +16,7 @@ mod resolved;
 pub use resolved::{AuthorizationTarget, Prepared, Resolved};
 mod value;
 pub mod verification;
+pub mod receipt;
 pub use request::{Compiled, Execution, Object, Request};
 mod xsd;
 

@@ -93,7 +93,7 @@ pub(super) async fn receive(
             .bind(p.tenant().to_string()).bind(attempt).bind(msg).bind(command).bind(code).bind(accepted).execute(&mut *c).await.map_err(db)?;
         if terminal_status(code) {
             // A native error is evidence even before the object closes. Success is not.
-            let logical_accept = native_rules::accepts_frame(
+            let logical_accept = receipt::accepts_frame(
                 code,
                 accepted == Some(true),
                 frame.try_get("end_byte").map_err(db)?,
