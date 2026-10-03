@@ -196,9 +196,6 @@ async fn prepare(
     } else {
         vec![]
     };
-    if authenticated {
-        crate::device::linked::ready_in(c, p).await?;
-    }
     let prepared = PreparedWindows {
         user_available: authenticated && login_user,
         provider_id: windows.provider(p.purpose()),
@@ -298,6 +295,9 @@ impl WindowsSession for Session {
     ) -> rss_mdm_execution_service::channels::Pending<'a, bool> {
         Box::pin(async move {
             let result: Result<bool, Error> = async {
+                if self.stored.is_none() {
+                    supersede_sessions(c, &mut self.facts, p).await?;
+                }
                 if p.purpose() == rss_mdm_registration_service::Purpose::WindowsDeclared {
                     self.collection_complete = true;
                     return Ok(false);

@@ -318,10 +318,10 @@ ALTER TABLE ONLY mdm_planning.configuration_devices FORCE ROW LEVEL SECURITY;
 CREATE TABLE mdm_planning.configuration_objects (
     tenant_id uuid NOT NULL, device text NOT NULL, user_key text NOT NULL,
     platform text NOT NULL CHECK(platform IN ('windows','macos')),
-    object_kind text NOT NULL CHECK(object_kind IN ('csp','profile','payload','declaration')),
+    object_kind text NOT NULL CHECK(object_kind IN ('csp','mi','profile','payload','declaration')),
     object_key text NOT NULL CHECK(octet_length(object_key) BETWEEN 1 AND 2048),
     operation uuid, digest bytea CHECK(digest IS NULL OR octet_length(digest)=32),
-    diagnosis text CHECK(diagnosis IN ('waiting_scope','waiting_registration','waiting_capability','not_applicable','configuration_conflict','native_group_conflict','removal_blocked_by_shared_unit','removing','unassigned')),
+    diagnosis text CHECK(diagnosis IN ('waiting_scope','waiting_registration','windows_declared_enrollment_not_ready','waiting_capability','not_applicable','configuration_conflict','native_group_conflict','removal_blocked_by_shared_unit','removing','unassigned')),
     PRIMARY KEY(tenant_id,device,user_key,platform,object_kind,object_key)
 );
 
@@ -555,4 +555,3 @@ $$;
 REVOKE ALL ON FUNCTION mdm_commands.windows_pending_operations(uuid,bigint,uuid) FROM PUBLIC;
 
 COMMIT;
-

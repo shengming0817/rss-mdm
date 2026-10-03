@@ -120,6 +120,11 @@ pub(crate) async fn published(client: &mut Client, policy: Uuid) -> anyhow::Resu
                 let mut ready = true;
                 for id in &ids {
                     let read = client.call(Method::GET, &format!("/{id}"), None).await?;
+                    ensure!(
+                        !matches!(read.1["commandStatus"].as_str(), Some("cancelled" | "rejected" | "timed_out" | "superseded")),
+                        "configuration operation {id} terminated before publication: status={}, failure={}",
+                        read.1["commandStatus"], read.1["dispatchFailure"]
+                    );
                     ready &= read.1["commandStatus"] == "published";
                 }
                 if ready {

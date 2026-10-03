@@ -70,32 +70,38 @@ pub(crate) async fn policy(
     State(app): State<Arc<HttpState>>,
     headers: HeaderMap,
     bytes: Bytes,
-) -> Result<Response, Error> {
-    let message = decode(
+) -> Response {
+    let message = match decode(
         &bytes,
         &headers,
         Operation::GetPolicies,
         &app,
         "/EnrollmentServer/LinkedPolicy.svc",
-    )?;
-    let security = message.header.security.as_ref().ok_or(Error::Malformed)?;
-    if security.certificate.is_none() || security.username.is_some() {
-        return Err(Error::Unsupported);
-    }
-    // XCEP is policy retrieval. Exported BST possession is not parent authentication.
-    response(
-        Some(&message),
-        Body::GetPoliciesResponse(soap::Policy {
-            policy_id: "".into(),
-            common_name: "RSS MDM WinDC".into(),
-            validity_seconds: 90 * 86400,
-            renewal_seconds: 30 * 86400,
-            minimum_key_length: 2048,
-            major_revision: 1,
-            minor_revision: 0,
-        }),
-        now(&app)?,
-    )
+    ) {
+        Ok(message) => message,
+        Err(error) => return fault(None, error),
+    };
+    let result = (|| {
+        let security = message.header.security.as_ref().ok_or(Error::Malformed)?;
+        if security.certificate.is_none() || security.username.is_some() {
+            return Err(Error::Unsupported);
+        }
+        // XCEP is policy retrieval. Exported BST possession is not parent authentication.
+        response(
+            Some(&message),
+            Body::GetPoliciesResponse(soap::Policy {
+                policy_id: "".into(),
+                common_name: "RSS MDM WinDC".into(),
+                validity_seconds: 90 * 86400,
+                renewal_seconds: 30 * 86400,
+                minimum_key_length: 2048,
+                major_revision: 1,
+                minor_revision: 0,
+            }),
+            now(&app)?,
+        )
+    })();
+    result.unwrap_or_else(|error| fault(Some(&message), error))
 }
 pub(crate) async fn current_parent(app: &HttpState, parent: Uuid) -> Result<(), Error> {
     let mut c = app
@@ -113,38 +119,52 @@ pub(crate) async fn issue(
     Extension(audit): Extension<RequestAudit>,
     headers: HeaderMap,
     bytes: Bytes,
-) -> Result<Response, Error> {
-    let message = decode(
+) -> Response {
+    let message = match decode(
         &bytes,
         &headers,
         Operation::Issue,
         &app,
         "/EnrollmentServer/LinkedEnrollment.svc",
-    )?;
+    ) {
+        Ok(message) => message,
+        Err(error) => return fault(None, error),
+    };
+    issue_message(&app, peer, &audit, &message, &bytes)
+        .await
+        .unwrap_or_else(|error| fault(Some(&message), error))
+}
+async fn issue_message(
+    app: &HttpState,
+    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    audit: &RequestAudit,
+    message: &soap::Message,
+    bytes: &[u8],
+) -> Result<Response, Error> {
     let Body::Issue(input) = &message.body else {
         return Err(Error::Malformed);
     };
     if let soap::CertificateRequest::RenewalPkcs7(cms) = &input.request {
         let provision = crate::renewal::issue(
-            &app,
+            app,
             &peer.ok_or(Error::Unauthorized)?.0,
             &cms.0,
-            &audit,
+            audit,
             Purpose::WindowsDeclared,
         )
         .await?;
         return response(
-            Some(&message),
+            Some(message),
             Body::IssueResponse(soap::IssueResponse {
                 context: input.context.clone(),
                 provisioning: Secret(provision),
                 request_id: input.request_id.clone(),
                 disposition: None,
             }),
-            now(&app)?,
+            now(app)?,
         );
     }
-    let proof = app.windows()?.ca.linked_proof(&bytes, now(&app)?)?;
+    let proof = app.windows()?.ca.linked_proof(bytes, now(app)?)?;
     let parent = app
         .devices
         .management_principal(
@@ -179,7 +199,7 @@ pub(crate) async fn issue(
     let soap::CertificateRequest::Pkcs10(csr) = &input.request else {
         return Err(Error::Malformed);
     };
-    let (id, intent) = intent(&app, &parent, operation, proof.replay(), &csr.0, input).await?;
+    let (id, intent) = intent(app, &parent, operation, proof.replay(), &csr.0, input).await?;
     let certificate = if let Some(certificate) =
         issuance::issued_certificate(&app.access, &parent.tenant().to_string(), id).await?
     {
@@ -192,12 +212,12 @@ pub(crate) async fn issue(
         )?)?
     };
     complete(
-        &app,
+        app,
         &parent,
         id,
         &intent,
         &certificate,
-        &audit,
+        audit,
         proof.replay(),
     )
     .await?;
@@ -240,14 +260,14 @@ pub(crate) async fn issue(
     )
     .map_err(|_| Error::Malformed)?;
     response(
-        Some(&message),
+        Some(message),
         Body::IssueResponse(soap::IssueResponse {
             context: input.context.clone(),
             provisioning: Secret(provision),
             request_id: input.request_id.clone(),
             disposition: None,
         }),
-        now(&app)?,
+        now(app)?,
     )
 }
 async fn intent(

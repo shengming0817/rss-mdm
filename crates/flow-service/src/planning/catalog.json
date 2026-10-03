@@ -992,7 +992,7 @@
       "configuration_objects",
       "configuration_objects_diagnosis_check",
       "c",
-      "CHECK ((diagnosis = ANY (ARRAY['waiting_scope'::text, 'waiting_registration'::text, 'waiting_capability'::text, 'not_applicable'::text, 'configuration_conflict'::text, 'native_group_conflict'::text, 'removal_blocked_by_shared_unit'::text, 'removing'::text, 'unassigned'::text])))",
+      "CHECK ((diagnosis = ANY (ARRAY['waiting_scope'::text, 'waiting_registration'::text, 'windows_declared_enrollment_not_ready'::text, 'waiting_capability'::text, 'not_applicable'::text, 'configuration_conflict'::text, 'native_group_conflict'::text, 'removal_blocked_by_shared_unit'::text, 'removing'::text, 'unassigned'::text])))",
       true
     ],
     [
@@ -1013,7 +1013,7 @@
       "configuration_objects",
       "configuration_objects_object_kind_check",
       "c",
-      "CHECK ((object_kind = ANY (ARRAY['csp'::text, 'profile'::text, 'payload'::text, 'declaration'::text])))",
+      "CHECK ((object_kind = ANY (ARRAY['csp'::text, 'mi'::text, 'profile'::text, 'payload'::text, 'declaration'::text])))",
       true
     ],
     [

@@ -157,6 +157,33 @@ async fn lock_sessions(
     Ok(())
 }
 
+async fn supersede_sessions(
+    tx: &mut sqlx::PgConnection,
+    facts: &mut Vec<rss_mdm_audit_integration::Fact>,
+    principal: &DevicePrincipal,
+) -> Result<(), Error> {
+    let tenant = principal.tenant().to_string();
+    let registration = principal.registration().to_string();
+    if principal.purpose() == crate::device::Purpose::Primary {
+        let sessions: Vec<String> = sqlx::query_scalar("SELECT session_id FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state IN ('challenge','collecting')")
+            .bind(&tenant).bind(&registration).fetch_all(&mut *tx).await.map_err(db)?;
+        for session in sessions {
+            crate::collection::terminate_session(
+                tx,
+                facts,
+                &tenant,
+                &registration,
+                &session,
+                "superseded",
+            )
+            .await?;
+        }
+    }
+    sqlx::query("UPDATE mdm_access.management_sessions SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state IN ('challenge','collecting')")
+        .bind(&tenant).bind(&registration).execute(tx).await.map_err(db)?;
+    Ok(())
+}
+
 async fn collect(
     tx: &mut sqlx::PgConnection,
     effects: (&mut Vec<rss_mdm_audit_integration::Fact>, &RequestAudit),
@@ -188,23 +215,6 @@ async fn collect(
             .any(|c| matches!(c, Command::Results(_)))
     {
         return Err(Error::Unauthorized);
-    }
-    if stored.is_none() {
-        let sessions: Vec<String> = sqlx::query_scalar("SELECT session_id FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state IN ('challenge','collecting')")
-            .bind(&tenant).bind(&registration).fetch_all(&mut *tx).await.map_err(db)?;
-        for session in sessions {
-            crate::collection::terminate_session(
-                tx,
-                facts,
-                &tenant,
-                &registration,
-                &session,
-                "superseded",
-            )
-            .await?;
-        }
-        sqlx::query("UPDATE mdm_access.management_sessions SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state IN ('challenge','collecting')")
-                .bind(&tenant).bind(&registration).execute(&mut *tx).await.map_err(db)?;
     }
     let mut complete = false;
     if let Some(id) = run_id {

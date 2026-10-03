@@ -117,6 +117,12 @@ async fn manage_on(
         WindowsReception::Challenge(prepared) => (prepared, false),
         WindowsReception::Authenticated(prepared) => (prepared, true),
     };
+    if authenticated
+        && p.purpose() == crate::device::Purpose::WindowsDeclared
+        && crate::device::linked::ready_in(c, p).await?
+    {
+        native::wake_configuration(c, p).await?;
+    }
     for reference in &prepared.continuing {
         let eligible = match prepared
             .session
@@ -187,7 +193,7 @@ async fn manage_on(
         });
     }
     let mut declared_summaries = Vec::new();
-    for command in &prepared.input.commands {
+    for command in raw.commands.iter().filter(|_| authenticated) {
         if let Command::Alert {
             alert: Alert::DeclaredConfiguration { summary, .. },
             ..

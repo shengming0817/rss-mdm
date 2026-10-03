@@ -287,7 +287,18 @@ impl ExecutionService {
             let Frozen::Configuration { exit, .. } = frozen else {
                 return Err(Error::Malformed.into());
             };
-            let state = object_state(tx, device, &old.objects).await?;
+            let rows = object_rows(tx, device, &old.objects).await?;
+            let state = rows.first().and_then(|r| r.0).filter(|id| {
+                rows.iter().zip(&old.objects).all(|(row, object)| {
+                    row.0 == Some(*id) && row.1.as_ref() == old.object_digests.get(object)
+                })
+            });
+            if state.is_none() {
+                // A conflicting desired claim never established this native publication.
+                // Withdraw only this owner's expectation, without touching another owner's work.
+                withdraw_claims(tx, device, policy).await?;
+                continue;
+            }
             let mut removal_contracts = BTreeSet::new();
             let mut retain = !matches!(exit, Exit::Remove);
             for (co_policy, co_frozen) in &prior {
@@ -565,6 +576,9 @@ async fn desired_in(
             let p = policies::storage::read_in(&service.policy_reader, tx, id)
                 .await?
                 .ok_or(Error::NotFound)?;
+            if !p.enabled {
+                continue;
+            }
             let eligible = policies::storage::eligible_in(&service.source, tx, &p, device)
                 .await?
                 .is_some();
@@ -695,6 +709,20 @@ async fn replace_claims(
         sqlx::query("DELETE FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND platform=$4 AND object_kind=$5 AND object_key=$6 AND NOT(policy=ANY($7))").bind(&tenant).bind(&device).bind(&o.user).bind(&o.platform).bind(&o.kind).bind(&o.key).bind(ids).execute(&mut *c).await?;
         for &(policy,version) in &policies {sqlx::query("INSERT INTO mdm_planning.configuration_claims(tenant_id,device,user_key,platform,object_kind,object_key,policy,version,operation) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(tenant_id,policy,device,user_key,platform,object_kind,object_key) DO UPDATE SET version=excluded.version,operation=excluded.operation").bind(&tenant).bind(&device).bind(&o.user).bind(&o.platform).bind(&o.kind).bind(&o.key).bind(policy).bind(version).bind(operation).execute(&mut *c).await?;}
     }Ok(())})).await?;
+    Ok(())
+}
+async fn withdraw_claims(tx: &mut PgTransaction<'_>, device: &str, policy: &Policy) -> Result<()> {
+    let tenant = tx.tenant_id().to_string();
+    let device = device.to_owned();
+    let id = policy.id;
+    let version = policy.version;
+    tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query("DELETE FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2 AND policy=$3 AND version=$4")
+            .bind(&tenant).bind(&device).bind(id).bind(version).execute(&mut *c).await?;
+        sqlx::query("UPDATE mdm_planning.configuration_objects o SET digest=NULL,diagnosis='unassigned' WHERE o.tenant_id=$1::uuid AND o.device=$2 AND o.operation IS NULL AND NOT EXISTS(SELECT 1 FROM mdm_planning.configuration_claims k WHERE (k.tenant_id,k.device,k.user_key,k.platform,k.object_kind,k.object_key)=(o.tenant_id,o.device,o.user_key,o.platform,o.object_kind,o.object_key))")
+            .bind(&tenant).bind(&device).execute(&mut *c).await?;
+        Ok(())
+    })).await?;
     Ok(())
 }
 async fn desired_claims(

@@ -330,16 +330,19 @@ pub(crate) async fn authorized_on(
     {
         return Ok(false);
     }
+    let admission = source
+        .admission_on(
+            c,
+            rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
+            row.try_get("scope").map_err(db)?,
+            device,
+        )
+        .await?;
+    // Pending applicability pauses dispatch; it does not withdraw durable approval.
     if !matches!(
-        source
-            .admission_on(
-                c,
-                rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
-                row.try_get("scope").map_err(db)?,
-                device
-            )
-            .await?,
+        admission,
         crate::source_authority::ScopeAdmission::Eligible { .. }
+            | crate::source_authority::ScopeAdmission::Pending
     ) && !dispatched_on(c, tenant, *operation).await?
     {
         return Ok(false);
@@ -426,6 +429,24 @@ pub async fn dispatch_ready_on(
     use crate::database::db;
     if dispatched_on(c, tenant, operation).await? {
         return Ok(true);
+    }
+    let scope: Option<Uuid> = sqlx::query_scalar("SELECT (p.definition->>'scope')::uuid FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.current_version=$2 AND p.enabled")
+        .bind(tenant).bind(version).fetch_optional(&mut *c).await.map_err(db)?;
+    let Some(scope) = scope else {
+        return Ok(false);
+    };
+    if !matches!(
+        source
+            .admission_on(
+                c,
+                rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
+                scope,
+                device
+            )
+            .await?,
+        crate::source_authority::ScopeAdmission::Eligible { .. }
+    ) {
+        return Ok(false);
     }
     let frozen: serde_json::Value = sqlx::query_scalar(
         "SELECT frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2",

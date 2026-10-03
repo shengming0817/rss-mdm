@@ -366,23 +366,32 @@ async fn receive_capabilities(
                 sqlx::query("INSERT INTO mdm_commands.capabilities VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,floor(extract(epoch FROM clock_timestamp()))::bigint) ON CONFLICT(tenant_id,registration) DO UPDATE SET generation=excluded.generation,os_version=excluded.os_version,edition=excluded.edition,session=excluded.session,observed_at=excluded.observed_at")
     .bind(&tenant).bind(&reg).bind(p.generation()).bind(version).bind(edition as i32).bind(session).execute(&mut *c).await.map_err(db)?;
                 if changed {
-                    sqlx::query("INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES($1::uuid,$2) ON CONFLICT(tenant_id,device) DO UPDATE SET input_revision=mdm_planning.configuration_devices.input_revision+1").bind(&tenant).bind(p.device()).execute(&mut *c).await.map_err(db)?;
-                    sqlx::query("SELECT rss_reconcile.wake($1::uuid,$2,$3)")
-                        .bind(&tenant)
-                        .bind(super::DOMAIN)
-                        .bind(format!("configuration:{}", p.device()))
-                        .execute(&mut *c)
-                        .await
-                        .map_err(db)?;
-                    crate::worker_wake::notify(c, crate::worker_wake::Work::CommandRecovery)
-                        .await
-                        .map_err(db)?;
+                    wake_configuration(c, p).await?;
                 }
             }
         }
     }
     Ok(())
 }
+pub(crate) async fn wake_configuration(
+    c: &mut PgConnection,
+    p: &DevicePrincipal,
+) -> std::result::Result<(), Error> {
+    let tenant = p.tenant().to_string();
+    sqlx::query("INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES($1::uuid,$2) ON CONFLICT(tenant_id,device) DO UPDATE SET input_revision=mdm_planning.configuration_devices.input_revision+1").bind(&tenant).bind(p.device()).execute(&mut *c).await.map_err(db)?;
+    sqlx::query("SELECT rss_reconcile.wake($1::uuid,$2,$3)")
+        .bind(&tenant)
+        .bind(super::DOMAIN)
+        .bind(format!("configuration:{}", p.device()))
+        .execute(&mut *c)
+        .await
+        .map_err(db)?;
+    crate::worker_wake::notify(c, crate::worker_wake::Work::CommandRecovery)
+        .await
+        .map_err(db)?;
+    Ok(())
+}
+
 fn edition_id(value: &str) -> Option<u32> {
     match value {
         "Professional" | "Pro" => Some(48),

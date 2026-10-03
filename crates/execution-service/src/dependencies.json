@@ -22,7 +22,7 @@
   "mdm_planning.asset_dispatch": "28c1c6cf86738870375f520a1436fe02506d303b8710e429c6773699972cf055",
   "mdm_planning.configuration_claims": "a1b3fe8d74c22126cc381f8c087bda829275a9b130582d252aed695548f970c7",
   "mdm_planning.configuration_devices": "f4a35e065007a6612dee61ade96e97640667aa530712c3fd76e2c8f7e552936a",
-  "mdm_planning.configuration_objects": "f3f8680b15e676a69d6bafaa5f5497a3e2cbd2e4899df3aa7aad60a7b10e8965",
+  "mdm_planning.configuration_objects": "2fdae25576568b3133f32590bceb14b53abe96e0607af23fb1014e3381491d15",
   "mdm_planning.operations": "56afdaa8e297688a599ec7efb9a8fa9f17ccbbd9c0435248e77cf37b6d37786a",
   "mdm_planning.policy_lock(p_policy uuid)": "d37d1882e3cd02200a1615d8647b2daf0edb4b4855f4dfeb8539fdf9d41e0c0a",
   "mdm_planning.remote_operation_targets": "1e73174dbf85223a122d82a088f9c7128dcbf2185601665fc240eae872a72622",

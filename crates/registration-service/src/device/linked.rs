@@ -90,11 +90,11 @@ pub async fn bind_in(
     })
 }
 /// Publish readiness only after a real authenticated SyncML exchange.
-pub async fn ready_in(c: &mut sqlx::PgConnection, p: &DevicePrincipal) -> Result<(), Error> {
+pub async fn ready_in(c: &mut sqlx::PgConnection, p: &DevicePrincipal) -> Result<bool, Error> {
     store::revalidate_management(c, p).await?;
     if p.purpose() == Purpose::WindowsDeclared {
-        sqlx::query("UPDATE mdm_access.registrations SET ready=true WHERE tenant_id=$1::uuid AND id=$2 AND purpose='windows_declared' AND NOT ready")
-            .bind(p.tenant().to_string()).bind(p.registration()).execute(c).await.map_err(db)?;
+        return Ok(sqlx::query("UPDATE mdm_access.registrations SET ready=true WHERE tenant_id=$1::uuid AND id=$2 AND purpose='windows_declared' AND NOT ready")
+            .bind(p.tenant().to_string()).bind(p.registration()).execute(c).await.map_err(db)?.rows_affected() == 1);
     }
-    Ok(())
+    Ok(false)
 }

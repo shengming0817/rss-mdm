@@ -60,7 +60,20 @@ class ModuleImpactTests(unittest.TestCase):
             self.assertIn('execution.commands.configuration', self.selected(path), path)
 
     def test_declared_protocol_consumers_select_linked_end_to_end_proof(self):
-        for path in MODULES['windows.declared'].production_inputs:
+        for path in (
+            'crates/execution-service/src/protocol.rs',
+            'crates/execution-service/src/native_configuration.rs',
+            'crates/registration-service/src/enrollment/store.rs',
+            'crates/registration-service/src/device/read.rs',
+            'crates/registration-service/src/device/store.rs',
+            'crates/windows-channel/src/management/session.rs',
+            'crates/windows-channel/src/renewal.rs',
+            'crates/windows-mdm/src/native/request.rs',
+            'crates/windows-mdm/src/native/declared.rs',
+            'crates/windows-mdm/src/native/verification.rs',
+            'crates/certificate/src/windows/linked.rs',
+            'crates/management-http/src/error_projection.rs',
+        ):
             self.assertIn('windows.declared', self.selected(path), path)
 
     def test_console_projection_inputs_select_their_http_consumers(self):

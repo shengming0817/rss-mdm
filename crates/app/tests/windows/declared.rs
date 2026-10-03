@@ -2,7 +2,7 @@
 use crate::device::test_support::options;
 use crate::windows::test_support::*;
 use crate::windows::*;
-use anyhow::ensure;
+use anyhow::{Context, ensure};
 use axum::http::StatusCode;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rss_mdm_registration_service::Purpose;
@@ -230,10 +230,15 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
     host.app
         .audit_store
         .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+    let unknown = post(wire.clone()).send().await?;
     ensure!(
-        post(wire.clone()).send().await?.status() == StatusCode::SERVICE_UNAVAILABLE,
-        "linked issuance did not expose unknown commit"
+        unknown.status() == StatusCode::INTERNAL_SERVER_ERROR,
+        "linked issuance did not expose SOAP fault"
     );
+    ensure!(matches!(
+        soap::decode_response(&issue, &unknown.bytes().await?, &CodecLimits::default())?.body,
+        Body::Fault(soap::FaultKind::EnrollmentServer)
+    ));
     let response = post(wire.clone()).send().await?;
     ensure!(
         response.status() == StatusCode::OK,
@@ -328,6 +333,7 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
         "child SyncML: {}",
         initial.status()
     );
+    let authenticated = authenticate_child(&child_client, &child_url, &message, &peer.ack).await?;
     let ready: bool = sqlx::query_scalar(
         "SELECT ready FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2",
     )
@@ -339,7 +345,15 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
     let source_count: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(child).fetch_one(&mut pg).await?;
     ensure!(source_count == 0);
     #[cfg(feature = "integration")]
-    mi_effect(&host, &child_client, &child_url, &message, &peer.ack).await?;
+    mi_effect(
+        &host,
+        &child_client,
+        &child_url,
+        &message,
+        &authenticated,
+        &peer.ack,
+    )
+    .await?;
     host.app
         .devices
         .revoke(
@@ -431,15 +445,11 @@ async fn mi_dispatch(
     child: &reqwest::Client,
     url: &str,
     initial: &syncml::Message,
-    parent_ack: &syncml::Message,
+    authenticated: &syncml::Message,
 ) -> anyhow::Result<syncml::Message> {
     use crate::execution::test_support::native;
     use syncml::Command;
-    let mut ack = parent_ack.clone();
-    ack.header.target = url.into();
-    let response = native::post(child, url, &ack).await?;
-    ensure!(response.status() == StatusCode::OK);
-    let response = syncml::decode(&response.bytes().await?, &CodecLimits::default())?;
+    let response = authenticated.clone();
     let gets = response
         .commands
         .iter()
@@ -479,6 +489,7 @@ async fn mi_effect(
     child: &reqwest::Client,
     url: &str,
     initial: &syncml::Message,
+    authenticated: &syncml::Message,
     parent_ack: &syncml::Message,
 ) -> anyhow::Result<()> {
     use crate::execution::test_support::native;
@@ -490,7 +501,7 @@ async fn mi_effect(
         document,
         id,
     } = mi_admit(host).await?;
-    let response = mi_dispatch(child, url, initial, parent_ack).await?;
+    let response = mi_dispatch(child, url, initial, authenticated).await?;
     let observed = native::post(child, url, &result_packet(initial, &response, None)).await?;
     ensure!(observed.status() == StatusCode::OK);
     let observed = syncml::decode(&observed.bytes().await?, &CodecLimits::default())?;
@@ -536,21 +547,17 @@ async fn mi_effect(
     let summary = format!(
         r#"<DeclaredConfigurations schema="1.0"><DeclaredConfiguration id="{id}" context="Device" checksum="immutable-v1" result_checksum="result-v1" state="60"/></DeclaredConfigurations>"#
     );
-    let notice = syncml::Message {
-        header: syncml::Header {
-            message_id: 6,
-            credential: None,
-            ..initial.header.clone()
+    let mut initial = initial.clone();
+    initial.header.session_id += 1;
+    let response = authenticate_child(child, url, &initial, parent_ack).await?;
+    let mut notice = result_packet(&initial, &response, None);
+    notice.commands.push(Command::Alert {
+        id: notice.commands.len() as u32 + 1,
+        alert: syncml::Alert::DeclaredConfiguration {
+            summary: Secret(summary),
+            explicit_format: true,
         },
-        commands: vec![Command::Alert {
-            id: 1,
-            alert: syncml::Alert::DeclaredConfiguration {
-                summary: Secret(summary),
-                explicit_format: true,
-            },
-        }],
-        final_message: true,
-    };
+    });
     let queried = native::post(child, url, &notice).await?;
     ensure!(queried.status() == StatusCode::OK);
     let queried = syncml::decode(&queried.bytes().await?, &CodecLimits::default())?;
@@ -572,7 +579,7 @@ async fn mi_effect(
     let complete = native::post(
         child,
         url,
-        &result_packet(initial, &queried, Some(&result(60))),
+        &result_packet(&initial, &queried, Some(&result(60))),
     )
     .await?;
     ensure!(complete.status() == StatusCode::OK);
@@ -698,6 +705,36 @@ async fn linked_peer(
     };
     pg.close().await?;
     Ok(result)
+}
+async fn authenticate_child(
+    client: &reqwest::Client,
+    url: &str,
+    first: &syncml::Message,
+    parent_ack: &syncml::Message,
+) -> anyhow::Result<syncml::Message> {
+    ensure!(manage(client, url, first).await? == StatusCode::OK);
+    let mut ack = parent_ack.clone();
+    ack.header.target = url.into();
+    ack.header.session_id = first.header.session_id;
+    if let syncml::Command::Status(status) = &mut ack.commands[0] {
+        status.challenge.as_mut().unwrap().nonce =
+            Some(Secret(STANDARD.encode(Uuid::new_v4().as_bytes())));
+    }
+    let response = client
+        .post(url)
+        .header("content-type", "application/vnd.syncml.dm+xml")
+        .body(syncml::encode(&ack, &CodecLimits::default())?)
+        .send()
+        .await?;
+    ensure!(
+        response.status() == StatusCode::OK,
+        "child authentication: {}",
+        response.status()
+    );
+    Ok(syncml::decode(
+        &response.bytes().await?,
+        &CodecLimits::default(),
+    )?)
 }
 async fn manage(
     client: &reqwest::Client,
@@ -860,7 +897,7 @@ async fn linked_renewal_and_parent_child_supersession() -> anyhow::Result<()> {
         parent.intent.registration,
     )?)?;
     let child = linked_peer(&host, &parent, &certificate, &host.root.join("device.key")).await?;
-    ensure!(manage(&child.mutual, &child.url, &child.message).await? == StatusCode::OK);
+    authenticate_child(&child.mutual, &child.url, &child.message, &parent.ack).await?;
     let renewed_child = renew(
         &host,
         &child.issue,
@@ -1060,27 +1097,12 @@ async fn begin_declared(
     parent_ack: &syncml::Message,
     session: u32,
 ) -> anyhow::Result<(syncml::Message, syncml::Message)> {
-    use crate::execution::test_support::native;
     let mut first = child.message.clone();
     first.header.session_id = session;
-    ensure!(
-        native::post(&child.mutual, &child.url, &first)
-            .await?
-            .status()
-            == StatusCode::OK
-    );
-    let mut ack = parent_ack.clone();
-    ack.header.target = child.url.clone();
-    ack.header.session_id = session;
-    if let syncml::Command::Status(status) = &mut ack.commands[0] {
-        status.challenge.as_mut().unwrap().nonce =
-            Some(Secret(STANDARD.encode([session as u8; 16])));
-    }
-    let response = native::post(&child.mutual, &child.url, &ack).await?;
-    ensure!(response.status() == StatusCode::OK);
-    let sent = syncml::decode(&response.bytes().await?, &CodecLimits::default())?;
+    let sent = authenticate_child(&child.mutual, &child.url, &first, parent_ack).await?;
     Ok((first, sent))
 }
+
 #[cfg(feature = "integration")]
 fn native_result(document: &str, operation: &str, state: u32) -> String {
     document
@@ -1187,8 +1209,10 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
     let child = linked_peer(&host, &parent, &certificate, &host.root.join("device.key")).await?;
     wait_diagnosis(&mut client, first, "windows_declared_enrollment_not_ready").await?;
     remote_not_ready(&mut client, &resource).await?;
-    ensure!(manage(&child.mutual, &child.url, &child.message).await? == StatusCode::OK);
-    let apply = published(&mut client, first).await?;
+    authenticate_child(&child.mutual, &child.url, &child.message, &parent.ack).await?;
+    let apply = published(&mut client, first)
+        .await
+        .context("publish WinDC Set after readiness")?;
     ensure!(apply.len() == 1);
     let (initial, mut sent) = begin_declared(&child, &parent.ack, 1800).await?;
     let mut writes = 0;
@@ -1246,7 +1270,9 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
         json!({"action":"disable"}),
     )
     .await?;
-    let removed = published(&mut client, first).await?;
+    let removed = published(&mut client, first)
+        .await
+        .context("publish WinDC Delete after disable")?;
     ensure!(removed.len() == 1 && removed != apply);
     let (initial, mut sent) = begin_declared(&child, &parent.ack, 1801).await?;
     let mut deletes = 0;
@@ -1350,7 +1376,9 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
     let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
     let worker = automation(&host).await?;
     let commands = client.command_worker(host.notifications.signals.clone())?;
-    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+    // Unknown submission may leave a fenced claim until lease expiry. The existing worker
+    // uses a 30s lease, 5s scan and 6s attempt; include that recovery path in this bound.
+    let released = tokio::time::timeout(std::time::Duration::from_secs(45), async {
         loop {
             if claim_count(&mut pg, first).await? == 0 {
                 return Ok::<_, anyhow::Error>(());
@@ -1358,7 +1386,21 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
     })
-    .await??;
+    .await;
+    if released.is_err() {
+        let status = client
+            .call(Method::GET, &format!("/{}", removed[0]), None)
+            .await?;
+        let claims: Vec<(String, Option<Uuid>, Option<String>)> = sqlx::query_as("SELECT object_kind,operation,diagnosis FROM mdm_planning.configuration_objects WHERE tenant_id=$1::uuid AND device=$2")
+            .bind(case_tenant()).bind(crate::test_support::case::name("tls-device")).fetch_all(&mut pg).await?;
+        let recovery: serde_json::Value = sqlx::query_scalar("SELECT jsonb_build_object('input',d.input_revision,'observed',d.observed_revision,'targets',(SELECT jsonb_agg(jsonb_build_object('entity',r.entity,'result',r.result,'failures',r.failures,'leaseUntil',r.lease_until,'nextRun',r.next_run)) FROM rss_reconcile.targets r WHERE r.tenant_id=d.tenant_id AND r.entity='configuration:'||d.device)) FROM mdm_planning.configuration_devices d WHERE d.tenant_id=$1::uuid AND d.device=$2")
+            .bind(case_tenant()).bind(crate::test_support::case::name("tls-device")).fetch_one(&mut pg).await?;
+        anyhow::bail!(
+            "Delete did not release claims: status={}, objects={claims:?}, recovery={recovery}",
+            status.1["commandStatus"]
+        );
+    }
+    released??;
     ensure!(
         client
             .call(Method::GET, &format!("/{}", removed[0]), None)
@@ -1471,7 +1513,7 @@ async fn declared_readiness_has_closed_http_diagnosis_and_primary_remains_availa
             && unready.1["code"] == "windows_declared_enrollment_not_ready",
         "unready: {unready:?}"
     );
-    ensure!(manage(&child.mutual, &child.url, &child.message).await? == StatusCode::OK);
+    authenticate_child(&child.mutual, &child.url, &child.message, &parent.ack).await?;
     ensure!(client.call(Method::POST, "", Some(input())).await?.0 == StatusCode::ACCEPTED);
     host.app
         .devices
