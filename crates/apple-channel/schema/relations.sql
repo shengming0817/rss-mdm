@@ -50,6 +50,7 @@ GRANT UPDATE(response) ON TABLE mdm_apple.attempts TO mdm_command_runtime;
 GRANT UPDATE(response_digest) ON TABLE mdm_apple.attempts TO mdm_access;
 GRANT UPDATE(response_digest) ON TABLE mdm_apple.attempts TO mdm_command_runtime;
 
+GRANT UPDATE(native_outcome) ON mdm_apple.attempts TO mdm_command_runtime;
 GRANT UPDATE(accepted) ON TABLE mdm_apple.attempts TO mdm_access;
 GRANT UPDATE(accepted) ON TABLE mdm_apple.attempts TO mdm_command_runtime;
 
@@ -66,35 +67,12 @@ GRANT SELECT(tenant_id,registration,state,access_rights) ON TABLE mdm_apple.devi
 GRANT UPDATE(state) ON TABLE mdm_apple.devices TO mdm_access;
 GRANT UPDATE(state) ON TABLE mdm_apple.devices TO mdm_command_runtime;
 
-GRANT UPDATE(token) ON TABLE mdm_apple.devices TO mdm_access;
-GRANT UPDATE(token) ON TABLE mdm_apple.devices TO mdm_command_runtime;
-
-GRANT UPDATE(magic) ON TABLE mdm_apple.devices TO mdm_access;
-GRANT UPDATE(magic) ON TABLE mdm_apple.devices TO mdm_command_runtime;
-
-GRANT UPDATE(token_revision) ON TABLE mdm_apple.devices TO mdm_access;
-
-GRANT UPDATE(push_id) ON TABLE mdm_apple.devices TO mdm_access;
-GRANT UPDATE(push_id) ON TABLE mdm_apple.devices TO mdm_command_runtime;
-
-GRANT UPDATE(push_lease_until) ON TABLE mdm_apple.devices TO mdm_access;
-GRANT UPDATE(push_lease_until) ON TABLE mdm_apple.devices TO mdm_command_runtime;
-
-GRANT UPDATE(next_push) ON TABLE mdm_apple.devices TO mdm_access;
-GRANT UPDATE(next_push) ON TABLE mdm_apple.devices TO mdm_command_runtime;
-
-GRANT UPDATE(push_configuration) ON TABLE mdm_apple.devices TO mdm_command_runtime;
-
-GRANT UPDATE(push_failures) ON TABLE mdm_apple.devices TO mdm_access;
-GRANT UPDATE(push_failures) ON TABLE mdm_apple.devices TO mdm_command_runtime;
-
-GRANT UPDATE(identity_health) ON TABLE mdm_apple.devices TO mdm_access;
-
-GRANT UPDATE(push_status) ON TABLE mdm_apple.devices TO mdm_access;
-GRANT UPDATE(push_status) ON TABLE mdm_apple.devices TO mdm_command_runtime;
-
-GRANT UPDATE(push_outcome) ON TABLE mdm_apple.devices TO mdm_access;
-GRANT UPDATE(push_outcome) ON TABLE mdm_apple.devices TO mdm_command_runtime;
+GRANT UPDATE(identity_health,bootstrap,bootstrap_revision) ON mdm_apple.devices TO mdm_access;
+ALTER TABLE mdm_apple.channels ADD CONSTRAINT channels_registration_fkey FOREIGN KEY(tenant_id,registration) REFERENCES mdm_apple.devices(tenant_id,registration);
+GRANT SELECT,INSERT ON mdm_apple.channels TO mdm_access;
+GRANT UPDATE(state,material,material_digest,token_revision,push_id,push_lease_until,next_push,push_failures,push_status,push_outcome) ON mdm_apple.channels TO mdm_access;
+GRANT SELECT ON mdm_apple.channels TO mdm_command_runtime;
+GRANT UPDATE(state,material,material_digest,push_id,push_lease_until,next_push,push_configuration,push_failures,push_status,push_outcome) ON mdm_apple.channels TO mdm_command_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_apple.scep_attempts TO mdm_access;
 

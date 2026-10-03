@@ -14,7 +14,8 @@ pub async fn checkin(
     Extension(peer): Extension<rss_mdm_certificate::HandshakePeer>,
     Extension(audit): Extension<RequestAudit>,
     bytes: Bytes,
-) -> Result<StatusCode, Error> {
+) -> Result<axum::response::Response, Error> {
+    use axum::response::IntoResponse;
     let apple = app.apple()?;
     let leaf = apple.authority.verify(
         peer.chain(),
@@ -29,24 +30,45 @@ pub async fn checkin(
             if topic != apple.config.apns_topic {
                 return Err(Error::Unauthorized);
             }
-            udid
+            Some(udid)
         }
-        CheckIn::CheckOut { udid } => udid,
-        CheckIn::UserAuthenticate => return Ok(StatusCode::GONE),
+        CheckIn::CheckOut { udid } | CheckIn::UserAuthenticate { udid, .. } => Some(udid),
+        CheckIn::SetBootstrapToken { .. } | CheckIn::GetBootstrapToken => dictionary
+            .get("UDID")
+            .map(|_| protocol::text(&dictionary, "UDID"))
+            .transpose()?,
     };
-    super::renewal::activate(&app, &leaf, udid).await?;
+    if let Some(udid) = udid {
+        super::renewal::activate(&app, &leaf, udid).await?;
+    }
     let credential = app.mount.credential(leaf.fingerprint());
     if matches!(input, CheckIn::Authenticate { .. })
-        && authenticate(&app, &leaf, udid, &audit).await?
+        && authenticate(&app, &leaf, udid.ok_or(Error::Malformed)?, &audit).await?
     {
-        return Ok(StatusCode::OK);
+        return Ok(StatusCode::OK.into_response());
     }
     bound(&app, &leaf).await?;
     let principal = app.devices.management_principal(&credential).await?;
     audit.identify_device(principal.registration());
     audit.target(principal.device());
     audit.registration(principal.registration());
-    audit.identify_device(principal.registration());
+    let digest = apple
+        .protection
+        .mac(
+            &bytes,
+            &crate::material::aad(
+                &principal.tenant().to_string(),
+                principal.registration(),
+                principal.generation(),
+                "",
+                0,
+                "apple.checkin.replay",
+            )?,
+        )
+        .map_err(|_| Error::Unavailable(Failure::AppleStorage))?
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     let budget = app.devices.retirement_budget();
     let control = budget.control();
     let attempt = app
@@ -62,8 +84,10 @@ pub async fn checkin(
                     udid,
                     input,
                     audit: &audit,
-                    digest: rss_mdm_registration_service::enrollment::digest(&bytes.as_ref()),
+                    digest,
                     facts: Vec::new(),
+                    protection: &apple.protection,
+                    response: Vec::new(),
                 },
             ),
             |(store, inputs), tx| {
@@ -83,18 +107,27 @@ pub async fn checkin(
                             .map_err(Error::from)?;
                     }
                     inputs.audit.mark_commit_started();
-                    Ok(())
+                    Ok(std::mem::take(&mut inputs.response))
                 })
             },
         )
         .await;
-    crate::operations::settle(attempt, &audit)?;
-    Ok(StatusCode::OK)
+    let response = crate::operations::settle(attempt, &audit)?;
+    Ok((
+        [
+            ("content-type", "application/xml"),
+            ("cache-control", "no-store"),
+        ],
+        response,
+    )
+        .into_response())
 }
 struct CheckinInputs<'a> {
     retirement: &'a dyn rss_mdm_registration_service::Retirement,
     principal: &'a crate::device::DevicePrincipal,
-    udid: &'a str,
+    udid: Option<&'a str>,
+    protection: &'a rss_mdm_native_protection::Protector,
+    response: Vec<u8>,
     input: CheckIn<'a>,
     audit: &'a RequestAudit,
     digest: String,
@@ -112,6 +145,8 @@ async fn checkin_on(
         audit,
         digest,
         facts,
+        protection,
+        response,
     } = inputs;
     let principal = *principal;
     let udid = *udid;
@@ -127,21 +162,23 @@ async fn checkin_on(
     )
     .await?;
     let row=sqlx::query("SELECT udid,state FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state<>'retired' FOR UPDATE").bind(&tenant).bind(&registration).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
-    if row.try_get::<String, _>("udid").map_err(db)? != udid {
+    if udid.is_some_and(|udid| row.try_get::<String, _>("udid").ok().as_deref() != Some(udid)) {
         return Err(Error::Unauthorized);
     }
     let (key, details) = match input {
         CheckIn::Authenticate { .. } => return Ok(Some("success")),
-        CheckIn::TokenUpdate { token, magic, .. } => {
-            let revision: Option<i64> = sqlx::query_scalar("UPDATE mdm_apple.devices SET state='active',token=$3,magic=$4,token_revision=token_revision+1,next_push=clock_timestamp(),push_id=NULL,push_lease_until=NULL,push_status=NULL,push_outcome=NULL,push_failures=0 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND (state<>'active' OR token IS DISTINCT FROM $3 OR magic IS DISTINCT FROM $4 OR push_outcome='rejected') RETURNING token_revision")
-                .bind(&tenant).bind(&registration).bind(*token).bind(*magic).fetch_optional(&mut *tx).await.map_err(db)?;
-            let Some(revision) = revision else {
+        CheckIn::TokenUpdate {
+            token, magic, user, ..
+        } => {
+            let scope = user.map(|id| id.to_string()).unwrap_or_default();
+            let Some(revision) =
+                crate::material::token(tx, protection, principal, &scope, token, magic).await?
+            else {
                 return Ok(Some("replay"));
             };
-            crate::notify(tx, "apple").await.map_err(db)?;
             (
-                format!("apple-token:{registration}:{revision}"),
-                serde_json::json!({"tokenRevision":revision}),
+                format!("apple-token:{registration}:{scope}:{revision}"),
+                serde_json::json!({"tokenRevision":revision,"userScope":scope}),
             )
         }
         CheckIn::CheckOut { .. } => {
@@ -159,7 +196,102 @@ async fn checkin_on(
                 serde_json::json!({"state":"revoked"}),
             )
         }
-        CheckIn::UserAuthenticate => return Err(Error::Malformed),
+        CheckIn::UserAuthenticate { user, .. } => {
+            *response = protocol::xml(protocol::dictionary([("DigestChallenge", "".into())]))?;
+            (
+                format!("apple-user-auth:{registration}:{user}:{digest}"),
+                serde_json::json!({"userScope":user.to_string()}),
+            )
+        }
+        CheckIn::SetBootstrapToken { .. } | CheckIn::GetBootstrapToken => {
+            crate::material::bootstrap_allowed(tx, principal).await?;
+            let current=sqlx::query("SELECT bootstrap,bootstrap_revision FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 FOR UPDATE").bind(&tenant).bind(principal.registration()).fetch_one(&mut *tx).await.map_err(db)?;
+            let revision = current
+                .try_get::<i64, _>("bootstrap_revision")
+                .map_err(db)?;
+            if let CheckIn::SetBootstrapToken { token } = input {
+                let token = token.filter(|token| !token.is_empty());
+                let old = current
+                    .try_get::<Option<Vec<u8>>, _>("bootstrap")
+                    .map_err(db)?;
+                let same = match (old.as_deref(), token) {
+                    (None, None) => true,
+                    (Some(sealed), Some(token)) => {
+                        let plain = protection
+                            .open_bytes(
+                                sealed,
+                                &crate::material::aad(
+                                    &tenant,
+                                    principal.registration(),
+                                    principal.generation(),
+                                    "",
+                                    revision,
+                                    "apple.bootstrap",
+                                )?,
+                            )
+                            .map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
+                        use subtle::ConstantTimeEq;
+                        bool::from(plain.expose().ct_eq(token))
+                    }
+                    _ => false,
+                };
+                if same {
+                    return Ok(Some("replay"));
+                }
+                let revision = revision
+                    .checked_add(1)
+                    .ok_or(Error::Unavailable(Failure::AppleStorage))?;
+                let sealed = token
+                    .filter(|token| !token.is_empty())
+                    .map(|token| {
+                        protection
+                            .seal_bytes(
+                                token,
+                                &crate::material::aad(
+                                    &tenant,
+                                    principal.registration(),
+                                    principal.generation(),
+                                    "",
+                                    revision,
+                                    "apple.bootstrap",
+                                )?,
+                            )
+                            .map_err(|_| Error::Unavailable(Failure::AppleStorage))
+                    })
+                    .transpose()?;
+                sqlx::query("UPDATE mdm_apple.devices SET bootstrap=$3,bootstrap_revision=$4 WHERE tenant_id=$1::uuid AND registration=$2").bind(&tenant).bind(principal.registration()).bind(sealed).bind(revision).execute(&mut *tx).await.map_err(db)?;
+            } else {
+                let mut body = plist::Dictionary::new();
+                if let Some(sealed) = current
+                    .try_get::<Option<Vec<u8>>, _>("bootstrap")
+                    .map_err(db)?
+                {
+                    let plain = protection
+                        .open_bytes(
+                            &sealed,
+                            &crate::material::aad(
+                                &tenant,
+                                principal.registration(),
+                                principal.generation(),
+                                "",
+                                revision,
+                                "apple.bootstrap",
+                            )?,
+                        )
+                        .map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
+                    body.insert(
+                        "BootstrapToken".into(),
+                        plist::Value::Data(plain.expose().to_vec()),
+                    );
+                }
+                *response = protocol::xml(body)?;
+                return Ok(Some("success"));
+            }
+            (
+                format!("apple-bootstrap:{registration}:{revision}:{digest}"),
+                serde_json::json!({"action":if matches!(input,CheckIn::GetBootstrapToken){"get"}else{"set"}}),
+            )
+        }
     };
     let fact = rss_mdm_audit_integration::Fact::business(
         audit,
@@ -191,15 +323,18 @@ pub async fn manage(
     )?;
     let dictionary = protocol::decode(&bytes)?;
     let message = protocol::management(&dictionary)?;
-    super::renewal::activate(&app, &leaf, message.udid).await?;
+    if message.user.is_none() {
+        super::renewal::activate(&app, &leaf, message.udid).await?;
+    }
     let credential = app.mount.credential(leaf.fingerprint());
     bound(&app, &leaf).await?;
     let principal = app.devices.management_principal(&credential).await?;
     audit.identify_device(principal.registration());
     audit.target(principal.device());
     audit.registration(principal.registration());
-    if let Some(response) =
-        super::renewal::management(&app, &principal, &dictionary, &bytes, &audit).await?
+    if message.user.is_none()
+        && let Some(response) =
+            super::renewal::management(&app, &principal, &dictionary, &bytes, &audit).await?
     {
         return Ok((
             [

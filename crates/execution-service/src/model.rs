@@ -110,6 +110,14 @@ impl Create {
             return Err(Error::Malformed);
         }
         self.target.validate()?;
+        if matches!(self.task, Task::Macos { .. })
+            && let NativeTarget::User { user_id } = &self.target
+        {
+            let id = Uuid::parse_str(user_id).map_err(|_| Error::Malformed)?;
+            if id.is_nil() || id.to_string() != *user_id {
+                return Err(Error::Malformed);
+            }
+        }
         if let Some((identifier, uuid, _)) = self.profile_target()
             && (uuid.is_nil()
                 || identifier.is_empty()

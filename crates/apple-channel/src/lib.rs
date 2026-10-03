@@ -7,10 +7,11 @@ mod database;
 pub mod enrollment;
 mod error;
 pub mod flow_store;
+mod material;
 mod native;
 mod operations;
-mod protection;
 mod profiles;
+mod protection;
 pub mod push;
 pub mod renewal;
 mod webhook;
@@ -231,7 +232,8 @@ pub async fn retire_in(
     registration: uuid::Uuid,
 ) -> Result<(), Error> {
     use crate::database::db;
-    sqlx::query("UPDATE mdm_apple.devices SET state='retired',token=NULL,magic=NULL WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.devices SET state='retired',bootstrap=NULL WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.channels SET state='retired',material=NULL,material_digest=NULL,push_lease_until=NULL WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("UPDATE mdm_apple.scep_attempts SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("UPDATE mdm_apple.profiles SET retired_at=coalesce(retired_at,floor(extract(epoch FROM clock_timestamp()))::bigint) WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).execute(&mut *tx).await.map_err(db)?;
     Ok(())

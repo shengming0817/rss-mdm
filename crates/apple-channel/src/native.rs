@@ -1,9 +1,9 @@
 //! Native applicability evidence is retained in the same immutable exchange attempts as its request.
 //! These protocol prerequisite queries are not Inventory definitions or command success evidence.
 use crate::{Error, database::db, device::DevicePrincipal, execution::channels::AppleCommand};
-use plist::{Dictionary, Value};
+use plist::Value;
 use rss_mdm_apple_mdm::{
-    applicability::{Channel, Context, Enrollment, Version},
+    applicability::{Channel, Context},
     protocol,
 };
 use sqlx::{PgConnection, Row};
@@ -58,53 +58,29 @@ pub(crate) async fn context(
     let (Some(device), Some(security)) = (device, security) else {
         return Ok(None);
     };
-    let facts = device
-        .get("QueryResponses")
-        .and_then(Value::as_dictionary)
-        .ok_or(Error::Malformed)?;
-    if facts
-        .keys()
-        .any(|k| !["OSVersion", "IsSupervised"].contains(&k.as_str()))
-    {
-        return Err(Error::Malformed);
-    }
-    let version =
-        Version::parse(protocol::text(facts, "OSVersion")?).map_err(|_| Error::Malformed)?;
-    let security = security
-        .get("SecurityInfo")
-        .and_then(Value::as_dictionary)
-        .ok_or(Error::Malformed)?;
-    let management = security
-        .get("ManagementStatus")
-        .and_then(Value::as_dictionary);
-    let boolean = |d: Option<&Dictionary>, key: &str| -> Result<Option<bool>, Error> {
-        d.and_then(|d| d.get(key))
-            .map(|v| v.as_boolean().ok_or(Error::Malformed))
-            .transpose()
-    };
-    Ok(Some(Context {
-        version: Some(version),
-        channel: Channel::Device,
-        enrollment: if boolean(management, "IsUserEnrollment")? == Some(true) {
-            Enrollment::User
+    Ok(Some(Context::from_reports(
+        &device,
+        Some(&security),
+        if command.target.user_key().is_empty() {
+            Channel::Device
         } else {
-            Enrollment::Device
+            Channel::User
         },
-        supervised: boolean(Some(facts), "IsSupervised")?,
-        automated_enrollment: boolean(management, "EnrolledViaDEP")?,
-        user_approved: boolean(management, "UserApprovedEnrollment")?,
-    }))
+    )?))
 }
+
 pub(crate) async fn resolve(
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     command: &AppleCommand,
-) -> Result<Option<Vec<u8>>, Error> {
+) -> Result<crate::execution::channels::AppleDispatch, Error> {
     let tenant = p.tenant().to_string();
     let rights:i32=sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'").bind(&tenant).bind(p.registration()).fetch_one(&mut *c).await.map_err(db)?;
     if rights & 1040 != 1040 {
-        return Err(Error::Unsupported);
+        return Ok(crate::execution::channels::AppleDispatch::Rejected(
+            rss_mdm_apple_mdm::native::Error::AccessRight,
+        ));
     }
     for (phase, payload) in [
         (
@@ -113,7 +89,11 @@ pub(crate) async fn resolve(
                 ("RequestType", "DeviceInformation".into()),
                 (
                     "Queries",
-                    Value::Array(vec!["OSVersion".into(), "IsSupervised".into()]),
+                    Value::Array(vec![
+                        "OSVersion".into(),
+                        "IsSupervised".into(),
+                        "IsAppleSilicon".into(),
+                    ]),
                 ),
             ]),
         ),
@@ -122,16 +102,21 @@ pub(crate) async fn resolve(
             protocol::dictionary([("RequestType", "SecurityInfo".into())]),
         ),
     ] {
-        let row=sqlx::query("SELECT id,state,request,next_attempt<=clock_timestamp() AS ready FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase=$3 AND registration=$4 AND generation=$5 FOR UPDATE").bind(&tenant).bind(command.operation).bind(phase).bind(p.registration()).bind(p.generation()).fetch_optional(&mut *c).await.map_err(db)?;
+        let row=sqlx::query("SELECT id,state,request,accepted,next_attempt<=clock_timestamp() AS ready FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase=$3 AND registration=$4 AND generation=$5 FOR UPDATE").bind(&tenant).bind(command.operation).bind(phase).bind(p.registration()).bind(p.generation()).fetch_optional(&mut *c).await.map_err(db)?;
         if let Some(row) = row {
             let state: String = row.try_get("state").map_err(db)?;
             if state == "acknowledged" {
+                if !row.try_get::<bool, _>("accepted").map_err(db)? {
+                    return Ok(crate::execution::channels::AppleDispatch::Rejected(
+                        rss_mdm_apple_mdm::native::Error::Field,
+                    ));
+                }
                 continue;
             }
             if !matches!(state.as_str(), "sent" | "not_now")
                 || !row.try_get::<bool, _>("ready").map_err(db)?
             {
-                return Ok(None);
+                return Ok(crate::execution::channels::AppleDispatch::Waiting);
             }
             let id: Uuid = row.try_get("id").map_err(db)?;
             sqlx::query("UPDATE mdm_apple.attempts SET state='sent',next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2").bind(&tenant).bind(id).execute(&mut *c).await.map_err(db)?;
@@ -145,7 +130,9 @@ pub(crate) async fn resolve(
                 crate::protection::Part::Request,
                 &sealed,
             )?;
-            return Ok(Some(plain.expose().to_vec()));
+            return Ok(crate::execution::channels::AppleDispatch::Ready(
+                plain.expose().to_vec(),
+            ));
         }
         // The only unversioned bootstrap commands are these fixed read-only prerequisites.
         // Their responses determine the real context before any authored native input is compiled.
@@ -161,7 +148,7 @@ pub(crate) async fn resolve(
             &bytes,
         )?;
         sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,operation,phase,request,state,deadline,next_attempt) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,'sent',to_timestamp($8),clock_timestamp()+interval '30 seconds')").bind(&tenant).bind(id).bind(p.registration()).bind(p.generation()).bind(command.operation).bind(phase).bind(sealed).bind(command.deadline as f64).execute(&mut *c).await.map_err(db)?;
-        return Ok(Some(bytes));
+        return Ok(crate::execution::channels::AppleDispatch::Ready(bytes));
     }
-    Ok(None)
+    Ok(crate::execution::channels::AppleDispatch::Waiting)
 }

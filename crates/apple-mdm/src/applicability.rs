@@ -175,3 +175,55 @@ pub enum Rejection {
 #[cfg(test)]
 #[path = "../tests/applicability.rs"]
 mod tests;
+
+impl Context {
+    /// Native prerequisite facts; absent facts remain unknown, never a grant or default hardware.
+    pub fn from_reports(
+        device: &plist::Dictionary,
+        security: Option<&plist::Dictionary>,
+        channel: Channel,
+    ) -> Result<Self, crate::Error> {
+        use plist::{Dictionary, Value};
+        let facts = device
+            .get("QueryResponses")
+            .and_then(Value::as_dictionary)
+            .ok_or(crate::Error::Malformed)?;
+        if facts
+            .keys()
+            .any(|key| !["OSVersion", "IsSupervised", "IsAppleSilicon"].contains(&key.as_str()))
+        {
+            return Err(crate::Error::Malformed);
+        }
+        let version = Version::parse(crate::protocol::text(facts, "OSVersion")?)
+            .map_err(|_| crate::Error::Malformed)?;
+        let security = security
+            .map(|body| {
+                body.get("SecurityInfo")
+                    .and_then(Value::as_dictionary)
+                    .ok_or(crate::Error::Malformed)
+            })
+            .transpose()?;
+        let management = security
+            .and_then(|body| body.get("ManagementStatus"))
+            .map(|value| value.as_dictionary().ok_or(crate::Error::Malformed))
+            .transpose()?;
+        let boolean = |body: Option<&Dictionary>, key: &str| {
+            body.and_then(|body| body.get(key))
+                .map(|value| value.as_boolean().ok_or(crate::Error::Malformed))
+                .transpose()
+        };
+        Ok(Self {
+            version: Some(version),
+            channel,
+            enrollment: if boolean(management, "IsUserEnrollment")? == Some(true) {
+                Enrollment::User
+            } else {
+                Enrollment::Device
+            },
+            supervised: boolean(Some(facts), "IsSupervised")?,
+            automated_enrollment: boolean(management, "EnrolledViaDEP")?,
+            user_approved: boolean(management, "UserApprovedEnrollment")?,
+            apple_silicon: boolean(Some(facts), "IsAppleSilicon")?,
+        })
+    }
+}

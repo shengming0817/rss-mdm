@@ -28,6 +28,7 @@ impl ExecutionService {
             .task
             .permissions()?
             .contains(&Permission::SoftwareDeploy)
+            && !matches!(input.task, Task::Macos { .. })
         {
             return Err(Error::Unsupported);
         }
@@ -91,6 +92,7 @@ impl ExecutionService {
             .task
             .permissions()?
             .contains(&Permission::SoftwareDeploy)
+            && !matches!(input.task, Task::Macos { .. })
         {
             return Err(Error::Unsupported.into());
         }
@@ -99,7 +101,14 @@ impl ExecutionService {
         storage::authorized_native(tx, proof, device, &input.task.permissions()?).await?;
         storage::lock(tx, &format!("request:{}", input.operation_id)).await?;
         storage::lock(tx, device).await?;
-        let required = apple::required(tx, &self.protection, device, input).await?;
+        let required = apple::required(
+            tx,
+            &self.protection,
+            self.apple_profiles.clone(),
+            device,
+            input,
+        )
+        .await?;
         let auth = storage::authorized_native(tx, proof, device, &required).await?;
         let fingerprint = create_fingerprint(self, proof, device, input)?;
         if let Some(value) = replay(tx, input.operation_id, &fingerprint, audit).await? {
@@ -142,13 +151,16 @@ impl ExecutionService {
             .permissions()?
             .contains(&Permission::SoftwareDeploy)
         {
-            let package = approval.agent_package().ok_or(Error::Unsupported)?;
-            if input.target != NativeTarget::Device
-                || checked_input(serde_json::to_vec(&input.task))?
-                    != checked_input(serde_json::to_vec(
-                        &package.native_task(input.operation_id)?,
-                    ))?
-            {
+            if let Some(package) = approval.agent_package() {
+                if input.target != NativeTarget::Device
+                    || checked_input(serde_json::to_vec(&input.task))?
+                        != checked_input(serde_json::to_vec(
+                            &package.native_task(input.operation_id)?,
+                        ))?
+                {
+                    return Err(Error::Unsupported.into());
+                }
+            } else if !matches!(input.task, Task::Macos { .. }) {
                 return Err(Error::Unsupported.into());
             }
         }
@@ -195,7 +207,14 @@ impl ExecutionService {
             },
             input,
         )?;
-        let required = apple::required(tx, &self.protection, device, input).await?;
+        let required = apple::required(
+            tx,
+            &self.protection,
+            self.apple_profiles.clone(),
+            device,
+            input,
+        )
+        .await?;
         approval.bind_required(required.clone());
         if required != input.task.permissions()? {
             let check = approval.clone();
@@ -223,7 +242,15 @@ impl ExecutionService {
         let approval = checked_input(serde_json::to_string(&approval))?;
         let digest = fingerprint.clone();
         tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_commands.operations(tenant_id,id,device,request,fingerprint,registration,registration_generation,generation,epoch,approval,dispatch_fingerprint,source_kind,policy_version,remote_operation,input_context) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6::uuid,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15)").bind(tenant).bind(id).bind(name).bind(request).bind(digest).bind(registration.to_string()).bind(registration_generation).bind(coordinate.generation()).bind(coordinate.epoch()).bind(approval).bind(dispatch_fingerprint).bind(source).bind(policy_version).bind(remote_operation).bind(input_context).execute(c).await?;Ok(())})).await?;
-        apple::own(tx, self.apple_store.clone(), device, registration, registration_generation, input).await?;
+        apple::own(
+            tx,
+            self.apple_profiles.clone(),
+            device,
+            registration,
+            registration_generation,
+            input,
+        )
+        .await?;
         let response = created(
             tx,
             &self.audit_store,

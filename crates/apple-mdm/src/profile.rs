@@ -90,7 +90,10 @@ pub fn enrollment(
         ("UseDevelopmentAPNS", false.into()),
         (
             "ServerCapabilities",
-            Value::Array(vec!["com.apple.mdm.per-user-connections".into()]),
+            Value::Array(vec![
+                "com.apple.mdm.per-user-connections".into(),
+                "com.apple.mdm.bootstraptoken".into(),
+            ]),
         ),
     ] {
         mdm.insert(key.into(), value);

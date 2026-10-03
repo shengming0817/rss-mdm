@@ -60,15 +60,8 @@ async fn collides(
         }
         for row in rows {
             after = row.try_get("operation").map_err(db)?;
-            for old in open(key, &row)? {
-                if objects.iter().any(|new| {
-                    new.uuid == old.uuid
-                        || (types
-                            && new.payload_type == old.payload_type
-                            && (!new.multiple || !old.multiple))
-                }) {
-                    return Ok(true);
-                }
+            if rss_mdm_apple_mdm::native::profiles::collides(objects, &open(key, &row)?, types) {
+                return Ok(true);
             }
         }
     }
@@ -99,10 +92,26 @@ pub(crate) async fn reserve(
         _ => return Err(Error::Malformed),
     };
     let user = command.target.user_key();
-    let (blocked, owned):(bool,bool)=sqlx::query_as("SELECT coalesce(bool_or(d.terminal_at IS NULL OR (p.dispatched_at IS NOT NULL AND p.observed_at IS NULL)),false),coalesce(bool_or(p.present AND p.profile=$7),false) FROM mdm_apple.profiles p JOIN rss_device_command.commands d ON d.tenant_id=p.tenant_id AND d.command_id=p.operation::text WHERE p.tenant_id=$1::uuid AND p.device=$2 AND p.user_key=$3 AND p.registration=$4 AND p.generation=$5 AND p.identifier=$6 AND p.retired_at IS NULL")
-        .bind(&target.tenant).bind(&target.device).bind(user).bind(target.registration).bind(target.generation).bind(identifier).bind(uuid).fetch_one(&mut *c).await.map_err(db)?;
-    if blocked
-        || (!present && !owned)
+    let enrollment:Uuid=sqlx::query_scalar("SELECT request_id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 AND generation=$3 AND state='active'").bind(&target.tenant).bind(target.registration).bind(target.generation).fetch_one(&mut *c).await.map_err(db)?;
+    if identifier == format!("com.rss-mdm.enrollment.{enrollment}") {
+        return Err(Error::Forbidden);
+    }
+
+    let rows=sqlx::query("SELECT d.terminal_at IS NOT NULL AS terminal,p.dispatched_at IS NOT NULL AS dispatched,p.observed_at IS NOT NULL AS observed,p.present,p.profile FROM mdm_apple.profiles p JOIN rss_device_command.commands d ON d.tenant_id=p.tenant_id AND d.command_id=p.operation::text WHERE p.tenant_id=$1::uuid AND p.device=$2 AND p.user_key=$3 AND p.registration=$4 AND p.generation=$5 AND p.identifier=$6 AND p.retired_at IS NULL")
+        .bind(&target.tenant).bind(&target.device).bind(user).bind(target.registration).bind(target.generation).bind(identifier).fetch_all(&mut *c).await.map_err(db)?;
+    let history = rows
+        .iter()
+        .map(|row| {
+            Ok(rss_mdm_apple_mdm::native::profiles::History {
+                terminal: row.try_get("terminal").map_err(db)?,
+                dispatched: row.try_get("dispatched").map_err(db)?,
+                observed: row.try_get("observed").map_err(db)?,
+                present: row.try_get("present").map_err(db)?,
+                uuid: row.try_get("profile").map_err(db)?,
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    if !rss_mdm_apple_mdm::native::profiles::can_reserve(&history, uuid, present)
         || collides(c, key, target, user, identifier, &objects, false).await?
     {
         return Err(Error::Conflict);

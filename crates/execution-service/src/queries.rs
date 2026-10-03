@@ -12,7 +12,7 @@ pub struct Queries {
     pub(crate) source: Arc<dyn source_authority::SourceAuthority>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) agent_store: Arc<dyn channels::Agent>,
-    pub(crate) apple_store: Arc<dyn channels::AppleStore>,
+    pub(crate) apple_results: Arc<dyn channels::AppleResults>,
     pub(crate) policy_reader: rss_mdm_policy_postgres::PolicyReader,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) runtime: Arc<PgRuntime>,
@@ -26,7 +26,7 @@ pub struct Dependencies {
     pub source: Arc<dyn source_authority::SourceAuthority>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub agent_store: Arc<dyn channels::Agent>,
-    pub apple_store: Arc<dyn channels::AppleStore>,
+    pub apple_results: Arc<dyn channels::AppleResults>,
     pub policy_reader: rss_mdm_policy_postgres::PolicyReader,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub runtime: Arc<PgRuntime>,
@@ -48,7 +48,7 @@ impl Queries {
             source: dependencies.source,
             protection: dependencies.protection,
             agent_store: dependencies.agent_store,
-            apple_store: dependencies.apple_store,
+            apple_results: dependencies.apple_results,
             policy_reader: dependencies.policy_reader,
             audit_store: dependencies.audit_store,
             runtime: dependencies.runtime,
@@ -91,8 +91,12 @@ impl Queries {
             if op.device!=device{return Err(Error::Forbidden.into());}
             let command=service.command_status(tx,&op).await?;
             let now=storage::now(tx).await?;let approved=storage::approval_valid(&service.source, &service.protection,tx,&op,now).await?;
-            let observation=protocol::observation(tx,&service.protection,service.apple_store.clone(),&op,command).await?;
-            let agent_installation=if op.approval.agent_package().is_some(){Some(super::native_installation::installation_observation(tx,service.apple_store.clone(),service.agent_store.clone(),&op).await?)}else{None};
+            if matches!(op.request.task, Task::Macos { request:rss_mdm_apple_mdm::native::request::Request::Command{..} }) {
+                let mut required=op.request.task.permissions()?;required.extend_from_slice(op.approval.required());required.sort();required.dedup();
+                storage::authorized_native(tx,proof,device,&required).await?;
+            }
+            let observation=protocol::observation(tx,&service.protection,service.apple_results.clone(),&op,command,true).await?;
+            let agent_installation=if op.approval.agent_package().is_some(){Some(super::native_installation::installation_observation(tx,service.apple_results.clone(),service.agent_store.clone(),&op).await?)}else{None};
             service.audit_store.append_request_in(tx,audit,200,"success").await?;
             records::decode(json!({"operationId":op.id,"commandId":op.id,"revision":op.revision,"task":op.request.task.summary()?,"target":op.request.target,"inputVersion":op.request.input_version,"deadline":op.request.deadline,"dispatchFailure":op.dispatch_failure,"authorization":if approved{"approved"}else{"blocked"},"commandStatus":crate::service::status(command),"observation":observation,"agentInstallation":agent_installation}))
         })).await.map_err(Into::into)

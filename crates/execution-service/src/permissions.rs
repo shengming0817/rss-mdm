@@ -62,6 +62,7 @@ pub(super) fn required(task: &Task) -> Result<Vec<P>, Error> {
 }
 fn apple_profile(schema: &str) -> Result<P, Error> {
     Ok(match schema {
+        "mdm/profiles/com.apple.mdm.yaml" => return Err(Error::Unsupported),
         "mdm/profiles/GlobalPreferences.yaml"
         | "mdm/profiles/com.apple.MCX(EnergySaver).yaml"
         | "mdm/profiles/com.apple.MCX(Mobility).yaml"
@@ -126,7 +127,6 @@ fn apple_profile(schema: &str) -> Result<P, Error> {
         | "mdm/profiles/com.apple.mcxMenuExtras.yaml"
         | "mdm/profiles/com.apple.mcxloginscripts.yaml"
         | "mdm/profiles/com.apple.mcxprinting.yaml"
-        | "mdm/profiles/com.apple.mdm.yaml"
         | "mdm/profiles/com.apple.mobiledevice.passwordpolicy.yaml"
         | "mdm/profiles/com.apple.notificationsettings.yaml"
         | "mdm/profiles/com.apple.preference.security.yaml"
@@ -335,7 +335,8 @@ fn apple_command(name: &str) -> Result<P, Error> {
         | "StopMirroring"
         | "EnableRemoteDesktop"
         | "DisableRemoteDesktop" => P::DeviceControl,
-        "InstallApplication"
+        "InstallMedia"
+        | "InstallApplication"
         | "InstallEnterpriseApplication"
         | "RemoveApplication"
         | "ManagedApplicationConfiguration" => P::SoftwareDeploy,
@@ -349,7 +350,8 @@ fn apple_command(name: &str) -> Result<P, Error> {
         | "VerifyFirmwarePassword"
         | "SetRecoveryLock"
         | "VerifyRecoveryLock"
-        | "RotateFileVaultKey" => P::SecurityOperate,
+        | "RotateFileVaultKey"
+        | "SecurityInfo" => P::SecurityOperate,
         "CancelEnhancedLogCollection" | "TriggerEnhancedLogCollection" => P::DeviceDiagnostics,
         "DeviceConfigured" | "InviteToProgram" => P::Enrollment,
         "InstallProvisioningProfile" | "RemoveProvisioningProfile" => P::Credentials,
@@ -361,7 +363,6 @@ fn apple_command(name: &str) -> Result<P, Error> {
         | "ProfileList"
         | "ProvisioningProfileList"
         | "CertificateList"
-        | "SecurityInfo"
         | "ContentCachingInformation"
         | "ActiveNSExtensions"
         | "NSExtensionMappings"

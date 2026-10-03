@@ -10,7 +10,7 @@ impl ExecutionService {
     ) -> std::result::Result<Option<Wake>, Error> {
         let configuration = *configuration;
         let tenant = self.tenant.to_string();
-        let participant = self.apple_store.clone();
+        let participant = self.apple_push.clone();
         let discovered = self
             .runtime
             .local_tx(self.tenant, deadline(), |tx| {
@@ -56,7 +56,7 @@ impl ExecutionService {
                     })
                     .await??;
                     let tenant = service.tenant.to_string();
-                    let participant = service.apple_store.clone();
+                    let participant = service.apple_push.clone();
                     let rows = tx
                         .with_connection(move |c| {
                             Box::pin(async move {
@@ -67,25 +67,44 @@ impl ExecutionService {
                         .map_err(Error::from)?;
                     for row in rows {
                         let registration = row.registration;
-                        if !pending(service, tx, service.apple_store.clone(), registration).await? {
+                        let user_key = row.user_key.clone();
+                        if !pending(
+                            service,
+                            tx,
+                            service.apple_push.clone(),
+                            registration,
+                            &row.user_key,
+                        )
+                        .await?
+                        {
                             let tenant = service.tenant.to_string();
-                            let participant = service.apple_store.clone();
+                            let participant = service.apple_push.clone();
                             tx.with_connection(move |c| {
                                 Box::pin(async move {
-                                    Ok(participant.defer_push(c, tenant, registration).await)
+                                    Ok(participant
+                                        .defer_push(c, tenant, registration, user_key)
+                                        .await)
                                 })
                             })
                             .await?
                             .map_err(Error::from)?;
                             continue;
                         }
+                        let user_key = row.user_key.clone();
                         let id = Uuid::new_v4();
                         let tenant = service.tenant.to_string();
-                        let participant = service.apple_store.clone();
+                        let participant = service.apple_push.clone();
                         tx.with_connection(move |c| {
                             Box::pin(async move {
                                 Ok(participant
-                                    .lease_push(c, tenant, id, registration, configuration)
+                                    .lease_push(
+                                        c,
+                                        tenant,
+                                        id,
+                                        registration,
+                                        user_key,
+                                        configuration,
+                                    )
                                     .await)
                             })
                         })
@@ -113,6 +132,7 @@ impl ExecutionService {
                             id,
                             registration,
                             revision,
+                            user_key: row.user_key,
                             token: row.token,
                             magic: row.magic,
                         }));
@@ -147,7 +167,7 @@ impl ExecutionService {
             let fingerprint=checked_input(serde_json::to_vec(&(registration,id,revision,status,outcome_name)))?;
             let fact=Fact::business(audit,&format!("apple-push:{id}:settle"),&fingerprint,200,"success",None)?
                 .with_details(serde_json::json!({"outcome":outcome_name,"status":status,"tokenRevision":revision}))?;
-            let participant=service.apple_store.clone();let wake=wake.clone();
+            let participant=service.apple_push.clone();let wake=wake.clone();
             let changed=tx.with_connection(move|c|Box::pin(async move{Ok(participant.settle_push(c,tenant,wake,status,outcome).await)})).await?.map_err(Error::from)?;
             if changed == Some(1) { crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Apple).await?; }
             match changed {
@@ -169,8 +189,9 @@ impl ExecutionService {
 async fn pending(
     service: &ExecutionService,
     tx: &mut PgTransaction<'_>,
-    participant: Arc<dyn super::channels::AppleStore>,
+    participant: Arc<dyn super::channels::ApplePush>,
     registration: Uuid,
+    user_key: &str,
 ) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
     let store = participant.clone();
@@ -180,7 +201,7 @@ async fn pending(
         })
         .await?
         .map_err(Error::from)?;
-    if renewal {
+    if renewal && user_key.is_empty() {
         return Ok(true);
     }
     let tenant = tx.tenant_id().to_string();
@@ -197,6 +218,25 @@ async fn pending(
             &row,
             "request",
         )?;
+        if request.target.user_key() != user_key {
+            if !user_key.is_empty() || request.target.user_key().is_empty() {
+                continue;
+            }
+            let store = participant.clone();
+            let tenant = tx.tenant_id().to_string();
+            let operation = row.try_get("id")?;
+            if !tx
+                .with_connection(move |c| {
+                    Box::pin(
+                        async move { Ok(store.needs_prerequisites(c, tenant, operation).await) },
+                    )
+                })
+                .await?
+                .map_err(Error::from)?
+            {
+                continue;
+            }
+        }
         let approval: crate::authority::ExecutionAuthority =
             stored(serde_json::from_str(&row.try_get::<String, _>("approval")?))?;
         let protection = service.protection.clone();
@@ -219,11 +259,11 @@ async fn pending(
             return Ok(true);
         }
     }
-    if remaining == 0 {
+    if remaining == 0 || !user_key.is_empty() {
         return Ok(false);
     }
     let tenant = tx.tenant_id().to_string();
-    let store = participant.clone();
+    let store = service.apple_collections.clone();
     let collections = tx
         .with_connection(move |c| {
             Box::pin(async move {

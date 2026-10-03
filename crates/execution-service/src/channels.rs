@@ -121,6 +121,7 @@ pub struct Observation {
     pub response: Option<Vec<u8>>,
     pub received_at: Option<i64>,
     pub accepted: bool,
+    pub native_outcome: Option<rss_mdm_apple_mdm::native::outcome::Outcome>,
 }
 pub struct AppleRegistration {
     pub tenant: String,
@@ -128,7 +129,7 @@ pub struct AppleRegistration {
     pub registration: uuid::Uuid,
     pub generation: i64,
 }
-pub trait AppleStore: Send + Sync {
+pub trait AppleProfiles: Send + Sync {
     fn reserve_profile<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -143,12 +144,37 @@ pub trait AppleStore: Send + Sync {
         operation: uuid::Uuid,
     ) -> Pending<'a, ()>;
 
+    fn previous_profiles<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        device: String,
+        user_key: String,
+        identifier: String,
+    ) -> Pending<'a, Vec<Uuid>>;
+}
+pub trait AppleCollections: Send + Sync {
     fn prepare_native_collection<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
         id: Uuid,
     ) -> Pending<'a, Vec<Fact>>;
+    fn pending_collections<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        registration: Uuid,
+        limit: usize,
+    ) -> Pending<'a, Vec<PendingCollection>>;
+}
+pub trait ApplePush: Send + Sync {
+    fn needs_prerequisites<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        operation: Uuid,
+    ) -> Pending<'a, bool>;
     fn push_due<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -166,6 +192,7 @@ pub trait AppleStore: Send + Sync {
         c: &'a mut PgConnection,
         tenant: String,
         registration: Uuid,
+        user_key: String,
     ) -> Pending<'a, ()>;
     fn lease_push<'a>(
         &'a self,
@@ -173,6 +200,7 @@ pub trait AppleStore: Send + Sync {
         tenant: String,
         wake: Uuid,
         registration: Uuid,
+        user_key: String,
         configuration: [u8; 32],
     ) -> Pending<'a, ()>;
     fn settle_push<'a>(
@@ -189,19 +217,8 @@ pub trait AppleStore: Send + Sync {
         tenant: String,
         registration: Uuid,
     ) -> Pending<'a, bool>;
-    fn pending_collections<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: String,
-        registration: Uuid,
-        limit: usize,
-    ) -> Pending<'a, Vec<PendingCollection>>;
-    fn defer_collection<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: String,
-        collection: Uuid,
-    ) -> Pending<'a, ()>;
+}
+pub trait AppleResults: Send + Sync {
     fn observations<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -214,6 +231,8 @@ pub enum Reception {
     Ready(Box<dyn AppleAttempt>),
 }
 pub trait AppleAttempt: Send {
+    fn valid(&self) -> bool;
+    fn outcome(&self) -> Option<rss_mdm_apple_mdm::native::outcome::Outcome>;
     fn latest(&self) -> bool;
     fn operation(&self) -> Option<Uuid>;
     fn phase(&self) -> &str;
@@ -251,6 +270,7 @@ pub trait Apple: Send + Sync {
         c: &'a mut PgConnection,
         p: &'a DevicePrincipal,
         udid: &'a str,
+        user_key: &'a str,
     ) -> Pending<'a, ()>;
     fn collect<'a>(
         &'a self,
@@ -274,6 +294,12 @@ pub trait Apple: Send + Sync {
         p: &'a DevicePrincipal,
         command: &'a AppleCommand,
     ) -> Pending<'a, AppleDispatch>;
+    fn prerequisites<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        p: &'a DevicePrincipal,
+        command: &'a AppleCommand,
+    ) -> Pending<'a, AppleDispatch>;
     fn collection<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -286,12 +312,14 @@ pub struct Wake {
     pub id: Uuid,
     pub registration: Uuid,
     pub revision: i64,
+    pub user_key: String,
     pub token: Vec<u8>,
     pub magic: String,
 }
 pub struct PushCandidate {
     pub registration: Uuid,
     pub revision: i64,
+    pub user_key: String,
     pub token: Vec<u8>,
     pub magic: String,
 }

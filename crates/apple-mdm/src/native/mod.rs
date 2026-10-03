@@ -105,6 +105,13 @@ impl Conditions {
         }
     }
     fn check(self, target: &Target<'_>) -> Result<(), Error> {
+        if target
+            .context
+            .version
+            .is_some_and(|version| version.components()[0] < 15)
+        {
+            return Err(Error::Unsupported);
+        }
         if self.introduced == Some("n/a") {
             return Err(Error::Unsupported);
         }

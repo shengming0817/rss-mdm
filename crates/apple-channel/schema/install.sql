@@ -39,6 +39,9 @@ CREATE TABLE mdm_apple.attempts (
     response bytea,
     response_digest bytea,
     received_at bigint,
+    user_key text NOT NULL DEFAULT '',
+    context jsonb,
+    native_outcome text CHECK(native_outcome IN ('query_result','acknowledged','deferred','pending_restart','in_progress','rejected','unknown')),
     accepted boolean NOT NULL DEFAULT false CONSTRAINT attempts_acceptance_check CHECK(NOT accepted OR response IS NOT NULL),
     next_attempt timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     deadline timestamp with time zone NOT NULL,
@@ -62,30 +65,35 @@ CREATE TABLE mdm_apple.devices (
     registration uuid NOT NULL,
     udid text NOT NULL,
     state text NOT NULL,
-    token bytea,
-    magic text,
-    token_revision bigint DEFAULT 0 NOT NULL,
-    push_id uuid,
-    push_lease_until timestamp with time zone,
-    next_push timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    push_configuration bytea,
-    push_failures integer DEFAULT 0 NOT NULL,
-    identity_health smallint DEFAULT 0 NOT NULL,
-    push_status integer,
-    push_outcome text,
-    CONSTRAINT devices_check CHECK (((state <> 'active'::text) OR ((token IS NOT NULL) AND (magic IS NOT NULL)))),
-    CONSTRAINT devices_identity_health_check CHECK (((identity_health >= 0) AND (identity_health <= 2))),
-    CONSTRAINT devices_magic_check CHECK (((length(magic) >= 1) AND (length(magic) <= 1024))),
-    CONSTRAINT devices_push_configuration_check CHECK ((octet_length(push_configuration) = 32)),
-    CONSTRAINT devices_push_failures_check CHECK (((push_failures >= 0) AND (push_failures <= 6))),
-    CONSTRAINT devices_push_outcome_check CHECK ((push_outcome = ANY (ARRAY['accepted'::text, 'retryable'::text, 'unregistered'::text, 'rejected'::text]))),
-    CONSTRAINT devices_state_check CHECK ((state = ANY (ARRAY['pending_token'::text, 'active'::text, 'retired'::text]))),
-    CONSTRAINT devices_token_check CHECK (((octet_length(token) >= 1) AND (octet_length(token) <= 512))),
-    CONSTRAINT devices_token_revision_check CHECK ((token_revision >= 0)),
+    identity_health smallint DEFAULT 0 NOT NULL CHECK(identity_health BETWEEN 0 AND 2),
+    bootstrap bytea CHECK(octet_length(bootstrap) BETWEEN 68 AND 16452),
+    bootstrap_revision bigint NOT NULL DEFAULT 0 CHECK(bootstrap_revision>=0),
+    CONSTRAINT devices_state_check CHECK(state IN ('pending_token','active','retired')),
     CONSTRAINT devices_udid_check CHECK (((length(udid) >= 1) AND (length(udid) <= 255)))
 );
 
 ALTER TABLE ONLY mdm_apple.devices FORCE ROW LEVEL SECURITY;
+
+-- Native user GUIDs share the device certificate, but never its token or push lease.
+CREATE TABLE mdm_apple.channels (
+    tenant_id uuid NOT NULL, registration uuid NOT NULL, generation bigint NOT NULL CHECK(generation>0),
+    user_key text NOT NULL CHECK(user_key='' OR user_key ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
+    state text NOT NULL CHECK(state IN ('pending_token','active','retired')),
+    material bytea CHECK(octet_length(material) BETWEEN 68 AND 4096),
+    material_digest bytea CHECK(octet_length(material_digest)=32),
+    token_revision bigint NOT NULL DEFAULT 0 CHECK(token_revision>=0),
+    push_id uuid, push_lease_until timestamptz,
+    next_push timestamptz NOT NULL DEFAULT clock_timestamp(),
+    push_configuration bytea CHECK(octet_length(push_configuration)=32),
+    push_failures integer NOT NULL DEFAULT 0 CHECK(push_failures BETWEEN 0 AND 6),
+    push_status integer,
+    push_outcome text CHECK(push_outcome IN ('accepted','retryable','unregistered','rejected')),
+    PRIMARY KEY(tenant_id,registration,user_key),
+    CHECK(state<>'active' OR (material IS NOT NULL AND material_digest IS NOT NULL))
+);
+ALTER TABLE mdm_apple.channels ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_apple.channels FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_apple.channels USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 
 CREATE TABLE mdm_apple.scep_attempts (
     access_rights integer NOT NULL CHECK(access_rights BETWEEN 1 AND 8191 AND (access_rights & 2 = 0 OR access_rights & 1 = 1) AND (access_rights & 128 = 0 OR access_rights & 64 = 64)),

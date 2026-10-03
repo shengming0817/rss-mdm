@@ -2,11 +2,12 @@ WITH tables AS (
  SELECT c.* FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_apple'
 ), updates(relation,col) AS (VALUES
  ('scep_attempts','state'),('scep_attempts','transaction_id'),('scep_attempts','csr_digest'),('scep_attempts','spki'),('scep_attempts','serial'),('scep_attempts','fingerprint'),('scep_attempts','certificate'),('scep_attempts','registration'),('scep_attempts','not_before'),('scep_attempts','not_after'),
- ('devices','state'),('devices','token'),('devices','magic'),('devices','token_revision'),('devices','next_push'),('devices','push_id'),('devices','push_lease_until'),('devices','push_status'),('devices','push_outcome'),('devices','push_failures'),('devices','identity_health'),
+ ('devices','state'),('devices','identity_health'),('devices','bootstrap'),('devices','bootstrap_revision'),
+ ('channels','state'),('channels','material'),('channels','material_digest'),('channels','token_revision'),('channels','next_push'),('channels','push_id'),('channels','push_lease_until'),('channels','push_status'),('channels','push_outcome'),('channels','push_failures'),
  ('profiles','retired_at'),('attempts','accepted'),('attempts','state'),('attempts','response'),('attempts','response_digest'),('attempts','received_at'),('attempts','next_attempt')
 )
 SELECT has_schema_privilege(current_user,'mdm_apple','USAGE')
- AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['attempts','devices','profiles','scep_attempts'] FROM tables WHERE relkind='r')
+ AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['attempts','channels','devices','profiles','scep_attempts'] FROM tables WHERE relkind='r')
  AND NOT EXISTS(SELECT 1 FROM tables WHERE relkind NOT IN ('r','i'))
  AND NOT EXISTS(SELECT 1 FROM tables t WHERE relkind='r' AND (
   NOT relrowsecurity OR NOT relforcerowsecurity OR relpersistence<>'p' OR relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)
