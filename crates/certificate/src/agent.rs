@@ -32,6 +32,7 @@ const RSA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1
 const SHA256_RSA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.11");
 const CLIENT_AUTH: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.3.2");
 const STEP: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.37476.9000.64.1");
+const COMMON_NAME: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.4.3");
 const EXTENSION_REQ: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.14");
 pub const SUBJECT: &str = "rss-mdm-agent";
 pub const PROFILE: &str = "rss-mdm.agent.v1";
@@ -45,6 +46,20 @@ fn rsa(algorithm: &AlgorithmIdentifierOwned, oid: ObjectIdentifier) -> bool {
             .parameters
             .as_ref()
             .is_none_or(|p| p == &Any::null())
+}
+fn agent_subject(name: &x509_cert::name::Name) -> bool {
+    use x509_cert::der::{Tag, Tagged};
+    if name.0.len() != 1 || name.0[0].0.len() != 1 {
+        return false;
+    }
+    name.0[0].0.iter().next().is_some_and(|attribute| {
+        attribute.oid == COMMON_NAME
+            && matches!(
+                attribute.value.tag(),
+                Tag::Utf8String | Tag::PrintableString
+            )
+            && attribute.value.value() == SUBJECT.as_bytes()
+    })
 }
 /// Identity comes from the registration owner's authorized database row.
 pub fn identity(tenant: Uuid, device: &str) -> Result<String, Error> {
@@ -93,8 +108,7 @@ impl VerifiedAgentCsr {
             csr.signature.as_bytes().ok_or(Error::CertificateRequest)?,
         )
         .map_err(malformed)?;
-        let expected = format!("CN={SUBJECT}").parse().map_err(malformed)?;
-        if !csr.info.subject.0.is_empty() && csr.info.subject != expected {
+        if !csr.info.subject.0.is_empty() && !agent_subject(&csr.info.subject) {
             return Err(Error::CertificateRequest);
         }
         if csr.info.attributes.len() > 1 {
@@ -314,11 +328,10 @@ impl AgentTrust {
         let t = &c.tbs_certificate;
         let start = t.validity.not_before.to_unix_duration().as_secs() as i64;
         let end = t.validity.not_after.to_unix_duration().as_secs() as i64;
-        let subject = format!("CN={SUBJECT}").parse().map_err(malformed)?;
         if !valid(&c, now)
             || !self.permits_window(start, end)
             || t.issuer != self.issuer.tbs_certificate.subject
-            || t.subject != subject
+            || !agent_subject(&t.subject)
             || !rsa(&t.subject_public_key_info.algorithm, RSA)
             || t.get::<BasicConstraints>()
                 .map_err(malformed)?
