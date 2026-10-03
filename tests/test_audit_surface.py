@@ -14,6 +14,9 @@ def production_paths():
 
 # Each entry binds an action to its declaration or dispatch entry in the production call path.
 OWNERS = {
+ 'certificate_archive_unlock':'crates/management-http/src/boundary.rs',
+ 'certificate_archive_lock':'crates/management-http/src/boundary.rs',
+
  'windows_renewal':'crates/windows-channel/src/renewal.rs',
  'windows_push':'crates/windows-channel/src/push_worker.rs',
  'timeline_read': 'crates/management-http/src/boundary.rs',
@@ -74,6 +77,9 @@ OWNERS = {
  'windows_policy': 'crates/windows-channel/src/boundary.rs'}
 
 DECLARATIONS = {
+ ('certificate_archive_unlock','crates/management-http/src/boundary.rs'),
+ ('certificate_archive_lock','crates/management-http/src/boundary.rs'),
+
     ('windows_renewal', 'crates/windows-channel/src/renewal.rs'),
     ('windows_push', 'crates/windows-channel/src/push_worker.rs'),
     ('credential_revoke', 'crates/execution-service/src/retirement.rs'),

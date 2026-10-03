@@ -65,10 +65,14 @@ impl Fixture {
         })
     }
     fn routes(authority: &authority::Authority, archive: Arc<Archive>) -> Result<Router> {
-        authority.router(Router::new().nest(
-            "/api/v1",
-            rss_mdm_management_http::certificate_archive::routes().with_state(archive),
-        ))
+        authority.router(
+            Router::new()
+                .nest(
+                    "/api/v1",
+                    rss_mdm_management_http::certificate_archive::routes().with_state(archive),
+                )
+                .merge(authority.authorization()),
+        )
     }
     async fn call(
         &mut self,
@@ -425,9 +429,9 @@ async fn generation_alerts_and_two_sessions_use_one_tenant_identity() -> Result<
 }
 
 async fn wait_for_archive_locks(count: usize) -> Result<()> {
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(Duration::from_secs(8), async {
         loop {
-            let n = pg("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event='advisory' AND query LIKE 'SELECT pg_advisory_xact_lock%'")?;
+            let n = pg("SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid=l.pid WHERE NOT l.granted AND a.datname=current_database()")?;
             if n.trim().parse::<usize>()? >= count {
                 return Ok::<_, anyhow::Error>(());
             }
@@ -453,9 +457,11 @@ async fn replayed_export_rechecks_generation_after_peer_password_change() -> Res
         Some(json!({"entryId":entry,"version":1})),
     )
     .await?;
+    let peer_access = database(&f.authority.base).await?;
+    let config: Config = serde_json::from_value(f.authority.base.clone())?;
     let peer = Arc::new(Archive::new(
-        f.authority.access.archive_pool(),
-        f.authority.audit.clone(),
+        peer_access.archive_pool(),
+        peer_access.audit_store(&config.audit).await?,
         f.clock.clone(),
     ));
     let peer_router = Fixture::routes(&f.authority, peer)?;

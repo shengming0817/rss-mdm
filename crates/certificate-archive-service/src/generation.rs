@@ -221,10 +221,10 @@ pub(crate) fn generate(
     } else {
         None
     };
-    if let Some((cert, _)) = &authority {
-        if until > crate::materials::facts(cert)?.not_after {
-            return Err(Error::Malformed);
-        }
+    if let Some((cert, _)) = &authority
+        && until > crate::materials::facts(cert)?.not_after
+    {
+        return Err(Error::Malformed);
     }
     let mut cert = X509::builder().map_err(invalid)?;
     cert.set_version(2).map_err(invalid)?;

@@ -689,11 +689,11 @@ fn request_digest(
         .map_err(|_| Error::Integrity)
 }
 fn public_digest(input: &impl serde::Serialize) -> Result<[u8; 32], Error> {
-    Ok(ring::digest::digest(
+    ring::digest::digest(
         &ring::digest::SHA256,
         &serde_json::to_vec(input).map_err(|_| Error::Malformed)?,
     )
     .as_ref()
     .try_into()
-    .map_err(|_| Error::Integrity)?)
+    .map_err(|_| Error::Integrity)
 }
