@@ -86,6 +86,12 @@ impl Fixture {
         Ok(Store::connect(config, self.secrets(root)?, Arc::new(Timer), budget()?).await?)
     }
 }
+fn hex_namespace(namespace: &str) -> String {
+    Sha256::digest(namespace.as_bytes())[..16]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
 fn budget() -> Result<Budget> {
     Budget::new(
         Arc::new(Timer),
@@ -223,6 +229,29 @@ async fn multipart_resume_exact_manifest_and_abort() -> TestResult {
         b.status(&resumed, budget()?).await?,
         UploadState::Absent
     ));
+    // CompleteMultipartUpload must enforce its own condition, independently of PutObject.
+    let conflicting = confirmed(b.begin(&write, budget()?).await?)?;
+    let first = Bytes::from(vec![b'a'; 5 * 1024 * 1024]);
+    let last = Bytes::from_static(b"tail");
+    let competing = [
+        confirmed(
+            b.part(&conflicting, 1, content(&first), source(first), budget()?)
+                .await?,
+        )?,
+        confirmed(
+            b.part(&conflicting, 2, content(&last), source(last), budget()?)
+                .await?,
+        )?,
+    ];
+    assert!(matches!(
+        b.complete(&conflicting, &competing, budget()?).await,
+        Err(Error::Conflict)
+    ));
+    let retained = b
+        .verify(object.object(), object.content(), budget()?)
+        .await?;
+    assert_eq!(retained.object(), object.object());
+    confirmed(b.abort(&conflicting, budget()?).await?)?;
     let abandoned = b.write(b.target("abandoned")?, "abandoned", content(b"bytes"))?;
     let original = confirmed(b.begin(&abandoned, budget()?).await?)?;
     let sibling = confirmed(b.begin(&abandoned, budget()?).await?)?;
@@ -326,11 +355,32 @@ async fn permission_configuration_integrity_and_exact_delete() -> TestResult {
     ));
     assert_eq!(a.inspect(&newer, budget()?).await?.length, 11);
     confirmed(a.delete(&newer, budget()?).await?)?;
-    // A missing bucket must remain configuration failure, even if HEAD returns generic 404.
+    // A missing selected object in an existing bucket is Missing.
     let absent = a.object(a.target("missing")?, "selected-version")?;
     assert!(matches!(
         a.inspect(&absent, budget()?).await,
         Err(Error::Missing)
+    ));
+    // Establish a valid connection first, then remove its empty bucket to exercise HEAD 404.
+    let bucket = format!("missing-{}", hex_namespace(&f.namespace));
+    root.create_bucket().bucket(&bucket).send().await?;
+    root.put_bucket_versioning()
+        .bucket(&bucket)
+        .versioning_configuration(
+            aws_sdk_s3::types::VersioningConfiguration::builder()
+                .status(aws_sdk_s3::types::BucketVersioningStatus::Enabled)
+                .build(),
+        )
+        .send()
+        .await?;
+    let mut config = f.config()?;
+    config.bucket = bucket.clone();
+    let missing_bucket = f.connect(config, true).await?;
+    root.delete_bucket().bucket(&bucket).send().await?;
+    let selected = missing_bucket.object(missing_bucket.target("missing")?, "selected-version")?;
+    assert!(matches!(
+        missing_bucket.inspect(&selected, budget()?).await,
+        Err(Error::Configuration)
     ));
     Ok(())
 }

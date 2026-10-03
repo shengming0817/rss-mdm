@@ -16,15 +16,26 @@ pub type ByteStreamInput = BoxStream<'static, Result<Bytes>>;
 /// Read failures are stream errors; early EOF is never successful completion.
 pub type ByteStreamOutput = BoxStream<'static, Result<Bytes>>;
 
+async fn cutoff(budget: &Budget) -> Result<tokio::time::Instant> {
+    // Cooperate even with streams that always return Ready (including empty frames).
+    tokio::task::yield_now().await;
+    let now = budget.clock.now();
+    if now >= budget.deadline.instant() {
+        return Err(Error::Budget);
+    }
+    Ok(budget
+        .deadline
+        .instant()
+        .min(
+            now.checked_add(budget.idle)
+                .unwrap_or(budget.deadline.instant()),
+        )
+        .into())
+}
+
 pub(crate) async fn next(stream: &mut ByteStreamInput, budget: &Budget) -> Result<Option<Bytes>> {
-    let cutoff = budget.deadline.instant().min(
-        budget
-            .clock
-            .now()
-            .checked_add(budget.idle)
-            .unwrap_or(budget.deadline.instant()),
-    );
-    tokio::time::timeout_at(cutoff.into(), stream.next())
+    let cutoff = cutoff(budget).await?;
+    tokio::time::timeout_at(cutoff, stream.next())
         .await
         .map_err(|_| Error::Budget)?
         .transpose()
@@ -127,15 +138,15 @@ pub(crate) fn download(
             if done {
                 return None;
             }
-            let cutoff = budget.deadline.instant().min(
-                budget
-                    .clock
-                    .now()
-                    .checked_add(budget.idle)
-                    .unwrap_or(budget.deadline.instant()),
-            );
-            let result = match tokio::time::timeout_at(cutoff.into(), body.next()).await {
-                Err(_) => Err(Error::Budget),
+            let result = match async {
+                let cutoff = cutoff(&budget).await?;
+                tokio::time::timeout_at(cutoff, body.next())
+                    .await
+                    .map_err(|_| Error::Budget)
+            }
+            .await
+            {
+                Err(error) => Err(error),
                 Ok(Some(Err(_))) => Err(Error::Transient),
                 Ok(Some(Ok(bytes))) => {
                     count = count.saturating_add(bytes.len() as u64);

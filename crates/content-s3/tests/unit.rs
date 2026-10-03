@@ -166,3 +166,54 @@ async fn idle_wait_and_absolute_cutoff_are_bounded() -> Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test(start_paused = true)]
+async fn expired_budget_rejects_immediately_ready_streams() -> Result<()> {
+    let b = budget()?;
+    tokio::time::advance(Duration::from_secs(3)).await;
+    assert_eq!(
+        body::next(&mut input(vec![b"abc"]), &b).await,
+        Err(Error::Budget)
+    );
+    let mut download = body::download(
+        aws_sdk_s3::primitives::ByteStream::from_static(b"abc"),
+        3,
+        None,
+        b,
+        None,
+    );
+    assert_eq!(download.next().await, Some(Err(Error::Budget)));
+    Ok(())
+}
+
+#[tokio::test]
+async fn always_ready_empty_frames_exhaust_budget_without_starving_runtime() -> Result<()> {
+    for payload in [b"".as_slice(), b"abc".as_slice()] {
+        let b = Budget::new(
+            Arc::new(Timer),
+            Duration::from_millis(5),
+            Duration::from_millis(5),
+            100,
+            2,
+        )?;
+        let mut source: ByteStreamInput = Box::pin(
+            futures::stream::once(async move { Ok(Bytes::copy_from_slice(payload)) })
+                .chain(futures::stream::repeat(Ok(Bytes::new()))),
+        );
+        let result = tokio::time::timeout(Duration::from_secs(1), async {
+            if payload.is_empty() {
+                body::empty_input(&mut source, content(payload), &b).await
+            } else {
+                body::upload(source, content(payload), b)
+                    .collect()
+                    .await
+                    .map(|_| ())
+                    .map_err(|_| Error::Budget)
+            }
+        })
+        .await
+        .map_err(|_| Error::Transient)?;
+        assert_eq!(result, Err(Error::Budget));
+    }
+    Ok(())
+}

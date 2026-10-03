@@ -24,13 +24,13 @@ class S3Environment:
 
     def reset(self):
         with self.lock:
-            ids = run(['docker','ps','-aq','--filter',f'name=^/{self.name}$'],capture_output=True).stdout.split()
+            ids = run(['docker','ps','-aq','--filter',f'name=^/{self.name}$'],capture_output=True,timeout=30).stdout.split()
             for identifier in ids:
-                info = json.loads(run(['docker','inspect',identifier],capture_output=True).stdout)[0]
+                info = json.loads(run(['docker','inspect',identifier],capture_output=True,timeout=30).stdout)[0]
                 labels = info.get('Config',{}).get('Labels') or {}
                 if info.get('Name') != '/' + self.name or labels.get('rss.mdm.worktree') != self.owner.identity or labels.get('rss.mdm.fixture') != 'content-s3':
                     raise RuntimeError('S3 fixture ownership mismatch')
-                run(['docker','rm','-f',identifier],capture_output=True)
+                run(['docker','rm','-f',identifier],capture_output=True,timeout=30)
             self.ready = False
 
     def execute(self, *args):
@@ -69,11 +69,11 @@ class S3Environment:
                  '--label','rss.mdm.fixture=content-s3','--env-file',envfile,'-p','127.0.0.1::9000',PROVIDER['image']],capture_output=True,timeout=120)
             try:
                 try:
-                    run(['docker','cp',tls,self.name+':/tls'],capture_output=True)
+                    run(['docker','cp',tls,self.name+':/tls'],capture_output=True,timeout=30)
                 finally:
                     (tls/'rustfs_key.pem').chmod(0o600)
-                run(['docker','start',self.name],capture_output=True)
-                port=run(['docker','port',self.name,'9000/tcp'],capture_output=True).stdout.strip().rsplit(':',1)[1]
+                run(['docker','start',self.name],capture_output=True,timeout=30)
+                port=run(['docker','port',self.name,'9000/tcp'],capture_output=True,timeout=30).stdout.strip().rsplit(':',1)[1]
                 self.configuration=dict(endpoint='https://localhost:'+port,region='us-east-1',bucket='content',namespace='content',
                                         ca=str(root/'ca.crt'),certificate=str(root/'server.crt'),key=str(root/'server.key'),accessKey=access,secretKey=secret,rootAccessKey=root_access,rootSecretKey=root_secret,
                                         provider=PROVIDER['provider'],version=PROVIDER['version'],image=PROVIDER['image'])
@@ -89,7 +89,7 @@ class S3Environment:
                 for bucket in ('content','neighbor','unversioned'):
                     self.signed('PUT',bucket)
                 private(root/'versioning.xml','<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Enabled</Status></VersioningConfiguration>')
-                run(['docker','cp',root/'versioning.xml',self.name+':/versioning.xml'],capture_output=True)
+                run(['docker','cp',root/'versioning.xml',self.name+':/versioning.xml'],capture_output=True,timeout=30)
                 self.signed('PUT','content?versioning','/versioning.xml',content_type='application/xml')
                 policy=dict(Version='2012-10-17',Statement=[
                     dict(Effect='Allow',Action=['s3:GetBucketVersioning'],Resource=['arn:aws:s3:::content','arn:aws:s3:::unversioned']),
@@ -98,7 +98,7 @@ class S3Environment:
                 private(root/'policy.json',policy)
                 private(root/'user.json',dict(secretKey=secret,status='enabled'))
                 for name in ('policy.json','user.json'):
-                    run(['docker','cp',root/name,self.name+':/'+name],capture_output=True)
+                    run(['docker','cp',root/name,self.name+':/'+name],capture_output=True,timeout=30)
                 for path,body in [('add-canned-policy?name=content-workload','/policy.json'),
                                   ('add-user?accessKey='+access,'/user.json'),
                                   ('set-user-or-group-policy?policyName=content-workload&userOrGroup='+access+'&isGroup=false','/dev/null')]:
