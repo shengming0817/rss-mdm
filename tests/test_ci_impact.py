@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 RSS_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RSS_ROOT / 'hack'))
-DEFAULT_SELECTOR = [sys.executable, str(RSS_ROOT / 'hack' / 'ci-impact.py')]
+DEFAULT_SELECTOR = [sys.executable, str(RSS_ROOT / 'hack' / 'ci_impact.py')]
 
 
 def selector_command() -> list[str]:

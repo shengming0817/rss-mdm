@@ -2,7 +2,7 @@
 
 T1 提供模型与边界证据；T2 使用真实依赖提供持久化、权限、协议与恢复证据；T3 在独立产品任务中验证真实设备与支持矩阵。缺依赖或未运行不能宣布通过。
 
-`make ci CI_BASE=origin/develop` 按影响范围运行快速检查，任何模式均不启动 PostgreSQL、网关或 IdP，不隐式执行 T2。`make t2 MODULE=affected CI_BASE=origin/develop` 运行受影响测试模块（裸 `make t2` 默认 affected），`MODULE=planning.http` 等选择专项，`MODULE=all` 选择全部；旧 SUITE/--suite 明确拒绝。执行与发现使用 `hack/t2_registry.py` 的唯一描述，affected 由 `hack/ci-impact.py` 统一选择，Rust 测试函数通过 nextest 实际发现。`make ci-full` 在同一构建租约内组合全部快速检查和全部 T2，正式候选和浏览器 T3 独立。本仓结果不由父仓 CI 代替；不新增远端 CI。
+`make ci CI_BASE=origin/develop` 按影响范围运行快速检查，任何模式均不启动 PostgreSQL、网关或 IdP，不隐式执行 T2。`make t2 MODULE=affected CI_BASE=origin/develop` 运行受影响测试模块（裸 `make t2` 默认 affected），`MODULE=planning.http` 等选择专项，`MODULE=all` 选择全部；旧 SUITE/--suite 明确拒绝。执行与发现使用 `hack/t2_registry.py` 的唯一描述，affected 由 `hack/ci_impact.py` 统一选择，Rust 测试函数通过 nextest 实际发现。`make ci-full` 在同一构建租约内组合全部快速检查和全部 T2，正式候选和浏览器 T3 独立。本仓结果不由父仓 CI 代替；不新增远端 CI。
 
 CI 直接验证当前工作区，不要求预先提交、clean HEAD 或冷构建。`make ci-plan` 仅预览；选择器比较基线 merge-base 与当前修改，计入未跟踪且非忽略的输入。docs/root Markdown 不贡献 Rust package seed，crate README 可参与 rustdoc。selection 分别记录 Cargo 的 `cargo.mode/packages` 与 T2 的 `t2.mode/modules`，并以原因区分业务影响、工具验证、代表场景与显式全量。Cargo 使用反向依赖闭包；独立 T1 文件不选 T2，独立 T2 文件只选所属模块，helper 只选直接消费者。生产输入按模块声明的实际消费接缝选择，多个输入取并集。manifest/lock 按两版依赖及实际接缝消费者选择，不沿 App 整包图扩大 T2；共享编译语义覆盖真实运行消费者。登记、模块输入和可识别 rename/copy 合并基线与当前归属；模块删除必须指向当前后继证明。未知输入、基线不可用、分析异常和非法结果明确失败，不执行隐式全量。存在脏文件本身不扩大选择。CI 在选择前与执行后核对当前文件集合、内容及状态，运行期间输入变化则失败，避免将旧测试结果用于新源码。
 

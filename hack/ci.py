@@ -268,7 +268,7 @@ def select_impact(head, base=None):
     merge = command(['/usr/bin/git', 'merge-base', base, head])
     if merge.returncode != 0 or not merge.stdout.strip():
         raise SelectionError('base-unavailable', base)
-    result = command([sys.executable, 'hack/ci-impact.py', '--base', merge.stdout.strip()], separate_stderr=True)
+    result = command([sys.executable, 'hack/ci_impact.py', '--base', merge.stdout.strip()], separate_stderr=True)
     if result.stderr.strip():
         print(result.stderr.strip(), file=sys.stderr)
     try:

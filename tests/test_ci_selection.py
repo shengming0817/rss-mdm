@@ -278,7 +278,7 @@ class EntryModes(unittest.TestCase):
 
         stdout, stderr = io.StringIO(), io.StringIO()
         with (
-            patch.object(impact.sys, 'argv', ['ci-impact.py', '--base', 'base']),
+            patch.object(impact.sys, 'argv', ['ci_impact.py', '--base', 'base']),
             patch.object(
                 impact,
                 'run',
