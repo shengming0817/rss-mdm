@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
 
 LOCAL_PACKAGES = {
+    "rss-mdm-content-s3": "crates/content-s3",
     "rss-mdm-certificate-archive-service": "crates/certificate-archive-service",
     "rss-mdm-native-protection": "crates/native-protection",
     "rss-mdm-native-schema": "crates/native-schema",

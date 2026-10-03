@@ -1,0 +1,30 @@
+[package]
+name = "rss-mdm-content-s3"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+autotests = false
+
+[dependencies]
+aws-sdk-s3.workspace = true
+aws-smithy-http-client.workspace = true
+aws-credential-types.workspace = true
+base64.workspace = true
+bytes.workspace = true
+futures.workspace = true
+http-body.workspace = true
+rss-request-context.workspace = true
+serde.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "io-util"] }
+url.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true
