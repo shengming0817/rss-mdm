@@ -109,11 +109,7 @@ impl Fixture {
             Some(observe),
             Some((
                 "ProfileList",
-                plist::Value::Array(vec![plist::Value::Dictionary(protocol::dictionary([
-                    ("PayloadIdentifier", native_profile().into()),
-                    ("PayloadUUID", profile.to_string().into()),
-                    ("PayloadVersion", 1.into()),
-                ]))]),
+                profile_manifest(profile, "com.apple.security.firewall"),
             )),
         )
         .await?;

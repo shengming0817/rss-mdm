@@ -114,7 +114,7 @@ impl Fixture {
         let mut accepted = false;
         for _ in 0..100 {
             let row = sqlx::query(
-                "SELECT push_status,push_outcome FROM mdm_apple.devices WHERE state='active'",
+                "SELECT push_status,push_outcome FROM mdm_apple.channels WHERE state='active'",
             )
             .fetch_one(&mut pg)
             .await?;

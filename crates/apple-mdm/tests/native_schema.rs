@@ -14,6 +14,42 @@ fn context() -> Context {
 }
 
 #[test]
+fn product_floor_rejects_native_objects_before_macos_15() {
+    let mut context = context();
+    context.version = Some(Version::parse("14.7").unwrap());
+    assert!(
+        Command::new(
+            "InstalledApplicationList",
+            Dictionary::new(),
+            &Target {
+                context: &context,
+                access_rights: &["AllowQueryApplications"],
+            }
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn prerequisite_reports_preserve_unknown_hardware_and_reject_extra_facts() {
+    let mut facts = Dictionary::new();
+    facts.insert("OSVersion".into(), "15.0".into());
+    let mut report = Dictionary::new();
+    report.insert("QueryResponses".into(), Value::Dictionary(facts.clone()));
+    let context = Context::from_reports(&report, None, Channel::User).unwrap();
+    assert_eq!(context.apple_silicon, None);
+    assert_eq!(context.automated_enrollment, None);
+    assert_eq!(context.channel, Channel::User);
+    facts.insert("IsAppleSilicon".into(), "true".into());
+    report.insert("QueryResponses".into(), Value::Dictionary(facts.clone()));
+    assert!(Context::from_reports(&report, None, Channel::Device).is_err());
+    facts.insert("IsAppleSilicon".into(), true.into());
+    facts.insert("SerialNumber".into(), "unrequested".into());
+    report.insert("QueryResponses".into(), Value::Dictionary(facts));
+    assert!(Context::from_reports(&report, None, Channel::Device).is_err());
+}
+
+#[test]
 fn command_fields_are_native_typed_and_unknown_fields_cannot_pass() {
     let context = context();
     let target = Target {
@@ -841,4 +877,45 @@ fn recovery_lock_requires_actual_hardware_and_update_deferrals_require_install_l
         ]))]),
     )]);
     assert!(Command::new("ScheduleOSUpdate", updates, &target).is_err());
+}
+
+#[test]
+fn profile_guards_require_terminal_and_complete_observation() {
+    use profiles::{History, can_reserve};
+    let id = uuid::Uuid::new_v4();
+    let mut old = History {
+        terminal: true,
+        dispatched: true,
+        observed: false,
+        present: true,
+        uuid: id,
+    };
+    assert!(!can_reserve(&[old], id, true));
+    old = History {
+        terminal: true,
+        dispatched: true,
+        observed: true,
+        present: true,
+        uuid: id,
+    };
+    assert!(can_reserve(&[old], id, false));
+    assert!(!can_reserve(&[], id, false));
+    assert!(can_reserve(&[], id, true));
+}
+
+#[test]
+fn bootstrap_requires_known_ade_device_facts() {
+    let mut context = context();
+    assert!(crate::protocol::bootstrap_allowed(&context).is_ok());
+    context.automated_enrollment = None;
+    assert!(matches!(
+        crate::protocol::bootstrap_allowed(&context),
+        Err(crate::Error::Unsupported)
+    ));
+    context.automated_enrollment = Some(true);
+    context.channel = Channel::User;
+    assert!(matches!(
+        crate::protocol::bootstrap_allowed(&context),
+        Err(crate::Error::Unsupported)
+    ));
 }

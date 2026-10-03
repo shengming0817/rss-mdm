@@ -3,6 +3,7 @@
     reason = "sequential real protocol and persistence assertions"
 )]
 //! Real Apple mTLS participant and fixed external SCEP provider; no principal or status stubs.
+mod commands;
 mod lifecycle;
 mod onboarding;
 mod oracle;
@@ -10,6 +11,7 @@ mod policy;
 mod scep;
 #[path = "support/scep.rs"]
 mod scep_client;
+mod users;
 use super::*;
 use crate::{
     api::Assembly,
@@ -598,8 +600,33 @@ fn native_profile() -> &'static str {
     crate::test_support::case::name("org.example.native-profile")
 }
 fn profile_task(id: Uuid, enabled: bool) -> serde_json::Value {
-    json!({"platform":"macos","request":{"kind":"install_profile","profile":{"identifier":native_profile(),"uuid":id,"metadata":{},"payloads":[{"schema":"mdm/profiles/com.apple.security.firewall.yaml","identifier":format!("{}.settings",native_profile()),"uuid":Uuid::new_v4(),"metadata":{},"fields":{"EnableFirewall":{"type":"boolean","value":enabled}}}]}}})
+    json!({"platform":"macos","request":{"kind":"install_profile","profile":{"identifier":native_profile(),"uuid":id,"metadata":{},"payloads":[{"schema":"mdm/profiles/com.apple.security.firewall.yaml","identifier":format!("{}.settings",native_profile()),"uuid":Uuid::from_u128(id.as_u128() ^ (1<<127)),"metadata":{},"fields":{"EnableFirewall":{"type":"boolean","value":enabled}}}]}}})
 }
 fn remove_profile_task(profile: Uuid) -> serde_json::Value {
     json!({"platform":"macos","request":{"kind":"remove_profile","identifier":native_profile(),"uuid":profile}})
+}
+
+fn profile_manifest(id: Uuid, kind: &str) -> plist::Value {
+    plist::Value::Array(vec![plist::Value::Dictionary(protocol::dictionary([
+        ("PayloadIdentifier", native_profile().into()),
+        ("PayloadUUID", id.to_string().into()),
+        ("PayloadVersion", 1.into()),
+        (
+            "PayloadContent",
+            plist::Value::Array(vec![plist::Value::Dictionary(protocol::dictionary([
+                (
+                    "PayloadIdentifier",
+                    format!("{}.settings", native_profile()).into(),
+                ),
+                (
+                    "PayloadUUID",
+                    Uuid::from_u128(id.as_u128() ^ (1 << 127))
+                        .to_string()
+                        .into(),
+                ),
+                ("PayloadType", kind.into()),
+                ("PayloadVersion", 1.into()),
+            ]))]),
+        ),
+    ]))])
 }

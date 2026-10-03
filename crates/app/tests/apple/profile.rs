@@ -50,11 +50,7 @@ impl Fixture {
         let bytes = peer.manage("Acknowledged", Some(execute), None).await?;
         let (observe, _) = command(&bytes, "ProfileList")?;
         ensure!(self.operation(installed).await?["commandStatus"] == "received");
-        let profiles = plist::Value::Array(vec![plist::Value::Dictionary(protocol::dictionary([
-            ("PayloadIdentifier", native_profile().into()),
-            ("PayloadUUID", installed.to_string().into()),
-            ("PayloadVersion", 1.into()),
-        ]))]);
+        let profiles = profile_manifest(installed, "com.apple.security.firewall");
         ensure!(
             peer.manage(
                 "Acknowledged",
@@ -240,11 +236,7 @@ async fn security_profile_replacement_and_removal_keep_target_permissions() -> R
         Some(observe),
         Some((
             "ProfileList",
-            plist::Value::Array(vec![plist::Value::Dictionary(protocol::dictionary([
-                ("PayloadIdentifier", native_profile().into()),
-                ("PayloadUUID", installed.to_string().into()),
-                ("PayloadVersion", 1.into()),
-            ]))]),
+            profile_manifest(installed, "com.apple.MCX.FileVault2"),
         )),
     )
     .await?;

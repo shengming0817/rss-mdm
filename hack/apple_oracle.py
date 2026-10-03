@@ -21,7 +21,7 @@ def running(root, env):
     with (root/'nano.log').open('w') as log:
         process = subprocess.Popen([str(binary),'-listen',address,'-ca',json.loads((root/'apple.json').read_text())['issuer_certificate_file'],
                                     '-storage','filekv','-storage-dsn',str(root/'nano-data'),
-                                    '-cert-header','X-Fixture-Certificate','-checkin',
+                                    '-cert-header','X-Fixture-Certificate','-checkin','-ua-zl-dc',
                                     '-push-url','http://127.0.0.1:1'],
                                    env={'PATH':os.environ['PATH'],'NANOMDM_API':api_key},stdout=log,stderr=subprocess.STDOUT)
         try:

@@ -98,6 +98,7 @@ impl Peer {
                             == Some(&plist::Value::Array(vec![
                                 "OSVersion".into(),
                                 "IsSupervised".into(),
+                                "IsAppleSilicon".into(),
                             ])) =>
                     {
                         (
@@ -105,6 +106,7 @@ impl Peer {
                             plist::Value::Dictionary(protocol::dictionary([
                                 ("OSVersion", "15.0".into()),
                                 ("IsSupervised", true.into()),
+                                ("IsAppleSilicon", true.into()),
                             ])),
                         )
                     }
