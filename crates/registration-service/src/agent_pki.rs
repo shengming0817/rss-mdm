@@ -167,8 +167,8 @@ impl AgentIssuer {
                 if !trust.permits_window(start,end) { return Err(Error::Configuration); }
                 let identity=rss_mdm_certificate::agent::identity(Uuid::parse_str(proof.tenant_id()).map_err(|_|Error::Configuration)?,&device).map_err(|_|Error::Configuration)?;
                 audit.target(&device);
-                let fact=Fact::business(audit,&format!("agent-pki:{attempt}:authorized"),&csr.digest(),200,"authorized",Some(*id))?
-                    .with_details(serde_json::json!({"attempt":attempt,"identity":identity,"spki":csr.spki(),"issuer":trust.issuer_digest(),"notBefore":start,"notAfter":end}))?;
+                let fact=Fact::business(audit,&format!("agent-pki:{attempt}:authorized"),&csr.digest(),200,"success",Some(*id))?
+                    .with_details(serde_json::json!({"phase":"authorized","attempt":attempt,"identity":identity,"spki":csr.spki(),"issuer":trust.issuer_digest(),"notBefore":start,"notAfter":end}))?;
                 store.append(tx,&fact,false).await.map_err(Error::from)?;
                 audit.mark_commit_started();
                 Ok::<_,Error>((identity,deadline,start,end))
@@ -212,13 +212,13 @@ impl AgentIssuer {
         let (status, label, details) = match &result {
             Ok(c) => (
                 200,
-                "signed",
-                serde_json::json!({"certificate":c.metadata,"csr":c.csr_digest}),
+                "success",
+                serde_json::json!({"phase":"signed","certificate":c.metadata,"csr":c.csr_digest}),
             ),
             Err(_) => (
                 503,
-                "issuance_unknown",
-                serde_json::json!({"attempt":intent.attempt}),
+                "unknown",
+                serde_json::json!({"phase":"issuance_unknown","attempt":intent.attempt}),
             ),
         };
         let fact = Fact::business(

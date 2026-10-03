@@ -279,13 +279,17 @@ async fn restored_ca_signs_only_live_authorized_agent_csrs_and_tls_preserves_pur
     let authorized = rows
         .iter()
         .position(|r| {
-            r.result() == "authorized" && r.payload["details"]["attempt"] == attempt.to_string()
+            r.result() == "success"
+                && r.payload["details"]["phase"] == "authorized"
+                && r.payload["details"]["attempt"] == attempt.to_string()
         })
         .expect("authorization fact");
     let result = rows
         .iter()
         .position(|r| {
-            r.result() == "signed" && r.payload["details"]["certificate"]["identity"] == m.identity
+            r.result() == "success"
+                && r.payload["details"]["phase"] == "signed"
+                && r.payload["details"]["certificate"]["identity"] == m.identity
         })
         .expect("signed fact");
     assert!(authorized < result);
@@ -351,7 +355,8 @@ async fn explicit_development_limit_and_unknown_result_remain_auditable() -> any
     );
     let mut conn = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
     let rows = crate::audit_test_support::read(&mut conn).await?;
-    assert!(rows.iter().any(|r| r.result() == "issuance_unknown"
+    assert!(rows.iter().any(|r| r.result() == "unknown"
+        && r.payload["details"]["phase"] == "issuance_unknown"
         && r.payload["details"]["attempt"] == attempt.to_string()));
     // The same protected loader used in assembly rejects public key-file access.
     #[cfg(unix)]
