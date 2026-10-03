@@ -30,7 +30,7 @@ class S3Environment:
                 labels = info.get('Config',{}).get('Labels') or {}
                 if info.get('Name') != '/' + self.name or labels.get('rss.mdm.worktree') != self.owner.identity or labels.get('rss.mdm.fixture') != 'content-s3':
                     raise RuntimeError('S3 fixture ownership mismatch')
-                run(['docker','rm','-f',identifier],capture_output=True,timeout=30)
+                run(['docker','rm','-f','-v',identifier],capture_output=True,timeout=30)
             self.ready = False
 
     def execute(self, *args):

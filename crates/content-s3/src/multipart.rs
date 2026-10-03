@@ -347,12 +347,18 @@ mod tests {
         );
         let mut observed = first.clone();
         observed.sha256 = None;
-        assert!(matches_manifest(&[observed.clone()], &[first.clone()]));
+        assert!(matches_manifest(
+            std::slice::from_ref(&observed),
+            std::slice::from_ref(&first)
+        ));
         observed.etag = "changed".into();
-        assert!(!matches_manifest(&[observed], &[first.clone()]));
+        assert!(!matches_manifest(&[observed], std::slice::from_ref(&first)));
         let mut different_hash = first.clone();
         different_hash.sha256 = Some([9; 32]);
-        assert!(!matches_manifest(&[different_hash], &[first.clone()]));
+        assert!(!matches_manifest(
+            &[different_hash],
+            std::slice::from_ref(&first)
+        ));
         let mut changed = last.clone();
         changed.upload.id = "replacement".into();
         assert_eq!(

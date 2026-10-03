@@ -25,7 +25,7 @@ class S3Fixtures(unittest.TestCase):
         with patch.object(s3_fixtures,'run') as run:
             run.side_effect=[type('Output',(),{'stdout':'selected'})(),type('Output',(),{'stdout':json.dumps([info])})(),None]
             fixture.reset()
-            run.assert_called_with(['docker','rm','-f','selected'],capture_output=True,timeout=30)
+            run.assert_called_with(['docker','rm','-f','-v','selected'],capture_output=True,timeout=30)
 
     def test_s3_target_requires_real_provider_tools_without_database(self):
         module=MODULES['content.s3']

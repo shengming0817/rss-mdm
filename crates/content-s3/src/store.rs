@@ -184,7 +184,7 @@ impl Store {
     pub async fn put(
         &self,
         write: &Write,
-        mut source: ByteStreamInput,
+        source: ByteStreamInput,
         budget: Budget,
     ) -> Result<Mutation<Written>> {
         let key = self.check_write(write, &budget)?;
@@ -192,6 +192,7 @@ impl Store {
             return Err(Error::Input);
         }
         let _permit = self.permit()?;
+        let mut source: ByteStreamInput = Box::pin(source.fuse());
         body::empty_input(&mut source, write.content, &budget).await?;
         let request = self
             .client
@@ -306,7 +307,10 @@ impl Store {
         end: u64,
         budget: Budget,
     ) -> Result<ByteStreamOutput> {
-        if start >= end || end > verified.content.length {
+        if start > end
+            || start == end && verified.content.length != 0
+            || end > verified.content.length
+        {
             return Err(Error::Input);
         }
         self.check_budget(&budget, end - start)?;

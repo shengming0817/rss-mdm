@@ -145,6 +145,10 @@ async fn stream_range_condition_and_two_clients() -> TestResult {
     let f = Fixture::load()?;
     let a = f.store().await?;
     let b = f.store().await?;
+    let empty = create(&a, "empty", "empty", Bytes::new()).await?;
+    let mut empty_read = b.read(&empty, 0, 0, budget()?).await?;
+    assert!(empty_read.next().await.is_none());
+    confirmed(b.delete(empty.object(), budget()?).await?)?;
     let bytes = Bytes::from_static(b"immutable software bytes");
     let first = create(&a, "shared", "first", bytes.clone()).await?;
     let revalidated = b.verify(first.object(), first.content(), budget()?).await?;
