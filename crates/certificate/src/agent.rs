@@ -217,6 +217,7 @@ pub struct AgentTrust {
     issuer: Certificate,
     issuer_digest: [u8; 32],
     verifier: Arc<dyn ClientCertVerifier>,
+    enrollment_verifier: Arc<dyn ClientCertVerifier>,
     provisioner: String,
     kid: String,
     max_seconds: i64,
@@ -272,19 +273,31 @@ impl AgentTrust {
             .add(CertificateDer::from(der.clone()))
             .map_err(malformed)?;
         let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
+            Arc::new(roots.clone()),
+            Arc::new(rustls::crypto::ring::default_provider()),
+        )
+        .build()
+        .map_err(malformed)?;
+        let enrollment_verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
             Arc::new(roots),
             Arc::new(rustls::crypto::ring::default_provider()),
         )
+        .allow_unauthenticated()
         .build()
         .map_err(malformed)?;
         Ok(Self {
             issuer,
             issuer_digest: Sha256::digest(der).into(),
             verifier,
+            enrollment_verifier,
             provisioner: provisioner.into(),
             kid: kid.into(),
             max_seconds: i64::from(max_days) * 86400,
         })
+    }
+    /// Offer real client authentication while permitting anonymous bootstrap requests.
+    pub fn enrollment_verifier(&self) -> Arc<dyn ClientCertVerifier> {
+        self.enrollment_verifier.clone()
     }
     pub fn verifier(&self) -> Arc<dyn ClientCertVerifier> {
         self.verifier.clone()

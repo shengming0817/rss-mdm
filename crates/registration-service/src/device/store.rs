@@ -417,25 +417,8 @@ pub(crate) async fn bind_authorized_in(
             .bind(tenant).bind(receipt.credential.to_string()).bind(receipt.registration.to_string()).bind(receipt.channel.as_str()).bind(locator(credential)).execute(&mut *tx).await.map_err(unique_or_db)?;
     sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES($1::uuid,$2::uuid,$3,$4::uuid,true)")
             .bind(tenant).bind(receipt.registration.to_string()).bind(command.source.as_str()).bind(receipt.epoch.to_string()).execute(&mut *tx).await.map_err(db)?;
-    enterprise_sources(tx, tenant, &receipt).await?;
-    Ok(receipt)
-}
 
-async fn enterprise_sources(
-    tx: &mut sqlx::PgConnection,
-    tenant: &str,
-    receipt: &RegistrationReceipt,
-) -> Result<(), Error> {
-    if receipt.channel == Channel::Agent {
-        for source in [
-            rss_mdm_inventory::Source::AgentScript,
-            rss_mdm_inventory::Source::AgentOsquery,
-        ] {
-            sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES($1::uuid,$2::uuid,$3,$4::uuid,true)")
-                .bind(tenant).bind(receipt.registration.to_string()).bind(source.as_str()).bind(Uuid::new_v4().to_string()).execute(&mut *tx).await.map_err(db)?;
-        }
-    }
-    Ok(())
+    Ok(receipt)
 }
 
 pub async fn replace_mdm_credential_in(
@@ -461,6 +444,7 @@ pub async fn revalidate_source(
     let registration = principal.registration().to_string();
     crate::device::store::lock_channel(tx, &tenant, principal.device(), principal.channel())
         .await?;
+    super::management::revalidate(tx, principal).await?;
     let live = sqlx::query("SELECT device,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2::uuid AND channel=$3 AND state='active'")
         .bind(&tenant).bind(&registration).bind(principal.channel().as_str()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
     if live.try_get::<String, _>("device").map_err(db)? != principal.device()

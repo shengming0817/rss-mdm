@@ -62,14 +62,14 @@ WITH targets AS (
  SELECT * FROM heads d WHERE ($3::text IS NULL OR status=$3)
  AND ($4::text IS NULL OR EXISTS(SELECT 1 FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.device=d.id AND r.channel=$4)
  OR EXISTS(SELECT 1 FROM mdm_access.requests q JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE q.tenant_id=$1::uuid AND g.device=d.id AND CASE WHEN q.source LIKE 'mdm.%' THEN 'mdm' ELSE 'agent' END=$4))
- AND ($5::text IS NULL OR EXISTS(SELECT 1 FROM mdm_access.requests q JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE q.tenant_id=$1::uuid AND g.device=d.id AND q.source=$5))
+ AND ($5::text IS NULL OR ($5='agent.builtin' AND EXISTS(SELECT 1 FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.device=d.id AND r.channel='agent')) OR EXISTS(SELECT 1 FROM mdm_access.requests q JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE q.tenant_id=$1::uuid AND g.device=d.id AND q.source=$5))
 ), page AS (
  SELECT * FROM filtered WHERE ($6::text IS NULL OR CASE WHEN $7 THEN id COLLATE "C"<$6 COLLATE "C" ELSE id COLLATE "C">$6 COLLATE "C" END)
  ORDER BY CASE WHEN NOT $7 THEN id END COLLATE "C" ASC, CASE WHEN $7 THEN id END COLLATE "C" DESC LIMIT $8
 )
 SELECT jsonb_build_object('items',coalesce((SELECT jsonb_agg(jsonb_build_object('id',d.id,'status',d.status,
  'channels',coalesce((SELECT jsonb_agg(jsonb_build_object('registrationId',r.id,'channel',r.channel,'generation',r.generation,'status',r.state,'source',r.source) ORDER BY r.channel) FROM
- (SELECT DISTINCT ON(r.channel) r.id,r.channel,r.generation,r.state,q.source FROM mdm_access.registrations r JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=$1::uuid AND r.device=d.id ORDER BY r.channel,r.generation DESC) r),'[]'::jsonb),
+ (SELECT DISTINCT ON(r.channel) r.id,r.channel,r.generation,r.state,coalesce(q.source,'agent.builtin') AS source FROM mdm_access.registrations r LEFT JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=$1::uuid AND r.device=d.id ORDER BY r.channel,r.generation DESC) r),'[]'::jsonb),
  'enrollments',coalesce((SELECT jsonb_agg(jsonb_build_object('enrollmentId',q.id,'source',q.source,'status',CASE WHEN q.state='pending' AND q.expires_at<=statement_timestamp() THEN 'expired' ELSE q.state END,'expiresAt',floor(extract(epoch FROM q.expires_at))::bigint) ORDER BY q.source) FROM
  (SELECT DISTINCT ON(q.source) q.id,q.source,q.state,q.expires_at FROM mdm_access.requests q JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE q.tenant_id=$1::uuid AND g.device=d.id AND q.issuance_operation IS NOT NULL ORDER BY q.source,q.expires_at DESC,q.id DESC) q),'[]'::jsonb))
  ORDER BY CASE WHEN NOT $7 THEN d.id END COLLATE "C" ASC, CASE WHEN $7 THEN d.id END COLLATE "C" DESC) FROM page d),'[]'::jsonb),

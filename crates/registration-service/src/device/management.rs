@@ -70,9 +70,32 @@ pub(super) async fn revalidate(
             return Err(Error::Unauthorized);
         }
     }
+    if p.channel() == Channel::Agent {
+        let row=sqlx::query("SELECT k.state,r.state AS registration_state,i.not_after FROM mdm_access.credentials k JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(k.tenant_id,k.registration) JOIN mdm_access.agent_issuances i ON(i.tenant_id,i.credential)=(k.tenant_id,k.id) WHERE k.tenant_id=$1::uuid AND k.id=$2")
+            .bind(p.tenant().to_string()).bind(p.credential()).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+        use rss_mdm_agent_wire::enroll::ErrorCode as C;
+        match row.try_get::<String, _>("state").map_err(db)?.as_str() {
+            "revoked" => return Err(Error::Agent(C::CredentialRevoked)),
+            "superseded" => return Err(Error::Agent(C::CredentialRetired)),
+            _ => {}
+        }
+        if row.try_get::<String, _>("registration_state").map_err(db)? != "active" {
+            return Err(Error::Agent(C::CredentialRevoked));
+        }
+        let now: i64 =
+            sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
+                .fetch_one(&mut *c)
+                .await
+                .map_err(db)?;
+        if row.try_get::<i64, _>("not_after").map_err(db)? <= now {
+            return Err(Error::Agent(
+                rss_mdm_agent_wire::enroll::ErrorCode::CertificateExpired,
+            ));
+        }
+    }
     let live: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations r JOIN mdm_access.credentials k ON(k.tenant_id,k.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.generation=$3 AND r.device=$4 AND r.purpose=$5 AND r.epoch=$6 AND r.state='active' AND k.id=$7 AND k.state='active' AND r.parent_id IS NOT DISTINCT FROM $8 AND r.parent_generation IS NOT DISTINCT FROM $9)")
         .bind(tenant).bind(p.registration()).bind(p.generation()).bind(p.device()).bind(p.purpose().as_str()).bind(p.epoch()).bind(p.credential()).bind(p.parent().map(|p|p.0)).bind(p.parent().map(|p|p.1))
-        .fetch_one(c).await.map_err(db)?;
+        .fetch_one(&mut *c).await.map_err(db)?;
     if !live {
         return Err(Error::Unauthorized);
     }

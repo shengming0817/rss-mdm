@@ -24,7 +24,8 @@ pub struct Registration {
     registration_id: Uuid,
     #[serde(skip_serializing_if = "Option::is_none")]
     user_context_id: Option<Uuid>,
-    enrollment_id: Uuid,
+    enrollment_id: Option<Uuid>,
+    agent_grant_id: Option<Uuid>,
     source: String,
     generation: i64,
     status: String,
@@ -61,7 +62,7 @@ pub async fn registration_list(
     rss_observation::Id::new(device).map_err(|_| Error::Malformed)?;
     proof.credentials(device)?;
     let mut tx = database.begin(proof.tenant_id()).await?;
-    let rows = sqlx::query("SELECT r.id::text,r.request_id::text,q.source,q.windows_profile,r.generation,r.state FROM mdm_access.registrations r JOIN mdm_access.requests q ON (q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND ($3::uuid IS NULL OR r.id>$3::uuid) ORDER BY r.id LIMIT 101")
+    let rows = sqlx::query("SELECT r.id::text,r.request_id::text,r.agent_grant_id,coalesce(q.source,'agent.builtin') AS source,q.windows_profile,r.generation,r.state FROM mdm_access.registrations r LEFT JOIN mdm_access.requests q ON (q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND ($3::uuid IS NULL OR r.id>$3::uuid) ORDER BY r.id LIMIT 101")
             .bind(proof.tenant_id()).bind(device).bind(page.after.map(|v|v.to_string())).fetch_all(&mut *tx).await.map_err(db)?;
     let more = rows.len() > 100;
     let items = rows
@@ -76,7 +77,12 @@ pub async fn registration_list(
                     .as_deref()
                     == Some("Full"))
                 .then_some(store::uuid(&row, "id")?),
-                enrollment_id: store::uuid(&row, "request_id")?,
+                enrollment_id: row
+                    .try_get::<Option<String>, _>("request_id")
+                    .map_err(db)?
+                    .map(|v| Uuid::parse_str(&v).map_err(|_| Error::Corrupt))
+                    .transpose()?,
+                agent_grant_id: row.try_get("agent_grant_id").map_err(db)?,
                 source: row.try_get("source").map_err(db)?,
                 generation: row.try_get("generation").map_err(db)?,
                 status: row.try_get("state").map_err(db)?,
