@@ -81,8 +81,8 @@ impl crate::queries::Queries {
                 if item["kind"]=="command" {
                     let id=stored(Uuid::parse_str(item["id"].as_str().ok_or(Error::Malformed)?))?;
                     let op=storage::load(tx,&s.protection,id).await?;let command=s.command_status(tx,&op).await?;
-                    let mut observation=super::protocol::observation(tx,&s.protection,s.apple_store.clone(),&op,command).await?;
-                    if op.approval.agent_package().is_some(){item["evidence"]["agentInstallation"]=super::native_installation::installation_observation(tx,s.apple_store.clone(),s.agent_store.clone(),&op).await?;}
+                    let mut observation=super::protocol::observation(tx,&s.protection,s.apple_results.clone(),&op,command,false).await?;
+                    if op.approval.agent_package().is_some(){item["evidence"]["agentInstallation"]=super::native_installation::installation_observation(tx,s.apple_results.clone(),s.agent_store.clone(),&op).await?;}
                     if let Some(receipts) = observation.get_mut("receipts").and_then(Value::as_array_mut) {
                         for receipt in receipts {
                             if let Some(fields) = receipt.as_object_mut()

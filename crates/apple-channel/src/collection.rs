@@ -24,10 +24,10 @@ pub async fn receive(
         Some(Reception::Ready(attempt)) => attempt,
     };
     if !rss_mdm_inventory_service::apple_collection::current(c, &tenant, id).await? {
-        attempt.settle(c, status).await?;
+        attempt.settle(c, status, false).await?;
         return Ok(true);
     }
-    attempt.settle(c, status).await?;
+    attempt.settle(c, status, true).await?;
     if status != wire::Status::NotNow {
         let mut run = store::load_on(c, &tenant, id).await?;
         let now = sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")

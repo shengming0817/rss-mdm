@@ -75,7 +75,7 @@ fn check_dictionary(
             Err(Error::Unsupported) => continue,
             Err(error) => return Err(error),
         };
-        if field.key != "ANY" && rule.required && !values.contains_key(field.key) {
+        if !field.wildcard && rule.required && !values.contains_key(field.key) {
             match rule.conditions.inherit(parent).check(target) {
                 Err(
                     Error::Unsupported
@@ -91,12 +91,7 @@ fn check_dictionary(
             .iter()
             .map(|&i| &d.fields[i])
             .find(|f| f.key == key)
-            .or_else(|| {
-                fields
-                    .iter()
-                    .map(|&i| &d.fields[i])
-                    .find(|f| f.key == "ANY")
-            })
+            .or_else(|| fields.iter().map(|&i| &d.fields[i]).find(|f| f.wildcard))
             .ok_or(Error::Field)?;
         check_field(d, field, value, target, parent, depth + 1)?;
     }

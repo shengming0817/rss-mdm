@@ -139,6 +139,19 @@ pub fn device(d: &Dictionary) -> Result<&str, Error> {
     }
     Ok(id)
 }
+/// A native user GUID is protocol scope, never an account authorization identity.
+pub fn user(d: &Dictionary) -> Result<Option<Uuid>, Error> {
+    let user = d
+        .get("UserID")
+        .map(|_| Uuid::parse_str(text(d, "UserID")?).map_err(|_| Error::Malformed))
+        .transpose()?;
+    if user.is_some_and(|id| id.is_nil())
+        || (user.is_none() && (d.contains_key("UserLongName") || d.contains_key("UserShortName")))
+    {
+        return Err(Error::Malformed);
+    }
+    Ok(user)
+}
 pub enum CheckIn<'a> {
     Authenticate {
         udid: &'a str,
@@ -149,24 +162,52 @@ pub enum CheckIn<'a> {
         topic: &'a str,
         token: &'a [u8],
         magic: &'a str,
+        user: Option<Uuid>,
     },
     CheckOut {
         udid: &'a str,
     },
-    UserAuthenticate,
+    UserAuthenticate {
+        udid: &'a str,
+        user: Uuid,
+    },
+    SetBootstrapToken {
+        token: Option<&'a [u8]>,
+    },
+    GetBootstrapToken,
 }
 pub fn checkin(d: &Dictionary) -> Result<CheckIn<'_>, Error> {
     let kind = text(d, "MessageType")?;
-    if kind == "UserAuthenticate" {
-        text(d, "UDID")?;
-        return Ok(CheckIn::UserAuthenticate);
+    if matches!(kind, "GetBootstrapToken" | "SetBootstrapToken") {
+        if user(d)?.is_some() {
+            return Err(Error::Unsupported);
+        }
+        return if kind == "GetBootstrapToken" {
+            Ok(CheckIn::GetBootstrapToken)
+        } else {
+            let token = d
+                .get("BootstrapToken")
+                .map(|v| {
+                    v.as_data()
+                        .filter(|v| v.len() <= 16384)
+                        .ok_or(Error::Malformed)
+                })
+                .transpose()?;
+            Ok(CheckIn::SetBootstrapToken { token })
+        };
     }
-    let udid = device(d)?;
+    let udid = text(d, "UDID")?;
+    if udid.len() > 255 {
+        return Err(Error::Malformed);
+    }
     match kind {
-        "Authenticate" => Ok(CheckIn::Authenticate {
-            udid,
-            topic: text(d, "Topic")?,
-        }),
+        "Authenticate" => {
+            device(d)?;
+            Ok(CheckIn::Authenticate {
+                udid,
+                topic: text(d, "Topic")?,
+            })
+        }
         "TokenUpdate" => {
             let token = d
                 .get("Token")
@@ -178,9 +219,24 @@ pub fn checkin(d: &Dictionary) -> Result<CheckIn<'_>, Error> {
                 topic: text(d, "Topic")?,
                 token,
                 magic: text(d, "PushMagic")?,
+                user: user(d)?,
             })
         }
-        "CheckOut" => Ok(CheckIn::CheckOut { udid }),
+        "CheckOut" => {
+            device(d)?;
+            Ok(CheckIn::CheckOut { udid })
+        }
+        "UserAuthenticate" => {
+            if let Some(value) = d.get("DigestResponse")
+                && value.as_string() != Some("")
+            {
+                return Err(Error::Unsupported);
+            }
+            Ok(CheckIn::UserAuthenticate {
+                udid,
+                user: user(d)?.ok_or(Error::Malformed)?,
+            })
+        }
         _ => Err(Error::Unsupported),
     }
 }
@@ -193,11 +249,13 @@ pub enum Status {
 }
 pub struct Planning<'a> {
     pub udid: &'a str,
+    pub user: Option<Uuid>,
     pub status: Status,
     pub command: Option<Uuid>,
 }
 pub fn management(d: &Dictionary) -> Result<Planning<'_>, Error> {
-    let udid = device(d)?;
+    let udid = text(d, "UDID")?;
+    let user = user(d)?;
     let status = match text(d, "Status")? {
         "Idle" => Status::Idle,
         "Acknowledged" => Status::Acknowledged,
@@ -215,6 +273,7 @@ pub fn management(d: &Dictionary) -> Result<Planning<'_>, Error> {
     };
     Ok(Planning {
         udid,
+        user,
         status,
         command,
     })
@@ -228,3 +287,19 @@ pub fn command(id: Uuid, payload: Dictionary) -> Result<Vec<u8>, Error> {
 #[cfg(test)]
 #[path = "../tests/protocol.rs"]
 mod tests;
+
+/// Bootstrap escrow is restricted to the evidenced ADE device enrollment.
+pub fn bootstrap_allowed(context: &crate::applicability::Context) -> Result<(), Error> {
+    use crate::applicability::{Channel, Enrollment, Version};
+    if context.channel != Channel::Device
+        || context.enrollment != Enrollment::Device
+        || context.supervised != Some(true)
+        || context.automated_enrollment != Some(true)
+        || context
+            .version
+            .is_none_or(|version| version < Version::parse("15.0").expect("fixed version"))
+    {
+        return Err(Error::Unsupported);
+    }
+    Ok(())
+}

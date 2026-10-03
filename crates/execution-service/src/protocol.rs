@@ -380,12 +380,14 @@ async fn settle_one(
 pub async fn observation(
     tx: &mut PgTransaction<'_>,
     protection: &rss_mdm_native_protection::Protector,
-    apple_store: Arc<dyn channels::AppleStore>,
+    apple_results: Arc<dyn channels::AppleResults>,
     op: &storage::Operation,
     command_status: dc::Status,
+    native_values: bool,
 ) -> Result<Value> {
     if matches!(op.request.task, Task::Macos { .. }) {
-        return super::apple::observation(tx, apple_store, op, command_status).await;
+        return super::apple::observation(tx, apple_results, op, command_status, native_values)
+            .await;
     }
     let tenant = tx.tenant_id();
     let id = op.id;

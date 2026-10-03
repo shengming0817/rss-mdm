@@ -8,6 +8,7 @@ fn device(version: &str) -> Context {
         supervised: Some(false),
         automated_enrollment: Some(false),
         user_approved: Some(true),
+        apple_silicon: Some(true),
     }
 }
 

@@ -142,15 +142,6 @@ CREATE TABLE mdm_commands.action_runs (
 
 ALTER TABLE ONLY mdm_commands.action_runs FORCE ROW LEVEL SECURITY;
 
-CREATE TABLE mdm_commands.apple_profiles (
-    tenant_id uuid NOT NULL, device text NOT NULL, user_key text NOT NULL,
-    identifier text NOT NULL, profile uuid NOT NULL, operation uuid NOT NULL,
-    registration uuid NOT NULL, version text NOT NULL,
-    CONSTRAINT profiles_version_check CHECK (octet_length(version) BETWEEN 1 AND 128)
-);
-
-ALTER TABLE ONLY mdm_commands.apple_profiles FORCE ROW LEVEL SECURITY;
-
 CREATE TABLE mdm_commands.attempts (
     tenant_id uuid NOT NULL, id uuid NOT NULL, operation uuid NOT NULL,
     ordinal bigint NOT NULL, credential uuid NOT NULL, session bigint NOT NULL,
@@ -403,12 +394,6 @@ ALTER TABLE ONLY mdm_commands.operations
 ALTER TABLE ONLY mdm_commands.policy_recovery
     ADD CONSTRAINT policy_recovery_pkey PRIMARY KEY (tenant_id, policy);
 
-ALTER TABLE ONLY mdm_commands.apple_profiles
-    ADD CONSTRAINT profiles_pkey PRIMARY KEY (tenant_id, device, user_key, identifier);
-
-ALTER TABLE ONLY mdm_commands.apple_profiles
-    ADD CONSTRAINT profiles_tenant_id_identifier_key UNIQUE (tenant_id, identifier);
-
 ALTER TABLE ONLY mdm_commands.requests
     ADD CONSTRAINT requests_pkey PRIMARY KEY (tenant_id, actor, id);
 
@@ -440,8 +425,6 @@ ALTER TABLE mdm_commands.action_receipts ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE mdm_commands.action_runs ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE mdm_commands.apple_profiles ENABLE ROW LEVEL SECURITY;
-
 ALTER TABLE mdm_commands.attempts ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE mdm_commands.capabilities ENABLE ROW LEVEL SECURITY;
@@ -463,8 +446,6 @@ CREATE POLICY tenant ON mdm_commands.action_polls USING ((tenant_id = (NULLIF(cu
 CREATE POLICY tenant ON mdm_commands.action_receipts USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 
 CREATE POLICY tenant ON mdm_commands.action_runs USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
-
-CREATE POLICY tenant ON mdm_commands.apple_profiles USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 
 CREATE POLICY tenant ON mdm_commands.attempts USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 

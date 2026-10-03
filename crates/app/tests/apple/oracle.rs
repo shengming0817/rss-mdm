@@ -23,6 +23,14 @@ impl Oracle {
         })
     }
     pub async fn compare(&self, path: &str, request: &[u8], response: &[u8]) -> Result<()> {
+        let request_dictionary = protocol::decode(request)?;
+        let mut enrollment = crate::test_support::case::name("rss-t2-apple").to_owned();
+        if let Some(user) = request_dictionary
+            .get("UserID")
+            .and_then(plist::Value::as_string)
+        {
+            enrollment = format!("{enrollment}:{user}");
+        }
         if path == "/mdm" && !response.is_empty() {
             let command = protocol::decode(response)?;
             let id = protocol::text(&command, "CommandUUID")?;
@@ -31,8 +39,7 @@ impl Oracle {
                     .client
                     .post(format!(
                         "{}/v1/enqueue/{}?nopush=1",
-                        self.origin,
-                        crate::test_support::case::name("rss-t2-apple")
+                        self.origin, enrollment
                     ))
                     .basic_auth("nanomdm", Some(&self.key))
                     .body(response.to_vec())

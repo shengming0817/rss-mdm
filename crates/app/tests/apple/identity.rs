@@ -54,7 +54,7 @@ impl Fixture {
                 ]),
             )
             .await?;
-        ensure!(reply.0 == StatusCode::GONE);
+        ensure!(reply.0 == StatusCode::BAD_REQUEST);
         let reply = self
             .browser
             .call(
@@ -185,7 +185,15 @@ impl Fixture {
         ensure!(wrong.0 == StatusCode::UNAUTHORIZED);
         let rejected = self.create_operation(|id| profile_task(id, false)).await?;
         let (id, _) = peer.next("InstallProfile").await?;
-        peer.manage("CommandFormatError", Some(id), None).await?;
+        let next = peer.manage("CommandFormatError", Some(id), None).await?;
+        ensure!(self.operation(rejected).await?["commandStatus"] == "published");
+        let (observe, _) = lifecycle::command(&next, "ProfileList")?;
+        peer.manage(
+            "Acknowledged",
+            Some(observe),
+            Some(("ProfileList", plist::Value::Array(vec![]))),
+        )
+        .await?;
         ensure!(self.operation(rejected).await?["commandStatus"] == "rejected");
         // Token revision fences a late APNs 410 from an earlier token.
         let queued = self.create_operation(|id| profile_task(id, true)).await?;
@@ -194,7 +202,7 @@ impl Fixture {
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
         let revision: i64 =
-            sqlx::query_scalar("SELECT token_revision FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration IN (SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2) AND state='active'")
+            sqlx::query_scalar("SELECT token_revision FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND registration IN (SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2) AND state='active'")
                 .bind(case_tenant()).bind(case_device()).fetch_one(&mut token_observer)
                 .await?;
         let facts_before = crate::audit_test_support::read(&mut token_observer)
@@ -205,7 +213,7 @@ impl Fixture {
         peer.token_value(43).await?;
         ensure!(
             sqlx::query_scalar::<_, i64>(
-                "SELECT token_revision FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration IN (SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2) AND state='active'"
+                "SELECT token_revision FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND registration IN (SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2) AND state='active'"
             )
             .bind(case_tenant()).bind(case_device()).fetch_one(&mut token_observer)
             .await?

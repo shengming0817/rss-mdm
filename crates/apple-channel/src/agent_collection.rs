@@ -35,7 +35,10 @@ pub async fn receive(
     };
     match attempt {
         crate::attempt::Reception::Replay => return Ok(Some(vec![])),
-        crate::attempt::Reception::Ready(a) => a.settle(c, status).await?,
+        crate::attempt::Reception::Ready(a) => {
+            a.settle(c, status, !row.try_get::<bool, _>("expired").map_err(db)?)
+                .await?
+        }
     }
     let mut facts = vec![];
     if row.try_get::<bool, _>("expired").map_err(db)? {

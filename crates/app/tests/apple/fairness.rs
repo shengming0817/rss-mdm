@@ -31,13 +31,13 @@ impl Fixture {
             .bind(case_tenant())
             .execute(&mut pg)
             .await?;
-        sqlx::query("UPDATE mdm_apple.devices SET next_push=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND registration IN (SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2)")
+        sqlx::query("UPDATE mdm_apple.channels SET next_push=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND registration IN (SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2)")
         .bind(case_tenant()).bind(case_device())
             .execute(&mut pg)
             .await?;
         let mut wake = None;
         for _ in 0..3 {
-            sqlx::query("UPDATE mdm_apple.devices SET next_push=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid").bind(case_tenant()).execute(&mut pg).await?;
+            sqlx::query("UPDATE mdm_apple.channels SET next_push=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid").bind(case_tenant()).execute(&mut pg).await?;
             wake = self
                 .app
                 .execution

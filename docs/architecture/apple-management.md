@@ -6,8 +6,12 @@
 
 APNs 只是唤醒，不推进命令。关联 ACK 记录接收，完整且认证的 ProfileList 记录产品 Profile 存在性，两者都不能证明 OS 防火墙效果。采集由 CollectionRun 独立关联和封存，不把 DeviceInformation 伪装成状态型命令。
 
+设备/用户通道共用绑定的设备证书，原生 UserID 只标识注册世代内的用户 scope，不建立账户目录。各通道分别持有加密 push 材料、token revision 与租约；Profile ownership 同样按 scope 隔离。一个通道的 token 失效不撤销其他通道的收发资格。CheckOut 和注册退役原子清理全部通道及 Bootstrap escrow。Bootstrap 仅在已接受的 ADE/监督/device enrollment 证据下提供。
+
 token revision 与租约隔离旧 APNs 回执，旧 410 不得清除新 token；配置拒绝持久暂停，短暂网络失败持久退避。健康状态区分内部故障、配置拒绝和设备离线，不能把重试伪造成业务进度。
 
 设备续期复用一次性签发与原生 attempt，保持稳定 profile 身份和注册世代；只有新密钥首次 mTLS/UDID 证明才替换凭据并隔离旧凭据。通用 CA renewal 保持关闭，离线跨过到期须人工重新注册。真实 Mac 的 profile 更新与证书生命周期仍需设备验收。
+
+Apple 纯核心持有版本/条件编译、结果解释、Profile 组合/清单与 guards 规则；通道 adapter 只持有协议和其存储，Execution 继续持有共同资格、执行结算与事务。Profile 错误后的完整反向证据只释放本次失败预留，旧安装 guards 保留；部分或加密清单保持未知。Profile、push、collection 和结果读取端口按真实消费者收窄，复用一个 adapter 与现有 attempt 流。命令查询完成、原生 ACK、待重启/延后/Unknown 与真实效果分别保存。
 
 操作、外部 CA 与恢复见 [Apple 指南](../guides/apple-management.md)。参考 [Apple 证书管理](https://developer.apple.com/documentation/devicemanagement/managing-certificates-for-device-management-services-and-devices)、[APNs 响应](https://developer.apple.com/documentation/usernotifications/handling-notification-responses-from-apns)，协议来源固定于 [Apple fixtures](../../fixtures/apple-tools.lock.json)。
