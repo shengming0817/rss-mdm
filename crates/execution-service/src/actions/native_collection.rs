@@ -144,7 +144,7 @@ pub async fn advance_run(
             })
             .await?;
             if native.frozen.input.platform == rss_mdm_policy::Platform::Macos {
-                let store = service.apple_store.clone();
+                let store = service.apple_collections.clone();
                 let tenant = tx.tenant_id().to_string();
                 let facts = tx
                     .with_connection(move |c| {

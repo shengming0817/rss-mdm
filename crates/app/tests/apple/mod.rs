@@ -3,6 +3,7 @@
     reason = "sequential real protocol and persistence assertions"
 )]
 //! Real Apple mTLS participant and fixed external SCEP provider; no principal or status stubs.
+mod commands;
 mod lifecycle;
 mod onboarding;
 mod oracle;
@@ -10,6 +11,7 @@ mod policy;
 mod scep;
 #[path = "support/scep.rs"]
 mod scep_client;
+mod users;
 use super::*;
 use crate::{
     api::Assembly,
@@ -305,6 +307,36 @@ impl Fixture {
             lose_notify,
         })
     }
+    async fn profile_query_due(&self, operation: Uuid) -> Result<()> {
+        use sqlx::Connection;
+        let mut pg =
+            sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+                .await?;
+        // Advance only the durable read retry clock; request, receipt and eligibility remain intact.
+        let count = sqlx::query("UPDATE mdm_apple.attempts SET next_attempt=clock_timestamp() WHERE tenant_id=$1::uuid AND operation=$2 AND phase='observe'")
+            .bind(case_tenant()).bind(operation).execute(&mut pg).await?.rows_affected();
+        ensure!(count > 0);
+        pg.close().await?;
+        Ok(())
+    }
+    async fn grant_native_actions(&self, extra: &[&str]) -> Result<()> {
+        let mut operations = vec![
+            "enrollment",
+            "credentials",
+            "inventory_read",
+            "inventory_collect",
+            "configuration_write",
+            "operation_read",
+            "operation_cancel",
+        ];
+        operations.extend_from_slice(extra);
+        crate::test_support::identity::set_grants(
+            case_tenant(),
+            crate::test_support::case::admin(),
+            crate::test_support::identity::device_grants(Some(case_device()), &operations)?,
+        )
+        .await
+    }
     async fn enrollment(&mut self) -> Result<(Uuid, Uuid, String)> {
         let password = crate::enrollment::random();
         self.browser.operation = Some(Uuid::new_v4());
@@ -598,8 +630,33 @@ fn native_profile() -> &'static str {
     crate::test_support::case::name("org.example.native-profile")
 }
 fn profile_task(id: Uuid, enabled: bool) -> serde_json::Value {
-    json!({"platform":"macos","request":{"kind":"install_profile","profile":{"identifier":native_profile(),"uuid":id,"metadata":{},"payloads":[{"schema":"mdm/profiles/com.apple.security.firewall.yaml","identifier":format!("{}.settings",native_profile()),"uuid":Uuid::new_v4(),"metadata":{},"fields":{"EnableFirewall":{"type":"boolean","value":enabled}}}]}}})
+    json!({"platform":"macos","request":{"kind":"install_profile","profile":{"identifier":native_profile(),"uuid":id,"metadata":{},"payloads":[{"schema":"mdm/profiles/com.apple.security.firewall.yaml","identifier":format!("{}.settings",native_profile()),"uuid":Uuid::from_u128(id.as_u128() ^ (1<<127)),"metadata":{},"fields":{"EnableFirewall":{"type":"boolean","value":enabled}}}]}}})
 }
 fn remove_profile_task(profile: Uuid) -> serde_json::Value {
     json!({"platform":"macos","request":{"kind":"remove_profile","identifier":native_profile(),"uuid":profile}})
+}
+
+fn profile_manifest(id: Uuid, kind: &str) -> plist::Value {
+    plist::Value::Array(vec![plist::Value::Dictionary(protocol::dictionary([
+        ("PayloadIdentifier", native_profile().into()),
+        ("PayloadUUID", id.to_string().into()),
+        ("PayloadVersion", 1.into()),
+        (
+            "PayloadContent",
+            plist::Value::Array(vec![plist::Value::Dictionary(protocol::dictionary([
+                (
+                    "PayloadIdentifier",
+                    format!("{}.settings", native_profile()).into(),
+                ),
+                (
+                    "PayloadUUID",
+                    Uuid::from_u128(id.as_u128() ^ (1 << 127))
+                        .to_string()
+                        .into(),
+                ),
+                ("PayloadType", kind.into()),
+                ("PayloadVersion", 1.into()),
+            ]))]),
+        ),
+    ]))])
 }

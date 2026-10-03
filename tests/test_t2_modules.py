@@ -43,7 +43,17 @@ class ModuleImpactTests(unittest.TestCase):
             self.assertFalse(selected.full)
             self.assertEqual(set(selected.modules), {
                 'execution.agent.history', 'execution.commands.windows', 'planning.http',
-                'planning.agent_policy', 'planning.remote', 'planning.software'})
+                'planning.agent_policy', 'planning.remote', 'planning.software'}
+                | ({'apple.commands','apple.users'} if path.endswith('/records.rs') else set()))
+
+    def test_native_modules_select_actual_write_read_permission_and_helper_inputs(self):
+        for path in ('crates/execution-service/src/service.rs',
+                     'crates/execution-service/src/queries/records.rs',
+                     'crates/execution-service/src/permissions.rs',
+                     'crates/app/tests/device/support.rs'):
+            selected = select_paths([path])
+            self.assertFalse(selected.full, path)
+            self.assertTrue({'apple.commands', 'apple.users'} <= set(selected.modules), path)
 
     def test_script_preparation_selects_all_script_entrances(self):
         for path in ('crates/resource/src/script.rs',

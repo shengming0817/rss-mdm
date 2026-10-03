@@ -90,7 +90,10 @@ pub fn enrollment(
         ("UseDevelopmentAPNS", false.into()),
         (
             "ServerCapabilities",
-            Value::Array(vec!["com.apple.mdm.per-user-connections".into()]),
+            Value::Array(vec![
+                "com.apple.mdm.per-user-connections".into(),
+                "com.apple.mdm.bootstraptoken".into(),
+            ]),
         ),
     ] {
         mdm.insert(key.into(), value);
@@ -111,12 +114,13 @@ pub fn presence(d: &Dictionary, identifier: &str, uuid: Uuid) -> Result<bool, Er
         .ok_or(Error::Malformed)?;
     let mut found = false;
     let mut ids = std::collections::BTreeSet::new();
+    let mut uuids = std::collections::BTreeSet::new();
     for value in profiles {
         let item = value.as_dictionary().ok_or(Error::Malformed)?;
         let id = super::protocol::text(item, "PayloadIdentifier")?;
         let payload = Uuid::parse_str(super::protocol::text(item, "PayloadUUID")?)
             .map_err(|_| Error::Malformed)?;
-        if !ids.insert(id) {
+        if id.is_empty() || payload.is_nil() || !ids.insert(id) || !uuids.insert(payload) {
             return Err(Error::Malformed);
         }
         if id == identifier {

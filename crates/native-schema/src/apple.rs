@@ -237,8 +237,9 @@ impl Fields<'_> {
             values.push(Some(rule(d, *node, &children)?));
         }
         Ok(format!(
-            "Field{{key:{:?},variants:&{}}}",
+            "Field{{key:{:?},wildcard:{},variants:&{}}}",
             name.ok_or("empty field")?,
+            name.is_some_and(|n| n == "ANY" || n.starts_with("ANY ")),
             variants(&values, index)?
         ))
     }

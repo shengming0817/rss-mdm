@@ -218,7 +218,7 @@ fn units() -> Vec<(&'static str, &'static str)> {
         ),
         ("flow-service-schema-v1", rss_mdm_flow_service::INSTALL_SQL),
         (
-            "execution-service-schema-v1",
+            "execution-service-schema-v2",
             rss_mdm_execution_service::INSTALL_SQL,
         ),
         (
@@ -234,7 +234,7 @@ fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_windows_channel::INSTALL_SQL,
         ),
         (
-            "apple-channel-schema-v1",
+            "apple-channel-schema-v2",
             rss_mdm_apple_channel::INSTALL_SQL,
         ),
         (
@@ -254,7 +254,7 @@ fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_content_service::RELATIONS_SQL,
         ),
         (
-            "execution-service-relations-v1",
+            "execution-service-relations-v2",
             rss_mdm_execution_service::RELATIONS_SQL,
         ),
         (
@@ -274,7 +274,7 @@ fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_windows_channel::RELATIONS_SQL,
         ),
         (
-            "apple-channel-relations-v1",
+            "apple-channel-relations-v2",
             rss_mdm_apple_channel::RELATIONS_SQL,
         ),
         (

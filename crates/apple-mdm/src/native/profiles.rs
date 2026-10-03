@@ -62,7 +62,38 @@ pub struct CompiledProfile {
     /// Profile and payload objects; an ACK does not prove their device effects.
     pub objects: Vec<ProfileObject>,
 }
+impl PayloadInput {
+    /// Stable native type from the generated official schema; applicability is checked at dispatch.
+    pub fn payload_type(&self) -> Result<&'static str, Error> {
+        generated::DEFINITIONS
+            .iter()
+            .find(|d| d.kind == Kind::Profile && d.schema == self.schema)
+            .map(|d| d.identity)
+            .ok_or(Error::UnknownSchema)
+    }
+}
 impl ProfileInput {
+    /// Compare the complete returned manifest, never infer settings or compliance from its presence.
+    /// Missing/encrypted content cannot establish that an earlier payload was replaced.
+    pub fn observed(&self, report: &Dictionary) -> Result<bool, crate::Error> {
+        let objects = self
+            .payloads
+            .iter()
+            .map(|p| {
+                Ok(ProfileObject {
+                    payload_type: p
+                        .payload_type()
+                        .map_err(|_| crate::Error::Malformed)?
+                        .into(),
+                    identifier: p.identifier.clone(),
+                    uuid: p.uuid,
+                    multiple: true,
+                })
+            })
+            .collect::<Result<Vec<_>, crate::Error>>()?;
+        observed_manifest(report, &self.identifier, self.uuid, &objects)
+    }
+
     /// Compile one scope-consistent profile and reject duplicate identities or singleton types.
     pub fn compile(&self, target: &Target<'_>) -> Result<CompiledProfile, Error> {
         identity(&self.identifier, self.uuid)?;
@@ -108,6 +139,7 @@ impl ProfileInput {
                 multiple: payload.allows_multiple(),
             });
         }
+        references(&payloads, &self.payloads, target)?;
         let mut document = envelope(&self.metadata, &self.identifier, self.uuid, "Configuration")?;
         if document.contains_key("EncryptedPayloadContent") {
             return Err(Error::Constraint);
@@ -135,6 +167,71 @@ impl ProfileInput {
         Ok(CompiledProfile { bytes, objects })
     }
 }
+/// Compare a complete native payload manifest with retained compiled object identities.
+/// The envelope is identified separately; compiled manifests may include its Configuration object.
+pub fn observed_manifest(
+    report: &Dictionary,
+    identifier: &str,
+    uuid: Uuid,
+    objects: &[ProfileObject],
+) -> Result<bool, crate::Error> {
+    use crate::protocol::text;
+    if !crate::profile::presence(report, identifier, uuid)? {
+        return Ok(false);
+    }
+    let item = report
+        .get("ProfileList")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_dictionary)
+                .find(|d| d.get("PayloadIdentifier").and_then(Value::as_string) == Some(identifier))
+        })
+        .ok_or(crate::Error::Malformed)?;
+    if item
+        .get("IsEncrypted")
+        .is_some_and(|v| v.as_boolean() != Some(false))
+        || item
+            .get("PayloadVersion")
+            .and_then(Value::as_unsigned_integer)
+            != Some(1)
+    {
+        return Err(crate::Error::Malformed);
+    }
+    let children = item
+        .get("PayloadContent")
+        .and_then(Value::as_array)
+        .ok_or(crate::Error::Malformed)?;
+    let mut identifiers = BTreeSet::from([identifier]);
+    let mut uuids = BTreeSet::from([uuid]);
+    let mut actual = BTreeSet::new();
+    for value in children {
+        let child = value.as_dictionary().ok_or(crate::Error::Malformed)?;
+        let identifier = text(child, "PayloadIdentifier")?;
+        let uuid =
+            Uuid::parse_str(text(child, "PayloadUUID")?).map_err(|_| crate::Error::Malformed)?;
+        if identifier.is_empty()
+            || uuid.is_nil()
+            || !identifiers.insert(identifier)
+            || !uuids.insert(uuid)
+            || child
+                .get("PayloadVersion")
+                .and_then(Value::as_unsigned_integer)
+                != Some(1)
+        {
+            return Err(crate::Error::Malformed);
+        }
+        actual.insert((text(child, "PayloadType")?, identifier, uuid));
+    }
+    let expected = objects
+        .iter()
+        .filter(|p| p.uuid != uuid)
+        .map(|p| (p.payload_type.as_str(), p.identifier.as_str(), p.uuid))
+        .collect::<BTreeSet<_>>();
+    Ok(actual == expected)
+}
+
 fn identity(identifier: &str, uuid: Uuid) -> Result<(), Error> {
     if uuid.is_nil()
         || identifier.trim().is_empty()
@@ -177,4 +274,177 @@ fn validate_metadata(schema: &str, fields: &Dictionary, target: &Target<'_>) -> 
         .ok_or(Error::InvalidSchema)?;
     Payload::for_definition(definition, fields.clone(), target)?;
     Ok(())
+}
+
+/// Certificate references are UUID identities within this same scoped, ordered Profile.
+fn references(
+    payloads: &[Value],
+    inputs: &[PayloadInput],
+    target: &Target<'_>,
+) -> Result<(), Error> {
+    let certificates = payloads
+        .iter()
+        .filter_map(Value::as_dictionary)
+        .filter_map(|d| {
+            let kind = d.get("PayloadType")?.as_string()?;
+            let id = Uuid::parse_str(d.get("PayloadUUID")?.as_string()?).ok()?;
+            matches!(
+                kind,
+                "com.apple.security.pkcs1"
+                    | "com.apple.security.pkcs12"
+                    | "com.apple.security.root"
+                    | "com.apple.security.pem"
+                    | "com.apple.security.scep"
+                    | "com.apple.ADCertificate.managed"
+            )
+            .then_some((id, kind))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    fn check(
+        value: &Value,
+        definition: &super::Definition,
+        ids: &[usize],
+        certificates: &std::collections::BTreeMap<Uuid, &str>,
+        target_depth: usize,
+        target: &Target<'_>,
+    ) -> Result<(), Error> {
+        if target_depth > 64 {
+            return Err(Error::Limit);
+        }
+        match value {
+            Value::Dictionary(values) => {
+                for (key, value) in values {
+                    // Arbitrary application dictionaries do not inherit native certificate semantics.
+                    let Some(field) = ids
+                        .iter()
+                        .map(|id| &definition.fields[*id])
+                        .find(|field| !field.wildcard && field.key == key)
+                    else {
+                        continue;
+                    };
+                    let identity = match key.as_str() {
+                        "IdentityCertificateUUID"
+                        | "AuthenticationCertificateUUID"
+                        | "ResourcePayloadCertificateUUID"
+                        | "DeviceCertificateUUID"
+                        | "ControllerCertificateUUID"
+                        | "AccessKeyTerminalIdentityUUID"
+                        | "SMIMESigningCertificateUUID"
+                        | "SMIMEEncryptionCertificateUUID" => Some(true),
+                        "PayloadCertificateUUID" => Some(!matches!(
+                            definition.identity,
+                            "com.apple.security.certificatepreference" | "com.apple.MCX.FileVault2"
+                        )),
+                        "CertificateUUID" => Some(false),
+                        _ => None,
+                    };
+                    let anchors = matches!(
+                        key.as_str(),
+                        "DeviceCACertificateUUIDs"
+                            | "ControllerCACertificateUUIDs"
+                            | "PayloadCertificateAnchorUUID"
+                            | "CertificateAnchorUUID"
+                            | "LeaderPayloadCertificateAnchorUUID"
+                            | "MemberPayloadCertificateAnchorUUID"
+                            | "ServerURLPinningCertificateUUIDs"
+                            | "CheckInURLPinningCertificateUUIDs"
+                            | "AccessKeyReaderIssuerCertificateUUID"
+                    );
+                    if identity.is_some() || anchors {
+                        let values: Vec<&Value> = match value {
+                            Value::Array(items) => items.iter().collect(),
+                            _ => vec![value],
+                        };
+                        for value in values {
+                            let id = Uuid::parse_str(value.as_string().ok_or(Error::Field)?)
+                                .map_err(|_| Error::Constraint)?;
+                            let kind = certificates.get(&id).ok_or(Error::Constraint)?;
+                            let is_identity = matches!(
+                                *kind,
+                                "com.apple.security.pkcs12"
+                                    | "com.apple.security.scep"
+                                    | "com.apple.ADCertificate.managed"
+                            );
+                            if (identity == Some(true) && !is_identity) || (anchors && is_identity)
+                            {
+                                return Err(Error::Constraint);
+                            }
+                        }
+                    }
+                    let rule = field.active(target)?;
+                    if !rule.children.is_empty() {
+                        check(
+                            value,
+                            definition,
+                            rule.children,
+                            certificates,
+                            target_depth + 1,
+                            target,
+                        )?;
+                    }
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    for id in ids {
+                        let field = &definition.fields[*id];
+                        let rule = field.active(target)?;
+                        if !rule.children.is_empty() {
+                            check(
+                                value,
+                                definition,
+                                rule.children,
+                                certificates,
+                                target_depth + 1,
+                                target,
+                            )?;
+                        }
+                    }
+                }
+            }
+            _ => (),
+        }
+        Ok(())
+    }
+    for (value, input) in payloads.iter().zip(inputs) {
+        let definition = generated::DEFINITIONS
+            .iter()
+            .find(|d| d.kind == Kind::Profile && d.schema == input.schema)
+            .ok_or(Error::UnknownSchema)?;
+        check(
+            value,
+            definition,
+            definition.request,
+            &certificates,
+            0,
+            target,
+        )?;
+    }
+    Ok(())
+}
+
+/// Facts read under the registration lock; the rule itself has no persistence dependency.
+pub struct History {
+    pub terminal: bool,
+    pub dispatched: bool,
+    pub observed: bool,
+    pub present: bool,
+    pub uuid: Uuid,
+}
+pub fn can_reserve(history: &[History], uuid: Uuid, present: bool) -> bool {
+    history
+        .iter()
+        .all(|old| old.terminal && (!old.dispatched || old.observed))
+        && (present || history.iter().any(|old| old.present && old.uuid == uuid))
+}
+pub fn collides(objects: &[ProfileObject], other: &[ProfileObject], types: bool) -> bool {
+    objects.iter().any(|new| {
+        other.iter().any(|old| {
+            new.uuid == old.uuid
+                || new.identifier == old.identifier
+                || (types
+                    && new.payload_type == old.payload_type
+                    && (!new.multiple || !old.multiple))
+        })
+    })
 }

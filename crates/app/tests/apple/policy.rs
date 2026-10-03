@@ -109,11 +109,7 @@ impl Fixture {
             Some(observe),
             Some((
                 "ProfileList",
-                plist::Value::Array(vec![plist::Value::Dictionary(protocol::dictionary([
-                    ("PayloadIdentifier", native_profile().into()),
-                    ("PayloadUUID", profile.to_string().into()),
-                    ("PayloadVersion", 1.into()),
-                ]))]),
+                profile_manifest(profile, "com.apple.security.firewall"),
             )),
         )
         .await?;
@@ -142,9 +138,44 @@ impl Fixture {
             .next("RemoveProfile")
             .await
             .map_err(|e| e.context("initial shared-owner removal"))?;
-        // A real native rejection must retain cleanup intent and admit another
-        // bounded command through the same existing queue, without administrator action.
-        peer.manage("Error", Some(remove), None).await?;
+        // Error alone preserves uncertain effects; a full unchanged manifest proves
+        // the failed removal before Policy admits another independent cleanup command.
+        let next = peer.manage("Error", Some(remove), None).await?;
+        let (observe, _) = lifecycle::command(&next, "ProfileList")?;
+        let mut incomplete = profile_manifest(profile, "com.apple.security.firewall");
+        incomplete.as_array_mut().unwrap()[0]
+            .as_dictionary_mut()
+            .unwrap()
+            .remove("PayloadContent");
+        peer.manage(
+            "Acknowledged",
+            Some(observe),
+            Some(("ProfileList", incomplete)),
+        )
+        .await?;
+        let mut db =
+            sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+                .await?;
+        let operation: Uuid = sqlx::query_scalar(
+            "SELECT operation FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND id=$2",
+        )
+        .bind(case_tenant())
+        .bind(remove)
+        .fetch_one(&mut db)
+        .await?;
+        db.close().await?;
+        ensure!(self.operation(operation).await?["commandStatus"] == "published");
+        self.profile_query_due(operation).await?;
+        let (observe, _) = peer.next("ProfileList").await?;
+        peer.manage(
+            "Acknowledged",
+            Some(observe),
+            Some((
+                "ProfileList",
+                profile_manifest(profile, "com.apple.security.firewall"),
+            )),
+        )
+        .await?;
         let (retry, _) = peer
             .next("RemoveProfile")
             .await

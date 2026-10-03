@@ -245,7 +245,7 @@ async fn prepare_on(
     )?;
     sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,certificate,phase,request,state,deadline) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$2::uuid,'renew',$5,'pending',to_timestamp($6))")
         .bind(tenant).bind(id.to_string()).bind(&registration).bind(generation).bind(request).bind(deadline as f64).execute(&mut *c).await.map_err(db)?;
-    sqlx::query("UPDATE mdm_apple.devices SET next_push=clock_timestamp() WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(&registration).execute(&mut *c).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.channels SET next_push=clock_timestamp() WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(&registration).execute(&mut *c).await.map_err(db)?;
     crate::notify(c, "apple").await.map_err(db)?;
     let registration = Uuid::parse_str(&registration)
         .map_err(|_| Error::Unavailable(crate::Failure::AppleInvariant))?;
@@ -539,7 +539,7 @@ pub async fn management(
         match attempt::lock(c, protection, p, id, attempt::Owner::Certificate, bytes).await? {
             None => return Ok(None),
             Some(attempt::Reception::Replay) => {}
-            Some(attempt::Reception::Ready(a)) => a.settle(c, message.status).await?,
+            Some(attempt::Reception::Ready(a)) => a.settle(c, message.status, true).await?,
         }
     }
     let next=sqlx::query("SELECT a.id::text,a.request FROM mdm_apple.attempts a JOIN mdm_apple.scep_attempts s ON (s.tenant_id,s.id)=(a.tenant_id,a.certificate) WHERE a.tenant_id=$1::uuid AND a.registration=$2::uuid AND a.generation=$3 AND a.phase='renew' AND a.state IN ('pending','sent','not_now') AND s.state IN ('prepared','consumed') AND a.next_attempt<=clock_timestamp() AND a.deadline>clock_timestamp() ORDER BY a.id LIMIT 1 FOR UPDATE OF a")
@@ -576,7 +576,7 @@ pub async fn next_maintenance(
     tenant: &str,
 ) -> Result<Option<std::time::Duration>, Error> {
     let mut tx = access.begin_read(tenant).await?;
-    let millis: Option<i64> = sqlx::query_scalar("SELECT ceil(extract(epoch FROM min(due)-clock_timestamp())*1000)::bigint FROM (SELECT next_push AS due FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND state='active' UNION ALL SELECT push_lease_until FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND state='active' UNION ALL SELECT to_timestamp(not_after) FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND state='bound' UNION ALL SELECT to_timestamp(not_after-least((not_after-not_before)/3,604800)) FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND state='bound' UNION ALL SELECT expires_at FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND state IN ('prepared','consumed') UNION ALL SELECT next_attempt FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND state IN ('pending','sent','not_now') UNION ALL SELECT deadline FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND state IN ('pending','sent','not_now')) times WHERE due>clock_timestamp()")
+    let millis: Option<i64> = sqlx::query_scalar("SELECT ceil(extract(epoch FROM min(due)-clock_timestamp())*1000)::bigint FROM (SELECT next_push AS due FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND state='active' UNION ALL SELECT push_lease_until FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND state='active' UNION ALL SELECT to_timestamp(not_after) FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND state='bound' UNION ALL SELECT to_timestamp(not_after-least((not_after-not_before)/3,604800)) FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND state='bound' UNION ALL SELECT expires_at FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND state IN ('prepared','consumed') UNION ALL SELECT next_attempt FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND state IN ('pending','sent','not_now') UNION ALL SELECT deadline FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND state IN ('pending','sent','not_now')) times WHERE due>clock_timestamp()")
         .bind(tenant).fetch_one(&mut *tx).await.map_err(db)?;
     tx.rollback().await.map_err(db)?;
     Ok(millis.map(|ms| std::time::Duration::from_millis(ms.max(1) as u64)))
