@@ -596,10 +596,30 @@ async fn device_push_invalidation_preserves_user_idle_and_receipts() -> Result<(
 #[tokio::test]
 #[ignore = "MODULE=apple.users: corrupt encrypted material is isolated from healthy push candidates"]
 async fn corrupt_user_material_does_not_block_healthy_device_push() -> Result<()> {
+    async fn token_for_push(peer: &Peer, user: Uuid) -> Result<()> {
+        let reply = peer
+            .send(
+                "/checkin",
+                protocol::dictionary([
+                    ("MessageType", "TokenUpdate".into()),
+                    (
+                        "UDID",
+                        crate::test_support::case::name("rss-t2-apple").into(),
+                    ),
+                    ("UserID", user.to_string().into()),
+                    ("Topic", peer.topic.clone().into()),
+                    ("Token", plist::Value::Data(vec![48; 32])),
+                    ("PushMagic", "fixture-magic".into()),
+                ]),
+            )
+            .await?;
+        ensure!(reply.0 == StatusCode::OK);
+        Ok(())
+    }
     let mut f = Fixture::start().await?;
     let (peer, device) = f.ready_local_peer().await?;
     let user = Uuid::new_v4();
-    peer.user_token(user, 48).await?;
+    token_for_push(&peer, user).await?;
     let operation = f.create_operation(|_| json!({"platform":"macos","request":{"kind":"command","command":{"requestType":"InstalledApplicationList","fields":{}}}})).await?;
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
@@ -609,7 +629,7 @@ async fn corrupt_user_material_does_not_block_healthy_device_push() -> Result<()
     sqlx::query("UPDATE mdm_apple.channels SET next_push=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND user_key=''")
         .bind(case_tenant()).execute(&mut pg).await?;
     let participant =
-        crate::apple::push::test_support::Participant::start(vec![200, 200], vec![42; 32]).await?;
+        crate::apple::push::test_support::Participant::start(vec![200], vec![42; 32]).await?;
     rss_mdm_apple_channel::push::wake(&participant.push, &f.app.execution).await?;
     let bad: (String, Option<Uuid>, Option<String>) = sqlx::query_as("SELECT state,push_id,push_outcome FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND user_key=$2")
         .bind(case_tenant()).bind(user.to_string()).fetch_one(&mut pg).await?;
@@ -624,6 +644,7 @@ async fn corrupt_user_material_does_not_block_healthy_device_push() -> Result<()
     .fetch_one(&mut pg)
     .await?;
     ensure!(healthy == "accepted");
+    participant.close().await?;
     ensure!(f.operation(operation).await?["commandStatus"] == "published");
     let (execute, _) = peer.next("InstalledApplicationList").await?;
     peer.manage(
@@ -633,13 +654,15 @@ async fn corrupt_user_material_does_not_block_healthy_device_push() -> Result<()
     )
     .await?;
     ensure!(f.operation(operation).await?["commandStatus"] == "applied");
-    peer.user_token(user, 48).await?;
+    token_for_push(&peer, user).await?;
     let recovered: (String,i64,Option<String>) = sqlx::query_as("SELECT state,token_revision,push_outcome FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND user_key=$2")
         .bind(case_tenant()).bind(user.to_string()).fetch_one(&mut pg).await?;
     ensure!(recovered == ("active".into(), 2, None));
     let _user_op = user_operation(&mut f,user,json!({"platform":"macos","request":{"kind":"command","command":{"requestType":"InstalledApplicationList","fields":{}}}})).await?;
     resolve_user(&peer).await?;
     sqlx::query("UPDATE mdm_apple.channels SET next_push=clock_timestamp()+interval '1 hour' WHERE tenant_id=$1::uuid AND user_key=''").bind(case_tenant()).execute(&mut pg).await?;
+    let participant =
+        crate::apple::push::test_support::Participant::start(vec![200], vec![48; 32]).await?;
     rss_mdm_apple_channel::push::wake(&participant.push, &f.app.execution).await?;
     let recovered: String = sqlx::query_scalar(
         "SELECT push_outcome FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND user_key=$2",
