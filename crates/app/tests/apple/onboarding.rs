@@ -40,7 +40,7 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
             Some((
                 "QueryResponses",
                 protocol::dictionary([
-                    ("OSVersion", "14.0".into()),
+                    ("OSVersion", "15.0".into()),
                     ("IsAppleSilicon", true.into()),
                 ])
                 .into(),
@@ -289,7 +289,7 @@ async fn collected_bundle_presence_remains_unknown() -> Result<()> {
             Some((
                 "QueryResponses",
                 protocol::dictionary([
-                    ("OSVersion", "14.0".into()),
+                    ("OSVersion", "15.0".into()),
                     ("IsAppleSilicon", true.into()),
                 ])
                 .into(),

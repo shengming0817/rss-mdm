@@ -296,6 +296,42 @@ impl ExecutionService {
                 .await?;
                 continue;
             }
+            // A verified replacement of the same native Profile retires its previous
+            // payload guards without issuing RemoveProfile against the new container.
+            if let Some(root) = old
+                .objects
+                .iter()
+                .find(|o| o.platform == "macos" && o.kind == "profile")
+            {
+                let mut replacement = None;
+                for current in inputs
+                    .iter()
+                    .filter(|d| d.ready && d.objects.contains(root))
+                {
+                    if let Some(id) = object_state(tx, device, &current.objects).await? {
+                        let op = storage::load(tx, &self.protection, id).await?;
+                        if self.required_command(tx, &op).await?.status() == dc::Status::Applied
+                            && self.reuse_configuration_in(tx, id, &current.digest).await?
+                        {
+                            replacement = Some(id);
+                            break;
+                        }
+                    }
+                }
+                if let Some(id) = replacement {
+                    replace_claims(tx, device, &unowned, &[], None).await?;
+                    save_objects(
+                        tx,
+                        device,
+                        &unowned,
+                        Some(id),
+                        None,
+                        Some(Diagnosis::Unassigned),
+                    )
+                    .await?;
+                    continue;
+                }
+            }
             if unowned.len() != old.objects.len() {
                 // Keep the old publication's remaining claims so the last owner's departure
                 // wakes this exact native removal. Never cut children from its ordered unit.

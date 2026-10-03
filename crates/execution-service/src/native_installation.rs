@@ -352,7 +352,7 @@ impl ExecutionService {
             }
             let observation = installation_observation(
                 tx,
-                self.apple_store.clone(),
+                self.apple_results.clone(),
                 self.agent_store.clone(),
                 &op,
             )
@@ -400,7 +400,7 @@ impl ExecutionService {
 }
 pub async fn installation_observation(
     tx: &mut PgTransaction<'_>,
-    apple: Arc<dyn channels::AppleStore>,
+    apple: Arc<dyn channels::AppleResults>,
     agent: Arc<dyn channels::Agent>,
     op: &storage::Operation,
 ) -> Result<serde_json::Value> {

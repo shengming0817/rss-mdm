@@ -139,10 +139,9 @@ pub(crate) async fn open(
             Arc::new(rss_mdm_flow_service::planning::execution_source::ExecutionSource);
         let agent_store: Arc<dyn rss_mdm_execution_service::channels::Agent> =
             Arc::new(rss_mdm_agent_channel::Bindings);
-        let apple_store: Arc<dyn rss_mdm_execution_service::channels::AppleStore> =
-            Arc::new(rss_mdm_apple_channel::flow_store::Store {
-                protection: protection.clone(),
-            });
+        let apple_store = Arc::new(rss_mdm_apple_channel::flow_store::Store {
+            protection: protection.clone(),
+        });
         let signer = config
             .task_signing
             .as_ref()
@@ -173,7 +172,7 @@ pub(crate) async fn open(
                 source: source.clone(),
                 protection: protection.clone(),
                 agent_store: agent_store.clone(),
-                apple_store: apple_store.clone(),
+                apple_results: apple_store.clone(),
                 policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
                 audit_store: audit_store.clone(),
                 runtime: runtime.clone(),
@@ -189,7 +188,10 @@ pub(crate) async fn open(
                 protection: protection.clone(),
                 inputs: inputs.clone(),
                 agent_store,
-                apple_store,
+                apple_profiles: apple_store.clone(),
+                apple_push: apple_store.clone(),
+                apple_collections: apple_store.clone(),
+                apple_results: apple_store.clone(),
                 policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
                 audit_store,
                 runtime: runtime.clone(),

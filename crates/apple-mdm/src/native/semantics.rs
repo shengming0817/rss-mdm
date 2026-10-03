@@ -4,6 +4,19 @@ use super::{Dictionary, Error, Kind, Value};
 
 pub(super) fn check(kind: Kind, identity: &str, fields: &Dictionary) -> Result<(), Error> {
     match (kind, identity) {
+        (Kind::Command, "DeleteUser") => {
+            if !fields
+                .get("DeleteAllUsers")
+                .and_then(Value::as_boolean)
+                .unwrap_or(false)
+                && fields
+                    .get("UserName")
+                    .and_then(Value::as_string)
+                    .is_none_or(|name| name.trim().is_empty())
+            {
+                return Err(Error::Constraint);
+            }
+        }
         (Kind::Command, "InstallApplication") => {
             exactly_one(fields, &["iTunesStoreID", "Identifier", "ManifestURL"])?;
             if let Some(value) = fields.get("iTunesStoreID")

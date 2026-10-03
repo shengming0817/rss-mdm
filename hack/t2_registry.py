@@ -421,7 +421,7 @@ for name in ('windows.issuance','windows.enrollment','windows.management','windo
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs + ('crates/app/tests/windows/support.rs',))
 for name in ('enrollment.recovery','windows.issuance','windows.enrollment','windows.management','windows.commands','windows.retention','windows.limits','execution.commands.admission','execution.commands.dispatch','execution.commands.recovery','execution.commands.windows','execution.commands.configuration','execution.commands.onboarding'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs + ('crates/app/tests/enrollment/support.rs',))
-for part in ('cms', 'apns', 'scep', 'collection', 'profile', 'policy', 'onboarding', 'renewal', 'identity', 'push', 'fairness', 'host'):
+for part in ('cms', 'apns', 'scep', 'collection', 'profile', 'policy', 'onboarding', 'renewal', 'identity', 'push', 'fairness', 'host', 'commands', 'users'):
     no_pg = part in ('cms', 'apns')
     fixtures = ('apple',) + (() if no_pg else ('identity', 'oracle'))
     if part in ('scep', 'renewal', 'identity'):
@@ -437,6 +437,7 @@ for part in ('cms', 'apns', 'scep', 'collection', 'profile', 'policy', 'onboardi
         'renewal': ('renewal.rs',), 'identity': ('checkin.rs','enrollment.rs'),
         'push': ('push.rs',), 'fairness': ('attempt.rs','protocol.rs'),
         'host': ('mod.rs','config.rs'),
+        'commands': ('native.rs','flow_store.rs','attempt.rs'), 'users': ('checkin.rs','flow_store.rs','material.rs'),
     }[part]
     add('apple.' + part, selectors=selectors, profile='none' if no_pg else 'product',
         fixtures=fixtures, sources=tuple(('crates/app/src/assembly/apple/' if path in ('mod.rs','config.rs') else 'crates/certificate/src/' if path=='certificate.rs' else 'crates/apple-mdm/src/' if path in ('protocol.rs','profile.rs') else 'crates/apple-channel/src/') + ('apple.rs' if path=='certificate.rs' else path) for path in source),
@@ -595,8 +596,8 @@ MODULES['publication.recovery'] = replace(MODULES['publication.recovery'], db_mo
 MODULES['windows.issuance'] = replace(MODULES['windows.issuance'], db_mode='fresh', scope='objects')
 MODULES['windows.retention'] = replace(MODULES['windows.retention'], db_mode='fresh', scope='objects')
 MODULES['windows.limits'] = replace(MODULES['windows.limits'], db_mode='reuse', scope='tenant')
-for name in ('apple.collection', 'apple.scep'):
-    MODULES[name] = replace(MODULES[name], scope='tenant', fixtures=(*MODULES[name].fixtures,'local_worker'))
+for name in ('apple.collection','apple.scep','apple.commands','apple.users'):
+    MODULES[name] = replace(MODULES[name],scope='tenant',fixtures=(*MODULES[name].fixtures,'local_worker'))
 MODULES['apple.profile'] = replace(MODULES['apple.profile'], scope='tenant', fixtures=(*MODULES['apple.profile'].fixtures,'local_worker'))
 MODULES['apple.policy'] = replace(MODULES['apple.policy'], db_mode='reuse', scope='tenant', fixtures=(*MODULES['apple.policy'].fixtures,'local_worker'), policies=(
     CasePolicy('apple::tests::policy::current_approval_and_deadlines', 'reuse', 'tenant'),
@@ -923,7 +924,7 @@ APP_HELPER_CONSUMERS = {
         'execution.commands.recovery','execution.commands.windows','execution.commands.configuration','execution.commands.onboarding',
         'windows.commands','windows.enrollment','windows.issuance','windows.limits','windows.management','windows.retention',
         'apple.collection','apple.profile','apple.policy','apple.onboarding','apple.renewal','apple.identity','apple.push',
-        'apple.fairness','apple.host','apple.scep'),
+        'apple.fairness','apple.host','apple.scep','apple.commands','apple.users'),
     'support/audit.rs': (
         'diagnostics.http',
         'audit.receipts','audit.integrity','audit.recovery','audit.budget',
@@ -1164,3 +1165,12 @@ consume(('crates/windows-channel/src/push*', 'crates/windows-channel/src/unenrol
 consume(('crates/windows-channel/src/renewal.rs', 'crates/certificate/src/windows/*'), 'windows.issuance windows.management')
 consume(('crates/execution-service/src/retirement*',), 'device.revocation windows.management apple.identity')
 consume(('crates/windows-mdm/src/provisioning/*',), 'windows.issuance windows.enrollment execution.commands.windows')
+
+consume(('crates/apple-mdm/src/*', 'crates/apple-mdm/src/native/*',
+         'crates/apple-channel/src/checkin.rs', 'crates/apple-channel/src/material.rs',
+         'crates/apple-channel/src/attempt.rs', 'crates/apple-channel/src/native.rs',
+         'crates/apple-channel/src/profiles.rs', 'crates/apple-channel/src/flow_store.rs',
+         'crates/apple-channel/src/lib.rs', 'crates/execution-service/src/apple*',
+         'crates/execution-service/src/channels.rs',
+         'crates/execution-service/src/service.rs', 'crates/execution-service/src/permissions.rs',
+         'crates/execution-service/src/queries/records.rs'), 'apple.commands apple.users')

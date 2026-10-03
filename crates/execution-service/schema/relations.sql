@@ -56,15 +56,6 @@ ALTER TABLE ONLY mdm_commands.operations
 ALTER TABLE ONLY mdm_commands.policy_recovery
     ADD CONSTRAINT policy_recovery_tenant_id_policy_fkey FOREIGN KEY (tenant_id, policy) REFERENCES mdm_policy.policies(tenant_id, id);
 
-ALTER TABLE ONLY mdm_commands.apple_profiles
-    ADD CONSTRAINT profiles_tenant_id_device_fkey FOREIGN KEY (tenant_id, device) REFERENCES mdm_access.devices(tenant_id, id);
-
-ALTER TABLE ONLY mdm_commands.apple_profiles
-    ADD CONSTRAINT profiles_tenant_id_operation_fkey FOREIGN KEY (tenant_id, operation) REFERENCES mdm_commands.operations(tenant_id, id);
-
-ALTER TABLE ONLY mdm_commands.apple_profiles
-    ADD CONSTRAINT profiles_tenant_id_registration_fkey FOREIGN KEY (tenant_id, registration) REFERENCES mdm_access.registrations(tenant_id, id);
-
 ALTER TABLE ONLY mdm_commands.requests
     ADD CONSTRAINT requests_tenant_id_operation_fkey FOREIGN KEY (tenant_id, operation) REFERENCES mdm_commands.operations(tenant_id, id);
 
@@ -100,16 +91,6 @@ GRANT UPDATE(state) ON TABLE mdm_commands.action_runs TO mdm_command_runtime;
 GRANT UPDATE(gateway_accepted) ON TABLE mdm_commands.action_runs TO mdm_command_runtime;
 
 GRANT UPDATE(result) ON TABLE mdm_commands.action_runs TO mdm_command_runtime;
-
-GRANT SELECT,INSERT ON TABLE mdm_commands.apple_profiles TO mdm_command_runtime;
-
-GRANT UPDATE(profile) ON TABLE mdm_commands.apple_profiles TO mdm_command_runtime;
-
-GRANT UPDATE(operation) ON TABLE mdm_commands.apple_profiles TO mdm_command_runtime;
-
-GRANT UPDATE(registration) ON TABLE mdm_commands.apple_profiles TO mdm_command_runtime;
-
-GRANT UPDATE(version) ON TABLE mdm_commands.apple_profiles TO mdm_command_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_commands.attempts TO mdm_command_runtime;
 
