@@ -51,6 +51,8 @@ DMClient 维护限定当前 provider。DMAcc 先读取所选 account 的 ServerI
 
 XCEP 仅返回策略，导出的 BST 不授予登记权限。LinkedEnrollment.svc 校验原始 XML 的父证书签名、时间戳、当前父凭据及新 CSR 私钥证明，签发独立子证书。子登记与父登记共享设备身份，使用独立 provider、证书、世代、命令编号和 `/ManagementServer/Declared.svc` 会话；首次真正认证签入后才能接受任务。子登记不建立 Inventory 报告源。父证书正常续期保留子登记；父重新登记、撤销或被替换会连带退役子登记。子证书在自己的登记入口续期，父子证书不能跨管理入口使用。
 
+WinDC 子登记缺失或尚未首次认证时，设备操作 API 返回 HTTP 409 与 `windows_declared_enrollment_not_ready`；配置策略保留等待状态和既有资源占用，远程执行目标返回同一诊断的 blocked 结果。先完成子登记及 Declared 首次认证签入，再重试设备操作；首次认证会唤醒等待配置。普通主登记和 ConfigRefresh 独立可用。
+
 ## DeclaredConfiguration 与 MI
 
 DeclaredConfiguration 使用现有配置与设备操作入口，Document 值为原生 XML；Delete 输入也保留原始文档，供删除效果与资源占用确认。支持的 Windows 证书协议版本来自冻结的官方事实，未知 servicing 分支拒绝。普通 ConfigRefresh 继续使用主登记。

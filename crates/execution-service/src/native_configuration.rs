@@ -287,12 +287,7 @@ impl ExecutionService {
             let Frozen::Configuration { exit, .. } = frozen else {
                 return Err(Error::Malformed.into());
             };
-            let rows = object_rows(tx, device, &old.objects).await?;
-            let state = rows.first().and_then(|r| r.0).filter(|id| {
-                rows.iter().zip(&old.objects).all(|(row, object)| {
-                    row.0 == Some(*id) && row.1.as_ref() == old.object_digests.get(object)
-                })
-            });
+            let state = self.publication_in(tx, device, &old).await?;
             if state.is_none() {
                 // A conflicting desired claim never established this native publication.
                 // Withdraw only this owner's expectation, without touching another owner's work.
@@ -431,6 +426,48 @@ impl ExecutionService {
         let device = device.to_owned();
         tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_planning.configuration_devices SET observed_revision=$3 WHERE tenant_id=$1::uuid AND device=$2").bind(tenant).bind(device).bind(revision).execute(c).await?;Ok(())})).await?;
         Ok(())
+    }
+    async fn publication_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        device: &str,
+        desired: &Desired<'_>,
+    ) -> Result<Option<Uuid>> {
+        let removal = desired
+            .native
+            .remove
+            .as_ref()
+            .map(|task| {
+                crate::protection::fingerprint(
+                    &self.protection,
+                    self.tenant,
+                    device,
+                    "native-configuration/v3",
+                    &(&desired.native.target, task),
+                )
+            })
+            .transpose()?;
+        let ids = object_rows(tx, device, &desired.objects)
+            .await?
+            .into_iter()
+            .filter_map(|row| row.0)
+            .collect::<BTreeSet<_>>();
+        for id in ids {
+            let operation = storage::load(tx, &self.protection, id).await?;
+            let digest = crate::protection::fingerprint(
+                &self.protection,
+                self.tenant,
+                device,
+                "native-configuration/v3",
+                &(&operation.request.target, &operation.request.task),
+            )?;
+            // A co-owner can replace one object's operation. The immutable whole task
+            // still proves this publication; an overlapping desired claim alone cannot.
+            if digest == desired.digest || removal.as_ref() == Some(&digest) {
+                return Ok(Some(id));
+            }
+        }
+        Ok(None)
     }
     async fn reuse_configuration_in(
         &self,
