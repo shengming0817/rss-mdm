@@ -3,7 +3,7 @@ use super::*;
 use lifecycle::{Peer, command};
 use sqlx::{Connection, Row};
 impl Peer {
-    async fn user_token(&self, user: Uuid, value: u8) -> Result<()> {
+    pub(super) async fn user_token(&self, user: Uuid, value: u8) -> Result<()> {
         let response = self
             .send(
                 "/checkin",
@@ -23,7 +23,7 @@ impl Peer {
         ensure!(response.0 == StatusCode::OK, "user token {}", response.0);
         Ok(())
     }
-    async fn user_manage(
+    pub(super) async fn user_manage(
         &self,
         user: Uuid,
         status: &str,

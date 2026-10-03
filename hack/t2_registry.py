@@ -421,7 +421,7 @@ for name in ('windows.issuance','windows.enrollment','windows.management','windo
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs + ('crates/app/tests/windows/support.rs',))
 for name in ('enrollment.recovery','windows.issuance','windows.enrollment','windows.management','windows.commands','windows.retention','windows.limits','execution.commands.admission','execution.commands.dispatch','execution.commands.recovery','execution.commands.windows','execution.commands.configuration','execution.commands.onboarding'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs + ('crates/app/tests/enrollment/support.rs',))
-for part in ('cms', 'apns', 'scep', 'collection', 'profile', 'policy', 'onboarding', 'renewal', 'identity', 'push', 'fairness', 'host', 'commands', 'users'):
+for part in ('cms', 'apns', 'scep', 'collection', 'profile', 'policy', 'onboarding', 'renewal', 'identity', 'push', 'fairness', 'host', 'commands', 'users', 'ddm', 'status'):
     no_pg = part in ('cms', 'apns')
     fixtures = ('apple',) + (() if no_pg else ('identity', 'oracle'))
     if part in ('scep', 'renewal', 'identity'):
@@ -437,6 +437,7 @@ for part in ('cms', 'apns', 'scep', 'collection', 'profile', 'policy', 'onboardi
         'renewal': ('renewal.rs',), 'identity': ('checkin.rs','enrollment.rs'),
         'push': ('push.rs',), 'fairness': ('attempt.rs','protocol.rs'),
         'host': ('mod.rs','config.rs'),
+        'ddm': ('ddm.rs','profiles.rs','exchange.rs'), 'status': ('ddm.rs','checkin.rs','exchange.rs'),
         'commands': ('native.rs','flow_store.rs','attempt.rs'), 'users': ('checkin.rs','flow_store.rs','material.rs'),
     }[part]
     add('apple.' + part, selectors=selectors, profile='none' if no_pg else 'product',
@@ -596,7 +597,7 @@ MODULES['publication.recovery'] = replace(MODULES['publication.recovery'], db_mo
 MODULES['windows.issuance'] = replace(MODULES['windows.issuance'], db_mode='fresh', scope='objects')
 MODULES['windows.retention'] = replace(MODULES['windows.retention'], db_mode='fresh', scope='objects')
 MODULES['windows.limits'] = replace(MODULES['windows.limits'], db_mode='reuse', scope='tenant')
-for name in ('apple.collection','apple.scep','apple.commands','apple.users'):
+for name in ('apple.collection','apple.scep','apple.commands','apple.users','apple.ddm','apple.status'):
     MODULES[name] = replace(MODULES[name],scope='tenant',fixtures=(*MODULES[name].fixtures,'local_worker'))
 MODULES['apple.profile'] = replace(MODULES['apple.profile'], scope='tenant', fixtures=(*MODULES['apple.profile'].fixtures,'local_worker'))
 MODULES['apple.policy'] = replace(MODULES['apple.policy'], db_mode='reuse', scope='tenant', fixtures=(*MODULES['apple.policy'].fixtures,'local_worker'), policies=(
@@ -749,7 +750,7 @@ consume(('crates/execution-service/src/actions/history.rs',), 'execution.agent.h
 consume(('crates/execution-service/src/actions/software.rs',), 'execution.software.offer execution.software.content execution.software.recovery')
 consume(('crates/execution-service/src/actions/agent.rs',), 'execution.agent.delivery execution.agent.content execution.agent.recovery')
 consume(('crates/execution-service/src/actions/recovery.rs',), 'execution.agent.recovery execution.software.recovery')
-AUDITED_MODULES = 'diagnostics.http audit.receipts audit.integrity audit.recovery audit.budget authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission identity.audit enrollment.http enrollment.recovery device.binding device.revocation device.recovery device.admission agent.registration agent.reports assets.http planning.http planning.policy planning.agent_policy planning.frequency planning.remote planning.software planning.onboarding planning.group_scope planning.recovery planning.resource_archive compliance.http compliance.recovery software.catalog software.http content.http content.mirror content.gc execution.agent.delivery execution.agent.content execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery execution.commands.admission execution.commands.dispatch execution.commands.recovery execution.commands.windows execution.commands.configuration execution.commands.onboarding windows.issuance windows.management windows.commands apple.scep apple.collection apple.profile apple.policy apple.onboarding apple.renewal apple.identity apple.push publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery'
+AUDITED_MODULES = 'diagnostics.http audit.receipts audit.integrity audit.recovery audit.budget authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission identity.audit enrollment.http enrollment.recovery device.binding device.revocation device.recovery device.admission agent.registration agent.reports assets.http planning.http planning.policy planning.agent_policy planning.frequency planning.remote planning.software planning.onboarding planning.group_scope planning.recovery planning.resource_archive compliance.http compliance.recovery software.catalog software.http content.http content.mirror content.gc execution.agent.delivery execution.agent.content execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery execution.commands.admission execution.commands.dispatch execution.commands.recovery execution.commands.windows execution.commands.configuration execution.commands.onboarding windows.issuance windows.management windows.commands apple.scep apple.collection apple.profile apple.policy apple.onboarding apple.renewal apple.identity apple.push apple.ddm apple.status publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery'
 consume(('crates/audit-integration/src/*',), AUDITED_MODULES)
 consume(('crates/flow-service/src/transaction.rs',), 'planning.http planning.policy planning.agent_policy planning.frequency planning.group_scope planning.recovery planning.resource_archive planning.scope planning.assets planning.software planning.onboarding')
 consume(('crates/audit-integration/src/budget.rs',), 'audit.budget enrollment.http enrollment.recovery device.binding device.revocation device.recovery agent.registration windows.issuance windows.management apple.scep apple.profile apple.renewal content.http content.mirror content.gc')
@@ -924,7 +925,7 @@ APP_HELPER_CONSUMERS = {
         'execution.commands.recovery','execution.commands.windows','execution.commands.configuration','execution.commands.onboarding',
         'windows.commands','windows.enrollment','windows.issuance','windows.limits','windows.management','windows.retention',
         'apple.collection','apple.profile','apple.policy','apple.onboarding','apple.renewal','apple.identity','apple.push',
-        'apple.fairness','apple.host','apple.scep','apple.commands','apple.users'),
+        'apple.fairness','apple.host','apple.scep','apple.commands','apple.users','apple.ddm','apple.status'),
     'support/audit.rs': (
         'diagnostics.http',
         'audit.receipts','audit.integrity','audit.recovery','audit.budget',
@@ -1174,3 +1175,15 @@ consume(('crates/apple-mdm/src/*', 'crates/apple-mdm/src/native/*',
          'crates/execution-service/src/channels.rs',
          'crates/execution-service/src/service.rs', 'crates/execution-service/src/permissions.rs',
          'crates/execution-service/src/queries/records.rs'), 'apple.commands apple.users')
+
+# Native DDM responsibilities and Resource delivery use real product HTTP consumers.
+consume(('crates/apple-channel/src/ddm*', 'crates/apple-channel/src/ddm/*',
+         'crates/apple-mdm/src/native/ddm*', 'crates/apple-mdm/src/native/ddm/*',
+         'crates/execution-service/src/apple_assets.rs'), 'apple.ddm apple.status')
+consume(('crates/apple-channel/src/profiles.rs', 'crates/apple-channel/src/exchange.rs',
+         'crates/apple-channel/src/evidence.rs', 'crates/apple-mdm/src/native/profiles.rs',
+         'crates/apple-mdm/src/native/evidence.rs'), 'apple.profile apple.policy apple.ddm apple.status')
+for name in ('apple.ddm', 'apple.status'):
+    MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs,
+        'crates/app/tests/apple/ddm.rs','crates/app/tests/apple/users.rs','crates/app/tests/apple/policy.rs',
+        'crates/app/tests/support/planning_http.rs','crates/app/tests/support/agent_execution.rs'))

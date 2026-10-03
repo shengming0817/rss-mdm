@@ -88,6 +88,26 @@ pub(crate) async fn native_configuration_resource(
     architecture: &str,
     input: Value,
 ) -> Result<()> {
+    native_configuration_bytes(
+        browser,
+        router,
+        id,
+        platform,
+        architecture,
+        &serde_json::to_vec(&input)?,
+    )
+    .await
+}
+
+/// Upload immutable native bytes, including unsigned Apple Profile data.
+pub(crate) async fn native_configuration_bytes(
+    browser: &mut Browser,
+    router: &Router,
+    id: uuid::Uuid,
+    platform: &str,
+    architecture: &str,
+    bytes: &[u8],
+) -> Result<()> {
     let path = format!("/api/v4/resources/{id}");
     call(
         browser,
@@ -97,7 +117,6 @@ pub(crate) async fn native_configuration_resource(
         json!({"action":"create","kind":"configuration"}),
     )
     .await?;
-    let bytes = serde_json::to_vec(&input)?;
     let digest = rss_mdm_resource::Digest::of(&bytes).bytes();
     call(browser, router, &path, 1, json!({"action":"version","version":"v1","kind":"configuration","variants":[{"platform":platform,"architecture":architecture,"key":"default","declaration":{"kind":"configuration","artifact":{"reference":"native-input","length":bytes.len(),"sha256":digest}}}]})).await?;
     ensure!(

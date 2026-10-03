@@ -1,6 +1,6 @@
 # Apple 原生注册、命令与 Profile 管理
 
-Rust 服务端支持设备和用户通道，使用外部 step-ca v0.30.2 完成 SCEP 签发。原生命令、查询、回执和多 payload Profile 复用现有 Execution、注册及采集 owner。组织/ADE 入网和 DDM 由各自业务持有；这里的 Bootstrap escrow 不代表已实现 ADE 入网。受控 T2 不代替真实 Apple 组织、APNs 和 Mac 验收，T3 证据另行登记。
+Rust 服务端支持设备和用户通道，使用外部 step-ca v0.30.2 完成 SCEP 签发。原生命令、查询、回执和多 payload Profile 复用现有 Execution、注册及采集 owner。DDM 的声明发布与状态证据由 Apple 原生 owner 持有；组织/ADE 入网独立实施，这里的 Bootstrap escrow 不代表已实现 ADE 入网。受控 T2 不代替真实 Apple 组织、APNs 和 Mac 验收，T3 证据另行登记。
 
 ## 注册与凭据
 
@@ -58,6 +58,18 @@ Profile 使用 `request.kind:"install_profile"` 和 `profile`，其中根及每�
 APNs 使用证书认证 HTTPS/HTTP2，token revision 和持久唤醒 lease 隔离过期回执。410 使对应当前 token 回到 pending_token；旧 revision 的 410 不撤销新 token。429 和网络失败按 30、60、120 秒递增退避，5xx 至少等待 900 秒，均封顶 960 秒，不改变命令结果。按闭合 APNs reason 判定 token 失效、配置拒绝或暂时故障；未知/畸形响应可重试，配置拒绝暂停当前 token revision/APNs 证书组合；TokenUpdate 或更换有效 APNs 证书并重启后可恢复。失效授权的采集会延后检查，不能持续占据有界队列前页。
 
 APNs 唤醒在持久 lease 的授权事务完成时取得发送资格。已领取或已被 APNs 接受的提示可能在撤销后才到达；提示本身不包含业务命令，后续设备请求仍必须通过当前注册、代际、来源及操作授权校验。
+
+## DDM 声明与状态
+
+operation 的 Apple 请求为 `{"kind":"declarations","declarations":[…],"assets":[…]}`；两个数组都必填，空 declarations 撤回当前调用方的集合。声明包含 identifier、declarationType 和类型化 payload，四类原生声明使用同一冻结版本/条件编译。StatusItems 订阅是 `com.apple.configuration.management.status-subscriptions` 配置声明中的 Name 数组，按当前作用域合并有效订阅；未知或当前平台不支持的名称被拒绝。
+
+原生客户端经现有 mTLS `PUT /checkin` 发送 DeclarativeManagement plist，Endpoint 支持 tokens、declaration-items、declaration/{activation|configuration|asset|management}/{identifier} 和 status。读取返回原生 JSON，缺少对象返回 404；status 的 Data 为原生 JSON 报告，成功返回 200 空 body。启用/唤醒同步使用现有 MDM attempt 的 DeclarativeManagement 命令，不建立第二套队列。
+
+下载资产的 binding 指定 identifier、resource、version、variant、versionDigest（32 字节数组）、contentType 和 profileSchemas。Resource 必须是已上传受保护内容的不可变 configuration 版本；版本摘要、内容长度/摘要、架构和当前 ResourceRead 均复核。服务器提供 HTTPS DataURL/ProfileURL 和原生 MDM Authentication，拒绝任意外部下载 URL。Legacy Profile 使用未签名 plist 内容，并按载荷顺序列出准确 Profile schema；签名 CMS 不作为这一路径的原始 Profile 输入。
+
+operation observation 分别返回 expected、synchronization、nativeStatus、effect 和 compliance。原生状态区分 valid/invalid/unknown、active 与 reasons；共同 applied 仅表示精确版本的声明核验完成。空集合撤回的 ACK 和无版本缺席报告不会证明终端移除。乱序的同版本冲突、未关联版本的增量状态保持 Unknown；receivedAt 只表示服务器收到证据的时间。详细值仍需要 operation_read 及原操作全部权限；这些报告不自动成为 Inventory Snapshot 或合规成功。
+
+`make t2 MODULE=apple.ddm` 验证四类声明、资产、重启、Legacy 接管和 Policy 所有权；`MODULE=apple.status` 验证冲突、作用域和撤权。真实 Mac 的同步、状态与 Profile 交接属于独立 T3。
 
 ## 产品配置
 
