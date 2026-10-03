@@ -1241,4 +1241,4 @@ consume(('crates/agent-wire/src/tasks/results.rs',),
 consume(('crates/windows-mdm/src/native/receipt.rs',),
         'windows.declared execution.commands.onboarding')
 consume(('crates/management-http/src/execution/projection.rs',),
-        QUERY_CONSUMERS + ' apple.profile apple.users apple.commands apple.ddm apple.status')
+        QUERY_CONSUMERS + ' execution.commands.configuration apple.profile apple.users apple.commands apple.ddm apple.status')
