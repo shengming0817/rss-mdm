@@ -39,10 +39,9 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
             task["payload"]["taskId"].as_str().unwrap(),
             task["payload"]["attemptId"].as_str().unwrap()
         ))
-        .header("host", "mdm.example.test")
-        .header(
-            "authorization",
-            format!("Bearer {CREDENTIAL}", CREDENTIAL = case_credential()),
+        .header("host", "mdm.example.test:9445")
+        .extension(
+            crate::test_support::agent::evidence(case_credential()).expect("registered TLS peer"),
         )
         .body(Body::empty())?;
     ensure!(router.clone().oneshot(expired).await?.status() == StatusCode::FORBIDDEN);
@@ -57,10 +56,9 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
             task["payload"]["taskId"].as_str().unwrap(),
             task["payload"]["attemptId"].as_str().unwrap()
         ))
-        .header("host", "mdm.example.test")
-        .header(
-            "authorization",
-            format!("Bearer {CREDENTIAL}", CREDENTIAL = case_credential()),
+        .header("host", "mdm.example.test:9445")
+        .extension(
+            crate::test_support::agent::evidence(case_credential()).expect("registered TLS peer"),
         )
         .body(Body::empty())?;
     let content = router.clone().oneshot(content).await?;
@@ -77,10 +75,9 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
             task["payload"]["taskId"].as_str().unwrap(),
             task["payload"]["attemptId"].as_str().unwrap()
         ))
-        .header("host", "mdm.example.test")
-        .header(
-            "authorization",
-            format!("Bearer {CREDENTIAL}", CREDENTIAL = case_credential()),
+        .header("host", "mdm.example.test:9445")
+        .extension(
+            crate::test_support::agent::evidence(case_credential()).expect("registered TLS peer"),
         )
         .body(Body::empty())?;
     let prerequisite = router.clone().oneshot(prerequisite).await?;
@@ -102,10 +99,9 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
             task["payload"]["taskId"].as_str().unwrap(),
             task["payload"]["attemptId"].as_str().unwrap()
         ))
-        .header("host", "mdm.example.test")
-        .header(
-            "authorization",
-            format!("Bearer {CREDENTIAL}", CREDENTIAL = case_credential()),
+        .header("host", "mdm.example.test:9445")
+        .extension(
+            crate::test_support::agent::evidence(case_credential()).expect("registered TLS peer"),
         )
         .body(Body::empty())?;
     ensure!(router.clone().oneshot(denied).await?.status() == StatusCode::FORBIDDEN);
@@ -147,10 +143,9 @@ async fn uninstall_content_permission() -> Result<()> {
             removal_task["payload"]["taskId"].as_str().unwrap(),
             removal_task["payload"]["attemptId"].as_str().unwrap()
         ))
-        .header("host", "mdm.example.test")
-        .header(
-            "authorization",
-            format!("Bearer {CREDENTIAL}", CREDENTIAL = case_credential()),
+        .header("host", "mdm.example.test:9445")
+        .extension(
+            crate::test_support::agent::evidence(case_credential()).expect("registered TLS peer"),
         )
         .body(Body::empty())?;
     let content = router.clone().oneshot(content).await?;
@@ -208,8 +203,10 @@ async fn windows_variant_content() -> Result<()> {
             windows_task["payload"]["taskId"].as_str().unwrap(),
             windows_task["payload"]["attemptId"].as_str().unwrap()
         ))
-        .header("host", "mdm.example.test")
-        .header("authorization", format!("Bearer {windows_credential}"))
+        .header("host", "mdm.example.test:9445")
+        .extension(
+            crate::test_support::agent::evidence(&windows_credential).expect("registered TLS peer"),
+        )
         .body(Body::empty())?;
     let windows_content = router.clone().oneshot(windows_content).await?;
     ensure!(windows_content.status() == StatusCode::OK);

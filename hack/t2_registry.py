@@ -793,13 +793,31 @@ for name, path in (('apple.push','push_cycle'), ('apple.host','production')):
 # Runtime fixture consumers sign durable candidates and use completed TLS peers.
 AGENT_FIXTURE_CONSUMERS = tuple(('agent.registration agent.reports execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.recovery execution.agent.history execution.software.offer execution.software.content execution.software.recovery planning.onboarding execution.commands.onboarding apple.onboarding planning.agent_policy planning.frequency planning.remote planning.http assets.http planning.software').split())
 AGENT_FIXTURES = ('identity','apple','scep','windows','agent_pki')
+AGENT_FIXTURE_INPUTS = ('crates/app/tests/support/agent.rs','crates/app/tests/support/agent_tls.rs','hack/agent_pki_fixtures.py')
 for name in AGENT_FIXTURE_CONSUMERS:
     module=MODULES[name]
     policies=tuple(replace(policy, fixtures=tuple(dict.fromkeys((*policy.fixtures,*AGENT_FIXTURES)))) if policy.fixtures is not None else policy for policy in module.policies)
-    inputs=('crates/app/tests/support/agent.rs','crates/app/tests/support/agent_tls.rs','hack/agent_pki_fixtures.py')
-    MODULES[name]=replace(module,fixtures=tuple(dict.fromkeys((*module.fixtures,*AGENT_FIXTURES))),policies=policies,support_inputs=tuple(dict.fromkeys((*module.support_inputs,*inputs))))
+    MODULES[name]=replace(module,fixtures=tuple(dict.fromkeys((*module.fixtures,*AGENT_FIXTURES))),policies=policies,support_inputs=tuple(dict.fromkeys((*module.support_inputs,*AGENT_FIXTURE_INPUTS))))
+
+# Only these mixed cases consume Agent enrollment; other native cases keep their fixtures.
+AGENT_FIXTURE_CASES = {
+    'execution.commands.windows': 'execution::t2::commands::windows::console_mixed_kind_cursor_and_device_visibility',
+    'software.http': 'software_catalog::t2::http::publication::publication_http_authority_receipts_and_public_native_binding',
+}
+for name, selector in AGENT_FIXTURE_CASES.items():
+    module = MODULES[name]
+    policies = list(module.policies)
+    existing = next((i for i, policy in enumerate(policies) if policy.selector == selector), None)
+    policy = policies[existing] if existing is not None else CasePolicy(selector, module.db_mode, module.scope)
+    policy = replace(policy, fixtures=tuple(dict.fromkeys((*(policy.fixtures or module.fixtures), *AGENT_FIXTURES))))
+    if existing is None:
+        policies.append(policy)
+    else:
+        policies[existing] = policy
+    MODULES[name] = replace(module, policies=tuple(policies), support_inputs=tuple(dict.fromkeys((*module.support_inputs, *AGENT_FIXTURE_INPUTS))))
 
 for name, module in tuple(MODULES.items()):
+    fixtures = set(module.fixtures).union(*(policy.fixtures or () for policy in module.policies))
     support = tuple(path for path in module.support_inputs if path != 'tests/support/software/*')
     if name in ('software.catalog','software.http','authorization.rules','content.http','content.mirror','content.gc','planning.resource_archive') or name.startswith('publication.'):
         support += ('tests/support/software/mod.rs',)
@@ -807,15 +825,15 @@ for name, module in tuple(MODULES.items()):
         support += ('tests/support/software/pg.rs',)
     if name == 'publication.recovery':
         support += ('tests/support/software/ack.rs',)
-    if 'windows' in module.fixtures:
+    if 'windows' in fixtures:
         support += ('hack/windows_fixtures.py',)
-    if 'apple' in module.fixtures:
+    if 'apple' in fixtures:
         support += ('hack/apple_fixtures.py',)
-    if set(module.fixtures) & {'scep','oracle'}:
+    if fixtures & {'scep','oracle'}:
         support += ('hack/apple_tools.py','fixtures/apple-tools.lock.json')
-    if 'scep' in module.fixtures:
+    if 'scep' in fixtures:
         support += ('hack/apple_ca.py',)
-    if 'idp' in module.fixtures:
+    if 'idp' in fixtures:
         support += ('hack/enterprise_idp.py',)
     if name in ('apple.cms','apple.apns','native.tls'):
         support = tuple(path for path in support if not path.startswith('crates/app/tests/support/'))
@@ -1421,7 +1439,7 @@ consume(('crates/inventory-service/src/error.rs',), 'agent.reports planning.onbo
 consume_dependencies('api.diagnostics apple.onboarding apple.push apple.users', dev='rss-mdm-apple-channel')
 consume_dependencies('api.diagnostics windows.declared execution.commands.onboarding', dev='rss-mdm-windows-channel')
 consume_dependencies('agent.registration agent.reports agent.pki device.binding device.revocation device.recovery', dev='rss-mdm-registration-service')
-consume_dependencies(AGENT_FIXTURE_CONSUMERS, normal='x509-cert tokio-rustls')
+consume_dependencies((*AGENT_FIXTURE_CONSUMERS, *AGENT_FIXTURE_CASES), normal='x509-cert tokio-rustls')
 
 consume_dependencies(TASK_CONSUMERS + ' execution.commands.admission execution.commands.configuration execution.commands.dispatch execution.commands.onboarding execution.commands.recovery execution.commands.windows', dev='rss-mdm-execution-service')
 

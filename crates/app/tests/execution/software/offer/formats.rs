@@ -270,8 +270,10 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
             task["payload"]["attemptId"].as_str().unwrap(),
             spec.steps.len() - 1
         ))
-        .header("host", "mdm.example.test")
-        .header("authorization", format!("Bearer {}", f.credential))
+        .header("host", "mdm.example.test:9445")
+        .extension(
+            crate::test_support::agent::evidence(&f.credential).expect("registered TLS peer"),
+        )
         .body(Body::empty())?;
     let content = f.router.clone().oneshot(content).await?;
     ensure!(content.status() == StatusCode::OK);

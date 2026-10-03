@@ -1541,6 +1541,9 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
         70,
     )?;
     let wire = syncml::encode(&packet, &CodecLimits::default())?;
+    // Isolate the request fault from periodic background recovery on the same store.
+    ensure!(commands.shutdown().join().await?.is_clean());
+    ensure!(worker.shutdown().join().await?.is_clean());
     host.app.execution.inject_fault(
         rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
     );
@@ -1550,8 +1553,6 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
         "commit unknown: {}",
         response.status()
     );
-    ensure!(commands.shutdown().join().await?.is_clean());
-    ensure!(worker.shutdown().join().await?.is_clean());
     drop(client);
     host = host.restart().await?;
     let response = child
