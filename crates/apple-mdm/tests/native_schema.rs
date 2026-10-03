@@ -1135,11 +1135,21 @@ fn mixed_native_results_do_not_hide_failures_when_reordered() {
                 Value::Dictionary(dictionary([
                     (
                         "org.example.first",
-                        Value::Dictionary(dictionary([("Status", statuses[0].into())])),
+                        Value::Dictionary(dictionary([
+                            ("Status", statuses[0].into()),
+                            ("ExternalVersionIdentifier", 1.into()),
+                            ("HasConfiguration", false.into()),
+                            ("ManagementFlags", 0.into()),
+                        ])),
                     ),
                     (
                         "org.example.second",
-                        Value::Dictionary(dictionary([("Status", statuses[1].into())])),
+                        Value::Dictionary(dictionary([
+                            ("Status", statuses[1].into()),
+                            ("ExternalVersionIdentifier", 1.into()),
+                            ("HasConfiguration", false.into()),
+                            ("ManagementFlags", 0.into()),
+                        ])),
                     ),
                 ])),
             )]);
