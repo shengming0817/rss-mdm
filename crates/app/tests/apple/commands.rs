@@ -54,6 +54,45 @@ async fn native_families_keep_results_separate_from_effects() -> Result<()> {
             .iter()
             .any(|r| r["phase"] == "execute" && r["fields"]["PasswordVerified"]["value"] == false)
     );
+    let lom_request = Uuid::new_v4().to_string();
+    let fields = rss_mdm_apple_mdm::native::input::Fields::from_plist(&protocol::dictionary([(
+        "RequestList",
+        plist::Value::Array(vec![plist::Value::Dictionary(protocol::dictionary([
+            ("DeviceRequestUUID", lom_request.clone().into()),
+            ("DeviceRequestType", "PowerON".into()),
+            ("DeviceDNSName", "device.example.test".into()),
+            ("LOMProtocolVersion", 1.into()),
+            (
+                "PrimaryIPv6AddressList",
+                plist::Value::Array(vec!["::1".into()]),
+            ),
+            ("SecondaryIPv6AddressList", plist::Value::Array(vec![])),
+        ]))]),
+    )]))?;
+    let lom = f
+        .create_operation(|_| task("LOMDeviceRequest", serde_json::to_value(fields).unwrap()))
+        .await?;
+    let (id, _) = peer.next("LOMDeviceRequest").await?;
+    peer.manage(
+        "Acknowledged",
+        Some(id),
+        Some((
+            "ResponseList",
+            plist::Value::Array(vec![plist::Value::Dictionary(protocol::dictionary([
+                ("DeviceRequestUUID", lom_request.into()),
+                ("DeviceRequestSuccess", false.into()),
+                ("DeviceRequestReturnError", "fixture-denied".into()),
+            ]))]),
+        )),
+    )
+    .await?;
+    let result = f.operation(lom).await?;
+    ensure!(result["observation"]["result"] == "rejected");
+    ensure!(
+        result["observation"]["fields"]["ResponseList"]["value"][0]["value"]["DeviceRequestReturnError"]
+            ["value"]
+            == "fixture-denied"
+    );
     let account = f
         .create_operation(|_| {
             task(

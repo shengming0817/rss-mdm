@@ -1165,4 +1165,9 @@ consume(('crates/windows-channel/src/renewal.rs', 'crates/certificate/src/window
 consume(('crates/execution-service/src/retirement*',), 'device.revocation windows.management apple.identity')
 consume(('crates/windows-mdm/src/provisioning/*',), 'windows.issuance windows.enrollment execution.commands.windows')
 
-consume(('crates/apple-mdm/src/*','crates/apple-mdm/src/native/*','crates/apple-channel/src/*','crates/execution-service/src/apple*','crates/execution-service/src/channels.rs'), 'apple.commands apple.users')
+consume(('crates/apple-mdm/src/*', 'crates/apple-mdm/src/native/*',
+         'crates/apple-channel/src/checkin.rs', 'crates/apple-channel/src/material.rs',
+         'crates/apple-channel/src/attempt.rs', 'crates/apple-channel/src/native.rs',
+         'crates/apple-channel/src/profiles.rs', 'crates/apple-channel/src/flow_store.rs',
+         'crates/apple-channel/src/lib.rs', 'crates/execution-service/src/apple*',
+         'crates/execution-service/src/channels.rs'), 'apple.commands apple.users')

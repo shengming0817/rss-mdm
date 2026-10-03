@@ -139,10 +139,10 @@ pub(crate) async fn dispatch(
     };
     let user: String = row.try_get("user_key").map_err(db)?;
     let root: String = row.try_get("identifier").map_err(db)?;
-    if let Some(objects) = objects {
-        if collides(c, key, &target, &user, &root, objects, true).await? {
-            return Ok(false);
-        }
+    if let Some(objects) = objects
+        && collides(c, key, &target, &user, &root, objects, true).await?
+    {
+        return Ok(false);
     }
     if row
         .try_get::<Option<i64>, _>("dispatched_at")

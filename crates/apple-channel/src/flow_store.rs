@@ -443,7 +443,6 @@ impl channels::Apple for super::Apple {
             }
             crate::native::resolve(c, &self.protection, p, command)
                 .await
-                .map(Into::into)
                 .map_err(Into::into)
         })
     }
@@ -493,9 +492,7 @@ async fn send_command(
             crate::notify(c, "apple").await.map_err(db)?;
             return Ok(AppleDispatch::Waiting);
         }
-        return super::native::resolve(c, &apple.protection, p, command)
-            .await
-            .map(Into::into);
+        return super::native::resolve(c, &apple.protection, p, command).await;
     };
     let rights:i32=sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'").bind(p.tenant().to_string()).bind(p.registration()).fetch_one(&mut *c).await.map_err(db)?;
     let rights = super::native::rights(rights);
