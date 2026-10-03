@@ -410,14 +410,10 @@ impl Drop for FaultProxy {
 }
 impl FaultProxy {
     async fn start(f: &Fixture) -> TestResult<Self> {
-        let certs = rustls_pemfile::certs(&mut std::io::Cursor::new(std::fs::read(
-            f.string("certificate")?,
-        )?))
-        .collect::<std::io::Result<Vec<_>>>()?;
-        let key = rustls_pemfile::private_key(&mut std::io::Cursor::new(std::fs::read(
-            f.string("key")?,
-        )?))?
-        .ok_or(Error::Configuration)?;
+        use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
+        let certs = CertificateDer::pem_file_iter(f.string("certificate")?)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let key = PrivateKeyDer::from_pem_file(f.string("key")?)?;
         let config = rustls::ServerConfig::builder_with_provider(Arc::new(
             rustls::crypto::ring::default_provider(),
         ))

@@ -28,7 +28,6 @@ reqwest = { workspace = true, features = ["stream"] }
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 tokio-rustls.workspace = true
-rustls-pemfile = "2"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 serde_json.workspace = true
 
