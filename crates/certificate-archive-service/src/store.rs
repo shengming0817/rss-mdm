@@ -173,6 +173,10 @@ pub(crate) async fn write(
             let snapshot=rss_mdm_authorization_service::snapshot_on(c,p.tenant_id(),p.instance_id()).await?;
             for permission in mutation.permissions(){snapshot.require(p,*permission,None).map_err(|_|Error::Forbidden)?;}
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2641))").bind(p.tenant_id()).execute(&mut *c).await?;
+            // Export returns plaintext even on replay; a retired unlock cannot be reused.
+            if let Mutation::Export { generation: expected, .. } = mutation {
+                generation(c, p.tenant_id(), *expected).await?;
+            }
             if let Some((old,result))=operation(c,p,*id).await?{if old.as_slice()!=digest||result.action!=*action{return Err(Error::Conflict)}return Ok((result,true))}
             let receipt=apply(c,p,*id,action,mutation).await?;
             sqlx::query("INSERT INTO mdm_certificate_archive.operations(tenant_id,actor,instance,id,action,digest,result,created_at) VALUES($1::uuid,$2::uuid,$3::uuid,$4::uuid,$5,$6,$7::jsonb,floor(extract(epoch FROM clock_timestamp()))::bigint)").bind(p.tenant_id()).bind(p.principal_id()).bind(p.instance_id()).bind(id.to_string()).bind(*action).bind(digest.as_slice()).bind(serde_json::to_string(&receipt).map_err(|_|Error::Integrity)?).execute(c).await?;

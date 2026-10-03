@@ -423,3 +423,73 @@ async fn generation_alerts_and_two_sessions_use_one_tenant_identity() -> Result<
     );
     Ok(())
 }
+
+async fn wait_for_archive_locks(count: usize) -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let n = pg("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event='advisory' AND query LIKE 'SELECT pg_advisory_xact_lock%'")?;
+            if n.trim().parse::<usize>()? >= count {
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await??;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=certificate-archive.http"]
+async fn replayed_export_rechecks_generation_after_peer_password_change() -> Result<()> {
+    let mut f = Fixture::open().await?;
+    f.initialize().await?;
+    let entry = Uuid::new_v4();
+    f.write("/import", import(entry, 0, "private historic material"))
+        .await?;
+    let operation = Uuid::new_v4();
+    f.admin.operation = Some(operation);
+    f.ok(
+        Method::POST,
+        "/export",
+        Some(json!({"entryId":entry,"version":1})),
+    )
+    .await?;
+    let peer = Arc::new(Archive::new(
+        f.authority.access.archive_pool(),
+        f.authority.audit.clone(),
+        f.clock.clone(),
+    ));
+    let peer_router = Fixture::routes(&f.authority, peer)?;
+    let mut peer_browser = f.authority.browser("admin")?;
+    ensure!(browser_subject(&peer_browser, &peer_router).await? == f.subject);
+    peer_browser.operation = Some(Uuid::new_v4());
+    // Queue the password writer first at the tenant lock. It holds the authorization
+    // lock, so the old-instance export prepares plaintext then waits behind it.
+    let mut blocker = f.authority.access.archive_pool().begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2641))")
+        .bind(case_tenant())
+        .execute(&mut *blocker)
+        .await?;
+    let change = tokio::spawn(async move {
+        peer_browser.call(&peer_router, Method::POST, "/api/v1/certificate-archive/vault/password", Some(json!({"oldPassword":"first archive password","newPassword":"second archive password"}))).await
+    });
+    wait_for_archive_locks(1).await?;
+    let router = f.router.clone();
+    let mut browser = f.admin;
+    let replay = tokio::spawn(async move {
+        browser
+            .call(
+                &router,
+                Method::POST,
+                "/api/v1/certificate-archive/export",
+                Some(json!({"entryId":entry,"version":1})),
+            )
+            .await
+    });
+    wait_for_archive_locks(2).await?;
+    blocker.rollback().await?;
+    ensure!(change.await??.0 == StatusCode::OK);
+    let (status, body) = replay.await??;
+    ensure!(status == StatusCode::LOCKED);
+    ensure!(body.get("files").is_none());
+    Ok(())
+}
