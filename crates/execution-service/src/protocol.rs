@@ -321,7 +321,10 @@ async fn settle_one(
         .map(|row| {
             Ok(rss_mdm_windows_mdm::native::receipt::ItemEvidence {
                 phase: AttemptPhase::parse(&row.try_get::<String, _>("phase")?)?.receipt_role(),
-                kind: rss_mdm_windows_mdm::native::receipt::CommandKind::parse(&row.try_get::<String,_>("kind")?).map_err(|_|Error::Malformed)?,
+                kind: rss_mdm_windows_mdm::native::receipt::CommandKind::parse(
+                    &row.try_get::<String, _>("kind")?,
+                )
+                .map_err(|_| Error::Malformed)?,
                 status: row.try_get("status")?,
                 receipt_accepted: row.try_get::<Option<bool>, _>("receipt_accepted")? == Some(true),
                 has_value: row.try_get::<Option<Vec<u8>>, _>("value")?.is_some(),
@@ -329,11 +332,15 @@ async fn settle_one(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    let decision =
-        rss_mdm_windows_mdm::native::receipt::settle(&evidence, package == channels::PackageState::Complete);
+    let decision = rss_mdm_windows_mdm::native::receipt::settle(
+        &evidence,
+        package == channels::PackageState::Complete,
+    );
     let (event, query_complete, values_complete) = match decision {
         rss_mdm_windows_mdm::native::receipt::Settlement::Wait => return Ok(()),
-        rss_mdm_windows_mdm::native::receipt::Settlement::Reject => (dc::DeviceEvent::Rejected, false, false),
+        rss_mdm_windows_mdm::native::receipt::Settlement::Reject => {
+            (dc::DeviceEvent::Rejected, false, false)
+        }
         rss_mdm_windows_mdm::native::receipt::Settlement::Receive {
             query_complete,
             values_complete,
@@ -396,20 +403,32 @@ pub async fn observation(
         };
         use crate::queries::records::WindowsReceipt;
         let receipt = WindowsReceipt {
-            phase: crate::AttemptPhase::parse(&row.try_get::<String,_>("phase")?)?,
-            ordinal: row.try_get("ordinal")?, session: row.try_get("session")?, message: row.try_get("message")?,
-            command: row.try_get("command")?, parent_command: row.try_get("parent_command")?,
-            item: row.try_get("item_ordinal")?, kind: row.try_get("kind")?, uri: row.try_get("uri")?,
-            status: row.try_get("status")?, value, accepted: row.try_get("receipt_accepted")?,
-            received_at: row.try_get("received_at")?, result_accepted: row.try_get("result_accepted")?,
+            phase: crate::AttemptPhase::parse(&row.try_get::<String, _>("phase")?)?,
+            ordinal: row.try_get("ordinal")?,
+            session: row.try_get("session")?,
+            message: row.try_get("message")?,
+            command: row.try_get("command")?,
+            parent_command: row.try_get("parent_command")?,
+            item: row.try_get("item_ordinal")?,
+            kind: row.try_get("kind")?,
+            uri: row.try_get("uri")?,
+            status: row.try_get("status")?,
+            value,
+            accepted: row.try_get("receipt_accepted")?,
+            received_at: row.try_get("received_at")?,
+            result_accepted: row.try_get("result_accepted")?,
             result_received_at: row.try_get("result_received_at")?,
-            frames: stored(serde_json::from_value(row.try_get::<Value,_>("frames")?))?, redacted: sensitive,
+            frames: stored(serde_json::from_value(row.try_get::<Value, _>("frames")?))?,
+            redacted: sensitive,
         };
         receipts.push(receipt);
     }
     let assessment = effect_assessment(protection, tx, op).await?;
     Ok(crate::queries::records::NativeObservation::Windows {
-        receipts, progress: super::service::status(command_status).into(), effect: assessment.state, reason: assessment.reason,
+        receipts,
+        progress: super::service::status(command_status).into(),
+        effect: assessment.state,
+        reason: assessment.reason,
     })
 }
 fn result_value(
@@ -563,8 +582,11 @@ pub(super) async fn settle_dispatch_failures(
 }
 
 /// Storage selects identity/order; the Windows owner decides native completeness.
-async fn completed_observation(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Vec<sqlx::postgres::PgRow>> {
-    use rss_mdm_windows_mdm::native::receipt::{ReceiptRole, ItemEvidence};
+async fn completed_observation(
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+) -> Result<Vec<sqlx::postgres::PgRow>> {
+    use rss_mdm_windows_mdm::native::receipt::{ItemEvidence, ReceiptRole};
     let mut before = i64::MAX;
     loop {
         let tenant = tx.tenant_id().to_string();
@@ -572,18 +594,24 @@ async fn completed_observation(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<V
             sqlx::query("SELECT id,ordinal FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='observe' AND ordinal<$3 ORDER BY ordinal DESC LIMIT 64")
                 .bind(tenant).bind(id).bind(before).fetch_all(c).await
         })).await?;
-        if candidates.is_empty() { return Ok(Vec::new()); }
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
         for candidate in candidates {
             before = candidate.try_get("ordinal")?;
-            let attempt:Uuid = candidate.try_get("id")?;
+            let attempt: Uuid = candidate.try_get("id")?;
             let tenant = tx.tenant_id().to_string();
             let rows = tx.with_connection(move |c|Box::pin(async move {
                 sqlx::query("SELECT a.id AS attempt,i.command,i.item_ordinal,i.kind,i.uri,i.status,i.value,i.receipt_accepted,i.result_accepted FROM mdm_commands.attempt_items i JOIN mdm_commands.attempts a ON(a.tenant_id,a.id)=(i.tenant_id,i.attempt) WHERE a.tenant_id=$1::uuid AND a.id=$2 ORDER BY i.command,i.item_ordinal")
                     .bind(tenant).bind(attempt).fetch_all(c).await
             })).await?;
-            let evidence = rows.iter().map(|r|native::item_evidence(r,ReceiptRole::Observe))
-                .collect::<std::result::Result<Vec<_>,_>>()?;
-            if !evidence.is_empty() && evidence.iter().all(ItemEvidence::complete) { return Ok(rows); }
+            let evidence = rows
+                .iter()
+                .map(|r| native::item_evidence(r, ReceiptRole::Observe))
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            if !evidence.is_empty() && evidence.iter().all(ItemEvidence::complete) {
+                return Ok(rows);
+            }
         }
     }
 }

@@ -3,21 +3,60 @@
 use super::Error;
 use crate::syncml::{rejected_status, successful_status, terminal_status};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ReceiptRole { Prepare, Execute, Observe }
+/// Purpose of one native attempt; independent of the common command state.
+pub enum ReceiptRole {
+    /// Prerequisite evidence before native execution.
+    Prepare,
+    /// Receipt of the requested native operation.
+    Execute,
+    /// Independent readback of the requested native effect.
+    Observe,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CommandKind { Add, Replace, Delete, Get, Exec, Atomic, Sequence }
+/// Closed set of supported native attempt item commands.
+pub enum CommandKind {
+    /// Create a native object.
+    Add,
+    /// Replace a native value.
+    Replace,
+    /// Delete a native object.
+    Delete,
+    /// Read a native value.
+    Get,
+    /// Execute a native operation.
+    Exec,
+    /// Native atomic group receipt.
+    Atomic,
+    /// Native ordered group receipt.
+    Sequence,
+}
 impl CommandKind {
+    /// Restore a stored native kind, rejecting unknown identities.
     pub fn parse(value: &str) -> Result<Self, Error> {
         Ok(match value {
-            "add"=>Self::Add,"replace"=>Self::Replace,"delete"=>Self::Delete,"get"=>Self::Get,
-            "exec"=>Self::Exec,"atomic"=>Self::Atomic,"sequence"=>Self::Sequence,
-            _=>return Err(Error::Value),
+            "add" => Self::Add,
+            "replace" => Self::Replace,
+            "delete" => Self::Delete,
+            "get" => Self::Get,
+            "exec" => Self::Exec,
+            "atomic" => Self::Atomic,
+            "sequence" => Self::Sequence,
+            _ => return Err(Error::Value),
         })
     }
     fn as_str(self) -> &'static str {
-        match self { Self::Add=>"add",Self::Replace=>"replace",Self::Delete=>"delete",Self::Get=>"get",Self::Exec=>"exec",Self::Atomic=>"atomic",Self::Sequence=>"sequence" }
+        match self {
+            Self::Add => "add",
+            Self::Replace => "replace",
+            Self::Delete => "delete",
+            Self::Get => "get",
+            Self::Exec => "exec",
+            Self::Atomic => "atomic",
+            Self::Sequence => "sequence",
+        }
     }
 }
+/// Allow provisional completion and atomic rollback while preserving terminal facts and values.
 pub fn compatible_receipt(
     kind: CommandKind,
     atomic: bool,
@@ -29,50 +68,77 @@ pub fn compatible_receipt(
     !old.is_some_and(|old| {
         terminal_status(old)
             && new.is_some_and(|new| {
-                old != new && !(atomic && matches!(new, 216 | 516) && successful_status(kind.as_str(), old))
+                old != new
+                    && !(atomic
+                        && matches!(new, 216 | 516)
+                        && successful_status(kind.as_str(), old))
             })
     }) && old_value.is_none_or(|old| new_value.is_none_or(|new| old == new))
 }
 
+/// A native error can terminate a fragment; success requires the full object.
 pub fn accepts_frame(code: i32, accepted: bool, end: i32, total: i32) -> bool {
     accepted && terminal_status(code) && (rejected_status(code) || end == total)
 }
 
+/// Native item evidence after caller-owned current eligibility checks.
 pub struct ItemEvidence {
+    /// Attempt purpose.
     pub phase: ReceiptRole,
+    /// Native operation kind.
     pub kind: CommandKind,
+    /// Native receipt code, absent before receipt.
     pub status: Option<i32>,
+    /// Whether the caller admitted this receipt.
     pub receipt_accepted: bool,
+    /// Whether an independently returned value is retained.
     pub has_value: bool,
+    /// Whether the caller admitted the returned value.
     pub result_accepted: bool,
 }
 impl ItemEvidence {
     /// A completed observation may report failure; it cannot substitute a missing Get value.
     pub fn complete(&self) -> bool {
-        self.receipt_accepted && self.status.is_some_and(terminal_status)
-            && (self.kind != CommandKind::Get || !matches!(self.status, Some(200 | 214))
+        self.receipt_accepted
+            && self.status.is_some_and(terminal_status)
+            && (self.kind != CommandKind::Get
+                || !matches!(self.status, Some(200 | 214))
                 || (self.has_value && self.result_accepted))
     }
     /// An accepted success must include any expected query value.
     pub fn successful(&self) -> bool {
-        self.receipt_accepted && self.status.is_some_and(|code| successful_status(self.kind.as_str(),code))
-            && (self.kind != CommandKind::Get || self.status == Some(204) || (self.has_value && self.result_accepted))
+        self.receipt_accepted
+            && self
+                .status
+                .is_some_and(|code| successful_status(self.kind.as_str(), code))
+            && (self.kind != CommandKind::Get
+                || self.status == Some(204)
+                || (self.has_value && self.result_accepted))
     }
     /// Outstanding transport work is independent of whether its evidence was authorized.
     pub fn pending(&self) -> bool {
         !self.status.is_some_and(terminal_status)
-            || (self.kind == CommandKind::Get && matches!(self.status,Some(200 | 214)) && !self.has_value)
+            || (self.kind == CommandKind::Get
+                && matches!(self.status, Some(200 | 214))
+                && !self.has_value)
     }
 }
 #[derive(Debug, PartialEq, Eq)]
+/// Native receipt assessment; the caller maps this to its common reducer.
 pub enum Settlement {
+    /// Native receipt or package evidence remains incomplete.
     Wait,
+    /// An accepted native execution or prerequisite receipt explicitly rejected the operation.
     Reject,
+    /// The requested native execution has been received.
     Receive {
+        /// Whether an entirely read-only execution has complete values.
         query_complete: bool,
+        /// Whether every execution Get has its required returned value.
         values_complete: bool,
     },
 }
+/// Assess native receipts without advancing common execution state.
 pub fn settle(items: &[ItemEvidence], package_complete: bool) -> Settlement {
     if items.iter().any(|i| {
         i.phase != ReceiptRole::Observe
@@ -101,9 +167,12 @@ pub fn settle(items: &[ItemEvidence], package_complete: bool) -> Settlement {
         .all(|i| i.status == Some(204) || (i.has_value && i.result_accepted));
     let query_complete = values_complete
         && execution.iter().any(|i| i.kind == CommandKind::Get)
-        && execution
-            .iter()
-            .all(|i| matches!(i.kind, CommandKind::Get | CommandKind::Atomic | CommandKind::Sequence));
+        && execution.iter().all(|i| {
+            matches!(
+                i.kind,
+                CommandKind::Get | CommandKind::Atomic | CommandKind::Sequence
+            )
+        });
     Settlement::Receive {
         query_complete,
         values_complete,
@@ -186,17 +255,26 @@ mod tests {
     #[test]
     fn query_receipts_keep_completeness_separate_from_success_and_authority() {
         let mut item = get();
-        for code in [200,214] {
-            item.status = Some(code); item.has_value = false;
-            assert!(!item.complete()); assert!(item.pending()); assert!(!item.successful());
+        for code in [200, 214] {
+            item.status = Some(code);
+            item.has_value = false;
+            assert!(!item.complete());
+            assert!(item.pending());
+            assert!(!item.successful());
         }
         item.status = Some(204);
-        assert!(item.complete()); assert!(!item.pending()); assert!(item.successful());
+        assert!(item.complete());
+        assert!(!item.pending());
+        assert!(item.successful());
         item.status = Some(500);
-        assert!(item.complete()); assert!(!item.successful());
+        assert!(item.complete());
+        assert!(!item.successful());
         item.receipt_accepted = false;
         assert!(!item.complete());
-        for code in [101,202,206,213] { item.status = Some(code); assert!(item.pending()); }
+        for code in [101, 202, 206, 213] {
+            item.status = Some(code);
+            assert!(item.pending());
+        }
     }
     #[test]
     fn rollback_is_allowed_only_with_atomic_ancestry_and_values_are_immutable() {

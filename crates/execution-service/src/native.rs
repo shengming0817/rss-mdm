@@ -10,8 +10,8 @@ use sqlx::{PgConnection, Row};
 mod outbound;
 use crate::native_rules;
 pub use outbound::{Continuation, continue_on, outgoing_on};
-use s::terminal_status;
 use rss_mdm_windows_mdm::native::receipt::{self, CommandKind, ItemEvidence, ReceiptRole};
+use s::terminal_status;
 const VERSION: &str = "./DevDetail/SwV";
 const EDITION: &str = "./Vendor/MSFT/DeviceStatus/OS/Edition";
 fn protocol() -> Error {
@@ -221,7 +221,7 @@ pub async fn receive_on(
             let atomic = atomic_ancestor(i64::from(id), &parents);
             let kind: String = item.try_get("kind").map_err(db)?;
             if !receipt::compatible_receipt(
-                CommandKind::parse(&kind).map_err(|_|protocol())?,
+                CommandKind::parse(&kind).map_err(|_| protocol())?,
                 atomic,
                 old_status,
                 status,
@@ -577,8 +577,13 @@ pub(crate) async fn send_on(
         } else {
             Vec::new()
         };
-        let accepted = !items.is_empty() && items.iter().map(|item| item_evidence(item,ReceiptRole::Execute))
-            .collect::<std::result::Result<Vec<_>,_>>()?.iter().all(ItemEvidence::successful);
+        let accepted = !items.is_empty()
+            && items
+                .iter()
+                .map(|item| item_evidence(item, ReceiptRole::Execute))
+                .collect::<std::result::Result<Vec<_>, _>>()?
+                .iter()
+                .all(ItemEvidence::successful);
         let fresh = cap
             .as_ref()
             .map(|(v, e)| {
@@ -666,10 +671,15 @@ pub(crate) async fn send_on(
                 continue;
             }
         }
-        let declared = prepared.as_ref().and_then(|p| p.effect.readback())
-            .and_then(|plan| plan.declared_versions(declared_summaries).map(|versions|(plan,versions)));
-        let versions = declared.as_ref().map(|(_,versions)| versions);
-        let summary_changed = if let (Some(old), Some((plan,_))) = (&old, &declared) {
+        let declared = prepared
+            .as_ref()
+            .and_then(|p| p.effect.readback())
+            .and_then(|plan| {
+                plan.declared_versions(declared_summaries)
+                    .map(|versions| (plan, versions))
+            });
+        let versions = declared.as_ref().map(|(_, versions)| versions);
+        let summary_changed = if let (Some(old), Some((plan, _))) = (&old, &declared) {
             if old.try_get::<String, _>("phase").map_err(db)? == "observe" {
                 if !declared_query_needed(
                     old,
@@ -884,8 +894,12 @@ pub(crate) async fn send_on(
     }
     let rows = sqlx::query("SELECT i.kind,i.status,i.value,i.receipt_accepted,i.result_accepted FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) WHERE a.tenant_id=$1::uuid AND o.registration=$2 AND a.session=$3 AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp())")
         .bind(&tenant).bind(p.registration()).bind(session).fetch_all(c).await.map_err(db)?;
-    let outstanding = rows.iter().map(|r|item_evidence(r,ReceiptRole::Execute))
-        .collect::<std::result::Result<Vec<_>,_>>()?.iter().any(ItemEvidence::pending);
+    let outstanding = rows
+        .iter()
+        .map(|r| item_evidence(r, ReceiptRole::Execute))
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .iter()
+        .any(ItemEvidence::pending);
     Ok(pending || outstanding)
 }
 // Versions are stored with the original attempt under the same tenant transaction.
@@ -896,9 +910,12 @@ fn declared_query_needed(
     p: &DevicePrincipal,
     protection: &rss_mdm_native_protection::Protector,
     plan: &rss_mdm_windows_mdm::native::verification::Verification,
-    current: (i64, &rss_mdm_windows_mdm::native::verification::DeclaredVersions),
+    current: (
+        i64,
+        &rss_mdm_windows_mdm::native::verification::DeclaredVersions,
+    ),
 ) -> std::result::Result<bool, Error> {
-    use rss_mdm_windows_mdm::native::verification::{EffectFact, DeclaredVersions};
+    use rss_mdm_windows_mdm::native::verification::{DeclaredVersions, EffectFact};
     let (session, versions) = current;
     let attempt = old.try_get::<Uuid, _>("id").map_err(db)?;
     let mut facts = Vec::new();
@@ -937,15 +954,38 @@ fn declared_query_needed(
         facts.push(fact);
     }
     let queried: Option<serde_json::Value> = old.try_get("declared_versions").map_err(db)?;
-    let queried: Option<DeclaredVersions> = queried.map(serde_json::from_value).transpose().map_err(|_|protocol())?;
-    Ok(plan.declared_query_needed(&facts, queried.as_ref(), versions,
-        old.try_get::<i64,_>("session").map_err(db)? == session))
+    let queried: Option<DeclaredVersions> = queried
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|_| protocol())?;
+    Ok(plan.declared_query_needed(
+        &facts,
+        queried.as_ref(),
+        versions,
+        old.try_get::<i64, _>("session").map_err(db)? == session,
+    ))
 }
-pub(super) fn item_evidence(row: &sqlx::postgres::PgRow, phase: ReceiptRole) -> std::result::Result<ItemEvidence, Error> {
-    Ok(ItemEvidence { phase, kind:CommandKind::parse(&row.try_get::<String,_>("kind").map_err(db)?).map_err(|_|protocol())?,
-        status:row.try_get("status").map_err(db)?, receipt_accepted:row.try_get::<Option<bool>,_>("receipt_accepted").map_err(db)? == Some(true),
-        has_value:row.try_get::<Option<Vec<u8>>,_>("value").map_err(db)?.is_some(),
-        result_accepted:row.try_get::<Option<bool>,_>("result_accepted").map_err(db)? == Some(true),
+pub(super) fn item_evidence(
+    row: &sqlx::postgres::PgRow,
+    phase: ReceiptRole,
+) -> std::result::Result<ItemEvidence, Error> {
+    Ok(ItemEvidence {
+        phase,
+        kind: CommandKind::parse(&row.try_get::<String, _>("kind").map_err(db)?)
+            .map_err(|_| protocol())?,
+        status: row.try_get("status").map_err(db)?,
+        receipt_accepted: row
+            .try_get::<Option<bool>, _>("receipt_accepted")
+            .map_err(db)?
+            == Some(true),
+        has_value: row
+            .try_get::<Option<Vec<u8>>, _>("value")
+            .map_err(db)?
+            .is_some(),
+        result_accepted: row
+            .try_get::<Option<bool>, _>("result_accepted")
+            .map_err(db)?
+            == Some(true),
     })
 }
 struct ExpectedItem {

@@ -265,17 +265,24 @@ pub(crate) async fn observation(
         accumulated.map(|s| s.state).unwrap_or_default(),
     )
     .map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
-    let mut status = projection.finish().map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
+    let mut status = projection
+        .finish()
+        .map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
     if !native_values {
         status.items.clear();
         status.errors.clear();
-        for row in &mut status.declarations { row["native"]["reasons"] = serde_json::json!([]); }
+        for row in &mut status.declarations {
+            row["native"]["reasons"] = serde_json::json!([]);
+        }
     }
     Ok(Some(native::evidence::DeclarationEvidence {
         input_version: publication.input_version,
         expected: set.manifest()["Declarations"].clone(),
-        publication: if retired.is_some() { native::evidence::PublicationState::Withdrawn }
-            else { native::evidence::PublicationState::Published },
+        publication: if retired.is_some() {
+            native::evidence::PublicationState::Withdrawn
+        } else {
+            native::evidence::PublicationState::Published
+        },
         received_at,
         status,
     }))

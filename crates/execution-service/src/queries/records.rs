@@ -209,7 +209,10 @@ pub enum NativeObservation {
 impl NativeObservation {
     pub(crate) fn redact_values(&mut self) {
         if let Self::Windows { receipts, .. } = self {
-            for receipt in receipts { receipt.value = None; receipt.redacted = true; }
+            for receipt in receipts {
+                receipt.value = None;
+                receipt.redacted = true;
+            }
         }
     }
 }

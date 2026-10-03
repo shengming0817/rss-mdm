@@ -199,8 +199,15 @@ async fn prepare(
     let mut declared_summaries = Vec::new();
     if authenticated {
         for command in &raw.commands {
-            if let Command::Alert { alert: syncml::Alert::DeclaredConfiguration { summary, .. }, .. } = command {
-                declared_summaries.extend(rss_mdm_windows_mdm::native::declared::summaries(&summary.0).map_err(|_| Error::Malformed)?);
+            if let Command::Alert {
+                alert: syncml::Alert::DeclaredConfiguration { summary, .. },
+                ..
+            } = command
+            {
+                declared_summaries.extend(
+                    rss_mdm_windows_mdm::native::declared::summaries(&summary.0)
+                        .map_err(|_| Error::Malformed)?,
+                );
             }
         }
     }

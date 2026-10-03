@@ -1234,3 +1234,11 @@ consume(('crates/execution-service/src/service.rs', 'crates/execution-service/sr
 
 consume(('crates/authorization-service/src/authority.rs', 'crates/authorization-service/src/model.rs', 'crates/execution-service/src/frozen.rs',
          'crates/execution-service/src/storage.rs'), 'apple.ddm apple.status')
+
+# Native evidence and HTTP projection inputs follow their actual production consumers (#2642).
+consume(('crates/agent-wire/src/tasks/results.rs',),
+        'planning.software execution.software.offer execution.software.content execution.software.recovery')
+consume(('crates/windows-mdm/src/native/receipt.rs',),
+        'windows.declared execution.commands.onboarding')
+consume(('crates/management-http/src/execution/projection.rs',),
+        QUERY_CONSUMERS + ' apple.profile apple.users apple.commands apple.ddm apple.status')

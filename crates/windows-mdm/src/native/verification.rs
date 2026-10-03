@@ -327,42 +327,82 @@ impl Request {
 pub struct DeclaredVersions(BTreeMap<String, (String, u32)>);
 impl Verification {
     /// Matching summaries only request a read; their progress never proves an effect.
-    pub fn declared_versions(&self, summaries: &[super::declared::Summary]) -> Option<DeclaredVersions> {
+    pub fn declared_versions(
+        &self,
+        summaries: &[super::declared::Summary],
+    ) -> Option<DeclaredVersions> {
         let mut declared = false;
         let mut versions = BTreeMap::new();
         for (uri, expected) in &self.expected {
             if let Expected::Declared { document, .. } = expected {
                 declared = true;
-                if let Some(summary) = summaries.iter().find(|s| s.id == document.identity.id
-                    && s.scope == document.identity.scope && s.checksum == document.identity.checksum) {
-                    versions.insert(uri.clone(),(summary.result_checksum.clone(),summary.state));
+                if let Some(summary) = summaries.iter().find(|s| {
+                    s.id == document.identity.id
+                        && s.scope == document.identity.scope
+                        && s.checksum == document.identity.checksum
+                }) {
+                    versions.insert(
+                        uri.clone(),
+                        (summary.result_checksum.clone(), summary.state),
+                    );
                 }
             }
         }
         declared.then_some(DeclaredVersions(versions))
     }
     /// A live query remains correlatable; a new session may retry abandoned work.
-    pub fn declared_query_needed(&self, facts: &[EffectFact], queried: Option<&DeclaredVersions>,
-        current: &DeclaredVersions, same_session: bool) -> bool {
-        if self.assess(facts).state == EffectState::Verified { return false; }
-        if !observation_complete(facts) || current.0.is_empty() { return !same_session; }
+    pub fn declared_query_needed(
+        &self,
+        facts: &[EffectFact],
+        queried: Option<&DeclaredVersions>,
+        current: &DeclaredVersions,
+        same_session: bool,
+    ) -> bool {
+        if self.assess(facts).state == EffectState::Verified {
+            return false;
+        }
+        if !observation_complete(facts) || current.0.is_empty() {
+            return !same_session;
+        }
         current.0.iter().any(|(uri, version)| {
-            if queried.and_then(|q|q.0.get(uri)) == Some(version) { return false; }
+            if queried.and_then(|q| q.0.get(uri)) == Some(version) {
+                return false;
+            }
             let consumed = facts.iter().find(|f| &f.uri == uri).and_then(|fact| {
-                if !fact.receipt_accepted || !fact.result_accepted || fact.status != Some(200) { return None; }
-                let Expected::Declared { document,operation } = self.expected.get(uri)? else { return None; };
+                if !fact.receipt_accepted || !fact.result_accepted || fact.status != Some(200) {
+                    return None;
+                }
+                let Expected::Declared {
+                    document,
+                    operation,
+                } = self.expected.get(uri)?
+                else {
+                    return None;
+                };
                 let result = super::declared::ResultDocument::parse(fact.value.as_deref()?).ok()?;
                 (result.identity == document.identity && &result.operation == operation)
-                    .then_some((result.result_checksum,result.state))
+                    .then_some((result.result_checksum, result.state))
             });
             consumed.as_ref() != Some(version)
         })
     }
 }
 fn observation_complete(facts: &[EffectFact]) -> bool {
-    use super::receipt::{ItemEvidence,CommandKind,ReceiptRole};
-    !facts.is_empty() && facts.iter().all(|f| ItemEvidence {
-        phase:ReceiptRole::Observe, kind:if f.uri.is_empty(){CommandKind::Atomic}else{CommandKind::Get},
-        status:f.status, receipt_accepted:f.receipt_accepted, has_value:f.value.is_some(), result_accepted:f.result_accepted,
-    }.complete())
+    use super::receipt::{CommandKind, ItemEvidence, ReceiptRole};
+    !facts.is_empty()
+        && facts.iter().all(|f| {
+            ItemEvidence {
+                phase: ReceiptRole::Observe,
+                kind: if f.uri.is_empty() {
+                    CommandKind::Atomic
+                } else {
+                    CommandKind::Get
+                },
+                status: f.status,
+                receipt_accepted: f.receipt_accepted,
+                has_value: f.value.is_some(),
+                result_accepted: f.result_accepted,
+            }
+            .complete()
+        })
 }

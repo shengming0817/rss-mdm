@@ -540,3 +540,74 @@ async fn failed_install_partial_manifest_keeps_ownership_until_proven_absent() -
     drop(device);
     f.close().await
 }
+
+#[tokio::test]
+#[ignore = "MODULE=apple.profile: attempt, guards, command and audit share the original transaction"]
+async fn profile_confirmation_rolls_back_with_execution_and_audit() -> Result<()> {
+    let mut f = Fixture::start().await?;
+    let (peer, device) = f.ready_local_peer().await?;
+    let operation = f.create_operation(|id| profile_task(id, true)).await?;
+    let (execute, _) = peer.next("InstallProfile").await?;
+    let next = peer.manage("Acknowledged", Some(execute), None).await?;
+    let (observe, _) = command(&next, "ProfileList")?;
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let operation_key = operation.to_string();
+    let observe_key = observe.to_string();
+    let audit_count = |records: Vec<crate::audit_test_support::Record>| {
+        records
+            .iter()
+            .filter(|r| {
+                r.operation() == Some(operation_key.as_str())
+                    || r.operation() == Some(observe_key.as_str())
+            })
+            .count()
+    };
+    let before = audit_count(crate::audit_test_support::read(&mut pg).await?);
+    let response = protocol::dictionary([
+        ("Status", "Acknowledged".into()),
+        (
+            "UDID",
+            crate::test_support::case::name("rss-t2-apple").into(),
+        ),
+        ("CommandUUID", observe.to_string().into()),
+        (
+            "ProfileList",
+            profile_manifest(operation, "com.apple.security.firewall"),
+        ),
+    ]);
+    // The commit fault is consumed after channel confirmation, reducer and audit SQL have run.
+    f.app
+        .execution
+        .inject_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
+    ensure!(peer.send("/mdm", response.clone()).await?.0 == StatusCode::SERVICE_UNAVAILABLE);
+    let state:(bool,bool)=sqlx::query_as("SELECT a.response IS NULL AND a.state='sent' AND NOT a.accepted,p.observed_at IS NULL AND p.retired_at IS NULL FROM mdm_apple.attempts a JOIN mdm_apple.profiles p ON(p.tenant_id,p.operation)=(a.tenant_id,a.operation) WHERE a.tenant_id=$1::uuid AND a.id=$2")
+        .bind(case_tenant()).bind(observe).fetch_one(&mut pg).await?;
+    ensure!(
+        state == (true, true),
+        "attempt or guards escaped rollback: {state:?}"
+    );
+    ensure!(
+        audit_count(crate::audit_test_support::read(&mut pg).await?) == before,
+        "audit escaped rollback"
+    );
+    ensure!(
+        f.operation(operation).await?["commandStatus"] == "received",
+        "command escaped rollback"
+    );
+    ensure!(peer.send("/mdm", response.clone()).await?.0 == StatusCode::OK);
+    let detail = f.operation(operation).await?;
+    ensure!(
+        detail["commandStatus"] == "applied" && detail["observation"]["result"] == "matched",
+        "recovery: {detail}"
+    );
+    let stable = peer.send("/mdm", response.clone()).await?;
+    ensure!(
+        peer.send("/mdm", response).await? == stable,
+        "replay changed response"
+    );
+    pg.close().await?;
+    drop(device);
+    f.close().await
+}

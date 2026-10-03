@@ -155,16 +155,21 @@ fn assessment_uses_detection_and_keeps_reboot_and_unknown_distinct() {
     let mut task = task();
     let mut evidence = result(&task);
     evidence.steps[0].process = SoftwareProcessObservation::NotRun;
-    assert_eq!(evidence.assess_for(&task).unwrap(),A::Satisfied);
-    evidence.steps[0].after = SoftwareDetectionObservation::Absent { evidence_sha256:[4;32],observed_at:101 };
-    assert_eq!(evidence.assess_for(&task).unwrap(),A::Unsatisfied);
+    assert_eq!(evidence.assess_for(&task).unwrap(), A::Satisfied);
+    evidence.steps[0].after = SoftwareDetectionObservation::Absent {
+        evidence_sha256: [4; 32],
+        observed_at: 101,
+    };
+    assert_eq!(evidence.assess_for(&task).unwrap(), A::Unsatisfied);
     evidence.steps[0].reboot_required = true;
-    assert_eq!(evidence.assess_for(&task).unwrap(),A::RebootPending);
+    assert_eq!(evidence.assess_for(&task).unwrap(), A::RebootPending);
     task.steps[0].action.reboot = SoftwareTaskReboot::Forbid;
     evidence.steps[0].step_digest = task.steps[0].digest().unwrap();
-    assert_eq!(evidence.assess_for(&task).unwrap(),A::Unsatisfied);
-    evidence.steps[0].after = SoftwareDetectionObservation::Unknown { diagnostic:"native detection unavailable".into() };
-    assert_eq!(evidence.assess_for(&task).unwrap(),A::Unknown);
+    assert_eq!(evidence.assess_for(&task).unwrap(), A::Unsatisfied);
+    evidence.steps[0].after = SoftwareDetectionObservation::Unknown {
+        diagnostic: "native detection unavailable".into(),
+    };
+    assert_eq!(evidence.assess_for(&task).unwrap(), A::Unknown);
 }
 #[test]
 fn root_uninstall_requires_absence_while_dependencies_require_exact_installation() {
@@ -173,17 +178,27 @@ fn root_uninstall_requires_absence_while_dependencies_require_exact_installation
     task.intent = SoftwareTaskIntent::Uninstall;
     let mut dependency = task.steps[0].clone();
     dependency.action.package = "Acme.Dependency".into();
-    task.steps.insert(0,dependency);
+    task.steps.insert(0, dependency);
     let mut evidence = result(&task);
     evidence.steps.push(evidence.steps[0].clone());
     let step = &task.steps[1];
     evidence.steps[1].index = 1;
     evidence.steps[1].step_digest = step.digest().unwrap();
     evidence.steps[1].package = step.action.package.clone();
-    evidence.steps[1].after = SoftwareDetectionObservation::Absent { evidence_sha256:[4;32],observed_at:101 };
-    assert_eq!(evidence.assess_for(&task).unwrap(),A::Satisfied);
-    evidence.steps[0].after = SoftwareDetectionObservation::Absent { evidence_sha256:[4;32],observed_at:101 };
-    assert_eq!(evidence.assess_for(&task).unwrap(),A::Unsatisfied);
-    evidence.steps[0].after = SoftwareDetectionObservation::Present { version:"1.0.0.0".into(),evidence_sha256:[4;32],observed_at:101 };
-    assert_eq!(evidence.assess_for(&task).unwrap(),A::Unsatisfied);
+    evidence.steps[1].after = SoftwareDetectionObservation::Absent {
+        evidence_sha256: [4; 32],
+        observed_at: 101,
+    };
+    assert_eq!(evidence.assess_for(&task).unwrap(), A::Satisfied);
+    evidence.steps[0].after = SoftwareDetectionObservation::Absent {
+        evidence_sha256: [4; 32],
+        observed_at: 101,
+    };
+    assert_eq!(evidence.assess_for(&task).unwrap(), A::Unsatisfied);
+    evidence.steps[0].after = SoftwareDetectionObservation::Present {
+        version: "1.0.0.0".into(),
+        evidence_sha256: [4; 32],
+        observed_at: 101,
+    };
+    assert_eq!(evidence.assess_for(&task).unwrap(), A::Unsatisfied);
 }

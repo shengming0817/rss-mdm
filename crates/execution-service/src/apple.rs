@@ -2,7 +2,7 @@
 use super::*;
 use crate::device::DevicePrincipal;
 use rss_mdm_apple_mdm::native::evidence::Settlement;
-use serde_json::{Value, json};
+use serde_json::json;
 
 /// Freeze old and new object authority under the existing device/authorization locks.
 pub async fn required(
@@ -99,25 +99,44 @@ pub async fn observation(
     status: dc::Status,
     native_values: bool,
 ) -> Result<crate::queries::records::NativeObservation> {
-    use rss_mdm_apple_mdm::native::{evidence, request::Request};
     use crate::queries::records::NativeObservation;
+    use rss_mdm_apple_mdm::native::{evidence, request::Request};
     let tenant = tx.tenant_id().to_string();
     let operation = op.id;
-    let Task::Macos { request } = &op.request.task else { return Err(Error::Malformed.into()); };
+    let Task::Macos { request } = &op.request.task else {
+        return Err(Error::Malformed.into());
+    };
     let progress = super::service::status(status).to_owned();
     if matches!(request, Request::Declarations { .. }) {
-        let facts = tx.with_connection(move |c| Box::pin(async move {
-            Ok(apple_results.declarations(c, tenant, operation, native_values).await)
-        })).await?.map_err(Error::from)?;
+        let facts = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(apple_results
+                        .declarations(c, tenant, operation, native_values)
+                        .await)
+                })
+            })
+            .await?
+            .map_err(Error::from)?;
         return Ok(NativeObservation::Declarations { facts, progress });
     }
     let profile = op.request.profile_target().is_some();
     let request = request.clone();
-    let rows = tx.with_connection(move |c| Box::pin(async move {
-        Ok(apple_results.observations(c, tenant, operation, request, native_values).await)
-    })).await?.map_err(Error::from)?;
-    Ok(NativeObservation::Apple { facts: evidence::summarize(rows, profile), progress,
-        effect_confirmed: status == dc::Status::Applied })
+    let rows = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                Ok(apple_results
+                    .observations(c, tenant, operation, request, native_values)
+                    .await)
+            })
+        })
+        .await?
+        .map_err(Error::from)?;
+    Ok(NativeObservation::Apple {
+        facts: evidence::summarize(rows, profile),
+        progress,
+        effect_confirmed: status == dc::Status::Applied,
+    })
 }
 
 impl ExecutionService {
