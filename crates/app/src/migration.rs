@@ -55,7 +55,7 @@ impl Installation {
             }
             tenants.push(tenant);
         }
-        if tenants.is_empty() || tenants.len() > 128 {
+        if tenants.is_empty() || tenants.len() > 1024 {
             return Err(invalid());
         }
         let epoch = Epoch::new(self.epoch).map_err(|_| invalid())?;
