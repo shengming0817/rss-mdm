@@ -146,6 +146,7 @@ CREATE TABLE mdm_commands.attempts (
     tenant_id uuid NOT NULL, id uuid NOT NULL, operation uuid NOT NULL,
     ordinal bigint NOT NULL, credential uuid NOT NULL, session bigint NOT NULL,
     message bigint NOT NULL, phase text NOT NULL, request bytea NOT NULL, platform jsonb,
+    declared_versions jsonb CHECK (declared_versions IS NULL OR (jsonb_typeof(declared_versions)='object' AND octet_length(declared_versions::text)<=1048576)),
     CONSTRAINT attempts_ordinal_check CHECK (ordinal > 0),
     CONSTRAINT attempts_phase_check CHECK (phase IN ('prepare','execute','observe'))
 );

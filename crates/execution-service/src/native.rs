@@ -568,13 +568,17 @@ pub(crate) async fn send_on(
                 continue;
             }
         }
-        let old=sqlx::query("SELECT a.id,a.ordinal,a.phase,a.session,a.platform FROM mdm_commands.attempts a WHERE a.tenant_id=$1::uuid AND a.operation=$2 ORDER BY a.ordinal DESC LIMIT 1").bind(&tenant).bind(op.operation_id).fetch_optional(&mut *c).await.map_err(db)?;
-        let accepted = if let Some(old) = &old {
-            let items = sqlx::query("SELECT kind,status,receipt_accepted,value,result_accepted FROM mdm_commands.attempt_items WHERE tenant_id=$1::uuid AND attempt=$2")
+        let old=sqlx::query("SELECT a.id,a.ordinal,a.phase,a.session,a.platform,a.declared_versions FROM mdm_commands.attempts a WHERE a.tenant_id=$1::uuid AND a.operation=$2 ORDER BY a.ordinal DESC LIMIT 1").bind(&tenant).bind(op.operation_id).fetch_optional(&mut *c).await.map_err(db)?;
+        let items = if let Some(old) = &old {
+            sqlx::query("SELECT command,item_ordinal,kind,uri,status,receipt_accepted,value,result_accepted FROM mdm_commands.attempt_items WHERE tenant_id=$1::uuid AND attempt=$2")
                 .bind(&tenant).bind(old.try_get::<Uuid, _>("id").map_err(db)?)
-                .fetch_all(&mut *c).await.map_err(db)?;
+                .fetch_all(&mut *c).await.map_err(db)?
+        } else {
+            Vec::new()
+        };
+        let accepted = if old.is_some() {
             let mut accepted = !items.is_empty();
-            for item in items {
+            for item in &items {
                 let kind: String = item.try_get("kind").map_err(db)?;
                 let status: Option<i32> = item.try_get("status").map_err(db)?;
                 accepted &= item
@@ -684,22 +688,37 @@ pub(crate) async fn send_on(
                 continue;
             }
         }
-        let summary_changed = !declared_summaries.is_empty()
-            && prepared.as_ref().is_some_and(|prepared| {
-                prepared.effect.readback().is_some_and(|plan| {
-                    plan.expected.values().any(|expected| match expected {
-                        rss_mdm_windows_mdm::native::verification::Expected::Declared {
-                            document,
-                            ..
-                        } => declared_summaries.iter().any(|summary| {
-                            summary.id == document.identity.id
-                                && summary.scope == document.identity.scope
-                                && summary.checksum == document.identity.checksum
-                        }),
-                        _ => false,
-                    })
+        let declared = prepared
+            .as_ref()
+            .and_then(|p| p.effect.readback())
+            .filter(|plan| {
+                plan.expected.values().any(|e| {
+                    matches!(
+                        e,
+                        rss_mdm_windows_mdm::native::verification::Expected::Declared { .. }
+                    )
                 })
             });
+        let versions = declared.map(|plan| declared_versions(plan, declared_summaries));
+        let summary_changed = if let (Some(old), Some(plan)) = (&old, declared) {
+            if old.try_get::<String, _>("phase").map_err(db)? == "observe" {
+                if !declared_query_needed(
+                    old,
+                    &items,
+                    p,
+                    protection,
+                    plan,
+                    (session, versions.as_ref().ok_or_else(protocol)?),
+                )? {
+                    continue;
+                }
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
         let (ordinal, phase) = match (&old, request) {
             (None, W::SyncMl { .. }) if binding.is_some() => (1, AttemptPhase::Prepare),
             (Some(old), W::SyncMl { .. })
@@ -780,6 +799,8 @@ pub(crate) async fn send_on(
             _ => continue,
         };
         if ordinal > 32 {
+            sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
+                .bind(&tenant).bind(op.operation_id).bind(serde_json::json!({"platform":"windows","phase":phase.as_str(),"reason":"native_attempt_budget_exhausted"})).execute(&mut *c).await.map_err(db)?;
             continue;
         }
         let readback = if phase == AttemptPhase::Prepare && binding.is_some() {
@@ -872,7 +893,7 @@ pub(crate) async fn send_on(
                 )?,
             )
             .map_err(|_| protocol())?;
-        sqlx::query("INSERT INTO mdm_commands.attempts(tenant_id,id,operation,ordinal,credential,session,message,phase,request,platform) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10)").bind(&tenant).bind(attempt).bind(op.operation_id).bind(ordinal).bind(p.credential()).bind(session).bind(msg).bind(phase.as_str()).bind(wire).bind(platform.map(serde_json::to_value).transpose().map_err(|_|protocol())?).execute(&mut *c).await.map_err(db)?;
+        sqlx::query("INSERT INTO mdm_commands.attempts(tenant_id,id,operation,ordinal,credential,session,message,phase,request,platform,declared_versions) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)").bind(&tenant).bind(attempt).bind(op.operation_id).bind(ordinal).bind(p.credential()).bind(session).bind(msg).bind(phase.as_str()).bind(wire).bind(platform.map(serde_json::to_value).transpose().map_err(|_|protocol())?).bind(if phase == AttemptPhase::Observe { versions } else { None }).execute(&mut *c).await.map_err(db)?;
         for item in expected_items(&command)? {
             sqlx::query("INSERT INTO mdm_commands.attempt_items(tenant_id,attempt,command,item_ordinal,kind,uri,parent_command) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)").bind(&tenant).bind(attempt).bind(i64::from(item.command)).bind(item.ordinal).bind(item.kind).bind(item.uri).bind(item.parent.map(i64::from)).execute(&mut *c).await.map_err(db)?;
         }
@@ -894,6 +915,135 @@ pub(crate) async fn send_on(
     }
     let outstanding:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) WHERE a.tenant_id=$1::uuid AND o.registration=$2 AND a.session=$3 AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AND (i.status IS NULL OR i.status IN (101,202,206,213) OR (i.kind='get' AND i.status IN (200,214) AND i.value IS NULL)))").bind(&tenant).bind(p.registration()).bind(session).fetch_one(c).await.map_err(db)?;
     Ok(pending || outstanding)
+}
+// Versions are stored with the original attempt under the same tenant transaction.
+// A summary only schedules a read; only accepted full Results prove the effect.
+fn declared_versions(
+    plan: &rss_mdm_windows_mdm::native::verification::Verification,
+    summaries: &[rss_mdm_windows_mdm::native::declared::Summary],
+) -> serde_json::Value {
+    let mut versions = serde_json::Map::new();
+    for (uri, expected) in &plan.expected {
+        if let rss_mdm_windows_mdm::native::verification::Expected::Declared { document, .. } =
+            expected
+        {
+            if let Some(summary) = summaries.iter().find(|s| {
+                s.id == document.identity.id
+                    && s.scope == document.identity.scope
+                    && s.checksum == document.identity.checksum
+            }) {
+                versions.insert(
+                    uri.clone(),
+                    serde_json::json!([summary.result_checksum, summary.state]),
+                );
+            }
+        }
+    }
+    serde_json::Value::Object(versions)
+}
+fn declared_query_needed(
+    old: &sqlx::postgres::PgRow,
+    items: &[sqlx::postgres::PgRow],
+    p: &DevicePrincipal,
+    protection: &rss_mdm_native_protection::Protector,
+    plan: &rss_mdm_windows_mdm::native::verification::Verification,
+    current: (i64, &serde_json::Value),
+) -> std::result::Result<bool, Error> {
+    use rss_mdm_windows_mdm::native::verification::{EffectFact, EffectPlan, EffectState};
+    let (session, versions) = current;
+    let attempt = old.try_get::<Uuid, _>("id").map_err(db)?;
+    let mut facts = Vec::new();
+    let mut consumed = serde_json::Map::new();
+    for item in items {
+        let value: Option<Vec<u8>> = item.try_get("value").map_err(db)?;
+        let value = value
+            .map(|v| {
+                let aad = result_aad(
+                    p.tenant(),
+                    p.registration(),
+                    p.generation(),
+                    attempt,
+                    item.try_get("command").map_err(db)?,
+                    item.try_get("item_ordinal").map_err(db)?,
+                )?;
+                let plain = protection.open_bytes(&v, &aad).map_err(|_| protocol())?;
+                String::from_utf8(plain.expose().to_vec()).map_err(|_| protocol())
+            })
+            .transpose()?;
+        let fact = EffectFact {
+            uri: item
+                .try_get::<Option<String>, _>("uri")
+                .map_err(db)?
+                .unwrap_or_default(),
+            status: item.try_get("status").map_err(db)?,
+            value,
+            receipt_accepted: item
+                .try_get::<Option<bool>, _>("receipt_accepted")
+                .map_err(db)?
+                == Some(true),
+            result_accepted: item
+                .try_get::<Option<bool>, _>("result_accepted")
+                .map_err(db)?
+                == Some(true),
+        };
+        if let Some(version) = consumed_declared_version(&fact, plan) {
+            consumed.insert(fact.uri.clone(), version);
+        }
+        facts.push(fact);
+    }
+    if EffectPlan::Readback(rss_mdm_windows_mdm::native::verification::Verification {
+        request: plan.request.clone(),
+        expected: plan.expected.clone(),
+    })
+    .assess(&facts)
+    .state
+        == EffectState::Verified
+    {
+        return Ok(false);
+    }
+    let complete = !facts.is_empty()
+        && facts.iter().all(|f| {
+            f.receipt_accepted
+                && f.status.is_some_and(terminal_status)
+                && (f.uri.is_empty()
+                    || f.status != Some(200)
+                    || (f.value.is_some() && f.result_accepted))
+        });
+    if !complete {
+        // Keep a live query correlatable; a new session may retry an abandoned one.
+        return Ok(old.try_get::<i64, _>("session").map_err(db)? != session);
+    }
+    if versions.as_object().is_none_or(|v| v.is_empty()) {
+        return Ok(old.try_get::<i64, _>("session").map_err(db)? != session);
+    }
+    let queried: Option<serde_json::Value> = old.try_get("declared_versions").map_err(db)?;
+    Ok(versions
+        .as_object()
+        .ok_or_else(protocol)?
+        .iter()
+        .any(|(uri, version)| {
+            queried.as_ref().and_then(|q| q.get(uri)) != Some(version)
+                && consumed.get(uri) != Some(version)
+        }))
+}
+fn consumed_declared_version(
+    fact: &rss_mdm_windows_mdm::native::verification::EffectFact,
+    plan: &rss_mdm_windows_mdm::native::verification::Verification,
+) -> Option<serde_json::Value> {
+    use rss_mdm_windows_mdm::native::{declared::ResultDocument, verification::Expected};
+    if !fact.receipt_accepted || !fact.result_accepted || fact.status != Some(200) {
+        return None;
+    }
+    let Expected::Declared {
+        document,
+        operation,
+    } = plan.expected.get(&fact.uri)?
+    else {
+        return None;
+    };
+    let result = ResultDocument::parse(fact.value.as_deref()?).ok()?;
+    (result.identity == document.identity && &result.operation == operation)
+        .then(|| serde_json::json!([result.result_checksum, result.state]))
 }
 struct ExpectedItem {
     command: u32,

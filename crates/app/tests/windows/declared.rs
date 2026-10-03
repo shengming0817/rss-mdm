@@ -389,7 +389,6 @@ struct MiOperation {
     client: crate::execution::test_support::Client,
     operation: Uuid,
     document: String,
-    id: Uuid,
 }
 #[cfg(feature = "integration")]
 async fn mi_admit(host: &Host) -> anyhow::Result<MiOperation> {
@@ -437,7 +436,6 @@ async fn mi_admit(host: &Host) -> anyhow::Result<MiOperation> {
         client,
         operation,
         document,
-        id,
     })
 }
 #[cfg(feature = "integration")]
@@ -499,7 +497,6 @@ async fn mi_effect(
         mut client,
         operation,
         document,
-        id,
     } = mi_admit(host).await?;
     let response = mi_dispatch(child, url, initial, authenticated).await?;
     let observed = native::post(child, url, &result_packet(initial, &response, None)).await?;
@@ -531,7 +528,12 @@ async fn mi_effect(
     let partial = native::post(
         child,
         url,
-        &result_packet(initial, &observed, Some(&result(20))),
+        &with_summary(
+            result_packet(initial, &observed, Some(&result(20))),
+            &document,
+            "result-v1",
+            20,
+        )?,
     )
     .await?;
     ensure!(partial.status() == StatusCode::OK);
@@ -543,30 +545,70 @@ async fn mi_effect(
             != "applied",
         "partial native state became effect"
     );
+    // More duplicate summaries than the attempt budget must not spend a single retry.
+    let mut previous = syncml::decode(&partial.bytes().await?, &CodecLimits::default())?;
+    for _ in 0..35 {
+        let packet = with_summary(
+            result_packet(initial, &previous, None),
+            &document,
+            "result-v1",
+            20,
+        )?;
+        let response = native::post(child, url, &packet).await?;
+        ensure!(response.status() == StatusCode::OK);
+        previous = syncml::decode(&response.bytes().await?, &CodecLimits::default())?;
+        ensure!(
+            !has_declared_query(&previous),
+            "unchanged consumed summary created another query"
+        );
+    }
     client.publish_operation(operation).await?;
-    let summary = format!(
-        r#"<DeclaredConfigurations schema="1.0"><DeclaredConfiguration id="{id}" context="Device" checksum="immutable-v1" result_checksum="result-v1" state="60"/></DeclaredConfigurations>"#
-    );
-    let mut initial = initial.clone();
+    let mut initial = with_summary(initial.clone(), &document, "result-v1", 20)?;
     initial.header.session_id += 1;
     let response = authenticate_child(child, url, &initial, parent_ack).await?;
-    let mut notice = result_packet(&initial, &response, None);
-    notice.commands.push(Command::Alert {
-        id: notice.commands.len() as u32 + 1,
-        alert: syncml::Alert::DeclaredConfiguration {
-            summary: Secret(summary),
-            explicit_format: true,
-        },
-    });
+    ensure!(
+        !has_declared_query(&response),
+        "unchanged summary retried across sessions"
+    );
+    let mut notice = with_summary(
+        result_packet(&initial, &response, None),
+        &document,
+        "result-v2",
+        20,
+    )?;
     let queried = native::post(child, url, &notice).await?;
     ensure!(queried.status() == StatusCode::OK);
     let queried = syncml::decode(&queried.bytes().await?, &CodecLimits::default())?;
     ensure!(
-        queried
-            .commands
-            .iter()
-            .any(|c| matches!(c, Command::Get { .. })),
-        "1224 did not trigger full Results"
+        has_declared_query(&queried),
+        "changed result checksum did not trigger full Results"
+    );
+    let progress = result(20).replace("result-v1", "result-v2");
+    notice = with_summary(
+        result_packet(&initial, &queried, Some(&progress)),
+        &document,
+        "result-v2",
+        20,
+    )?;
+    let response = native::post(child, url, &notice).await?;
+    ensure!(response.status() == StatusCode::OK);
+    let response = syncml::decode(&response.bytes().await?, &CodecLimits::default())?;
+    ensure!(
+        !has_declared_query(&response),
+        "full progress result was immediately replaced"
+    );
+    notice = with_summary(
+        result_packet(&initial, &response, None),
+        &document,
+        "result-v2",
+        60,
+    )?;
+    let queried = native::post(child, url, &notice).await?;
+    ensure!(queried.status() == StatusCode::OK);
+    let queried = syncml::decode(&queried.bytes().await?, &CodecLimits::default())?;
+    ensure!(
+        has_declared_query(&queried),
+        "changed state did not trigger full Results"
     );
     ensure!(
         client
@@ -576,13 +618,48 @@ async fn mi_effect(
             != "applied",
         "summary became effect"
     );
-    let complete = native::post(
-        child,
-        url,
-        &result_packet(&initial, &queried, Some(&result(60))),
-    )
-    .await?;
+    previous = queried.clone();
+    for _ in 0..35 {
+        let packet = with_summary(
+            result_packet(&initial, &previous, None),
+            &document,
+            "result-v2",
+            60,
+        )?;
+        let response = native::post(child, url, &packet).await?;
+        ensure!(response.status() == StatusCode::OK);
+        previous = syncml::decode(&response.bytes().await?, &CodecLimits::default())?;
+        ensure!(
+            !has_declared_query(&previous),
+            "in-flight query was replaced"
+        );
+    }
+    let mut packet = with_summary(
+        result_packet(
+            &initial,
+            &queried,
+            Some(&result(60).replace("result-v1", "result-v2")),
+        ),
+        &document,
+        "result-v2",
+        60,
+    )?;
+    packet.header.message_id = previous.header.message_id + 1;
+    let complete = native::post(child, url, &packet).await?;
     ensure!(complete.status() == StatusCode::OK);
+    ensure!(
+        !has_declared_query(&syncml::decode(
+            &complete.bytes().await?,
+            &CodecLimits::default()
+        )?),
+        "full success was replaced by an empty observation"
+    );
+    let mut pg = PgConnection::connect_with(&options("postgres")?).await?;
+    let attempts: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='observe'").bind(case_tenant()).bind(operation).fetch_one(&mut pg).await?;
+    ensure!(
+        attempts == 3,
+        "duplicate summaries consumed attempts: {attempts}"
+    );
     let detail = client
         .call(Method::GET, &format!("/{operation}"), None)
         .await?;
@@ -716,6 +793,25 @@ async fn authenticate_child(
     let mut ack = parent_ack.clone();
     ack.header.target = url.into();
     ack.header.session_id = first.header.session_id;
+    for command in &first.commands {
+        if let syncml::Command::Alert {
+            alert: syncml::Alert::DeclaredConfiguration { .. },
+            ..
+        } = command
+        {
+            let mut command = command.clone();
+            if let syncml::Command::Alert { id, .. } = &mut command {
+                *id = ack
+                    .commands
+                    .iter()
+                    .map(syncml::Command::id)
+                    .max()
+                    .unwrap_or(0)
+                    + 1;
+            }
+            ack.commands.push(command);
+        }
+    }
     if let syncml::Command::Status(status) = &mut ack.commands[0] {
         status.challenge.as_mut().unwrap().nonce =
             Some(Secret(STANDARD.encode(Uuid::new_v4().as_bytes())));
@@ -1022,6 +1118,45 @@ async fn automation(host: &Host) -> anyhow::Result<rss_runtime::ShutdownStack> {
     Ok(owner)
 }
 #[cfg(feature = "integration")]
+fn has_declared_query(message: &syncml::Message) -> bool {
+    message.commands.iter().any(|c| matches!(c, syncml::Command::Get { items, .. } if items.iter().any(|i| i.target.as_ref().is_some_and(|u| u.contains("/Results/")))))
+}
+fn with_summary(
+    mut packet: syncml::Message,
+    document: &str,
+    version: &str,
+    state: u32,
+) -> anyhow::Result<syncml::Message> {
+    let identity = rss_mdm_windows_mdm::native::declared::Document::parse(document)?.identity;
+    let context = match identity.scope {
+        rss_mdm_windows_mdm::native::Scope::Device => "Device",
+        rss_mdm_windows_mdm::native::Scope::User => "User",
+    };
+    packet.commands.retain(|c| {
+        !matches!(
+            c,
+            syncml::Command::Alert {
+                alert: syncml::Alert::DeclaredConfiguration { .. },
+                ..
+            }
+        )
+    });
+    let id = packet
+        .commands
+        .iter()
+        .map(syncml::Command::id)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    packet.commands.push(syncml::Command::Alert {
+        id,
+        alert: syncml::Alert::DeclaredConfiguration {
+            summary: Secret(format!(r#"<DeclaredConfigurations schema="1.0"><DeclaredConfiguration id="{}" context="{context}" checksum="{}" result_checksum="{version}" state="{state}"/></DeclaredConfigurations>"#, identity.id, identity.checksum)),
+            explicit_format: true,
+        },
+    });
+    Ok(packet)
+}
 fn result_packet(
     first: &syncml::Message,
     sent: &syncml::Message,
@@ -1306,11 +1441,16 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
             .1["commandStatus"]
             != "applied"
     );
-    let partial = result_packet(
-        &initial,
-        &sent,
-        Some(&native_result(&document, "Delete", 10)),
-    );
+    let partial = with_summary(
+        result_packet(
+            &initial,
+            &sent,
+            Some(&native_result(&document, "Delete", 10)),
+        ),
+        &document,
+        "result-v1",
+        10,
+    )?;
     let response = native::post(&child.mutual, &child.url, &partial).await?;
     ensure!(response.status() == StatusCode::OK);
     ensure!(
@@ -1330,11 +1470,16 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
         ensure!(response.status() == StatusCode::OK);
         sent = syncml::decode(&response.bytes().await?, &CodecLimits::default())?;
     }
-    let packet = result_packet(
-        &initial,
-        &sent,
-        Some(&native_result(&document, "Delete", 70)),
-    );
+    let packet = with_summary(
+        result_packet(
+            &initial,
+            &sent,
+            Some(&native_result(&document, "Delete", 70)),
+        ),
+        &document,
+        "result-v1",
+        70,
+    )?;
     let wire = syncml::encode(&packet, &CodecLimits::default())?;
     host.app.execution.inject_fault(
         rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
