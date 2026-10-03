@@ -1,16 +1,22 @@
-# Apple 手动注册、采集与 Profile 管理
+# Apple 原生注册、命令与 Profile 管理
 
-本入口实现 Rust 服务端的设备通道，使用外部 step-ca v0.30.2 完成 SCEP 签发。覆盖手动 mobileconfig、Authenticate/TokenUpdate/CheckOut、Model/OSVersion 采集，以及单一设备防火墙 Profile 的安装、移除和存在性核实。受控 T2 不代替真实 Apple 组织、APNs 和 Mac 验收；T3 由 #2482 持有。不提供 ADE、DDM、用户管理或系统防火墙效果证明。
+Rust 服务端支持设备和用户通道，使用外部 step-ca v0.30.2 完成 SCEP 签发。原生命令、查询、回执和多 payload Profile 复用现有 Execution、注册及采集 owner。组织/ADE 入网和 DDM 由各自业务持有；这里的 Bootstrap escrow 不代表已实现 ADE 入网。受控 T2 不代替真实 Apple 组织、APNs 和 Mac 验收，T3 证据另行登记。
 
 ## 注册与凭据
 
 管理员在线登录并拥有目标设备的 `enrollment` 权限后，调用 `POST /api/v3/enrollments`，提交 `deviceId`、`source:"mdm.apple"`、256 位随机 `password`，以及非零 UUID `Idempotency-Key`。返回 HTTP 200 的 pending 授权。生命周期整组已切换 v3，旧版本不挂载；Windows 使用 `mdm.windows`，Agent 使用 `agent.builtin`，不接受请求 `channel`。
 
-设备通过 HTTPS `POST /api/v3/enrollments/{id}/profile` 提交 `{"password":"…"}` 下载附带 CMS 签名的 mobileconfig；响应不缓存。口令和配置只交付给授权设备。Profile 配置 RSA 2048 SCEP 身份、设备范围、AccessRights 19（启用固定 Agent 安装时为 4371）、生产 APNs topic、CheckOutWhenRemoved，以及 `per-user-connections` capability；`SignMessage=false`，管理传输必须使用原生 mTLS。UserAuthenticate 返回 410，不建立用户身份。服务端保存设备实际安装 profile 的权限；后来启用 Agent 安装配置不会增加已有设备权限，也不会使其原生身份失效。缺少查询或安装权限时，策略返回 missing_native_rights，需通过正常注册流程取得用户/系统授权。
+设备通过 HTTPS `POST /api/v3/enrollments/{id}/profile` 提交 `{"password":"…"}` 下载附带 CMS 签名的 mobileconfig；响应不缓存。口令和配置只交付给授权设备。Profile 配置 RSA 2048 SCEP 身份、设备范围、AccessRights 8191、生产 APNs topic、CheckOutWhenRemoved，以及 `per-user-connections`、`bootstraptoken` capability；`SignMessage=false`，管理传输必须使用原生 mTLS。UserAuthenticate 在已绑定 mTLS 身份下返回空 DigestChallenge；不接收目录密码或建立业务账户身份。服务端保存设备实际安装 profile 的权限；后来启用 Agent 安装配置不会增加已有设备权限，也不会使其原生身份失效。缺少查询或安装权限时，策略返回 missing_native_rights，需通过正常注册流程取得用户/系统授权。
 
 SCEP challenge 在返回 allow 前提交唯一消费事实，绑定 enrollment、签发 attempt、事务 ID、CSR 摘要、公钥和配置身份。相同请求重试也被拒绝。通知丢失时，首次携带匹配有效证书的 Authenticate 可完成绑定；签发响应丢失不能重新签发，须由原管理员 resume，换口令后重新下载 Profile。新 attempt 使用新密钥；活跃已消费公钥不能跨 attempt 复用。
 
 CN 为 enrollment UUID 的 32 位小写 hex 与 attempt UUID 的 32 位小写 hex 直接拼接，长度 64。证书只接受专用 issuer、完整身份绑定、clientAuth EKU、digitalSignature、非 CA、无 SAN 和不超过 90 日的有效期。设备先进入 pending_token；TokenUpdate 验证 topic、UDID 并保存 token/PushMagic 后才允许管理投递。CheckOut、管理员撤销和换代均停用旧设备身份；旧证书、旧 source/epoch 或旧代际不能承接新任务。
+
+## 用户通道与 Bootstrap Token
+
+原生用户 GUID 绑定当前租户、设备注册及世代，共用设备身份凭据。UserAuthenticate 不授予资源权限；用户 TokenUpdate 分别保存加密 token/PushMagic、revision、租约与失效状态。operation 的 `target` 为 `{"kind":"user","userId":"规范小写非零 UUID"}`。设备前提只从设备通道查询，实际用户命令、回执和 ProfileList 只在该用户通道关联。用户 410 不停用设备或其他用户；设备 CheckOut/撤销/换代统一退役所有通道、Profile history 和 Bootstrap 材料。
+
+GetBootstrapToken/SetBootstrapToken 由已绑定的设备证书认证，只有同世代已接受的原生证据明确确认监督、ADE 及 device enrollment 后可使用；缺失证据返回 Unsupported。没有 token 时 GET 成功但省略 BootstrapToken，SET 缺失或零长度 token 清除 escrow。材料按租户、注册世代、用途及 revision 加密，响应禁止缓存。此接口不把 token、UserID 或 AuthToken 变成浏览器业务授权。
 
 ## 采集
 
@@ -20,27 +26,33 @@ CN 为 enrollment UUID 的 32 位小写 hex 与 attempt UUID 的 32 位小写 he
 
 完整 Snapshot 经既有 Observation/Inventory 投影。Partial/Failed 保留最后完整资产，最新质量由 CollectionRun 单独呈现；不拼接旧值伪造新 Snapshot，不引入字段 TTL。纯超时且没有字段结果只记录失败 run，不制造 Observation 报告。
 
-## Profile 操作
+## 原生操作与 Profile
 
-整组 Execution 使用 `/api/v2`，包括计划执行。`POST /api/v2/devices/{id}/operations` 的请求为：
+设备 operation 使用 `POST /api/v3/devices/{id}/operations`，与 Policy/Resource 共用类型化原生输入。请求固定 `operationId`、`inputVersion`、`target`、`task` 和未来 Unix 秒 `deadline`。例如：
 
 ```json
-{"operationId":"97c3820e-4698-47dc-bb09-b33bd53da2f0","task":{"kind":"profile_install","enabled":true},"deadline":1800000000}
+{"operationId":"97c3820e-4698-47dc-bb09-b33bd53da2f0","inputVersion":"v1","target":{"kind":"device"},"task":{"platform":"macos","request":{"kind":"command","command":{"requestType":"InstalledApplicationList","fields":{}}}},"deadline":1800000000}
 ```
 
-示例 deadline 必须替换为未来 Unix 秒。要求设备级 `firewall_write`；同一 Identifier 的操作串行。Identifier 稳定绑定 tenant/device，安装 operationId 是 PayloadUUID。移除 task 为 `{"kind":"profile_remove","profile":"当前拥有的安装 UUID"}`，不能移除其他 UUID。任务类型自身决定协议，不接受 executor 字段。查询、取消和重新批准沿用 [Execution](device-operations.md) 的 operation_read/operation_cancel、requestId 和 expectedRevision 契约。
+原生字段显式保留 plist 类型：`string`、`boolean`、十进制字符串 `integer`、`unsigned`、`real`、`date`、Base64 `data`、`array` 和 `dictionary`。`RunScript` 返回 Unsupported；原生操作不会转成 Agent 脚本。平台合同来自固定 Apple release 和 macOS 15 起的必要历史定义，实际 OS、硬件、监督、注册方式、通道及安装的 AccessRights 由认证设备证据判定。设备先回答原生前提查询，服务端不会采用浏览器提交的可信平台事实。
 
-| 证据 | commandStatus 含义 |
+查询、应用/PKG、安全、账户、控制、设置和 OS 更新各自保留原生结果。查询完成可结束共同命令，但报告的 Unknown、安装中或拒绝仍是设备数据；ACK 仅证明接收。待重启、用户延后、错误及 Unknown 单独呈现，不能据此宣布安装、更新或合规成功。详细原生结果读取同时要求 operation_read 和原操作权限；目录只显示摘要。PKG 原生命令不建立固定 Agent 准入，后者继续由既有安装策略与软件 owner 负责。
+
+Profile 使用 `request.kind:"install_profile"` 和 `profile`，其中根及每个 payload 分别指定原生 identifier/UUID、metadata、schema 路径与 fields；移除使用 `request.kind:"remove_profile"`、identifier 和拥有的 UUID。完整输入见 [Profile 类型](../../crates/apple-mdm/src/native/profiles.rs)。`PayloadVersion=1` 属于 Apple 格式，`inputVersion` 属于内容版本。编译器决定 System/User scope，拒绝重复身份、单实例冲突和无效同 Profile 证书引用；客户端不能覆盖这些编译器字段。
+
+同一注册世代及通道内的 identifier 串行。已发出的未知副作用继续占有 guards；取消、超时或错误不释放它们。Profile owner 加密保存完整派发 manifest；替换或移除必须经当前、关联、接受的 ProfileList 证据确认。安装观测同时比较根和全部 payload 的 type/identifier/UUID/version；缺失、加密或不完整清单不证明替换完成。旧世代、旧尝试、晚到或越权回执不能覆盖新所有权。
+
+| 证据 | 含义 |
 | --- | --- |
-| 事务内受理和 outbox 保存 | queued |
-| 内部 dispatch 成功发布 | published |
-| APNs 200 | 仅接受唤醒，不推进 command |
-| 精确关联安装/移除 ACK | received |
-| NotNow | 保留待执行，延迟重投同一请求身份 |
-| Error / CommandFormatError | rejected |
-| 完整、关联 ProfileList 与预期 identifier/UUID/存在性匹配 | applied |
+| 事务受理和 outbox 保存 | queued |
+| 内部发布完成 | published |
+| APNs 200 | 接受唤醒，不推进命令 |
+| 精确关联 ACK | received |
+| NotNow | 延迟重投同一 UUID 和不可变请求 |
+| Profile Error / CommandFormatError | 保留未知副作用，独立查询存在性 |
+| 完整且接受的 ProfileList 匹配 | applied，仅证明原生对象存在性 |
 
-ProfileList 查询不设置 ManagedOnly，使用完整列表，避免依赖尚未确定的 OS 版本。无列表或不完整字段不证明缺失；同 Identifier 的不同 UUID 是 mismatch。查询 observation 带 `protocol:"mdm.apple"` 和 `observationScope:"profile_presence"`；`effect:"unknown"` 明确不证明 OS 防火墙已生效。错误 UUID、越权或旧代际 ACK 不产生成功；存在性不匹配保留 received 和 mismatch/unknown，直到取消或超时。
+不重投已发送且结果未知的变更；只读恢复复用现有 attempt 流并有次数与期限上限。Profile 存在、OS 设置效果及合规分别记录，`effect:"unknown"` 不证明防火墙或其他设置已生效。查询、取消和重新批准沿用 [Execution](device-operations.md) 的 requestId 与 expectedRevision 契约。
 
 APNs 使用证书认证 HTTPS/HTTP2，token revision 和持久唤醒 lease 隔离过期回执。410 使对应当前 token 回到 pending_token；旧 revision 的 410 不撤销新 token。429 和网络失败按 30、60、120 秒递增退避，5xx 至少等待 900 秒，均封顶 960 秒，不改变命令结果。按闭合 APNs reason 判定 token 失效、配置拒绝或暂时故障；未知/畸形响应可重试，配置拒绝暂停当前 token revision/APNs 证书组合；TokenUpdate 或更换有效 APNs 证书并重启后可恢复。失效授权的采集会延后检查，不能持续占据有界队列前页。
 
