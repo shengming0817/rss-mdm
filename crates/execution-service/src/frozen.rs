@@ -34,7 +34,7 @@ pub enum Frozen {
 
 use crate::{Error, authorization::context::AuthorizedPrincipal};
 impl Frozen {
-    pub fn authorize_native(
+    pub(crate) fn authorize_native(
         &mut self,
         proof: &AuthorizedPrincipal,
         snapshot: &crate::authorization::Snapshot,

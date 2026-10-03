@@ -189,7 +189,7 @@ mod error_projection;
 
 pub mod wake;
 
-pub mod freeze_inputs;
+mod freeze_inputs;
 pub mod input_preparation;
 pub use input_preparation::authorize_policy_snapshot;
 
@@ -234,34 +234,6 @@ impl Inputs {
             content: dependencies.content,
             signing_enabled: dependencies.signing_enabled,
         }
-    }
-    pub fn freeze_enrollment(
-        &self,
-        proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
-        snapshot: &rss_mdm_authorization_service::Snapshot,
-        action: &rss_mdm_policy::Action,
-    ) -> std::result::Result<enrollment::FrozenEnrollment, Error> {
-        if !self.signing_enabled {
-            return Err(Error::Unsupported);
-        }
-        enrollment_preparation::freeze(proof, snapshot, action, &self.enrollment_entries)
-    }
-    pub fn authorize_native(
-        &self,
-        frozen: &mut frozen::Frozen,
-        proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
-        snapshot: &rss_mdm_authorization_service::Snapshot,
-        device: Option<&std::collections::BTreeSet<String>>,
-        owner: Option<configuration::Owner>,
-    ) -> std::result::Result<(), Error> {
-        frozen.authorize_native(
-            proof,
-            snapshot,
-            device,
-            &self.protection,
-            self.tenant,
-            owner,
-        )
     }
     pub async fn verify_artifact(
         &self,

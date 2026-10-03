@@ -3,33 +3,31 @@ use crate::agent_install::{FrozenInstall, Identity, Package};
 use crate::authorization::{self, Permission, context::AuthorizedPrincipal};
 use crate::{Error, Inputs, transaction::*};
 use rss_mdm_authorization_service::UserGrant;
-use rss_mdm_policy::Action;
+use rss_mdm_policy::{SoftwareResourceBinding, schedule::Schedule};
 use rss_mdm_resource as resource;
 use rss_transactional_messaging_postgres::PgTransaction;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 impl Inputs {
-    pub async fn freeze_agent_in(
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "freeze inputs and current authority are explicit"
+    )]
+    pub(crate) async fn freeze_agent_in(
         &self,
         tx: &mut PgTransaction<'_>,
         proof: &AuthorizedPrincipal,
         snapshot: &authorization::Snapshot,
-        action: &Action,
+        binding: &SoftwareResourceBinding,
+        admission: Uuid,
+        schedule: &Schedule,
+        lifetime: u32,
     ) -> Result<FrozenInstall> {
-        let Action::EnsureAgentInstalled {
-            resource: binding,
-            admission_operation,
-            schedule,
-            run_lifetime_seconds,
-        } = action
-        else {
-            return Err(Error::Malformed.into());
-        };
         let config = &self.agent_installation;
         config.validate()?;
-        let selection = binding.software().ok_or(Error::Malformed)?;
+        let selection = binding;
         let version = self
-            .active_version_in(tx, binding.id(), binding.version())
+            .active_version_in(tx, binding.id.as_str(), binding.version.as_str())
             .await?;
         let mut packages = BTreeMap::new();
         for (target, key) in &selection.variants {
@@ -40,10 +38,10 @@ impl Inputs {
                 .resolve_in(
                     tx,
                     &rss_mdm_software_service::preparation::Selection {
-                        resource: binding.id(),
-                        version: binding.version(),
+                        resource: binding.id.as_str(),
+                        version: binding.version.as_str(),
                         digest: version.digest().bytes(),
-                        admission: *admission_operation,
+                        admission: admission,
                         variant: key,
                         uninstall: false,
                     },
@@ -126,9 +124,9 @@ impl Inputs {
         Ok(FrozenInstall {
             resource: binding.clone(),
             resource_digest: version.digest().bytes(),
-            admission_operation: *admission_operation,
+            admission_operation: admission,
             schedule: schedule.clone(),
-            run_lifetime_seconds: *run_lifetime_seconds,
+            run_lifetime_seconds: lifetime,
             packages,
             deploy: UserGrant::all_devices(snapshot, proof, Permission::SoftwareDeploy)?,
             enrollment: UserGrant::all_devices(snapshot, proof, Permission::Enrollment)?,

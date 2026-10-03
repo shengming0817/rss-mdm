@@ -539,37 +539,6 @@ impl References for StoredReferences {
 }
 
 /// Locked resource version access for Policy preparation; owns no management service.
-pub struct VersionReader {
-    tenant: TenantId,
-}
-impl VersionReader {
-    pub fn new(tenant: TenantId) -> Self {
-        Self { tenant }
-    }
-    pub async fn active_version_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        resource: &str,
-        version: &str,
-    ) -> Result<r::Version> {
-        if tx.tenant_id() != self.tenant {
-            return Err(Error::Forbidden.into());
-        }
-        let (version, state) = checked(
-            rss_mdm_resource_postgres::lock_reference_in(
-                tx,
-                &checked_input(r::Id::new(resource))?,
-                &checked_input(r::Id::new(version))?,
-            )
-            .await?,
-        )?;
-        if state != r::State::Active {
-            return Err(Error::Conflict.into());
-        }
-        Ok(version)
-    }
-}
-
 pub const CATALOG_SQL: &str = include_str!("catalog.sql");
 
 pub const CATALOG_JSON: &str = include_str!("catalog.json");

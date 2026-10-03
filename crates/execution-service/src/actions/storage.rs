@@ -140,7 +140,7 @@ impl ScheduledPolicy {
         match self {
             Self::Script(v) => v.frozen.definition.spec().timeout_seconds,
             Self::Native(v) => v.frozen.definition.spec().timeout_seconds,
-            Self::Software(v) => v.frozen.run_lifetime_seconds,
+            Self::Software(v) => v.assignment.frozen.run_lifetime_seconds,
             Self::Enrollment(v) => v.frozen.run_lifetime_seconds,
         }
     }
@@ -171,7 +171,11 @@ impl ScheduledPolicy {
                 else {
                     return Ok(false);
                 };
-                if !v.supported_in(&service.admission(), tx, &binding).await? {
+                if !v
+                    .assignment
+                    .supported_in(&service.admission(), tx, &binding)
+                    .await?
+                {
                     return Ok(false);
                 }
                 let Some((platform, architecture)) =
@@ -179,15 +183,16 @@ impl ScheduledPolicy {
                 else {
                     return Ok(false);
                 };
-                v.authorized_in(
-                    &service.admission(),
-                    tx,
-                    &target.device,
-                    platform,
-                    architecture,
-                    now,
-                )
-                .await
+                v.assignment
+                    .authorized_in(
+                        &service.admission(),
+                        tx,
+                        &target.device,
+                        platform,
+                        architecture,
+                        now,
+                    )
+                    .await
             }
         }
     }
@@ -237,6 +242,7 @@ impl ScheduledPolicy {
                 .await?
                 .ok_or(Error::Forbidden)?;
                 let steps = v
+                    .assignment
                     .prepared_in(
                         &service.admission(),
                         tx,
@@ -272,7 +278,7 @@ impl ScheduledPolicy {
                     steps,
                     execution_context: binding.execution_context,
                     definition_digest: digest,
-                    intent: match v.intent() {
+                    intent: match v.assignment.intent() {
                         rss_mdm_policy::SoftwareIntent::RequiredInstall
                         | rss_mdm_policy::SoftwareIntent::AvailableInstall => {
                             wire::SoftwareTaskIntent::Install
@@ -282,7 +288,7 @@ impl ScheduledPolicy {
                         }
                     },
                     start_mode: if matches!(
-                        v.intent(),
+                        v.assignment.intent(),
                         rss_mdm_policy::SoftwareIntent::AvailableInstall
                     ) {
                         wire::SoftwareStartMode::UserInitiated

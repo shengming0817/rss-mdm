@@ -14,8 +14,9 @@ pub fn policy_id(entity: &str) -> Option<Uuid> {
 }
 pub async fn active(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
+    let kinds = rss_mdm_policy::AssignmentBehavior::NativeCollectionRecovery.kinds();
     Ok(tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.id=$2::uuid AND p.enabled AND p.definition->'action'->>'kind'='native_collection') OR EXISTS(SELECT 1 FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND v.policy=$2::uuid AND ((r.state->>'execution'='not_started' AND r.state->>'cancellation'<>'confirmed') OR r.state->>'execution'='running' OR (r.state->>'execution'='unknown' AND r.state->>'cancellation'='none' AND (NOT p.enabled OR p.current_version<>v.id))))").bind(tenant).bind(id.to_string()).fetch_one(c).await
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.id=$2::uuid AND p.enabled AND p.definition->'action'->>'kind'=ANY($3::text[])) OR EXISTS(SELECT 1 FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND v.policy=$2::uuid AND ((r.state->>'execution'='not_started' AND r.state->>'cancellation'<>'confirmed') OR r.state->>'execution'='running' OR (r.state->>'execution'='unknown' AND r.state->>'cancellation'='none' AND (NOT p.enabled OR p.current_version<>v.id))))").bind(tenant).bind(id.to_string()).bind(kinds).fetch_one(c).await
     })).await?)
 }
 pub async fn recover(

@@ -29,7 +29,7 @@ pub async fn write_in(
     store: &rss_mdm_policy_postgres::PolicyStore,
     tx: &mut PgTransaction<'_>,
     p: &Policy,
-    frozen: Option<(&Frozen, &Vec<u8>)>,
+    frozen: Option<&Frozen>,
     proof: &AuthorizedPrincipal,
     now: i64,
 ) -> Result<()> {
@@ -57,7 +57,7 @@ pub async fn write_in(
     let publication = rss_mdm_policy_postgres::Publication {
         policy: p.clone(),
         frozen: frozen
-            .map(|(value, _)| checked_input(serde_json::to_value(value)))
+            .map(|value| checked_input(serde_json::to_value(value)))
             .transpose()?,
         author: checked_input(serde_json::to_value(proof.user()))?,
         at: now,
@@ -70,15 +70,10 @@ pub async fn enqueue_change_in(
     policy: &Policy,
     old: Option<&Policy>,
 ) -> Result<()> {
-    if matches!(
-        policy.definition.action,
-        Action::Configuration { .. } | Action::EnsureAgentInstalled { .. }
-    ) || old.is_some_and(|p| {
-        matches!(
-            p.definition.action,
-            Action::Configuration { .. } | Action::EnsureAgentInstalled { .. }
-        )
-    }) {
+    let native = rss_mdm_policy::AssignmentBehavior::NativeDesired;
+    if policy.definition.action.kind().assignment_behavior() == native
+        || old.is_some_and(|p| p.definition.action.kind().assignment_behavior() == native)
+    {
         crate::automation::jobs::enqueue_job_in(
             tx,
             Uuid::new_v4(),
@@ -87,7 +82,10 @@ pub async fn enqueue_change_in(
         .await?;
     }
     // Native templates reuse this Policy recovery owner for due reads and pending-run recovery.
-    if old.is_some() || matches!(policy.definition.action, Action::NativeCollection { .. }) {
+    if old.is_some()
+        || policy.definition.action.kind().assignment_behavior()
+            == rss_mdm_policy::AssignmentBehavior::NativeCollectionRecovery
+    {
         rss_mdm_execution_service::sources::storage::wake_execution_in(tx, policy.id).await?;
     }
     Ok(())

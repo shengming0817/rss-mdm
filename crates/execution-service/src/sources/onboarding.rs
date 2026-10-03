@@ -126,8 +126,8 @@ pub async fn state_in(
                         Ok(rss_mdm_software_service::catalog::admitted_on(
                             c,
                             tenant,
-                            action.resource.id(),
-                            action.resource.version(),
+                            action.resource.id.as_str(),
+                            action.resource.version.as_str(),
                             action.resource_digest,
                             action.admission_operation,
                             &action
