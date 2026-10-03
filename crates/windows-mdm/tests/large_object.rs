@@ -116,6 +116,7 @@ fn large_native_payload_compiles_before_transport_fragmentation() {
     let command = request
         .compile(
             Context {
+                enrollment: rss_mdm_windows_mdm::native::Enrollment::Primary,
                 build: Some([10, 0, 22621, 521]),
                 edition: Some(48),
                 scope: Scope::Device,

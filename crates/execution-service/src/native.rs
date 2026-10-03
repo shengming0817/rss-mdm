@@ -404,6 +404,7 @@ fn context(version: &str, edition: u32, scope: Scope) -> std::result::Result<Con
         build[i] = part.parse().map_err(|_| protocol())?;
     }
     Ok(Context {
+        enrollment: rss_mdm_windows_mdm::native::Enrollment::Primary,
         build: Some(build),
         edition: Some(edition),
         scope,

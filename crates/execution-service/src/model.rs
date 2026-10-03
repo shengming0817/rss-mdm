@@ -123,7 +123,7 @@ impl Create {
         } = &self.task
         {
             for object in request.objects().map_err(|_| Error::Malformed)? {
-                if (object.scope == rss_mdm_windows_mdm::native::Scope::User)
+                if (object.scope() == rss_mdm_windows_mdm::native::Scope::User)
                     != matches!(self.target, NativeTarget::User { .. })
                 {
                     return Err(Error::Malformed);
@@ -198,7 +198,7 @@ impl Task {
             Self::Windows {
                 request: W::SyncMl { request },
             } => {
-                json!({"platform":"windows","kind":"sync_ml","name":"SyncML","objects":request.objects().map_err(|_|Error::Malformed)?.into_iter().map(|o|o.uri).collect::<Vec<_>>()})
+                json!({"platform":"windows","kind":"sync_ml","name":"SyncML","objects":request.objects().map_err(|_|Error::Malformed)?.into_iter().map(|o|o.key().to_owned()).collect::<Vec<_>>()})
             }
             Self::Windows {
                 request: W::Msi { job },

@@ -3670,6 +3670,7 @@ name = "rss-mdm-windows-mdm"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "percent-encoding",
  "quick-xml 0.42.0",
  "regex",
  "serde",

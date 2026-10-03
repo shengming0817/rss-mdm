@@ -2,6 +2,8 @@
 
 本仓独立维护 Cargo workspace。工具链、依赖和命令分别以 `rust-toolchain.toml`、`Cargo.toml` / `Cargo.lock`、[Makefile](../../Makefile) 为准。先阅读 [协作入口](../../AGENTS.md) 与 [验证规则](../rules/verification-scope.md)。
 
+WSTEP 证书签名验证使用 libxml2 原始 DOM 规范化。构建需要 libxml2 开发头文件、pkg-config 和 libclang：Linux 安装 `libxml2-dev clang pkg-config`，macOS 使用 `brew install libxml2 pkg-config llvm`；运行镜像需提供 libxml2，依赖由 [Dockerfile](../../deployment/Dockerfile) 持有。
+
 ```sh
 make build
 make check

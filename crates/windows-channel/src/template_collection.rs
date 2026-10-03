@@ -55,6 +55,7 @@ pub async fn send(
             .try_into()
             .map_err(|_| corrupt())?;
         let context = rss_mdm_windows_mdm::native::Context {
+            enrollment: rss_mdm_windows_mdm::native::Enrollment::Primary,
             build: Some(build),
             edition: Some(edition.try_into().map_err(|_| corrupt())?),
             scope: rss_mdm_windows_mdm::native::Scope::Device,

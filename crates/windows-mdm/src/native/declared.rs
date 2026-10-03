@@ -31,6 +31,7 @@ pub struct ResourceResult {
     pub state: Option<u32>,
 }
 /// Parsed bounded native document. Values deliberately do not implement Debug.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Document {
     /// Exact native document or resource identity.
     pub identity: Identity,
@@ -40,6 +41,7 @@ pub struct Document {
     pub dsc: bool,
 }
 /// A native value remains tied to the format declared by its official protocol position.
+#[derive(Clone, PartialEq, Eq)]
 pub struct ResourceValue {
     /// Native URI format, absent for MI provider parameters.
     pub format: Option<String>,
@@ -150,7 +152,9 @@ fn family(start: &Start, dsc: bool, result: bool) -> Result<String, Error> {
         {
             return Err(Error::Value);
         }
-        Ok(format!("{}:{class}", attr(start, "namespace")?))
+        let namespace = attr(start, "namespace")?.replace('\\', "/");
+        if namespace.len() > 256 || !namespace.split('/').all(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')) { return Err(Error::Identity); }
+        Ok(format!("{}:{}", namespace.to_ascii_lowercase(), class.to_ascii_lowercase()))
     } else {
         let name = attr(start, "name")?;
         if !name.starts_with("./Vendor/MSFT/")
@@ -190,7 +194,10 @@ fn member(start: &Start, family: &str, dsc: bool, result: bool) -> Result<String
     {
         return Err(Error::Value);
     }
-    Ok(format!("{family}/{path}"))
+    if dsc {
+        if !path.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') { return Err(Error::Identity); }
+        Ok(format!("{family}/{}/{}", start.name, path.to_ascii_lowercase()))
+    } else { Ok(format!("{family}/{path}")) }
 }
 impl Document {
     /// Parse the bounded official document grammar without external XML resolution.
@@ -209,9 +216,11 @@ impl Document {
         }
         let family_tag = if dsc { "DSC" } else { "CSP" };
         let mut resources = BTreeMap::new();
+        let mut families = std::collections::BTreeSet::new();
         while input.is("", family_tag).map_err(malformed)? {
             let start = input.start("", family_tag).map_err(malformed)?;
             let family = family(&start, dsc, false)?;
+            if dsc && !families.insert(family.clone()) { return Err(Error::Identity); }
             while input
                 .is("", if dsc { "Key" } else { "URI" })
                 .map_err(malformed)?
@@ -249,9 +258,7 @@ impl Document {
         }
         input.end("", "DeclaredConfiguration").map_err(malformed)?;
         input.finish().map_err(malformed)?;
-        if resources.is_empty() {
-            return Err(Error::Value);
-        }
+        if resources.is_empty() || dsc && families.iter().any(|family| !resources.keys().any(|k| k.starts_with(&format!("{family}/Key/")))) { return Err(Error::Value); }
         Ok(Self {
             identity,
             resources,
@@ -285,9 +292,11 @@ impl ResultDocument {
         let dsc = identity.scenario.starts_with("MSFTExtensibilityMIProvider");
         let family_tag = if dsc { "DSC" } else { "CSP" };
         let mut resources = BTreeMap::new();
+        let mut families = std::collections::BTreeSet::new();
         while input.is("", family_tag).map_err(malformed)? {
             let start = input.start("", family_tag).map_err(malformed)?;
             let family = family(&start, dsc, true)?;
+            if dsc && !families.insert(family.clone()) { return Err(Error::Identity); }
             let inherited_status = if dsc { number(&start, "status")? } else { None };
             let inherited_state = if dsc { number(&start, "state")? } else { None };
             while input
@@ -438,14 +447,12 @@ pub fn summaries(xml: &str) -> Result<Vec<Summary>, Error> {
 impl Document {
     /// Validate embedded CSP values using the same generated schema as ordinary native operations.
     pub fn requests(&self, operation: super::Verb) -> Result<Vec<super::Request>, Error> {
-        if self.dsc {
-            return Ok(Vec::new());
-        }
+        if self.dsc { return Err(Error::OperationNotAllowed); }
         let inventory = operation == super::Verb::Get;
         self.resources
             .iter()
             .map(|(uri, resource)| {
-                let value = if inventory {
+                let value = if inventory || operation == super::Verb::Delete {
                     None
                 } else {
                     Some(match resource.format.as_deref().ok_or(Error::Value)? {
