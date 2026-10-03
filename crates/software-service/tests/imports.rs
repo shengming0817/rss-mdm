@@ -84,7 +84,11 @@ fn brew_source_tag_is_bound_to_resource_architecture_even_without_export() {
 
 #[test]
 fn import_rejects_retired_ownership_including_null() {
-    for ownership in [json!("managed_only"), json!("allow_user_existing"), json!(null)] {
+    for ownership in [
+        json!("managed_only"),
+        json!("allow_user_existing"),
+        json!(null),
+    ] {
         let mut request = input();
         request["ownership"] = ownership;
         assert!(serde_json::from_value::<ImportRequest>(request).is_err());

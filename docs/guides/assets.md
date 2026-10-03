@@ -108,3 +108,11 @@ severity 为 low/medium/high/critical，仅用于解释；platform 为 all/windo
 资产详情中的 lists 只返回摘要，各来源摘要自带独立游标，冲突时仍可分页检查每份来源清单。使用 `GET /api/v2/devices/{id}/inventory-lists/{field}?limit=100&cursor=…` 读取选值后的列表。游标绑定字段、设备、租户、授权范围及资产水位；后续变更不混入旧分页。完整空列表与未执行、失败、部分输出分别表达。字段和清单没有 TTL。
 
 本地 `rss-mdm-fixture ingest-fixture` 只接受示例发布的 typed-fields-v2 collector 数据；显式设置 `MDM_COLLECTION_URL` 为有采集结果写权限的数据库身份。示例先提交冻结定义与结果，再用 `DATABASE_URL` 对应的投影运行身份提交 Observation 引用。两者不共享隐式提权或旧格式读取。
+
+## 用已安装软件事实安排软件策略
+
+`device.software.installed` 沿用现有对象数组，条目持有 id、name、version、publisher、scope。先按 `device.software.installed.id` 的 `contains_any` 条件形成智能组，再通过 Scope 分配已有 Software Policy：持续必装用 required_install，用户可选用 available_install，明确移除用 explicit_uninstall。软件不走 RemoteOperation；一次性操作入口的范围冻结见 [企业任务](enterprise-tasks.md)。
+
+例如，清理已检测到的旧应用可对该 id 的组发布 explicit_uninstall；升级已安装应用可对同一组发布 required_install；全设备必装应对目标 Scope 发布 required_install，让当前任务的独立检测确认是否已经满足。用户已有安装同样可以满足目标，或者由有权限的任务执行升级/卸载，不以历史安装归属作为执行门槛。
+
+检查指定软件的版本时，读取授权清单中 id 匹配的同一对象及其 version。不要将独立 id 集合条件与 version 集合条件 AND 后宣称关联到了同一软件；Group 目前没有数组条目关联语法。完整空列表可用于判定未发现目标，Missing、Unsupported、冲突或部分采集须保留未知及质量解释。软件任务结果只证明该次执行的前后检测；后续库存仍由既有采集链路产生，不能从 verified 结果伪造库存快照。

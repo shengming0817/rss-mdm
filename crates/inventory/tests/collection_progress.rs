@@ -139,3 +139,31 @@ fn invalid_list_items_are_recorded_without_replacing_previous_list_facts() {
         serde_json::from_slice(&serde_json::to_vec(&progress).unwrap()).unwrap();
     assert_eq!(progress, restored);
 }
+
+#[test]
+fn installed_software_empty_snapshot_is_confirmed_not_missing_or_partial() {
+    use rss_mdm_inventory::FieldKey;
+    let key = FieldKey::parse("device.software.installed").unwrap();
+    let d = CollectionDefinition::new(
+        "installed-software",
+        1,
+        Source::MdmWindows,
+        builtin::fields()
+            .into_iter()
+            .filter(|f| f.key == key)
+            .collect(),
+    )
+    .unwrap();
+    let mut empty = CollectionProgress::new(d.clone());
+    empty
+        .observe_value(key, CollectedValue::Value(Scalar::Array(vec![])), 1)
+        .unwrap();
+    empty.observe_status(key, 200, 1).unwrap();
+    assert!(matches!(empty.body().unwrap(), Some(Body::Snapshot(values)) if values.len() == 1));
+    let mut missing = CollectionProgress::new(d.clone());
+    missing.finish();
+    assert!(missing.body().unwrap().is_none());
+    assert_eq!(missing.fields()[&key].quality, Quality::Missing);
+    let partial = CollectionProgress::reported(d, &Body::Partial(vec![]), 1).unwrap();
+    assert!(matches!(partial.body().unwrap(), Some(Body::Partial(values)) if values.is_empty()));
+}

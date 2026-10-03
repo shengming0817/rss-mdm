@@ -132,7 +132,11 @@ fn software_validation_reports_closed_context_without_input_values() {
 #[test]
 fn software_rejects_retired_ownership_including_null() {
     assert!(version(spec()).is_ok());
-    for ownership in [json!("managed_only"), json!("allow_user_existing"), json!(null)] {
+    for ownership in [
+        json!("managed_only"),
+        json!("allow_user_existing"),
+        json!(null),
+    ] {
         let mut value = spec();
         value["ownership"] = ownership;
         assert!(version(value).is_err());

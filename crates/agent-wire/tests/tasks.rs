@@ -218,6 +218,11 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
             v["steps"][0]["action"]["behavior"]["install"]["timeoutSeconds"] = json!("never")
         },
         |v: &mut serde_json::Value| v["publicationId"] = json!(null),
+        |v: &mut serde_json::Value| v["steps"][0]["action"]["ownership"] = json!("managed_only"),
+        |v: &mut serde_json::Value| {
+            v["steps"][0]["action"]["ownership"] = json!("allow_user_existing")
+        },
+        |v: &mut serde_json::Value| v["steps"][0]["action"]["ownership"] = json!(null),
     ] {
         let mut bad = serde_json::to_value(&spec).unwrap();
         change(&mut bad);

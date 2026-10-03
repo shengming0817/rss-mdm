@@ -128,6 +128,35 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
     } else {
         ("macos", "aarch64", "macos_aarch64")
     };
+    let version_input = |definition: Value| json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"version","version":"v1","kind":"software","variants":[{"platform":os,"architecture":arch,"key":"default","declaration":{"kind":"software","definition":definition}}]}});
+    for ownership in [
+        json!("managed_only"),
+        json!("allow_user_existing"),
+        json!(null),
+    ] {
+        let mut old = definition.clone();
+        old["ownership"] = ownership;
+        ensure!(
+            f.author
+                .call(&f.router, Method::POST, &path, Some(version_input(old)))
+                .await?
+                .0
+                == StatusCode::BAD_REQUEST
+        );
+    }
+    if format == "dmg_app" {
+        for digest in [json!(vec![1; 32]), json!(null)] {
+            let mut old = definition.clone();
+            old["behavior"]["payload"]["application"]["materialSha256"] = digest;
+            ensure!(
+                f.author
+                    .call(&f.router, Method::POST, &path, Some(version_input(old)))
+                    .await?
+                    .0
+                    == StatusCode::BAD_REQUEST
+            );
+        }
+    }
     write(&mut f.author,&f.router,&path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":os,"architecture":arch,"key":"default","declaration":{"kind":"software","definition":definition}}]})).await?;
     let request = Request::builder().method(Method::POST)
         .uri(format!("/api/v3/resources/{resource}/content?version=v1&variant=default&platform={os}&architecture={arch}&operation={}",Uuid::new_v4()))
@@ -182,6 +211,29 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
     .await??;
     let spec: rss_mdm_agent_wire::SoftwareTaskSpec =
         serde_json::from_value(task["payload"].clone())?;
+    use ring::signature::KeyPair;
+    let key_file = f.base["task_signing"]["private_key_file"].as_str().unwrap();
+    let key = ring::signature::Ed25519KeyPair::from_pkcs8(&std::fs::read(key_file)?).unwrap();
+    let signed: rss_mdm_agent_wire::SignedTask = serde_json::from_value(task.clone())?;
+    let verification = rss_mdm_agent_wire::TaskVerification {
+        key_id: "t2",
+        public_key: key.public_key().as_ref(),
+        tenant_id: Uuid::parse_str(case_tenant())?,
+        device_id: if platform == Platform::Windows {
+            case_windows_device()
+        } else {
+            case_device()
+        },
+        platform: spec.platform,
+        architecture: spec.architecture,
+        registration_id: spec.registration_id,
+        generation: spec.generation,
+        task_id: spec.task_id,
+        attempt_id: spec.attempt_id,
+        permit: rss_mdm_agent_wire::TaskPermit::Offer,
+        now: crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?,
+    };
+    signed.verify(&verification)?;
     ensure!(spec.steps.len() == if format == "msix" { 1 } else { 2 });
     let root = spec.steps.last().unwrap();
     ensure!(
@@ -225,6 +277,15 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
     for kind in ["received", "start"] {
         let r = event_with(&f.router, &f.credential, &task, json!({"kind":kind})).await?;
         ensure!(r.0 == StatusCode::OK, "{kind}: {r:?}");
+        if kind == "start" {
+            let ack: rss_mdm_agent_wire::TaskEventAck = serde_json::from_value(r.1)?;
+            ack.into_permit()
+                .unwrap()
+                .verify(&rss_mdm_agent_wire::TaskVerification {
+                    permit: rss_mdm_agent_wire::TaskPermit::Start,
+                    ..verification
+                })?;
+        }
     }
     let mut result = result_event(&task, "install", Some(0), "present", false)?;
     let output_marker = "private installer stdout marker";
@@ -246,7 +307,29 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
             "wrong native effect accepted"
         );
     }
+    // A matching user-existing app satisfies Required without an installer mutation.
+    // This is detector evidence, not a claim that this task installed or owns the app.
+    if format == "dmg_app" {
+        for step in result["steps"].as_array_mut().unwrap() {
+            let mut before = step["after"].clone();
+            before["observedAt"] = json!(1);
+            step["before"] = before;
+            step["process"] = json!({"kind":"not_run"});
+        }
+    }
+    let inventory_before = pg(&format!(
+        "SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{}'",
+        case_tenant()
+    ))?;
     let r = event_with(&f.router, &f.credential, &task, result).await?;
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{}'",
+            case_tenant()
+        ))? == inventory_before,
+        "software result fabricated an inventory snapshot"
+    );
+
     ensure!(r.0 == StatusCode::OK, "result: {r:?}");
     if format == "exe" {
         let runs = f

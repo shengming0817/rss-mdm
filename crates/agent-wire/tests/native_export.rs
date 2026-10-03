@@ -134,3 +134,20 @@ fn invocation_schema_matches_literal_argument_and_environment_validation() {
         assert_eq!(spec.validate().is_ok(), accepted);
     }
 }
+
+#[test]
+fn app_copy_rust_and_schema_reject_the_retired_directory_digest() {
+    let canonical: serde_json::Value =
+        serde_json::from_str(include_str!("../schema/task-payload-v6.schema.json")).unwrap();
+    let schema = json!({"$ref":"#/$defs/SoftwareTaskAction","$defs":canonical["$defs"]});
+    let validator = jsonschema::draft202012::new(&schema).unwrap();
+    let action = json!({"package":"Acme.App","version":"1","reboot":"report","downgrade":"deny","signatures":[],"behavior":{"kind":"dmg","image":"installer","volume":"Acme","scope":"system","invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","payload":{"kind":"app_copy","application":{"path":"Acme.app","targetName":"Acme.app","bundleId":"com.acme.app","version":"1"},"uninstall":true}}});
+    assert!(serde_json::from_value::<SoftwareTaskAction>(action.clone()).is_ok());
+    assert!(validator.is_valid(&action));
+    for digest in [json!(vec![1; 32]), json!(null)] {
+        let mut old = action.clone();
+        old["behavior"]["payload"]["application"]["materialSha256"] = digest;
+        assert!(serde_json::from_value::<SoftwareTaskAction>(old.clone()).is_err());
+        assert!(!validator.is_valid(&old));
+    }
+}
