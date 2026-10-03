@@ -108,13 +108,44 @@ impl channels::ApplePush for Store {
                     "apple.push.material",
                 )
                 .map_err(channels::Rejection::from)?;
-                let plain = self.protection.open_bytes(&sealed, &aad).map_err(|_| {
-                    channels::Rejection::from(Error::Unavailable(crate::Failure::AppleStorage))
-                })?;
-                let material: crate::material::Push = serde_json::from_slice(plain.expose())
-                    .map_err(|_| {
-                        channels::Rejection::from(Error::Unavailable(crate::Failure::AppleStorage))
-                    })?;
+                // The composition root binds this immutable key at startup. Authentication
+                // or decoding failure here belongs to this row; DB/AAD failures propagate.
+                let material = self
+                    .protection
+                    .open_bytes(&sealed, &aad)
+                    .ok()
+                    .and_then(|plain| {
+                        serde_json::from_slice::<crate::material::Push>(plain.expose()).ok()
+                    })
+                    .filter(|value| {
+                        !value.token.is_empty()
+                            && value.token.len() <= 512
+                            && !value.magic.is_empty()
+                            && value.magic.len() <= 1024
+                    });
+                let Some(material) = material else {
+                    sqlx::query("UPDATE mdm_apple.channels SET state='pending_token',push_id=NULL,push_lease_until=NULL,push_status=NULL,push_outcome='rejected' WHERE tenant_id=$1::uuid AND registration=$2 AND user_key=$3 AND token_revision=$4")
+                        .bind(&tenant).bind(registration).bind(&user_key).bind(revision)
+                        .execute(&mut *c).await.map_err(storage)?;
+                    if user_key.is_empty() {
+                        sqlx::query("UPDATE mdm_apple.devices SET state='pending_token' WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'")
+                            .bind(&tenant).bind(registration).execute(&mut *c).await.map_err(storage)?;
+                    }
+                    let scope = self
+                        .protection
+                        .mac(user_key.as_bytes(), &aad)
+                        .map_err(|_| {
+                            channels::Rejection::from(Error::Unavailable(
+                                crate::Failure::AppleStorage,
+                            ))
+                        })?;
+                    let scope: String = scope.iter().map(|byte| format!("{byte:02x}")).collect();
+                    eprintln!(
+                        "{}",
+                        serde_json::json!({"event":"apple_push_material_rejected","registration":registration,"token_revision":revision,"channel":if user_key.is_empty(){"device"}else{"user"},"scope":scope,"failure":"material_integrity"})
+                    );
+                    continue;
+                };
                 result.push(channels::PushCandidate {
                     registration,
                     revision,

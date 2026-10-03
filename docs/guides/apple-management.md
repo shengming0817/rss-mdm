@@ -102,7 +102,7 @@ challenge 是一次性事务，先消费提交再 allow；CA 的重复传输不�
 
 启动失败按闭合类别定位：`AppleListeners`、`AppleScep`、`AppleProfileSigner`、`AppleApns`、`AppleChallengeWebhook`、`AppleNotifyWebhook`；不会输出路径、密钥、口令或 provider 原文。
 
-`apple_push_result` 包含 registration、token revision、HTTP status、outcome 及闭合 failure 类别。`transport` 表示连接/TLS/传输失败，`certificate_expired` 表示本地 APNs 材料到期。429/网络失败使用封顶 960 秒的退避，5xx 至少等待 900 秒；已知 token 失效 reason 清除当前 token/PushMagic 并等待 TokenUpdate；配置拒绝暂停相同 token revision 与 APNs 证书组合。修复证书配置后重启，或收到新 TokenUpdate 后恢复。以上状态都不推进命令结果；不得据 APNs 成功判断 Profile 已安装。
+`apple_push_result` 包含 wake ID、device/user 通道类别、registration、token revision、HTTP status、outcome 及闭合 failure 类别。坏加密推送材料只隔离所属通道为 pending_token，等待真实 TokenUpdate 恢复；`apple_push_material_rejected` 输出闭合完整性类别及带密钥的 scope 摘要，健康候选继续处理。全局数据库失败继续影响 readiness，错误保护密钥由启动绑定拒绝。`transport` 表示连接/TLS/传输失败，`certificate_expired` 表示本地 APNs 材料到期。429/网络失败使用封顶 960 秒的退避，5xx 至少等待 900 秒；已知 token 失效 reason 清除当前 token/PushMagic 并等待 TokenUpdate；配置拒绝暂停相同 token revision 与 APNs 证书组合。修复证书配置后重启，或收到新 TokenUpdate 后恢复。以上状态都不推进命令结果；不得据 APNs 成功判断 Profile 已安装。
 ## 续期与后台故障观测
 
 设备身份采用服务端受控的注册 profile 更新，step-ca 的通用 renewal 仍保持禁用；每次签发必须消费产品准备的一次性 challenge。配置身份变化仍要求重新注册，不会借续期接受漂移。监控 `apple_identity_health` 的 `renewal_due`/`expired` 和 `apple_identity_renewal`；离线跨过证书到期的设备使用人工重新注册恢复。
