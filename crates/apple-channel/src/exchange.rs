@@ -104,6 +104,8 @@ impl ports::AppleExchange for Exchange {
                 crate::attempt::Reception::Ready(attempt) => {
                     ports::AppleReception::Command(Box::new(CommandAttempt {
                         attempt,
+                        principal: p.clone(),
+                        report: self.dictionary.clone(),
                         key: self.apple.protection.clone(),
                         status: self.status,
                         user: self.user,
@@ -114,6 +116,8 @@ impl ports::AppleExchange for Exchange {
     }
 }
 struct CommandAttempt {
+    principal: crate::device::DevicePrincipal,
+    report: plist::Dictionary,
     attempt: crate::attempt::Attempt,
     key: Arc<rss_mdm_native_protection::Protector>,
     status: protocol::Status,
@@ -154,12 +158,37 @@ impl ports::AppleAttempt for CommandAttempt {
             let query = matches!(&command.request, Request::Command {command} if rss_mdm_apple_mdm::native::outcome::family(&command.request_type)==Ok(rss_mdm_apple_mdm::native::outcome::Family::Query));
             let fact =
                 evidence::settlement(phase, self.status, self.attempt.outcome, profile, query);
+            let declaration_guards = self.attempt.declaration_guards.clone();
             self.attempt
                 .settle(c, self.status, accepted)
                 .await
                 .map_err(ports::Rejection::from)?;
             if !accepted {
                 return Ok(S::Waiting);
+            }
+            if phase == Phase::Observe
+                && self.status == protocol::Status::Acknowledged
+                && matches!(command.request, Request::Declarations { .. })
+            {
+                let released = crate::ddm::release_profiles(
+                    c,
+                    &self.key,
+                    &self.principal,
+                    &self.user,
+                    &self.report,
+                    &declaration_guards,
+                )
+                .await
+                .map_err(ports::Rejection::from)?;
+                return Ok(
+                    if released
+                        && matches!(&command.request,Request::Declarations{declarations,..} if declarations.is_empty())
+                    {
+                        S::Reported
+                    } else {
+                        S::Waiting
+                    },
+                );
             }
             if fact != S::Profile {
                 return Ok(fact);

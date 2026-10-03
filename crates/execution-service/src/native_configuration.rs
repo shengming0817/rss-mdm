@@ -222,8 +222,18 @@ impl ExecutionService {
                     first
                         .native
                         .request(id, first.policy.version.to_string(), deadline, false)?;
-                self.queue_policy_configuration(tx, device, first.policy, &request, false, audit)
-                    .await?;
+                self.queue_policy_configuration(
+                    tx,
+                    device,
+                    first.policy,
+                    &request,
+                    first
+                        .native
+                        .unit_key(&self.protection, self.tenant, device)?,
+                    false,
+                    audit,
+                )
+                .await?;
                 id
             };
             save_objects(
@@ -354,7 +364,23 @@ impl ExecutionService {
                     op.approval,
                     authority::ExecutionAuthority::Policy { remove: true, .. }
                 );
-                if is_remove && command.status() == dc::Status::Applied {
+                let publication_withdrawn = if is_remove
+                    && command.status() == dc::Status::Received
+                    && matches!(&op.request.task, Task::Macos { request: rss_mdm_apple_mdm::native::request::Request::Declarations { declarations, .. } } if declarations.is_empty())
+                {
+                    let results = self.apple_results.clone();
+                    let tenant = self.tenant.to_string();
+                    tx.with_connection(move |c| {
+                        Box::pin(
+                            async move { Ok(results.withdrawal_published(c, tenant, id).await) },
+                        )
+                    })
+                    .await?
+                    .map_err(Error::from)?
+                } else {
+                    false
+                };
+                if is_remove && (command.status() == dc::Status::Applied || publication_withdrawn) {
                     replace_claims(tx, device, &old.objects, &[], None).await?;
                     save_objects(
                         tx,
@@ -388,8 +414,16 @@ impl ExecutionService {
                 let request = old
                     .native
                     .request(id, policy.version.to_string(), deadline, true)?;
-                self.queue_policy_configuration(tx, device, policy, &request, true, audit)
-                    .await?;
+                self.queue_policy_configuration(
+                    tx,
+                    device,
+                    policy,
+                    &request,
+                    old.native.unit_key(&self.protection, self.tenant, device)?,
+                    true,
+                    audit,
+                )
+                .await?;
                 id
             };
             save_objects(
@@ -475,10 +509,12 @@ impl ExecutionService {
         device: &str,
         policy: &Policy,
         input: &Create,
+        unit: String,
         remove: bool,
         audit: &RequestAudit,
     ) -> Result<()> {
         let authority = crate::authority::ExecutionAuthority::Policy {
+            unit,
             required: input.task.permissions()?,
             tenant: tx.tenant_id().to_string(),
             policy: policy.id,

@@ -107,6 +107,11 @@ impl ExecutionService {
             self.apple_profiles.clone(),
             device,
             input,
+            Some(format!(
+                "user:{}:{}",
+                proof.user().instance_id,
+                proof.user().principal_id
+            )),
         )
         .await?;
         let auth = storage::authorized_native(tx, proof, device, &required).await?;
@@ -213,6 +218,7 @@ impl ExecutionService {
             self.apple_profiles.clone(),
             device,
             input,
+            Some(approval.apple_owner(input.operation_id)?),
         )
         .await?;
         approval.bind_required(required.clone());

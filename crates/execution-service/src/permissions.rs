@@ -34,12 +34,62 @@ pub(super) fn required(task: &Task) -> Result<Vec<P>, Error> {
                 A::RemoveProfile { .. } => {
                     permissions.insert(P::ConfigurationWrite);
                 }
-                A::Declarations { declarations } => {
+                A::Declarations {
+                    declarations,
+                    assets,
+                } => {
                     if declarations.len() > 4096 {
                         return Err(Error::Malformed);
                     }
                     permissions.insert(P::ConfigurationWrite);
+                    if !assets.is_empty() {
+                        permissions.insert(P::ResourceRead);
+                    }
+                    for asset in assets {
+                        for schema in &asset.profile_schemas {
+                            permissions.insert(apple_profile(schema)?);
+                        }
+                    }
                     for declaration in declarations {
+                        if declaration.declaration_type
+                            == "com.apple.configuration.management.status-subscriptions"
+                        {
+                            let payload = declaration
+                                .payload
+                                .to_plist()
+                                .map_err(|_| Error::Malformed)?;
+                            for item in payload
+                                .get("StatusItems")
+                                .and_then(plist::Value::as_array)
+                                .ok_or(Error::Malformed)?
+                            {
+                                let name = item
+                                    .as_dictionary()
+                                    .and_then(|v| v.get("Name"))
+                                    .and_then(plist::Value::as_string)
+                                    .ok_or(Error::Malformed)?;
+                                if name != "management.declarations" {
+                                    permissions.insert(P::InventoryRead);
+                                }
+                                if name.starts_with("security.")
+                                    || name.starts_with("diskmanagement.filevault.")
+                                    || name.starts_with("enhanced-logging.")
+                                    || name.starts_with("mdm.push-")
+                                {
+                                    permissions.insert(P::SecurityOperate);
+                                }
+                                if name.starts_with("account.") {
+                                    permissions.insert(P::AccountWrite);
+                                }
+                                if name.starts_with("softwareupdate.") {
+                                    permissions.insert(P::DeviceUpdate);
+                                }
+                                if name.starts_with("app.managed.") || name.starts_with("package.")
+                                {
+                                    permissions.insert(P::SoftwareDeploy);
+                                }
+                            }
+                        }
                         let ty = declaration.declaration_type.as_str();
                         if ty.contains("softwareupdate") {
                             permissions.insert(P::DeviceUpdate);

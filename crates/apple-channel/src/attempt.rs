@@ -23,6 +23,7 @@ pub struct Attempt {
     digest: Vec<u8>,
     pub operation: Option<Uuid>,
     pub phase: String,
+    pub declaration_guards: Vec<Uuid>,
 }
 pub async fn lock(
     c: &mut PgConnection,
@@ -36,7 +37,7 @@ pub async fn lock(
     let scope = crate::protocol::user(&crate::protocol::decode(bytes)?)?
         .map(|id| id.to_string())
         .unwrap_or_default();
-    let row = sqlx::query("SELECT operation::text,phase,state,response_digest,request,context,(operation IS NULL OR ordinal=(SELECT max(b.ordinal) FROM mdm_apple.attempts b WHERE b.tenant_id=a.tenant_id AND b.operation=a.operation AND b.phase=a.phase)) AS latest FROM mdm_apple.attempts a WHERE tenant_id=$1::uuid AND id=$2::uuid AND registration=$3::uuid AND generation=$4 AND user_key=$6 AND CASE $5 WHEN 0 THEN collection IS NOT NULL WHEN 1 THEN operation IS NOT NULL ELSE certificate IS NOT NULL END FOR UPDATE")
+    let row = sqlx::query("SELECT operation::text,phase,state,response_digest,request,context,declaration_guards,(operation IS NULL OR ordinal=(SELECT max(b.ordinal) FROM mdm_apple.attempts b WHERE b.tenant_id=a.tenant_id AND b.operation=a.operation AND b.phase=a.phase)) AS latest FROM mdm_apple.attempts a WHERE tenant_id=$1::uuid AND id=$2::uuid AND registration=$3::uuid AND generation=$4 AND user_key=$6 AND CASE $5 WHEN 0 THEN collection IS NOT NULL WHEN 1 THEN operation IS NOT NULL ELSE certificate IS NOT NULL END FOR UPDATE")
         .bind(&tenant).bind(id.to_string()).bind(p.registration().to_string()).bind(p.generation()).bind(match owner { Owner::Collection=>0i32, Owner::Command=>1, Owner::Certificate=>2 }).bind(scope).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else { return Ok(None) };
     let state: String = row.try_get("state").map_err(db)?;
@@ -174,6 +175,7 @@ pub async fn lock(
         digest,
         operation,
         phase: row.try_get("phase").map_err(db)?,
+        declaration_guards: row.try_get("declaration_guards").map_err(db)?,
     })))
 }
 impl Attempt {

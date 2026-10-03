@@ -496,3 +496,170 @@ pub fn collides(objects: &[ProfileObject], other: &[ProfileObject], types: bool)
         })
     })
 }
+
+/// Import a bounded unsigned native profile with explicit official schema provenance.
+/// PayloadType is not sufficient to disambiguate Apple's profile schema definitions.
+pub fn from_native(
+    bytes: &[u8],
+    schemas: &[String],
+    channel: Channel,
+) -> Result<ProfileInput, Error> {
+    if bytes.len() > 16 * 1024 * 1024 {
+        return Err(Error::Limit);
+    }
+    let value = Value::from_reader(std::io::Cursor::new(bytes)).map_err(|_| Error::Encoding)?;
+    let root = value.as_dictionary().ok_or(Error::Field)?;
+    let scope = if channel == Channel::Device {
+        "System"
+    } else {
+        "User"
+    };
+    if root
+        .get("PayloadScope")
+        .and_then(Value::as_string)
+        .unwrap_or("System")
+        != scope
+        || root.get("PayloadType").and_then(Value::as_string) != Some("Configuration")
+        || root
+            .get("PayloadVersion")
+            .and_then(Value::as_unsigned_integer)
+            != Some(1)
+    {
+        return Err(Error::Constraint);
+    }
+    let read_identity = |values: &Dictionary| -> Result<(String, Uuid), Error> {
+        let id = values
+            .get("PayloadIdentifier")
+            .and_then(Value::as_string)
+            .ok_or(Error::Field)?;
+        let uuid = Uuid::parse_str(
+            values
+                .get("PayloadUUID")
+                .and_then(Value::as_string)
+                .ok_or(Error::Field)?,
+        )
+        .map_err(|_| Error::Field)?;
+        identity(id, uuid)?;
+        Ok((id.into(), uuid))
+    };
+    let children = root
+        .get("PayloadContent")
+        .and_then(Value::as_array)
+        .ok_or(Error::Field)?;
+    if children.len() != schemas.len() {
+        return Err(Error::Constraint);
+    }
+    let common = generated::DEFINITIONS
+        .iter()
+        .find(|d| d.schema == "mdm/profiles/CommonPayloadKeys.yaml")
+        .ok_or(Error::InvalidSchema)?;
+    let identity_keys = [
+        "PayloadIdentifier",
+        "PayloadUUID",
+        "PayloadType",
+        "PayloadVersion",
+    ];
+    let mut payloads = Vec::new();
+    for (child, schema) in children.iter().zip(schemas) {
+        let child = child.as_dictionary().ok_or(Error::Field)?;
+        let definition = generated::DEFINITIONS
+            .iter()
+            .find(|d| d.kind == Kind::Profile && d.schema == schema)
+            .ok_or(Error::UnknownSchema)?;
+        if matches!(
+            definition.identity,
+            "com.apple.mdm"
+                | "com.apple.declarations"
+                | "TopLevel"
+                | "CommonPayloadKeys"
+                | "Configuration"
+        ) || child.get("PayloadType").and_then(Value::as_string) != Some(definition.identity)
+            || child
+                .get("PayloadVersion")
+                .and_then(Value::as_unsigned_integer)
+                != Some(1)
+        {
+            return Err(Error::Constraint);
+        }
+        let (identifier, uuid) = read_identity(child)?;
+        let mut metadata = Dictionary::new();
+        let mut fields = Dictionary::new();
+        for (name, value) in child {
+            if identity_keys.contains(&name.as_str()) {
+                continue;
+            }
+            if common.request.iter().any(|i| common.fields[*i].key == name) {
+                metadata.insert(name.clone(), value.clone());
+            } else {
+                fields.insert(name.clone(), value.clone());
+            }
+        }
+        payloads.push(PayloadInput {
+            schema: schema.clone(),
+            identifier,
+            uuid,
+            metadata: Fields::from_plist(&metadata)?,
+            fields: Fields::from_plist(&fields)?,
+        });
+    }
+    let (identifier, uuid) = read_identity(root)?;
+    let metadata: Dictionary = root
+        .iter()
+        .filter(|(name, _)| {
+            !identity_keys.contains(&name.as_str())
+                && !["PayloadContent", "PayloadScope"].contains(&name.as_str())
+        })
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    Ok(ProfileInput {
+        identifier,
+        uuid,
+        metadata: Fields::from_plist(&metadata)?,
+        payloads,
+    })
+}
+/// DDM takeover requires the exact ordered native structure; presence alone is insufficient.
+pub fn same_structure(left: &[ProfileObject], right: &[ProfileObject]) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(a, b)| {
+            a.identifier == b.identifier && a.uuid == b.uuid && a.payload_type == b.payload_type
+        })
+}
+
+/// Takeover observes the managed profile's ordered structure, including complete payload content.
+pub fn observed_structure(
+    report: &Dictionary,
+    objects: &[ProfileObject],
+) -> Result<bool, crate::Error> {
+    let root = objects.first().ok_or(crate::Error::Malformed)?;
+    if !observed_manifest(report, &root.identifier, root.uuid, objects)? {
+        return Ok(false);
+    }
+    let profile = report
+        .get("ProfileList")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items.iter().filter_map(Value::as_dictionary).find(|p| {
+                p.get("PayloadIdentifier").and_then(Value::as_string) == Some(&root.identifier)
+            })
+        })
+        .ok_or(crate::Error::Malformed)?;
+    if profile.get("IsManaged").and_then(Value::as_boolean) != Some(true) {
+        return Ok(false);
+    }
+    let children = profile
+        .get("PayloadContent")
+        .and_then(Value::as_array)
+        .ok_or(crate::Error::Malformed)?;
+    Ok(children.iter().zip(&objects[1..]).all(|(value, expected)| {
+        value.as_dictionary().is_some_and(|v| {
+            v.get("PayloadType").and_then(Value::as_string) == Some(&expected.payload_type)
+                && v.get("PayloadIdentifier").and_then(Value::as_string)
+                    == Some(&expected.identifier)
+                && v.get("PayloadUUID")
+                    .and_then(Value::as_string)
+                    .and_then(|v| Uuid::parse_str(v).ok())
+                    == Some(expected.uuid)
+        })
+    }))
+}

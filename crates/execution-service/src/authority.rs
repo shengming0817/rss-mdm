@@ -27,6 +27,7 @@ pub enum ExecutionAuthority {
         device: String,
     },
     Policy {
+        unit: String,
         required: Vec<Permission>,
         tenant: String,
         policy: uuid::Uuid,
@@ -69,6 +70,21 @@ impl ExecutionAuthority {
                 .iter()
                 .map(|&p| UserGrant::from_proof(snapshot, proof, device, p))
                 .collect::<Result<_, _>>()?,
+        })
+    }
+    pub fn apple_owner(&self, operation: uuid::Uuid) -> Result<String, Error> {
+        Ok(match self {
+            Self::User { evidence, .. } => {
+                let user = evidence.first().ok_or(Error::Forbidden)?.user();
+                if evidence.iter().any(|g| g.user() != user) {
+                    return Err(Error::Forbidden);
+                }
+                format!("user:{}:{}", user.instance_id, user.principal_id)
+            }
+            Self::Policy { unit, .. } => format!("configuration:{unit}"),
+            Self::RemoteOperation { .. } | Self::AgentInstall { .. } => {
+                format!("operation:{operation}")
+            }
         })
     }
     pub fn required(&self) -> &[Permission] {
@@ -156,6 +172,7 @@ impl ExecutionAuthority {
                 version,
                 device,
                 remove,
+                unit,
                 ..
             } => {
                 let frozen=sqlx::query_scalar::<_,serde_json::Value>("SELECT frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2 AND policy=$3").bind(tenant).bind(version).bind(policy).fetch_optional(&mut *conn).await.map_err(db)?;
@@ -165,6 +182,7 @@ impl ExecutionAuthority {
                 if *remove && !native_grant(conn, frozen.clone(), device, permission, now).await? {
                     return Ok(false);
                 }
+                let retained_frozen = frozen.clone();
                 let expected: crate::frozen::Frozen =
                     serde_json::from_value(frozen).map_err(|_| Error::Malformed)?;
                 let crate::frozen::Frozen::Configuration { native, exit, .. } = expected else {
@@ -185,6 +203,21 @@ impl ExecutionAuthority {
                 {
                     return Ok(false);
                 }
+                if native.unit_key(key, tenant_id, device)? != *unit {
+                    return Ok(false);
+                }
+                let retain_ddm = matches!(exit, rss_mdm_policy::Exit::Retain)
+                    && matches!(
+                        native.apply,
+                        crate::Task::Macos {
+                            request: rss_mdm_apple_mdm::native::request::Request::Declarations { .. }
+                        }
+                    );
+                let retained_grant = if retain_ddm {
+                    native_grant(conn, retained_frozen.clone(), device, permission, now).await?
+                } else {
+                    false
+                };
                 let expected_objects = native.objects()?;
                 let expected = serde_json::to_vec(&(&native.target, &native.apply))
                     .map_err(|_| Error::Malformed)?;
@@ -248,7 +281,7 @@ impl ExecutionAuthority {
                         }
                     }
                 }
-                Ok(*remove || live)
+                Ok(*remove || live || retained_grant)
             }
         }
     }

@@ -16,6 +16,11 @@ struct Basis {
     expires_at: Option<i64>,
 }
 impl UserGrant {
+    /// Stable actor identity for native ownership; this conveys no current authority.
+    pub fn user(&self) -> &User {
+        &self.user
+    }
+
     pub fn from_proof(
         snapshot: &Snapshot,
         proof: &AuthorizedPrincipal,

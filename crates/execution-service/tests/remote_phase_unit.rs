@@ -18,6 +18,7 @@ fn cancellation_deadline_and_unknown_do_not_claim_early_completion() {
                     apply: Task::Macos {
                         request: rss_mdm_apple_mdm::native::request::Request::Declarations {
                             declarations: vec![],
+                            assets: vec![],
                         },
                     },
                 },

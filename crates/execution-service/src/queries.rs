@@ -91,7 +91,7 @@ impl Queries {
             if op.device!=device{return Err(Error::Forbidden.into());}
             let command=service.command_status(tx,&op).await?;
             let now=storage::now(tx).await?;let approved=storage::approval_valid(&service.source, &service.protection,tx,&op,now).await?;
-            if matches!(op.request.task, Task::Macos { request:rss_mdm_apple_mdm::native::request::Request::Command{..} }) {
+            if matches!(op.request.task, Task::Macos { request:rss_mdm_apple_mdm::native::request::Request::Command{..} | rss_mdm_apple_mdm::native::request::Request::Declarations{..} }) {
                 let mut required=op.request.task.permissions()?;required.extend_from_slice(op.approval.required());required.sort();required.dedup();
                 storage::authorized_native(tx,proof,device,&required).await?;
             }

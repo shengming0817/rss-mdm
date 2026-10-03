@@ -14,17 +14,15 @@ pub async fn required(
     owner: Arc<dyn super::channels::AppleProfiles>,
     device: &str,
     input: &Create,
+    declaration_owner: Option<String>,
 ) -> Result<Vec<crate::authorization::Permission>> {
     let mut required = input.task.permissions()?;
-    let Some((identifier, _, _)) = input.profile_target() else {
-        return Ok(required);
-    };
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
     let user = input.target.user_key().to_owned();
-    let identifier = identifier.to_owned();
-    let old = tx
-        .with_connection(move |c| {
+    let old = if let Some((identifier, _, _)) = input.profile_target() {
+        let identifier = identifier.to_owned();
+        tx.with_connection(move |c| {
             Box::pin(async move {
                 Ok(owner
                     .previous_profiles(c, tenant, device, user, identifier)
@@ -32,11 +30,29 @@ pub async fn required(
             })
         })
         .await?
-        .map_err(Error::from)?;
+        .map_err(Error::from)?
+    } else if matches!(
+        input.task,
+        Task::Macos {
+            request: rss_mdm_apple_mdm::native::request::Request::Declarations { .. }
+        }
+    ) {
+        let name = declaration_owner.ok_or(Error::Malformed)?;
+        tx.with_connection(move |c| {
+            Box::pin(async move {
+                Ok(owner
+                    .previous_declarations(c, tenant, device, user, name)
+                    .await)
+            })
+        })
+        .await?
+        .map_err(Error::from)?
+    } else {
+        return Ok(required);
+    };
     for old in old {
         let old = storage::load(tx, key, old).await?;
         required.extend(old.request.task.permissions()?);
-        required.extend_from_slice(old.approval.required());
     }
     required.sort();
     required.dedup();
@@ -64,6 +80,9 @@ pub async fn own(
     };
     let command = super::channels::AppleCommand {
         operation: input.operation_id,
+        authorized_declarations: Vec::new(),
+        owner: String::new(),
+        assets: Vec::new(),
         deadline: input.deadline,
         input_version: input.input_version.clone(),
         target: input.target.clone(),
@@ -88,6 +107,24 @@ pub async fn observation(
     let Task::Macos { request } = &op.request.task else {
         return Err(Error::Malformed.into());
     };
+    if matches!(
+        request,
+        rss_mdm_apple_mdm::native::request::Request::Declarations { .. }
+    ) {
+        let observation = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(apple_results
+                        .declarations(c, tenant, operation, native_values)
+                        .await)
+                })
+            })
+            .await?
+            .map_err(Error::from)?;
+        let mut value=observation.unwrap_or_else(||json!({"protocol":"mdm.apple","observationScope":"declarations","synchronization":"unpublished","nativeStatus":null,"effect":"unverified","compliance":"unknown"}));
+        value["progress"] = json!(super::service::status(status));
+        return Ok(value);
+    }
     let request = request.clone();
     let rows = tx
         .with_connection(move |c| {
@@ -263,6 +300,9 @@ async fn receive(
     };
     let command = channels::AppleCommand {
         operation: op.id,
+        authorized_declarations: Vec::new(),
+        owner: op.approval.apple_owner(op.id)?,
+        assets: Vec::new(),
         deadline: op.request.deadline,
         input_version: op.request.input_version.clone(),
         target: op.request.target.clone(),
@@ -360,7 +400,7 @@ async fn send(
             if prerequisites && (!user_key.is_empty() || op.request.target.user_key().is_empty()) {
                 continue;
             }
-            match send_one(tx, apple.clone(), p, &op, prerequisites).await? {
+            match send_one(service, tx, apple.clone(), p, &op, prerequisites).await? {
                 channels::AppleDispatch::Ready(bytes) => return Ok(bytes),
                 channels::AppleDispatch::Waiting => {}
                 channels::AppleDispatch::Rejected(error) => {
@@ -392,6 +432,7 @@ async fn send(
     Ok(reply.bytes)
 }
 async fn send_one(
+    service: &ExecutionService,
     tx: &mut PgTransaction<'_>,
     apple: Arc<dyn super::channels::Apple>,
     p: &DevicePrincipal,
@@ -401,8 +442,46 @@ async fn send_one(
     let Task::Macos { request } = &op.request.task else {
         return Err(Error::Unsupported.into());
     };
+    let authorized_declarations = if !prerequisites
+        && matches!(
+            request,
+            rss_mdm_apple_mdm::native::request::Request::Declarations { .. }
+        ) {
+        let profiles = service.apple_profiles.clone();
+        let principal = p.clone();
+        let user = op.request.target.user_key().to_owned();
+        let ids = tx
+            .with_connection(move |c| {
+                Box::pin(
+                    async move { Ok(profiles.declaration_candidates(c, &principal, &user).await) },
+                )
+            })
+            .await?
+            .map_err(Error::from)?;
+        authorized_declarations(service, tx, p, op.request.target.user_key(), ids).await?
+    } else {
+        Vec::new()
+    };
+    let assets = if prerequisites {
+        Vec::new()
+    } else {
+        match super::apple_assets::resolve(service, tx, request, &op.request.target).await {
+            Ok(assets) => assets,
+            Err(crate::transaction::Fault::Request(
+                Error::Malformed | Error::NotFound | Error::Conflict | Error::Unsupported,
+            )) => {
+                return Ok(channels::AppleDispatch::Rejected(
+                    rss_mdm_apple_mdm::native::Error::Constraint,
+                ));
+            }
+            Err(error) => return Err(error),
+        }
+    };
     let command = super::channels::AppleCommand {
         operation: op.id,
+        authorized_declarations,
+        owner: op.approval.apple_owner(op.id)?,
+        assets,
         deadline: op.request.deadline,
         input_version: op.request.input_version.clone(),
         target: op.request.target.clone(),
@@ -421,4 +500,155 @@ async fn send_one(
         })
         .await?
         .map_err(Error::from)?)
+}
+
+async fn authorized_declarations(
+    service: &ExecutionService,
+    tx: &mut PgTransaction<'_>,
+    p: &DevicePrincipal,
+    user: &str,
+    ids: Vec<uuid::Uuid>,
+) -> Result<Vec<uuid::Uuid>> {
+    let now = storage::now(tx).await?;
+    let mut authorized = Vec::new();
+    for id in ids {
+        let op = storage::load(tx, &service.protection, id).await?;
+        let progress = service.required_command(tx, &op).await?.status();
+        let live = progress == dc::Status::Applied
+            || (!progress.is_terminal() && now < op.request.deadline);
+        if live
+            && op.registration == p.registration()
+            && op.registration_generation == p.generation()
+            && op.request.target.user_key() == user
+            && storage::approval_valid(&service.source, &service.protection, tx, &op, now).await?
+        {
+            if let Task::Macos { request } = &op.request.task {
+                match super::apple_assets::resolve(service, tx, request, &op.request.target).await {
+                    Ok(_) => {}
+                    Err(crate::transaction::Fault::Request(
+                        Error::Malformed | Error::NotFound | Error::Conflict | Error::Unsupported,
+                    )) => continue,
+                    Err(error) => return Err(error),
+                }
+            }
+            authorized.push(id);
+        }
+    }
+    Ok(authorized)
+}
+impl ExecutionService {
+    pub async fn apple_ddm(
+        &self,
+        p: &DevicePrincipal,
+        exchange: Box<dyn channels::AppleDdmExchange>,
+        audit: &RequestAudit,
+    ) -> std::result::Result<channels::AppleDdmReply, Error> {
+        crate::transaction::run(
+            &self.audit_store,
+            &self.runtime,
+            self.tenant,
+            audit,
+            (self, p, Some(exchange), audit),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (service, p, exchange, audit) = ctx;
+                    let service = *service;
+                    let p = *p;
+                    let tenant = service.tenant.to_string();
+                    let instance = service.instance.clone();
+                    tx.with_connection(move |c| {
+                        Box::pin(async move {
+                            Ok(crate::authorization::lock_on(c, &tenant, &instance).await)
+                        })
+                    })
+                    .await??;
+                    crate::transaction::lock(tx).await?;
+                    storage::lock(tx, p.device()).await?;
+                    let exchange = exchange.take().ok_or(Error::Conflict)?;
+                    let principal = p.clone();
+                    let (exchange, ids) = tx
+                        .with_connection(move |c| {
+                            Box::pin(async move {
+                                Ok(async {
+                                    exchange.current(c, &principal).await?;
+                                    let ids = exchange.candidates(c, &principal).await?;
+                                    Ok::<_, channels::Rejection>((exchange, ids))
+                                }
+                                .await)
+                            })
+                        })
+                        .await?
+                        .map_err(Error::from)?;
+                    let authorized =
+                        authorized_declarations(service, tx, p, exchange.user_key(), ids).await?;
+                    let principal = p.clone();
+                    let reply = tx
+                        .with_connection(move |c| {
+                            Box::pin(async move {
+                                Ok(exchange.respond(c, &principal, authorized).await)
+                            })
+                        })
+                        .await?
+                        .map_err(Error::from)?;
+                    for id in &reply.synchronized {
+                        let op = storage::load(tx, &service.protection, *id).await?;
+                        if eligible(service, tx, p, &op).await? {
+                            complete_ddm(service, tx, &op).await?;
+                        }
+                    }
+                    service
+                        .audit_store
+                        .append_request_in(tx, audit, reply.status, "success")
+                        .await?;
+                    Ok(reply)
+                })
+            },
+        )
+        .await
+    }
+}
+
+async fn complete_ddm(
+    service: &ExecutionService,
+    tx: &mut PgTransaction<'_>,
+    op: &storage::Operation,
+) -> Result<()> {
+    if service.required_command(tx, op).await?.status() == dc::Status::Published {
+        let transition = service
+            .store
+            .report(
+                tx,
+                &dc::DeviceReport {
+                    scope: op.scope,
+                    command_id: op.command_id()?,
+                    coordinate: op.coordinate,
+                    event: dc::DeviceEvent::Received,
+                },
+            )
+            .await?;
+        if transition.outcome == dc::Outcome::OutOfOrder {
+            return Err(Error::Conflict.into());
+        }
+    }
+    let transition = service
+        .store
+        .report(
+            tx,
+            &dc::DeviceReport {
+                scope: op.scope,
+                command_id: op.command_id()?,
+                coordinate: op.coordinate,
+                event: dc::DeviceEvent::Reported(op.request.digest(
+                    &service.protection,
+                    service.tenant,
+                    &op.device,
+                )?),
+            },
+        )
+        .await?;
+    if transition.outcome == dc::Outcome::OutOfOrder {
+        return Err(Error::Conflict.into());
+    }
+    crate::wake::wake_native_in(service.source.clone(), tx, &op.device).await?;
+    Ok(())
 }

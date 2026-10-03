@@ -139,6 +139,9 @@ pub(crate) async fn dispatch(
     };
     let user: String = row.try_get("user_key").map_err(db)?;
     let root: String = row.try_get("identifier").map_err(db)?;
+    if crate::ddm::profile_conflict(c, key, p, &user, &root, objects).await? {
+        return Ok(false);
+    }
     if let Some(objects) = objects
         && collides(c, key, &target, &user, &root, objects, true).await?
     {
@@ -249,4 +252,80 @@ pub(crate) async fn confirm(
     sqlx::query("UPDATE mdm_apple.profiles SET observed_at=coalesce(observed_at,floor(extract(epoch FROM clock_timestamp()))::bigint) WHERE tenant_id=$1::uuid AND operation=$2")
         .bind(&target.tenant).bind(operation).execute(c).await.map_err(db)?;
     Ok(decision)
+}
+
+/// DDM may adopt only the complete ordered structure of an observed classic MDM profile.
+pub(crate) async fn ddm_admission(
+    c: &mut PgConnection,
+    key: &Protector,
+    p: &DevicePrincipal,
+    user: &str,
+    profiles: &[rss_mdm_apple_mdm::native::ddm::LegacyProfile],
+) -> Result<bool, Error> {
+    let target = AppleRegistration {
+        tenant: p.tenant().to_string(),
+        device: p.device().into(),
+        registration: p.registration(),
+        generation: p.generation(),
+    };
+    for profile in profiles {
+        let root = profile.objects.first().ok_or(Error::Malformed)?;
+        let rows=sqlx::query("SELECT * FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND user_key=$4 AND identifier=$5 AND retired_at IS NULL")
+            .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(user).bind(&root.identifier).fetch_all(&mut *c).await.map_err(db)?;
+        for row in rows {
+            if !row.try_get::<bool, _>("present").map_err(db)?
+                || row
+                    .try_get::<Option<i64>, _>("observed_at")
+                    .map_err(db)?
+                    .is_none()
+                || row
+                    .try_get::<Option<Vec<u8>>, _>("manifest")
+                    .map_err(db)?
+                    .is_none()
+                || !rss_mdm_apple_mdm::native::profiles::same_structure(
+                    &profile.objects,
+                    &open(key, &row)?,
+                )
+            {
+                return Ok(false);
+            }
+            let old_operation: Uuid = row.try_get("operation").map_err(db)?;
+            let evidence=sqlx::query("SELECT id,response FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3 AND generation=$4 AND user_key=$5 AND phase='observe' AND accepted AND state='acknowledged' AND ordinal=(SELECT max(a.ordinal) FROM mdm_apple.attempts a WHERE a.tenant_id=$1::uuid AND a.operation=$2 AND a.phase='observe')")
+                .bind(p.tenant().to_string()).bind(old_operation).bind(p.registration()).bind(p.generation()).bind(user).fetch_optional(&mut *c).await.map_err(db)?;
+            let Some(evidence) = evidence else {
+                return Ok(false);
+            };
+            let sealed: Vec<u8> = evidence.try_get("response").map_err(db)?;
+            let plain = crate::protection::open(
+                key,
+                &p.tenant().to_string(),
+                p.registration(),
+                p.generation(),
+                evidence.try_get("id").map_err(db)?,
+                crate::protection::Part::Response,
+                &sealed,
+            )?;
+            let body = crate::protocol::decode(plain.expose())?;
+            if !matches!(
+                rss_mdm_apple_mdm::native::profiles::observed_structure(&body, &profile.objects),
+                Ok(true)
+            ) {
+                return Ok(false);
+            }
+        }
+        if collides(
+            c,
+            key,
+            &target,
+            user,
+            &root.identifier,
+            &profile.objects,
+            true,
+        )
+        .await?
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }

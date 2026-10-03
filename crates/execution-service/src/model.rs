@@ -221,7 +221,7 @@ impl Task {
                 A::RemoveProfile { identifier, .. } => {
                     json!({"platform":"macos","kind":"remove_profile","name":"RemoveProfile","objects":[identifier]})
                 }
-                A::Declarations { declarations } => {
+                A::Declarations { declarations, .. } => {
                     json!({"platform":"macos","kind":"declarations","name":"DeclarativeManagement","objects":declarations.iter().map(|d|&d.identifier).collect::<Vec<_>>()})
                 }
             },

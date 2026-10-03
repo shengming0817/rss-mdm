@@ -31,6 +31,7 @@ use rss_mdm_inventory_service::{assets, collection};
 use rss_mdm_registration_service::device;
 pub mod actions;
 mod apple;
+mod apple_assets;
 mod apple_push;
 mod input_storage;
 mod managed_registration;

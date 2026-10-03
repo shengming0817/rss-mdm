@@ -4,6 +4,35 @@ SET LOCAL check_function_bodies = false;
 
 CREATE SCHEMA mdm_apple;
 
+-- Protocol snapshots point at existing operations; they never own desired policy state.
+CREATE TABLE mdm_apple.declarations (
+    tenant_id uuid NOT NULL, operation uuid NOT NULL,
+    registration uuid NOT NULL, generation bigint NOT NULL CHECK(generation>0),
+    user_key text NOT NULL CHECK(user_key='' OR user_key ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
+    owner text NOT NULL CHECK(octet_length(owner) BETWEEN 1 AND 256),
+    snapshot bytea NOT NULL CHECK(octet_length(snapshot) BETWEEN 68 AND 16777284),
+    published_at bigint NOT NULL DEFAULT floor(extract(epoch FROM clock_timestamp()))::bigint,
+    retired_at bigint, legacy_released_at bigint,
+    PRIMARY KEY(tenant_id,operation)
+);
+CREATE UNIQUE INDEX declarations_owner ON mdm_apple.declarations(tenant_id,registration,generation,user_key,owner) WHERE retired_at IS NULL;
+ALTER TABLE mdm_apple.declarations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_apple.declarations FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_apple.declarations USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
+CREATE TABLE mdm_apple.status_reports (
+    tenant_id uuid NOT NULL, id uuid NOT NULL,
+    registration uuid NOT NULL, generation bigint NOT NULL CHECK(generation>0),
+    user_key text NOT NULL CHECK(user_key='' OR user_key ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
+    digest bytea NOT NULL CHECK(octet_length(digest)=32),
+    evidence bytea NOT NULL CHECK(octet_length(evidence) BETWEEN 68 AND 4194372),
+    received_at bigint NOT NULL DEFAULT floor(extract(epoch FROM clock_timestamp()))::bigint,
+    PRIMARY KEY(tenant_id,id), UNIQUE(tenant_id,registration,generation,user_key,digest)
+);
+CREATE INDEX status_reports_scope ON mdm_apple.status_reports(tenant_id,registration,generation,user_key);
+ALTER TABLE mdm_apple.status_reports ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_apple.status_reports FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_apple.status_reports USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
+
 -- One immutable dispatch history per native Profile operation. Desired state remains in Policy.
 CREATE TABLE mdm_apple.profiles (
     tenant_id uuid NOT NULL, operation uuid NOT NULL,
@@ -41,6 +70,8 @@ CREATE TABLE mdm_apple.attempts (
     received_at bigint,
     user_key text NOT NULL DEFAULT '',
     context jsonb,
+    declaration_guards uuid[] NOT NULL DEFAULT ARRAY[]::uuid[],
+    CONSTRAINT attempts_declaration_guards_check CHECK(cardinality(declaration_guards)<=4096 AND (cardinality(declaration_guards)=0 OR phase='observe')),
     native_outcome text CHECK(native_outcome IN ('query_result','acknowledged','deferred','pending_restart','in_progress','rejected','unknown')),
     accepted boolean NOT NULL DEFAULT false CONSTRAINT attempts_acceptance_check CHECK(NOT accepted OR response IS NOT NULL),
     next_attempt timestamp with time zone DEFAULT clock_timestamp() NOT NULL,

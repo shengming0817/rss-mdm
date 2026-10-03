@@ -132,6 +132,22 @@ pub struct AppleRegistration {
     pub generation: i64,
 }
 pub trait AppleProfiles: Send + Sync {
+    fn declaration_candidates<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        p: &'a DevicePrincipal,
+        user: &'a str,
+    ) -> Pending<'a, Vec<Uuid>>;
+
+    fn previous_declarations<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        device: String,
+        user: String,
+        owner: String,
+    ) -> Pending<'a, Vec<Uuid>>;
+
     fn reserve_profile<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -213,6 +229,22 @@ pub trait ApplePush: Send + Sync {
     ) -> Pending<'a, bool>;
 }
 pub trait AppleResults: Send + Sync {
+    /// Server publication withdrawal is distinct from native object absence.
+    fn withdrawal_published<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        operation: Uuid,
+    ) -> Pending<'a, bool>;
+
+    fn declarations<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        operation: Uuid,
+        native_values: bool,
+    ) -> Pending<'a, Option<serde_json::Value>>;
+
     fn observations<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -250,6 +282,9 @@ pub enum AppleReception {
 }
 pub struct AppleCommand {
     pub operation: Uuid,
+    pub owner: String,
+    pub authorized_declarations: Vec<Uuid>,
+    pub assets: Vec<rss_mdm_apple_mdm::native::ddm::AssetBinding>,
     pub deadline: i64,
     pub input_version: String,
     pub target: super::NativeTarget,
@@ -501,4 +536,34 @@ impl Rejection {
         };
         (status, rss_mdm_agent_wire::ErrorBody { code })
     }
+}
+
+/// A native check-in participant retains protocol bytes at the channel owner.
+pub trait AppleDdmExchange: Send {
+    fn user_key(&self) -> &str;
+    fn current<'a>(&'a self, c: &'a mut PgConnection, p: &'a DevicePrincipal) -> Pending<'a, ()>;
+    fn candidates<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        p: &'a DevicePrincipal,
+    ) -> Pending<'a, Vec<Uuid>>;
+    fn respond<'a>(
+        self: Box<Self>,
+        c: &'a mut PgConnection,
+        p: &'a DevicePrincipal,
+        authorized: Vec<Uuid>,
+    ) -> Pending<'a, AppleDdmReply>;
+}
+pub struct AppleDdmReply {
+    pub status: u16,
+    pub bytes: Vec<u8>,
+    pub synchronized: Vec<Uuid>,
+}
+
+pub trait AppleAssetRead: Send + Sync {
+    fn binding<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        p: &'a DevicePrincipal,
+    ) -> Pending<'a, rss_mdm_apple_mdm::native::ddm::AssetBinding>;
 }

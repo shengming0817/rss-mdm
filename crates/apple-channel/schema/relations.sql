@@ -2,6 +2,14 @@
 BEGIN;
 SET LOCAL check_function_bodies = false;
 
+ALTER TABLE mdm_apple.declarations ADD CONSTRAINT declarations_registration_fkey FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id);
+ALTER TABLE mdm_apple.declarations ADD CONSTRAINT declarations_operation_fkey FOREIGN KEY(tenant_id,operation) REFERENCES mdm_commands.operations(tenant_id,id);
+ALTER TABLE mdm_apple.status_reports ADD CONSTRAINT status_reports_registration_fkey FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id);
+GRANT SELECT,INSERT ON mdm_apple.declarations,mdm_apple.status_reports TO mdm_command_runtime;
+GRANT UPDATE(retired_at,legacy_released_at) ON mdm_apple.declarations TO mdm_command_runtime;
+GRANT SELECT ON mdm_apple.declarations,mdm_apple.status_reports TO mdm_access;
+GRANT UPDATE(retired_at) ON mdm_apple.declarations TO mdm_access;
+
 ALTER TABLE mdm_apple.profiles ADD CONSTRAINT profiles_device_fkey FOREIGN KEY(tenant_id,device) REFERENCES mdm_access.devices(tenant_id,id);
 ALTER TABLE mdm_apple.profiles ADD CONSTRAINT profiles_registration_fkey FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id);
 ALTER TABLE mdm_apple.profiles ADD CONSTRAINT profiles_operation_fkey FOREIGN KEY(tenant_id,operation) REFERENCES mdm_commands.operations(tenant_id,id);
