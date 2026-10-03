@@ -144,3 +144,26 @@ fn installation_accepts_only_empty_or_exact_complete_current_ledger() {
     duplicate[0] = duplicate[1].clone();
     assert!(!accepted_ledger(&duplicate, &current));
 }
+
+#[test]
+fn installation_validates_tenant_coordinates_within_the_declared_limit() {
+    let mut installation = Installation {
+        audit_mode: AuditMode::Plain,
+        instance_id: crate::test_support::identity::INSTANCE.into(),
+        target: [1; 16],
+        lineage: [2; 16],
+        epoch: 1,
+        tenants: (1..=1024)
+            .map(|n| uuid::Uuid::from_u128(n).to_string())
+            .collect(),
+    };
+    assert!(installation.validate().is_ok());
+    installation
+        .tenants
+        .push(uuid::Uuid::from_u128(1025).to_string());
+    assert!(installation.validate().is_err());
+    installation.tenants = vec![uuid::Uuid::from_u128(1).to_string(); 2];
+    assert!(installation.validate().is_err());
+    installation.tenants.clear();
+    assert!(installation.validate().is_err());
+}

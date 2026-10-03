@@ -52,7 +52,9 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(values[1]['identityTenants'], [values[1]['tenant'], values[1]['peer']])
         self.assertTrue({v[k] for v in values for k in ('tenant', 'peer')} <= set(installation(values)['tenants']))
 
-    def test_installation_limit_fails_before_services(self):
-        jobs = [job(str(i), 'pair') for i in range(65)]
-        with self.assertRaisesRegex(ValueError, '128'):
+    def test_installation_accepts_1024_tenants_and_rejects_1025_before_services(self):
+        jobs = [job(str(i), 'tenant') for i in range(1023)]
+        self.assertEqual(len(installation(contexts('run', jobs).values())['tenants']), 1024)
+        jobs.append(job('one-over', 'tenant'))
+        with self.assertRaisesRegex(ValueError, '1024'):
             installation(contexts('run', jobs).values())
