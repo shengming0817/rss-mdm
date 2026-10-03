@@ -675,6 +675,24 @@ fn ddm_incremental_claims_merge_disjoint_objects_and_preserve_unordered_removal(
         |id| json!({"identifier":id,"subject-summary":"fixture","is-identity":false,"data":"AQID"});
     let first = evidence(false, json!([cert("a")]), json!([]));
     let delta = evidence(false, json!([cert("b")]), json!([]));
+    let unassociated = ReportEvidence {
+        report: serde_json::to_vec(
+            &json!({"StatusItems":{"security":{"certificate":{"list":[cert("b")]}}},"Errors":[]}),
+        )
+        .unwrap(),
+        ..delta.clone()
+    };
+    let uncertain = project(&set, &[first.clone(), unassociated.clone()], &target).unwrap();
+    assert!(
+        uncertain
+            .unknown_items
+            .contains("security.certificate.list")
+    );
+    assert_eq!(
+        serde_json::to_value(uncertain).unwrap(),
+        serde_json::to_value(project(&set, &[unassociated, first.clone()], &target).unwrap())
+            .unwrap(),
+    );
     let mut streaming = crate::native::ddm::Projection::new(&set, &target).unwrap();
     streaming.observe(&first).unwrap();
     let checkpoint: crate::native::ddm::ProjectionState =
@@ -1248,7 +1266,7 @@ fn mixed_native_results_do_not_hide_failures_when_reordered() {
 }
 
 #[test]
-fn ddm_projection_is_commutative_and_old_tokens_do_not_change_current_claims() {
+fn ddm_projection_separates_native_versions_from_unassociated_status_quality() {
     use crate::native::{
         ddm::{DeclarationInput, DeclarationSet, ReportEvidence, project},
         input::{FieldValue as F, Fields},
@@ -1285,7 +1303,51 @@ fn ddm_projection_is_commutative_and_old_tokens_do_not_change_current_claims() {
     )
     .unwrap();
     assert!(stable.synchronized);
-    assert_eq!(stable.items["device.operating-system.version"], "26.0");
+    assert!(
+        stable
+            .items
+            .get("device.operating-system.version")
+            .is_none()
+    );
+    assert!(
+        stable
+            .unknown_items
+            .contains("device.operating-system.version")
+    );
+    let initial = project(&set, std::slice::from_ref(&first), &target).unwrap();
+    assert_eq!(initial.items["device.operating-system.version"], "26.0");
+    let item_only = ReportEvidence {
+        report:
+            br#"{"StatusItems":{"device":{"operating-system":{"version":"26.1"}}},"Errors":[]}"#
+                .to_vec(),
+        ..first.clone()
+    };
+    let error_only = ReportEvidence {
+        report: br#"{"StatusItems":{},"Errors":[{"StatusItem":"device.operating-system.version","Reasons":[{"Code":"unavailable"}]}]}"#.to_vec(),
+        ..first.clone()
+    };
+    for unassociated in [item_only, error_only] {
+        let mut streaming = crate::native::ddm::Projection::new(&set, &target).unwrap();
+        streaming.observe(&first).unwrap();
+        let checkpoint =
+            serde_json::from_slice(&serde_json::to_vec(&streaming.checkpoint()).unwrap()).unwrap();
+        let mut restored =
+            crate::native::ddm::Projection::restore(&set, &target, checkpoint).unwrap();
+        restored.observe(&unassociated).unwrap();
+        let value = restored.finish().unwrap();
+        assert!(value.synchronized);
+        assert!(value.items.get("device.operating-system.version").is_none());
+        assert!(
+            value
+                .unknown_items
+                .contains("device.operating-system.version")
+        );
+        let forward = serde_json::to_value(value).unwrap();
+        let reverse =
+            serde_json::to_value(project(&set, &[unassociated, first.clone()], &target).unwrap())
+                .unwrap();
+        assert_eq!(forward, reverse);
+    }
     let conflicting = evidence(&token, false, "26.1");
     let forward = serde_json::to_value(
         project(

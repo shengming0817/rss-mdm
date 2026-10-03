@@ -218,41 +218,47 @@ impl<'a> Projection<'a> {
             .iter()
             .map(|d| (d.identifier.as_str(), d.server_token.as_str()))
             .collect::<BTreeMap<_, _>>();
-        // Old collection snapshots cannot clear the current collection's status items.
+        // Only an exact collection version can establish subscribed values.
         let current = !expected_versions.is_empty()
             && expected_versions.iter().all(|(id, token)| {
                 reported_versions.get(id.as_str()).copied() == Some(token.as_str())
             });
-        if current {
-            *full |= report.full_report();
-            for name in evidence.subscriptions.intersection(wanted) {
-                if let Some(value) = report.items().get(name) {
-                    if let Some(array) = arrays.get_mut(name) {
-                        array.observe(value, report.full_report())?;
-                        continue;
-                    }
-                    claim(
-                        claims.entry(name.clone()).or_default(),
-                        serde_json::to_string(value).map_err(|_| Error::Encoding)?,
-                    );
-                } else if report.full_report() {
-                    if let Some(array) = arrays.get_mut(name) {
-                        array.observe(&Value::Null, true)?;
-                        continue;
-                    }
-                    claim(claims.entry(name.clone()).or_default(), "null".into());
+        *full |= current && report.full_report();
+        for name in evidence.subscriptions.intersection(wanted) {
+            if let Some(value) = report.items().get(name) {
+                if let Some(array) = arrays.get_mut(name) {
+                    array.observe(
+                        if current { value } else { &Value::Null },
+                        current && report.full_report(),
+                    )?;
+                    continue;
                 }
-            }
-            for error in report.errors() {
-                if let Some(name) = error.get("StatusItem").and_then(Value::as_str)
-                    && wanted.contains(name)
-                {
-                    errors.insert(serde_json::to_string(error).map_err(|_| Error::Encoding)?);
-                    if let Some(array) = arrays.get_mut(name) {
-                        array.observe(&Value::Null, false)?;
+                claim(
+                    claims.entry(name.clone()).or_default(),
+                    if current {
+                        serde_json::to_string(value).map_err(|_| Error::Encoding)?
                     } else {
-                        claim(claims.entry(name.into()).or_default(), "null".into());
-                    }
+                        "null".into()
+                    },
+                );
+            } else if report.full_report() {
+                if let Some(array) = arrays.get_mut(name) {
+                    array.observe(&Value::Null, true)?;
+                    continue;
+                }
+                claim(claims.entry(name.clone()).or_default(), "null".into());
+            }
+        }
+        for error in report.errors() {
+            if let Some(name) = error.get("StatusItem").and_then(Value::as_str)
+                && wanted.contains(name)
+                && evidence.subscriptions.contains(name)
+            {
+                errors.insert(serde_json::to_string(error).map_err(|_| Error::Encoding)?);
+                if let Some(array) = arrays.get_mut(name) {
+                    array.observe(&Value::Null, false)?;
+                } else {
+                    claim(claims.entry(name.into()).or_default(), "null".into());
                 }
             }
         }

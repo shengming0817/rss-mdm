@@ -16,6 +16,32 @@ async fn status_authority_and_user_scope_are_independent() -> Result<()> {
     let first = report(&device_manifest, true, "15.0");
     native(&peer, None, "status", Some(&first)).await?;
     ensure!(f.operation(device_operation).await?["commandStatus"] == "applied");
+    let item_only =
+        json!({"StatusItems":{"device":{"operating-system":{"version":"15.1"}}},"Errors":[]});
+    ensure!(native(&peer, None, "status", Some(&item_only)).await?.0 == StatusCode::OK);
+    let value = f.operation(device_operation).await?;
+    ensure!(value["observation"]["nativeStatus"]["synchronized"] == true);
+    ensure!(
+        value["observation"]["nativeStatus"]["items"]
+            .get("device.operating-system.version")
+            .is_none()
+    );
+    ensure!(
+        value["observation"]["nativeStatus"]["unknownItems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "device.operating-system.version")
+    );
+    let error_only = json!({"StatusItems":{},"Errors":[{"StatusItem":"device.operating-system.version","Reasons":[{"Code":"unavailable"}]}]});
+    ensure!(native(&peer, None, "status", Some(&error_only)).await?.0 == StatusCode::OK);
+    ensure!(
+        f.operation(device_operation).await?["observation"]["nativeStatus"]["errors"]
+            .as_array()
+            .unwrap()
+            .len()
+            == 1
+    );
     let conflicting = report(&device_manifest, false, "15.1");
     native(&peer, None, "status", Some(&conflicting)).await?;
     let result = f.operation(device_operation).await?;

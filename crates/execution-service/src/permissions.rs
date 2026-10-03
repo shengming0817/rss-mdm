@@ -125,7 +125,6 @@ fn apple_declaration(identity: &str) -> Result<P, Error> {
         | "com.apple.configuration.external-intelligence.settings"
         | "com.apple.configuration.intelligence.settings"
         | "com.apple.configuration.keyboard.settings"
-        | "com.apple.configuration.legacy.interactive"
         | "com.apple.configuration.legacy"
         | "com.apple.configuration.management.status-subscriptions"
         | "com.apple.configuration.management.test"
@@ -796,6 +795,7 @@ mod windows_tests {
             );
         }
         assert!(apple_declaration("com.apple.configuration.future").is_err());
+        assert!(apple_declaration("com.apple.configuration.legacy.interactive").is_err());
     }
     #[test]
     fn apple_profile_security_is_explicit_and_unknown_schema_is_rejected() {

@@ -67,6 +67,8 @@ operation 的 Apple 请求为 `{"kind":"declarations","declarations":[…],"asse
 
 下载资产的 binding 指定 identifier、resource、version、variant、versionDigest（32 字节数组）、contentType 和 profileSchemas。Resource 必须是已上传受保护内容的不可变 configuration 版本；版本摘要、内容长度/摘要、架构和当前 ResourceRead 均复核。服务器提供 HTTPS DataURL/ProfileURL 和原生 MDM Authentication，拒绝任意外部下载 URL。Legacy Profile 使用未签名 plist 内容，并按载荷顺序列出准确 Profile schema；签名 CMS 不作为这一路径的原始 Profile 输入。
 
+产品支持受保护的 `com.apple.configuration.legacy`；`com.apple.configuration.legacy.interactive` 在准入时拒绝。
+
 operation observation 分别返回 expected、synchronization、nativeStatus、effect 和 compliance。原生状态区分 valid/invalid/unknown、active 与 reasons；共同 applied 仅表示精确版本的声明核验完成。空集合撤回的 ACK 和无版本缺席报告不会证明终端移除。乱序的同版本冲突、未关联版本的增量状态保持 Unknown；receivedAt 只表示服务器收到证据的时间。详细值仍需要 operation_read 及原操作全部权限；Profile 原始清单还需要 inventory_collect，缺少权限时仍可读取核验摘要。每作用域最多 16 个有效 publication，累计状态预算为每个 512 KiB，预算耗尽后明确 Unknown；这些报告不自动成为 Inventory Snapshot 或合规成功。
 
 `make t2 MODULE=apple.ddm` 验证四类声明、资产、重启、Legacy 接管和 Policy 所有权；`MODULE=apple.status` 验证冲突、作用域和撤权。真实 Mac 的同步、状态与 Profile 交接属于独立 T3，缺口登记为 [#2647](https://dev.azure.com/shengming0923/rss/_workitems/edit/2647)。

@@ -137,6 +137,18 @@ async fn four_families_assets_recovery_and_withdrawal() -> Result<()> {
     let mut f = Fixture::start().await?;
     grants(true).await?;
     let (peer, device) = f.ready_local_peer().await?;
+    let denied = f.browser.call(
+        &f.router, Method::POST,
+        &format!("/api/v3/devices/{}/operations", case_device()),
+        Some(json!({"operationId":Uuid::new_v4(),"inputVersion":"interactive","target":{"kind":"device"},
+            "task":task(vec![declaration("interactive","com.apple.configuration.legacy.interactive",
+                json!({"ProfileURL":"https://external.invalid/sensitive.plist","VisibleName":"Interactive"}))],vec![]),
+            "deadline":f.app.clock.unix_seconds()?+300})),
+    ).await?;
+    ensure!(
+        denied.0 == StatusCode::UNPROCESSABLE_ENTITY,
+        "interactive must fail admission: {denied:?}"
+    );
     let resource = Uuid::new_v4();
     let content = json!({"fixture":"immutable-native-ddm-asset"});
     crate::test_support::planning_http::native_configuration_resource(

@@ -628,6 +628,9 @@ MODULES['windows.retention'] = replace(MODULES['windows.retention'], db_mode='fr
 MODULES['windows.limits'] = replace(MODULES['windows.limits'], db_mode='reuse', scope='tenant')
 for name in ('apple.collection','apple.scep','apple.commands','apple.users','apple.ddm','apple.status'):
     MODULES[name] = replace(MODULES[name],scope='tenant',fixtures=(*MODULES[name].fixtures,'local_worker'))
+MODULES['apple.ddm'] = replace(MODULES['apple.ddm'], policies=(
+    CasePolicy('apple::tests::ddm::four_families_assets_recovery_and_withdrawal', 'fresh', 'tenant'),
+))
 MODULES['apple.profile'] = replace(MODULES['apple.profile'], scope='tenant', fixtures=(*MODULES['apple.profile'].fixtures,'local_worker'))
 MODULES['apple.policy'] = replace(MODULES['apple.policy'], db_mode='reuse', scope='tenant', fixtures=(*MODULES['apple.policy'].fixtures,'local_worker'), policies=(
     CasePolicy('apple::tests::policy::current_approval_and_deadlines', 'reuse', 'tenant'),
