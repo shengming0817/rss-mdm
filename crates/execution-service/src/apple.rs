@@ -106,7 +106,23 @@ pub async fn observation(
         .await?
         .map_err(Error::from)?;
     if op.request.profile_target().is_none() {
-        let receipts = rows.iter().map(|r| json!({"phase":r.phase,"state":r.state,"receivedAt":r.received_at,"accepted":r.accepted,"outcome":r.native_outcome})).collect::<Vec<_>>();
+        let receipts = rows.iter().map(|r| {
+            let mut receipt = json!({"phase":r.phase,"state":r.state,"receivedAt":r.received_at,"accepted":r.accepted,"outcome":r.native_outcome});
+            if native_values && r.accepted && !r.phase.starts_with("resolve_")
+                && let Some(response) = &r.response
+            {
+                let mut fields = wire::decode(response).map_err(Error::from)?;
+                for key in ["Status", "CommandUUID", "UDID", "UserID", "AuthToken",
+                    "UserLongName", "UserShortName", "EnrollmentID", "EnrollmentUserID"] {
+                    fields.remove(key);
+                }
+                receipt["fields"] = serde_json::to_value(
+                    rss_mdm_apple_mdm::native::input::Fields::from_plist(&fields)
+                        .map_err(|_| Error::Malformed)?
+                ).map_err(|_| Error::Malformed)?;
+            }
+            Ok(receipt)
+        }).collect::<Result<Vec<_>>>()?;
         let mut value = json!({"protocol":"mdm.apple","observationScope":"native_command","receipts":receipts,"progress":super::service::status(status),"effect":"unverified"});
         if let Some(row) = rows.iter().rev().find(|row| {
             row.accepted && row.native_outcome.is_some() && !row.phase.starts_with("resolve_")
@@ -128,25 +144,11 @@ pub async fn observation(
             }
 
             if native_values
-                && (row.phase == "execute"
-                    && matches!(&op.request.task,Task::Macos{request:rss_mdm_apple_mdm::native::request::Request::Command{command}} if rss_mdm_apple_mdm::native::outcome::family(&command.request_type)==Ok(rss_mdm_apple_mdm::native::outcome::Family::Query)))
-                && let Some(response) = &row.response
+                && let Some(receipt) = receipts.iter().rev().find(|r| {
+                    r["phase"] == row.phase && r["accepted"] == true && r.get("fields").is_some()
+                })
             {
-                let mut result = wire::decode(response).map_err(Error::from)?;
-                for key in [
-                    "Status",
-                    "CommandUUID",
-                    "UDID",
-                    "UserID",
-                    "AuthToken",
-                    "UserLongName",
-                    "UserShortName",
-                ] {
-                    result.remove(key);
-                }
-                let fields = rss_mdm_apple_mdm::native::input::Fields::from_plist(&result)
-                    .map_err(|_| Error::Malformed)?;
-                value["fields"] = serde_json::to_value(fields).map_err(|_| Error::Malformed)?;
+                value["fields"] = receipt["fields"].clone();
             }
         }
         return Ok(value);
@@ -473,44 +475,53 @@ async fn send(
     p: &DevicePrincipal,
     user_key: &str,
 ) -> Result<Vec<u8>> {
-    let tenant = tx.tenant_id().to_string();
-    let registration = p.registration().to_string();
-    let generation = p.generation();
-    let ids=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_scalar::<_,String>("SELECT o.id::text FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.registration_generation=$3 AND o.gateway_accepted AND o.dispatch_failure IS NULL AND o.input_context->>'platform'='macos' AND d.status IN ('published','received') ORDER BY o.id LIMIT 64")
-            .bind(tenant).bind(registration).bind(generation).fetch_all(c).await
+    let mut after = Uuid::nil();
+    loop {
+        let tenant = tx.tenant_id().to_string();
+        let registration = p.registration().to_string();
+        let generation = p.generation();
+        let scope = user_key.to_owned();
+        let cursor = after;
+        let ids=tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query_scalar::<_,String>("SELECT o.id::text FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.registration_generation=$3 AND o.gateway_accepted AND o.dispatch_failure IS NULL AND o.input_context->>'platform'='macos' AND d.status IN ('published','received') AND o.id>$4 AND ($5='' OR (o.input_context->'target'->>'kind'='user' AND o.input_context->'target'->>'userId'=$5)) AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) ORDER BY o.id LIMIT 64")
+            .bind(tenant).bind(registration).bind(generation).bind(cursor).bind(scope).fetch_all(c).await
     })).await?;
-    for id in ids {
-        let op = storage::load(tx, &service.protection, stored(Uuid::parse_str(&id))?).await?;
-        if !eligible(service, tx, p, &op).await? {
-            continue;
+        if ids.is_empty() {
+            break;
         }
-        let approval = op.approval.clone();
-        let source = service.source.clone();
-        if !tx
-            .with_connection(move |c| {
-                Box::pin(async move { Ok(approval.dispatch_ready(source.as_ref(), c).await) })
-            })
-            .await??
-        {
-            continue;
-        }
-        let prerequisites = op.request.target.user_key() != user_key;
-        if prerequisites && (!user_key.is_empty() || op.request.target.user_key().is_empty()) {
-            continue;
-        }
-        match send_one(tx, apple.clone(), p, &op, prerequisites).await? {
-            channels::AppleDispatch::Ready(bytes) => return Ok(bytes),
-            channels::AppleDispatch::Waiting => {}
-            channels::AppleDispatch::Rejected(error) => {
-                let tenant = tx.tenant_id().to_string();
-                let id = op.id;
-                let failure = json!({"platform":"macos","reason":error.to_string()});
-                tx.with_connection(move |c| Box::pin(async move {
+        for id in ids {
+            after = stored(Uuid::parse_str(&id))?;
+            let op = storage::load(tx, &service.protection, stored(Uuid::parse_str(&id))?).await?;
+            if !eligible(service, tx, p, &op).await? {
+                continue;
+            }
+            let approval = op.approval.clone();
+            let source = service.source.clone();
+            if !tx
+                .with_connection(move |c| {
+                    Box::pin(async move { Ok(approval.dispatch_ready(source.as_ref(), c).await) })
+                })
+                .await??
+            {
+                continue;
+            }
+            let prerequisites = op.request.target.user_key() != user_key;
+            if prerequisites && (!user_key.is_empty() || op.request.target.user_key().is_empty()) {
+                continue;
+            }
+            match send_one(tx, apple.clone(), p, &op, prerequisites).await? {
+                channels::AppleDispatch::Ready(bytes) => return Ok(bytes),
+                channels::AppleDispatch::Waiting => {}
+                channels::AppleDispatch::Rejected(error) => {
+                    let tenant = tx.tenant_id().to_string();
+                    let id = op.id;
+                    let failure = json!({"platform":"macos","reason":error.to_string()});
+                    tx.with_connection(move |c| Box::pin(async move {
                     sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
                         .bind(tenant).bind(id).bind(failure).execute(c).await?;
                     Ok(())
                 })).await?;
+                }
             }
         }
     }

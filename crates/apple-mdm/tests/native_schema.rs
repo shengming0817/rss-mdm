@@ -919,3 +919,118 @@ fn bootstrap_requires_known_ade_device_facts() {
         Err(crate::Error::Unsupported)
     ));
 }
+
+#[test]
+fn certificate_references_bind_scalar_and_array_values_to_this_profile() {
+    use profiles::{PayloadInput, ProfileInput};
+    let certificate = uuid::Uuid::new_v4();
+    let make = |schema: &str, fields: Dictionary, id| PayloadInput {
+        schema: schema.into(),
+        identifier: format!("org.example.{id}"),
+        uuid: id,
+        metadata: input::Fields::default(),
+        fields: input::Fields::from_plist(&fields).unwrap(),
+    };
+    let mut ctx = context();
+    ctx.channel = Channel::User;
+    let mut profile = ProfileInput {
+        identifier: "org.example.refs".into(),
+        uuid: uuid::Uuid::new_v4(),
+        metadata: input::Fields::default(),
+        payloads: vec![make(
+            "mdm/profiles/com.apple.ews.account.yaml",
+            crate::protocol::dictionary([(
+                "AuthenticationCertificateUUID",
+                certificate.to_string().into(),
+            )]),
+            uuid::Uuid::new_v4(),
+        )],
+    };
+    let target = Target {
+        context: &ctx,
+        access_rights: &[],
+    };
+    assert!(profile.compile(&target).is_err());
+    profile.payloads.push(make(
+        "mdm/profiles/com.apple.security.pkcs12.yaml",
+        crate::protocol::dictionary([("PayloadContent", Value::Data(vec![1, 2, 3]))]),
+        certificate,
+    ));
+    assert!(profile.compile(&target).is_ok());
+    profile.payloads[1].schema = "mdm/profiles/com.apple.security.root.yaml".into();
+    assert!(
+        profile.compile(&target).is_err(),
+        "public certificate used as identity"
+    );
+    ctx.channel = Channel::Device;
+    profile.payloads[0] = make(
+        "mdm/profiles/com.apple.lom.yaml",
+        crate::protocol::dictionary([(
+            "DeviceCACertificateUUIDs",
+            Value::Array(vec![certificate.to_string().into()]),
+        )]),
+        uuid::Uuid::new_v4(),
+    );
+    let target = Target {
+        context: &ctx,
+        access_rights: &[],
+    };
+    assert!(profile.compile(&target).is_ok());
+    profile.payloads[1].schema = "mdm/profiles/com.apple.security.pkcs12.yaml".into();
+    assert!(
+        profile.compile(&target).is_err(),
+        "identity used as CA anchor"
+    );
+    profile.payloads.pop();
+    assert!(
+        profile.compile(&target).is_err(),
+        "array references external certificate"
+    );
+}
+
+#[test]
+fn lom_inner_failure_is_rejected_despite_outer_acknowledgement() {
+    let ctx = context();
+    let target = Target {
+        context: &ctx,
+        access_rights: &["DeviceLockAndRemovePasscode"],
+    };
+    let id = uuid::Uuid::new_v4().to_string();
+    let command = input::CommandInput {
+        request_type: "LOMDeviceRequest".into(),
+        fields: input::Fields::from_plist(&crate::protocol::dictionary([(
+            "RequestList",
+            Value::Array(vec![Value::Dictionary(crate::protocol::dictionary([
+                ("DeviceRequestType", "PowerON".into()),
+                ("DeviceRequestUUID", id.clone().into()),
+                ("DeviceDNSName", "device.example.test".into()),
+                ("PrimaryIPv6AddressList", Value::Array(vec!["::1".into()])),
+                ("SecondaryIPv6AddressList", Value::Array(vec![])),
+                ("LOMProtocolVersion", 1.into()),
+            ]))]),
+        )]))
+        .unwrap(),
+    };
+    for (success, expected) in [
+        (true, outcome::Outcome::Acknowledged),
+        (false, outcome::Outcome::Rejected),
+    ] {
+        let response = crate::protocol::dictionary([(
+            "ResponseList",
+            Value::Array(vec![Value::Dictionary(crate::protocol::dictionary([
+                ("DeviceRequestUUID", id.clone().into()),
+                ("DeviceRequestSuccess", success.into()),
+            ]))]),
+        )]);
+        assert_eq!(
+            outcome::interpret(
+                &command,
+                &response,
+                crate::protocol::Status::Acknowledged,
+                &target
+            )
+            .unwrap(),
+            expected
+        );
+    }
+}

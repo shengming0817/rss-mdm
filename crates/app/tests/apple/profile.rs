@@ -309,3 +309,137 @@ async fn security_profile_replacement_and_removal_keep_target_permissions() -> R
     drop(device);
     f.close().await
 }
+
+#[tokio::test]
+#[ignore = "MODULE=apple.profile: protected history collisions and observed guard release"]
+async fn cross_root_guards_require_complete_removal_evidence() -> Result<()> {
+    let mut f = Fixture::start().await?;
+    let (peer, device) = f.ready_local_peer().await?;
+    let original = f.create_operation(|id| profile_task(id, true)).await?;
+    let (execute, _) = peer.next("InstallProfile").await?;
+    let next = peer.manage("Acknowledged", Some(execute), None).await?;
+    let (observe, _) = command(&next, "ProfileList")?;
+    peer.manage(
+        "Acknowledged",
+        Some(observe),
+        Some((
+            "ProfileList",
+            profile_manifest(original, "com.apple.security.firewall"),
+        )),
+    )
+    .await?;
+    let alternate = |id: Uuid, reuse: bool| {
+        let mut task = profile_task(id, true);
+        task["request"]["profile"]["identifier"] = json!(format!("{}.other", native_profile()));
+        task["request"]["profile"]["payloads"][0]["identifier"] =
+            json!(format!("{}.other.settings", native_profile()));
+        if reuse {
+            task["request"]["profile"]["payloads"][0]["uuid"] =
+                json!(Uuid::from_u128(original.as_u128() ^ (1 << 127)));
+        }
+        task
+    };
+    let path = format!("/api/v3/devices/{}/operations", case_device());
+    let blocked = Uuid::new_v4();
+    let reply = f.browser.call(&f.router,Method::POST,&path,Some(json!({"operationId":blocked,"inputVersion":"1","target":{"kind":"device"},"task":alternate(blocked,true),"deadline":f.app.clock.unix_seconds()?+300}))).await?;
+    ensure!(
+        reply.0 == StatusCode::CONFLICT,
+        "cross-root UUID collision {reply:?}"
+    );
+    let singleton = f.create_operation(|id| alternate(id, false)).await?;
+    let (resolve, _) = peer.next("DeviceInformation").await?;
+    let next = peer
+        .manage(
+            "Acknowledged",
+            Some(resolve),
+            Some((
+                "QueryResponses",
+                plist::Value::Dictionary(protocol::dictionary([
+                    ("OSVersion", "15.0".into()),
+                    ("IsSupervised", true.into()),
+                    ("IsAppleSilicon", true.into()),
+                ])),
+            )),
+        )
+        .await?;
+    let (resolve, _) = command(&next, "SecurityInfo")?;
+    let next = peer
+        .manage(
+            "Acknowledged",
+            Some(resolve),
+            Some((
+                "SecurityInfo",
+                plist::Value::Dictionary(protocol::dictionary([(
+                    "ManagementStatus",
+                    plist::Value::Dictionary(protocol::dictionary([
+                        ("EnrolledViaDEP", false.into()),
+                        ("IsUserEnrollment", false.into()),
+                        ("UserApprovedEnrollment", true.into()),
+                    ])),
+                )])),
+            )),
+        )
+        .await?;
+    ensure!(next.is_empty(), "singleton dispatched");
+    ensure!(f.operation(singleton).await?["dispatchFailure"].is_object());
+    let remove = f
+        .create_operation(|_| remove_profile_task(original))
+        .await?;
+    let (execute, _) = peer.next("RemoveProfile").await?;
+    let next = peer.manage("Acknowledged", Some(execute), None).await?;
+    let (observe, _) = command(&next, "ProfileList")?;
+    peer.manage("Acknowledged", Some(observe), None).await?;
+    ensure!(f.operation(remove).await?["commandStatus"] == "received");
+    let candidate = Uuid::new_v4();
+    let reply = f.browser.call(&f.router,Method::POST,&path,Some(json!({"operationId":candidate,"inputVersion":"1","target":{"kind":"device"},"task":alternate(candidate,true),"deadline":f.app.clock.unix_seconds()?+300}))).await?;
+    ensure!(
+        reply.0 == StatusCode::CONFLICT,
+        "incomplete manifest released UUID guard"
+    );
+    let (observe, _) = peer.next("ProfileList").await?;
+    peer.manage(
+        "Acknowledged",
+        Some(observe),
+        Some(("ProfileList", plist::Value::Array(vec![]))),
+    )
+    .await?;
+    ensure!(f.operation(remove).await?["commandStatus"] == "applied");
+    let replacement = f.create_operation(|id| alternate(id, true)).await?;
+    let (execute, _) = peer.next("InstallProfile").await?;
+    let next = peer.manage("Acknowledged", Some(execute), None).await?;
+    let (observe, _) = command(&next, "ProfileList")?;
+    let mut manifest = profile_manifest(replacement, "com.apple.security.firewall");
+    let root = manifest.as_array_mut().unwrap()[0]
+        .as_dictionary_mut()
+        .unwrap();
+    root.insert(
+        "PayloadIdentifier".into(),
+        format!("{}.other", native_profile()).into(),
+    );
+    let child = root
+        .get_mut("PayloadContent")
+        .unwrap()
+        .as_array_mut()
+        .unwrap()[0]
+        .as_dictionary_mut()
+        .unwrap();
+    child.insert(
+        "PayloadIdentifier".into(),
+        format!("{}.other.settings", native_profile()).into(),
+    );
+    child.insert(
+        "PayloadUUID".into(),
+        Uuid::from_u128(original.as_u128() ^ (1 << 127))
+            .to_string()
+            .into(),
+    );
+    peer.manage(
+        "Acknowledged",
+        Some(observe),
+        Some(("ProfileList", manifest)),
+    )
+    .await?;
+    ensure!(f.operation(replacement).await?["commandStatus"] == "applied");
+    drop(device);
+    f.close().await
+}

@@ -204,64 +204,73 @@ async fn pending(
     if renewal && user_key.is_empty() {
         return Ok(true);
     }
-    let tenant = tx.tenant_id().to_string();
-    let rows=tx.with_connection(move|c|Box::pin(async move{
- sqlx::query("SELECT o.id,o.device,o.registration,o.registration_generation,o.input_context,o.request,o.approval::text FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.gateway_accepted AND d.status IN ('published','received') AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) ORDER BY o.id LIMIT 64").bind(tenant).bind(registration).fetch_all(c).await
+    let mut after = Uuid::nil();
+    loop {
+        let tenant = tx.tenant_id().to_string();
+        let scope = user_key.to_owned();
+        let cursor = after;
+        let rows=tx.with_connection(move|c|Box::pin(async move{
+ sqlx::query("SELECT o.id,o.device,o.registration,o.registration_generation,o.input_context,o.request,o.approval::text FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2::uuid AND o.gateway_accepted AND d.status IN ('published','received') AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AND o.input_context->>'platform'='macos' AND o.dispatch_failure IS NULL AND o.id>$3 AND ($4='' OR (o.input_context->'target'->>'kind'='user' AND o.input_context->'target'->>'userId'=$4)) ORDER BY o.id LIMIT 64").bind(tenant).bind(registration).bind(cursor).bind(scope).fetch_all(c).await
  })).await?;
-    let remaining = 64 - rows.len();
-    let now = storage::now(tx).await?;
-    for row in rows {
-        let request = super::input_storage::open_row(
-            &service.protection,
-            service.tenant,
-            row.try_get("id")?,
-            &row,
-            "request",
-        )?;
-        if request.target.user_key() != user_key {
-            if !user_key.is_empty() || request.target.user_key().is_empty() {
-                continue;
-            }
-            let store = participant.clone();
-            let tenant = tx.tenant_id().to_string();
-            let operation = row.try_get("id")?;
-            if !tx
-                .with_connection(move |c| {
-                    Box::pin(
-                        async move { Ok(store.needs_prerequisites(c, tenant, operation).await) },
-                    )
-                })
-                .await?
-                .map_err(Error::from)?
-            {
-                continue;
-            }
+        if rows.is_empty() {
+            break;
         }
-        let approval: crate::authority::ExecutionAuthority =
-            stored(serde_json::from_str(&row.try_get::<String, _>("approval")?))?;
-        let protection = service.protection.clone();
-        let source = service.source.clone();
-        if tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    Ok(match request.task.permissions() {
-                        Ok(permissions) => {
-                            approval
-                                .valid(source.as_ref(), c, &protection, &permissions, now)
-                                .await
-                        }
-                        Err(error) => Err(error),
+        let now = storage::now(tx).await?;
+        for row in rows {
+            after = row.try_get("id")?;
+            let request = super::input_storage::open_row(
+                &service.protection,
+                service.tenant,
+                row.try_get("id")?,
+                &row,
+                "request",
+            )?;
+            if request.target.user_key() != user_key {
+                if !user_key.is_empty() || request.target.user_key().is_empty() {
+                    continue;
+                }
+                let store = participant.clone();
+                let tenant = tx.tenant_id().to_string();
+                let operation = row.try_get("id")?;
+                if !tx
+                    .with_connection(move |c| {
+                        Box::pin(async move {
+                            Ok(store.needs_prerequisites(c, tenant, operation).await)
+                        })
+                    })
+                    .await?
+                    .map_err(Error::from)?
+                {
+                    continue;
+                }
+            }
+            let approval: crate::authority::ExecutionAuthority =
+                stored(serde_json::from_str(&row.try_get::<String, _>("approval")?))?;
+            let protection = service.protection.clone();
+            let source = service.source.clone();
+            if tx
+                .with_connection(move |c| {
+                    Box::pin(async move {
+                        Ok(match request.task.permissions() {
+                            Ok(permissions) => {
+                                approval
+                                    .valid(source.as_ref(), c, &protection, &permissions, now)
+                                    .await
+                            }
+                            Err(error) => Err(error),
+                        })
                     })
                 })
-            })
-            .await??
-        {
-            return Ok(true);
+                .await??
+            {
+                return Ok(true);
+            }
         }
     }
-    if remaining == 0 || !user_key.is_empty() {
+    if !user_key.is_empty() {
         return Ok(false);
     }
+    let remaining = 64;
     let tenant = tx.tenant_id().to_string();
     let store = service.apple_collections.clone();
     let collections = tx

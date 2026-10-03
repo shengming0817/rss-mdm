@@ -296,23 +296,53 @@ fn references(
                     else {
                         continue;
                     };
-                    if matches!(
+                    let identity = match key.as_str() {
+                        "IdentityCertificateUUID"
+                        | "AuthenticationCertificateUUID"
+                        | "ResourcePayloadCertificateUUID"
+                        | "DeviceCertificateUUID"
+                        | "ControllerCertificateUUID"
+                        | "AccessKeyTerminalIdentityUUID"
+                        | "SMIMESigningCertificateUUID"
+                        | "SMIMEEncryptionCertificateUUID" => Some(true),
+                        "PayloadCertificateUUID" => Some(!matches!(
+                            definition.identity,
+                            "com.apple.security.certificatepreference" | "com.apple.MCX.FileVault2"
+                        )),
+                        "CertificateUUID" => Some(false),
+                        _ => None,
+                    };
+                    let anchors = matches!(
                         key.as_str(),
-                        "PayloadCertificateUUID" | "IdentityCertificateUUID" | "CertificateUUID"
-                    ) {
-                        let id = Uuid::parse_str(value.as_string().ok_or(Error::Field)?)
-                            .map_err(|_| Error::Constraint)?;
-                        let kind = certificates.get(&id).ok_or(Error::Constraint)?;
-                        if matches!(
-                            key.as_str(),
-                            "PayloadCertificateUUID" | "IdentityCertificateUUID"
-                        ) && !matches!(
-                            *kind,
-                            "com.apple.security.pkcs12"
-                                | "com.apple.security.scep"
-                                | "com.apple.ADCertificate.managed"
-                        ) {
-                            return Err(Error::Constraint);
+                        "DeviceCACertificateUUIDs"
+                            | "ControllerCACertificateUUIDs"
+                            | "PayloadCertificateAnchorUUID"
+                            | "CertificateAnchorUUID"
+                            | "LeaderPayloadCertificateAnchorUUID"
+                            | "MemberPayloadCertificateAnchorUUID"
+                            | "ServerURLPinningCertificateUUIDs"
+                            | "CheckInURLPinningCertificateUUIDs"
+                            | "AccessKeyReaderIssuerCertificateUUID"
+                    );
+                    if identity.is_some() || anchors {
+                        let values: Vec<&Value> = match value {
+                            Value::Array(items) => items.iter().collect(),
+                            _ => vec![value],
+                        };
+                        for value in values {
+                            let id = Uuid::parse_str(value.as_string().ok_or(Error::Field)?)
+                                .map_err(|_| Error::Constraint)?;
+                            let kind = certificates.get(&id).ok_or(Error::Constraint)?;
+                            let is_identity = matches!(
+                                *kind,
+                                "com.apple.security.pkcs12"
+                                    | "com.apple.security.scep"
+                                    | "com.apple.ADCertificate.managed"
+                            );
+                            if (identity == Some(true) && !is_identity) || (anchors && is_identity)
+                            {
+                                return Err(Error::Constraint);
+                            }
                         }
                     }
                     let rule = field.active(target)?;

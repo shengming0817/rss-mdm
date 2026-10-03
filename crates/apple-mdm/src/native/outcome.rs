@@ -122,6 +122,27 @@ pub fn interpret(
         fields.remove(key);
     }
     compiled.validate_response(&fields, target)?;
+    if command.request_type == "LOMDeviceRequest" {
+        let items = fields
+            .get("ResponseList")
+            .and_then(Value::as_array)
+            .ok_or(Error::Field)?;
+        let mut unknown = items.is_empty();
+        for item in items {
+            let item = item.as_dictionary().ok_or(Error::Field)?;
+            if item.get("DeviceRequestSuccess").and_then(Value::as_boolean) == Some(false)
+                || item.contains_key("DeviceRequestReturnError")
+            {
+                return Ok(Outcome::Rejected);
+            }
+            unknown |= item.get("DeviceRequestSuccess").and_then(Value::as_boolean) != Some(true);
+        }
+        return Ok(if unknown {
+            Outcome::Unknown
+        } else {
+            Outcome::Acknowledged
+        });
+    }
     if command.request_type == "ManagedApplicationList" {
         let apps = fields
             .get("ManagedApplicationList")

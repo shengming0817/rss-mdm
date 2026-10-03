@@ -460,3 +460,46 @@ async fn same_profile_identifier_has_independent_user_and_device_ownership() -> 
     drop(device);
     f.close().await
 }
+
+#[tokio::test]
+#[ignore = "MODULE=apple.users: another scope cannot truncate user dispatch or APNs pending scan"]
+async fn user_queue_survives_a_full_page_of_received_device_commands() -> Result<()> {
+    let mut f = Fixture::start().await?;
+    let (peer, device) = f.ready_local_peer().await?;
+    let user = Uuid::new_v4();
+    peer.user_token(user, 46).await?;
+    for ordinal in 0..64 {
+        let op = f.create_operation_at(Uuid::from_u128(1000+ordinal), |_|json!({"platform":"macos","request":{"kind":"command","command":{"requestType":"RestartDevice","fields":{}}}})).await?;
+        let (id, _) = peer.next("RestartDevice").await?;
+        peer.manage("Acknowledged", Some(id), None).await?;
+        ensure!(f.operation(op).await?["commandStatus"] == "received");
+    }
+    let op = user_operation(&mut f,user,json!({"platform":"macos","request":{"kind":"command","command":{"requestType":"InstalledApplicationList","fields":{}}}})).await?;
+    resolve_user(&peer).await?;
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    // Keep the already acknowledged device scope out of this push observation window.
+    sqlx::query("UPDATE mdm_apple.channels SET next_push=clock_timestamp()+interval '1 hour' WHERE tenant_id=$1::uuid AND user_key=''").bind(case_tenant()).execute(&mut pg).await?;
+    pg.close().await?;
+    let configuration = f.app.apple()?.channel.push_fixture().configuration;
+    let wake = f
+        .app
+        .execution
+        .apple_wake(&configuration)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("missing user wake after device page"))?;
+    ensure!(wake.user_key == user.to_string());
+    let next = peer.user_manage(user, "Idle", None, None).await?;
+    let (execute, _) = command(&next.1, "InstalledApplicationList")?;
+    peer.user_manage(
+        user,
+        "Acknowledged",
+        Some(execute),
+        Some(("InstalledApplicationList", plist::Value::Array(vec![]))),
+    )
+    .await?;
+    ensure!(f.operation(op).await?["commandStatus"] == "applied");
+    drop(device);
+    f.close().await
+}

@@ -46,6 +46,14 @@ async fn native_families_keep_results_separate_from_effects() -> Result<()> {
         result["observation"]["result"] == "rejected" && result["commandStatus"] != "applied",
         "verification {result}"
     );
+    ensure!(result["observation"]["fields"]["PasswordVerified"]["value"] == false);
+    ensure!(
+        result["observation"]["receipts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["phase"] == "execute" && r["fields"]["PasswordVerified"]["value"] == false)
+    );
     let account = f
         .create_operation(|_| {
             task(
@@ -100,6 +108,13 @@ async fn native_families_keep_results_separate_from_effects() -> Result<()> {
     ensure!(
         result["commandStatus"] == "received" && result["observation"]["result"] == "deferred",
         "OS update {result}"
+    );
+    ensure!(
+        result["observation"]["receipts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["phase"] == "execute" && r["fields"].get("UpdateResults").is_some())
     );
     drop(device);
     f.close().await

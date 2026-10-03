@@ -247,6 +247,8 @@ struct AppleReceipt {
     phase: String,
     state: String,
     received_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fields: Option<rss_mdm_apple_mdm::native::input::Fields>,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
