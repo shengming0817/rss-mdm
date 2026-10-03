@@ -97,5 +97,6 @@ ALTER TABLE mdm_access.agent_issuances ADD CONSTRAINT activated_credential FOREI
 GRANT SELECT,INSERT ON mdm_access.agent_grants,mdm_access.agent_issuances TO mdm_access;
 GRANT UPDATE(actor,instance,state) ON mdm_access.agent_grants TO mdm_access;
 GRANT UPDATE(state,certificate_chain,metadata,fingerprint,activation_operation,activation_digest,activation_result,credential) ON mdm_access.agent_issuances TO mdm_access;
+GRANT SELECT,INSERT ON mdm_access.agent_grants TO mdm_command_runtime;
 GRANT SELECT(tenant_id,credential,not_after) ON mdm_access.agent_issuances TO mdm_command_runtime;
 COMMIT;

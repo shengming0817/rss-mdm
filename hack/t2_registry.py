@@ -116,7 +116,7 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
  'execution.commands.recovery': ('crates/execution-service/src/recovery.rs',
                                  'crates/execution-service/src/lifecycle.rs'),
  'execution.commands.windows': ('crates/execution-service/src/native.rs',),
- 'execution.commands.onboarding': ('crates/execution-service/src/agent_preparation.rs','crates/windows-mdm/src/software.rs','crates/execution-service/src/native_installation.rs','crates/execution-service/src/managed_registration.rs','crates/windows-channel/src/agent_collection.rs','crates/agent-channel/src/managed.rs','crates/registration-service/src/enrollment/managed.rs'),
+ 'execution.commands.onboarding': ('crates/execution-service/src/agent_preparation.rs','crates/windows-mdm/src/software.rs','crates/execution-service/src/native_installation.rs','crates/execution-service/src/managed_registration.rs','crates/windows-channel/src/agent_collection.rs','crates/registration-service/src/enrollment/managed.rs'),
  'execution.commands.configuration': ('crates/execution-service/src/native_configuration.rs',
                                  'crates/execution-service/src/native.rs'),
  'execution.software.offer': ('crates/execution-service/src/actions/software.rs',
@@ -187,7 +187,7 @@ add('agent.pki', selectors=('agent_pki_tests::',), fixtures=('identity','apple',
              'crates/app/src/agent_pki.rs','deployment/agent-leaf.tpl',
              'crates/registration-service/src/operations.rs'),
     tests=('crates/app/tests/agent_pki/mod.rs',),
-    support=('hack/agent_pki_fixtures.py','crates/app/tests/device/support.rs',
+    support=('hack/agent_pki_fixtures.py','crates/app/tests/support/agent_tls.rs','crates/app/tests/device/support.rs',
              'crates/app/tests/enrollment/support.rs','crates/app/tests/support/audit.rs'))
 MODULES['agent.pki'] = replace(MODULES['agent.pki'], policies=(
     CasePolicy('agent_pki_tests::restored_ca_signs_only_live_authorized_agent_csrs_and_tls_preserves_purpose',
@@ -650,13 +650,13 @@ consume(('crates/agent-wire/schema/runtime/binding-profile-*.json',), 'agent.reg
 consume(('crates/agent-wire/schema/runtime/report-*.json',), 'agent.reports planning.onboarding')
 consume(('crates/agent-wire/src/onboarding.rs',),
         'agent.reports planning.onboarding execution.commands.onboarding apple.onboarding execution.agent.delivery execution.agent.poll execution.agent.recovery')
-consume(('crates/agent-wire/schema/enroll/native-grant-request.schema.json',),
+consume(('crates/agent-wire/schema/enroll/native-grant-request-v1.schema.json',),
         'execution.commands.onboarding apple.onboarding')
 # Native onboarding shares one durable installation and managed-registration owner.
 consume(('crates/execution-service/src/native_installation.rs',
          'crates/execution-service/src/managed_registration.rs',
          'crates/execution-service/src/agent_preparation.rs',
-         'crates/agent-channel/src/managed.rs',
+
          'crates/registration-service/src/enrollment/managed.rs'),
         'execution.commands.onboarding apple.onboarding')
 consume(('crates/execution-service/src/sources/onboarding.rs',

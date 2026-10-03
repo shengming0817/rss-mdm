@@ -8,11 +8,11 @@ use crate::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rss_mdm_agent_wire::{enroll as wire, runtime};
 use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_certificate::agent::{AgentTrust, PROFILE, VerifiedAgentCsr};
+use rss_mdm_certificate::agent::{PROFILE, VerifiedAgentCsr};
 use rss_mdm_registration_service::agent::{Assembly, NativeAdmission, Pending, Service};
 use std::{path::PathBuf, sync::Arc, time::Duration};
 use uuid::Uuid;
-use x509_cert::der::{Decode, Encode};
+use x509_cert::der::Decode;
 fn root() -> PathBuf {
     PathBuf::from(std::env::var("MDM_APPLE_FIXTURES").unwrap())
 }

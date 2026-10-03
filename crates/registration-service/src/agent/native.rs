@@ -42,7 +42,7 @@ native_authority->>'installation'= $2
     .await
     .map_err(db)?
     {
-        let row = grant_row(c, &tenant, id).await?;
+        let row = native_grant_row(c, &tenant, id).await?;
         if row.try_get::<String, _>("request_digest").map_err(db)? != digest
             || row.try_get::<String, _>("spki").map_err(db)? != bound
         {
@@ -103,7 +103,7 @@ $12)
     .execute(&mut *c)
     .await
     .map_err(db)?;
-    Ok((receipt(&grant_row(c, &tenant, id).await?)?, false))
+    Ok((receipt(&native_grant_row(c, &tenant, id).await?)?, false))
 }
 /// Native proof reconstructed only from a stored grant and its still-current registration.
 pub struct Source {
@@ -176,4 +176,12 @@ registration=$3 AND channel='mdm' AND state='active'
         installation: s.installation,
         runtime: s.runtime,
     })
+}
+
+// Native creation is serialized by its installation advisory lock. A read here
+// avoids granting the execution role lifecycle mutation rights or taking a
+// grant lock after the native-channel lock held by its caller.
+async fn native_grant_row(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<PgRow, Error> {
+    sqlx::query("SELECT * FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND id=$2 AND source='native'")
+        .bind(tenant).bind(id).fetch_one(c).await.map_err(db)
 }

@@ -276,7 +276,7 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
                 .await?,
         )),
         apple: false,
-        windows: false,
+        windows: true,
     });
     let protected = Router::new()
         .nest(

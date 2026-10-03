@@ -68,12 +68,10 @@ SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND grant_id=$
                     if let Some(authority) = grant
                         .try_get::<Option<serde_json::Value>, _>("native_authority")
                         .map_err(db)?
-                    {
-                        if authority["runtime"]
+                        && authority["runtime"]
                             != serde_json::to_value(&input.runtime).map_err(|_| Error::Malformed)?
-                        {
-                            return Err(Error::Forbidden);
-                        }
+                    {
+                        return Err(Error::Forbidden);
                     }
                     if !service.policy.platforms.contains(&input.runtime.platform)
                         || row_platform(&grant)? != input.runtime.platform

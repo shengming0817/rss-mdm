@@ -2,7 +2,9 @@
 use crate::device::test_support::options;
 use crate::windows::test_support::*;
 use crate::windows::*;
-use anyhow::{Context, ensure};
+#[cfg(feature = "integration")]
+use anyhow::Context;
+use anyhow::ensure;
 use axum::http::StatusCode;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rss_mdm_registration_service::Purpose;
@@ -333,7 +335,7 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
         "child SyncML: {}",
         initial.status()
     );
-    let authenticated = authenticate_child(&child_client, &child_url, &message, &peer.ack).await?;
+    let _authenticated = authenticate_child(&child_client, &child_url, &message, &peer.ack).await?;
     let ready: bool = sqlx::query_scalar(
         "SELECT ready FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2",
     )
@@ -350,7 +352,7 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
         &child_client,
         &child_url,
         &message,
-        &authenticated,
+        &_authenticated,
         &peer.ack,
     )
     .await?;

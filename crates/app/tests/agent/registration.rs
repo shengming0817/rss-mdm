@@ -117,7 +117,7 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
         .iter()
         .map(|v| STANDARD.decode(v.as_str().unwrap()))
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    let peer = crate::agent_pki_tests::peer(
+    let peer = crate::test_support::agent_tls::peer(
         service.trust(),
         &chain,
         &std::path::PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?),

@@ -31,8 +31,10 @@ WITH tables AS (
 ,
  ('mdm_apple.attempts','native_outcome'),('mdm_apple.attempts','accepted'),('mdm_apple.attempts','state'),('mdm_apple.attempts','response'),('mdm_apple.attempts','response_digest'),('mdm_apple.attempts','received_at'),('mdm_apple.attempts','next_attempt'),
  ('mdm_apple.declarations','retired_at'),('mdm_apple.declarations','legacy_released_at'),('mdm_apple.declarations','projection'),('mdm_apple.profiles','manifest'),('mdm_apple.profiles','dispatched_at'),('mdm_apple.profiles','observed_at'),('mdm_apple.profiles','retired_at'),('mdm_apple.devices','state'),('mdm_apple.channels','state'),('mdm_apple.channels','material'),('mdm_apple.channels','material_digest'),('mdm_apple.channels','push_id'),('mdm_apple.channels','push_lease_until'),('mdm_apple.channels','next_push'),('mdm_apple.channels','push_status'),('mdm_apple.channels','push_outcome'),('mdm_apple.channels','push_configuration'),('mdm_apple.channels','push_failures')
+), read_columns(relation,col) AS (VALUES
+ ('mdm_access.agent_issuances','tenant_id'),('mdm_access.agent_issuances','credential'),('mdm_access.agent_issuances','not_after')
 ), allowed(relation,sel,ins,del) AS (VALUES
- ('mdm_flow.native_protection',true,true,false),
+ ('mdm_flow.native_protection',true,true,false),('mdm_access.agent_grants',true,true,false),
  ('mdm.inventory',true,false,false),
  ('mdm.field_versions',true,false,false),('mdm.collection_definitions',true,true,false),('mdm.collection_results',true,true,false),
  ('mdm_software_composition.subjects',true,false,false),('mdm_software_composition.targets',true,false,false),('mdm_software_composition.projections',true,false,false),('mdm_software_release.aggregates',true,false,false),
@@ -83,7 +85,7 @@ SELECT current_user='mdm_command_runtime' AND session_user=current_user
 
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_attribute col ON col.attrelid=c.oid LEFT JOIN allowed a ON a.relation=n.nspname||'.'||c.relname
   WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname<>'information_schema' AND c.relkind IN('r','v','m','f') AND col.attnum>0 AND NOT col.attisdropped
-  AND (has_column_privilege(current_user,c.oid,col.attnum,'SELECT')<>coalesce(a.sel,false)
+  AND (has_column_privilege(current_user,c.oid,col.attnum,'SELECT')<>(coalesce(a.sel,false) OR EXISTS(SELECT 1 FROM read_columns r WHERE r.relation=n.nspname||'.'||c.relname AND r.col=col.attname))
     OR has_column_privilege(current_user,c.oid,col.attnum,'INSERT')<>coalesce(a.ins,false)
     OR has_column_privilege(current_user,c.oid,col.attnum,'REFERENCES')))
  AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace

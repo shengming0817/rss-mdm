@@ -169,7 +169,7 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
         .await?;
     assert!(
         service
-            .authorize_report(&independent, ReportSource::AgentBuiltin)
+            .authorize_report(&independent, ReportSource::MdmWindows)
             .await
             .is_ok()
     );
@@ -286,7 +286,7 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
     );
     assert_eq!(
         restart
-            .authorize_report(&independent, ReportSource::AgentBuiltin)
+            .authorize_report(&independent, ReportSource::MdmWindows)
             .await?
             .0
             .registration(),

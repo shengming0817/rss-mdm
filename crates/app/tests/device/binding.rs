@@ -126,7 +126,7 @@ async fn bindings_generations_and_competing_credentials() -> anyhow::Result<()> 
     );
     assert!(
         service
-            .authorize_report(&independent, ReportSource::AgentBuiltin)
+            .authorize_report(&independent, ReportSource::MdmWindows)
             .await
             .is_ok()
     );
