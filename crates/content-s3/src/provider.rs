@@ -4,6 +4,9 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use std::future::Future;
 
 pub(crate) fn classify<E: ProvideErrorMetadata>(error: &SdkError<E>) -> Error {
+    if matches!(error, SdkError::ConstructionFailure(_)) {
+        return Error::Configuration;
+    }
     let code = error
         .as_service_error()
         .and_then(ProvideErrorMetadata::code);
@@ -19,6 +22,7 @@ pub(crate) fn classify<E: ProvideErrorMetadata>(error: &SdkError<E>) -> Error {
             ),
             _,
         ) => Error::Configuration,
+        (Some("AccessDenied" | "Forbidden" | "Unauthorized"), _) => Error::Denied,
         (Some("NoSuchKey" | "NoSuchVersion" | "NoSuchUpload" | "NotFound"), _) => Error::Missing,
         (Some("BadDigest" | "InvalidDigest"), _) => Error::Integrity,
         (
@@ -40,9 +44,12 @@ pub(crate) fn classify<E: ProvideErrorMetadata>(error: &SdkError<E>) -> Error {
 pub(crate) fn uncertain<E: ProvideErrorMetadata>(error: &SdkError<E>) -> bool {
     match error {
         SdkError::ConstructionFailure(_) => false,
-        SdkError::ServiceError(_) => error
-            .raw_response()
-            .is_none_or(|r| r.status().as_u16() >= 500),
+        SdkError::ServiceError(_) => {
+            classify(error) == Error::Transient
+                || error
+                    .raw_response()
+                    .is_some_and(|r| r.status().as_u16() >= 500)
+        }
         _ => true,
     }
 }

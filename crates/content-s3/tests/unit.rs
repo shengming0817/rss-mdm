@@ -5,6 +5,10 @@ use futures::StreamExt;
 use std::time::Instant;
 struct Timer;
 impl Clock for Timer {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "explicit test clock adapter in the Tokio time domain"
+    )]
     fn now(&self) -> Instant {
         tokio::time::Instant::now().into_std()
     }
