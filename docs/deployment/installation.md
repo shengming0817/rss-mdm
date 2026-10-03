@@ -54,11 +54,11 @@ docker run --name rss-mdm --network host --mount type=bind,src=/private/mdm-runt
 
 IMAGE 替换为 candidate.json 固定镜像身份。秘密和配置文件由 UID 10001 持有且权限 0600。安装目录与运行目录分开准备；镜像不嵌入配置或私钥。
 
-## 客户端与网关使用同一组织 CA
+## 桌面与 Agent 入口及服务器证书信任
 
 网关加载部署方配置的服务器证书链与私钥。使用私有 CA 时，把签发该服务器证书的 CA 公共证书通过可信部署渠道分发到设备；CA 私钥留在部署端，不放入 Agent 配置、客户端安装包或前端静态资源。数据库连接的 `ca_file` 属于 PostgreSQL 信任，不复用为组织网关 CA。
 
-组织连接和私有 CA 的部署输入统一放在客户端构建/部署所用 `.env`：`RSS_MDM_ORIGIN` 对应本服务的 HTTPS `product_origin`，`RSS_MDM_TENANT_ID` 对应 `identity.tenant_id`，可选 `RSS_MDM_CA_FILE` 指向签发网关证书的单个 PEM CA 公共证书绝对路径。桌面构建时嵌入公共证书，仅对该 origin/tenant 生效，不读取系统执行服务的配置。Agent 部署从同一 `.env` 生成 `execution.json` 的 origin、tenant、ca_file，并将同一 CA 复制到受保护设备路径；生成入口由 rss-mdm-agent 的 `scripts/agent-organization.mjs` 持有。
+组织连接和私有 CA 的部署输入统一放在客户端构建/部署所用 `.env`：`RSS_MDM_ORIGIN` 对应本服务的 HTTPS `product_origin`，`RSS_MDM_TENANT_ID` 对应 `identity.tenant_id`，可选 `RSS_MDM_CA_FILE` 指向签发网关证书的单个 PEM CA 公共证书绝对路径。桌面构建时嵌入公共证书，仅对该 origin/tenant 生效，不读取系统执行服务的配置。Agent 的 `execution.json.origin` 必须使用 `agent_pki.endpoint.origin`，tenant 对应 `identity.tenant_id`；`ca_file` 信任该 Agent TLS 入口服务器证书的签发 CA，并把公共 CA 文件放到受保护的设备路径。桌面网关和 Agent 入口由同一 CA 签发时可以分发同一公共证书；分别签发时各自配置对应信任。Agent/安装器的独立入口配置由后续消费任务适配，不能直接把桌面 `.env` 的 `RSS_MDM_ORIGIN` 复制为 Agent origin。
 
 服务端网关继续配置服务器证书链和私钥；它们不通过客户端 CA 环境变量传入。客户端 CA 留空时使用默认信任。CA 更新后桌面重新构建、Agent 重新加载配置，不修改系统证书库，也不跳过证书链或主机名校验。其它组织和个人 AI 连接不继承此 CA。
 

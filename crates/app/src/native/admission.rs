@@ -166,7 +166,7 @@ impl Admission {
         }
         Some(slot)
     }
-    fn request(&self, address: IpAddr) -> Option<(OwnedSemaphorePermit, OwnedSemaphorePermit)> {
+    fn peer_request(&self, address: IpAddr) -> Option<OwnedSemaphorePermit> {
         let now = self.clock.now();
         let mut state = self.state.lock().ok()?;
         let peer = state.peers.get_mut(&address)?;
@@ -175,7 +175,11 @@ impl Admission {
         if !peer.request_rate.take(now) || !state.requests.take(now) {
             return None;
         }
-        Some((slot, self.requests.clone().try_acquire_owned().ok()?))
+        Some(slot)
+    }
+    fn request(&self, address: IpAddr) -> Option<(OwnedSemaphorePermit, OwnedSemaphorePermit)> {
+        let peer = self.peer_request(address)?;
+        Some((peer, self.requests.clone().try_acquire_owned().ok()?))
     }
 }
 pub(crate) async fn admit(
@@ -202,7 +206,7 @@ pub(crate) async fn admit_agent(
     request: Request,
     next: Next,
 ) -> Response {
-    let Some(_slots) = gate.owner.request(gate.peer) else {
+    let Some(_peer_slot) = gate.owner.peer_request(gate.peer) else {
         gate.owner.refused(1);
         use axum::http::{HeaderValue, StatusCode, header};
         let body = if request.uri().path().starts_with("/api/agent/enroll/v1/") {

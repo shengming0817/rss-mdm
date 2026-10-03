@@ -26,6 +26,8 @@ impl Service {
         let request_digest = digest(input)?;
         let spki = hex(verified.spki());
         let csr = STANDARD.decode(&input.csr).map_err(|_| Error::Malformed)?;
+        // Authorization and candidate writes are phases; the HTTP result still needs settlement.
+        a.require_request_settlement();
         a.operation(input.operation_id, "agent_certificate_authorize");
         let claim = self
             .write(a, (self, input, a, request_digest, spki, csr), |ctx, c| {

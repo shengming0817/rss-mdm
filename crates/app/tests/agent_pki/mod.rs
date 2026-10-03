@@ -180,8 +180,54 @@ async fn explicit_development_limit_and_unknown_result_remain_auditable() -> any
     let g = grant()?;
     let r = unknown.create(&p, &g, &audit()).await?;
     let input = signing(&g, r.grant_id)?;
-    let first = unknown.issue(&input, &audit()).await.unwrap_err();
-    let retry = unknown.issue(&input, &audit()).await.unwrap_err();
+    use axum::{Router, body::Body, http::Request};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let router = Router::new().nest(
+        "/api/agent/enroll/v1",
+        rss_mdm_agent_channel::enroll::router(unknown.clone(), envelope("mdm.example.test").await?),
+    );
+    let mut failures = Vec::new();
+    let mut owner =
+        <sqlx::PgConnection as sqlx::Connection>::connect_with(&options("postgres")?).await?;
+    for _ in 0..2 {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::post("/api/agent/enroll/v1/certificates")
+                    .header("host", "mdm.example.test")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&input)?))?,
+            )
+            .await?;
+        assert_eq!(response.status(), 503);
+        let id = response.headers()["x-request-id"].to_str()?.to_owned();
+        failures.push(serde_json::from_slice::<wire::ErrorBody>(
+            &response.into_body().collect().await?.to_bytes(),
+        )?);
+        let records = crate::test_support::audit::read(&mut owner).await?;
+        let facts: Vec<_> = records
+            .iter()
+            .filter(|r| r.request() == Some(id.as_str()))
+            .collect();
+        let settlements: Vec<_> = facts
+            .iter()
+            .filter(|r| r.source() == "mdm.request")
+            .collect();
+        assert_eq!(settlements.len(), 1);
+        assert_eq!(settlements[0].status(), 503);
+        assert_eq!(settlements[0].result(), "failed");
+        if failures.len() == 1 {
+            assert!(
+                facts
+                    .iter()
+                    .any(|r| r.source() != "mdm.request" && r.status() == 200),
+                "durable claim fact must survive final CA failure settlement"
+            );
+        }
+    }
+    let first = &failures[0];
+    let retry = &failures[1];
     assert_eq!(first.code, wire::ErrorCode::IssuanceUnknown);
     assert_eq!(first.issuance_id, retry.issuance_id);
     let restarted = service(deployment()).await?;
@@ -270,5 +316,293 @@ async fn provisioner_rejects_substituted_csr_and_consumed_token() -> anyhow::Res
         .send()
         .await?;
     assert!(!response.status().is_success());
+    Ok(())
+}
+
+async fn envelope(host: &str) -> anyhow::Result<rss_mdm_agent_channel::boundary::Envelope> {
+    let db = Database::connect(options("mdm_access")?).await?;
+    Ok(rss_mdm_agent_channel::boundary::Envelope {
+        admission: Arc::new(tokio::sync::Semaphore::new(32)),
+        host: host.into(),
+        clock: crate::test_support::monotonic(),
+        audit_store: db.audit_store(&crate::config::AuditConfig::Plain).await?,
+        requests: Arc::new(tokio::sync::Semaphore::new(4)),
+        tenant: case_a().into(),
+    })
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=agent.pki"]
+async fn agent_ingress_holds_one_global_permit_per_request() -> anyhow::Result<()> {
+    use axum::{Router, body::Body, http::Request, middleware, routing::get};
+    use tokio::sync::{Barrier, mpsc};
+    use tower::ServiceExt;
+    let envelope = envelope("mdm.example.test").await?;
+    let requests = envelope.requests.clone();
+    let admission = crate::native::admission::Admission::new(
+        envelope.clock.clone(),
+        requests.clone(),
+        "mdm-agent",
+    );
+    let first = admission.connection("127.0.0.1".parse()?).unwrap();
+    let second = admission.connection("127.0.0.2".parse()?).unwrap();
+    let third = admission.connection("127.0.0.3".parse()?).unwrap();
+    let release = Arc::new(Barrier::new(5));
+    let (entered, mut entries) = mpsc::channel(4);
+    let held = get(move || {
+        let entered = entered.clone();
+        let release = release.clone();
+        async move {
+            entered.send(()).await.unwrap();
+            release.wait().await;
+            "done"
+        }
+    });
+    let router = rss_mdm_agent_channel::boundary::wrap(
+        Router::new().route("/held", held).route(
+            "/ready",
+            get(|| async { axum::http::StatusCode::NO_CONTENT }),
+        ),
+        envelope,
+    )
+    .layer(middleware::from_fn(crate::native::admission::admit_agent));
+    let mut running = Vec::new();
+    for gate in [first.gate(), first.gate(), second.gate(), second.gate()] {
+        let request = Request::get("/held")
+            .header("host", "mdm.example.test")
+            .extension(gate)
+            .body(Body::empty())?;
+        let router = router.clone();
+        running.push(tokio::spawn(async move { router.oneshot(request).await }));
+    }
+    tokio::time::timeout(Duration::from_secs(5), async {
+        for _ in 0..4 {
+            entries.recv().await.unwrap();
+        }
+    })
+    .await?;
+    assert_eq!(requests.available_permits(), 0);
+    let response = router
+        .clone()
+        .oneshot(
+            Request::get("/ready")
+                .header("host", "mdm.example.test")
+                .extension(third.gate())
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(
+        response.status(),
+        503,
+        "fifth peer reaches the global body budget"
+    );
+    release.wait().await;
+    for task in running {
+        assert_eq!(task.await??.status(), 200);
+    }
+    assert_eq!(requests.available_permits(), 4);
+    let response = router
+        .oneshot(
+            Request::get("/ready")
+                .header("host", "mdm.example.test")
+                .extension(third.gate())
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(response.status(), 204);
+    Ok(())
+}
+
+type AgentHttp = tokio::io::BufReader<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>;
+async fn connect_agent(
+    address: std::net::SocketAddr,
+    chain: Option<&[Vec<u8>]>,
+) -> anyhow::Result<AgentHttp> {
+    use tokio_rustls::{
+        TlsConnector,
+        rustls::{
+            self,
+            pki_types::{
+                CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, pem::PemObject,
+            },
+        },
+    };
+    let mut roots = rustls::RootCertStore::empty();
+    for cert in CertificateDer::pem_slice_iter(&std::fs::read(root().join("ca.crt"))?) {
+        roots.add(cert?)?;
+    }
+    let builder = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()?
+    .with_root_certificates(roots);
+    let config = match chain {
+        Some(chain) => builder.with_client_auth_cert(
+            chain.iter().cloned().map(CertificateDer::from).collect(),
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(std::fs::read(
+                root().join("agent.pk8"),
+            )?)),
+        )?,
+        None => builder.with_no_client_auth(),
+    };
+    let stream = tokio::net::TcpStream::connect(address).await?;
+    Ok(tokio::io::BufReader::new(
+        TlsConnector::from(Arc::new(config))
+            .connect(ServerName::try_from("localhost")?, stream)
+            .await?,
+    ))
+}
+async fn agent_http(
+    io: &mut AgentHttp,
+    method: &str,
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> anyhow::Result<(u16, serde_json::Value)> {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
+    let body = body
+        .map(|v| serde_json::to_vec(&v))
+        .transpose()?
+        .unwrap_or_default();
+    let head = format!(
+        "{method} {path} HTTP/1.1\r\nHost: mdm.example.test:9445\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
+        body.len()
+    );
+    io.get_mut().write_all(head.as_bytes()).await?;
+    io.get_mut().write_all(&body).await?;
+    io.get_mut().flush().await?;
+    let mut line = String::new();
+    io.read_line(&mut line).await?;
+    let status = line
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| anyhow::anyhow!("missing HTTP status"))?
+        .parse()?;
+    let mut length = None;
+    loop {
+        line.clear();
+        anyhow::ensure!(
+            io.read_line(&mut line).await? != 0,
+            "truncated HTTP headers"
+        );
+        if line == "\r\n" {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("content-length") {
+                length = Some(value.trim().parse::<usize>()?);
+            }
+        }
+    }
+    let mut bytes = vec![0; length.ok_or_else(|| anyhow::anyhow!("missing HTTP content-length"))?];
+    io.read_exact(&mut bytes).await?;
+    Ok((status, serde_json::from_slice(&bytes)?))
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=agent.pki"]
+async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation()
+-> anyhow::Result<()> {
+    let host = crate::windows::t2::support::Host::open().await?;
+    let routers = crate::api::from_state(
+        host.app.clone(),
+        "mdm.example.test".into(),
+        crate::test_support::monotonic(),
+    );
+    let (_, router) = routers
+        .listeners
+        .into_iter()
+        .find(|(kind, _)| *kind == crate::native::NativeListenerKind::Agent)
+        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let mut owner = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(5))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    owner
+        .startup()?
+        .stage_task_with_token(crate::native::tls::registration(
+            listener,
+            router,
+            host.app.audit_store.clone(),
+            case_a().into(),
+            crate::native::NativeListenerKind::Agent,
+        ));
+    let g = grant()?;
+    let mut anonymous = connect_agent(address, None).await?;
+    let (status, body) = agent_http(
+        &mut anonymous,
+        "POST",
+        "/api/agent/enroll/v1/requests",
+        Some(serde_json::to_value(&g)?),
+    )
+    .await?;
+    assert_eq!(status, 200, "anonymous TLS bootstrap: {body}");
+    let receipt: wire::GrantReceipt = serde_json::from_value(body)?;
+    let p = admin(case_a(), "admin-a").await?;
+    host.app
+        .agent_enrollment
+        .as_ref()
+        .unwrap()
+        .approve(&p, receipt.grant_id, Uuid::new_v4(), &audit())
+        .await?;
+    let (status, body) = agent_http(
+        &mut anonymous,
+        "POST",
+        "/api/agent/enroll/v1/certificates",
+        Some(serde_json::to_value(signing(&g, receipt.grant_id)?)?),
+    )
+    .await?;
+    assert_eq!(status, 200, "anonymous signing: {body}");
+    let candidate: wire::Candidate = serde_json::from_value(body)?;
+    let path = format!("/api/agent/runtime/v1/reports/{}", Uuid::new_v4());
+    let (status, body) = agent_http(&mut anonymous, "GET", &path, None).await?;
+    assert_eq!(status, 401);
+    assert_eq!(body["code"], "invalid_identity");
+    let mut certified = connect_agent(address, Some(&chain(&candidate)?)).await?;
+    let (status, body) = agent_http(&mut certified, "GET", &path, None).await?;
+    assert_eq!(status, 401);
+    assert_eq!(
+        body["code"], "invalid_identity",
+        "candidate is not an active identity"
+    );
+    let (status, body) = agent_http(
+        &mut certified,
+        "POST",
+        "/api/agent/enroll/v1/activate",
+        Some(serde_json::to_value(wire::ActivationRequest {
+            wire_version: 1,
+            issuance_id: candidate.issuance_id,
+            operation_id: Uuid::new_v4(),
+        })?),
+    )
+    .await?;
+    assert_eq!(status, 200, "activation through real TLS proof: {body}");
+    let active: wire::ActivationReceipt = serde_json::from_value(body)?;
+    let (status, body) = agent_http(&mut certified, "GET", &path, None).await?;
+    assert_eq!(status, 404);
+    assert_eq!(
+        body["code"], "report_not_found",
+        "active identity reaches report lookup"
+    );
+    host.app
+        .devices
+        .revoke(
+            &p,
+            &active.runtime.device_id,
+            active.runtime.registration_id,
+            Uuid::new_v4(),
+        )
+        .await?;
+    let (status, body) = agent_http(&mut certified, "GET", &path, None).await?;
+    assert_eq!(status, 401);
+    assert_eq!(
+        body["code"], "credential_revoked",
+        "same TLS connection must recheck revoked credentials"
+    );
+    drop(certified);
+    drop(anonymous);
+    assert!(owner.shutdown().join().await?.is_clean());
+    host.close().await?;
     Ok(())
 }

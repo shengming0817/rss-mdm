@@ -188,10 +188,13 @@ add('agent.pki', selectors=('agent_pki_tests::',), fixtures=('identity','apple',
              'crates/registration-service/src/operations.rs'),
     tests=('crates/app/tests/agent_pki/mod.rs',),
     support=('hack/agent_pki_fixtures.py','crates/app/tests/support/agent_tls.rs','crates/app/tests/device/support.rs',
-             'crates/app/tests/enrollment/support.rs','crates/app/tests/support/audit.rs'))
+             'crates/app/tests/enrollment/support.rs','crates/app/tests/support/audit.rs',
+             'crates/app/tests/windows/support.rs'))
 MODULES['agent.pki'] = replace(MODULES['agent.pki'], policies=(
     CasePolicy('agent_pki_tests::restored_ca_signs_only_live_authorized_agent_csrs_and_tls_preserves_purpose',
                'reuse', 'pair'),
+    CasePolicy('agent_pki_tests::agent_ingress_holds_one_global_permit_per_request', 'reuse', 'tenant'),
+    CasePolicy('agent_pki_tests::production_agent_listener_bootstraps_activates_and_rechecks_revocation', 'reuse', 'tenant'),
 ))
 
 add('installation.migration', selectors=('migration::tests::',), profile='empty',
