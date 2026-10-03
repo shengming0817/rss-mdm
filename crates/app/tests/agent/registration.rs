@@ -111,6 +111,8 @@ async fn registration_binding_and_replay() -> Result<()> {
                 .method(Method::POST)
                 .uri("/api/v1/agent-grants")
                 .header("host", "mdm.example.test")
+                .header("origin", "https://mdm.example.test")
+                .header("x-identity-request", "1")
                 .extension(crate::test_support::agent::evidence(agent.credential).unwrap())
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&agent.request)?))?,
@@ -131,12 +133,16 @@ async fn registration_binding_and_replay() -> Result<()> {
         .await?;
     let before: (i16, String) = sqlx::query_as("SELECT wire_version,capabilities FROM mdm_agent.bindings WHERE tenant_id=$1::uuid AND registration=$2::uuid")
         .bind(case_tenant()).bind(registration).fetch_one(&mut owner).await?;
-    for mutation in [
-        "wire_version=6",
-        "capabilities='[\"inventory.collect.v6\"]'",
+    for query in [
+        "UPDATE mdm_agent.bindings SET wire_version=6 WHERE tenant_id=$1::uuid AND registration=$2::uuid",
+        "UPDATE mdm_agent.bindings SET capabilities='[\"inventory.collect.v6\"]' WHERE tenant_id=$1::uuid AND registration=$2::uuid",
     ] {
-        let error = sqlx::query(&format!("UPDATE mdm_agent.bindings SET {mutation} WHERE tenant_id=$1::uuid AND registration=$2::uuid"))
-            .bind(case_tenant()).bind(registration).execute(&mut owner).await.unwrap_err();
+        let error = sqlx::query(query)
+            .bind(case_tenant())
+            .bind(registration)
+            .execute(&mut owner)
+            .await
+            .unwrap_err();
         let error = error
             .as_database_error()
             .expect("database constraint rejection");

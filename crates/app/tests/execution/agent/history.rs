@@ -227,9 +227,8 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
         } else {
             "policies"
         };
-        let version = if remote { 3 } else { 2 };
         let path = format!(
-            "/api/v{version}/{route}/{parent}/runs/{}",
+            "/api/v1/{route}/{parent}/runs/{}",
             task["payload"]["taskId"].as_str().unwrap()
         );
         let denied = f.author.call(&f.router, Method::GET, &path, None).await?;

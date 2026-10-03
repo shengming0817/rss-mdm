@@ -11,7 +11,14 @@ fn rebuilt_v1_rejects_retired_majors_and_historical_v1_shapes() {
         "inventory",
         1,
         rss_mdm_inventory::Source::AgentBuiltin,
-        rss_mdm_inventory::builtin::fields(),
+        rss_mdm_inventory::builtin::fields()
+            .into_iter()
+            .filter(|field| {
+                field
+                    .sources
+                    .contains_key(&rss_mdm_inventory::Source::AgentBuiltin)
+            })
+            .collect(),
     )
     .unwrap();
     let report = serde_json::to_value(
