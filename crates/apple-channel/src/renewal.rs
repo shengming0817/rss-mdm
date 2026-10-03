@@ -539,7 +539,7 @@ pub async fn management(
         match attempt::lock(c, protection, p, id, attempt::Owner::Certificate, bytes).await? {
             None => return Ok(None),
             Some(attempt::Reception::Replay) => {}
-            Some(attempt::Reception::Ready(a)) => a.settle(c, message.status).await?,
+            Some(attempt::Reception::Ready(a)) => a.settle(c, message.status, true).await?,
         }
     }
     let next=sqlx::query("SELECT a.id::text,a.request FROM mdm_apple.attempts a JOIN mdm_apple.scep_attempts s ON (s.tenant_id,s.id)=(a.tenant_id,a.certificate) WHERE a.tenant_id=$1::uuid AND a.registration=$2::uuid AND a.generation=$3 AND a.phase='renew' AND a.state IN ('pending','sent','not_now') AND s.state IN ('prepared','consumed') AND a.next_attempt<=clock_timestamp() AND a.deadline>clock_timestamp() ORDER BY a.id LIMIT 1 FOR UPDATE OF a")

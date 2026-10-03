@@ -1,13 +1,38 @@
 use crate::device::DevicePrincipal;
+use crate::execution::channels::{self, AppleCommand, AppleDispatch, Pending, Reception};
 use crate::{Error, database::db};
 use rss_mdm_apple_mdm::protocol as wire;
-use rss_mdm_execution_service::channels::{self, AppleCommand, AppleDispatch, Pending, Reception};
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 pub struct Store {
     pub protection: std::sync::Arc<rss_mdm_native_protection::Protector>,
 }
 impl channels::AppleStore for Store {
+    fn reserve_profile<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        target: channels::AppleRegistration,
+        command: AppleCommand,
+    ) -> Pending<'a, ()> {
+        Box::pin(async move {
+            crate::profiles::reserve(c, &self.protection, &target, &command)
+                .await
+                .map_err(Into::into)
+        })
+    }
+    fn confirm_profile<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        target: channels::AppleRegistration,
+        operation: Uuid,
+    ) -> Pending<'a, ()> {
+        Box::pin(async move {
+            crate::profiles::confirm(c, &target, operation)
+                .await
+                .map_err(Into::into)
+        })
+    }
+
     fn prepare_native_collection<'a>(
         &'a self,
         c: &'a mut sqlx::PgConnection,
@@ -186,10 +211,11 @@ impl channels::AppleStore for Store {
         operation: Uuid,
     ) -> Pending<'a, Vec<channels::Observation>> {
         Box::pin(async move {
-            let rows=sqlx::query("SELECT id,registration,generation,phase,state,response,received_at FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2::uuid ORDER BY ordinal,phase").bind(&tenant).bind(operation).fetch_all(c).await.map_err(|e|channels::Rejection::from(db(e)))?;
+            let rows=sqlx::query("SELECT id,registration,generation,phase,state,response,received_at,accepted FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2::uuid ORDER BY ordinal,phase").bind(&tenant).bind(operation).fetch_all(c).await.map_err(|e|channels::Rejection::from(db(e)))?;
             rows.into_iter()
                 .map(|r| {
                     Ok(channels::Observation {
+                        accepted: r.try_get("accepted").map_err(storage)?,
                         phase: r
                             .try_get("phase")
                             .map_err(|e| channels::Rejection::from(db(e)))?,
@@ -236,8 +262,14 @@ impl channels::AppleAttempt for super::attempt::Attempt {
         self: Box<Self>,
         c: &'a mut PgConnection,
         status: wire::Status,
+        accepted: bool,
     ) -> Pending<'a, ()> {
-        Box::pin(async move { (*self).settle(c, status).await.map_err(Into::into) })
+        Box::pin(async move {
+            (*self)
+                .settle(c, status, accepted)
+                .await
+                .map_err(Into::into)
+        })
     }
 }
 impl channels::Apple for super::Apple {
@@ -357,10 +389,7 @@ async fn send_command(
     command: &AppleCommand,
 ) -> Result<AppleDispatch, Error> {
     use rss_mdm_apple_mdm::native::{self, request::Request as A};
-    if !matches!(
-        command.target,
-        rss_mdm_execution_service::NativeTarget::Device
-    ) {
+    if !matches!(command.target, crate::execution::NativeTarget::Device) {
         return Err(Error::Unsupported);
     }
     let Some(context) = super::native::context(c, &apple.protection, p, command).await? else {
@@ -386,10 +415,10 @@ async fn send_command(
     };
     let executed = rows.iter().any(|r| {
         r.try_get::<String, _>("phase").ok().as_deref() == Some("execute")
-            && matches!(
+            && (matches!(
                 r.try_get::<String, _>("state").ok().as_deref(),
                 Some("sent" | "acknowledged")
-            )
+            ) || (profile && r.try_get::<String, _>("state").ok().as_deref() == Some("error")))
     });
     let phase = if (profile || software_query.is_some()) && executed {
         "observe"
@@ -401,6 +430,7 @@ async fn send_command(
         .fetch_one(&mut *c)
         .await
         .map_err(db)?;
+    let mut profile_objects = None;
     let compiled = if phase == "observe" {
         if let Some(query) = software_query {
             query.compile(&target)
@@ -415,6 +445,7 @@ async fn send_command(
                     Ok(profile) => profile,
                     Err(error) => return Ok(AppleDispatch::Rejected(error)),
                 };
+                profile_objects = Some(profile.objects);
                 let signed = apple.signer.sign(&profile.bytes, now)?;
                 native::Command::new(
                     "InstallProfile",
@@ -471,6 +502,19 @@ async fn send_command(
         if ordinal > 32 {
             return Ok(AppleDispatch::Waiting);
         }
+    }
+    if phase == "execute"
+        && profile
+        && !crate::profiles::dispatch(
+            c,
+            &apple.protection,
+            p,
+            command.operation,
+            profile_objects.as_deref(),
+        )
+        .await?
+    {
+        return Ok(AppleDispatch::Rejected(native::Error::Constraint));
     }
     let bytes = compiled.encode(id).map_err(|_| Error::Malformed)?;
     let sealed = crate::protection::seal(

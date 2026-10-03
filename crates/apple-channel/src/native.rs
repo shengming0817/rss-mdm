@@ -34,7 +34,7 @@ pub(crate) async fn context(
     p: &DevicePrincipal,
     command: &AppleCommand,
 ) -> Result<Option<Context>, Error> {
-    let rows=sqlx::query("SELECT id,phase,response FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND operation=$4 AND phase IN('resolve_device','resolve_security') AND state='acknowledged' ORDER BY phase").bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(command.operation).fetch_all(c).await.map_err(db)?;
+    let rows=sqlx::query("SELECT id,phase,response FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND operation=$4 AND phase IN('resolve_device','resolve_security') AND state='acknowledged' AND accepted ORDER BY phase").bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(command.operation).fetch_all(c).await.map_err(db)?;
     let mut device = None;
     let mut security = None;
     for row in rows {

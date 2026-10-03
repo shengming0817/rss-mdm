@@ -2,6 +2,14 @@
 BEGIN;
 SET LOCAL check_function_bodies = false;
 
+ALTER TABLE mdm_apple.profiles ADD CONSTRAINT profiles_device_fkey FOREIGN KEY(tenant_id,device) REFERENCES mdm_access.devices(tenant_id,id);
+ALTER TABLE mdm_apple.profiles ADD CONSTRAINT profiles_registration_fkey FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id);
+ALTER TABLE mdm_apple.profiles ADD CONSTRAINT profiles_operation_fkey FOREIGN KEY(tenant_id,operation) REFERENCES mdm_commands.operations(tenant_id,id);
+GRANT SELECT,INSERT ON mdm_apple.profiles TO mdm_command_runtime;
+GRANT UPDATE(manifest,dispatched_at,observed_at,retired_at) ON mdm_apple.profiles TO mdm_command_runtime;
+GRANT SELECT ON mdm_apple.profiles TO mdm_access;
+GRANT UPDATE(retired_at) ON mdm_apple.profiles TO mdm_access;
+
 ALTER TABLE ONLY mdm_apple.attempts
     ADD CONSTRAINT attempts_tenant_id_certificate_fkey FOREIGN KEY (tenant_id, certificate) REFERENCES mdm_apple.scep_attempts(tenant_id, id);
 
@@ -41,6 +49,9 @@ GRANT UPDATE(response) ON TABLE mdm_apple.attempts TO mdm_command_runtime;
 
 GRANT UPDATE(response_digest) ON TABLE mdm_apple.attempts TO mdm_access;
 GRANT UPDATE(response_digest) ON TABLE mdm_apple.attempts TO mdm_command_runtime;
+
+GRANT UPDATE(accepted) ON TABLE mdm_apple.attempts TO mdm_access;
+GRANT UPDATE(accepted) ON TABLE mdm_apple.attempts TO mdm_command_runtime;
 
 GRANT UPDATE(received_at) ON TABLE mdm_apple.attempts TO mdm_access;
 GRANT UPDATE(received_at) ON TABLE mdm_apple.attempts TO mdm_command_runtime;

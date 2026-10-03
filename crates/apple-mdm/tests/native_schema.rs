@@ -343,6 +343,47 @@ fn profile_composition_preserves_native_identity_scope_and_payload_versions() {
         Some(1)
     );
     assert_eq!(compiled.objects.len(), 2);
+    let mut listed = body.clone();
+    let report = |item: Dictionary| {
+        crate::protocol::dictionary([("ProfileList", Value::Array(vec![item.into()]))])
+    };
+    assert!(profile.observed(&report(listed.clone())).unwrap());
+    listed.remove("PayloadContent");
+    assert!(profile.observed(&report(listed.clone())).is_err());
+    listed = body.clone();
+    listed.insert("IsEncrypted".into(), true.into());
+    assert!(profile.observed(&report(listed)).is_err());
+    listed = body.clone();
+    let children = listed
+        .get_mut("PayloadContent")
+        .unwrap()
+        .as_array_mut()
+        .unwrap();
+    children[0]
+        .as_dictionary_mut()
+        .unwrap()
+        .remove("PayloadUUID");
+    assert!(profile.observed(&report(listed)).is_err());
+    listed = body.clone();
+    let children = listed
+        .get_mut("PayloadContent")
+        .unwrap()
+        .as_array_mut()
+        .unwrap();
+    children.push(children[0].clone());
+    assert!(profile.observed(&report(listed)).is_err());
+    listed = body.clone();
+    let children = listed
+        .get_mut("PayloadContent")
+        .unwrap()
+        .as_array_mut()
+        .unwrap();
+    children[0]
+        .as_dictionary_mut()
+        .unwrap()
+        .insert("PayloadIdentifier".into(), "old-payload".into());
+    assert!(!profile.observed(&report(listed)).unwrap());
+
     profile.payloads.push(profile.payloads[0].clone());
     assert!(profile.compile(&target).is_err());
 }

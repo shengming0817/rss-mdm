@@ -88,16 +88,21 @@ pub async fn lock(
     })))
 }
 impl Attempt {
-    /// Caller must authorize its business effect under the same transaction before settling.
-    pub async fn settle(self, c: &mut PgConnection, status: Status) -> Result<(), Error> {
+    /// Persist authenticated evidence and its eligibility under the same transaction.
+    pub async fn settle(
+        self,
+        c: &mut PgConnection,
+        status: Status,
+        accepted: bool,
+    ) -> Result<(), Error> {
         let state = match status {
             Status::Acknowledged => "acknowledged",
             Status::Error => "error",
             Status::NotNow => "not_now",
             Status::Idle => return Err(Error::Malformed),
         };
-        sqlx::query("UPDATE mdm_apple.attempts SET state=$3,response=$4,response_digest=$5,received_at=floor(extract(epoch FROM clock_timestamp()))::bigint,next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid")
-            .bind(self.tenant).bind(self.id.to_string()).bind(state).bind(self.bytes).bind(self.digest).execute(&mut *c).await.map_err(db)?;
+        sqlx::query("UPDATE mdm_apple.attempts SET state=$3,response=$4,response_digest=$5,accepted=$6,received_at=floor(extract(epoch FROM clock_timestamp()))::bigint,next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid")
+            .bind(self.tenant).bind(self.id.to_string()).bind(state).bind(self.bytes).bind(self.digest).bind(accepted).execute(&mut *c).await.map_err(db)?;
         if status == Status::NotNow {
             crate::notify(c, "apple").await.map_err(db)?;
         }

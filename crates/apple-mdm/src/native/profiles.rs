@@ -62,7 +62,77 @@ pub struct CompiledProfile {
     /// Profile and payload objects; an ACK does not prove their device effects.
     pub objects: Vec<ProfileObject>,
 }
+impl PayloadInput {
+    /// Stable native type from the generated official schema; applicability is checked at dispatch.
+    pub fn payload_type(&self) -> Result<&'static str, Error> {
+        generated::DEFINITIONS
+            .iter()
+            .find(|d| d.kind == Kind::Profile && d.schema == self.schema)
+            .map(|d| d.identity)
+            .ok_or(Error::UnknownSchema)
+    }
+}
 impl ProfileInput {
+    /// Compare the complete returned manifest, never infer settings or compliance from its presence.
+    /// Missing/encrypted content cannot establish that an earlier payload was replaced.
+    pub fn observed(&self, report: &Dictionary) -> Result<bool, crate::Error> {
+        use crate::protocol::text;
+        if !crate::profile::presence(report, &self.identifier, self.uuid)? {
+            return Ok(false);
+        }
+        let item = report
+            .get("ProfileList")
+            .and_then(Value::as_array)
+            .and_then(|items| {
+                items.iter().filter_map(Value::as_dictionary).find(|d| {
+                    d.get("PayloadIdentifier").and_then(Value::as_string) == Some(&self.identifier)
+                })
+            })
+            .ok_or(crate::Error::Malformed)?;
+        if item
+            .get("IsEncrypted")
+            .is_some_and(|v| v.as_boolean() != Some(false))
+        {
+            return Err(crate::Error::Malformed);
+        }
+        let children = item
+            .get("PayloadContent")
+            .and_then(Value::as_array)
+            .ok_or(crate::Error::Malformed)?;
+        let mut identifiers = BTreeSet::new();
+        let mut uuids = BTreeSet::from([self.uuid]);
+        let mut actual = BTreeSet::new();
+        for value in children {
+            let child = value.as_dictionary().ok_or(crate::Error::Malformed)?;
+            let identifier = text(child, "PayloadIdentifier")?;
+            let uuid = Uuid::parse_str(text(child, "PayloadUUID")?)
+                .map_err(|_| crate::Error::Malformed)?;
+            if identifier.is_empty()
+                || uuid.is_nil()
+                || !identifiers.insert(identifier)
+                || !uuids.insert(uuid)
+                || child
+                    .get("PayloadVersion")
+                    .and_then(Value::as_unsigned_integer)
+                    != Some(1)
+            {
+                return Err(crate::Error::Malformed);
+            }
+            actual.insert((text(child, "PayloadType")?, identifier, uuid));
+        }
+        let expected = self
+            .payloads
+            .iter()
+            .map(|p| {
+                Ok((
+                    p.payload_type().map_err(|_| crate::Error::Malformed)?,
+                    p.identifier.as_str(),
+                    p.uuid,
+                ))
+            })
+            .collect::<Result<BTreeSet<_>, crate::Error>>()?;
+        Ok(actual == expected)
+    }
     /// Compile one scope-consistent profile and reject duplicate identities or singleton types.
     pub fn compile(&self, target: &Target<'_>) -> Result<CompiledProfile, Error> {
         identity(&self.identifier, self.uuid)?;

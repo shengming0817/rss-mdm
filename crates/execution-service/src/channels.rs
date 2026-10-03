@@ -120,8 +120,29 @@ pub struct Observation {
     pub state: String,
     pub response: Option<Vec<u8>>,
     pub received_at: Option<i64>,
+    pub accepted: bool,
+}
+pub struct AppleRegistration {
+    pub tenant: String,
+    pub device: String,
+    pub registration: uuid::Uuid,
+    pub generation: i64,
 }
 pub trait AppleStore: Send + Sync {
+    fn reserve_profile<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        target: AppleRegistration,
+        command: AppleCommand,
+    ) -> Pending<'a, ()>;
+    /// Flow calls only after a current accepted, correlated manifest proves the intended presence.
+    fn confirm_profile<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        target: AppleRegistration,
+        operation: uuid::Uuid,
+    ) -> Pending<'a, ()>;
+
     fn prepare_native_collection<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -196,7 +217,12 @@ pub trait AppleAttempt: Send {
     fn latest(&self) -> bool;
     fn operation(&self) -> Option<Uuid>;
     fn phase(&self) -> &str;
-    fn settle<'a>(self: Box<Self>, c: &'a mut PgConnection, status: Status) -> Pending<'a, ()>;
+    fn settle<'a>(
+        self: Box<Self>,
+        c: &'a mut PgConnection,
+        status: Status,
+        accepted: bool,
+    ) -> Pending<'a, ()>;
 }
 pub struct AppleCommand {
     pub operation: Uuid,

@@ -3,7 +3,22 @@ use super::*;
 use crate::device::DevicePrincipal;
 use rss_mdm_apple_mdm::{profile, protocol as wire};
 use serde_json::{Value, json};
-use sqlx::Row;
+
+fn profile_observed(
+    input: &Create,
+    d: &plist::Dictionary,
+    identifier: &str,
+    uuid: Uuid,
+) -> std::result::Result<bool, rss_mdm_apple_mdm::Error> {
+    if let Task::Macos {
+        request: rss_mdm_apple_mdm::native::request::Request::InstallProfile { profile },
+    } = &input.task
+    {
+        profile.observed(d)
+    } else {
+        profile::presence(d, identifier, uuid)
+    }
+}
 
 /// Freeze old and new object authority under the existing device/authorization locks.
 pub async fn required(
@@ -21,10 +36,10 @@ pub async fn required(
     let user = input.target.user_key().to_owned();
     let identifier = identifier.to_owned();
     let old = tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_scalar::<_, Uuid>("SELECT operation FROM mdm_commands.apple_profiles WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND identifier=$4 FOR UPDATE")
-            .bind(tenant).bind(device).bind(user).bind(identifier).fetch_optional(c).await
+        sqlx::query_scalar::<_, Uuid>("SELECT operation FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND identifier=$4 AND retired_at IS NULL ORDER BY operation")
+            .bind(tenant).bind(device).bind(user).bind(identifier).fetch_all(c).await
     })).await?;
-    if let Some(old) = old {
+    for old in old {
         let old = storage::load(tx, key, old).await?;
         required.extend(old.request.task.permissions()?);
         required.extend_from_slice(old.approval.required());
@@ -35,29 +50,36 @@ pub async fn required(
 }
 pub async fn own(
     tx: &mut PgTransaction<'_>,
+    owner: Arc<dyn super::channels::AppleStore>,
     device: &str,
     registration: Uuid,
+    generation: i64,
     input: &Create,
 ) -> Result<()> {
-    let Some((identifier, profile, present)) = input.profile_target() else {
+    if input.profile_target().is_none() {
         return Ok(());
+    }
+    let Task::Macos { request } = &input.task else {
+        return Err(Error::Malformed.into());
     };
-    let tenant = tx.tenant_id().to_string();
-    let device = device.to_owned();
-    let operation = input.operation_id;
-    let identifier = identifier.to_owned();
-    let user = input.target.user_key().to_owned();
-    let version = input.input_version.clone();
-    let result=tx.with_connection(move|c|Box::pin(async move {
-        let old=sqlx::query("SELECT p.profile::text,p.registration::text,d.terminal_at IS NOT NULL AS terminal FROM mdm_commands.apple_profiles p JOIN rss_device_command.commands d ON d.tenant_id=p.tenant_id AND d.command_id=p.operation::text WHERE p.tenant_id=$1::uuid AND p.device=$2 AND p.user_key=$3 AND p.identifier=$4 FOR UPDATE OF p")
-            .bind(&tenant).bind(&device).bind(&user).bind(&identifier).fetch_optional(&mut *c).await?;
-        if old.as_ref().is_some_and(|r|r.try_get::<bool,_>("terminal").ok()!=Some(true)) {return Ok(Err(Error::Conflict))}
-        if !present && !old.as_ref().is_some_and(|r|r.try_get::<String,_>("profile").ok()==Some(profile.to_string()) && r.try_get::<String,_>("registration").ok()==Some(registration.to_string())) {return Ok(Err(Error::Conflict))}
-        sqlx::query("INSERT INTO mdm_commands.apple_profiles(tenant_id,device,user_key,identifier,profile,operation,registration,version) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(tenant_id,device,user_key,identifier) DO UPDATE SET profile=excluded.profile,operation=excluded.operation,registration=excluded.registration,version=excluded.version")
-            .bind(&tenant).bind(&device).bind(user).bind(identifier).bind(profile).bind(operation).bind(registration).bind(version).execute(c).await?;
-        Ok(Ok(()))
-    })).await?;
-    result?;
+    let target = super::channels::AppleRegistration {
+        tenant: tx.tenant_id().to_string(),
+        device: device.into(),
+        registration,
+        generation,
+    };
+    let command = super::channels::AppleCommand {
+        operation: input.operation_id,
+        deadline: input.deadline,
+        input_version: input.input_version.clone(),
+        target: input.target.clone(),
+        request: request.clone(),
+    };
+    tx.with_connection(move |c| {
+        Box::pin(async move { Ok(owner.reserve_profile(c, target, command).await) })
+    })
+    .await?
+    .map_err(Error::from)?;
     Ok(())
 }
 pub async fn observation(
@@ -77,11 +99,15 @@ pub async fn observation(
         .map_err(Error::from)?;
     if op.request.profile_target().is_none() {
         return Ok(
-            json!({"protocol":"mdm.apple","observationScope":"native_command","receipts":rows.iter().map(|r|json!({"phase":r.phase,"state":r.state,"receivedAt":r.received_at})).collect::<Vec<_>>(),"progress":super::service::status(status),"effect":"unverified"}),
+            json!({"protocol":"mdm.apple","observationScope":"native_command","receipts":rows.iter().map(|r|json!({"phase":r.phase,"state":r.state,"receivedAt":r.received_at,"accepted":r.accepted})).collect::<Vec<_>>(),"progress":super::service::status(status),"effect":"unverified"}),
         );
     }
     let mut value = json!({"protocol":"mdm.apple","observationScope":"profile_presence","result":"unknown","effect":"unknown","progress":"unknown"});
+    value["receipts"] = json!(rows.iter().map(|r|json!({"phase":r.phase,"state":r.state,"receivedAt":r.received_at,"accepted":r.accepted})).collect::<Vec<_>>());
     for row in rows {
+        if !row.accepted {
+            continue;
+        }
         let phase = row.phase;
         let state = row.state;
         if phase == "execute" {
@@ -96,7 +122,7 @@ pub async fn observation(
                 let d = wire::decode(&response).map_err(Error::from)?;
                 let (identifier, profile, present) =
                     op.request.profile_target().ok_or(Error::Conflict)?;
-                let presence = profile::presence(&d, identifier, profile);
+                let presence = profile_observed(&op.request, &d, identifier, profile);
                 value["result"] = json!(match presence {
                     Ok(p) if p == present && status == dc::Status::Applied => "matched",
                     Ok(p) if p != present => "mismatched",
@@ -256,15 +282,14 @@ async fn receive(
         attempt.operation().ok_or(Error::Conflict)?,
     )
     .await?;
-    if !eligible(service, tx, p, &op).await? {
-        return Err(Error::Forbidden.into());
-    }
+    let accepted = eligible(service, tx, p, &op).await? && attempt.latest();
     let phase = attempt.phase().to_owned();
-    let latest = attempt.latest();
-    tx.with_connection(move |c| Box::pin(async move { Ok(attempt.settle(c, status).await) }))
-        .await?
-        .map_err(Error::from)?;
-    if !latest {
+    tx.with_connection(move |c| {
+        Box::pin(async move { Ok(attempt.settle(c, status, accepted).await) })
+    })
+    .await?
+    .map_err(Error::from)?;
+    if !accepted {
         return Ok(());
     }
     if phase.starts_with("resolve_") && status != wire::Status::Error {
@@ -280,6 +305,11 @@ async fn receive(
     };
     let event = match (phase.as_str(), status) {
         (_, wire::Status::NotNow) => return Ok(()),
+        ("execute" | "observe", wire::Status::Error) if op.request.profile_target().is_some() => {
+            // Profile mutation errors preserve uncertain effects. The native owner may
+            // query presence, but this receipt never authorizes another mutation.
+            return Ok(());
+        }
         ("observe", wire::Status::Error) if software => {
             return Ok(());
         }
@@ -292,9 +322,22 @@ async fn receive(
         ("observe", wire::Status::Acknowledged) => {
             let (identifier, profile, present) =
                 op.request.profile_target().ok_or(Error::Conflict)?;
-            if profile::presence(d, identifier, profile).ok() != Some(present) {
+            if profile_observed(&op.request, d, identifier, profile).ok() != Some(present) {
                 return Ok(());
             }
+            let owner = service.apple_store.clone();
+            let target = super::channels::AppleRegistration {
+                tenant: service.tenant.to_string(),
+                device: op.device.clone(),
+                registration: op.registration,
+                generation: op.registration_generation,
+            };
+            let operation = op.id;
+            tx.with_connection(move |c| {
+                Box::pin(async move { Ok(owner.confirm_profile(c, target, operation).await) })
+            })
+            .await?
+            .map_err(Error::from)?;
             dc::DeviceEvent::Reported(op.request.digest(
                 &service.protection,
                 service.tenant,
@@ -309,6 +352,19 @@ async fn receive(
         coordinate: op.coordinate,
         event,
     };
+    if matches!(report.event, dc::DeviceEvent::Reported(_))
+        && service.required_command(tx, &op).await?.status() == dc::Status::Published
+    {
+        // A correlated recovery query establishes receipt of native evidence. The
+        // failed mutation's own receipt stays unchanged and separately visible.
+        let received = dc::DeviceReport {
+            event: dc::DeviceEvent::Received,
+            ..report.clone()
+        };
+        if service.store.report(tx, &received).await?.outcome == dc::Outcome::OutOfOrder {
+            return Err(Error::Conflict.into());
+        }
+    }
     let transition = service.store.report(tx, &report).await?;
     if transition.outcome == dc::Outcome::OutOfOrder {
         return Err(Error::Conflict.into());
@@ -339,9 +395,7 @@ async fn send(
         let approval = op.approval.clone();
         let source = service.source.clone();
         if !tx
-            .with_connection(move |c| {
-                Box::pin(async move { Ok(approval.dispatch_ready(source.as_ref(), c).await) })
-            })
+            .with_connection(move |c| Box::pin(async move { Ok(approval.dispatch_ready(source.as_ref(), c).await) }))
             .await??
         {
             continue;
