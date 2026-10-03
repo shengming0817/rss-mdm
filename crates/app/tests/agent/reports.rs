@@ -27,7 +27,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     let (status, error) = agent_call(
         router,
         Method::GET,
-        "/api/agent/v5/reports/not-a-uuid",
+        "/api/agent/v6/reports/not-a-uuid",
         Some(credential),
         None,
     )
@@ -39,7 +39,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     let (status, error) = agent_call(
         router,
         Method::POST,
-        "/api/agent/v5/reports",
+        "/api/agent/v6/reports",
         Some(credential),
         Some(json!({"oversized":"x".repeat(17_000)})),
     )
@@ -51,7 +51,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     let (status, error) = agent_call(
         router,
         Method::POST,
-        "/api/agent/v5/reports",
+        "/api/agent/v6/reports",
         Some(credential),
         Some(json!({"oversized":"x".repeat(2 * 1024 * 1024 + 1)})),
     )
@@ -65,7 +65,7 @@ async fn durable_reports_and_projection() -> Result<()> {
         agent_call(
             router,
             Method::GET,
-            &format!("/api/agent/v5/reports/{missing}"),
+            &format!("/api/agent/v6/reports/{missing}"),
             Some(credential),
             None
         )
@@ -76,7 +76,7 @@ async fn durable_reports_and_projection() -> Result<()> {
         agent_call(
             router,
             Method::GET,
-            &format!("/api/agent/v5/reports/{missing}"),
+            &format!("/api/agent/v6/reports/{missing}"),
             Some(password),
             None
         )
@@ -85,7 +85,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     );
     let report_id = uuid::Uuid::new_v4();
     let report = json!({
-        "wireVersion":5,
+        "wireVersion":6,
         "collection":registration["collections"][0],
         "reportId":report_id,
         "sequence":0,
@@ -98,7 +98,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     let (status, ack) = agent_call(
         router,
         Method::POST,
-        "/api/agent/v5/reports",
+        "/api/agent/v6/reports",
         Some(credential),
         Some(report.clone()),
     )
@@ -111,7 +111,7 @@ async fn durable_reports_and_projection() -> Result<()> {
         agent_call(
             router,
             Method::POST,
-            "/api/agent/v5/reports",
+            "/api/agent/v6/reports",
             Some(credential),
             Some(report.clone())
         )
@@ -120,7 +120,7 @@ async fn durable_reports_and_projection() -> Result<()> {
         "report replay changed acknowledgement"
     );
     let concurrent_id = uuid::Uuid::new_v4();
-    let concurrent = json!({"wireVersion":5,"collection":registration["collections"][0],"reportId":concurrent_id,"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
+    let concurrent = json!({"wireVersion":6,"collection":registration["collections"][0],"reportId":concurrent_id,"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
     let mut same_id = tokio::task::JoinSet::new();
     for _ in 0..4 {
         let router = router.clone();
@@ -129,7 +129,7 @@ async fn durable_reports_and_projection() -> Result<()> {
             agent_call(
                 &router,
                 Method::POST,
-                "/api/agent/v5/reports",
+                "/api/agent/v6/reports",
                 Some(credential),
                 Some(body),
             )
@@ -160,7 +160,7 @@ async fn durable_reports_and_projection() -> Result<()> {
         agent_call(
             router,
             Method::POST,
-            "/api/agent/v5/reports",
+            "/api/agent/v6/reports",
             Some(credential),
             Some(changed)
         )
@@ -171,7 +171,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     let (status, current) = agent_call(
         router,
         Method::GET,
-        &format!("/api/agent/v5/reports/{report_id}"),
+        &format!("/api/agent/v6/reports/{report_id}"),
         Some(credential),
         None,
     )
@@ -198,14 +198,14 @@ async fn durable_reports_and_projection() -> Result<()> {
     let partial_id = uuid::Uuid::new_v4();
     let failed_id = uuid::Uuid::new_v4();
     for body in [
-        json!({"wireVersion":5,"collection":registration["collections"][0],"reportId":partial_id,"sequence":1,"observedAt":2,"body":{"kind":"partial","values":[{"field":"device.model","value":{"kind":"value","value":{"kind":"string","value":"Unconfirmed"}}}]}}),
-        json!({"wireVersion":5,"collection":registration["collections"][0],"reportId":failed_id,"sequence":2,"observedAt":3,"body":{"kind":"failed","code":"collectionFailed"}}),
+        json!({"wireVersion":6,"collection":registration["collections"][0],"reportId":partial_id,"sequence":1,"observedAt":2,"body":{"kind":"partial","values":[{"field":"device.model","value":{"kind":"value","value":{"kind":"string","value":"Unconfirmed"}}}]}}),
+        json!({"wireVersion":6,"collection":registration["collections"][0],"reportId":failed_id,"sequence":2,"observedAt":3,"body":{"kind":"failed","code":"collectionFailed"}}),
     ] {
         ensure!(
             agent_call(
                 router,
                 Method::POST,
-                "/api/agent/v5/reports",
+                "/api/agent/v6/reports",
                 Some(credential),
                 Some(body)
             )
@@ -221,12 +221,12 @@ async fn durable_reports_and_projection() -> Result<()> {
     let mut capacity = tokio::task::JoinSet::new();
     for sequence in [3, 4] {
         let router = router.clone();
-        let body = json!({"wireVersion":5,"collection":registration["collections"][0],"reportId":uuid::Uuid::new_v4(),"sequence":sequence,"observedAt":4,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
+        let body = json!({"wireVersion":6,"collection":registration["collections"][0],"reportId":uuid::Uuid::new_v4(),"sequence":sequence,"observedAt":4,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
         capacity.spawn(async move {
             agent_call(
                 &router,
                 Method::POST,
-                "/api/agent/v5/reports",
+                "/api/agent/v6/reports",
                 Some(credential),
                 Some(body),
             )
@@ -271,12 +271,12 @@ async fn durable_reports_and_projection() -> Result<()> {
     ] {
         let expected = "operation_unknown";
         let fault_report = uuid::Uuid::new_v4();
-        let body = json!({"wireVersion":5,"collection":registration["collections"][0],"reportId":fault_report,"sequence":100+number,"observedAt":100+number,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
+        let body = json!({"wireVersion":6,"collection":registration["collections"][0],"reportId":fault_report,"sequence":100+number,"observedAt":100+number,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
         audit_store.inject_next_fault(fault);
         let failed = agent_call(
             router,
             Method::POST,
-            "/api/agent/v5/reports",
+            "/api/agent/v6/reports",
             Some(credential),
             Some(body.clone()),
         )
@@ -290,7 +290,7 @@ async fn durable_reports_and_projection() -> Result<()> {
         let retry = agent_call(
             router,
             Method::POST,
-            "/api/agent/v5/reports",
+            "/api/agent/v6/reports",
             Some(credential),
             Some(body.clone()),
         )
@@ -300,7 +300,7 @@ async fn durable_reports_and_projection() -> Result<()> {
             agent_call(
                 router,
                 Method::POST,
-                "/api/agent/v5/reports",
+                "/api/agent/v6/reports",
                 Some(credential),
                 Some(body)
             )

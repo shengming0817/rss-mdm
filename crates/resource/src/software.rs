@@ -99,15 +99,6 @@ pub enum SoftwareDowngrade {
     /// Permit the exact approved downgrade.
     Allow,
 }
-/// Existing user software is not silently adopted.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SoftwareOwnership {
-    /// Only organization-managed instances may be changed.
-    ManagedOnly,
-    /// Explicitly allow changes to an existing user-owned instance.
-    AllowUserExisting,
-}
 /// Exact same-tenant dependency; graph validation occurs under product resource locks.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -167,8 +158,6 @@ pub struct SoftwareSpec {
     pub reboot: SoftwareReboot,
     /// Explicit downgrade permission.
     pub downgrade: SoftwareDowngrade,
-    /// Existing installation ownership boundary.
-    pub ownership: SoftwareOwnership,
     /// Exact tenant-local resource prerequisites.
     pub dependencies: Vec<SoftwareDependency>,
     /// Immutable publication metadata; absence of native export is explicit.

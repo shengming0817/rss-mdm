@@ -4,7 +4,7 @@ use uuid::Uuid;
 #[test]
 fn enrollment_reports_keep_unknown_and_third_party_distinct_from_unenrolled() {
     let schema: serde_json::Value =
-        serde_json::from_str(include_str!("../schema/report-request-v5.schema.json")).unwrap();
+        serde_json::from_str(include_str!("../schema/report-request-v6.schema.json")).unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
     for state in [
         "unenrolled",
@@ -12,24 +12,24 @@ fn enrollment_reports_keep_unknown_and_third_party_distinct_from_unenrolled() {
         "other_organization",
         "unknown",
     ] {
-        let value = json!({"wireVersion":5,"reportId":Uuid::new_v4(),"sequence":2,"observedAt":3,"collection":enrollment_collection(),"body":{"kind":"snapshot","values":[{"field":"channel.mdm.enrollment","value":{"kind":"value","value":{"kind":"string","value":state}}}]}});
+        let value = json!({"wireVersion":6,"reportId":Uuid::new_v4(),"sequence":2,"observedAt":3,"collection":enrollment_collection(),"body":{"kind":"snapshot","values":[{"field":"channel.mdm.enrollment","value":{"kind":"value","value":{"kind":"string","value":state}}}]}});
         let request: ReportRequest = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(request).unwrap(), value);
         assert!(validator.is_valid(&value));
     }
     for state in ["offline", "absent", "permissionDenied"] {
-        let value = json!({"wireVersion":5,"reportId":Uuid::new_v4(),"sequence":2,"observedAt":3,"collection":enrollment_collection(),"body":{"kind":"snapshot","values":[{"field":"channel.mdm.enrollment","value":{"kind":"value","value":{"kind":"string","value":state}}}]}});
+        let value = json!({"wireVersion":6,"reportId":Uuid::new_v4(),"sequence":2,"observedAt":3,"collection":enrollment_collection(),"body":{"kind":"snapshot","values":[{"field":"channel.mdm.enrollment","value":{"kind":"value","value":{"kind":"string","value":state}}}]}});
         assert!(serde_json::from_value::<ReportRequest>(value.clone()).is_err());
     }
 }
 #[test]
 fn managed_registration_has_no_device_identity_or_bearer_claim() {
     let schema: serde_json::Value = serde_json::from_str(include_str!(
-        "../schema/managed-registration-request-v5.schema.json"
+        "../schema/managed-registration-request-v6.schema.json"
     ))
     .unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
-    let value = json!({"wireVersion":5,"operationId":Uuid::new_v4(),"installationOperation":Uuid::new_v4(),"credential":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","capabilities":["inventory.collect.v5"],"platform":"windows","architecture":"x86_64","executionContext":{"revision":1,"osVersion":[10,0,22621,0],"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false}});
+    let value = json!({"wireVersion":6,"operationId":Uuid::new_v4(),"installationOperation":Uuid::new_v4(),"credential":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","capabilities":["inventory.collect.v6"],"platform":"windows","architecture":"x86_64","executionContext":{"revision":1,"osVersion":[10,0,22621,0],"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false}});
     serde_json::from_value::<ManagedRegistrationRequest>(value.clone())
         .unwrap()
         .validate()
@@ -48,7 +48,7 @@ fn managed_registration_has_no_device_identity_or_bearer_claim() {
         assert!(!validator.is_valid(&invalid));
     }
     let mut invalid = value;
-    invalid["capabilities"] = json!(["inventory.collect.v5", "inventory.collect.v5"]);
+    invalid["capabilities"] = json!(["inventory.collect.v6", "inventory.collect.v6"]);
     assert!(serde_json::from_value::<ManagedRegistrationRequest>(invalid).is_err());
 }
 
@@ -56,10 +56,10 @@ fn managed_registration_has_no_device_identity_or_bearer_claim() {
 fn enrollment_schema_and_signing_agree_on_text_and_expiry_boundaries() {
     use rss_mdm_agent_wire::EnrollmentTaskSpec;
     let schema: serde_json::Value =
-        serde_json::from_str(include_str!("../schema/task-payload-v5.schema.json")).unwrap();
+        serde_json::from_str(include_str!("../schema/task-payload-v6.schema.json")).unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
     let tenant = Uuid::new_v4();
-    let base = json!({"wireVersion":5,"tenantId":tenant,"deviceId":"agent","platform":"macos","architecture":"aarch64","registrationId":Uuid::new_v4(),"generation":1,"taskId":Uuid::new_v4(),"attemptId":Uuid::new_v4(),"permit":"offer","expiresAt":1,"organization":tenant,"entry":{"kind":"macos","url":"https://mdm.example.test/enroll"}});
+    let base = json!({"wireVersion":6,"tenantId":tenant,"deviceId":"agent","platform":"macos","architecture":"aarch64","registrationId":Uuid::new_v4(),"generation":1,"taskId":Uuid::new_v4(),"attemptId":Uuid::new_v4(),"permit":"offer","expiresAt":1,"organization":tenant,"entry":{"kind":"macos","url":"https://mdm.example.test/enroll"}});
     for (field, value, expected) in [
         ("expiresAt", json!(0), false),
         ("expiresAt", json!(1), true),

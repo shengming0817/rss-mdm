@@ -78,7 +78,7 @@ class Selection(unittest.TestCase):
                 if 'fmt' in args: return result('failure', 1)
                 return result()
             selection = {'cargoFull': False, 't2Full': False, 'packages': [], 'reasons': ['docs-only'], 'modules': [], 'toolTests': []}
-            with patch.object(ci, "require_lease"), patch.object(ci, 'OUT', out), patch.object(ci, 'select_impact', return_value=selection), patch.object(ci, 'command', side_effect=command), patch.object(ci, 'dependency_graphs') as graphs, patch.dict(ci.os.environ, {'CI_PLAN': '0'}), contextlib.redirect_stdout(output):
+            with patch.object(ci, "require_lease"), patch.object(ci, 'OUT', out), patch.object(ci, 'select_impact', return_value=selection), patch.object(ci, 'command', side_effect=command), patch.object(ci, 'dependency_graphs') as graphs, patch.dict(ci.os.environ, {'CI_PLAN': '0', 'CI_T2': 'none'}), contextlib.redirect_stdout(output):
                 self.assertEqual(ci.main(), 1)
             evidence = json.loads((out / 'result.json').read_text())
             self.assertEqual(evidence['gates']['script-tests']['status'], 'skipped')

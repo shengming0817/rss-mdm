@@ -128,8 +128,12 @@ async fn import(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Json(op): Json<Operation<rss_mdm_software_service::imports::ImportRequest>>,
+    body: std::result::Result<
+        Json<Operation<rss_mdm_software_service::imports::ImportRequest>>,
+        axum::extract::rejection::JsonRejection,
+    >,
 ) -> Result<Json<Value>, Error> {
+    let Json(op) = body.map_err(|_| Error::Malformed)?;
     rss_mdm_software_service::management::catalog::import(&app, &auth.proof, &audit, op)
         .await
         .map(Json)

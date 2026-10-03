@@ -272,7 +272,6 @@ fn dmg(spec: &SoftwareSpec, value: &DmgSoftware) -> Result<(), Error> {
                 || !application.target_name.ends_with(".app")
                 || application.target_name.contains('/')
                 || application.version != spec.version
-                || application.material_sha256 == [0; 32]
             {
                 return Err(invalid(Validation::Identity));
             }

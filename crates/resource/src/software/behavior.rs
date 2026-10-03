@@ -146,8 +146,6 @@ pub struct MacApplication {
     pub bundle_id: String,
     /// Exact bundle version.
     pub version: String,
-    /// Digest of the frozen payload inventory supplied with the definition.
-    pub material_sha256: [u8; 32],
     /// Exact .app basename in the selected Applications directory.
     pub target_name: String,
 }
@@ -160,11 +158,11 @@ pub struct MacApplication {
     deny_unknown_fields
 )]
 pub enum DmgPayload {
-    /// Copy/replace one declared application; removal is only for its managed exact target.
+    /// Copy/replace one declared application; removal requires the declared exact target.
     AppCopy {
         /// Full declared app material.
         application: MacApplication,
-        /// Whether the exact managed target may be removed.
+        /// Whether an authorized task may remove the declared exact target.
         uninstall: bool,
     },
     /// Select one PKG and reuse PackageInstaller semantics.

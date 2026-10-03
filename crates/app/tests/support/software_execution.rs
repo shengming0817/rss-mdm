@@ -45,8 +45,8 @@ pub(crate) async fn event_with(
     task: &Value,
     event: Value,
 ) -> Result<(StatusCode, Value)> {
-    agent_call(router,Method::POST,&format!("/api/agent/v5/tasks/{}/events", task["payload"]["taskId"].as_str().unwrap()),Some(credential),
-        Some(json!({"wireVersion":5,"executionContext":task["payload"]["executionContext"],"operationId":Uuid::new_v4(),"attemptId":task["payload"]["attemptId"],"event":event}))).await
+    agent_call(router,Method::POST,&format!("/api/agent/v6/tasks/{}/events", task["payload"]["taskId"].as_str().unwrap()),Some(credential),
+        Some(json!({"wireVersion":6,"executionContext":task["payload"]["executionContext"],"operationId":Uuid::new_v4(),"attemptId":task["payload"]["attemptId"],"event":event}))).await
 }
 pub(crate) fn result_event(
     task: &Value,
@@ -118,9 +118,9 @@ pub(crate) async fn claim_with(
             let response = agent_call(
                 router,
                 Method::POST,
-                "/api/agent/v5/tasks/claim",
+                "/api/agent/v6/tasks/claim",
                 Some(credential),
-                Some(json!({"wireVersion":5,"executionContext":crate::test_support::software_execution::context(platform),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
+                Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(platform),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
             )
             .await?;
             ensure!(response.0 == StatusCode::OK, "claim: {response:?}");
@@ -184,8 +184,8 @@ pub(crate) struct Fixture {
 impl Fixture {
     pub(crate) async fn approved(platform: Platform) -> Result<Self> {
         let capabilities = match platform {
-            Platform::Windows => json!(["inventory.collect.v5", "software.msi.system.v5"]),
-            Platform::MacOs => json!(["inventory.collect.v5", "software.pkg.system.v5"]),
+            Platform::Windows => json!(["inventory.collect.v6", "software.msi.system.v6"]),
+            Platform::MacOs => json!(["inventory.collect.v6", "software.pkg.system.v6"]),
         };
         Self::with_profiles(platform, capabilities, context(platform)).await
     }
@@ -278,8 +278,8 @@ impl Fixture {
             .await?;
         ensure!(enrollment.0.is_success(), "enrollment: {enrollment:?}");
         author.operation = None;
-        let registration=agent_call(&router,Method::POST,"/api/agent/v5/registrations",None,
-            Some(json!({"wireVersion":5,"executionContext":execution_context,"operationId":Uuid::new_v4(),"enrollmentId":enrollment.1["enrollmentId"],"password":password,"credential":credential,"platform":platform_name,"architecture":architecture,"capabilities":capabilities}))).await?;
+        let registration=agent_call(&router,Method::POST,"/api/agent/v6/registrations",None,
+            Some(json!({"wireVersion":6,"executionContext":execution_context,"operationId":Uuid::new_v4(),"enrollmentId":enrollment.1["enrollmentId"],"password":password,"credential":credential,"platform":platform_name,"architecture":architecture,"capabilities":capabilities}))).await?;
         ensure!(
             registration.0 == StatusCode::CREATED,
             "registration: {registration:?}"
@@ -310,11 +310,11 @@ impl Fixture {
         .await?;
         let dependency_bytes = format!("controlled dependency package {dependency}").into_bytes();
         let dependency_digest: [u8; 32] = Sha256::digest(&dependency_bytes).into();
-        let dependency_definition = json!({"source":registered["snapshot"],"package":"Private.Dependency","version":"1","artifacts":{"scripts/install.sh":{"reference":"dep-installer","length":dependency_bytes.len(),"sha256":dependency_digest}},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"behavior":{"kind":"pkg","installer":"scripts/install.sh","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"pkg_receipt","receipt":"com.private.dependency","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+        let dependency_definition = json!({"source":registered["snapshot"],"package":"Private.Dependency","version":"1","artifacts":{"scripts/install.sh":{"reference":"dep-installer","length":dependency_bytes.len(),"sha256":dependency_digest}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"pkg","installer":"scripts/install.sh","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"pkg_receipt","receipt":"com.private.dependency","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
         let windows_dependency_bytes =
             format!("controlled windows dependency msi {dependency}").into_bytes();
         let windows_dependency_digest: [u8; 32] = Sha256::digest(&windows_dependency_bytes).into();
-        let windows_dependency_definition = json!({"source":registered["snapshot"],"package":"Private.WindowsDependency","version":"1","artifacts":{"package":{"reference":"dep-win-installer","length":windows_dependency_bytes.len(),"sha256":windows_dependency_digest}},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+        let windows_dependency_definition = json!({"source":registered["snapshot"],"package":"Private.WindowsDependency","version":"1","artifacts":{"package":{"reference":"dep-win-installer","length":windows_dependency_bytes.len(),"sha256":windows_dependency_digest}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
         write(&mut author,&router,&dependency_path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":platform_name,"architecture":architecture,"key":"default","declaration":{"kind":"software","definition":if platform == Platform::MacOs { dependency_definition } else { windows_dependency_definition }}}]})).await?;
         if platform == Platform::MacOs {
             let request=Request::builder().method(Method::POST).uri(format!("/api/v3/resources/{dependency}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
@@ -365,10 +365,10 @@ impl Fixture {
         let digest: [u8; 32] = Sha256::digest(&bytes).into();
         let removal = format!("#!/bin/sh\n# {resource}\nexit 0\n").into_bytes();
         let removal_digest: [u8; 32] = Sha256::digest(&removal).into();
-        let definition = json!({"source":registered["snapshot"],"package":"Private.Controlled","version":"1","artifacts":{"package":{"reference":"installer","length":bytes.len(),"sha256":digest},"remove":{"reference":"remover","length":removal.len(),"sha256":removal_digest}},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[{"resource":dependency,"version":"v1","sha256":dependency_version.1["resourceDigest"]}],"behavior":{"kind":"pkg","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":{"installer":"remove","invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"detect":{"kind":"pkg_receipt","receipt":"com.private.controlled","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+        let definition = json!({"source":registered["snapshot"],"package":"Private.Controlled","version":"1","artifacts":{"package":{"reference":"installer","length":bytes.len(),"sha256":digest},"remove":{"reference":"remover","length":removal.len(),"sha256":removal_digest}},"reboot":"report","downgrade":"deny","dependencies":[{"resource":dependency,"version":"v1","sha256":dependency_version.1["resourceDigest"]}],"behavior":{"kind":"pkg","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":{"installer":"remove","invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"detect":{"kind":"pkg_receipt","receipt":"com.private.controlled","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
         let windows_bytes = format!("controlled windows root msi {resource}").into_bytes();
         let windows_digest: [u8; 32] = Sha256::digest(&windows_bytes).into();
-        let windows_definition = json!({"source":registered["snapshot"],"package":"Private.WindowsControlled","version":"1","artifacts":{"package":{"reference":"win-installer","length":windows_bytes.len(),"sha256":windows_digest}},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[{"resource":dependency,"version":"v1","sha256":dependency_version.1["resourceDigest"]}],"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF}","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+        let windows_definition = json!({"source":registered["snapshot"],"package":"Private.WindowsControlled","version":"1","artifacts":{"package":{"reference":"win-installer","length":windows_bytes.len(),"sha256":windows_digest}},"reboot":"report","downgrade":"deny","dependencies":[{"resource":dependency,"version":"v1","sha256":dependency_version.1["resourceDigest"]}],"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF}","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
         write(&mut author,&router,&path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":platform_name,"architecture":architecture,"key":"default","declaration":{"kind":"software","definition":if platform == Platform::MacOs { definition } else { windows_definition }}}]})).await?;
         if platform == Platform::MacOs {
             let request=Request::builder().method(Method::POST).uri(format!("/api/v3/resources/{resource}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))

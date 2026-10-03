@@ -26,18 +26,18 @@ pub(crate) async fn register(router: &Router, browser: &mut Browser) -> Result<A
     );
     let operation = uuid::Uuid::new_v4();
     let registration_request = json!({
-        "wireVersion":5,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":operation,
+        "wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":operation,
         "enrollmentId":enrollment["enrollmentId"],
         "password":password,
         "credential":credential,
         "platform":"macos",
         "architecture":"aarch64",
-        "capabilities":["inventory.collect.v5"]
+        "capabilities":["inventory.collect.v6"]
     });
     let (status, registration) = agent_call(
         router,
         Method::POST,
-        "/api/agent/v5/registrations",
+        "/api/agent/v6/registrations",
         None,
         Some(registration_request.clone()),
     )
@@ -103,7 +103,7 @@ pub(crate) async fn router(fixture: &authority::Authority) -> Result<Router> {
     Ok(fixture
         .router_with_public(
             fixture.authorization().merge(fixture.enrollment()),
-            Router::new().nest("/api/agent/v5", agent),
+            Router::new().nest("/api/agent/v6", agent),
         )?
         .merge(fallback))
 }
@@ -140,7 +140,7 @@ INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enable
  JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(s.tenant_id,s.registration)
  WHERE r.tenant_id='{TENANT}' AND r.device='{canonical_sql}' AND r.channel='agent' AND r.state='active' AND s.enabled;
 INSERT INTO mdm_agent.bindings(tenant_id,registration,wire_version,capabilities,platform,architecture,execution_context)
- SELECT '{TENANT}',registration,5,'["inventory.collect.v5","task.execute.v5"]','macos','aarch64','{execution_context}'::jsonb FROM task_targets;
+ SELECT '{TENANT}',registration,6,'["inventory.collect.v6","task.execute.v6"]','macos','aarch64','{execution_context}'::jsonb FROM task_targets;
 DO $$ BEGIN
  IF (SELECT count(*) FROM task_targets t JOIN mdm_access.registrations r ON r.id=t.registration
      JOIN mdm_agent.bindings b ON b.registration=r.id
@@ -148,7 +148,7 @@ DO $$ BEGIN
      JOIN mdm_access.requests q ON q.id=r.request_id
      JOIN mdm_access.devices d ON (d.tenant_id,d.id)=(r.tenant_id,r.device)
      WHERE r.state='active' AND c.state='active'
-       AND b.capabilities='["inventory.collect.v5","task.execute.v5"]'
+       AND b.capabilities='["inventory.collect.v6","task.execute.v6"]'
        AND (SELECT count(*) FROM mdm_access.report_sources s WHERE s.registration=r.id AND s.enabled
             AND s.source IN ('agent.builtin','agent.script','agent.osquery'))=3) <> {count}
  THEN RAISE EXCEPTION 'incomplete task target fixture'; END IF;

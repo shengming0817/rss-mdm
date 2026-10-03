@@ -14,12 +14,12 @@ fn secret() -> String {
 
 fn registration() -> Value {
     json!({
-        "wireVersion": 5,
+        "wireVersion": 6,
         "operationId": Uuid::nil(),
         "enrollmentId": "8cc2fb40-21a1-4390-b4ec-702087c284b5",
         "password": secret(),
         "credential": secret(),
-        "capabilities": ["inventory.collect.v5"],
+        "capabilities": ["inventory.collect.v6"],
         "platform": "macos", "architecture": "aarch64",
         "executionContext":{"revision":1,"osVersion":[14,0,0,0],"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false}
     })
@@ -30,7 +30,7 @@ fn registration_is_strict_and_secrets_are_redacted() {
     let mut value = registration();
     value["operationId"] = json!(Uuid::new_v4());
     let request: RegistrationRequest = serde_json::from_value(value.clone()).unwrap();
-    assert_eq!(request.capabilities(), &[Capability::InventoryCollectionV5]);
+    assert_eq!(request.capabilities(), &[Capability::InventoryCollectionV6]);
     assert_eq!(format!("{:?}", request.password()), "[REDACTED]");
     assert_eq!(format!("{:?}", request.credential()), "[REDACTED]");
     assert_eq!(request.password().expose(), secret());
@@ -41,7 +41,7 @@ fn registration_is_strict_and_secrets_are_redacted() {
     wrong["wireVersion"] = json!(1);
     assert!(serde_json::from_value::<RegistrationRequest>(wrong).is_err());
     let mut unknown = registration();
-    unknown["capabilities"] = json!(["inventory.collect.v5", "future"]);
+    unknown["capabilities"] = json!(["inventory.collect.v6", "future"]);
     assert!(serde_json::from_value::<RegistrationRequest>(unknown).is_err());
 }
 
@@ -52,7 +52,7 @@ fn producers_construct_the_only_supported_shape() {
         Uuid::new_v4(),
         Secret::parse(&secret()).unwrap(),
         Secret::parse(&secret()).unwrap(),
-        vec![Capability::InventoryCollectionV5],
+        vec![Capability::InventoryCollectionV6],
         TaskPlatform::Macos,
         TaskArchitecture::Aarch64,
         rss_mdm_agent_wire::SoftwareExecutionContext {
@@ -66,14 +66,14 @@ fn producers_construct_the_only_supported_shape() {
         },
     )
     .unwrap();
-    assert_eq!(serde_json::to_value(request).unwrap()["wireVersion"], 5);
+    assert_eq!(serde_json::to_value(request).unwrap()["wireVersion"], 6);
     assert!(matches!(
         RegistrationRequest::new(
             Uuid::nil(),
             Uuid::new_v4(),
             Secret::parse(&secret()).unwrap(),
             Secret::parse(&secret()).unwrap(),
-            vec![Capability::InventoryCollectionV5],
+            vec![Capability::InventoryCollectionV6],
             TaskPlatform::Macos,
             TaskArchitecture::Aarch64,
             rss_mdm_agent_wire::SoftwareExecutionContext {
@@ -103,7 +103,7 @@ fn producers_construct_the_only_supported_shape() {
         Uuid::new_v4(),
         Secret::parse(&secret()).unwrap(),
         Secret::parse(&secret()).unwrap(),
-        vec![Capability::InventoryCollectionV5, Capability::TaskExecuteV5],
+        vec![Capability::InventoryCollectionV6, Capability::TaskExecuteV6],
         TaskPlatform::Macos,
         TaskArchitecture::Aarch64,
         rss_mdm_agent_wire::SoftwareExecutionContext {
@@ -119,7 +119,7 @@ fn producers_construct_the_only_supported_shape() {
     .unwrap();
     assert_eq!(
         task_capable.capabilities(),
-        &[Capability::InventoryCollectionV5, Capability::TaskExecuteV5]
+        &[Capability::InventoryCollectionV6, Capability::TaskExecuteV6]
     );
     assert!(
         RegistrationRequest::new(
@@ -127,7 +127,7 @@ fn producers_construct_the_only_supported_shape() {
             Uuid::new_v4(),
             Secret::parse(&secret()).unwrap(),
             Secret::parse(&secret()).unwrap(),
-            vec![Capability::TaskExecuteV5],
+            vec![Capability::TaskExecuteV6],
             TaskPlatform::Macos,
             TaskArchitecture::Aarch64,
             rss_mdm_agent_wire::SoftwareExecutionContext {
@@ -158,12 +158,12 @@ fn producers_construct_the_only_supported_shape() {
 #[test]
 fn published_schemas_match_wire_rejections() {
     let registration_schema: Value = serde_json::from_str(include_str!(
-        "../schema/registration-request-v5.schema.json"
+        "../schema/registration-request-v6.schema.json"
     ))
     .unwrap();
     let registration_validator = jsonschema::validator_for(&registration_schema).unwrap();
     let report_schema: Value =
-        serde_json::from_str(include_str!("../schema/report-request-v5.schema.json")).unwrap();
+        serde_json::from_str(include_str!("../schema/report-request-v6.schema.json")).unwrap();
     let report_validator = jsonschema::validator_for(&report_schema).unwrap();
 
     let mut valid_registration = registration();
@@ -194,13 +194,13 @@ fn published_schemas_match_wire_rejections() {
 
     let mut task_capable = registration();
     task_capable["operationId"] = json!(Uuid::new_v4());
-    task_capable["capabilities"] = json!(["inventory.collect.v5", "task.execute.v5"]);
+    task_capable["capabilities"] = json!(["inventory.collect.v6", "task.execute.v6"]);
     assert!(registration_validator.is_valid(&task_capable));
     assert!(serde_json::from_value::<RegistrationRequest>(task_capable.clone()).is_ok());
     for capabilities in [
-        json!(["task.execute.v5"]),
-        json!(["task.execute.v5", "inventory.collect.v5"]),
-        json!(["inventory.collect.v5", "task.execute.v5", "task.execute.v5"]),
+        json!(["task.execute.v6"]),
+        json!(["task.execute.v6", "inventory.collect.v6"]),
+        json!(["inventory.collect.v6", "task.execute.v6", "task.execute.v6"]),
     ] {
         let mut invalid = task_capable.clone();
         invalid["capabilities"] = capabilities;
@@ -246,7 +246,7 @@ fn published_schemas_match_wire_rejections() {
 #[test]
 fn manifest_covers_and_fingerprints_every_public_shape() {
     let manifest: Value = serde_json::from_str(SCHEMA_MANIFEST).unwrap();
-    assert_eq!(manifest["wireVersion"], 5);
+    assert_eq!(manifest["wireVersion"], 6);
     assert_eq!(
         manifest["schemas"]
             .as_array()
@@ -271,19 +271,19 @@ fn manifest_covers_and_fingerprints_every_public_shape() {
         ]
     );
     let schemas = [
-        include_bytes!("../schema/registration-request-v5.schema.json").as_slice(),
-        include_bytes!("../schema/registration-receipt-v5.schema.json").as_slice(),
-        include_bytes!("../schema/report-request-v5.schema.json").as_slice(),
-        include_bytes!("../schema/report-ack-v5.schema.json").as_slice(),
-        include_bytes!("../schema/report-status-v5.schema.json").as_slice(),
-        include_bytes!("../schema/error-body-v5.schema.json").as_slice(),
-        include_bytes!("../schema/task-claim-request-v5.schema.json").as_slice(),
-        include_bytes!("../schema/task-event-request-v5.schema.json").as_slice(),
-        include_bytes!("../schema/task-payload-v5.schema.json").as_slice(),
-        include_bytes!("../schema/signed-task-v5.schema.json").as_slice(),
-        include_bytes!("../schema/task-claim-response-v5.schema.json").as_slice(),
-        include_bytes!("../schema/task-event-ack-v5.schema.json").as_slice(),
-        include_bytes!("../schema/managed-registration-request-v5.schema.json").as_slice(),
+        include_bytes!("../schema/registration-request-v6.schema.json").as_slice(),
+        include_bytes!("../schema/registration-receipt-v6.schema.json").as_slice(),
+        include_bytes!("../schema/report-request-v6.schema.json").as_slice(),
+        include_bytes!("../schema/report-ack-v6.schema.json").as_slice(),
+        include_bytes!("../schema/report-status-v6.schema.json").as_slice(),
+        include_bytes!("../schema/error-body-v6.schema.json").as_slice(),
+        include_bytes!("../schema/task-claim-request-v6.schema.json").as_slice(),
+        include_bytes!("../schema/task-event-request-v6.schema.json").as_slice(),
+        include_bytes!("../schema/task-payload-v6.schema.json").as_slice(),
+        include_bytes!("../schema/signed-task-v6.schema.json").as_slice(),
+        include_bytes!("../schema/task-claim-response-v6.schema.json").as_slice(),
+        include_bytes!("../schema/task-event-ack-v6.schema.json").as_slice(),
+        include_bytes!("../schema/managed-registration-request-v6.schema.json").as_slice(),
     ];
     let mut digest = Sha256::new();
     for schema in schemas {
@@ -299,18 +299,18 @@ fn response_and_error_schemas_match_strict_consumers() {
     let epoch = Uuid::new_v4();
     let report = Uuid::new_v4();
     let receipt = RegistrationReceipt {
-        wire_version: 5,
+        wire_version: 6,
         operation_id: operation,
         device_id: "device-1".into(),
         registration_id: registration,
         generation: 1,
         source: ReportSource::AgentBuiltin,
         epoch,
-        capabilities: vec![Capability::InventoryCollectionV5],
+        capabilities: vec![Capability::InventoryCollectionV6],
         collections: vec![collection()],
     };
     let ack = ReportAck {
-        wire_version: 5,
+        wire_version: 6,
         report_id: report,
         received_at: 1,
         intake: IntakeStatus::Durable,
@@ -323,22 +323,22 @@ fn response_and_error_schemas_match_strict_consumers() {
     let values: [(Value, &str); 4] = [
         (
             serde_json::to_value(receipt).unwrap(),
-            include_str!("../schema/registration-receipt-v5.schema.json"),
+            include_str!("../schema/registration-receipt-v6.schema.json"),
         ),
         (
             serde_json::to_value(ack).unwrap(),
-            include_str!("../schema/report-ack-v5.schema.json"),
+            include_str!("../schema/report-ack-v6.schema.json"),
         ),
         (
             serde_json::to_value(status).unwrap(),
-            include_str!("../schema/report-status-v5.schema.json"),
+            include_str!("../schema/report-status-v6.schema.json"),
         ),
         (
             serde_json::to_value(ErrorBody {
                 code: ErrorCode::OperationUnknown,
             })
             .unwrap(),
-            include_str!("../schema/error-body-v5.schema.json"),
+            include_str!("../schema/error-body-v6.schema.json"),
         ),
     ];
     for (value, schema) in values {
@@ -347,11 +347,11 @@ fn response_and_error_schemas_match_strict_consumers() {
     }
 
     let uppercase = json!({
-        "wireVersion":5,"reportId":report.to_string().to_uppercase(),
+        "wireVersion":6,"reportId":report.to_string().to_uppercase(),
         "receivedAt":1,"intake":"durable"
     });
     let schema: Value =
-        serde_json::from_str(include_str!("../schema/report-ack-v5.schema.json")).unwrap();
+        serde_json::from_str(include_str!("../schema/report-ack-v6.schema.json")).unwrap();
     assert!(
         !jsonschema::validator_for(&schema)
             .unwrap()
@@ -372,7 +372,7 @@ fn canonical_secrets_are_exactly_256_bits() {
 fn report_profile_is_closed_bounded_and_canonical() {
     let id = Uuid::new_v4();
     let a = json!({
-        "wireVersion": 5,
+        "wireVersion": 6,
         "reportId": id,
         "sequence": 7,
         "observedAt": 1_800_000_000,
@@ -383,7 +383,7 @@ fn report_profile_is_closed_bounded_and_canonical() {
         ]}
     });
     let b = json!({
-        "wireVersion": 5,
+        "wireVersion": 6,
         "reportId": id,
         "sequence": 7,
         "observedAt": 1_800_000_000,
@@ -401,7 +401,7 @@ fn report_profile_is_closed_bounded_and_canonical() {
     assert_eq!(a.values()[0].value, CollectedValue::Unsupported);
 
     let duplicate = json!({
-        "wireVersion":5,"reportId":Uuid::new_v4(),"sequence":1,"observedAt":1,"collection":collection(),
+        "wireVersion":6,"reportId":Uuid::new_v4(),"sequence":1,"observedAt":1,"collection":collection(),
         "body":{"kind":"partial","values":[
             {"field":"device.model","value":{"kind":"value","value":{"kind":"string","value":"A"}}},
             {"field":"device.model","value":{"kind":"value","value":{"kind":"string","value":"B"}}}
@@ -409,7 +409,7 @@ fn report_profile_is_closed_bounded_and_canonical() {
     });
     assert!(serde_json::from_value::<ReportRequest>(duplicate).is_err());
     let delta = json!({
-        "wireVersion":5,"reportId":Uuid::new_v4(),"sequence":1,"observedAt":1,"collection":collection(),
+        "wireVersion":6,"reportId":Uuid::new_v4(),"sequence":1,"observedAt":1,"collection":collection(),
         "body":{"kind":"delta","values":[]}
     });
     assert!(serde_json::from_value::<ReportRequest>(delta).is_err());
@@ -418,7 +418,7 @@ fn report_profile_is_closed_bounded_and_canonical() {
 #[test]
 fn failed_reports_and_error_codes_are_closed() {
     let request: ReportRequest = serde_json::from_value(json!({
-        "wireVersion":5,"reportId":Uuid::new_v4(),"sequence":1,"observedAt":1,"collection":collection(),
+        "wireVersion":6,"reportId":Uuid::new_v4(),"sequence":1,"observedAt":1,"collection":collection(),
         "body":{"kind":"failed","code":"temporarilyUnavailable"}
     }))
     .unwrap();

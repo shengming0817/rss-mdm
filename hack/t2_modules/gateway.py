@@ -17,7 +17,7 @@ def verify(context):
     config=(ROOT/'deployment/nginx.conf').read_text()
     config=config.replace('listen 443 ssl;','listen 8080;').replace('ssl_certificate /private/mdm-tls.crt;','').replace('ssl_certificate_key /private/mdm-tls.key;','')
     config=config.replace('server 127.0.0.1:8081;','server 127.0.0.1:8082;')
-    stream_paths = ['/api/agent/v5/tasks/task/content', '/api/agent/v5/installations/operation/package']
+    stream_paths = ['/api/agent/v6/tasks/task/content', '/api/agent/v6/installations/operation/package']
     buffered_path = '/api/probe-stream-buffered'
     stream_body = 'x' * 2048
     # This real upstream delivers less than one proxy buffer over four seconds.
@@ -75,10 +75,10 @@ def verify(context):
         time.sleep(3.2)
         if request('/api/v2/tenants/11111111-1111-4111-8111-111111111111/login')[0]!=200:raise RuntimeError('login budget did not recover')
         import base64
-        chunk=json.dumps({'wireVersion':5,'event':{'kind':'output_chunk','data':base64.urlsafe_b64encode(b'x'*262144).decode().rstrip('=')}})
-        if request('/api/agent/v5/tasks/task/events',body=chunk)[0]!=200:raise RuntimeError('valid output chunk blocked by gateway')
-        if request('/api/agent/v5/tasks/task/events',body='x'*1114113)[0]!=413:raise RuntimeError('oversized task event accepted')
-        if request('/api/agent/v4/tasks/task/events',body=chunk)[0]!=413:raise RuntimeError('legacy route inherited V5 upload budget')
+        chunk=json.dumps({'wireVersion':6,'event':{'kind':'output_chunk','data':base64.urlsafe_b64encode(b'x'*262144).decode().rstrip('=')}})
+        if request('/api/agent/v6/tasks/task/events',body=chunk)[0]!=200:raise RuntimeError('valid output chunk blocked by gateway')
+        if request('/api/agent/v6/tasks/task/events',body='x'*1114113)[0]!=413:raise RuntimeError('oversized task event accepted')
+        if request('/api/agent/v5/tasks/task/events',body=chunk)[0]!=413:raise RuntimeError('legacy route inherited V6 upload budget')
         for path,limit in [('/api/v3/devices/device/operations',16777216),('/api/v4/resources/resource',8388608)]:
             if request(path,body=b'x'*limit)[0]!=200:raise RuntimeError('native JSON budget rejected exact boundary: '+path)
             if request(path,body=b'x'*(limit+1))[0]!=413:raise RuntimeError('native JSON budget exceeded: '+path)
@@ -116,7 +116,7 @@ def verify(context):
         if 200 not in statuses or 429 not in statuses: raise RuntimeError('general API admission is not bounded')
         log=subprocess.run(['docker','logs',name],check=True,capture_output=True,text=True,timeout=10)
         if 'synthetic-sensitive-value' in log.stdout+log.stderr or 'mdm_gateway' not in log.stdout:raise RuntimeError('gateway logging contract failed')
-        print('login gateway T2: actual peer budget, spoofed forwarding rejection, bounded recovery and V5 content streaming and bounded result uploads passed')
+        print('login gateway T2: actual peer budget, spoofed forwarding rejection, bounded recovery and V6 content streaming and bounded result uploads passed')
 
 def main(context):
     verify(context)

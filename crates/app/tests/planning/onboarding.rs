@@ -10,7 +10,7 @@ async fn fixture() -> Result<Fixture> {
     f.grants
         .extend(identity::device_grants(None, &["enrollment"])?);
     identity::set_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
-    f.register_profile(json!(["inventory.collect.v5", "mdm.enrollment.v5"]))
+    f.register_profile(json!(["inventory.collect.v6", "mdm.enrollment.v6"]))
         .await?;
     let setup = start_automation(&f.base).await?;
     let group = Uuid::new_v4();
@@ -38,11 +38,11 @@ async fn report(f: &Fixture, sequence: u64, state: &str) -> Result<()> {
             })
         })
         .ok_or_else(|| anyhow::anyhow!("server did not publish enrollment collection"))?;
-    let input = json!({"wireVersion":5,"collection":collection,"reportId":id,"sequence":sequence,"observedAt":1,"body":{"kind":"snapshot","values":[{"field":"channel.mdm.enrollment","value":{"kind":"value","value":{"kind":"string","value":state}}}]}});
+    let input = json!({"wireVersion":6,"collection":collection,"reportId":id,"sequence":sequence,"observedAt":1,"body":{"kind":"snapshot","values":[{"field":"channel.mdm.enrollment","value":{"kind":"value","value":{"kind":"string","value":state}}}]}});
     let response = agent_call(
         &f.router,
         Method::POST,
-        "/api/agent/v5/reports",
+        "/api/agent/v6/reports",
         Some(case_credential()),
         Some(input.clone()),
     )
@@ -53,7 +53,7 @@ async fn report(f: &Fixture, sequence: u64, state: &str) -> Result<()> {
             == agent_call(
                 &f.router,
                 Method::POST,
-                "/api/agent/v5/reports",
+                "/api/agent/v6/reports",
                 Some(case_credential()),
                 Some(input)
             )

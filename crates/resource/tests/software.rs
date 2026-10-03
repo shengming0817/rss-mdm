@@ -3,7 +3,7 @@ use rss_request_context::TenantId;
 use serde_json::{Value, json};
 
 fn spec() -> Value {
-    json!({"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"Acme.App","version":"1.0+enterprise","artifacts":{"package":{"reference":"app-msi","length":3,"sha256":vec![2;32]}},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":["/qn"],"environment":{},"timeoutSeconds":600,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1.0+enterprise"},"upgradeInvocation":{"runAs":"system","arguments":["/qn"],"environment":{},"timeoutSeconds":600,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}})
+    json!({"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"Acme.App","version":"1.0+enterprise","artifacts":{"package":{"reference":"app-msi","length":3,"sha256":vec![2;32]}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":["/qn"],"environment":{},"timeoutSeconds":600,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1.0+enterprise"},"upgradeInvocation":{"runAs":"system","arguments":["/qn"],"environment":{},"timeoutSeconds":600,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}})
 }
 fn version(value: Value) -> Result<Version, String> {
     let definition: SoftwareDefinition =
@@ -37,7 +37,6 @@ fn complete_software_definition_is_frozen_without_external_manifest() {
         ("/package", json!("Acme.Other")),
         ("/version", json!("2+enterprise")),
         ("/downgrade", json!("allow")),
-        ("/ownership", json!("allow_user_existing")),
         (
             "/dependencies",
             json!([{"resource":"dependency","version":"v1","sha256":vec![3;32]}]),
@@ -128,4 +127,18 @@ fn software_validation_reports_closed_context_without_input_values() {
             .to_string()
             .contains("Target")
     );
+}
+
+#[test]
+fn software_rejects_retired_ownership_including_null() {
+    assert!(version(spec()).is_ok());
+    for ownership in [
+        json!("managed_only"),
+        json!("allow_user_existing"),
+        json!(null),
+    ] {
+        let mut value = spec();
+        value["ownership"] = ownership;
+        assert!(version(value).is_err());
+    }
 }

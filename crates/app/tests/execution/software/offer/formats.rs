@@ -61,29 +61,29 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
     }
     let profiles = match format {
         "exe" => json!([
-            "inventory.collect.v5",
-            "software.msi.system.v5",
-            "software.exe.system.v5"
+            "inventory.collect.v6",
+            "software.msi.system.v6",
+            "software.exe.system.v6"
         ]),
         "dmg_app" => json!([
-            "inventory.collect.v5",
-            "software.pkg.system.v5",
-            "software.dmg.app.system.v5"
+            "inventory.collect.v6",
+            "software.pkg.system.v6",
+            "software.dmg.app.system.v6"
         ]),
         "dmg_pkg" => json!([
-            "inventory.collect.v5",
-            "software.pkg.system.v5",
-            "software.dmg.pkg.system.v5"
+            "inventory.collect.v6",
+            "software.pkg.system.v6",
+            "software.dmg.pkg.system.v6"
         ]),
         "msix" if user => json!([
-            "inventory.collect.v5",
-            "software.msi.system.v5",
-            "software.msix.registration.user.v5"
+            "inventory.collect.v6",
+            "software.msi.system.v6",
+            "software.msix.registration.user.v6"
         ]),
         "msix" => json!([
-            "inventory.collect.v5",
-            "software.msi.system.v5",
-            "software.msix.provisioning.system.v5"
+            "inventory.collect.v6",
+            "software.msi.system.v6",
+            "software.msix.provisioning.system.v6"
         ]),
         _ => anyhow::bail!("unknown matrix entry"),
     };
@@ -95,7 +95,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
             b"controlled offline executable".to_vec(),
         ),
         "dmg_app" => (
-            json!({"kind":"dmg","image":"package","volume":"Acme","scope":"system","invocation":invocation(false),"upgrade":"in_place","payload":{"kind":"app_copy","application":{"path":"Acme.app","bundleId":"com.acme.app","version":"1.0","materialSha256":vec![7;32],"targetName":"Acme.app"},"uninstall":true}}),
+            json!({"kind":"dmg","image":"package","volume":"Acme","scope":"system","invocation":invocation(false),"upgrade":"in_place","payload":{"kind":"app_copy","application":{"path":"Acme.app","bundleId":"com.acme.app","version":"1.0","targetName":"Acme.app"},"uninstall":true}}),
             b"controlled app disk image".to_vec(),
         ),
         "dmg_pkg" => (
@@ -114,7 +114,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
     } else {
         json!([{"resource":f.dependency,"version":"v1","sha256":f.dependency_digest}])
     };
-    let definition = json!({"source":f.source_snapshot,"package":"Acme.App","version":version,"provenance":{"kind":"private"},"artifacts":{"package":{"reference":"installer","length":bytes.len(),"sha256":<[u8;32]>::from(Sha256::digest(&bytes))}},"behavior":behavior,"signatures":[],"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":deps,"export":{"kind":"disabled"}});
+    let definition = json!({"source":f.source_snapshot,"package":"Acme.App","version":version,"provenance":{"kind":"private"},"artifacts":{"package":{"reference":"installer","length":bytes.len(),"sha256":<[u8;32]>::from(Sha256::digest(&bytes))}},"behavior":behavior,"signatures":[],"reboot":"report","downgrade":"deny","dependencies":deps,"export":{"kind":"disabled"}});
     write(
         &mut f.author,
         &f.router,
@@ -128,7 +128,37 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
     } else {
         ("macos", "aarch64", "macos_aarch64")
     };
+    let version_input = |definition: Value| json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"version","version":"v1","kind":"software","variants":[{"platform":os,"architecture":arch,"key":"default","declaration":{"kind":"software","definition":definition}}]}});
+    for ownership in [
+        json!("managed_only"),
+        json!("allow_user_existing"),
+        json!(null),
+    ] {
+        let mut old = definition.clone();
+        old["ownership"] = ownership;
+        ensure!(
+            f.author
+                .call(&f.router, Method::POST, &path, Some(version_input(old)))
+                .await?
+                .0
+                == StatusCode::BAD_REQUEST
+        );
+    }
+    if format == "dmg_app" {
+        for digest in [json!(vec![1; 32]), json!(null)] {
+            let mut old = definition.clone();
+            old["behavior"]["payload"]["application"]["materialSha256"] = digest;
+            ensure!(
+                f.author
+                    .call(&f.router, Method::POST, &path, Some(version_input(old)))
+                    .await?
+                    .0
+                    == StatusCode::BAD_REQUEST
+            );
+        }
+    }
     write(&mut f.author,&f.router,&path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":os,"architecture":arch,"key":"default","declaration":{"kind":"software","definition":definition}}]})).await?;
+    let content_setup = crate::test_support::software::content_setup_guard().await?;
     let request = Request::builder().method(Method::POST)
         .uri(format!("/api/v3/resources/{resource}/content?version=v1&variant=default&platform={os}&architecture={arch}&operation={}",Uuid::new_v4()))
         .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
@@ -157,6 +187,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
         json!({"action":"approve","evidence":["hash-only enterprise review"]}),
     )
     .await?;
+    drop(content_setup);
     let policy = Uuid::new_v4();
     let policy_path = format!("/api/v3/policies/{policy}");
     write(&mut f.author,&f.router,&policy_path,0,json!({"action":"put","enabled":true,"definition":{"scope":f.scope,"action":{"kind":"software","resource":{"kind":"software","id":resource,"version":"v1","variants":{selector:"default"}},"intent":"required_install","delivery":{"kind":"direct"},"admissionOperation":admitted["admission"]["operation"],"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":f.scope,"opensAt":0}]}}}})).await?;
@@ -165,10 +196,10 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
             let r = agent_call(
                 &f.router,
                 Method::POST,
-                "/api/agent/v5/tasks/claim",
+                "/api/agent/v6/tasks/claim",
                 Some(&f.credential),
                 Some(
-                    json!({"wireVersion":5,"profiles":[],"executionContext":local,"operationId":Uuid::new_v4()}),
+                    json!({"wireVersion":6,"profiles":[],"executionContext":local,"operationId":Uuid::new_v4()}),
                 ),
             )
             .await?;
@@ -182,6 +213,29 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
     .await??;
     let spec: rss_mdm_agent_wire::SoftwareTaskSpec =
         serde_json::from_value(task["payload"].clone())?;
+    use ring::signature::KeyPair;
+    let key_file = f.base["task_signing"]["private_key_file"].as_str().unwrap();
+    let key = ring::signature::Ed25519KeyPair::from_pkcs8(&std::fs::read(key_file)?).unwrap();
+    let signed: rss_mdm_agent_wire::SignedTask = serde_json::from_value(task.clone())?;
+    let verification = rss_mdm_agent_wire::TaskVerification {
+        key_id: "t2",
+        public_key: key.public_key().as_ref(),
+        tenant_id: Uuid::parse_str(case_tenant())?,
+        device_id: if platform == Platform::Windows {
+            case_windows_device()
+        } else {
+            crate::test_support::software_execution::case_device()
+        },
+        platform: spec.platform,
+        architecture: spec.architecture,
+        registration_id: spec.registration_id,
+        generation: spec.generation,
+        task_id: spec.task_id,
+        attempt_id: spec.attempt_id,
+        permit: rss_mdm_agent_wire::TaskPermit::Offer,
+        now: crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?,
+    };
+    signed.verify(&verification)?;
     ensure!(spec.steps.len() == if format == "msix" { 1 } else { 2 });
     let root = spec.steps.last().unwrap();
     ensure!(
@@ -211,7 +265,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
     let content = Request::builder()
         .method(Method::GET)
         .uri(format!(
-            "/api/agent/v5/tasks/{}/content?attempt={}&artifact={}%2Fpackage",
+            "/api/agent/v6/tasks/{}/content?attempt={}&artifact={}%2Fpackage",
             task["payload"]["taskId"].as_str().unwrap(),
             task["payload"]["attemptId"].as_str().unwrap(),
             spec.steps.len() - 1
@@ -225,6 +279,15 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
     for kind in ["received", "start"] {
         let r = event_with(&f.router, &f.credential, &task, json!({"kind":kind})).await?;
         ensure!(r.0 == StatusCode::OK, "{kind}: {r:?}");
+        if kind == "start" {
+            let ack: rss_mdm_agent_wire::TaskEventAck = serde_json::from_value(r.1)?;
+            ack.into_permit()
+                .unwrap()
+                .verify(&rss_mdm_agent_wire::TaskVerification {
+                    permit: rss_mdm_agent_wire::TaskPermit::Start,
+                    ..verification
+                })?;
+        }
     }
     let mut result = result_event(&task, "install", Some(0), "present", false)?;
     let output_marker = "private installer stdout marker";
@@ -246,7 +309,29 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
             "wrong native effect accepted"
         );
     }
+    // A matching user-existing app satisfies Required without an installer mutation.
+    // This is detector evidence, not a claim that this task installed or owns the app.
+    if format == "dmg_app" {
+        for step in result["steps"].as_array_mut().unwrap() {
+            let mut before = step["after"].clone();
+            before["observedAt"] = json!(1);
+            step["before"] = before;
+            step["process"] = json!({"kind":"not_run"});
+        }
+    }
+    let inventory_before = pg(&format!(
+        "SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{}'",
+        case_tenant()
+    ))?;
     let r = event_with(&f.router, &f.credential, &task, result).await?;
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{}'",
+            case_tenant()
+        ))? == inventory_before,
+        "software result fabricated an inventory snapshot"
+    );
+
     ensure!(r.0 == StatusCode::OK, "result: {r:?}");
     if format == "exe" {
         let runs = f

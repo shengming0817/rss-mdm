@@ -343,7 +343,7 @@ async fn admission_rejects_noninherited_switchable_privileges() {
 }
 
 fn software(artifact: &r::Artifact) -> r::SoftwareDefinition {
-    serde_json::from_value(serde_json::json!({"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"Acme.App","version":"1.2","artifacts":{"package":{"reference":artifact.reference().as_str(),"length":artifact.length(),"sha256":artifact.digest().bytes()}},"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":["/qn"],"environment":{},"timeoutSeconds":600,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1.2"},"upgradeInvocation":{"runAs":"system","arguments":["/qn"],"environment":{},"timeoutSeconds":600,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}})).unwrap()
+    serde_json::from_value(serde_json::json!({"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"Acme.App","version":"1.2","artifacts":{"package":{"reference":artifact.reference().as_str(),"length":artifact.length(),"sha256":artifact.digest().bytes()}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":["/qn"],"environment":{},"timeoutSeconds":600,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1.2"},"upgradeInvocation":{"runAs":"system","arguments":["/qn"],"environment":{},"timeoutSeconds":600,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}})).unwrap()
 }
 
 #[tokio::test]
@@ -450,4 +450,60 @@ async fn artifact_reference_index_covers_reuse_without_another_upload_and_archiv
             "another Resource reference must retain the shared bytes"
         );
     }
+}
+
+#[tokio::test]
+#[ignore = "real PostgreSQL: make t2 MODULE=resource.persistence"]
+async fn software_storage_v4_rejects_v3_without_rewriting_immutable_bytes() {
+    let runtime = runtime().await;
+    let store = ResourceStore::new(runtime, tenant(), deadline())
+        .await
+        .unwrap();
+    let key = id(&unique());
+    store
+        .execute(
+            &req(&key, 0, Command::Create(r::Kind::Software)),
+            deadline(),
+        )
+        .await
+        .unwrap();
+    store
+        .execute(
+            &req(&key, 1, Command::Insert(version(&key, "one", 1))),
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let read = format!(
+        "SELECT convert_from(document,'UTF8') FROM mdm_resource.immutable WHERE tenant_id='{}' AND owner='{}' AND kind='version'",
+        tenant(),
+        key.as_str()
+    );
+    let original = sql(&read);
+    let mut document: serde_json::Value = serde_json::from_str(&original).unwrap();
+    assert_eq!(document[0], 4);
+    assert!(document[5][0][3][1].get("ownership").is_none());
+    document[0] = serde_json::json!(3);
+    let old = serde_json::to_string(&document).unwrap();
+    // Deliberately install an intact outer digest so rejection exercises the format boundary.
+    // The damaged material belongs to this case's disposable database.
+    let replace = |bytes: &str| {
+        sql(&format!(
+            "UPDATE mdm_resource.immutable SET document=convert_to('{bytes}','UTF8'),digest=sha256(convert_to('{bytes}','UTF8')) WHERE tenant_id='{}' AND owner='{}' AND kind='version'",
+            tenant(),
+            key.as_str()
+        ))
+    };
+    replace(&old);
+    assert!(store.get(&key, deadline()).await.is_err());
+    assert_eq!(sql(&read), old, "failed read must not rewrite history");
+    replace(&original);
+    assert_eq!(
+        store
+            .version(&key, &id("one"), deadline())
+            .await
+            .unwrap()
+            .unwrap(),
+        version(&key, "one", 1)
+    );
 }
