@@ -14,5 +14,4 @@ GRANT SELECT ON TABLE mdm_agent.bindings TO mdm_flow_runtime;
 GRANT SELECT ON TABLE mdm_agent.bindings TO mdm_command_runtime;
 GRANT UPDATE(execution_context) ON TABLE mdm_agent.bindings TO mdm_command_runtime;
 
-GRANT SELECT,INSERT ON TABLE mdm_agent.operations TO mdm_access;
 COMMIT;
