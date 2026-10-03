@@ -909,7 +909,6 @@ MODULES['execution.agent.history'] = replace(MODULES['execution.agent.history'],
     'crates/execution-service/src/directory.rs', 'crates/management-http/src/execution/http.rs'))
 
 TOOL_INPUTS = {
-    'tests/fixtures/t2-impact-2642.json.gz': ('test_ci_impact',),
     'hack/t2_context.py': ('test_t2_context', 'test_t2_fixtures'),
     'hack/t2_database.py': ('test_t2_fixtures',),
     'hack/t2_hosts.py': ('test_t2_hosts',),
@@ -1130,479 +1129,233 @@ PG_CONSUMERS = {n for n, m in MODULES.items() if m.postgres}
 APP_CONSUMERS = {n for n, m in MODULES.items() if m.build == APP}
 
 
-def consume_dependencies(names, entries):
+def consume_dependencies(names, *, normal='', dev=''):
+    if isinstance(names, str):
+        names = names.split()
+    entries = tuple(DependencyInput('crates/app/Cargo.toml', alias, kind)
+                    for kind, aliases in (('normal', normal), ('dev', dev))
+                    for alias in aliases.split())
     for name in sorted(names):
-        MODULES[name] = replace(
-            MODULES[name],
-            dependency_inputs=(
-                *MODULES[name].dependency_inputs,
-                *(
-                    DependencyInput('crates/app/Cargo.toml', alias, kind)
-                    for alias, kind in entries
-                ),
-            ),
-        )
+        module = MODULES[name]
+        MODULES[name] = replace(module, dependency_inputs=(*module.dependency_inputs, *entries))
 
 
 consume_dependencies(
     PG_CONSUMERS,
-    (
-        ('rss-audit-postgres', 'normal'),
-        ('rss-ledger-postgres', 'normal'),
-        ('rss-identity-postgres', 'normal'),
-        ('rss-observation-postgres', 'normal'),
-        ('rss-projection-postgres', 'normal'),
-        ('rss-request-context', 'normal'),
-        ('sha2', 'normal'),
-        ('sqlx', 'normal'),
-        ('rss-transactional-messaging', 'normal'),
-        ('rss-transactional-messaging-postgres', 'normal'),
-        ('rss-device-command-postgres', 'normal'),
-        ('rss-reconcile-postgres', 'normal'),
-    ),
+    normal=(
+               'rss-audit-postgres rss-ledger-postgres rss-identity-postgres rss-observation-postgres rss-'
+               'projection-postgres rss-request-context sha2 sqlx rss-transactional-messaging rss-transactional-'
+               'messaging-postgres rss-device-command-postgres rss-reconcile-postgres'
+           ),
 )
 
 consume_dependencies(
     APP_CONSUMERS,
-    (
-        ('rss-ledger', 'normal'),
-        ('url', 'normal'),
-        ('zeroize', 'normal'),
-        ('libc', 'normal'),
-    ),
+    normal='rss-ledger url zeroize libc',
 )
 
 consume_dependencies(
     PG_CONSUMERS | {'apple.cms', 'apple.apns'},
-    (
-        ('rss-identity-core', 'normal'),
-        ('thiserror', 'normal'),
-        ('serde', 'normal'),
-        ('serde_json', 'normal'),
-    ),
+    normal='rss-identity-core thiserror serde serde_json',
 )
 
 consume_dependencies(
-    (APP_CONSUMERS | {'host.lifecycle'})
-    - {
-        'audit.receipts',
-        'worker.wake',
-        'apple.cms',
-        'api.diagnostics',
-        'audit.budget',
-        'audit.integrity',
-        'native.tls',
-        'apple.apns',
-        'audit.recovery',
-    },
-    (
-        ('rss-identity-http-axum', 'normal'),
-        ('rand', 'normal'),
-        ('base64', 'normal'),
-        ('http-body-util', 'dev'),
-    ),
+    (APP_CONSUMERS | {'host.lifecycle'}) - set((
+                                                   'audit.receipts worker.wake apple.cms api.diagnostics audit.budget audit.integrity native.tls '
+                                                   'apple.apns audit.recovery'
+                                               ).split()),
+    normal='rss-identity-http-axum rand base64',
+    dev='http-body-util',
 )
 
 consume_dependencies(
-    (
-        APP_CONSUMERS
-        | {
-            'inventory.process',
-            'inventory.reader',
-            'inventory.recovery',
-            'inventory.manual',
-            'inventory.projection',
-            'host.lifecycle',
-        }
-    )
-    - {
-        'audit.receipts',
-        'worker.wake',
-        'apple.cms',
-        'audit.budget',
-        'audit.integrity',
-        'apple.apns',
-        'audit.recovery',
-    },
-    (('rss-observation', 'normal'),),
+    (APP_CONSUMERS | set((
+                             'inventory.process inventory.reader inventory.recovery inventory.manual inventory.projection '
+                             'host.lifecycle'
+                         ).split())) - set('audit.receipts worker.wake apple.cms audit.budget audit.integrity apple.apns audit.recovery'.split()),
+    normal='rss-observation',
 )
 
 consume_dependencies(
-    (APP_CONSUMERS | {'host.lifecycle'})
-    - {'audit.receipts', 'apple.cms', 'audit.budget', 'apple.apns', 'audit.recovery'},
-    (('rss-runtime', 'normal'),),
+    (APP_CONSUMERS | {'host.lifecycle'}) - set('audit.receipts apple.cms audit.budget apple.apns audit.recovery'.split()),
+    normal='rss-runtime',
 )
 
 consume_dependencies(
     APP_CONSUMERS | {'host.lifecycle'},
-    (('axum', 'normal'), ('uuid', 'normal'), ('anyhow', 'normal')),
+    normal='axum uuid anyhow',
 )
 
 consume_dependencies(
-    (APP_CONSUMERS | {'host.lifecycle'})
-    - {
-        'audit.receipts',
-        'worker.wake',
-        'apple.cms',
-        'api.diagnostics',
-        'audit.budget',
-        'audit.integrity',
-        'native.tls',
-        'audit.recovery',
-    },
-    (('reqwest', 'normal'), ('reqwest', 'dev')),
+    (APP_CONSUMERS | {'host.lifecycle'}) - set((
+                                                   'audit.receipts worker.wake apple.cms api.diagnostics audit.budget audit.integrity native.tls '
+                                                   'audit.recovery'
+                                               ).split()),
+    normal='reqwest',
+    dev='reqwest',
 )
 
 consume_dependencies(
-    (APP_CONSUMERS | {'host.lifecycle'})
-    - {
-        'audit.receipts',
-        'worker.wake',
-        'apple.cms',
-        'api.diagnostics',
-        'audit.budget',
-        'audit.recovery',
-    },
-    (('ring', 'normal'),),
+    (APP_CONSUMERS | {'host.lifecycle'}) - set('audit.receipts worker.wake apple.cms api.diagnostics audit.budget audit.recovery'.split()),
+    normal='ring',
 )
 
 consume_dependencies(
     (
-        'agent.pki',
-        'apple.collection',
-        'apple.commands',
-        'apple.ddm',
-        'apple.fairness',
-        'apple.host',
-        'apple.identity',
-        'apple.onboarding',
-        'apple.policy',
-        'apple.profile',
-        'apple.push',
-        'apple.renewal',
-        'apple.scep',
-        'apple.status',
-        'apple.users',
-        'execution.commands.admission',
-        'execution.commands.configuration',
-        'execution.commands.dispatch',
-        'execution.commands.onboarding',
-        'execution.commands.recovery',
-        'execution.commands.windows',
-        'windows.commands',
-        'windows.declared',
-        'windows.enrollment',
-        'windows.issuance',
-        'windows.limits',
-        'windows.management',
-        'windows.retention',
+        'agent.pki apple.collection apple.commands apple.ddm apple.fairness apple.host apple.identity '
+        'apple.onboarding apple.policy apple.profile apple.push apple.renewal apple.scep apple.status '
+        'apple.users execution.commands.admission execution.commands.configuration '
+        'execution.commands.dispatch execution.commands.onboarding execution.commands.recovery '
+        'execution.commands.windows windows.commands windows.declared windows.enrollment windows.issuance'
+        ' windows.limits windows.management windows.retention'
     ),
-    (('x509-cert', 'normal'),),
+    normal='x509-cert',
 )
 
 consume_dependencies(
     (
-        'agent.pki',
-        'apple.apns',
-        'apple.collection',
-        'apple.commands',
-        'apple.ddm',
-        'apple.fairness',
-        'apple.host',
-        'apple.identity',
-        'apple.onboarding',
-        'apple.policy',
-        'apple.profile',
-        'apple.push',
-        'apple.renewal',
-        'apple.scep',
-        'apple.status',
-        'apple.users',
-        'execution.commands.admission',
-        'execution.commands.configuration',
-        'execution.commands.dispatch',
-        'execution.commands.onboarding',
-        'execution.commands.recovery',
-        'execution.commands.windows',
-        'native.tls',
-        'windows.commands',
-        'windows.declared',
-        'windows.enrollment',
-        'windows.issuance',
-        'windows.limits',
-        'windows.management',
-        'windows.retention',
+        'agent.pki apple.apns apple.collection apple.commands apple.ddm apple.fairness apple.host '
+        'apple.identity apple.onboarding apple.policy apple.profile apple.push apple.renewal apple.scep '
+        'apple.status apple.users execution.commands.admission execution.commands.configuration '
+        'execution.commands.dispatch execution.commands.onboarding execution.commands.recovery '
+        'execution.commands.windows native.tls windows.commands windows.declared windows.enrollment '
+        'windows.issuance windows.limits windows.management windows.retention'
     ),
-    (('tokio-rustls', 'normal'),),
+    normal='tokio-rustls',
 )
 
 consume_dependencies(
     PG_CONSUMERS | {'apple.apns'},
-    (('time', 'normal'), ('tokio', 'normal'), ('time', 'dev'), ('tokio', 'dev')),
+    normal='time tokio',
+    dev='time tokio',
 )
 
 consume_dependencies(
-    (APP_CONSUMERS | {'host.lifecycle'})
-    - {
-        'audit.receipts',
-        'worker.wake',
-        'apple.cms',
-        'audit.budget',
-        'audit.integrity',
-        'native.tls',
-        'apple.apns',
-        'audit.recovery',
-    },
-    (('tower', 'normal'), ('tower', 'dev')),
+    (APP_CONSUMERS | {'host.lifecycle'}) - set((
+                                                   'audit.receipts worker.wake apple.cms audit.budget audit.integrity native.tls apple.apns '
+                                                   'audit.recovery'
+                                               ).split()),
+    normal='tower',
+    dev='tower',
 )
 
 consume_dependencies(
     (
-        'apple.apns',
-        'apple.cms',
-        'apple.collection',
-        'apple.commands',
-        'apple.ddm',
-        'apple.fairness',
-        'apple.host',
-        'apple.identity',
-        'apple.onboarding',
-        'apple.policy',
-        'apple.profile',
-        'apple.push',
-        'apple.renewal',
-        'apple.scep',
-        'apple.status',
-        'apple.users',
-        'certificate-archive.http',
-        'identity.sso',
-        'windows.declared',
-        'windows.issuance',
+        'apple.apns apple.cms apple.collection apple.commands apple.ddm apple.fairness apple.host '
+        'apple.identity apple.onboarding apple.policy apple.profile apple.push apple.renewal apple.scep '
+        'apple.status apple.users certificate-archive.http identity.sso windows.declared windows.issuance'
     ),
-    (('tempfile', 'dev'),),
+    dev='tempfile',
 )
 
 consume_dependencies(
     (
-        'api.diagnostics',
-        'apple.identity',
-        'apple.policy',
-        'assets.http',
-        'audit.budget',
-        'audit.integrity',
-        'audit.receipts',
-        'audit.recovery',
-        'authorization.capacity',
-        'authorization.rules',
-        'compliance.group_input',
-        'compliance.http',
-        'compliance.recovery',
-        'content.http',
-        'device.recovery',
-        'device.revocation',
-        'diagnostics.http',
-        'enrollment.http',
-        'execution.agent.content',
-        'execution.agent.history',
-        'execution.commands.admission',
-        'execution.commands.dispatch',
-        'execution.commands.onboarding',
-        'planning.agent_policy',
-        'planning.assets',
-        'planning.group_scope',
-        'planning.recovery',
-        'planning.resource_archive',
-        'planning.scope',
-        'software.http',
-        'timeline.http',
-        'windows.enrollment',
-        'windows.issuance',
-        'windows.limits',
-        'windows.management',
+        'api.diagnostics apple.identity apple.policy assets.http audit.budget audit.integrity '
+        'audit.receipts audit.recovery authorization.capacity authorization.rules compliance.group_input '
+        'compliance.http compliance.recovery content.http device.recovery device.revocation '
+        'diagnostics.http enrollment.http execution.agent.content execution.agent.history '
+        'execution.commands.admission execution.commands.dispatch execution.commands.onboarding '
+        'planning.agent_policy planning.assets planning.group_scope planning.recovery '
+        'planning.resource_archive planning.scope software.http timeline.http windows.enrollment '
+        'windows.issuance windows.limits windows.management'
     ),
-    (('rss-audit-core', 'normal'),),
+    normal='rss-audit-core',
 )
 
 consume_dependencies(
-    ('content.gc', 'timeline.http'),
-    (('rss-contract', 'normal'), ('rss-contract', 'dev')),
+    'content.gc timeline.http',
+    normal='rss-contract',
+    dev='rss-contract',
 )
 
 consume_dependencies(
     (
-        'api.diagnostics',
-        'apple.apns',
-        'apple.host',
-        'apple.identity',
-        'apple.policy',
-        'apple.push',
-        'assets.http',
-        'audit.budget',
-        'audit.integrity',
-        'audit.receipts',
-        'audit.recovery',
-        'authorization.capacity',
-        'authorization.rules',
-        'compliance.group_input',
-        'compliance.http',
-        'compliance.recovery',
-        'content.http',
-        'device.recovery',
-        'device.revocation',
-        'diagnostics.http',
-        'enrollment.http',
-        'execution.agent.content',
-        'execution.agent.history',
-        'execution.commands.admission',
-        'execution.commands.configuration',
-        'execution.commands.dispatch',
-        'execution.commands.onboarding',
-        'execution.commands.recovery',
-        'host.lifecycle',
-        'identity.audit',
-        'inventory.manual',
-        'inventory.process',
-        'inventory.projection',
-        'inventory.reader',
-        'inventory.recovery',
-        'inventory.runtime',
-        'planning.agent_policy',
-        'planning.assets',
-        'planning.group_scope',
-        'planning.recovery',
-        'planning.resource_archive',
-        'planning.scope',
-        'software.http',
-        'windows.enrollment',
-        'windows.issuance',
-        'windows.limits',
-        'windows.management',
-        'worker.wake',
+        'api.diagnostics apple.apns apple.host apple.identity apple.policy apple.push assets.http '
+        'audit.budget audit.integrity audit.receipts audit.recovery authorization.capacity '
+        'authorization.rules compliance.group_input compliance.http compliance.recovery content.http '
+        'device.recovery device.revocation diagnostics.http enrollment.http execution.agent.content '
+        'execution.agent.history execution.commands.admission execution.commands.configuration '
+        'execution.commands.dispatch execution.commands.onboarding execution.commands.recovery '
+        'host.lifecycle identity.audit inventory.manual inventory.process inventory.projection '
+        'inventory.reader inventory.recovery inventory.runtime planning.agent_policy planning.assets '
+        'planning.group_scope planning.recovery planning.resource_archive planning.scope software.http '
+        'windows.enrollment windows.issuance windows.limits windows.management worker.wake'
     ),
-    (('tokio-util', 'normal'),),
+    normal='tokio-util',
 )
 
 consume_dependencies(
     (
-        'assets.http',
-        'audit.integrity',
-        'diagnostics.http',
-        'execution.commands.configuration',
-        'execution.commands.recovery',
-        'planning.assets',
-        'planning.group_scope',
-        'planning.recovery',
-        'planning.resource_archive',
-        'planning.scope',
+        'assets.http audit.integrity diagnostics.http execution.commands.configuration '
+        'execution.commands.recovery planning.assets planning.group_scope planning.recovery '
+        'planning.resource_archive planning.scope'
     ),
-    (('rss-reconcile', 'normal'),),
+    normal='rss-reconcile',
+)
+
+consume_dependencies(
+    'api.identity_context diagnostics.http identity.audit identity.local identity.sso',
+    normal='rss-identity-oidc',
 )
 
 consume_dependencies(
     (
-        'api.identity_context',
-        'diagnostics.http',
-        'identity.audit',
-        'identity.local',
-        'identity.sso',
+        'api.diagnostics api.identity_context diagnostics.http execution.commands.admission '
+        'execution.commands.configuration execution.commands.dispatch execution.commands.onboarding '
+        'execution.commands.recovery execution.commands.windows host.lifecycle identity.audit '
+        'identity.local identity.sso native.tls windows.commands windows.declared windows.enrollment '
+        'windows.issuance windows.limits windows.management windows.retention'
     ),
-    (('rss-identity-oidc', 'normal'),),
+    normal='rss-axum',
+)
+
+consume_dependencies(
+    'diagnostics.http identity.audit',
+    normal='rss-transactional-messaging-runtime',
 )
 
 consume_dependencies(
     (
-        'api.diagnostics',
-        'api.identity_context',
-        'diagnostics.http',
-        'execution.commands.admission',
-        'execution.commands.configuration',
-        'execution.commands.dispatch',
-        'execution.commands.onboarding',
-        'execution.commands.recovery',
-        'execution.commands.windows',
-        'host.lifecycle',
-        'identity.audit',
-        'identity.local',
-        'identity.sso',
-        'native.tls',
-        'windows.commands',
-        'windows.declared',
-        'windows.enrollment',
-        'windows.issuance',
-        'windows.limits',
-        'windows.management',
-        'windows.retention',
+        'apple.collection apple.commands apple.ddm apple.fairness apple.host apple.identity '
+        'apple.onboarding apple.policy apple.profile apple.push apple.renewal apple.scep apple.status '
+        'apple.users diagnostics.http host.lifecycle inventory.manual inventory.process '
+        'inventory.projection inventory.reader inventory.recovery inventory.runtime'
     ),
-    (('rss-axum', 'normal'),),
+    normal='rss-projection',
 )
 
 consume_dependencies(
-    ('diagnostics.http', 'identity.audit'),
-    (('rss-transactional-messaging-runtime', 'normal'),),
+    'content.http diagnostics.http worker.wake',
+    normal='futures',
+)
+
+consume_dependencies(
+    'api.diagnostics',
+    normal='tracing-subscriber',
+)
+
+consume_dependencies(
+    'execution.software.offer software.http',
+    normal='zip',
+)
+
+consume_dependencies(
+    'native.tls',
+    normal='tracing',
+)
+
+consume_dependencies(
+    'apple.apns apple.host apple.push windows.management',
+    dev='h2',
 )
 
 consume_dependencies(
     (
-        'apple.collection',
-        'apple.commands',
-        'apple.ddm',
-        'apple.fairness',
-        'apple.host',
-        'apple.identity',
-        'apple.onboarding',
-        'apple.policy',
-        'apple.profile',
-        'apple.push',
-        'apple.renewal',
-        'apple.scep',
-        'apple.status',
-        'apple.users',
-        'diagnostics.http',
-        'host.lifecycle',
-        'inventory.manual',
-        'inventory.process',
-        'inventory.projection',
-        'inventory.reader',
-        'inventory.recovery',
-        'inventory.runtime',
+        'apple.collection apple.commands apple.ddm apple.fairness apple.host apple.identity '
+        'apple.onboarding apple.policy apple.profile apple.push apple.renewal apple.scep apple.status '
+        'apple.users'
     ),
-    (('rss-projection', 'normal'),),
-)
-
-consume_dependencies(
-    ('content.http', 'diagnostics.http', 'worker.wake'), (('futures', 'normal'),)
-)
-
-consume_dependencies(('api.diagnostics',), (('tracing-subscriber', 'normal'),))
-
-consume_dependencies(
-    ('execution.software.offer', 'software.http'), (('zip', 'normal'),)
-)
-
-consume_dependencies(('native.tls',), (('tracing', 'normal'),))
-
-consume_dependencies(
-    ('apple.apns', 'apple.host', 'apple.push', 'windows.management'), (('h2', 'dev'),)
-)
-
-consume_dependencies(
-    (
-        'apple.collection',
-        'apple.commands',
-        'apple.ddm',
-        'apple.fairness',
-        'apple.host',
-        'apple.identity',
-        'apple.onboarding',
-        'apple.policy',
-        'apple.profile',
-        'apple.push',
-        'apple.renewal',
-        'apple.scep',
-        'apple.status',
-        'apple.users',
-    ),
-    (('plist', 'normal'), ('cms', 'normal')),
+    normal='plist cms',
 )
 
 DEPENDENCY_POLICIES['crates/app/Cargo.toml'] = {

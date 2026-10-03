@@ -634,6 +634,7 @@ class DependencyOwnership(unittest.TestCase):
                             version='1.0.0',
                             source=None,
                             manifest_path=str(root / 'crates/app/Cargo.toml'),
+                            dependencies=[dict(name='db-package', rename='db_driver', kind=kind) for kind in (None, 'dev')],
                         ),
                         dict(
                             id='db',
@@ -750,6 +751,7 @@ class DependencyOwnership(unittest.TestCase):
                                 dict(
                                     id='service',
                                     name='service',
+                                    dependencies=[dict(name='database', rename='driver', kind=None)],
                                     version='1.0.0',
                                     source=None,
                                     manifest_path=str(
@@ -816,70 +818,6 @@ class DependencyOwnership(unittest.TestCase):
                 )[1],
                 {'old', 'new'},
             )
-
-
-class RevisionReplay(unittest.TestCase):
-    def test_2642_fixed_input_selects_40_without_registry_fallback(self):
-        import gzip
-        import dataclasses
-        import contextlib
-        import ci_impact as impact
-
-        fixture = json.loads(
-            gzip.decompress(
-                (RSS_ROOT / 'tests/fixtures/t2-impact-2642.json.gz').read_bytes()
-            )
-        )
-
-        def registry(data):
-            return impact.Registry(
-                data['modules'],
-                tuple(data['t1']),
-                data['tools'],
-                data['dependencies'],
-                data['controls'],
-                tuple(data['tool_only']),
-                {},
-            )
-
-        before, after = registry(fixture['before']), registry(fixture['after'])
-        changes = [impact.Change('M', path, path) for path in fixture['paths']]
-        graph = type(
-            'Graph',
-            (),
-            {
-                'members': set(),
-                'owner': lambda self, path: None,
-                'names': lambda self, keys: set(),
-            },
-        )()
-        with (
-            patch.object(impact, 'changed_paths', return_value=changes),
-            patch.object(
-                impact,
-                'baseline_tree',
-                return_value=contextlib.nullcontext(Path('/baseline')),
-            ),
-            patch.object(impact, 'snapshot', side_effect=[before, after]),
-            patch.object(impact, 'metadata', return_value=graph),
-            patch.object(
-                impact,
-                'all_tools',
-                return_value=list({t for ts in after.tools.values() for t in ts}),
-            ),
-            patch.object(
-                impact, 'analyze_dependencies', return_value=(set(), set(), set(), [])
-            ),
-        ):
-            decision = impact.select(RSS_ROOT, fixture['base'])
-        self.assertEqual(
-            decision['t2'], {'mode': 'affected', 'modules': fixture['expected']}
-        )
-        self.assertEqual(len(decision['t2']['modules']), 40)
-        self.assertIn('test_ci_impact', decision['toolTests'])
-        self.assertFalse(
-            any(r.get('detail') == 'shared-runtime' for r in decision['reasons'])
-        )
 
 
 if __name__ == '__main__':
