@@ -76,9 +76,43 @@ pub fn compatible_receipt(
     }) && old_value.is_none_or(|old| new_value.is_none_or(|new| old == new))
 }
 
-/// A native error can terminate a fragment; success requires the full object.
-pub fn accepts_frame(code: i32, accepted: bool, end: i32, total: i32) -> bool {
-    accepted && terminal_status(code) && (rejected_status(code) || end == total)
+/// Provisional frame receipts may progress; a terminal receipt cannot be replaced.
+pub fn compatible_frame(old: Option<i32>, new: i32) -> bool {
+    old.is_none_or(|old| !terminal_status(old) || old == new)
+}
+
+/// Assess a terminal frame as logical item evidence; provisional receipts return no settlement.
+pub fn frame_receipt(code: i32, admitted: bool, end: usize, total: usize) -> Option<bool> {
+    terminal_status(code).then_some(admitted && (rejected_status(code) || end == total))
+}
+
+/// Native fragment progress; the caller still owns current eligibility and dispatch.
+#[derive(Debug, PartialEq, Eq)]
+pub enum FrameContinuation {
+    /// Await a buffer receipt or the complete object's logical receipt.
+    Wait,
+    /// The peer accepted the current buffer and may receive the next range.
+    Continue,
+    /// An early terminal receipt or an unadmitted buffer forbids continuing.
+    Abort,
+}
+
+/// Only an admitted 213 buffer receipt may advance an incomplete native object.
+pub fn frame_continuation(
+    status: Option<i32>,
+    admitted: bool,
+    end: usize,
+    total: usize,
+) -> FrameContinuation {
+    if status.is_some_and(terminal_status) && end < total {
+        FrameContinuation::Abort
+    } else if end == total || status != Some(213) {
+        FrameContinuation::Wait
+    } else if admitted {
+        FrameContinuation::Continue
+    } else {
+        FrameContinuation::Abort
+    }
 }
 
 /// Native item evidence after caller-owned current eligibility checks.
@@ -246,11 +280,31 @@ mod tests {
     }
     #[test]
     fn early_frame_success_cannot_become_success_after_later_frames_are_sent() {
-        assert!(!accepts_frame(200, true, 4, 8));
-        assert!(accepts_frame(200, true, 8, 8));
-        assert!(accepts_frame(500, true, 4, 8));
-        assert!(!accepts_frame(213, true, 8, 8));
-        assert!(!accepts_frame(200, false, 8, 8));
+        assert_eq!(frame_receipt(200, true, 4, 8), Some(false));
+        assert_eq!(frame_receipt(200, true, 8, 8), Some(true));
+        assert_eq!(frame_receipt(500, true, 4, 8), Some(true));
+        assert_eq!(frame_receipt(213, true, 8, 8), None);
+        assert_eq!(frame_receipt(200, false, 8, 8), Some(false));
+    }
+    #[test]
+    fn frame_replays_preserve_terminal_receipts() {
+        assert!(compatible_frame(None, 213));
+        assert!(compatible_frame(Some(213), 200));
+        assert!(compatible_frame(Some(200), 200));
+        assert!(!compatible_frame(Some(200), 500));
+        assert!(!compatible_frame(Some(500), 200));
+    }
+    #[test]
+    fn fragments_continue_only_after_admitted_buffer_receipts() {
+        use FrameContinuation::*;
+        assert_eq!(frame_continuation(None, true, 4, 8), Wait);
+        assert_eq!(frame_continuation(Some(101), true, 4, 8), Wait);
+        assert_eq!(frame_continuation(Some(213), true, 4, 8), Continue);
+        assert_eq!(frame_continuation(Some(213), false, 4, 8), Abort);
+        assert_eq!(frame_continuation(Some(200), true, 4, 8), Abort);
+        assert_eq!(frame_continuation(Some(500), true, 4, 8), Abort);
+        assert_eq!(frame_continuation(Some(213), true, 8, 8), Wait);
+        assert_eq!(frame_continuation(Some(200), true, 8, 8), Wait);
     }
     #[test]
     fn query_receipts_keep_completeness_separate_from_success_and_authority() {
