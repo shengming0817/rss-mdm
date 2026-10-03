@@ -66,15 +66,17 @@ impl ManagementContentPort for SoftwareContent {
         }
         let artifact = input.artifact.artifact().map_err(|_| Error::Malformed)?;
         let binding = Binding {
-            storage_class: crate::StorageClass::Artifact,
-            resource: input.version.resource().as_str().to_owned(),
-            version: input.version.label().as_str().to_owned(),
-            variant: input.variant.to_owned(),
-            platform: input.platform,
-            architecture: input.architecture,
-            resource_digest: input.version.digest().bytes(),
-            source: Some(input.source.clone()),
-            origin: None,
+            purpose: crate::Purpose::Resource(crate::ResourceBinding {
+                storage_class: crate::StorageClass::Artifact,
+                resource: input.version.resource().as_str().to_owned(),
+                version: input.version.label().as_str().to_owned(),
+                variant: input.variant.to_owned(),
+                platform: input.platform,
+                architecture: input.architecture,
+                resource_digest: input.version.digest().bytes(),
+                source: Some(input.source.clone()),
+                origin: None,
+            }),
             reference: input.artifact.reference.clone(),
             length: input.artifact.length,
             sha256: input.artifact.sha256,

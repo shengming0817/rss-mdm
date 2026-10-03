@@ -32,7 +32,7 @@ pub async fn append(
     let at = Timepoint::try_from(now(tx).await?).map_err(|_| Error::Malformed)?;
     let key = PartitionKey::parse(&format!(
         "content:{:x}",
-        Sha256::digest(upload.binding.resource.as_bytes())
+        Sha256::digest(upload.binding.resource()?.resource.as_bytes())
     ))
     .map_err(|_| Error::Malformed)?;
     let metadata = MessageMetadata::new(
@@ -50,7 +50,7 @@ pub async fn append(
         ),
         MessageMetadataExtensions::new(None, Some(key), None, BTreeMap::new()),
     );
-    let payload=serde_json::to_vec(&serde_json::json!({"v":1,"operation":upload.id,"resource":upload.binding.resource,"version":upload.binding.version,"reference":upload.binding.reference,"length":upload.binding.length,"sha256":upload.binding.sha256})).map_err(|_|Error::Malformed)?;
+    let payload=serde_json::to_vec(&serde_json::json!({"v":1,"operation":upload.id,"resource":upload.binding.resource()?.resource,"version":upload.binding.resource()?.version,"reference":upload.binding.reference,"length":upload.binding.length,"sha256":upload.binding.sha256})).map_err(|_|Error::Malformed)?;
     let message = PendingMessage::new(MessageEnvelope::new(
         MessageId::parse(&format!(
             "content.v1:{:x}:{}",

@@ -14,6 +14,10 @@ pub fn routes(queries: Arc<rss_mdm_execution_service::queries::Queries>) -> Rout
             Router::new()
                 .route("/operations", get(directory))
                 .route("/devices/{device}/operations/{id}", get(read))
+                .route(
+                    "/devices/{device}/operations/{id}/diagnostic-artifact",
+                    get(diagnostic_artifact),
+                )
                 .with_state(queries),
         )
         .route(
@@ -73,7 +77,7 @@ async fn read(
     audit.target(&device);
     app.read(&auth.proof, &device, id, &audit)
         .await
-        .map(|v| Json(crate::execution::projection::command(v)))
+        .map(|v| Json(crate::execution::projection::command(v, &device)))
         .map_err(Error::from)
 }
 async fn cancel(
@@ -123,4 +127,33 @@ impl HttpState {
     pub fn windows(&self) -> std::result::Result<(), crate::Error> {
         self.windows.then_some(()).ok_or(crate::Error::Unsupported)
     }
+}
+
+async fn diagnostic_artifact(
+    State(app): State<Arc<rss_mdm_execution_service::queries::Queries>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path((device, id)): Path<(String, Uuid)>,
+) -> std::result::Result<axum::response::Response, Error> {
+    audit.operation(id, "command_diagnostic_download");
+    audit.target(&device);
+    let content = app
+        .diagnostic_artifact(&auth.proof, &device, id, &audit)
+        .await?;
+    let length = content.artifact.length();
+    let etag = content.etag();
+    let stream = content.stream(0, length).await?;
+    axum::http::Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/octet-stream")
+        .header(
+            "content-disposition",
+            "attachment; filename=diagnostic-log.bin",
+        )
+        .header("cache-control", "no-store")
+        .header("content-length", length)
+        .header("etag", etag)
+        .header("x-content-type-options", "nosniff")
+        .body(axum::body::Body::from_stream(stream))
+        .map_err(|_| Error::Malformed)
 }

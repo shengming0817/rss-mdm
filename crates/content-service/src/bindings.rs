@@ -16,10 +16,11 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub async fn bind_in(tx: &mut PgTransaction<'_>, upload: &Upload) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
     let upload = upload.clone();
+    let resource = upload.binding.resource()?.clone();
     let encoded = serde_json::to_value(&upload.binding).map_err(|_| crate::Error::Malformed)?;
     tx.with_connection(move|c|Box::pin(async move{
  let inserted=sqlx::query("INSERT INTO mdm_content.bindings(tenant_id,actor,operation,resource,version,reference,length,sha256,binding) VALUES($1::uuid,$2,$3::uuid,$4,$5,$6,$7,$8,$9) ON CONFLICT(tenant_id,actor,operation) DO NOTHING")
- .bind(&tenant).bind(&upload.binding.actor).bind(upload.id).bind(&upload.binding.resource).bind(&upload.binding.version).bind(&upload.binding.reference).bind(upload.binding.length as i64).bind(upload.binding.sha256.to_vec()).bind(&encoded).execute(&mut *c).await?.rows_affected();
+ .bind(&tenant).bind(&upload.binding.actor).bind(upload.id).bind(&resource.resource).bind(&resource.version).bind(&upload.binding.reference).bind(upload.binding.length as i64).bind(upload.binding.sha256.to_vec()).bind(&encoded).execute(&mut *c).await?.rows_affected();
  if inserted!=0{return Ok(Ok(true));}
  let old=sqlx::query_scalar::<_,serde_json::Value>("SELECT binding FROM mdm_content.bindings WHERE tenant_id=$1::uuid AND actor=$2 AND operation=$3::uuid").bind(tenant).bind(upload.binding.actor).bind(upload.id).fetch_one(c).await?;
  Ok(if old==encoded{Ok(false)}else{Err(crate::Error::Conflict)})

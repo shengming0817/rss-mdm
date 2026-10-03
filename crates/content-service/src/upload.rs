@@ -3,10 +3,30 @@ use super::*;
 use rss_mdm_resource::{Digest as ResourceDigest, Id};
 use std::io::Write;
 use uuid::Uuid;
+/// Immutable physical upload binding; diagnostics never claim a Resource identity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct UploadBinding {
-    #[serde(skip)]
+pub struct Binding {
+    pub purpose: Purpose,
+    pub reference: String,
+    pub length: u64,
+    pub sha256: [u8; 32],
+    pub actor: String,
+}
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "binding",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum Purpose {
+    Resource(ResourceBinding),
+    Diagnostic(crate::diagnostic::Identity),
+}
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceBinding {
     pub storage_class: StorageClass,
     pub resource: String,
     pub version: String,
@@ -16,12 +36,20 @@ pub struct UploadBinding {
     pub resource_digest: [u8; 32],
     pub source: Option<rss_mdm_resource::SoftwareSource>,
     pub origin: Option<String>,
-    pub reference: String,
-    pub length: u64,
-    pub sha256: [u8; 32],
-    pub actor: String,
 }
-impl UploadBinding {
+impl Binding {
+    pub fn resource(&self) -> Result<&ResourceBinding, Error> {
+        match &self.purpose {
+            Purpose::Resource(v) => Ok(v),
+            Purpose::Diagnostic(_) => Err(Error::Malformed),
+        }
+    }
+    pub fn class(&self) -> StorageClass {
+        match &self.purpose {
+            Purpose::Resource(v) => v.storage_class,
+            Purpose::Diagnostic(_) => StorageClass::NativeDiagnostic,
+        }
+    }
     pub fn artifact(&self) -> Result<Artifact, Error> {
         Artifact::new(
             Id::new(&self.reference).map_err(|_| Error::Malformed)?,
@@ -37,7 +65,7 @@ pub struct Upload {
     #[serde(skip)]
     pub(super) native: Option<super::protected::Checkpoint>,
     pub id: Uuid,
-    pub binding: UploadBinding,
+    pub binding: Binding,
     pub offset: u64,
     pub expires: i64,
     pub complete: bool,
@@ -92,7 +120,7 @@ impl Store {
     pub async fn begin(
         self: &Arc<Self>,
         id: Uuid,
-        binding: UploadBinding,
+        binding: Binding,
         now: i64,
     ) -> Result<Upload, Error> {
         if id.is_nil()
@@ -102,7 +130,20 @@ impl Store {
         {
             return Err(Error::Malformed);
         }
+        if matches!(&binding.purpose, crate::Purpose::Resource(v) if v.storage_class == StorageClass::NativeDiagnostic)
+        {
+            return Err(Error::Malformed);
+        }
         binding.artifact()?;
+        let expires = match &binding.purpose {
+            Purpose::Diagnostic(identity) => identity.expires_at,
+            Purpose::Resource(_) => now
+                .checked_add(self.config.retention_seconds as i64)
+                .ok_or(Error::Malformed)?,
+        };
+        if expires <= now {
+            return Err(Error::Malformed);
+        }
         let reservation = super::protected::reservation(&binding)?;
         let key = storage_key(&binding.actor, id);
         let store = self.clone();
@@ -129,12 +170,10 @@ impl Store {
                 id,
                 binding,
                 offset: 0,
-                expires: now
-                    .checked_add(store.config.retention_seconds as i64)
-                    .ok_or(Error::Malformed)?,
+                expires,
                 complete: false,
             };
-            if upload.binding.storage_class == StorageClass::NativeConfiguration {
+            if upload.binding.class().protected() {
                 upload.native = Some(super::protected::Checkpoint::empty());
             }
             let file = options()
@@ -186,7 +225,7 @@ impl Store {
             if upload.complete || upload.offset != expected {
                 return Err(Error::Conflict);
             }
-            if upload.binding.storage_class == StorageClass::NativeConfiguration {
+            if upload.binding.class().protected() {
                 return Ok((upload, file));
             }
             if file.metadata().map_err(|_| storage())?.len() < expected {
@@ -200,7 +239,7 @@ impl Store {
         })
         .await
         .map_err(|_| storage())??;
-        if upload.binding.storage_class == StorageClass::NativeConfiguration {
+        if upload.binding.class().protected() {
             return self.append_native(upload, file, body).await;
         }
         let mut file = tokio::fs::File::from_std(file);
@@ -261,21 +300,17 @@ impl Store {
             let _permit = permit;
             let old = s.load_upload(id, now)?;
             if old.complete {
-                s.verify_class_sync(
-                    &old.binding.artifact()?,
-                    old.binding.storage_class,
-                    deadline,
-                )?;
+                s.verify_class_sync(&old.binding.artifact()?, old.binding.class(), deadline)?;
                 return Ok(old);
             }
             let mut file = lock(&s.upload_path(id, "part"))?;
             let mut upload = s.load_upload(id, now)?;
             let artifact = upload.binding.artifact()?;
             if upload.complete {
-                s.verify_class_sync(&artifact, upload.binding.storage_class, deadline)?;
+                s.verify_class_sync(&artifact, upload.binding.class(), deadline)?;
                 return Ok(upload);
             }
-            if upload.binding.storage_class == StorageClass::NativeConfiguration {
+            if upload.binding.class().protected() {
                 return s.finish_native(upload, file, deadline);
             }
             let _blob = lock(&s.blob_lock(artifact.digest().bytes()))?;
@@ -304,7 +339,6 @@ impl Store {
         .map_err(|_| storage())?
     }
 }
-pub use UploadBinding as Binding;
 
 impl Store {
     // Called only while holding the existing cross-process upload reservation lock.
@@ -331,7 +365,7 @@ impl Store {
                     .checked_add(super::protected::reservation(&value.binding)?)
                     .ok_or_else(invariant)?;
                 count += 1;
-            } else if value.binding.storage_class == StorageClass::NativeConfiguration {
+            } else if value.binding.class().protected() {
                 reserved = reserved
                     .checked_add(
                         fs::metadata(self.upload_path(other, "json"))

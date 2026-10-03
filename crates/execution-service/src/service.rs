@@ -151,6 +151,14 @@ impl ExecutionService {
     ) -> Result<Value> {
         let now = self.store.now(tx).await? / 1_000_000;
         input.validate(now)?;
+        let diagnostic_progress = if let Some(log) = crate::native::diagnostic::input(&input.task) {
+            let content = self.content.as_ref().ok_or(Error::Unsupported)?;
+            Some(checked_input(serde_json::to_value(
+                crate::native::diagnostic::State::new(log, &content.config),
+            ))?)
+        } else {
+            None
+        };
         if input
             .task
             .permissions()?
@@ -249,7 +257,7 @@ impl ExecutionService {
         };
         let approval = checked_input(serde_json::to_string(&approval))?;
         let digest = fingerprint.clone();
-        tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_commands.operations(tenant_id,id,device,request,fingerprint,registration,registration_generation,generation,epoch,approval,dispatch_fingerprint,source_kind,policy_version,remote_operation,input_context) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6::uuid,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15)").bind(tenant).bind(id).bind(name).bind(request).bind(digest).bind(registration.to_string()).bind(registration_generation).bind(coordinate.generation()).bind(coordinate.epoch()).bind(approval).bind(dispatch_fingerprint).bind(source).bind(policy_version).bind(remote_operation).bind(input_context).execute(c).await?;Ok(())})).await?;
+        tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_commands.operations(tenant_id,id,device,request,fingerprint,registration,registration_generation,generation,epoch,approval,dispatch_fingerprint,source_kind,policy_version,remote_operation,input_context,diagnostic_progress) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6::uuid,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15,$16)").bind(tenant).bind(id).bind(name).bind(request).bind(digest).bind(registration.to_string()).bind(registration_generation).bind(coordinate.generation()).bind(coordinate.epoch()).bind(approval).bind(dispatch_fingerprint).bind(source).bind(policy_version).bind(remote_operation).bind(input_context).bind(diagnostic_progress).execute(c).await?;Ok(())})).await?;
         apple::own(
             tx,
             self.apple_profiles.clone(),

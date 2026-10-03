@@ -6,10 +6,10 @@ execution_roles AS (
  SELECT r.* FROM pg_roles r WHERE EXISTS(
   SELECT 1 FROM execution_roles e WHERE pg_has_role(e.oid,r.oid,'USAGE'))
 )
-SELECT (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['bindings'] FROM tables)
+SELECT (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['bindings','diagnostic_artifacts'] FROM tables)
  AND NOT EXISTS(SELECT 1 FROM reachable WHERE rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication OR has_schema_privilege(oid,'mdm_content','CREATE'))
  AND NOT EXISTS(SELECT 1 FROM tables t WHERE NOT relrowsecurity OR NOT relforcerowsecurity OR relowner IN(SELECT oid FROM reachable)
- OR NOT has_table_privilege(current_user,t.oid,'SELECT') OR NOT has_table_privilege(current_user,t.oid,'INSERT') OR EXISTS(SELECT 1 FROM reachable r WHERE has_table_privilege(r.oid,t.oid,'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')))
+ OR NOT has_table_privilege(current_user,t.oid,'SELECT') OR (has_table_privilege(current_user,t.oid,'INSERT')<>(t.relname='bindings')) OR EXISTS(SELECT 1 FROM reachable r WHERE has_table_privilege(r.oid,t.oid,'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')))
  AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_attribute a ON a.attrelid=t.oid WHERE a.attnum>0 AND NOT a.attisdropped
  AND (has_column_privilege(current_user,t.oid,a.attnum,'UPDATE') <> (false)
  OR EXISTS(SELECT 1 FROM reachable r WHERE has_column_privilege(r.oid,t.oid,a.attnum,'REFERENCES')

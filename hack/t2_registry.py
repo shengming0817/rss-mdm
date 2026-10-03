@@ -1467,3 +1467,11 @@ for provider in ('flow-service','inventory-service','authorization-service','aud
     prefix=f'crates/{provider}/'
     consumers={name for name,module in MODULES.items() if any(path.startswith(prefix) for path in module.production_inputs)}
     consume_dependencies(consumers, dev=f'rss-mdm-{provider}')
+
+consume(('crates/windows-mdm/src/native/diagnostic.rs', 'crates/execution-service/src/native/diagnostic.rs',
+         'crates/execution-service/src/diagnostic_artifacts.rs', 'crates/execution-service/src/queries/diagnostics.rs',
+         'crates/content-service/src/diagnostic.rs'), 'execution.commands.windows content.gc')
+
+MODULES['execution.commands.windows'] = replace(MODULES['execution.commands.windows'],
+    selectors=(*MODULES['execution.commands.windows'].selectors, 'execution::t2::commands::diagnostics::'),
+    test_inputs=(*MODULES['execution.commands.windows'].test_inputs, 'crates/app/tests/execution/commands/diagnostics.rs'))

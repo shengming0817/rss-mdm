@@ -10,15 +10,19 @@ async fn cleanup_preserves_resource_references(
     let data = case::name("orphaned upload without resource reference").as_bytes();
     let upload = Uuid::new_v4();
     let binding = rss_mdm_content_service::Binding {
-        storage_class: rss_mdm_content_service::StorageClass::Artifact,
-        resource: "orphan".into(),
-        version: "1".into(),
-        variant: "default".into(),
-        platform: rss_mdm_resource::Platform::Windows,
-        architecture: rss_mdm_resource::Architecture::X86_64,
-        resource_digest: [1; 32],
-        source: None,
-        origin: None,
+        purpose: rss_mdm_content_service::Purpose::Resource(
+            rss_mdm_content_service::ResourceBinding {
+                storage_class: rss_mdm_content_service::StorageClass::Artifact,
+                resource: "orphan".into(),
+                version: "1".into(),
+                variant: "default".into(),
+                platform: rss_mdm_resource::Platform::Windows,
+                architecture: rss_mdm_resource::Architecture::X86_64,
+                resource_digest: [1; 32],
+                source: None,
+                origin: None,
+            },
+        ),
         reference: "orphan".into(),
         length: data.len() as u64,
         sha256: rss_mdm_resource::Digest::of(data).bytes(),
@@ -119,15 +123,19 @@ async fn gc_reference_race(
         .begin(
             id,
             rss_mdm_content_service::Binding {
-                storage_class: rss_mdm_content_service::StorageClass::Artifact,
-                resource: resource.as_str().into(),
-                version: "v1".into(),
-                variant: "default".into(),
-                platform: r::Platform::Windows,
-                architecture: r::Architecture::X86_64,
-                resource_digest: [1; 32],
-                source: None,
-                origin: None,
+                purpose: rss_mdm_content_service::Purpose::Resource(
+                    rss_mdm_content_service::ResourceBinding {
+                        storage_class: rss_mdm_content_service::StorageClass::Artifact,
+                        resource: resource.as_str().into(),
+                        version: "v1".into(),
+                        variant: "default".into(),
+                        platform: r::Platform::Windows,
+                        architecture: r::Architecture::X86_64,
+                        resource_digest: [1; 32],
+                        source: None,
+                        origin: None,
+                    },
+                ),
                 reference: artifact.reference().as_str().into(),
                 length: artifact.length(),
                 sha256: artifact.digest().bytes(),

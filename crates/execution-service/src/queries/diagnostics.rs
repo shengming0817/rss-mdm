@@ -1,0 +1,114 @@
+//! Downloads repeat current authorization after verified file work outside PG.
+use super::*;
+use rss_mdm_content_service::{Verified, diagnostic::Metadata};
+impl Queries {
+    pub async fn diagnostic_artifact(
+        &self,
+        proof: &AuthorizedPrincipal,
+        device: &str,
+        id: Uuid,
+        audit: &RequestAudit,
+    ) -> std::result::Result<Verified, QueryError> {
+        let reader = self
+            .diagnostic_reader
+            .as_ref()
+            .ok_or(QueryError::Unsupported)?;
+        let metadata = self
+            .diagnostic_metadata(proof, device, id, audit, None)
+            .await?;
+        let verified = reader
+            .verify(
+                &metadata
+                    .artifact()
+                    .map_err(crate::Error::from)
+                    .map_err(QueryError::from)?,
+            )
+            .await
+            .map_err(crate::Error::from)
+            .map_err(QueryError::from)?;
+        self.diagnostic_metadata(proof, device, id, audit, Some(&metadata))
+            .await?;
+        Ok(verified)
+    }
+    async fn diagnostic_metadata(
+        &self,
+        proof: &AuthorizedPrincipal,
+        device: &str,
+        id: Uuid,
+        audit: &RequestAudit,
+        expected: Option<&Metadata>,
+    ) -> std::result::Result<Metadata, QueryError> {
+        transaction::run(
+            &self.audit_store,
+            &self.runtime,
+            self.tenant,
+            audit,
+            (self, proof, device, id, audit, expected),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (service, proof, device, id, audit, expected) = *ctx;
+                    let permissions =
+                        storage::authorized(tx, proof, device, Permission::OperationRead).await?;
+                    permissions.require(proof, Permission::DeviceDiagnostics, Some(device))?;
+                    storage::lock(tx, device).await?;
+                    let op = storage::load(tx, &service.protection, id).await?;
+                    if op.device != device
+                        || crate::native::diagnostic::input(&op.request.task).is_none()
+                    {
+                        return Err(Error::Forbidden.into());
+                    }
+                    let current = storage::current_registration(
+                        tx,
+                        device,
+                        rss_mdm_registration_service::Purpose::Primary,
+                    )
+                    .await?;
+                    if current != (op.registration, op.registration_generation) {
+                        return Err(Error::Conflict.into());
+                    }
+                    let tenant = service.tenant;
+                    let registration = op.registration;
+                    let generation = op.registration_generation;
+                    let state = tx
+                        .with_connection(move |c| {
+                            Box::pin(async move {
+                                Ok(crate::native::diagnostic::load(c, tenant, id).await)
+                            })
+                        })
+                        .await??;
+                    if !matches!(state.transfer, crate::native::diagnostic::Transfer::Ready) {
+                        return Err(Error::Conflict.into());
+                    }
+                    let metadata = tx
+                        .with_connection(move |c| {
+                            Box::pin(async move {
+                                Ok(rss_mdm_content_service::diagnostic::read_in(
+                                    c,
+                                    tenant,
+                                    id,
+                                    registration,
+                                    generation,
+                                )
+                                .await)
+                            })
+                        })
+                        .await?
+                        .map_err(Error::from)?
+                        .ok_or(Error::Conflict)?;
+                    if expected.is_some_and(|old| old != &metadata) {
+                        return Err(Error::Conflict.into());
+                    }
+                    if expected.is_some() {
+                        service
+                            .audit_store
+                            .append_request_in(tx, audit, 200, "success")
+                            .await?;
+                    }
+                    Ok(metadata)
+                })
+            },
+        )
+        .await
+        .map_err(Into::into)
+    }
+}

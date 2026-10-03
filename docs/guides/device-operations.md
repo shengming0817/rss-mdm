@@ -52,9 +52,25 @@ Policy 引用精确资源版本/variant；它消费完整操作权限和多对�
 
 查询分别返回原生 receipts、执行进度、effect 和 effectReason。ACK 不证明效果；效果为 verified、diverged、waiting 或 unverifiable。DomainProfile/EnableFirewall 仍只有原生 Replace，DeviceStatus 的设备整体状态不能证明该叶效果。Policy Delete 可能恢复默认值；缺少固定检测条件时保留 unverifiable 和 guards，超时/取消不重发已派发未知变更。
 
-机器来源、逐文件摘要和归档摘要分别固定；生成/更新命令见[本地开发](local-development.md)。原始请求、回执和关联绑定租户、设备、注册世代及操作身份并加密保存。用户/linked 身份维护、持续配置、会话增强与诊断制品由对应生命周期 owner 提供；必要前提缺失只拒绝相关操作。受控协议验证不代表真机效果或合规。
+机器来源、逐文件摘要和归档摘要分别固定；生成/更新命令见[本地开发](local-development.md)。原始请求、回执和关联绑定租户、设备、注册世代及操作身份并加密保存。用户/linked 身份维护、持续配置与会话增强由对应生命周期 owner 提供；必要前提缺失只拒绝相关操作。受控协议验证不代表真机效果或合规。
 
 安装、升级和后台诊断见[运维](../deployment/operations.md)。ActionRun 与状态型任务分离，脚本退出码不转成变更效果；见[企业任务](enterprise-tasks.md)。
+
+## 原生诊断文件
+
+Windows 已登记的 DiagnosticLog Provider、Collector 或 Channel 可沿现有设备 operation 读取完整文件。先完成必要的原生日志配置，再使用 [DiagnosticLog 输入](../../crates/windows-mdm/src/native/diagnostic.rs) 选择 FileContext；可选 trigger 只接受固定 schema 中的原生日志生产命令。设备范围需要 `device_diagnostics`；未配置真实 content storage 时拒绝创建。
+
+```json
+{"operationId":"<新 UUID>","inputVersion":"logs-v1","deadline":<有效 Unix 秒>,"target":{"kind":"device"},"task":{"platform":"windows","request":{"kind":"diagnostic_log","request":{"trigger":null,"fileContext":"DeviceManagement","blockSizeKb":4,"maxBytes":1048576}}}}
+```
+
+服务端接受完整块数、逐块索引/数据和最终块数核对后，设备命令才完成。`-1`、`-2` 块数保持等待；错序、缺块、大小超限、原生拒绝或完整性失败保留明确的停止原因。日志 trigger 的受理、设备输出完成与文件转存是独立事实，不证明配置效果或合规。原生 trigger 结果未知时不会重新触发；读取可在新会话重新选择同一块。
+
+普通 operation 查询仅投影诊断阶段、长度和受限制品元数据，隐藏所有诊断 Results 原文。文件完成转存及不可变关联后，元数据给出 `downloadUrl`，指向 `GET /api/v3/devices/{device}/operations/{operation}/diagnostic-artifact`。每次下载都核验当前 `operation_read` 与 `device_diagnostics`、租户、设备、当前注册世代及保留期限；文件校验前后分别检查，响应禁止缓存。
+
+转存沿现有命令恢复 worker 运行：先提交接受事实，事务外完成加密文件 I/O，再在原租约保护的短事务内重新核验资格、登记关联与审计。重复及重启恢复使用相同物理上传身份；转存重试不会延长保留期。取消、到期、旧世代或当前授权失效时停止新的取块、转存和关联，保留既有事实；重新授权不会自动恢复已停止的文件。无引用的孤儿文件由现有 content 清理回收，已下载响应与正在关联的文件使用同一保护锁。
+
+Apple 只返回固定原生命令可提供的事实。Enhanced Log Collection 使用 Apple 要求的用户交互与 AppleCare 会话条件，不向 RSS 声明任意文件上传；无法建立真实原生映射时保持 Unsupported。平台依据为 [Microsoft DiagnosticLog CSP](https://learn.microsoft.com/en-us/windows/client-management/mdm/diagnosticlog-csp) 和 [Apple 固定 command schema](../../crates/native-schema/sources/lock.json)。这些后端协议测试不能替代真实设备验收。
 
 ## 设备时间线
 
