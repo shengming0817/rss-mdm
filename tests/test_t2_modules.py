@@ -349,6 +349,24 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertEqual(self.selected('crates/agent-wire/schema/runtime/report-request-v1.schema.json'),
                          {'agent.reports','planning.onboarding'})
 
+    def test_wire_schema_renames_keep_baseline_and_current_consumers(self):
+        from dataclasses import replace
+        from ci_impact import current_registry
+        current = current_registry()
+        baseline = replace(current, modules={
+            name: {**module, 'production_inputs': tuple(
+                path.replace('-v1.schema', '-v6.schema') for path in module['production_inputs'])}
+            for name, module in current.modules.items()
+        })
+        for shape in ['signed-task', 'binding-profile', 'report-request', 'error-body', 'agent']:
+            suffix = '.schema-manifest.json' if shape == 'agent' else '.schema.json'
+            old = f'crates/agent-wire/schema/runtime/{shape}-v6{suffix}'
+            new = f'crates/agent-wire/schema/runtime/{shape}-v1{suffix}'
+            with self.subTest(shape=shape):
+                self.assertEqual(select_inputs([old], baseline).modules,
+                                 select_inputs([new], current).modules)
+                self.assertTrue(select_inputs([new], current).modules)
+
     def test_onboarding_wire_selects_its_actual_consumers(self):
         inputs = {
             'crates/agent-wire/src/onboarding.rs': {

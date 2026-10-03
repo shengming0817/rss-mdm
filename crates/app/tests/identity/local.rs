@@ -15,7 +15,10 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
         (Method::GET, "/api/v1/authorization".to_owned()),
         (
             Method::GET,
-            format!("/api/v1/identity/tenants/{TENANT}/session", TENANT = case_tenant()),
+            format!(
+                "/api/v1/identity/tenants/{TENANT}/session",
+                TENANT = case_tenant()
+            ),
         ),
         (Method::POST, "/api/v1/enrollments".to_owned()),
     ] {

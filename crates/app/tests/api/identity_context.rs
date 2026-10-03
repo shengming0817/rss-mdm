@@ -38,7 +38,10 @@ pub(crate) async fn host_context_matrix(
             .call(
                 &router,
                 Method::GET,
-                &format!("/api/v1/identity/tenants/{TENANT}/session", TENANT = case_tenant()),
+                &format!(
+                    "/api/v1/identity/tenants/{TENANT}/session",
+                    TENANT = case_tenant()
+                ),
                 None,
             )
             .await?
@@ -55,7 +58,10 @@ pub(crate) async fn host_context_matrix(
             .call(
                 &router,
                 Method::GET,
-                &format!("/api/v1/identity/tenants/{TENANT}/session", TENANT = case_tenant()),
+                &format!(
+                    "/api/v1/identity/tenants/{TENANT}/session",
+                    TENANT = case_tenant()
+                ),
                 None,
             )
             .await?

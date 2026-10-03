@@ -42,7 +42,7 @@ class WireArtifactTests(unittest.TestCase):
         with directory:
             path = schema / "report-ack-v1.schema.json"
             value = json.loads(path.read_text())
-            value["$id"] += "#changed"
+            value["properties"]["receivedAt"]["minimum"] += 1
             path.write_text(json.dumps(value))
             with self.assertRaisesRegex(ValueError, "fingerprint"):
                 self.check_copy(schema)
@@ -65,7 +65,7 @@ class WireArtifactTests(unittest.TestCase):
                 self.check_copy(schema)
         directory, schema = self.fixture()
         with directory:
-            (schema / "report-ack-v2.schema.json").write_text("{}")
+            (schema / "report-ack-v6.schema.json").write_text("{}")
             with self.assertRaisesRegex(ValueError, "schema directory"):
                 self.check_copy(schema)
 
@@ -84,7 +84,30 @@ class WireArtifactTests(unittest.TestCase):
         with directory:
             path = schema / "agent-v1.schema-manifest.json"
             value = json.loads(path.read_text())
-            value["wireVersion"] = 2
+            value["wireVersion"] = 6
             path.write_text(json.dumps(value))
             with self.assertRaisesRegex(ValueError, "Agent V1"):
                 self.check_copy(schema)
+
+    def test_retired_schema_identity_and_version_cannot_be_rehashed(self):
+        for mutation, error in [("identity", "schema identifier"), ("version", "wireVersion")]:
+            with self.subTest(mutation=mutation):
+                directory, schema = self.fixture()
+                with directory:
+                    path = schema / "report-status-v1.schema.json"
+                    value = json.loads(path.read_text())
+                    if mutation == "identity":
+                        value["$id"] = value["$id"].replace("/payload/v1/", "/payload/v6/")
+                    else:
+                        value["properties"]["ack"]["properties"]["wireVersion"]["const"] = 6
+                    path.write_text(json.dumps(value))
+                    manifest = json.loads((schema / "agent-v1.schema-manifest.json").read_text())
+                    import hashlib
+                    import re
+                    digest = hashlib.sha256(b"".join((schema / item["file"]).read_bytes() for item in manifest["schemas"])).hexdigest()
+                    source = re.sub(r'(pub const SCHEMA_FINGERPRINT: &str =\s*")[0-9a-f]{64}', lambda m: m[1] + digest, artifact.LIB.read_text())
+                    library = schema / "runtime.rs"
+                    library.write_text(source)
+                    with patch.object(artifact, "LIB", library):
+                        with self.assertRaisesRegex(ValueError, error):
+                            self.check_copy(schema)

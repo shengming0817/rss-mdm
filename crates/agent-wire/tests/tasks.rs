@@ -84,6 +84,19 @@ fn signatures_bind_attempt_artifact_and_permission_and_fail_closed() {
         now: 99,
     };
     signed.verify(&context).unwrap();
+    let current_bytes = signed.payload.signing_bytes(context.key_id).unwrap();
+    let separator = current_bytes.iter().position(|byte| *byte == 0).unwrap();
+    let domain = std::str::from_utf8(&current_bytes[..separator]).unwrap();
+    assert!(domain.ends_with("-v1-ed25519"));
+    let mut old_bytes = domain.replace("-v1-ed25519", "-v6-ed25519").into_bytes();
+    old_bytes.extend_from_slice(&current_bytes[separator..]);
+    let mut old = signed.clone();
+    old.signature =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.sign(&old_bytes).as_ref());
+    assert!(
+        old.verify(&context).is_err(),
+        "retired V6 signature domain accepted"
+    );
     for bad in [
         TaskVerification {
             platform: TaskPlatform::Windows,
@@ -255,6 +268,19 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
         now: 100,
     };
     signed.verify(&context).unwrap();
+    let current_bytes = signed.payload.signing_bytes(context.key_id).unwrap();
+    let separator = current_bytes.iter().position(|byte| *byte == 0).unwrap();
+    let domain = std::str::from_utf8(&current_bytes[..separator]).unwrap();
+    assert!(domain.ends_with("-v1-ed25519"));
+    let mut old_bytes = domain.replace("-v1-ed25519", "-v6-ed25519").into_bytes();
+    old_bytes.extend_from_slice(&current_bytes[separator..]);
+    let mut old = signed.clone();
+    old.signature =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.sign(&old_bytes).as_ref());
+    assert!(
+        old.verify(&context).is_err(),
+        "retired V6 signature domain accepted"
+    );
     let mut altered = spec;
     altered.steps[0].action.package = "other.editor".into();
     altered.definition_digest = ring::digest::digest(
@@ -301,7 +327,7 @@ fn task_response_schemas_and_rust_reject_unknown_major_and_authority() {
             .remove(if index == 0 { "task" } else { "permit" });
         assert!(!validator.is_valid(&missing_nullable));
         assert!(!rust_valid(missing_nullable));
-        for (name, invalid) in [("wireVersion", json!(1)), ("tenant", json!(Uuid::new_v4()))] {
+        for (name, invalid) in [("wireVersion", json!(6)), ("tenant", json!(Uuid::new_v4()))] {
             let mut bad = value.clone();
             bad[name] = invalid;
             assert!(!validator.is_valid(&bad));

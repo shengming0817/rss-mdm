@@ -152,7 +152,10 @@ async fn roundtrip(
         .call(
             router,
             Method::GET,
-            &format!("/api/v1/identity/tenants/{TENANT}/session", TENANT = case_tenant()),
+            &format!(
+                "/api/v1/identity/tenants/{TENANT}/session",
+                TENANT = case_tenant()
+            ),
             None,
         )
         .await?;

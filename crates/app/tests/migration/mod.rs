@@ -60,6 +60,38 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
     }
     migrate_on(&mut owner, &installation).await?;
     owner.execute("CREATE TABLE public.installation_evidence(value text); INSERT INTO public.installation_evidence VALUES('preserve')").await?;
+    // Agent V6 SQL at base ab3f923a5b9a95951829430113af6db34db29c7c; the installer must not upgrade this ledger.
+    let old_agent_digest = "d83c754a01ae788f6ac846df16586838b89ac7651c5a2f5b3225a69dda3ecbf9";
+    let current_agent = before
+        .iter()
+        .find(|row| row.0 == "agent-channel-schema-v1")
+        .unwrap();
+    ensure!(current_agent.1 != old_agent_digest);
+    sqlx::query("UPDATE public.mdm_migrations SET digest=$1 WHERE name='agent-channel-schema-v1'")
+        .bind(old_agent_digest)
+        .execute(&mut owner)
+        .await?;
+    let old_ledger: Vec<(String, String, bool)> =
+        sqlx::query_as("SELECT name,digest,complete FROM public.mdm_migrations ORDER BY name")
+            .fetch_all(&mut owner)
+            .await?;
+    ensure!(migrate_on(&mut owner, &installation).await.is_err());
+    let rejected_ledger: Vec<(String, String, bool)> =
+        sqlx::query_as("SELECT name,digest,complete FROM public.mdm_migrations ORDER BY name")
+            .fetch_all(&mut owner)
+            .await?;
+    ensure!(old_ledger == rejected_ledger);
+    ensure!(
+        sqlx::query_scalar::<_, String>("SELECT value FROM public.installation_evidence")
+            .fetch_one(&mut owner)
+            .await?
+            == "preserve"
+    );
+    // Restore only this disposable fixture before exercising the remaining admission cases.
+    sqlx::query("UPDATE public.mdm_migrations SET digest=$1 WHERE name='agent-channel-schema-v1'")
+        .bind(&current_agent.1)
+        .execute(&mut owner)
+        .await?;
     for statement in [
         "UPDATE public.mdm_migrations SET digest=repeat('0',64) WHERE name='transactional-messaging-v1'",
         "UPDATE public.mdm_migrations SET complete=false WHERE name='transactional-messaging-v1'",

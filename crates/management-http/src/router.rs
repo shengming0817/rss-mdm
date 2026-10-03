@@ -107,29 +107,18 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
             "/devices/{id}/collection-runs/{run}",
             get(collection_run).with_state(collection_read),
         )
-        .route("/devices/{id}/actions", post(action))
-        .route_layer(middleware::from_fn_with_state(
-            authentication_state.clone(),
-            crate::authorization::http::protect,
-        ));
+        .route("/devices/{id}/actions", post(action));
     let planning_routes = Router::new()
         .merge(crate::runtime_diagnostics::routes().with_state(state.diagnostics))
         .merge(crate::planning::routes().with_state(planning.clone()))
         .merge(crate::execution::actions::http::routes().with_state(state.queries.clone()))
         .merge(crate::assets::routes().with_state(assets))
-        .merge(crate::compliance::http::routes().with_state(state.compliance))
-        .route_layer(middleware::from_fn_with_state(
-            authentication_state.clone(),
-            crate::authorization::http::protect,
-        ));
-    let resources = crate::resource_catalog::http::routes()
-        .with_state(Arc::new(crate::resource_catalog::http::HttpState {
+        .merge(crate::compliance::http::routes().with_state(state.compliance));
+    let resources = crate::resource_catalog::http::routes().with_state(Arc::new(
+        crate::resource_catalog::http::HttpState {
             catalog: state.catalog,
-        }))
-        .route_layer(middleware::from_fn_with_state(
-            authentication_state.clone(),
-            crate::authorization::http::protect,
-        ));
+        },
+    ));
     let operations = Router::new()
         .merge(crate::agent_enrollment::routes(state.agent_enrollment))
         .merge(crate::execution::routes(state.queries.clone()).with_state(execution))
@@ -145,11 +134,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         .merge(crate::content::http::routes().with_state(state.content))
         .merge(crate::enrollment::http::routes().with_state(enrollment))
         .merge(crate::enrollment::directory::routes().with_state(directory))
-        .merge(crate::timeline::routes().with_state(state.timeline))
-        .route_layer(middleware::from_fn_with_state(
-            authentication_state.clone(),
-            crate::authorization::http::protect,
-        ));
+        .merge(crate::timeline::routes().with_state(state.timeline));
     let host_context = Router::new()
         .route(
             "/api/v1/identity-host/tenants/{tenant}/context",
@@ -159,20 +144,19 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
             authentication_state.clone(),
             crate::authorization::http::identity_only,
         ));
-    let workspace = Router::new()
-        .route("/api/v1/mdm-candidate/workspace", get(workspace))
+    let protected = core
+        .merge(planning_routes)
+        .merge(operations)
+        .merge(resources)
+        .route("/mdm-candidate/workspace", get(workspace))
         .route_layer(middleware::from_fn_with_state(
-            authentication_state.clone(),
+            authentication_state,
             crate::authorization::http::protect,
         ));
     crate::boundary::wrap(
         Router::new()
             .merge(host_context)
-            .merge(workspace)
-            .nest(
-                "/api/v1",
-                core.merge(planning_routes).merge(operations).merge(resources),
-            )
+            .nest("/api/v1", protected)
             .layer(axum::extract::DefaultBodyLimit::max(16384)),
         envelope,
     )

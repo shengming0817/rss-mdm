@@ -208,7 +208,10 @@ impl Browser {
             .call(
                 app,
                 Method::POST,
-                &format!("/api/v1/identity/tenants/{TENANT}/login", TENANT = case_tenant()),
+                &format!(
+                    "/api/v1/identity/tenants/{TENANT}/login",
+                    TENANT = case_tenant()
+                ),
                 Some(json!({"login":case::login(login),"password":password})),
             )
             .await?

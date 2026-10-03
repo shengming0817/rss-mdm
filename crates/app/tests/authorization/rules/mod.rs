@@ -337,7 +337,10 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
             .call(
                 &router,
                 Method::POST,
-                &format!("/api/v1/identity/tenants/{TENANT}/accounts", TENANT = case_tenant()),
+                &format!(
+                    "/api/v1/identity/tenants/{TENANT}/accounts",
+                    TENANT = case_tenant()
+                ),
                 Some(json!({"login":"foundation-member","password":PASSWORD}))
             )
             .await?

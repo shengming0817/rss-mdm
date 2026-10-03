@@ -95,6 +95,46 @@ async fn durable_reports_and_projection() -> Result<()> {
             {"field":"device.os.version","value":{"kind":"value","value":{"kind":"string","value":"1.0"}}}
         ]}
     });
+    for version in [2, 3, 4, 5, 6, 255] {
+        let mut retired = report.clone();
+        retired["wireVersion"] = json!(version);
+        ensure!(
+            agent_call(
+                router,
+                Method::POST,
+                "/api/v1/agent/runtime/reports",
+                Some(credential),
+                Some(retired)
+            )
+            .await?
+            .0 == StatusCode::BAD_REQUEST
+        );
+    }
+    let mut historical = report.clone();
+    historical.as_object_mut().unwrap().remove("collection");
+    ensure!(
+        agent_call(
+            router,
+            Method::POST,
+            "/api/v1/agent/runtime/reports",
+            Some(credential),
+            Some(historical)
+        )
+        .await?
+        .0 == StatusCode::BAD_REQUEST
+    );
+    ensure!(
+        agent_call(
+            router,
+            Method::GET,
+            &format!("/api/v1/agent/runtime/reports/{report_id}"),
+            Some(credential),
+            None
+        )
+        .await?
+        .0 == StatusCode::NOT_FOUND,
+        "retired input created a report"
+    );
     let (status, ack) = agent_call(
         router,
         Method::POST,

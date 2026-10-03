@@ -58,6 +58,6 @@ snapshot、partial、failed 分别表达完整快照、部分结果和失败。�
 
 软件结果是绑定 definitionDigest 的逐步骤证据：index/stepDigest、target、package、native identity、独立 before/after 检测、process、重启及诊断。MSIX 注册与 provisioning 使用不同 identity 变体，错误步骤、用户会话、包身份或作用域拒绝投影。退出码不能代替独立检测；Unknown 保留原任务恢复身份。当前 wire 为新 V1，只维护当前软件 shape 与指纹，消费方须更新精确依赖。
 
-新 V1 继续拒绝软件 ownership 和 AppCopy 的 materialSha256，旧字段即使为 null 也拒绝；AppCopy 仍绑定完整 DMG 摘要、明确的包路径和目标名、bundle ID、版本、执行身份与独立前后检测。此变更同时将软件 Resource 的摘要域和持久化标记切到 V4，其它 Resource 格式不变。服务端只支持新部署；独立 Agent #2614 须更新到同一固定契约，当前服务端测试不代表 Agent 或真机已完成。
+新 V1 继续拒绝软件 ownership 和 AppCopy 的 materialSha256，旧字段即使为 null 也拒绝；AppCopy 仍绑定完整 DMG 摘要、明确的包路径和目标名、bundle ID、版本、执行身份与独立前后检测。软件 Resource 继续沿用既有 V4 摘要域和持久化标记，其它 Resource 格式不变。服务端只支持新部署；独立 Agent #2663 须更新到本项交付的完整 Git rev 和两个 V1 指纹，当前服务端测试不代表 Agent 或真机已完成。
 
 原生安装命令生成的固定包 URL 为 `/api/v1/agent/enroll/installations/{operation}/package`，`agent_installation.content_origin` 必须与 Agent TLS origin 相同。引导下载每次验证固定安装 operation、有效期、原生注册、投递记录和业务授权。所有 runtime 入口要求 Agent mTLS。

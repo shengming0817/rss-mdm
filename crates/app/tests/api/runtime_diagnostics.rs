@@ -30,6 +30,24 @@ async fn runtime_diagnostics_requires_explicit_permission() -> Result<()> {
             .is_some_and(|items| items.len() >= 4)
     );
     ensure!(audit_count(|r| r.action() == "runtime_diagnostics_read" && r.status() == 200)? > 0);
+    // The complete host serves the current V1 catalog; retired mounts cannot fall back to it.
+    for path in [
+        "/api/v2/runtime/diagnostics",
+        "/api/v3/enrollments",
+        "/api/v4/resources",
+        "/api/v2/device-queries",
+        "/api/v3/operations",
+        "/api/mdm-candidate/v1/workspace",
+        "/api/identity-host/v1/tenants/retired/context",
+        "/api/v2/tenants/retired/session",
+        "/api/v2/oidc/callback",
+        "/software/native/sources/retired/test/information",
+    ] {
+        ensure!(
+            member.call(&router, Method::GET, path, None).await?.0 == StatusCode::NOT_FOUND,
+            "retired HTTP mount accepted {path}"
+        );
+    }
     set_management_grants(&subject, json!([])).await?;
     ensure!(member.call(&router, Method::GET, PATH, None).await?.0 == StatusCode::FORBIDDEN);
     reader.close().await;

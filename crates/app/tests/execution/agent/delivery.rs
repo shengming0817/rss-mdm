@@ -35,16 +35,33 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
         )
         .await?;
     ensure!(old.status() == StatusCode::NOT_FOUND);
+    let operation = Uuid::new_v4();
+    let valid = json!({"wireVersion":1,"operationId":operation,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"]});
+    for version in [2, 3, 4, 5, 6, 255] {
+        let mut retired = valid.clone();
+        retired["wireVersion"] = json!(version);
+        ensure!(
+            agent_call(
+                &router,
+                Method::POST,
+                "/api/v1/agent/runtime/tasks/claim",
+                Some(case_credential()),
+                Some(retired)
+            )
+            .await?
+            .0 == StatusCode::BAD_REQUEST
+        );
+    }
     ensure!(
         agent_call(
             &router,
             Method::POST,
             "/api/v1/agent/runtime/tasks/claim",
             Some(case_credential()),
-            Some(json!({"wireVersion":2,"operationId":Uuid::new_v4()}))
+            Some(valid)
         )
         .await?
-        .0 == StatusCode::BAD_REQUEST
+        .0 == StatusCode::OK
     );
     Ok(())
 }
@@ -120,6 +137,24 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
         !reserved.trim().is_empty(),
         "collection was not frozen before Offer"
     );
+    let event_operation = Uuid::new_v4();
+    for version in [2, 3, 4, 5, 6, 255] {
+        let retired = json!({"wireVersion":version,"operationId":event_operation,"attemptId":task["payload"]["attemptId"],"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"event":{"kind":"received"}});
+        ensure!(
+            agent_call(
+                &router,
+                Method::POST,
+                &format!(
+                    "/api/v1/agent/runtime/tasks/{}/events",
+                    task["payload"]["taskId"].as_str().unwrap()
+                ),
+                Some(case_credential()),
+                Some(retired)
+            )
+            .await?
+            .0 == StatusCode::BAD_REQUEST
+        );
+    }
     task_event(&router, &task, json!({"kind":"received"})).await?;
     let permit = task_event(&router, &task, json!({"kind":"start"})).await?;
     let ack: rss_mdm_agent_wire::runtime::TaskEventAck = serde_json::from_value(permit)?;

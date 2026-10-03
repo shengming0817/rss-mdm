@@ -1,13 +1,59 @@
 use rss_mdm_agent_wire::{enroll, runtime};
 use serde_json::json;
 use uuid::Uuid;
+
 #[test]
-fn http_versions_and_task_payload_versions_are_independent() {
+fn rebuilt_v1_rejects_retired_majors_and_historical_v1_shapes() {
     assert_eq!(enroll::API_VERSION, 1);
     assert_eq!(runtime::API_VERSION, 1);
     assert_eq!(runtime::WIRE_VERSION, 1);
-    let report = json!({"wireVersion":5,"reportId":Uuid::new_v4(),"sequence":1,"observedAt":1,"body":{"kind":"snapshot","values":[]}});
-    assert!(serde_json::from_value::<runtime::ReportRequest>(report).is_err());
-    let grant = json!({"wireVersion":6,"operationId":Uuid::new_v4(),"secret":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","platform":"macos"});
-    assert!(serde_json::from_value::<enroll::GrantRequest>(grant).is_err());
+    let collection = runtime::CollectionDefinition::new(
+        "inventory",
+        1,
+        rss_mdm_inventory::Source::AgentBuiltin,
+        rss_mdm_inventory::builtin::fields(),
+    )
+    .unwrap();
+    let report = serde_json::to_value(
+        runtime::ReportRequest::new(
+            Uuid::new_v4(),
+            1,
+            1,
+            collection,
+            runtime::ReportBody::Snapshot(vec![]),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let schema: serde_json::Value = serde_json::from_str(include_str!(
+        "../schema/runtime/report-request-v1.schema.json"
+    ))
+    .unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    assert!(validator.is_valid(&report));
+    for version in [0, 2, 3, 4, 5, 6, 255] {
+        let mut old = report.clone();
+        old["wireVersion"] = json!(version);
+        assert!(serde_json::from_value::<runtime::ReportRequest>(old.clone()).is_err());
+        assert!(!validator.is_valid(&old));
+    }
+    let mut historical = report;
+    historical.as_object_mut().unwrap().remove("collection");
+    assert!(serde_json::from_value::<runtime::ReportRequest>(historical.clone()).is_err());
+    assert!(!validator.is_valid(&historical));
+    // The first V1 used enrollment passwords, claimed device IDs and inventory.basic.v1.
+    let old_registration = json!({"wireVersion":1,"operationId":Uuid::new_v4(),
+        "enrollmentId":Uuid::new_v4(),"password":"old-password","credential":"old-bearer",
+        "deviceId":"claimed-device","capabilities":["inventory.basic.v1"]});
+    assert!(serde_json::from_value::<enroll::CertificateRequest>(old_registration).is_err());
+    for capability in [
+        "inventory.basic.v1",
+        "inventory.collect.v6",
+        "task.execute.v6",
+        "software.msi.system.v6",
+        "mdm.enrollment.v6",
+        "unknown.v1",
+    ] {
+        assert!(serde_json::from_value::<runtime::Capability>(json!(capability)).is_err());
+    }
 }

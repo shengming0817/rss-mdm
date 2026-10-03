@@ -33,6 +33,10 @@ async fn registration_binding_and_replay() -> Result<()> {
         .0 == StatusCode::CONFLICT
     );
     for path in [
+        "/api/agent/v1/registrations",
+        "/api/agent/v1/reports",
+        "/api/agent/enroll/v1/certificates",
+        "/api/agent/runtime/v1/reports",
         "/api/agent/v3/registrations",
         "/api/agent/v6/registrations",
         "/api/agent/v6/reports",
@@ -71,10 +75,96 @@ async fn registration_binding_and_replay() -> Result<()> {
             Method::POST,
             "/api/v1/agent/runtime/reports",
             Some(agent.password),
-            Some(body)
+            Some(body.clone())
         )
         .await?
         .0 == StatusCode::UNAUTHORIZED
+    );
+    use sqlx::Connection;
+    use std::str::FromStr;
+    let cookie = browser
+        .cookies
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/agent/runtime/reports")
+                .header("host", "mdm.example.test:9445")
+                .header("cookie", cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body)?))?,
+        )
+        .await?;
+    ensure!(
+        response.status() == StatusCode::UNAUTHORIZED,
+        "browser Cookie replaced Agent mTLS"
+    );
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/agent-grants")
+                .header("host", "mdm.example.test")
+                .extension(crate::test_support::agent::evidence(agent.credential).unwrap())
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&agent.request)?))?,
+        )
+        .await?;
+    ensure!(
+        response.status() == StatusCode::UNAUTHORIZED,
+        "Agent credential granted browser management access"
+    );
+    let registration = agent.registration["registrationId"].as_str().unwrap();
+    let options = sqlx::postgres::PgConnectOptions::from_str(&std::env::var("MDM_OWNER_URL")?)?
+        .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
+        .ssl_root_cert(std::env::var("PG_CA_FILE")?);
+    let mut owner = sqlx::PgConnection::connect_with(&options).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_tenant())
+        .execute(&mut owner)
+        .await?;
+    let before: (i16, String) = sqlx::query_as("SELECT wire_version,capabilities FROM mdm_agent.bindings WHERE tenant_id=$1::uuid AND registration=$2::uuid")
+        .bind(case_tenant()).bind(registration).fetch_one(&mut owner).await?;
+    for mutation in [
+        "wire_version=6",
+        "capabilities='[\"inventory.collect.v6\"]'",
+    ] {
+        let error = sqlx::query(&format!("UPDATE mdm_agent.bindings SET {mutation} WHERE tenant_id=$1::uuid AND registration=$2::uuid"))
+            .bind(case_tenant()).bind(registration).execute(&mut owner).await.unwrap_err();
+        let error = error
+            .as_database_error()
+            .expect("database constraint rejection");
+        ensure!(
+            error.code().as_deref() == Some("23514")
+                && error.constraint() == Some("agent_binding_profile")
+        );
+    }
+    let after: (i16, String) = sqlx::query_as("SELECT wire_version,capabilities FROM mdm_agent.bindings WHERE tenant_id=$1::uuid AND registration=$2::uuid")
+        .bind(case_tenant()).bind(registration).fetch_one(&mut owner).await?;
+    ensure!(
+        before == after && after.0 == 1,
+        "rejected binding mutation changed persistent identity"
+    );
+    owner.close().await?;
+    let mut retired_profile = agent.request.clone();
+    retired_profile["operationId"] = json!(Uuid::new_v4());
+    retired_profile["runtime"]["capabilities"] = json!(["inventory.collect.v6"]);
+    ensure!(
+        agent_call(
+            &router,
+            Method::POST,
+            "/api/v1/agent/enroll/certificates",
+            None,
+            Some(retired_profile)
+        )
+        .await?
+        .0 == StatusCode::BAD_REQUEST
     );
     let native_password=browser.call(&router,Method::POST,"/api/v1/enrollments",Some(json!({"deviceId":"claimed-device","password":agent.password,"source":"agent.builtin"}))).await?;
     ensure!(native_password.0 == StatusCode::BAD_REQUEST);

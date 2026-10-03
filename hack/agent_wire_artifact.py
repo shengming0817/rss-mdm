@@ -102,6 +102,18 @@ def write():
     LIB.write_text(source)
 
 
+def check_wire_versions(value, name):
+    if isinstance(value, dict):
+        properties = value.get("properties", {})
+        if "wireVersion" in properties and properties["wireVersion"] != {"const": 1}:
+            raise ValueError(f"{name}: non-V1 wireVersion constraint")
+        for child in value.values():
+            check_wire_versions(child, name)
+    elif isinstance(value, list):
+        for child in value:
+            check_wire_versions(child, name)
+
+
 def check():
     manifest = json.loads(MANIFEST.read_text())
     if manifest.get("wireVersion") != 1 or manifest.get("apiVersion") != 1:
@@ -128,8 +140,10 @@ def check():
     for name in files:
         data = (SCHEMAS / name).read_bytes()
         schema = json.loads(data)
-        if "/agent/runtime/v1/payload/v1/" not in schema.get("$id", ""):
+        expected_id = "https://rss.example/mdm/agent/runtime/v1/payload/v1/" + name.replace("-v1.schema.json", ".schema.json")
+        if schema.get("$id") != expected_id:
             raise ValueError(f"{name}: non-V1 schema identifier")
+        check_wire_versions(schema, name)
         digest.update(data)
     expected = re.search(r'pub const SCHEMA_FINGERPRINT: &str =\s*"([0-9a-f]{64})"', LIB.read_text())
     if expected is None or expected.group(1) != digest.hexdigest():
