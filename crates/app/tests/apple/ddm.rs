@@ -341,7 +341,7 @@ async fn legacy_takeover_retains_guards_until_correlated_absence() -> Result<()>
     let signed = f.root.join("legacy-signed.der");
     let unsigned = f.root.join("legacy-unsigned.plist");
     std::fs::write(&signed, payload["Payload"].as_data().unwrap())?;
-    scep_client::openssl([
+    scep_client::openssl(&[
         "cms".as_ref(),
         "-verify".as_ref(),
         "-binary".as_ref(),
