@@ -35,7 +35,7 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
     let expired = Request::builder()
         .method(Method::GET)
         .uri(format!(
-            "/api/agent/v5/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
+            "/api/agent/v6/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
             task["payload"]["taskId"].as_str().unwrap(),
             task["payload"]["attemptId"].as_str().unwrap()
         ))
@@ -53,7 +53,7 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
     let content = Request::builder()
         .method(Method::GET)
         .uri(format!(
-            "/api/agent/v5/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
+            "/api/agent/v6/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
             task["payload"]["taskId"].as_str().unwrap(),
             task["payload"]["attemptId"].as_str().unwrap()
         ))
@@ -73,7 +73,7 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
     let prerequisite = Request::builder()
         .method(Method::GET)
         .uri(format!(
-            "/api/agent/v5/tasks/{}/content?attempt={}&artifact=0%2Fscripts%2Finstall.sh",
+            "/api/agent/v6/tasks/{}/content?attempt={}&artifact=0%2Fscripts%2Finstall.sh",
             task["payload"]["taskId"].as_str().unwrap(),
             task["payload"]["attemptId"].as_str().unwrap()
         ))
@@ -98,7 +98,7 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
     let denied = Request::builder()
         .method(Method::GET)
         .uri(format!(
-            "/api/agent/v5/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
+            "/api/agent/v6/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
             task["payload"]["taskId"].as_str().unwrap(),
             task["payload"]["attemptId"].as_str().unwrap()
         ))
@@ -143,7 +143,7 @@ async fn uninstall_content_permission() -> Result<()> {
     let content = Request::builder()
         .method(Method::GET)
         .uri(format!(
-            "/api/agent/v5/tasks/{}/content?attempt={}&artifact=0%2Fremove",
+            "/api/agent/v6/tasks/{}/content?attempt={}&artifact=0%2Fremove",
             removal_task["payload"]["taskId"].as_str().unwrap(),
             removal_task["payload"]["attemptId"].as_str().unwrap()
         ))
@@ -204,7 +204,7 @@ async fn windows_variant_content() -> Result<()> {
     let windows_content = Request::builder()
         .method(Method::GET)
         .uri(format!(
-            "/api/agent/v5/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
+            "/api/agent/v6/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
             windows_task["payload"]["taskId"].as_str().unwrap(),
             windows_task["payload"]["attemptId"].as_str().unwrap()
         ))

@@ -135,7 +135,7 @@ pub fn routers(
         .route("/ManagementServer/MDM.svc", post(management::manage))
         .route("/ManagementServer/Declared.svc", post(management::manage))
         .route(
-            "/api/agent/v5/managed-registrations",
+            "/api/agent/v6/managed-registrations",
             post(management::register_agent),
         );
     (

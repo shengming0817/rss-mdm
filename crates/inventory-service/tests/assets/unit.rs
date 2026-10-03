@@ -163,3 +163,87 @@ fn registered_paths_feed_group_sets_and_sensitive_conditions_need_an_explicit_gr
     assert!(!device.fields.contains_key(&custom.key));
     assert!(device.fields.contains_key(&root));
 }
+
+#[test]
+fn installed_id_groups_use_existing_sets_and_preserve_unknown_states() {
+    use rss_mdm_group_postgres::core as g;
+    use rss_mdm_inventory::{Catalog, ResolvedField, State};
+    let tenant = TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
+    let catalog = Catalog::new(rss_mdm_inventory::builtin::fields()).unwrap();
+    let root = FieldKey::parse("device.software.installed").unwrap();
+    let criteria = Criteria::Predicate {
+        field: FieldKey::parse("device.software.installed.id").unwrap(),
+        op: Operator::ContainsAny,
+        value: None,
+        values: Some(vec![Scalar::String("acme.app".into())]),
+    };
+    let rule = rule(tenant, Uuid::new_v4(), &criteria, &catalog).unwrap();
+    let item = |id: &str, version: &str| {
+        Scalar::Object(
+            [
+                ("id".into(), Scalar::String(id.into())),
+                ("name".into(), Scalar::String(id.into())),
+                ("version".into(), Scalar::String(version.into())),
+                ("publisher".into(), Scalar::String("Acme".into())),
+                ("scope".into(), Scalar::String("system".into())),
+            ]
+            .into(),
+        )
+    };
+    let installed = Scalar::Array(vec![item("acme.app", "1"), item("other.app", "2")]);
+    for (state, expected) in [
+        (State::Known(installed.clone()), g::Decision::Match),
+        (State::Known(Scalar::Array(vec![])), g::Decision::NoMatch),
+        (State::Missing, g::Decision::Unknown),
+        (State::Unsupported, g::Decision::Unknown),
+        (State::Conflict, g::Decision::Unknown),
+    ] {
+        let device = DeviceView {
+            lists: BTreeMap::new(),
+            device: "device".into(),
+            channels: BTreeSet::new(),
+            quality: vec![],
+            revisions: BTreeMap::new(),
+            fields: [(
+                root,
+                ResolvedField {
+                    field: root,
+                    state,
+                    sources: vec![],
+                },
+            )]
+            .into(),
+        };
+        let page = filter::page(tenant, &[device], &catalog, &rule).unwrap();
+        let result = rule
+            .evaluate_page(
+                &g::PageInput {
+                    tenant,
+                    id: "inventory",
+                    version: "1",
+                    dictionary_version: rss_mdm_inventory::DICTIONARY,
+                    coverage: &page.coverage,
+                    objects: &page.objects,
+                    after: None,
+                },
+                Timepoint::try_from(1).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(result.objects[0].decision, expected);
+    }
+    // The original typed items retain correlation; flattened Group sets do not.
+    let Scalar::Array(items) = installed else {
+        panic!("expected array")
+    };
+    let target = items
+        .iter()
+        .find_map(|v| match v {
+            Scalar::Object(fields) if fields["id"] == Scalar::String("acme.app".into()) => {
+                Some(fields)
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(target["version"], Scalar::String("1".into()));
+    assert_ne!(target["version"], Scalar::String("2".into()));
+}

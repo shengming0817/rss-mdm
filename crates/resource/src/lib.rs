@@ -436,7 +436,7 @@ impl Version {
     // V1: domain separator, tenant, length-prefixed identities, explicit tags/counts.
     fn canonical(&self) -> Vec<u8> {
         let mut e = Encoding(if self.kind == Kind::Software {
-            b"rss-mdm-resource-software-v3\0".to_vec()
+            b"rss-mdm-resource-software-v4\0".to_vec()
         } else if self.kind == Kind::Script {
             b"rss-mdm-resource-script-v2\0".to_vec()
         } else if self.kind == Kind::NativeCollection {

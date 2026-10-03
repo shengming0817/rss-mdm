@@ -1,19 +1,88 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/mdm/agent/v5/task-claim-request.schema.json",
+  "$id": "https://rss.example/mdm/agent/v6/registration-request.schema.json",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "wireVersion",
     "operationId",
-    "profiles",
+    "enrollmentId",
+    "password",
+    "credential",
+    "capabilities",
+    "platform",
+    "architecture",
     "executionContext"
   ],
   "properties": {
     "wireVersion": {
-      "const": 5
+      "const": 6
     },
     "operationId": {
+      "$ref": "#/$defs/nonNilUuid"
+    },
+    "enrollmentId": {
+      "$ref": "#/$defs/nonNilUuid"
+    },
+    "password": {
+      "$ref": "#/$defs/secret"
+    },
+    "credential": {
+      "$ref": "#/$defs/secret"
+    },
+    "capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "uniqueItems": true,
+      "prefixItems": [
+        {
+          "const": "inventory.collect.v6"
+        }
+      ],
+      "items": {
+        "enum": [
+          "inventory.collect.v6",
+          "task.execute.v6",
+          "software.msi.system.v6",
+          "software.msi.user.v6",
+          "software.pkg.system.v6",
+          "software.bundle.windows.system.v6",
+          "software.bundle.windows.user.v6",
+          "software.bundle.macos.system.v6",
+          "software.bundle.macos.user.v6",
+          "software.winget.system.v6",
+          "software.winget.user.v6",
+          "software.brew.bottle.user.v6",
+          "software.exe.system.v6",
+          "software.exe.user.v6",
+          "software.dmg.app.system.v6",
+          "software.dmg.app.user.v6",
+          "software.dmg.pkg.system.v6",
+          "software.msix.registration.user.v6",
+          "software.msix.provisioning.system.v6",
+          "mdm.enrollment.v6"
+        ]
+      }
+    },
+    "platform": {
+      "enum": [
+        "windows",
+        "macos"
+      ]
+    },
+    "architecture": {
+      "enum": [
+        "x86_64",
+        "aarch64"
+      ]
+    },
+    "executionContext": {
+      "$ref": "#/$defs/SoftwareExecutionContext"
+    }
+  },
+  "$defs": {
+    "nonNilUuid": {
       "type": "string",
       "format": "uuid",
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -21,24 +90,10 @@
         "const": "00000000-0000-0000-0000-000000000000"
       }
     },
-    "profiles": {
-      "type": "array",
-      "maxItems": 4,
-      "uniqueItems": true,
-      "items": {
-        "enum": [
-          "power_shell7",
-          "posix_sh",
-          "bash",
-          "osquery"
-        ]
-      }
+    "secret": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
     },
-    "executionContext": {
-      "$ref": "#/$defs/SoftwareExecutionContext"
-    }
-  },
-  "$defs": {
     "SoftwareExecutionContext": {
       "type": "object",
       "additionalProperties": false,

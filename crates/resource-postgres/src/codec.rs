@@ -109,7 +109,7 @@ fn read_declaration(v: &Value) -> Result<Declaration, PgError> {
 pub(crate) fn version(v: &Version) -> Result<Vec<u8>, PgError> {
     STORAGE.encode(&json!([
         match v.kind() {
-            Kind::Software => 3,
+            Kind::Software => 4,
             Kind::Script => 2,
             Kind::Configuration => 5,
             Kind::NativeCollection => 4,
@@ -141,7 +141,7 @@ pub(crate) fn read_version(bytes: &[u8]) -> Result<Version, PgError> {
     let a = array(&v, 7)?;
     if n(&a[0])?
         != match read_kind(&a[4])? {
-            Kind::Software => 3,
+            Kind::Software => 4,
             Kind::Script => 2,
             Kind::Configuration => 5,
             Kind::NativeCollection => 4,
