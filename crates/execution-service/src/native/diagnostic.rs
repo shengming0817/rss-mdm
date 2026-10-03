@@ -220,10 +220,9 @@ pub(super) async fn send(
         if let Task::Windows {
             request: W::SyncMl { request },
         } = &other.task
+            && conflicts(request, log)?
         {
-            if conflicts(request, log)? {
-                return Ok(true);
-            }
+            return Ok(true);
         }
     }
     let old=sqlx::query("SELECT id,ordinal,session,diagnostic_step FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2 ORDER BY ordinal DESC LIMIT 1")

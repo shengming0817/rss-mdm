@@ -32,9 +32,20 @@ impl Queries {
             .diagnostic_reader
             .as_ref()
             .ok_or(QueryError::Unsupported)?;
+        // Preflight and final response settlement belong to separate PG transactions.
+        // Only the final current-qualification check settles the request audit.
+        let preflight_audit = audit.transaction_copy();
         let metadata = self
-            .diagnostic_metadata(proof, device, id, audit, None)
-            .await?;
+            .diagnostic_metadata(proof, device, id, &preflight_audit, None)
+            .await;
+        preflight_audit.finalize(metadata.as_ref().err().and_then(|error| {
+            matches!(
+                error,
+                QueryError::Unavailable(_) | QueryError::CommitUnknown | QueryError::RollbackFailed
+            )
+            .then_some(rss_mdm_audit_integration::FailureReason::Transaction)
+        }));
+        let metadata = metadata?;
         let verified = reader
             .verify(
                 &metadata

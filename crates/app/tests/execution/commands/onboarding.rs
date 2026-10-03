@@ -396,10 +396,12 @@ async fn start_fixture() -> Result<(
     Uuid,
     Uuid,
 )> {
-    start_fixture_until(None).await
+    let (host, client, peer, commands, owner, policy, operation, _) =
+        start_fixture_until(None).await?;
+    Ok((host, client, peer, commands, owner, policy, operation))
 }
 async fn start_fixture_until(
-    until: Option<i64>,
+    window_seconds: Option<i64>,
 ) -> Result<(
     crate::windows::test_support::Host,
     Client,
@@ -408,6 +410,7 @@ async fn start_fixture_until(
     rss_runtime::ShutdownStack,
     Uuid,
     Uuid,
+    Option<i64>,
 )> {
     let mut host = crate::windows::test_support::Host::with_agent(
         Some(setup::pin(true)),
@@ -440,6 +443,15 @@ async fn start_fixture_until(
     );
     launch.finish();
     let commands = client.command_worker(host.notifications.signals.clone())?;
+    use crate::clock::Clock;
+    // Fixture bootstrapping does not consume the business schedule window.
+    let until = window_seconds
+        .map(|window| {
+            crate::clock::SystemClock
+                .unix_seconds()
+                .map(|now| now + window)
+        })
+        .transpose()?;
     let policy = setup::publish_until(
         &mut client.browser,
         &client.router,
@@ -459,7 +471,9 @@ async fn start_fixture_until(
     );
     post(&peer, &reply(&initial, &response, false)).await?;
     let operation = setup::operation(policy).await?;
-    Ok((host, client, peer, commands, owner, policy, operation))
+    Ok((
+        host, client, peer, commands, owner, policy, operation, until,
+    ))
 }
 async fn execute(
     peer: &crate::windows::test_support::Peer,
@@ -654,9 +668,9 @@ async fn cancellation_blocks_registration_and_preserves_uncertain_native_effect(
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -> Result<()> {
     use crate::clock::Clock;
-    let until = crate::clock::SystemClock.unix_seconds()? + 20;
-    let (host, mut client, peer, commands, owner, policy, operation) =
-        start_fixture_until(Some(until)).await?;
+    let (host, mut client, peer, commands, owner, policy, operation, until) =
+        start_fixture_until(Some(20)).await?;
+    let until = until.expect("scheduled fixture");
     execute(&peer, &mut client, policy).await?;
     ensure!(
         client

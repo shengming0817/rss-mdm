@@ -38,13 +38,18 @@ async fn create(client: &mut Client) -> anyhow::Result<()> {
     create_with_id(client, Uuid::new_v4()).await
 }
 async fn create_with_id(client: &mut Client, id: Uuid) -> anyhow::Result<()> {
+    accept_with_id(client, id, false).await?;
+    client.publish_operation(client.operation).await?;
+    Ok(())
+}
+async fn accept_with_id(client: &mut Client, id: Uuid, trigger: bool) -> anyhow::Result<()> {
     client.operation = id;
-    let accepted=client.call(Method::POST,"",Some(json!({"operationId":client.operation,"inputVersion":"diagnostic-1","deadline":crate::windows::test_support::now()+300,"target":{"kind":"device"},"task":{"platform":"windows","request":{"kind":"diagnostic_log","request":{"trigger":null,"fileContext":"DeviceManagement","blockSizeKb":1,"maxBytes":4096}}}}))).await?;
+    let trigger = trigger.then(|| json!({"kind":"node","node":"./Vendor/MSFT/DiagnosticLog/DeviceStateData/MdmConfiguration","instance":[],"operation":"exec","value":{"type":"text","value":""}}));
+    let accepted=client.call(Method::POST,"",Some(json!({"operationId":client.operation,"inputVersion":"diagnostic-1","deadline":crate::windows::test_support::now()+300,"target":{"kind":"device"},"task":{"platform":"windows","request":{"kind":"diagnostic_log","request":{"trigger":trigger,"fileContext":"DeviceManagement","blockSizeKb":1,"maxBytes":4096}}}}))).await?;
     ensure!(
         accepted.0 == StatusCode::ACCEPTED,
         "diagnostic create: {accepted:?}"
     );
-    client.publish_operation(client.operation).await?;
     Ok(())
 }
 fn reply(
@@ -74,14 +79,14 @@ fn reply(
         })],
         final_message: true,
     };
-    let mut pending = response.commands.iter().collect::<Vec<_>>();
+    let mut pending = response.commands.iter().rev().collect::<Vec<_>>();
     while let Some(command) = pending.pop() {
         let (name, items) = match command {
             s::Command::Get { items, .. } => (s::CommandName::Get, Some(items)),
             s::Command::Replace { items, .. } => (s::CommandName::Replace, Some(items)),
             s::Command::Exec { items, .. } => (s::CommandName::Exec, Some(items)),
             s::Command::Sequence { commands, .. } => {
-                pending.extend(commands);
+                pending.extend(commands.iter().rev());
                 (s::CommandName::Sequence, None)
             }
             _ => continue,
@@ -188,6 +193,23 @@ async fn collect(
     )
     .await?;
     let mut response = initial.response;
+    if response
+        .commands
+        .iter()
+        .any(|c| matches!(c, s::Command::Exec { .. }))
+    {
+        let packet = reply(&initial.first, &response, 2, 0, &[]);
+        response = exchange(peer, &packet).await?;
+        let again = exchange(peer, &packet).await?;
+        ensure!(
+            s::encode(&again, &CodecLimits::default())?
+                == s::encode(&response, &CodecLimits::default())?
+        );
+        ensure!(
+            operation(client).await?["observation"]["diagnostic"]["step"]["kind"] == "size",
+            "trigger receipt did not advance to size negotiation"
+        );
+    }
     let mut bytes = vec![b'X'; 1024];
     bytes.extend_from_slice(b"private-diagnostic-canary-tail");
     for (count, index, data) in [
@@ -215,10 +237,8 @@ async fn collect(
                 .all(|r| r["value"].is_null()),
             "diagnostic raw value projection"
         );
-        if invalid_index {
-            if detail["observation"]["diagnostic"]["transfer"] == "blocked" {
-                return Ok(bytes.clone());
-            }
+        if invalid_index && detail["observation"]["diagnostic"]["transfer"] == "blocked" {
+            return Ok(bytes.clone());
         }
     }
     Ok(bytes)
@@ -227,18 +247,27 @@ async fn recovery_report(
     client: &Client,
     budget: Duration,
 ) -> anyhow::Result<rss_reconcile::Report> {
+    recovery_report_with_attempt(client, budget, Duration::from_secs(6)).await
+}
+async fn recovery_report_with_attempt(
+    client: &Client,
+    budget: Duration,
+    attempt_timeout: Duration,
+) -> anyhow::Result<rss_reconcile::Report> {
     use rss_mdm_execution_service::recovery;
     let timer = recovery::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, budget, &cancel);
     let policy = rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
         concurrency: 1,
-        lease_ttl: Duration::from_secs(10),
-        attempt_timeout: Duration::from_secs(1),
-        scan_interval: Duration::from_millis(20),
+        // A stopped test worker leaves a bounded lease, just as a crashed owner does.
+        lease_ttl: Duration::from_secs(3),
+        attempt_timeout,
+        // One attempt per test run; do not start another at the controller cutoff.
+        scan_interval: Duration::from_secs(10),
         idle_scan_interval: Duration::from_millis(20),
-        initial_backoff: Duration::from_millis(20),
-        max_backoff: Duration::from_millis(100),
+        initial_backoff: Duration::from_secs(2),
+        max_backoff: Duration::from_secs(2),
         max_attempts: 3,
     })?;
     let report = client
@@ -254,7 +283,7 @@ async fn recovery_report(
     Ok(report)
 }
 async fn recover(client: &Client) -> anyhow::Result<()> {
-    let report = recovery_report(client, Duration::from_secs(2)).await?;
+    let report = recovery_report(client, Duration::from_secs(8)).await?;
     ensure!(
         report.execution_failed == 0,
         "diagnostic recovery: {report:?}"
@@ -299,7 +328,13 @@ async fn complete_file_restarts_replays_downloads_and_stops_after_revocation() -
     let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
     let rule = Uuid::new_v4();
     grants(&mut client, rule, 0, true).await?;
-    create(&mut client).await?;
+    accept_with_id(&mut client, Uuid::new_v4(), true).await?;
+    recover(&client).await?;
+    ensure!(
+        operation(&mut client).await?["observation"]["diagnostic"]["transfer"] == "pending",
+        "recovery abandoned a queued request before dispatch"
+    );
+    client.publish_operation(client.operation).await?;
     let bytes = collect(&peer, &mut client, 1301, false).await?;
     let detail = operation(&mut client).await?;
     ensure!(
@@ -474,7 +509,11 @@ async fn published_file_without_committed_association_recovers_same_identity() -
         .app
         .execution
         .inject_diagnostic_association_fault(PgTransactionFault::CommitPending);
-    let failed = recovery_report(&client, Duration::from_millis(700)).await?;
+    // Leave the controller alive beyond the failed attempt so it can record the
+    // outcome, but stop before the next backoff/lease allows a successful retry.
+    let failed =
+        recovery_report_with_attempt(&client, Duration::from_millis(2500), Duration::from_secs(2))
+            .await?;
     ensure!(
         failed.execution_failed > 0,
         "association fault did not run: {failed:?}"

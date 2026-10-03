@@ -128,9 +128,8 @@ fn read_records(
     file: &mut File,
     protection: &Protector,
     tenant: rss_request_context::TenantId,
-    artifact: &Artifact,
+    (artifact, class): (&Artifact, StorageClass),
     count: u64,
-    class: StorageClass,
     timer: &dyn Clock,
     deadline: Deadline,
 ) -> Result<Zeroizing<Vec<u8>>, Error> {
@@ -376,9 +375,8 @@ impl Store {
             &mut file,
             &self.protection,
             self.tenant,
-            &artifact,
+            (&artifact, class),
             full_length,
-            class,
             self.timer.as_ref(),
             deadline,
         )?;
@@ -399,9 +397,8 @@ impl Store {
                 &mut existing,
                 &self.protection,
                 self.tenant,
-                &artifact,
+                (&artifact, class),
                 artifact.length(),
-                class,
                 self.timer.as_ref(),
                 deadline,
             )?;
@@ -506,9 +503,8 @@ impl Verified {
                 &mut file,
                 protection,
                 *tenant,
-                &self.artifact,
+                (&self.artifact, *class),
                 self.artifact.length(),
-                *class,
                 self.timer.as_ref(),
                 self.deadline,
             )?;

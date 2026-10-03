@@ -2,7 +2,7 @@
 //! ref: MicrosoftDocs DiagnosticLog CSP FileDownload/DMChannel; DiagnosticLog.xml.
 use super::{Error, Request, Scope, Value, Verb};
 use serde::{Deserialize, Serialize};
-const ROOT: &str = "./Device/Vendor/MSFT/DiagnosticLog/FileDownload/DMChannel/*/";
+const ROOT: &str = "./Vendor/MSFT/DiagnosticLog/FileDownload/DMChannel/*/";
 /// Immutable input; platform evidence, identities and permissions remain server owned.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -55,12 +55,10 @@ impl Input {
             for object in trigger.objects()? {
                 let uri = object.key();
                 if object.scope() != Scope::Device
-                    || !(uri
-                        == "./Device/Vendor/MSFT/DiagnosticLog/DeviceStateData/MdmConfiguration"
-                        || (uri.starts_with("./Device/Vendor/MSFT/DiagnosticLog/EtwLog/Channels/")
+                    || !(uri == "./Vendor/MSFT/DiagnosticLog/DeviceStateData/MdmConfiguration"
+                        || (uri.starts_with("./Vendor/MSFT/DiagnosticLog/EtwLog/Channels/")
                             && uri.ends_with("/Export"))
-                        || (uri
-                            .starts_with("./Device/Vendor/MSFT/DiagnosticLog/EtwLog/Collectors/")
+                        || (uri.starts_with("./Vendor/MSFT/DiagnosticLog/EtwLog/Collectors/")
                             && uri.ends_with("/TraceControl")))
                 {
                     return Err(Error::Unsupported);
@@ -188,13 +186,14 @@ impl Progress {
                 {
                     return Err(Error::Value);
                 }
-                self.length = self
+                let length = self
                     .length
                     .checked_add(bytes.len() as u64)
                     .ok_or(Error::Limit)?;
-                if self.length > input.max_bytes {
+                if length > input.max_bytes {
                     return Err(Error::Limit);
                 }
+                self.length = length;
                 if expected + 1 == n {
                     Step::Verify
                 } else {
@@ -226,6 +225,36 @@ mod tests {
         }
     }
     #[test]
+    fn official_file_steps_and_trigger_compile_from_the_pinned_schema() {
+        let mut input = input();
+        let context = super::super::Context {
+            scope: Scope::Device,
+            enrollment: super::super::Enrollment::Primary,
+            build: Some([10, 0, 26100, 0]),
+            edition: Some(48),
+        };
+        input.validate().unwrap();
+        for step in [
+            Step::Size,
+            Step::Count,
+            Step::Block { index: 0 },
+            Step::Verify,
+        ] {
+            input.request(step).unwrap().compile(context, 1).unwrap();
+        }
+        input.trigger = Some(Request::Node {
+            node: "./Vendor/MSFT/DiagnosticLog/DeviceStateData/MdmConfiguration".into(),
+            instance: vec![],
+            operation: Verb::Exec,
+            value: Some(Value::Text(String::new())),
+        });
+        input
+            .request(Step::Trigger)
+            .unwrap()
+            .compile(context, 1)
+            .unwrap();
+    }
+    #[test]
     fn waits_then_requires_all_blocks_and_final_count() {
         let input = input();
         let mut p = Progress::new(&input);
@@ -250,6 +279,23 @@ mod tests {
         assert!(p.accept(&input, Some(4), None, None).is_err());
         p.accept(&input, Some(2), None, None).unwrap();
         assert!(p.accept(&input, None, Some(0), Some(&[1; 2])).is_err());
+        let bounded = Input {
+            max_bytes: 1025,
+            ..input.clone()
+        };
+        let mut boundary = Progress::new(&bounded);
+        boundary.accept(&bounded, None, None, None).unwrap();
+        boundary.accept(&bounded, Some(2), None, None).unwrap();
+        boundary
+            .accept(&bounded, None, Some(0), Some(&[1; 1024]))
+            .unwrap();
+        assert!(
+            boundary
+                .accept(&bounded, None, Some(1), Some(&[2; 2]))
+                .is_err()
+        );
+        assert_eq!(boundary.length, 1024);
+        assert_eq!(boundary.step, Step::Block { index: 1 });
         let mut input = input;
         input.trigger = Some(Request::Node {
             node: "./Device/Vendor/MSFT/RemoteWipe/doWipe".into(),

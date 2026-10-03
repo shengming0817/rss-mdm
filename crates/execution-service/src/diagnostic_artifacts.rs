@@ -147,6 +147,10 @@ impl ExecutionService {
         audit: &RequestAudit,
     ) -> std::result::Result<Option<Snapshot>, Error> {
         control.check().map_err(|_| Error::Conflict)?;
+        // Each PG phase owns one settlement. The orchestration audit never inherits
+        // a prior phase's Committed state, while request coordinates stay shared.
+        let transaction_audit = audit.transaction_copy();
+        let audit = &transaction_audit;
         let error = Mutex::new(None);
         let attempt = self
             .runtime
@@ -187,7 +191,14 @@ impl ExecutionService {
                 },
             )
             .await;
-        settle(attempt, audit, error)
+        let result = settle(attempt, audit, error);
+        audit.finalize(
+            result
+                .as_ref()
+                .err()
+                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+        );
+        result
     }
 }
 async fn advance(
@@ -228,7 +239,10 @@ async fn advance(
             let now = storage::now(tx).await?;
             let eligible = matches!(
                 command.status(),
-                dc::Status::Published | dc::Status::Received | dc::Status::Applied
+                dc::Status::Queued
+                    | dc::Status::Published
+                    | dc::Status::Received
+                    | dc::Status::Applied
             ) && now < op.request.deadline
                 && state.expires_at.is_none_or(|expiry| expiry > now)
                 && storage::approval_valid(&service.source, &service.protection, tx, &op, now)
