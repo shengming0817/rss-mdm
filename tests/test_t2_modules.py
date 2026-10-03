@@ -268,6 +268,19 @@ class ModuleImpactTests(unittest.TestCase):
                                   'crates/resource-postgres/tests/behavior.rs'])
         self.assertEqual(selection.modules, ('apple.apns', 'resource.persistence'))
 
+    def test_real_execution_tools_select_existing_representatives(self):
+        pg = {'api.identity_context', 'group.persistence', 'policy.persistence'}
+        for path in ('hack/t2_database.py', 'hack/t2_context.py'):
+            selection = select_inputs([path])
+            self.assertEqual(set(selection.modules), pg)
+            self.assertTrue(selection.tools)
+        for path in ('hack/t2_environment.py', 'hack/t2_fixtures.py'):
+            self.assertEqual(self.selected(path), pg | {'host.lifecycle', 'gateway.admission'})
+        self.assertEqual(self.selected('hack/t2_hosts.py'), {'host.lifecycle'})
+        self.assertEqual(self.selected('hack/t2_execution.py'), {'policy.persistence'})
+        for path in ('hack/ci_impact.py', 'hack/t2.py', 'hack/verification_result.py'):
+            self.assertEqual(self.selected(path), set())
+
     def test_authorization_and_audit_module_inputs_stay_local(self):
         self.assertEqual(self.selected('crates/app/tests/authorization/capacity.rs'),
                          {'authorization.capacity'})

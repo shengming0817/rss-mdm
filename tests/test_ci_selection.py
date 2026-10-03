@@ -28,6 +28,31 @@ def result(stdout='', returncode=0):
 
 
 class Selection(unittest.TestCase):
+    def test_failed_selector_diagnostic_reaches_formal_entry(self):
+        failure = SimpleNamespace(
+            stdout=json.dumps(
+                {
+                    'status': 'failed',
+                    'error': {
+                        'code': 'selector-internal',
+                        'phase': 'selection',
+                        'inputs': [],
+                    },
+                }
+            ),
+            stderr='selector-internal phase=selection exception=RuntimeError\n',
+            returncode=1,
+        )
+        diagnostic = io.StringIO()
+        with (
+            patch.dict(ci.os.environ, {'CI_FULL': '0', 'CI_T2': 'none'}),
+            patch.object(ci, 'command', side_effect=[result('base'), failure]),
+            contextlib.redirect_stderr(diagnostic),
+            self.assertRaises(SelectionError),
+        ):
+            ci.select_impact('head')
+        self.assertEqual(diagnostic.getvalue(), failure.stderr)
+
     def test_native_source_checks_follow_their_actual_owners(self):
         selection = make_selection(['rss-mdm-winget-source'], [], [], [])
         self.assertFalse(ci.selected_gate('native-schema', selection))

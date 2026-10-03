@@ -269,6 +269,8 @@ def select_impact(head, base=None):
     if merge.returncode != 0 or not merge.stdout.strip():
         raise SelectionError('base-unavailable', base)
     result = command([sys.executable, 'hack/ci-impact.py', '--base', merge.stdout.strip()], separate_stderr=True)
+    if result.stderr.strip():
+        print(result.stderr.strip(), file=sys.stderr)
     try:
         decision = strict_json(result.stdout)
     except (ValueError, TypeError) as error:

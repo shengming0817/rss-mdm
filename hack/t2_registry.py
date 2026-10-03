@@ -1633,6 +1633,17 @@ TOOL_ONLY_INPUTS = (
     'hack/verification_result.py',
 )
 
-# Add only the existing modules needed when a tool change alters a real execution
-# seam; this change adjusts selection/error handling, not fixture execution.
-REPRESENTATIVE_INPUTS = {}
+# Real execution uses existing carriers: product/Identity, group, backend with
+# fault isolation, and the Python host/gateway. Scheduling and reporting remain
+# covered by tool tests; none of these declarations adds a business matrix.
+PG_REPRESENTATIVES = ('api.identity_context', 'group.persistence', 'policy.persistence')
+REPRESENTATIVE_INPUTS = {
+    'hack/t2_execution.py': ('policy.persistence',),
+    'hack/t2_python.py': ('host.lifecycle', 'gateway.admission'),
+    'hack/t2_processes.py': ('host.lifecycle',),
+    'hack/t2_environment.py': (*PG_REPRESENTATIVES, 'host.lifecycle', 'gateway.admission'),
+    'hack/t2_fixtures.py': (*PG_REPRESENTATIVES, 'host.lifecycle', 'gateway.admission'),
+    'hack/t2_database.py': PG_REPRESENTATIVES,
+    'hack/t2_context.py': PG_REPRESENTATIVES,
+    'hack/t2_hosts.py': ('host.lifecycle',),
+}

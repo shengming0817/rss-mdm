@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Black-box contract for the package-only CI impact selector."""
+"""Black-box contract for consumer-based CI and T2 selection."""
 
 from __future__ import annotations
 
@@ -101,8 +101,12 @@ MODULES = {n:Module(n, Build(n), ('',), production_inputs=(p+'/src/*',), test_in
            ('other-integration','tests/other-integration')]}
 T1_INPUTS = ()
 TOOL_INPUTS = {'hack/t2_registry.py': ('test_registry',)}
-CONTROL_INPUTS = {'Makefile': {'format':'tools', 'tools':['test_registry']},
-                  'deny.toml': {'format':'tools', 'tools':['test_registry']}}
+CONTROL_INPUTS = {'Makefile': {'format':'make', 'tools':['test_registry']},
+                  'deny.toml': {'format':'tools', 'tools':['test_registry']},
+                  '.cargo/config.toml': {'format':'toml', 'tools':['test_registry'],
+                                         'fields': {'build.jobs':'tools', 'build.rustflags':'runtime'}},
+                  'rust-toolchain.toml': {'format':'toml', 'tools':['test_registry'],
+                                          'fields': {'toolchain.channel':'runtime', 'toolchain.components':'tools'}}}
 DEPENDENCY_POLICIES = {}
 """,
         )
@@ -306,6 +310,32 @@ class CiImpactContract(unittest.TestCase):
         self.assertEqual(decision['status'], 'failed')
         self.assertEqual(decision['error']['code'], 'diff-unavailable')
 
+    def test_rename_and_copy_require_each_endpoint_owner(self):
+        for mode in ('rename', 'copy'):
+            with self.subTest(mode=mode):
+                self.repo.git('reset', '--hard', self.repo.base)
+                self.repo.git('clean', '-fd')
+                getattr(self.repo, mode)(
+                    'crates/leaf/src/obsolete.rs', 'unknown/input.rs'
+                )
+                decision = self.repo.select()[1]
+                self.assertEqual(decision['status'], 'failed')
+                self.assertEqual(decision['error']['code'], 'unmapped-input')
+                self.assertIn('unknown/input.rs', decision['error']['inputs'])
+
+    def test_copy_to_tool_does_not_erase_business_source_owner(self):
+        registry = self.repo.root / 'hack/t2_registry.py'
+        registry.write_text(
+            registry.read_text()
+            + "\nTOOL_INPUTS['hack/tool.py'] = ('test_registry',)\nTOOL_ONLY_INPUTS = ('hack/tool.py',)\n"
+        )
+        self.repo.commit('declare tool owner')
+        self.repo.base = self.repo.git('rev-parse', 'HEAD').stdout.strip()
+        self.repo.copy('crates/leaf/src/obsolete.rs', 'hack/tool.py')
+        decision = self.repo.select()[1]
+        self.assert_selected(decision, ['leaf', 'leaf-integration'], ['leaf'])
+        self.assertEqual(decision['toolTests'], ['test_registry'])
+
     def test_type_change_is_a_diff_failure(self):
         path = self.repo.root / 'crates/leaf/src/obsolete.rs'
         path.unlink()
@@ -390,6 +420,77 @@ class CiImpactContract(unittest.TestCase):
             decision = self.repo.select()[1]
             self.assert_selected(decision, [], [])
             self.assertEqual(decision['toolTests'], ['test_registry'])
+
+    def test_shared_controls_select_actual_runtime_consumers(self):
+        registry = self.repo.root / 'hack/t2_registry.py'
+        registry.write_text(
+            registry.read_text()
+            + "\nMODULES['host'] = Module('host', None, (), profile='none', fixtures=('identity',), python='test_registry', db_mode=None, scope=None)\n"
+            + "MODULES['python-only'] = Module('python-only', None, (), profile='none', python='test_registry', db_mode=None, scope=None)\n"
+        )
+        self.repo.commit('declare Rust fixture and Python consumers')
+        self.repo.base = self.repo.git('rev-parse', 'HEAD').stdout.strip()
+        expected = sorted(
+            [
+                'core',
+                'leaf',
+                'other',
+                'dev-consumer',
+                'build-consumer',
+                'optional-consumer',
+                'leaf-integration',
+                'other-integration',
+                'host',
+            ]
+        )
+        for path, content, detail in (
+            (
+                'Makefile',
+                'export RUSTFLAGS := -C debuginfo=1\n',
+                'shared-compiler-environment',
+            ),
+            (
+                'rust-toolchain.toml',
+                '[toolchain]\nchannel = "stable"\n',
+                'shared-runtime',
+            ),
+            (
+                '.cargo/config.toml',
+                '[build]\nrustflags = ["-C", "debuginfo=1"]\n',
+                'shared-runtime',
+            ),
+        ):
+            with self.subTest(path=path):
+                self.repo.git('reset', '--hard', self.repo.base)
+                self.repo.git('clean', '-fd')
+                self.repo._write(path, content)
+                decision = self.repo.select()[1]
+                self.assertEqual(decision['status'], 'selected', decision)
+                self.assertEqual(
+                    decision['t2'], {'mode': 'affected', 'modules': expected}
+                )
+                self.assertEqual(len(decision['cargo']['packages']), 8)
+                self.assertEqual(decision['toolTests'], ['test_registry'])
+                self.assertTrue(
+                    any(r.get('detail') == detail for r in decision['reasons'])
+                )
+
+    def test_control_tool_fields_and_unknown_fields(self):
+        for path, content in (
+            ('.cargo/config.toml', '[build]\njobs = 2\n'),
+            ('rust-toolchain.toml', '[toolchain]\ncomponents = ["clippy"]\n'),
+        ):
+            with self.subTest(path=path):
+                self.repo.git('reset', '--hard', self.repo.base)
+                self.repo.git('clean', '-fd')
+                self.repo._write(path, content)
+                decision = self.repo.select()[1]
+                self.assert_selected(decision, [], [])
+                self.assertEqual(decision['toolTests'], ['test_registry'])
+        self.repo._write('.cargo/config.toml', '[unclassified]\nsetting = true\n')
+        decision = self.repo.select()[1]
+        self.assertEqual(decision['status'], 'failed')
+        self.assertEqual(decision['error']['code'], 'unclassified-config')
 
     def test_metadata_failure_is_not_full(self):
         self.repo.change('crates/leaf/src/lib.rs')

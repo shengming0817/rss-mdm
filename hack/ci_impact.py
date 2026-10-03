@@ -898,7 +898,9 @@ def analyze_controls(oldroot, root, changes, registries):
                 if compiler_environment(oldroot) != compiler_environment(root):
                     packages_all = True
                     consumed = {
-                        name for name, m in registry.modules.items() if m['build'] or 'identity' in m['fixtures']
+                        name
+                        for name, m in registry.modules.items()
+                        if m['build'] or 'identity' in m['fixtures']
                     }
                     modules.update(consumed)
                     reasons.append(
@@ -943,7 +945,9 @@ def analyze_controls(oldroot, root, changes, registries):
                 if category == 'runtime':
                     packages_all = True
                     consumed = {
-                        name for name, m in registry.modules.items() if m['build'] or 'identity' in m['fixtures']
+                        name
+                        for name, m in registry.modules.items()
+                        if m['build'] or 'identity' in m['fixtures']
                     }
                     modules.update(consumed)
                     reasons.append(
@@ -1042,64 +1046,62 @@ def select(root, base):
         graphs = (metadata(oldroot), metadata(root)) if need_graph else None
         packages = set()
         for c in changes:
-            if (c.new or c.old) in after.tool_only:
-                path = c.new or c.old
-                tools.update(after.tools.get(path, ()))
-                representatives = set(before.representatives.get(path, ())) | set(
-                    after.representatives.get(path, ())
-                )
-                modules.update(representatives)
-                reasons.append(
-                    dict(
-                        kind='representative' if representatives else 'tool',
-                        input=path,
-                        modules=sorted(representatives),
-                        tools=list(after.tools.get(path, ())),
-                    )
-                )
-                continue
-            paths = [
-                (c.old, before, graphs[0] if graphs else None),
-                (c.new, after, graphs[1] if graphs else None),
-            ]
-            claimed = False
-            for path, registry, g in paths:
-                if not path:
-                    continue
+            for path in sorted({p for p in (c.old, c.new) if p}):
+                # Ownership is required per rename/copy endpoint. For a stable
+                # path either revision may carry a mapping that was removed.
                 if (
                     path == 'Cargo.lock'
                     or path == 'Cargo.toml'
                     or path.endswith('/Cargo.toml')
                 ):
-                    claimed = True
                     continue
-                try:
-                    impact = path_inputs(path, registry)
-                except SelectionError:
-                    continue
-                claimed = True
-                modules.update(impact.modules)
-                tools.update(impact.tools)
-                reasons.append(
-                    dict(
-                        kind='tool'
-                        if impact.tools and not impact.modules
-                        else 'business'
-                        if impact.modules
-                        else 'documentation'
-                        if is_docs(path)
-                        else 'unit-test',
-                        input=path,
-                        modules=list(impact.modules),
-                        tools=list(impact.tools),
+                if path in after.tool_only:
+                    tools.update(after.tools.get(path, ()))
+                    representatives = set(before.representatives.get(path, ())) | set(
+                        after.representatives.get(path, ())
                     )
-                )
-                if g:
-                    key = g.owner(path)
-                    if key:
-                        packages.update(g.names(g.closure({key}, reverse=True)))
-            if not claimed:
-                raise SelectionError('unmapped-input', c.new or c.old)
+                    modules.update(representatives)
+                    reasons.append(
+                        dict(
+                            kind='representative' if representatives else 'tool',
+                            input=path,
+                            modules=sorted(representatives),
+                            tools=list(after.tools.get(path, ())),
+                        )
+                    )
+                    continue
+                claimed = False
+                for registry, g in (
+                    (before, graphs[0] if graphs else None),
+                    (after, graphs[1] if graphs else None),
+                ):
+                    try:
+                        impact = path_inputs(path, registry)
+                    except SelectionError:
+                        continue
+                    claimed = True
+                    modules.update(impact.modules)
+                    tools.update(impact.tools)
+                    reasons.append(
+                        dict(
+                            kind='tool'
+                            if impact.tools and not impact.modules
+                            else 'business'
+                            if impact.modules
+                            else 'documentation'
+                            if is_docs(path)
+                            else 'unit-test',
+                            input=path,
+                            modules=list(impact.modules),
+                            tools=list(impact.tools),
+                        )
+                    )
+                    if g:
+                        key = g.owner(path)
+                        if key:
+                            packages.update(g.names(g.closure({key}, reverse=True)))
+                if not claimed:
+                    raise SelectionError('unmapped-input', path)
         if graphs:
             p, m, t, r = analyze_dependencies(
                 oldroot, root, changes, graphs, (before, after)
