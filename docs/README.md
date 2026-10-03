@@ -8,3 +8,5 @@
 - [稳定规则](rules/README.md)
 
 - [测试模块](guides/test-modules.md)：T1/T2 归属、MODULE 执行、affected、并发与结果证据。
+
+- [项目证书目录、存档与密码恢复](../crates/certificate-archive-service/README.md)

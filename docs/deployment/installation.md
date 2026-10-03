@@ -95,3 +95,5 @@ Linux host 网络使回环浏览器监听与同机 HTTPS 网关配合；Windows 
 时间线索引是产品派生数据，`rss_audit` 持久事实仍是唯一来源。安装包含 timeline-service schema；旧 schema 继续按现有精确安装清单拒绝，不支持前缀升级。后台任务自动从 checkpoint 追赶，故障可见，恢复后继续读取原事实。
 
 需要重建时先停止本安装的所有服务实例，由数据库 owner 在一个事务内设置目标租户上下文，删除该租户的 `mdm_timeline.facts`，将其 checkpoint 的 `position`、`source_through` 置为 -1、`healthy` 置为 true，并为 `generation` 设置新的 UUID。保留既有游标签名秘密和全部 Audit/Ledger 数据，再启动服务。旧游标因世代变化被拒绝；历史追赶完成前，API 明确返回覆盖进度。不得删除 Audit 事实、修补审计回执或改写迁移清单来恢复索引。
+
+证书存档新增 `certificate-archive-schema-v1`，保持空库安装/准确安装记录重放，不升级旧候选账本。运行不需要存档主密码；存档通过现有租户授权管理授予独立权限，详见[证书目录](../../crates/certificate-archive-service/README.md)。

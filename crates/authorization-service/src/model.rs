@@ -5,6 +5,10 @@ use uuid::Uuid;
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq, Ord, PartialOrd)]
 #[serde(rename_all = "snake_case")]
 pub enum Permission {
+    CertificateArchiveRead,
+    CertificateArchiveWrite,
+    CertificateArchiveUnlock,
+    CertificateArchiveExport,
     RuntimeDiagnosticsRead,
     InventoryRead,
     InventorySensitiveRead,
@@ -79,7 +83,11 @@ impl Permission {
             | Self::SoftwareDeploy
             | Self::OperationRead
             | Self::OperationCancel => true,
-            Self::InventorySensitiveRead
+            Self::CertificateArchiveRead
+            | Self::CertificateArchiveWrite
+            | Self::CertificateArchiveUnlock
+            | Self::CertificateArchiveExport
+            | Self::InventorySensitiveRead
             | Self::InventoryFieldsWrite
             | Self::RuntimeDiagnosticsRead
             | Self::AuthorizationRead

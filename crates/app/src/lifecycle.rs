@@ -92,6 +92,7 @@ pub async fn serve(
                         automation,
                         publications,
                         identity_audit,
+                        archive,
                         timeline,
                         notifications,
                     ) = tokio::time::timeout(compiled.config.flow.startup_budget(), async {
@@ -274,9 +275,15 @@ pub async fn serve(
                                 Error::Unavailable(Failure::Database),
                             )
                         })?;
+                        let archive = crate::certificate_archive::assemble(
+                            &access,
+                            audit_store.clone(),
+                            Arc::new(crate::clock::SystemClock),
+                        );
                         let mut app = crate::api::from_compiled(
                             compiled,
                             crate::api::AssemblyDependencies {
+                                certificate_archive: archive.clone(),
                                 timeline: timeline.clone(),
                                 audit_store: audit_store.clone(),
                                 clock: Arc::new(crate::clock::SystemClock),
@@ -328,6 +335,7 @@ pub async fn serve(
                             automation,
                             planning.publications.clone(),
                             identity_audit,
+                            archive,
                             timeline,
                             notifications,
                         ))
@@ -356,6 +364,7 @@ pub async fn serve(
                     launch.stage_deferred_task_with_token(publications.registration().critical());
                     launch.stage_deferred_task_with_token(identity_audit.registration().critical());
                     launch.stage_deferred_task_with_token(timeline.registration().critical());
+                    launch.stage_deferred_task_with_token(archive.registration().critical());
                     launch.stage_deferred_task_with_token(
                         execution
                             .service

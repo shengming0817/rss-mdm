@@ -8,6 +8,19 @@ from t2_registry import MODULES, select_paths
 
 
 class ModuleImpactTests(unittest.TestCase):
+    def test_archive_selects_real_consumers_and_keeps_t1_independent(self):
+        for path in ('crates/native-protection/src/lib.rs',
+                     'crates/authorization-service/src/model.rs',
+                     'crates/audit-integration/src/lib.rs',
+                     'crates/management-http/src/boundary.rs',
+                     'crates/app/tests/support/planning_http.rs'):
+            selected = select_paths([path])
+            self.assertFalse(selected.full, path)
+            self.assertIn('certificate-archive.http', selected.modules, path)
+        selected = select_paths(['crates/certificate-archive-service/tests/behavior.rs'])
+        self.assertFalse(selected.full)
+        self.assertEqual(selected.modules, ())
+
     def test_collection_inputs_select_their_actual_protocol_consumers(self):
         cases={
             'crates/execution-service/src/actions/output.rs': {'execution.agent.delivery'},

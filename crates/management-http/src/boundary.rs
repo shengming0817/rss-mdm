@@ -194,6 +194,8 @@ fn project(error: Error) -> Response {
 }
 fn route_action(route: &str) -> &'static str {
     match route {
+        "/api/v1/certificate-archive/vault/unlock" => "certificate_archive_unlock",
+        "/api/v1/certificate-archive/vault/lock" => "certificate_archive_lock",
         "/api/v3/devices/{device}/timeline" => "timeline_read",
         "/api/v3/audit-events" => "audit_search",
         "/api/v2/runtime/diagnostics" => "runtime_diagnostics_read",

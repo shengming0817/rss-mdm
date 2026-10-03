@@ -3,6 +3,8 @@ use crate::{ConfigIssue, Failure, planning, resource_catalog};
 #[derive(Clone, Debug, thiserror::Error, serde::Serialize)]
 #[serde(tag = "kind", content = "reason", rename_all = "snake_case")]
 pub enum Error {
+    #[error(transparent)]
+    Archive(#[from] rss_mdm_certificate_archive_service::Error),
     #[error("invalid product configuration")]
     Configuration(ConfigIssue),
     #[error("invalid request")]

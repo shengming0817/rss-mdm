@@ -1,0 +1,31 @@
+[package]
+autotests = false
+name = "rss-mdm-certificate-archive-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+[dependencies]
+rss-mdm-native-protection.workspace = true
+rss-mdm-authorization-service.workspace = true
+rss-mdm-audit-integration.workspace = true
+rss-audit-postgres.workspace = true
+rss-transactional-messaging.workspace = true
+rss-request-context.workspace = true
+rss-runtime.workspace = true
+argon2.workspace = true
+openssl.workspace = true
+x509-cert.workspace = true
+url.workspace = true
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+ring.workspace = true
+zeroize.workspace = true
+base64.workspace = true
+thiserror.workspace = true
+futures.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }
+[lints]
+workspace = true

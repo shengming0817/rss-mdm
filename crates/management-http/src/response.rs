@@ -7,6 +7,7 @@ use axum::{
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
         let (status, code) = match &self {
+            Error::Archive(e) => archive_error(e),
             Error::Conflict => (StatusCode::CONFLICT, "operation_conflict"),
             Error::WindowsDeclaredEnrollmentNotReady => (
                 StatusCode::CONFLICT,
@@ -80,5 +81,28 @@ impl IntoResponse for Error {
         let mut response = (status, Json(body)).into_response();
         response.extensions_mut().insert(self);
         response
+    }
+}
+
+fn archive_error(error: &rss_mdm_certificate_archive_service::Error) -> (StatusCode, &'static str) {
+    use rss_mdm_certificate_archive_service::Error as E;
+    match error {
+        E::Malformed => (StatusCode::BAD_REQUEST, "malformed_request"),
+        E::Material => (StatusCode::BAD_REQUEST, "archive_material_invalid"),
+        E::KeyMismatch => (StatusCode::BAD_REQUEST, "archive_key_mismatch"),
+        E::Password => (StatusCode::FORBIDDEN, "archive_password_rejected"),
+        E::Locked => (StatusCode::LOCKED, "archive_locked"),
+        E::Unauthorized => (StatusCode::UNAUTHORIZED, "invalid_identity"),
+        E::Forbidden => (StatusCode::FORBIDDEN, "permission_denied"),
+        E::NotFound => (StatusCode::NOT_FOUND, "archive_not_found"),
+        E::Conflict => (StatusCode::CONFLICT, "operation_conflict"),
+        E::Integrity => (StatusCode::INTERNAL_SERVER_ERROR, "archive_integrity_error"),
+        E::Storage | E::Audit => (StatusCode::SERVICE_UNAVAILABLE, "service_unavailable"),
+        E::Limited => (StatusCode::TOO_MANY_REQUESTS, "request_limited"),
+        E::CommitUnknown => (StatusCode::SERVICE_UNAVAILABLE, "operation_unknown"),
+        E::RollbackFailed => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "operation_rollback_unconfirmed",
+        ),
     }
 }

@@ -1,0 +1,55 @@
+{
+  "tables": [
+    {
+      "schema": "mdm_certificate_archive",
+      "table": "vaults",
+      "read_write": true,
+      "updates": [
+        "generation",
+        "salt",
+        "wrapped_key",
+        "kdf",
+        "updated_at"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_certificate_archive",
+      "table": "entries",
+      "read_write": true,
+      "updates": [
+        "revision",
+        "retired",
+        "recommended_version"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_certificate_archive",
+      "table": "versions",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_certificate_archive",
+      "table": "operations",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_certificate_archive",
+      "table": "settings",
+      "read_write": true,
+      "updates": [
+        "revision",
+        "document"
+      ],
+      "delete_policy": null
+    }
+  ],
+  "functions": [],
+  "external_relations": [],
+  "verified_schemas": []
+}

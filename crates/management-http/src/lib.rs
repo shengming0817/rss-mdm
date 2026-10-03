@@ -36,6 +36,7 @@ pub fn authentication_routes(router: axum::Router, envelope: boundary::Envelope)
     ))
 }
 
+pub mod certificate_archive;
 mod timeline;
 
 pub mod software_native;
