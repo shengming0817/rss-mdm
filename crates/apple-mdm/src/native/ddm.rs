@@ -9,7 +9,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 pub use status::{DeclarationStatus, StatusReport, Validity};
 mod projection;
-pub use projection::{Projection, ReportEvidence, StatusProjection, project};
+pub use projection::{
+    PROJECTION_BYTES, Projection, ProjectionState, ReportEvidence, StatusProjection, project,
+};
 mod assets;
 pub use assets::{AssetBinding, AssetInput, LegacyProfile, bind_assets, legacy_profiles};
 use std::collections::BTreeMap;

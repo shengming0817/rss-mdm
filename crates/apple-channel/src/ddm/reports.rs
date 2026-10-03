@@ -1,5 +1,37 @@
 //! Protected report evidence and commutative native interpretation.
 use super::*;
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Accumulated {
+    state: native::ddm::ProjectionState,
+    received_at: i64,
+}
+fn publication_set(publication: &Publication, scope: &str) -> Result<DeclarationSet, Error> {
+    let target = native::Target {
+        context: &publication.context,
+        access_rights: &[],
+    };
+    DeclarationSet::new(
+        scope,
+        publication
+            .inputs
+            .iter()
+            .map(|i| i.compile(&publication.version, &target))
+            .collect::<Result<_, _>>()
+            .map_err(|_| Error::Unavailable(Failure::AppleStorage))?,
+    )
+    .map_err(|_| Error::Unavailable(Failure::AppleStorage))
+}
+fn accumulated(
+    key: &Protector,
+    sealed: &[u8],
+    aad: &rss_mdm_native_protection::DerivedAad,
+) -> Result<Accumulated, Error> {
+    let plain = key
+        .open_bytes(sealed, aad)
+        .map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
+    serde_json::from_slice(plain.expose()).map_err(|_| Error::Unavailable(Failure::AppleStorage))
+}
 impl Exchange {
     pub(super) async fn status(
         &self,
@@ -62,8 +94,42 @@ impl Exchange {
             "apple.ddm.report",
             &serde_json::to_vec(&evidence).map_err(|_| Error::Malformed)?,
         )?;
-        sqlx::query("INSERT INTO mdm_apple.status_reports(tenant_id,id,registration,generation,user_key,digest,evidence) VALUES($1::uuid,$2,$3,$4,$5,$6,$7) ON CONFLICT(tenant_id,registration,generation,user_key,digest) DO NOTHING")
-            .bind(p.tenant().to_string()).bind(id).bind(p.registration()).bind(p.generation()).bind(&self.user).bind(digest.as_slice()).bind(sealed).execute(&mut *c).await.map_err(db)?;
+        let inserted = sqlx::query("INSERT INTO mdm_apple.status_reports(tenant_id,id,registration,generation,user_key,digest,evidence) VALUES($1::uuid,$2,$3,$4,$5,$6,$7) ON CONFLICT(tenant_id,registration,generation,user_key,digest) DO NOTHING")
+            .bind(p.tenant().to_string()).bind(id).bind(p.registration()).bind(p.generation()).bind(&self.user).bind(digest.as_slice()).bind(sealed).execute(&mut *c).await.map_err(db)?.rows_affected() == 1;
+        if inserted {
+            let received_at:i64=sqlx::query_scalar("SELECT received_at FROM mdm_apple.status_reports WHERE tenant_id=$1::uuid AND id=$2").bind(p.tenant().to_string()).bind(id).fetch_one(&mut *c).await.map_err(db)?;
+            // Raw history and bounded accumulated claims commit together in the host transaction.
+            for (operation, _, publication) in publications {
+                let sealed:Option<Vec<u8>>=sqlx::query_scalar("SELECT projection FROM mdm_apple.declarations WHERE tenant_id=$1::uuid AND operation=$2 AND retired_at IS NULL").bind(p.tenant().to_string()).bind(operation).fetch_one(&mut *c).await.map_err(db)?;
+                let protection = aad(p, &self.user, *operation, "apple.ddm.projection")?;
+                let state = sealed
+                    .map(|bytes| accumulated(&self.apple.protection, &bytes, &protection))
+                    .transpose()?
+                    .map(|s| s.state)
+                    .unwrap_or_default();
+                let expected = publication_set(publication, &scope(p, &self.user)?)?;
+                let target = native::Target {
+                    context: &publication.context,
+                    access_rights: &[],
+                };
+                let mut projection = native::ddm::Projection::restore(&expected, &target, state)
+                    .map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
+                projection
+                    .observe(&evidence)
+                    .map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
+                let bytes = serde_json::to_vec(&Accumulated {
+                    state: projection.checkpoint(),
+                    received_at,
+                })
+                .map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
+                let sealed = self
+                    .apple
+                    .protection
+                    .seal_bytes(&bytes, &protection)
+                    .map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
+                sqlx::query("UPDATE mdm_apple.declarations SET projection=$3 WHERE tenant_id=$1::uuid AND operation=$2 AND retired_at IS NULL").bind(p.tenant().to_string()).bind(operation).bind(sealed).execute(&mut *c).await.map_err(db)?;
+            }
+        }
         let mut synchronized = Vec::new();
         for (id, _, publication) in publications {
             if let Some(value) = observation(
@@ -141,7 +207,7 @@ pub(crate) async fn observation(
     operation: Uuid,
     native_values: bool,
 ) -> Result<Option<serde_json::Value>, Error> {
-    let row=sqlx::query("SELECT registration,generation,user_key,snapshot,retired_at FROM mdm_apple.declarations WHERE tenant_id=$1::uuid AND operation=$2")
+    let row=sqlx::query("SELECT registration,generation,user_key,snapshot,projection,retired_at FROM mdm_apple.declarations WHERE tenant_id=$1::uuid AND operation=$2")
         .bind(tenant).bind(operation).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else { return Ok(None) };
     let registration = row.try_get("registration").map_err(db)?;
@@ -167,58 +233,40 @@ pub(crate) async fn observation(
         context: &publication.context,
         access_rights: &[],
     };
-    let set = DeclarationSet::new(
+    let set = publication_set(
+        &publication,
         &serde_json::to_string(&(tenant, registration, generation, &user))
             .map_err(|_| Error::Malformed)?,
-        publication
-            .inputs
-            .iter()
-            .map(|i| i.compile(&publication.version, &target))
-            .collect::<Result<_, _>>()
-            .map_err(|_| Error::Unavailable(Failure::AppleStorage))?,
-    )
-    .map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
+    )?;
     let retired: Option<i64> = row.try_get("retired_at").map_err(db)?;
-    let mut projection = native::ddm::Projection::new(&set, &target)
-        .map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
-    let mut received_at = None;
-    let mut after = Uuid::nil();
-    loop {
-        let rows=sqlx::query("SELECT id,evidence,received_at FROM mdm_apple.status_reports WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND user_key=$4 AND id>$5 ORDER BY id LIMIT 8")
-            .bind(tenant).bind(registration).bind(generation).bind(&user).bind(after).fetch_all(&mut *c).await.map_err(db)?;
-        if rows.is_empty() {
-            break;
-        }
-        for row in rows {
-            after = row.try_get("id").map_err(db)?;
-            let sealed: Vec<u8> = row.try_get("evidence").map_err(db)?;
-            let plain = key
-                .open_bytes(
-                    &sealed,
+    let sealed: Option<Vec<u8>> = row.try_get("projection").map_err(db)?;
+    let accumulated = if retired.is_none() {
+        sealed
+            .map(|bytes| {
+                accumulated(
+                    key,
+                    &bytes,
                     &aad_parts(
                         tenant,
                         registration,
                         generation,
                         &user,
-                        row.try_get("id").map_err(db)?,
-                        "apple.ddm.report",
+                        operation,
+                        "apple.ddm.projection",
                     )?,
                 )
-                .map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
-            let value: native::ddm::ReportEvidence = serde_json::from_slice(plain.expose())
-                .map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
-            received_at = Some(
-                received_at
-                    .unwrap_or(0i64)
-                    .max(row.try_get("received_at").map_err(db)?),
-            );
-            if retired.is_none() {
-                projection
-                    .observe(&value)
-                    .map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
-            }
-        }
-    }
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    let received_at = accumulated.as_ref().map(|s| s.received_at);
+    let projection = native::ddm::Projection::restore(
+        &set,
+        &target,
+        accumulated.map(|s| s.state).unwrap_or_default(),
+    )
+    .map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
     let mut projection = serde_json::to_value(
         projection
             .finish()

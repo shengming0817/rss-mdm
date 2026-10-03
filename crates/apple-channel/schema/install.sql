@@ -11,6 +11,7 @@ CREATE TABLE mdm_apple.declarations (
     user_key text NOT NULL CHECK(user_key='' OR user_key ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
     owner text NOT NULL CHECK(octet_length(owner) BETWEEN 1 AND 256),
     snapshot bytea NOT NULL CHECK(octet_length(snapshot) BETWEEN 68 AND 16777284),
+    projection bytea CHECK(octet_length(projection) BETWEEN 68 AND 524512),
     published_at bigint NOT NULL DEFAULT floor(extract(epoch FROM clock_timestamp()))::bigint,
     retired_at bigint, legacy_released_at bigint,
     PRIMARY KEY(tenant_id,operation)

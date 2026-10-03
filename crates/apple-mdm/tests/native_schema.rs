@@ -675,6 +675,36 @@ fn ddm_incremental_claims_merge_disjoint_objects_and_preserve_unordered_removal(
         |id| json!({"identifier":id,"subject-summary":"fixture","is-identity":false,"data":"AQID"});
     let first = evidence(false, json!([cert("a")]), json!([]));
     let delta = evidence(false, json!([cert("b")]), json!([]));
+    let mut streaming = crate::native::ddm::Projection::new(&set, &target).unwrap();
+    streaming.observe(&first).unwrap();
+    let checkpoint: crate::native::ddm::ProjectionState =
+        serde_json::from_slice(&serde_json::to_vec(&streaming.checkpoint()).unwrap()).unwrap();
+    let mut restored = crate::native::ddm::Projection::restore(&set, &target, checkpoint).unwrap();
+    restored.observe(&delta).unwrap();
+    assert_eq!(
+        serde_json::to_value(restored.finish().unwrap()).unwrap(),
+        serde_json::to_value(project(&set, &[first.clone(), delta.clone()], &target).unwrap())
+            .unwrap()
+    );
+    let budget = evidence(
+        false,
+        json!([{"identifier":"large","subject-summary":"x".repeat(crate::native::ddm::PROJECTION_BYTES),"is-identity":false,"data":"AQID"}]),
+        json!([]),
+    );
+    let mut bounded = crate::native::ddm::Projection::new(&set, &target).unwrap();
+    bounded.observe(&budget).unwrap();
+    assert!(
+        serde_json::to_vec(&bounded.checkpoint()).unwrap().len()
+            < crate::native::ddm::PROJECTION_BYTES
+    );
+    bounded.observe(&first).unwrap();
+    let exhausted = bounded.finish().unwrap();
+    assert!(!exhausted.synchronized);
+    assert!(
+        exhausted
+            .unknown_items
+            .contains("security.certificate.list")
+    );
     let merged = project(&set, &[first.clone(), delta.clone()], &target).unwrap();
     assert_eq!(
         merged.items["security.certificate.list"],
@@ -1234,23 +1264,17 @@ fn ddm_projection_is_commutative_and_old_tokens_do_not_change_current_claims() {
         declaration_type: "com.apple.configuration.management.status-subscriptions".into(),
         payload: Fields(BTreeMap::from([(
             "StatusItems".into(),
-            F::Array(vec![
-                F::Dictionary(Fields(BTreeMap::from([(
-                    "Name".into(),
-                    F::String("management.declarations".into()),
-                )]))),
-                F::Dictionary(Fields(BTreeMap::from([(
-                    "Name".into(),
-                    F::String("device.operating-system.version".into()),
-                )]))),
-            ]),
+            F::Array(vec![F::Dictionary(Fields(BTreeMap::from([(
+                "Name".into(),
+                F::String("device.operating-system.version".into()),
+            )])))]),
         )])),
     };
     let declaration = input.compile("v1", &target).unwrap();
     let token = declaration.server_token().to_string();
     let set = DeclarationSet::new("scope", vec![declaration]).unwrap();
     let evidence = |token: &str, active: bool, version: &str| {
-        ReportEvidence{context:context.clone(),report:serde_json::to_vec(&serde_json::json!({"FullReport":true,"Errors":[],"StatusItems":{"management":{"declarations":{"activations":[],"configurations":[{"identifier":"subscriptions","server-token":token,"active":active,"valid":"valid"}],"assets":[],"management":[]}},"device":{"operating-system":{"version":version}}}})).unwrap(),subscriptions:BTreeSet::from(["management.declarations".into(),"device.operating-system.version".into()]),declarations_token:set.tokens()["SyncTokens"]["DeclarationsToken"].as_str().unwrap().into()}
+        ReportEvidence{context:context.clone(),report:serde_json::to_vec(&serde_json::json!({"FullReport":true,"Errors":[],"StatusItems":{"management":{"declarations":{"activations":[],"configurations":[{"identifier":"subscriptions","server-token":token,"active":active,"valid":"valid"}],"assets":[],"management":[]}},"device":{"operating-system":{"version":version}}}})).unwrap(),subscriptions:BTreeSet::from(["device.operating-system.version".into()]),declarations_token:set.tokens()["SyncTokens"]["DeclarationsToken"].as_str().unwrap().into()}
     };
     let first = evidence(&token, true, "26.0");
     let stale = evidence("older-token", false, "15.0");

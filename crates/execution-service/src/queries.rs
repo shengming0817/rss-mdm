@@ -91,11 +91,26 @@ impl Queries {
             if op.device!=device{return Err(Error::Forbidden.into());}
             let command=service.command_status(tx,&op).await?;
             let now=storage::now(tx).await?;let approved=storage::approval_valid(&service.source, &service.protection,tx,&op,now).await?;
+            let mut native_values=true;
             if matches!(op.request.task, Task::Macos { request:rss_mdm_apple_mdm::native::request::Request::Command{..} | rss_mdm_apple_mdm::native::request::Request::Declarations{..} }) {
                 let mut required=op.request.task.permissions()?;required.extend_from_slice(op.approval.required());required.sort();required.dedup();
                 storage::authorized_native(tx,proof,device,&required).await?;
             }
-            let observation=protocol::observation(tx,&service.protection,service.apple_results.clone(),&op,command,true).await?;
+            if op.request.profile_target().is_some() {
+                let mut required=op.request.task.permissions()?;
+                required.extend_from_slice(op.approval.required());
+                required.push(Permission::InventoryCollect);
+                required.sort(); required.dedup();
+                let snapshot=crate::action_admission::current(tx,proof).await?;
+                for permission in required {
+                    match snapshot.require(proof,permission,Some(device)) {
+                        Ok(()) => {},
+                        Err(crate::authorization::error::AuthorizationError::Forbidden) => native_values=false,
+                        Err(error) => return Err(Error::from(error).into()),
+                    }
+                }
+            }
+            let observation=protocol::observation(tx,&service.protection,service.apple_results.clone(),&op,command,native_values).await?;
             let agent_installation=if op.approval.agent_package().is_some(){Some(super::native_installation::installation_observation(tx,service.apple_results.clone(),service.agent_store.clone(),&op).await?)}else{None};
             service.audit_store.append_request_in(tx,audit,200,"success").await?;
             records::decode(json!({"operationId":op.id,"commandId":op.id,"revision":op.revision,"task":op.request.task.summary()?,"target":op.request.target,"inputVersion":op.request.input_version,"deadline":op.request.deadline,"dispatchFailure":op.dispatch_failure,"authorization":if approved{"approved"}else{"blocked"},"commandStatus":crate::service::status(command),"observation":observation,"agentInstallation":agent_installation}))

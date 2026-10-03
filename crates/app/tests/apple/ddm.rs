@@ -199,6 +199,22 @@ async fn four_families_assets_recovery_and_withdrawal() -> Result<()> {
     peer.manage("Acknowledged", Some(id), None).await?;
     ensure!(f.operation(operation).await?["commandStatus"] == "received");
     let status = report(&initial, true, "15.0");
+    f.app
+        .execution
+        .inject_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
+    ensure!(
+        native(&peer, None, "status", Some(&status)).await?.0 == StatusCode::SERVICE_UNAVAILABLE
+    );
+    let mut fault_pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let rolled_back:(i64,bool)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_apple.status_reports WHERE tenant_id=$1::uuid),projection IS NULL FROM mdm_apple.declarations WHERE tenant_id=$1::uuid AND operation=$2").bind(case_tenant()).bind(operation).fetch_one(&mut fault_pg).await?;
+    ensure!(
+        rolled_back == (0, true),
+        "report or projection escaped failed transaction"
+    );
+    fault_pg.close().await?;
+    ensure!(f.operation(operation).await?["commandStatus"] == "received");
     ensure!(native(&peer, None, "status", Some(&status)).await?.0 == StatusCode::OK);
     ensure!(native(&peer, None, "status", Some(&status)).await?.0 == StatusCode::OK);
     let result = f.operation(operation).await?;
@@ -223,6 +239,23 @@ async fn four_families_assets_recovery_and_withdrawal() -> Result<()> {
             .windows(b"immutable-native-ddm".len())
             .any(|v| v == b"immutable-native-ddm")
     );
+    let cache: Vec<u8> = sqlx::query_scalar(
+        "SELECT projection FROM mdm_apple.declarations WHERE tenant_id=$1::uuid AND operation=$2",
+    )
+    .bind(case_tenant())
+    .bind(operation)
+    .fetch_one(&mut pg)
+    .await?;
+    ensure!(
+        serde_json::from_slice::<Value>(&cache).is_err(),
+        "projection remained plaintext"
+    );
+    // Corrupt retained history as a storage fault: online reads must use protected accumulated claims.
+    sqlx::query("UPDATE mdm_apple.status_reports SET evidence=$2 WHERE tenant_id=$1::uuid")
+        .bind(case_tenant())
+        .bind(vec![0u8; 68])
+        .execute(&mut pg)
+        .await?;
     pg.close().await?;
     let address = format!(
         "127.0.0.1:{}",
@@ -238,6 +271,10 @@ async fn four_families_assets_recovery_and_withdrawal() -> Result<()> {
     ensure!(
         peer.client.get(&url).send().await?.bytes().await?.as_ref()
             == serde_json::to_vec(&content)?
+    );
+    ensure!(
+        f.operation(operation).await?["observation"]["nativeStatus"]["synchronized"] == true,
+        "restart lost accumulated native claims"
     );
     let replacement = f
         .create_operation(|_| task(vec![subscription("subscriptions")], vec![]))
@@ -279,6 +316,15 @@ async fn four_families_assets_recovery_and_withdrawal() -> Result<()> {
         f.operation(withdrawal).await?["commandStatus"] == "received",
         "unversioned absence fabricated effect"
     );
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let unguarded:bool=sqlx::query_scalar("SELECT bool_and(legacy_released_at IS NOT NULL) FROM mdm_apple.declarations WHERE tenant_id=$1::uuid").bind(case_tenant()).fetch_one(&mut pg).await?;
+    ensure!(unguarded, "non-Legacy publication entered absence guards");
+    sqlx::query("UPDATE mdm_apple.declarations SET snapshot=$2 WHERE tenant_id=$1::uuid AND retired_at IS NOT NULL").bind(case_tenant()).bind(vec![0u8;68]).execute(&mut pg).await?;
+    pg.close().await?;
+    f.create_operation(|id| profile_task(id, true)).await?;
+    peer.next("InstallProfile").await?;
     drop(device);
     f.close().await
 }
@@ -331,7 +377,6 @@ async fn legacy_takeover_retains_guards_until_correlated_absence() -> Result<()>
         .create_operation(|_| {
             task(
                 vec![
-                    subscription("subscriptions"),
                     declaration("legacy", "com.apple.configuration.legacy", json!({})),
                     declaration(
                         "activation",

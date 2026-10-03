@@ -12,6 +12,8 @@ use rss_mdm_native_protection::{ProtectionContext, Protector};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;
+// Online work is bounded independently of retained evidence history.
+const MAX_PUBLICATIONS: usize = 16;
 mod assets;
 mod guards;
 mod reports;
@@ -84,8 +86,11 @@ async fn publications(
     p: &DevicePrincipal,
     user: &str,
 ) -> Result<Vec<(Uuid, String, Publication)>, Error> {
-    let rows=sqlx::query("SELECT operation,owner,snapshot FROM mdm_apple.declarations WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND user_key=$4 AND retired_at IS NULL ORDER BY operation")
+    let rows=sqlx::query("SELECT operation,owner,snapshot FROM mdm_apple.declarations WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND user_key=$4 AND retired_at IS NULL ORDER BY operation LIMIT 17")
         .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(user).fetch_all(c).await.map_err(db)?;
+    if rows.len() > MAX_PUBLICATIONS {
+        return Err(Error::Conflict);
+    }
     let mut out = Vec::new();
     for row in rows {
         let id = row.try_get("operation").map_err(db)?;
@@ -219,6 +224,9 @@ pub(crate) async fn publish(
             legacy,
         },
     ));
+    if old.len() > MAX_PUBLICATIONS {
+        return Ok(Err(native::Error::Constraint));
+    }
     let new = &old.last().ok_or(Error::Malformed)?.2;
     for (_, _, other) in &old[..old.len() - 1] {
         if new.legacy.iter().any(|a| {
@@ -249,8 +257,8 @@ pub(crate) async fn publish(
     )?;
     sqlx::query("UPDATE mdm_apple.declarations SET retired_at=floor(extract(epoch FROM clock_timestamp()))::bigint WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND user_key=$4 AND owner=$5 AND retired_at IS NULL")
         .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(user).bind(&command.owner).execute(&mut *c).await.map_err(db)?;
-    sqlx::query("INSERT INTO mdm_apple.declarations(tenant_id,operation,registration,generation,user_key,owner,snapshot) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)")
-        .bind(p.tenant().to_string()).bind(command.operation).bind(p.registration()).bind(p.generation()).bind(user).bind(&command.owner).bind(sealed).execute(&mut *c).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_apple.declarations(tenant_id,operation,registration,generation,user_key,owner,snapshot,legacy_released_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,CASE WHEN $8 THEN floor(extract(epoch FROM clock_timestamp()))::bigint END)")
+        .bind(p.tenant().to_string()).bind(command.operation).bind(p.registration()).bind(p.generation()).bind(user).bind(&command.owner).bind(sealed).bind(new.legacy.is_empty()).execute(&mut *c).await.map_err(db)?;
     Ok(Ok(set.tokens()))
 }
 struct Exchange {

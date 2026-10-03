@@ -1187,3 +1187,10 @@ for name in ('apple.ddm', 'apple.status'):
     MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs,
         'crates/app/tests/apple/ddm.rs','crates/app/tests/apple/users.rs','crates/app/tests/apple/policy.rs',
         'crates/app/tests/support/planning_http.rs','crates/app/tests/support/agent_execution.rs'))
+
+consume(('crates/execution-service/src/apple.rs', 'crates/execution-service/src/authority.rs',
+         'crates/execution-service/src/source_authority.rs', 'crates/execution-service/src/permissions.rs',
+         'crates/execution-service/src/queries.rs', 'crates/execution-service/src/queries/records.rs',
+         'crates/execution-service/src/transaction.rs', 'crates/execution-service/src/channels.rs',
+         'crates/execution-service/src/configuration.rs', 'crates/execution-service/src/native_configuration.rs',
+         'crates/execution-service/src/model.rs', 'crates/apple-mdm/src/native/request.rs'), 'apple.ddm apple.status')

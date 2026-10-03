@@ -61,13 +61,13 @@ APNs 唤醒在持久 lease 的授权事务完成时取得发送资格。已领�
 
 ## DDM 声明与状态
 
-operation 的 Apple 请求为 `{"kind":"declarations","declarations":[…],"assets":[…]}`；两个数组都必填，空 declarations 撤回当前调用方的集合。声明包含 identifier、declarationType 和类型化 payload，四类原生声明使用同一冻结版本/条件编译。StatusItems 订阅是 `com.apple.configuration.management.status-subscriptions` 配置声明中的 Name 数组，按当前作用域合并有效订阅；未知或当前平台不支持的名称被拒绝。
+operation 的 Apple 请求为 `{"kind":"declarations","declarations":[…],"assets":[…]}`；两个数组都必填，空 declarations 撤回当前调用方的集合。声明包含 identifier、declarationType 和类型化 payload，四类原生声明使用同一冻结版本/条件编译。StatusItems 订阅是 `com.apple.configuration.management.status-subscriptions` 配置声明中的 Name 数组，Apple 自动报告 management.declarations，无需显式订阅。其它状态按当前作用域合并有效订阅；未知或当前平台不支持的名称被拒绝。
 
 原生客户端经现有 mTLS `PUT /checkin` 发送 DeclarativeManagement plist，Endpoint 支持 tokens、declaration-items、declaration/{activation|configuration|asset|management}/{identifier} 和 status。读取返回原生 JSON，缺少对象返回 404；status 的 Data 为原生 JSON 报告，成功返回 200 空 body。启用/唤醒同步使用现有 MDM attempt 的 DeclarativeManagement 命令，不建立第二套队列。
 
 下载资产的 binding 指定 identifier、resource、version、variant、versionDigest（32 字节数组）、contentType 和 profileSchemas。Resource 必须是已上传受保护内容的不可变 configuration 版本；版本摘要、内容长度/摘要、架构和当前 ResourceRead 均复核。服务器提供 HTTPS DataURL/ProfileURL 和原生 MDM Authentication，拒绝任意外部下载 URL。Legacy Profile 使用未签名 plist 内容，并按载荷顺序列出准确 Profile schema；签名 CMS 不作为这一路径的原始 Profile 输入。
 
-operation observation 分别返回 expected、synchronization、nativeStatus、effect 和 compliance。原生状态区分 valid/invalid/unknown、active 与 reasons；共同 applied 仅表示精确版本的声明核验完成。空集合撤回的 ACK 和无版本缺席报告不会证明终端移除。乱序的同版本冲突、未关联版本的增量状态保持 Unknown；receivedAt 只表示服务器收到证据的时间。详细值仍需要 operation_read 及原操作全部权限；这些报告不自动成为 Inventory Snapshot 或合规成功。
+operation observation 分别返回 expected、synchronization、nativeStatus、effect 和 compliance。原生状态区分 valid/invalid/unknown、active 与 reasons；共同 applied 仅表示精确版本的声明核验完成。空集合撤回的 ACK 和无版本缺席报告不会证明终端移除。乱序的同版本冲突、未关联版本的增量状态保持 Unknown；receivedAt 只表示服务器收到证据的时间。详细值仍需要 operation_read 及原操作全部权限；Profile 原始清单还需要 inventory_collect，缺少权限时仍可读取核验摘要。每作用域最多 16 个有效 publication，累计状态预算为每个 512 KiB，预算耗尽后明确 Unknown；这些报告不自动成为 Inventory Snapshot 或合规成功。
 
 `make t2 MODULE=apple.ddm` 验证四类声明、资产、重启、Legacy 接管和 Policy 所有权；`MODULE=apple.status` 验证冲突、作用域和撤权。真实 Mac 的同步、状态与 Profile 交接属于独立 T3。
 

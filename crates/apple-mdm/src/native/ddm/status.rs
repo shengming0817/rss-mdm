@@ -22,7 +22,7 @@ pub struct DeclarationStatus {
     pub validity: Validity,
     pub reasons: Vec<Value>,
 }
-/// Validated wire report. The channel persists evidence and owns full/delta reconciliation.
+/// Validated wire report. The channel persists evidence; core Projection owns full/delta interpretation.
 pub struct StatusReport {
     full: bool,
     items: BTreeMap<String, Value>,

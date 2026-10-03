@@ -23,7 +23,7 @@ pub struct StatusProjection {
     pub synchronized: bool,
     pub compliance: &'static str,
 }
-#[derive(Default)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct ArrayClaims {
     objects: BTreeMap<String, BTreeSet<String>>,
     full: Option<BTreeSet<String>>,
@@ -77,6 +77,19 @@ impl ArrayClaims {
         Ok((Value::Array(items), unknown))
     }
 }
+/// Bounded accumulated claims for one immutable native publication. No report history is needed.
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectionState {
+    claims: BTreeMap<String, BTreeSet<String>>,
+    arrays: BTreeMap<String, ArrayClaims>,
+    native: BTreeMap<String, BTreeSet<String>>,
+    errors: BTreeSet<String>,
+    full: bool,
+    exhausted: bool,
+}
+/// Maximum persisted claim bytes; exceeding it preserves raw evidence but makes projection Unknown.
+pub const PROJECTION_BYTES: usize = 512 * 1024;
 /// Exact-token, commutative native evidence fold; persistence and receive order remain outside.
 pub struct Projection<'a> {
     set: &'a DeclarationSet,
@@ -84,9 +97,10 @@ pub struct Projection<'a> {
     wanted: BTreeSet<String>,
     claims: BTreeMap<String, BTreeSet<String>>,
     arrays: BTreeMap<String, ArrayClaims>,
-    native: BTreeMap<(String, String), BTreeSet<String>>,
+    native: BTreeMap<String, BTreeSet<String>>,
     errors: BTreeSet<String>,
     full: bool,
+    exhausted: bool,
 }
 impl<'a> Projection<'a> {
     /// Freeze expected versions and subscribed native names.
@@ -136,7 +150,7 @@ impl<'a> Projection<'a> {
                 arrays.insert(name.clone(), ArrayClaims::default());
             }
         }
-        let native: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
+        let native: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let errors = BTreeSet::new();
         let full = false;
         Ok(Self {
@@ -148,10 +162,39 @@ impl<'a> Projection<'a> {
             native,
             errors,
             full,
+            exhausted: false,
         })
+    }
+    /// Restore only claims bound by the caller to this exact immutable publication.
+    pub fn restore(
+        set: &'a DeclarationSet,
+        target: &Target<'_>,
+        state: ProjectionState,
+    ) -> Result<Self, Error> {
+        let mut projection = Self::new(set, target)?;
+        projection.claims = state.claims;
+        projection.arrays.extend(state.arrays);
+        projection.native = state.native;
+        projection.errors = state.errors;
+        projection.full = state.full;
+        projection.exhausted = state.exhausted;
+        Ok(projection)
+    }
+    pub fn checkpoint(&self) -> ProjectionState {
+        ProjectionState {
+            claims: self.claims.clone(),
+            arrays: self.arrays.clone(),
+            native: self.native.clone(),
+            errors: self.errors.clone(),
+            full: self.full,
+            exhausted: self.exhausted,
+        }
     }
     /// Add one immutable report. No insertion or receive order determines recency.
     pub fn observe(&mut self, evidence: &ReportEvidence) -> Result<(), Error> {
+        if self.exhausted {
+            return Ok(());
+        }
         let Self {
             set,
             expected_versions,
@@ -213,7 +256,8 @@ impl<'a> Projection<'a> {
                 }
             }
         }
-        if evidence.subscriptions.contains("management.declarations") {
+        {
+            // Apple reports management.declarations automatically, without a subscription.
             for status in declaration_status {
                 let Some(expected) = set.declaration(status.kind, &status.identifier) else {
                     continue;
@@ -223,12 +267,22 @@ impl<'a> Projection<'a> {
                 }
                 let value = json!({"active":status.active,"valid":match status.validity{Validity::Valid=>"valid",Validity::Invalid=>"invalid",Validity::Unknown=>"unknown"},"reasons":status.reasons});
                 claim(
-                    native
-                        .entry((status.identifier, status.server_token))
-                        .or_default(),
+                    native.entry(status.identifier).or_default(),
                     serde_json::to_string(&value).map_err(|_| Error::Encoding)?,
                 );
             }
+        }
+        if serde_json::to_vec(&self.checkpoint())
+            .map_err(|_| Error::Encoding)?
+            .len()
+            > PROJECTION_BYTES
+        {
+            self.claims.clear();
+            self.arrays.clear();
+            self.native.clear();
+            self.errors.clear();
+            self.full = false;
+            self.exhausted = true;
         }
         Ok(())
     }
@@ -245,6 +299,10 @@ impl<'a> Projection<'a> {
         } = self;
         let mut items = BTreeMap::new();
         let mut unknown_items = BTreeSet::new();
+        if self.exhausted {
+            unknown_items.extend(self.wanted);
+            unknown_items.insert("management.declarations".into());
+        }
         for (name, values) in claims {
             if values.len() == 1
                 && let Some(value) = values.first()
@@ -282,14 +340,14 @@ impl<'a> Projection<'a> {
             {
                 let id = expected["Identifier"].as_str().ok_or(Error::Encoding)?;
                 let token = expected["ServerToken"].as_str().ok_or(Error::Encoding)?;
-                let values = native.get(&(id.into(), token.into()));
+                let values = native.get(id);
                 let state = if let Some(values) = values
                     && values.len() == 1
                 {
                     serde_json::from_str(values.first().ok_or(Error::Encoding)?)
                         .map_err(|_| Error::Encoding)?
                 } else {
-                    json!({"active":null,"valid":"unknown","reasons":[],"evidence":if values.is_some(){"unordered_conflict"}else{"unobserved"}})
+                    json!({"active":null,"valid":"unknown","reasons":[],"evidence":if self.exhausted{"work_budget_exceeded"}else if values.is_some(){"unordered_conflict"}else{"unobserved"}})
                 };
                 declarations
                     .push(json!({"identifier":id,"serverToken":token,"kind":kind,"native":state}));

@@ -44,7 +44,7 @@ class ModuleImpactTests(unittest.TestCase):
             self.assertEqual(set(selected.modules), {
                 'execution.agent.history', 'execution.commands.windows', 'planning.http',
                 'planning.agent_policy', 'planning.remote', 'planning.software'}
-                | ({'apple.commands','apple.users'} if path.endswith('/records.rs') else set()))
+                | ({'apple.commands','apple.users','apple.ddm','apple.status'} if path.endswith('/records.rs') else set()))
 
     def test_native_modules_select_actual_write_read_permission_and_helper_inputs(self):
         for path in ('crates/execution-service/src/service.rs',
@@ -54,6 +54,16 @@ class ModuleImpactTests(unittest.TestCase):
             selected = select_paths([path])
             self.assertFalse(selected.full, path)
             self.assertTrue({'apple.commands', 'apple.users'} <= set(selected.modules), path)
+
+    def test_ddm_authority_and_reads_select_native_consumers(self):
+        for path in ('crates/execution-service/src/apple.rs',
+                     'crates/execution-service/src/authority.rs',
+                     'crates/execution-service/src/permissions.rs',
+                     'crates/execution-service/src/queries.rs',
+                     'crates/execution-service/src/transaction.rs',
+                     'crates/apple-mdm/src/native/request.rs'):
+            selected = select_paths([path])
+            self.assertTrue({'apple.ddm', 'apple.status'} <= set(selected.modules), path)
 
     def test_script_preparation_selects_all_script_entrances(self):
         for path in ('crates/resource/src/script.rs',

@@ -90,19 +90,7 @@ pub(super) fn required(task: &Task) -> Result<Vec<P>, Error> {
                                 }
                             }
                         }
-                        let ty = declaration.declaration_type.as_str();
-                        if ty.contains("softwareupdate") {
-                            permissions.insert(P::DeviceUpdate);
-                        }
-                        if ty.contains("app.managed") || ty.contains("package") {
-                            permissions.insert(P::SoftwareDeploy);
-                        }
-                        if ty.contains("credential") || ty.contains("identity") {
-                            permissions.insert(P::SecurityOperate);
-                        }
-                        if ty.contains("account") {
-                            permissions.insert(P::AccountWrite);
-                        }
+                        permissions.insert(apple_declaration(&declaration.declaration_type)?);
                     }
                 }
             }
@@ -110,6 +98,69 @@ pub(super) fn required(task: &Task) -> Result<Vec<P>, Error> {
     }
     Ok(permissions.into_iter().collect())
 }
+fn apple_declaration(identity: &str) -> Result<P, Error> {
+    Ok(match identity {
+        "com.apple.activation.simple"
+        | "com.apple.asset.data"
+        | "com.apple.configuration.accessibility.settings"
+        | "com.apple.configuration.app.settings"
+        | "com.apple.configuration.content-cache.settings"
+        | "com.apple.configuration.external-intelligence.settings"
+        | "com.apple.configuration.intelligence.settings"
+        | "com.apple.configuration.keyboard.settings"
+        | "com.apple.configuration.legacy.interactive"
+        | "com.apple.configuration.legacy"
+        | "com.apple.configuration.management.status-subscriptions"
+        | "com.apple.configuration.management.test"
+        | "com.apple.configuration.math.settings"
+        | "com.apple.configuration.migration-assistant.settings"
+        | "com.apple.configuration.safari.bookmarks"
+        | "com.apple.configuration.safari.settings"
+        | "com.apple.configuration.siri.settings"
+        | "com.apple.management.organization-info"
+        | "com.apple.management.properties"
+        | "com.apple.management.server-capabilities" => P::ConfigurationWrite,
+        "com.apple.asset.useridentity"
+        | "com.apple.configuration.account.caldav"
+        | "com.apple.configuration.account.carddav"
+        | "com.apple.configuration.account.exchange"
+        | "com.apple.configuration.account.google"
+        | "com.apple.configuration.account.ldap"
+        | "com.apple.configuration.account.mail"
+        | "com.apple.configuration.account.subscribed-calendar" => P::AccountWrite,
+        "com.apple.configuration.app.managed" | "com.apple.configuration.package" => {
+            P::SoftwareDeploy
+        }
+        "com.apple.configuration.softwareupdate.enforcement.specific"
+        | "com.apple.configuration.softwareupdate.settings" => P::DeviceUpdate,
+        "com.apple.asset.credential.acme"
+        | "com.apple.asset.credential.certificate"
+        | "com.apple.asset.credential.identity"
+        | "com.apple.asset.credential.scep"
+        | "com.apple.asset.credential.userpassword"
+        | "com.apple.configuration.diskmanagement.settings"
+        | "com.apple.configuration.extensible-sso"
+        | "com.apple.configuration.network.dns-proxy"
+        | "com.apple.configuration.network.dns-settings"
+        | "com.apple.configuration.network.relay"
+        | "com.apple.configuration.network.vpn.ikev2"
+        | "com.apple.configuration.network.vpn.ipsec"
+        | "com.apple.configuration.network.vpn.vpn-plugin"
+        | "com.apple.configuration.passcode.settings"
+        | "com.apple.configuration.safari.extensions.settings"
+        | "com.apple.configuration.screensharing.connection.group"
+        | "com.apple.configuration.screensharing.connection"
+        | "com.apple.configuration.screensharing.host.settings"
+        | "com.apple.configuration.security.certificate"
+        | "com.apple.configuration.security.identity"
+        | "com.apple.configuration.security.passkey.attestation"
+        | "com.apple.configuration.services.background-tasks"
+        | "com.apple.configuration.services.configuration-files"
+        | "com.apple.configuration.webcontent-filter.plugin" => P::SecurityOperate,
+        _ => return Err(Error::Unsupported),
+    })
+}
+
 fn apple_profile(schema: &str) -> Result<P, Error> {
     Ok(match schema {
         "mdm/profiles/com.apple.mdm.yaml" => return Err(Error::Unsupported),
@@ -701,6 +752,24 @@ fn security_policy_area(area: &str) -> bool {
 mod windows_tests {
     use super::*;
     use rss_mdm_windows_mdm::native::Verb;
+    #[test]
+    fn sensitive_declarations_require_security_authority() {
+        for identity in [
+            "services.background-tasks",
+            "services.configuration-files",
+            "network.dns-proxy",
+            "network.dns-settings",
+            "network.relay",
+            "network.vpn.ikev2",
+            "passcode.settings",
+        ] {
+            assert_eq!(
+                apple_declaration(&format!("com.apple.configuration.{identity}")).unwrap(),
+                P::SecurityOperate
+            );
+        }
+        assert!(apple_declaration("com.apple.configuration.future").is_err());
+    }
     #[test]
     fn apple_profile_security_is_explicit_and_unknown_schema_is_rejected() {
         for schema in [
