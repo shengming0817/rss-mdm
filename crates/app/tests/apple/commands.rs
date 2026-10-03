@@ -129,12 +129,64 @@ async fn native_families_keep_results_separate_from_effects() -> Result<()> {
         payload["ManifestURL"].as_string() == Some("https://packages.example.test/manifest.plist")
     );
     let next = peer.manage("Acknowledged", Some(id), None).await?;
-    let (observe, _) = command(&next, "InstalledApplicationList")?;
-    peer.manage("Error", Some(observe), None).await?;
+    ensure!(
+        next.is_empty(),
+        "ManifestURL cannot supply a trusted bundle identity"
+    );
     let result = f.operation(pkg).await?;
     ensure!(
         result["commandStatus"] == "received" && result["observation"]["effect"] == "unverified",
         "PKG {result}"
+    );
+    let fields = rss_mdm_apple_mdm::native::input::Fields::from_plist(&protocol::dictionary([(
+        "Manifest",
+        plist::Value::Dictionary(protocol::dictionary([(
+            "items",
+            plist::Value::Array(vec![plist::Value::Dictionary(protocol::dictionary([
+                (
+                    "assets",
+                    plist::Value::Array(vec![plist::Value::Dictionary(protocol::dictionary([
+                        ("kind", "software-package".into()),
+                        ("url", "https://packages.example.test/app.pkg".into()),
+                        ("sha256", "ab".repeat(32).into()),
+                    ]))]),
+                ),
+                (
+                    "metadata",
+                    plist::Value::Dictionary(protocol::dictionary([
+                        ("bundle-identifier", "org.example.native-pkg".into()),
+                        ("bundle-version", "1.2.3".into()),
+                        ("kind", "software".into()),
+                        ("title", "Fixture".into()),
+                    ])),
+                ),
+            ]))]),
+        )])),
+    )]))?;
+    let pkg = f
+        .create_operation(|_| {
+            task(
+                "InstallEnterpriseApplication",
+                serde_json::to_value(fields).unwrap(),
+            )
+        })
+        .await?;
+    let (id, _) = peer.next("InstallEnterpriseApplication").await?;
+    let next = peer.manage("Acknowledged", Some(id), None).await?;
+    let (observe, payload) = command(&next, "InstalledApplicationList")?;
+    ensure!(
+        payload["Identifiers"]
+            .as_array()
+            .is_some_and(|identifiers| {
+                identifiers.len() == 1
+                    && identifiers[0].as_string() == Some("org.example.native-pkg")
+            })
+    );
+    peer.manage("Error", Some(observe), None).await?;
+    let result = f.operation(pkg).await?;
+    ensure!(
+        result["commandStatus"] == "received" && result["observation"]["effect"] == "unverified",
+        "query error rejected pending PKG {result}"
     );
     let update=f.create_operation(|_|task("ScheduleOSUpdate",json!({"Updates":{"type":"array","value":[{"type":"dictionary","value":{"ProductKey":{"type":"string","value":"fixture-update"},"InstallAction":{"type":"string","value":"InstallLater"},"MaxUserDeferrals":{"type":"integer","value":"3"}}}]}}))).await?;
     let (id, _) = peer.next("ScheduleOSUpdate").await?;
