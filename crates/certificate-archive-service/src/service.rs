@@ -419,7 +419,7 @@ impl Archive {
                 generation,
                 entry,
                 expected,
-                metadata,
+                metadata: Box::new(metadata),
                 facts,
                 sealed,
                 request_version,

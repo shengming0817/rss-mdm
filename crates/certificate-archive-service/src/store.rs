@@ -109,7 +109,7 @@ pub(crate) enum Mutation {
         generation: i64,
         entry: Uuid,
         expected: i64,
-        metadata: Metadata,
+        metadata: Box<Metadata>,
         facts: Vec<MaterialFacts>,
         sealed: Vec<u8>,
         request_version: Option<VersionRef>,
