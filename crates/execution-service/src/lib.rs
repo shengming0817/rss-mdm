@@ -41,6 +41,11 @@ pub use native_configuration::Diagnosis as ConfigurationDiagnosis;
 pub mod health;
 mod lifecycle;
 pub mod native;
+mod retirement;
+mod windows_wake;
+pub use retirement::retire_in;
+/// Privileges for participation in the registration owner’s original transaction.
+pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 
 mod protocol;
 pub mod recovery;

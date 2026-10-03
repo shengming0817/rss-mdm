@@ -73,6 +73,8 @@ pub enum ConfigIssue {
     SecretContents,
     Budget,
     WindowsListeners,
+    WindowsPush,
+    WindowsPoll,
     EnrollmentCa,
     NativeTls,
     ProtocolKey,

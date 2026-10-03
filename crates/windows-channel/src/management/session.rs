@@ -17,6 +17,8 @@ struct Session {
     facts: Vec<rss_mdm_audit_integration::Fact>,
     run_id: Option<Uuid>,
     collection_complete: bool,
+    login_user: bool,
+    limits: CodecLimits,
 }
 impl rss_mdm_execution_service::channels::Windows for Windows {
     fn prepare<'a>(
@@ -172,18 +174,39 @@ async fn prepare(
         let _ = syncml::correlate(expected, &input, &CodecLimits::default())
             .map_err(|_| Error::Conflict)?;
     }
+    let login_user = stored
+        .as_ref()
+        .map(|r| r.try_get::<bool, _>("login_user").map_err(db))
+        .transpose()?
+        .unwrap_or_else(|| {
+            raw.commands.iter().any(|c| {
+                matches!(
+                    c,
+                    Command::Alert {
+                        alert: syncml::Alert::LoginStatus {
+                            status: syncml::LoginStatus::User,
+                            ..
+                        },
+                        ..
+                    }
+                )
+            })
+        });
     let facts = if authenticated {
         crate::notifications::facts(key, p, raw, bytes, audit)?
     } else {
         vec![]
     };
     let prepared = PreparedWindows {
+        user_available: authenticated && login_user,
+        provider_id: windows.provider_id.clone(),
+        management_urls: windows.management_urls(),
         input,
         history: history.expected,
         response,
         controls,
         continuing,
-        limits: history.limits,
+        limits: history.limits.clone(),
         package,
         session: Box::new(Session {
             windows,
@@ -200,6 +223,8 @@ async fn prepare(
             facts,
             run_id: None,
             collection_complete: false,
+            login_user,
+            limits: history.limits,
         }),
     };
     Ok(if authenticated {
@@ -245,6 +270,20 @@ fn interruption(raw: &syncml::Message, fault: crate::large_object::Fault) -> Vec
     ]
 }
 impl WindowsSession for Session {
+    fn result_eligible<'a>(
+        &'a self,
+        c: &'a mut sqlx::PgConnection,
+        key: &'a rss_mdm_native_protection::Protector,
+        p: &'a DevicePrincipal,
+        session: u32,
+        reference: &'a syncml::Reference,
+    ) -> rss_mdm_execution_service::channels::Pending<'a, Option<bool>> {
+        Box::pin(async move {
+            crate::push_channel::result_eligible(c, key, p, session, reference)
+                .await
+                .map_err(Into::into)
+        })
+    }
     fn collect<'a>(
         &'a mut self,
         source: &'a dyn rss_mdm_execution_service::source_authority::SourceAuthority,
@@ -260,11 +299,22 @@ impl WindowsSession for Session {
             let result: Result<bool, Error> = async {
                 let filtered = if self.authenticated {
                     let history = history.ok_or(Error::Conflict)?;
+                    let input = crate::push_channel::receive(
+                        c,
+                        key,
+                        &self.windows,
+                        p,
+                        input,
+                        history,
+                        &self.audit,
+                        &mut self.facts,
+                    )
+                    .await?;
                     let input = crate::agent_collection::receive(
                         c,
                         key,
                         p,
-                        input,
+                        &input,
                         history,
                         &mut self.facts,
                     )
@@ -296,6 +346,9 @@ impl WindowsSession for Session {
                 self.collection_complete = complete;
                 let mut pending = false;
                 if dispatch && self.authenticated {
+                    pending |=
+                        crate::push_channel::send(c, key, &self.windows, p, response, &self.limits)
+                            .await?;
                     pending |= crate::agent_collection::send(
                         c,
                         key,
@@ -384,9 +437,9 @@ async fn save(
         "challenge"
     };
     if session.stored.is_none() {
-        sqlx::query("INSERT INTO mdm_access.management_sessions(tenant_id,registration,session_id,generation,credential,state,last_message,client_authenticated,nonce,expires_at,run_id) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,$7,$8,$9,clock_timestamp()+interval '15 minutes',$10)")
+        sqlx::query("INSERT INTO mdm_access.management_sessions(tenant_id,registration,session_id,generation,credential,state,last_message,client_authenticated,nonce,expires_at,run_id,login_user) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,$7,$8,$9,clock_timestamp()+interval '15 minutes',$10,$11)")
             .bind(&tenant).bind(&registration).bind(&sid).bind(p.generation()).bind(p.credential()).bind(state).bind(mid)
-            .bind(session.client_authenticated).bind(&session.server.nonce).bind(session.run_id).execute(&mut *c).await.map_err(db)?;
+            .bind(session.client_authenticated).bind(&session.server.nonce).bind(session.run_id).bind(session.login_user).execute(&mut *c).await.map_err(db)?;
         notify(c).await.map_err(db)?;
     } else {
         sqlx::query("UPDATE mdm_access.management_sessions SET state=$4,last_message=$5,client_authenticated=$6,nonce=$7,run_id=$8 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3")

@@ -22,6 +22,26 @@ pub(crate) async fn create(
     reference: Uuid,
     key: Uuid,
 ) -> anyhow::Result<crate::enrollment::Receipt> {
+    create_windows(
+        store,
+        proof,
+        device,
+        password,
+        reference,
+        key,
+        rss_mdm_registration_service::enrollment::WindowsProfile::Full,
+    )
+    .await
+}
+pub(crate) async fn create_windows(
+    store: &Database,
+    proof: &AuthorizedPrincipal,
+    device: &str,
+    password: &Password,
+    reference: Uuid,
+    key: Uuid,
+    profile: rss_mdm_registration_service::enrollment::WindowsProfile,
+) -> anyhow::Result<crate::enrollment::Receipt> {
     let a = audit(proof, key, device, "enrollment_create");
     let receipt = crate::enrollment::store::create_enrollment(
         store
@@ -31,6 +51,7 @@ pub(crate) async fn create(
         proof.enrollment(device)?,
         password,
         rss_mdm_inventory::ReportSource::MdmWindows,
+        Some(profile),
         reference,
         key,
         &a,

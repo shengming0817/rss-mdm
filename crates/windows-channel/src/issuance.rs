@@ -59,6 +59,9 @@ pub async fn issuance_intent(
     now: i64,
 ) -> Result<Intent, Error> {
     let (csr, enrollment_type) = input;
+    if auth.windows_profile.map(|v| v.as_str()) != Some(enrollment_type.as_str()) {
+        return Err(Error::Forbidden);
+    }
     let verified = Csr::verify(csr)?;
     let mut tx = database.begin(proof.tenant_id()).await?;
     let row = request(&mut tx, proof.tenant_id(), auth.id).await?;
@@ -114,7 +117,6 @@ pub async fn issuance_intent(
             credential: intent.credential.to_string(),
             epoch: intent.epoch.to_string(),
             secrets: &intent.sealed,
-            enrollment_type: enrollment_type.as_str(),
         },
     )
     .await
@@ -374,6 +376,8 @@ pub fn provision(
     };
     rss_mdm_windows_mdm::provisioning::encode(
         &rss_mdm_windows_mdm::provisioning::Provisioning {
+            poll: &w.poll,
+            push_pfn: w.push.as_ref().map(|p| p.pfn.as_str()),
             enrollment_type: intent.enrollment_type,
             enterprise_device_id: &intent.registration.to_string(),
             issuer: &intent.issuer,

@@ -1,5 +1,7 @@
 //! ref: RustCrypto formats x509-cert/v0.2.5 src/request.rs; ring 0.17.14 src/rsa/keypair.rs.
+mod renewal;
 use crate::Error;
+pub use renewal::RenewalProof;
 use ring::{
     rand::SystemRandom,
     signature::{self, KeyPair},
@@ -101,6 +103,7 @@ pub struct WindowsEnrollmentAuthority {
     certificate: Certificate,
     der: Vec<u8>,
     verifier: Arc<dyn ClientCertVerifier>,
+    enrollment_verifier: Arc<dyn ClientCertVerifier>,
 }
 impl WindowsEnrollmentAuthority {
     pub fn der(&self) -> &[u8] {
@@ -110,6 +113,10 @@ impl WindowsEnrollmentAuthority {
         self.verifier.clone()
     }
 
+    /// Enrollment permits unauthenticated initial enrollment, but verifies any offered TLS identity.
+    pub fn enrollment_verifier(&self) -> Arc<dyn ClientCertVerifier> {
+        self.enrollment_verifier.clone()
+    }
     pub fn from_bytes(pem: &[u8], pkcs8: &[u8], now: i64) -> Result<Self, Error> {
         if pem.len() > 32768 || pkcs8.len() > 32768 {
             return Err(Error::Malformed);
@@ -153,8 +160,16 @@ impl WindowsEnrollmentAuthority {
         roots
             .add(CertificateDer::from(der.clone()))
             .map_err(invalid)?;
+        let roots = Arc::new(roots);
+        let enrollment_verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
+            roots.clone(),
+            Arc::new(rustls::crypto::ring::default_provider()),
+        )
+        .allow_unauthenticated()
+        .build()
+        .map_err(invalid)?;
         let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
-            Arc::new(roots),
+            roots,
             Arc::new(rustls::crypto::ring::default_provider()),
         )
         .build()
@@ -164,6 +179,7 @@ impl WindowsEnrollmentAuthority {
             certificate,
             der,
             verifier,
+            enrollment_verifier,
         })
     }
     pub fn intent(&self, csr: &Csr, registration: Uuid, now: i64) -> Result<IssuanceIntent, Error> {

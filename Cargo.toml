@@ -57,7 +57,7 @@ rss-identity-postgres = { git = "https://dev.azure.com/shengming0923/rss/_git/rs
 rss-identity-http-axum = { git = "https://dev.azure.com/shengming0923/rss/_git/rss-identity", rev = "c8e1c42824225e2d9de81662539174a0fefedd39" }
 rss-identity-oidc = { git = "https://dev.azure.com/shengming0923/rss/_git/rss-identity", rev = "c8e1c42824225e2d9de81662539174a0fefedd39" }
 axum = { version = "=0.8.9", features = ["json", "query"] }
-reqwest = { version = "=0.12.28", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "=0.12.28", default-features = false, features = ["rustls-tls", "http2"] }
 url = "2.5"
 uuid = { version = "1", features = ["v4", "serde"] }
 zeroize = { version = "1", features = ["serde"] }
@@ -68,6 +68,7 @@ subtle = "2"
 libc = "0.2"
 rand = "0.8"
 http-body-util = "0.1"
+httpdate = "1"
 h2 = "=0.4.19"
 tower = { version = "0.5", features = ["util"] }
 rss-runtime = { git = "https://dev.azure.com/shengming0923/rss/_git/rss", rev = "c83978d9b43d40f6663dc923c3e2afb3e9f51895", default-features = false }

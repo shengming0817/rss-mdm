@@ -292,8 +292,30 @@ pub async fn eligible_on(
     p: &crate::device::DevicePrincipal,
     id: Uuid,
 ) -> std::result::Result<bool, crate::Error> {
+    eligible_target_on(
+        source,
+        c,
+        p.tenant(),
+        &crate::Target {
+            device: p.device().into(),
+            registration: p.registration(),
+            generation: p.generation(),
+        },
+        id,
+    )
+    .await
+}
+
+/// Wake claims revalidate the same frozen grants under the authority/channel locks.
+pub(crate) async fn eligible_target_on(
+    source: &dyn crate::source_authority::SourceAuthority,
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    target: &crate::Target,
+    id: Uuid,
+) -> std::result::Result<bool, crate::Error> {
     let row=sqlx::query("SELECT coalesce(v.frozen,o.frozen) AS frozen,r.device,r.deadline,r.state,(policy.definition->>'scope')::uuid AS scope FROM mdm_commands.action_runs r LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) LEFT JOIN mdm_policy.policies policy ON(policy.tenant_id,policy.id)=(v.tenant_id,v.policy) LEFT JOIN mdm_planning.remote_operations o ON(o.tenant_id,o.id)=(r.tenant_id,r.remote_operation) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.device=$3 AND r.registration=$4 AND r.generation=$5 AND r.deadline>floor(extract(epoch FROM clock_timestamp())) AND ((policy.enabled AND policy.current_version=r.policy_version) OR (o.deadline>floor(extract(epoch FROM clock_timestamp())) AND NOT o.cancelled))")
-        .bind(p.tenant().to_string()).bind(id).bind(p.device()).bind(p.registration()).bind(p.generation()).fetch_optional(&mut *c).await.map_err(crate::database::db)?;
+        .bind(tenant.to_string()).bind(id).bind(target.device.as_str()).bind(target.registration).bind(target.generation).fetch_optional(&mut *c).await.map_err(crate::database::db)?;
     let Some(row) = row else {
         return Ok(false);
     };
@@ -302,7 +324,7 @@ pub async fn eligible_on(
         .map_err(crate::database::db)?
         && !matches!(
             source
-                .admission_on(c, p.tenant(), scope, p.device())
+                .admission_on(c, tenant, scope, target.device.as_str())
                 .await
                 .map_err(crate::Error::from)?,
             crate::source_authority::ScopeAdmission::Eligible { .. }
@@ -326,7 +348,7 @@ pub async fn eligible_on(
     };
     let Some(grants) = action
         .grants
-        .get(p.device())
+        .get(target.device.as_str())
         .or_else(|| action.grants.get("*"))
     else {
         return Ok(false);

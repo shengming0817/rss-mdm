@@ -16,6 +16,12 @@ pub enum NativeTarget {
     User { user_id: String },
 }
 impl NativeTarget {
+    pub(crate) fn matches_windows_context(&self, context: Option<Uuid>) -> bool {
+        match self {
+            Self::Device => true,
+            Self::User { user_id } => context.is_some_and(|id| user_id == &id.to_string()),
+        }
+    }
     pub fn user_key(&self) -> &str {
         match self {
             Self::Device => "",

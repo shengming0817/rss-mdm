@@ -77,6 +77,8 @@ async fn prune_on(
     }
     sqlx::query("DELETE FROM mdm_access.management_messages m USING unnest($2::text[],$3::text[]) k(registration,session_id) WHERE m.tenant_id=$1::uuid AND m.registration=k.registration::uuid AND m.session_id=k.session_id")
             .bind(tenant).bind(&registrations).bind(&sessions).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("DELETE FROM mdm_windows.push_queries q USING unnest($2::text[],$3::text[]) k(registration,session_id) WHERE q.tenant_id=$1::uuid AND q.registration=k.registration::uuid AND q.session::text=k.session_id")
+        .bind(tenant).bind(&registrations).bind(&sessions).execute(&mut *tx).await.map_err(db)?;
     let count=sqlx::query("DELETE FROM mdm_access.management_sessions s USING unnest($2::text[],$3::text[]) k(registration,session_id) WHERE s.tenant_id=$1::uuid AND s.registration=k.registration::uuid AND s.session_id=k.session_id")
             .bind(tenant).bind(&registrations).bind(&sessions).execute(&mut *tx).await.map_err(db)?.rows_affected();
     Ok(count)

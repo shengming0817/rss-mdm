@@ -152,6 +152,8 @@ CREATE TABLE mdm_access.requests (
     expires_at timestamp with time zone,
     issuance_operation uuid,
     source text NOT NULL,
+    windows_profile text,
+    CONSTRAINT requests_windows_profile_check CHECK ((source='mdm.windows' AND windows_profile IS NOT NULL AND windows_profile IN ('Full','Device')) OR (source<>'mdm.windows' AND windows_profile IS NULL)),
     CONSTRAINT enrollment_shape CHECK ((state = 'cancelled') OR (expected_generation IS NOT NULL AND expires_at IS NOT NULL AND issuance_operation IS NOT NULL AND ((authority_kind='password' AND password_digest IS NOT NULL AND password_version>0 AND credential_ref IS NOT NULL) OR (authority_kind='managed_installation' AND source='agent.builtin' AND expected_generation=0 AND password_digest IS NULL AND password_version=0 AND credential_ref IS NULL)))),
     CONSTRAINT requests_expected_generation_check CHECK ((expected_generation >= 0)),
     CONSTRAINT requests_password_digest_check CHECK ((password_digest ~ '^[0-9a-f]{64}$'::text)),

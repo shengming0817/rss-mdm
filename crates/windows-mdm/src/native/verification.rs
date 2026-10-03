@@ -230,3 +230,122 @@ impl Expected {
         }
     }
 }
+
+impl Request {
+    /// DMAcc dynamic names are not provider IDs. Prove their ServerID before reading
+    /// credentials or changing account state, using the same operation's Prepare attempt.
+    pub fn enrollment_binding(
+        &self,
+        provider: &str,
+        context: Context,
+    ) -> Result<Option<Verification>, Error> {
+        self.command_count()?;
+        let mut pending = vec![self];
+        let mut accounts = BTreeMap::new();
+        while let Some(request) = pending.pop() {
+            match request {
+                Self::Atomic { operations } | Self::Sequence { operations } => {
+                    pending.extend(operations)
+                }
+                Self::Node { node, instance, .. } if node.starts_with("./SyncML/DMAcc/*") => {
+                    let account = instance.first().ok_or(Error::Identity)?;
+                    let path = "./SyncML/DMAcc/*/ServerID";
+                    let op = Operation::compile(
+                        path,
+                        std::slice::from_ref(account),
+                        Verb::Get,
+                        None,
+                        context,
+                    )?;
+                    accounts.insert(
+                        op.uri().to_owned(),
+                        Self::Node {
+                            node: path.into(),
+                            instance: vec![account.clone()],
+                            operation: Verb::Get,
+                            value: None,
+                        },
+                    );
+                }
+                _ => {}
+            }
+        }
+        if accounts.is_empty() {
+            return Ok(None);
+        }
+        let expected = accounts
+            .keys()
+            .map(|uri| (uri.clone(), Expected::Value(provider.into())))
+            .collect();
+        let mut operations = accounts.into_values().collect::<Vec<_>>();
+        let request = if operations.len() == 1 {
+            operations.remove(0)
+        } else {
+            Self::Sequence { operations }
+        };
+        Ok(Some(Verification { request, expected }))
+    }
+}
+
+impl Request {
+    /// Desired connection addresses, in the native list syntax. Discovery upgrades
+    /// have a different enrollment lifecycle and are deliberately not conflated here.
+    pub fn management_addresses(&self) -> Result<Vec<String>, Error> {
+        self.command_count()?;
+        let mut pending = vec![self];
+        let mut addresses = BTreeMap::new();
+        while let Some(request) = pending.pop() {
+            match request {
+                Self::Atomic { operations } | Self::Sequence { operations } => {
+                    pending.extend(operations.iter().rev())
+                }
+                Self::Node {
+                    node,
+                    instance,
+                    operation,
+                    value,
+                    ..
+                } if matches!(operation, Verb::Add | Verb::Replace)
+                    && ((node.contains("/DMClient/Provider/*/")
+                        && (node.ends_with("/ManagementServerAddressList")
+                            || node.ends_with("/ManagementServiceAddress")))
+                        || node == "./SyncML/DMAcc/*/AppAddr/*/Addr") =>
+                {
+                    let Some(super::Value::Text(value)) = value else {
+                        return Err(Error::Value);
+                    };
+                    let mut remaining = value.trim();
+                    let mut values = Vec::new();
+                    if remaining.starts_with('<') {
+                        while !remaining.is_empty() {
+                            let body = remaining.strip_prefix('<').ok_or(Error::Value)?;
+                            let (url, rest) = body.split_once('>').ok_or(Error::Value)?;
+                            values.push(url.to_owned());
+                            remaining = rest.trim();
+                            if values.len() > 16 {
+                                return Err(Error::Limit);
+                            }
+                        }
+                    } else {
+                        values.push(remaining.to_owned());
+                    }
+                    if values.iter().any(|u| {
+                        u.len() > 4096
+                            || !u.starts_with("https://")
+                            || u.bytes()
+                                .any(|b| b.is_ascii_whitespace() || b == b'<' || b == b'>')
+                    }) {
+                        return Err(Error::Value);
+                    }
+                    // Every dynamic address object is independently authorized. Repeated writes
+                    // to one object make the intended reconnect endpoint ambiguous.
+                    if addresses.insert((node, instance), values).is_some() {
+                        return Err(Error::Value);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(addresses.into_values().flatten().collect())
+    }
+}

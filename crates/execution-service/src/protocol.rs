@@ -118,7 +118,19 @@ async fn manage_on(
         WindowsReception::Authenticated(prepared) => (prepared, true),
     };
     for reference in &prepared.continuing {
-        if !native::result_eligible_on(source, c, key, p, raw.header.session_id, reference).await? {
+        let eligible = match prepared
+            .session
+            .result_eligible(c, key, p, raw.header.session_id, reference)
+            .await
+            .map_err(Error::from)?
+        {
+            Some(value) => value,
+            None => {
+                native::result_eligible_on(source, c, key, p, raw.header.session_id, reference)
+                    .await?
+            }
+        };
+        if !eligible {
             prepared.package = P::Aborted;
             prepared.controls = vec![Command::Alert {
                 id: 0,
@@ -180,8 +192,13 @@ async fn manage_on(
         key,
         p,
         &mut prepared.response,
-        dispatch,
-        &prepared.limits,
+        native::Dispatch {
+            enabled: dispatch,
+            user_available: prepared.user_available,
+            provider_id: &prepared.provider_id,
+            management_urls: &prepared.management_urls,
+            limits: &prepared.limits,
+        },
     )
     .await?;
     let sent = matches!(continuation, native::Continuation::Sent);
@@ -454,6 +471,46 @@ async fn effect_assessment(
     }
     let tenant = tx.tenant_id().to_string();
     let rows=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT a.id AS attempt,i.command,i.item_ordinal,i.kind,i.uri,i.status,i.value,i.receipt_accepted,i.result_accepted FROM mdm_commands.attempt_items i JOIN mdm_commands.attempts a ON(a.tenant_id,a.id)=(i.tenant_id,i.attempt) WHERE a.tenant_id=$1::uuid AND a.operation=$2 AND a.phase='observe' AND a.ordinal=(SELECT max(ordinal) FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='observe') ORDER BY i.command,i.item_ordinal").bind(tenant).bind(id).fetch_all(c).await})).await?;
+    let addresses = request
+        .management_addresses()
+        .map_err(|_| Error::Malformed)?;
+    if !addresses.is_empty() {
+        let tenant = tx.tenant_id().to_string();
+        let registration = op.registration;
+        let generation = op.registration_generation;
+        let endpoint = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query("SELECT m.response,a.credential,a.session,a.message FROM mdm_commands.attempts a JOIN mdm_access.management_messages m ON(m.tenant_id,m.registration,m.session_id,m.message_id)=(a.tenant_id,$3,a.session::text,a.message) JOIN mdm_access.management_sessions s ON(s.tenant_id,s.registration,s.session_id)=(m.tenant_id,m.registration,m.session_id) WHERE a.tenant_id=$1::uuid AND a.operation=$2 AND a.phase='observe' AND s.generation=$4 AND a.session<>(SELECT session FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute' ORDER BY ordinal DESC LIMIT 1) ORDER BY a.ordinal DESC LIMIT 1")
+                .bind(tenant).bind(id).bind(registration).bind(generation).fetch_optional(c).await
+        })).await?;
+        let Some(endpoint) = endpoint else {
+            return Ok(EffectAssessment::waiting(
+                "management_address_reconnect_required",
+            ));
+        };
+        let session = endpoint.try_get::<i64, _>("session")?.to_string();
+        let credential: Uuid = endpoint.try_get("credential")?;
+        let message: i64 = endpoint.try_get("message")?;
+        let plain = protection
+            .open_bytes(
+                &endpoint.try_get::<Vec<u8>, _>("response")?,
+                &crate::protection::aad(
+                    tx.tenant_id(),
+                    "windows.management.response",
+                    &(registration, generation, credential, &session, message),
+                )?,
+            )
+            .map_err(|_| Error::Unavailable(Failure::Protocol))?;
+        let reply = rss_mdm_windows_mdm::syncml::decode(
+            plain.expose(),
+            &rss_mdm_windows_mdm::CodecLimits::default(),
+        )
+        .map_err(|_| Error::Malformed)?;
+        if !addresses.contains(&reply.header.source) {
+            return Ok(EffectAssessment::waiting(
+                "management_address_reconnect_required",
+            ));
+        }
+    }
     let mut facts = Vec::new();
     for row in rows {
         facts.push(EffectFact {

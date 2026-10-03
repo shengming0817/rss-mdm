@@ -14,6 +14,8 @@ def production_paths():
 
 # Each entry binds an action to its declaration or dispatch entry in the production call path.
 OWNERS = {
+ 'windows_renewal':'crates/windows-channel/src/renewal.rs',
+ 'windows_push':'crates/windows-channel/src/push_worker.rs',
  'timeline_read': 'crates/management-http/src/boundary.rs',
  'audit_search': 'crates/management-http/src/boundary.rs','agent_content':'crates/execution-service/src/native_installation.rs','authentication':'crates/management-http/src/boundary.rs','agent_registration': 'crates/agent-channel/src/lib.rs',
  'agent_report': 'crates/agent-channel/src/lib.rs',
@@ -72,6 +74,9 @@ OWNERS = {
  'windows_policy': 'crates/windows-channel/src/boundary.rs'}
 
 DECLARATIONS = {
+    ('windows_renewal', 'crates/windows-channel/src/renewal.rs'),
+    ('windows_push', 'crates/windows-channel/src/push_worker.rs'),
+    ('credential_revoke', 'crates/execution-service/src/retirement.rs'),
  ('management_read','crates/management-http/src/enrollment/directory.rs'),
  ('management_read','crates/management-http/src/remote_operations/http.rs'),
  ('timeline_read','crates/management-http/src/boundary.rs'),

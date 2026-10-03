@@ -633,6 +633,7 @@ def case_fixtures(module, selector, marker):
                                                replace(previous, fixtures=fixtures)))
 
 
+case_fixtures('windows.issuance', 'windows::t2::issuance::native_renewal_preserves_registration_and_activates_only_after_new_tls_proof', 'local_worker')
 case_fixtures('diagnostics.http', 'api::t2::runtime_diagnostics::execution_first_scan_failure_recovers_only_after_real_success', None)
 case_fixtures('assets.http', 'assets::t2::http::manual::manual_types_replay_cas_and_rollback', 'shared_worker')
 case_fixtures('planning.http', 'planning::t2::http::console_scope_ready_tracks_current_admission', 'local_worker')
@@ -1153,3 +1154,10 @@ consume(('crates/windows-channel/src/transcript.rs', 'crates/windows-channel/src
         'windows.management windows.commands windows.retention execution.commands.windows execution.commands.configuration execution.commands.onboarding inventory.runtime')
 consume(('crates/execution-service/src/native/*', 'crates/execution-service/src/native_rules.rs'),
         'execution.commands.windows execution.commands.configuration execution.commands.onboarding windows.management windows.commands')
+
+# Native Windows channel maintenance and retirement consumers.
+MODULES['windows.management'] = replace(MODULES['windows.management'], test_inputs=(*MODULES['windows.management'].test_inputs, 'crates/app/tests/windows/wns.rs'))
+consume(('crates/windows-channel/src/push*', 'crates/windows-channel/src/unenrollment.rs', 'crates/execution-service/src/windows_wake.rs'), 'windows.management device.revocation')
+consume(('crates/windows-channel/src/renewal.rs', 'crates/certificate/src/windows/*'), 'windows.issuance windows.management')
+consume(('crates/execution-service/src/retirement*',), 'device.revocation windows.management apple.identity')
+consume(('crates/windows-mdm/src/provisioning/*',), 'windows.issuance windows.enrollment execution.commands.windows')

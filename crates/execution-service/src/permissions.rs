@@ -14,6 +14,7 @@ pub(super) fn required(task: &Task) -> Result<Vec<P>, Error> {
             }
             rss_mdm_windows_mdm::native::Execution::SyncMl { request } => {
                 request.command_count().map_err(|_| Error::Malformed)?;
+                request.validate_poll().map_err(|_| Error::Malformed)?;
                 windows(request, &mut permissions)?;
             }
         },
@@ -198,6 +199,18 @@ fn windows_node(
             return Ok(());
         }
         return Err(Error::Unsupported);
+    }
+    if node == "./SyncML/DMAcc" || node.starts_with("./SyncML/DMAcc/") {
+        // authorization_nodes has already rejected nodes absent from the pinned schema.
+        out.insert(P::Enrollment);
+        if node
+            .split('/')
+            .any(|segment| matches!(segment, "AAuthSecret" | "AAuthData"))
+        {
+            out.insert(P::Credentials);
+            out.insert(P::SecurityOperate);
+        }
+        return Ok(());
     }
     let path = node
         .split("/Vendor/MSFT/")
@@ -676,6 +689,29 @@ mod windows_tests {
         assert!(permissions.contains(&P::DeviceUpdate));
         assert!(permissions.contains(&P::SecurityOperate));
         assert!(!permissions.contains(&P::ConfigurationWrite));
+    }
+    #[test]
+    fn dmacc_requires_enrollment_and_secrets_require_separate_authority() {
+        let mut permissions = BTreeSet::new();
+        windows_node("./SyncML/DMAcc/*/Name", Verb::Replace, &mut permissions).unwrap();
+        assert_eq!(permissions, BTreeSet::from([P::Enrollment]));
+        windows_node(
+            "./SyncML/DMAcc/*/AppAuth/*/AAuthSecret",
+            Verb::Replace,
+            &mut permissions,
+        )
+        .unwrap();
+        assert_eq!(
+            permissions,
+            BTreeSet::from([P::Enrollment, P::Credentials, P::SecurityOperate])
+        );
+        let unknown = rss_mdm_windows_mdm::native::Request::Node {
+            node: "./SyncML/DMAcc/*/Invented".into(),
+            instance: vec!["account".into()],
+            operation: Verb::Replace,
+            value: Some(rss_mdm_windows_mdm::native::Value::Text("x".into())),
+        };
+        assert!(windows(&unknown, &mut permissions).is_err());
     }
     #[test]
     fn secrets_require_credentials_and_unknown_mutations_fail_closed() {

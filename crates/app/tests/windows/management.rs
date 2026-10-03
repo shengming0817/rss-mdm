@@ -612,3 +612,142 @@ async fn abort_and_nonfinal_message_budget_cannot_publish_a_collection_snapshot(
     }
     host.close().await
 }
+
+#[cfg(feature = "integration")]
+#[tokio::test]
+#[ignore = "make t2 MODULE=windows.management"]
+async fn native_unenrollment_notification_retires_only_its_authenticated_registration()
+-> anyhow::Result<()> {
+    let mut host = Host::open().await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    let warm = crate::execution::test_support::native::begin(
+        &peer.mutual,
+        &peer.url,
+        &peer.message,
+        &peer.ack,
+        1299,
+        None,
+    )
+    .await?;
+    ensure!(
+        crate::execution::test_support::native::post(
+            &peer.mutual,
+            &peer.url,
+            &crate::execution::test_support::native::report(
+                &warm.first,
+                &warm.gets,
+                "10.0.26100.0",
+                200
+            )
+        )
+        .await?
+        .status()
+            == StatusCode::OK
+    );
+    let mut work =
+        crate::execution::test_support::Client::start(host.browser.clone(), host.app.clone())
+            .await?;
+    work.accept_approved().await?;
+    work.publish_operation(work.operation).await?;
+    let pool = sqlx::PgPool::connect_with(options("postgres")?).await?;
+    let mut notification = peer.message.clone();
+    notification.header.session_id = 1300;
+    notification.header.credential = None;
+    notification.commands = vec![Command::Alert {
+        id: 2,
+        alert: syncml::Alert::UnenrollmentRequested,
+    }];
+    let mut other = notification.clone();
+    other.header.source = "other-native-device".into();
+    let post = |message: syncml::Message| {
+        peer.mutual
+            .post(&peer.url)
+            .header("content-type", "application/vnd.syncml.dm+xml")
+            .body(syncml::encode(&message, &CodecLimits::default()).unwrap())
+            .send()
+    };
+    ensure!(post(other).await?.status() == StatusCode::FORBIDDEN);
+    host.app
+        .audit_store
+        .inject_next_fault(rss_audit_postgres::PgFault::BeforeCommitPending);
+    ensure!(post(notification.clone()).await?.status() == StatusCode::SERVICE_UNAVAILABLE);
+    let intact: bool = sqlx::query_scalar("SELECT r.state='active' AND EXISTS(SELECT 1 FROM mdm_access.credentials c WHERE c.tenant_id=r.tenant_id AND c.registration=r.id AND c.state='active') AND NOT EXISTS(SELECT 1 FROM mdm_windows.unenrollment_receipts u WHERE u.tenant_id=r.tenant_id AND u.registration=r.id) FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.id=$2").bind(case_tenant()).bind(peer.intent.registration).fetch_one(&pool).await?;
+    ensure!(intact, "retirement or receipt escaped rollback");
+    let state = work
+        .call(
+            axum::http::Method::GET,
+            &format!("/{}", work.operation),
+            None,
+        )
+        .await?;
+    ensure!(
+        state.1["commandStatus"] == "published",
+        "retirement reducer escaped rollback: {}",
+        state.1
+    );
+    let (response, duplicate) =
+        tokio::join!(post(notification.clone()), post(notification.clone()));
+    let response = response?;
+    let duplicate = duplicate?;
+    ensure!(
+        response.status() == StatusCode::OK,
+        "native disconnection: {}",
+        response.status()
+    );
+    let original = response.bytes().await?;
+    ensure!(duplicate.status() == StatusCode::OK);
+    ensure!(duplicate.bytes().await? == original);
+    let state = work
+        .call(
+            axum::http::Method::GET,
+            &format!("/{}", work.operation),
+            None,
+        )
+        .await?;
+    ensure!(
+        state.1["commandStatus"] == "cancelled",
+        "pending command survived retirement: {}",
+        state.1
+    );
+
+    // Retired response recovery survives temporary transcript pruning.
+    let pool = sqlx::PgPool::connect_with(options("postgres")?).await?;
+    sqlx::query(
+        "DELETE FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND registration=$2",
+    )
+    .bind(case_tenant())
+    .bind(peer.intent.registration)
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "DELETE FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2",
+    )
+    .bind(case_tenant())
+    .bind(peer.intent.registration)
+    .execute(&pool)
+    .await?;
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_windows.unenrollment_receipts WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(peer.intent.registration).fetch_one(&pool).await?;
+    ensure!(count == 1);
+    pool.close().await;
+    let response = syncml::decode(&original, &CodecLimits::default())?;
+    ensure!(
+        response
+            .commands
+            .iter()
+            .all(|c| matches!(c, Command::Status(_))),
+        "new work after disconnection"
+    );
+    let replay = post(notification.clone()).await?;
+    ensure!(replay.status() == StatusCode::OK);
+    ensure!(replay.bytes().await? == original);
+    notification.header.session_id += 1;
+    ensure!(post(notification).await?.status() == StatusCode::CONFLICT);
+    ensure!(post(peer.message.clone()).await?.status() == StatusCode::UNAUTHORIZED);
+    host.close().await?;
+    Ok(())
+}
+
+#[cfg(feature = "integration")]
+#[path = "wns.rs"]
+mod wns;

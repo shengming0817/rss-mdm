@@ -66,6 +66,7 @@ pub struct DevicePrincipal {
     generation: i64,
     channel: Channel,
     credential: Uuid,
+    user_context: Option<Uuid>,
 }
 impl DevicePrincipal {
     pub fn tenant(&self) -> TenantId {
@@ -82,6 +83,10 @@ impl DevicePrincipal {
     }
     pub fn channel(&self) -> Channel {
         self.channel
+    }
+    /// Full enrollment permits only its enrolled-user scope; this is not an OS or organization identity.
+    pub fn user_context(&self) -> Option<Uuid> {
+        self.user_context
     }
     pub fn credential(&self) -> Uuid {
         self.credential
@@ -356,6 +361,7 @@ impl DeviceService {
                 Channel::Agent => ReportSource::AgentBuiltin,
                 Channel::Mdm => ReportSource::MdmWindows,
             },
+            (channel == Channel::Mdm).then_some(crate::enrollment::WindowsProfile::Device),
             Uuid::new_v4(),
             key,
             &audit,

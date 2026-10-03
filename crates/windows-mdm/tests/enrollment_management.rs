@@ -37,7 +37,19 @@ fn status_uses_one_documented_grammar_and_preserves_authentication() {
 
 #[test]
 fn provisioning_selects_enrollment_store_and_escapes_the_subject() {
+    let poll = rss_mdm_windows_mdm::provisioning::Poll {
+        interval_for_first_set_of_retries: 15,
+        number_of_first_retries: 10,
+        interval_for_second_set_of_retries: 0,
+        number_of_second_retries: 0,
+        interval_for_remaining_scheduled_retries: 1440,
+        number_of_remaining_scheduled_retries: 0,
+        poll_on_login: false,
+        all_users_poll_on_first_login: false,
+    };
     let mut p = Provisioning {
+        push_pfn: None,
+        poll: &poll,
         enrollment_type: EnrollmentType::Full,
         enterprise_device_id: "enterprise-device-id",
         issuer: &[1, 2],
@@ -100,4 +112,43 @@ fn current_windows_discovery_and_optional_context_remain_standard_inputs() {
         soap::decode(&encoded, Operation::Issue, &limits).unwrap(),
         issue
     );
+}
+
+#[test]
+fn native_poll_requires_explicit_reachable_schedule_and_complete_typed_maintenance() {
+    use rss_mdm_windows_mdm::{native::Request, provisioning::Poll};
+    let poll = Poll {
+        interval_for_first_set_of_retries: 15,
+        number_of_first_retries: 10,
+        interval_for_second_set_of_retries: 0,
+        number_of_second_retries: 0,
+        interval_for_remaining_scheduled_retries: 1440,
+        number_of_remaining_scheduled_retries: 0,
+        poll_on_login: false,
+        all_users_poll_on_first_login: false,
+    };
+    assert!(poll.validate().is_ok());
+    let json = serde_json::to_value(&poll).unwrap();
+    let mut missing = json.as_object().unwrap().clone();
+    missing.remove("poll_on_login");
+    assert!(serde_json::from_value::<Poll>(serde_json::Value::Object(missing)).is_err());
+    let mut finite = poll.clone();
+    finite.number_of_remaining_scheduled_retries = 1;
+    assert!(finite.validate().is_err());
+    let mut unreachable = poll.clone();
+    unreachable.number_of_first_retries = 0;
+    assert!(unreachable.validate().is_err());
+    let mut backwards = poll.clone();
+    backwards.interval_for_second_set_of_retries = 10;
+    backwards.number_of_second_retries = 1;
+    assert!(backwards.validate().is_err());
+    let request = Request::poll_schedule("RSS-MDM", &poll).unwrap();
+    assert!(request.validate_poll().is_ok());
+    assert!(request.validate_provider("RSS-MDM").is_ok());
+    assert!(request.validate_provider("OTHER").is_err());
+    let Request::Sequence { mut operations } = request else {
+        panic!()
+    };
+    operations.pop();
+    assert!(Request::Sequence { operations }.validate_poll().is_err());
 }

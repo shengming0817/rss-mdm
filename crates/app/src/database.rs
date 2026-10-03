@@ -134,6 +134,7 @@ async fn admission(pool: &PgPool) -> Result<(), Error> {
     let contracts = [
         rss_mdm_authorization_service::ACCESS_CONTRACT,
         rss_mdm_registration_service::ACCESS_CONTRACT,
+        rss_mdm_execution_service::ACCESS_CONTRACT,
         rss_mdm_inventory_service::ACCESS_CONTRACT,
         rss_mdm_agent_channel::ACCESS_CONTRACT,
         rss_mdm_windows_channel::ACCESS_CONTRACT,

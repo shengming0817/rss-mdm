@@ -292,16 +292,16 @@ async fn rejected_csrs(
     let Body::Issue(original) = &issue.body else {
         anyhow::bail!("expected Issue")
     };
-    let mut trailing = original.csr.0.clone();
+    let mut trailing = original.request.bytes().to_vec();
     trailing.push(0);
-    let mut bad_proof = original.csr.0.clone();
+    let mut bad_proof = original.request.bytes().to_vec();
     *bad_proof.last_mut().unwrap() ^= 1;
     for csr in [trailing, bad_proof] {
         let mut request = issue.clone();
         let Body::Issue(body) = &mut request.body else {
             unreachable!()
         };
-        body.csr = Secret(csr);
+        body.request = soap::CertificateRequest::Pkcs10(Secret(csr));
         let response = client
             .post(path)
             .header("content-type", "application/soap+xml")

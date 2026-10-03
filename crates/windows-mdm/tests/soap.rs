@@ -453,3 +453,33 @@ fn xcep_sha256_triple_does_not_inherit_historical_sha1() {
         assert!(soap::decode(bad.as_bytes(), Operation::GetPoliciesResponse, &l).is_err());
     }
 }
+
+#[test]
+fn initial_issue_requires_username_but_cms_renewal_uses_transport_identity() {
+    let limits = CodecLimits::default();
+    let mut message = soap::decode(
+        include_bytes!("fixtures/issue-request.xml"),
+        Operation::Issue,
+        &limits,
+    )
+    .unwrap();
+    message.header.security = None;
+    assert!(soap::encode(&message, &limits).is_err());
+    let Body::Issue(input) = &mut message.body else {
+        panic!()
+    };
+    input.request =
+        soap::CertificateRequest::RenewalPkcs7(rss_mdm_windows_mdm::Secret(vec![1, 2, 3]));
+    input.additional_context.0.clear();
+    let bytes = soap::encode(&message, &limits).unwrap();
+    let decoded = soap::decode(&bytes, Operation::Issue, &limits).unwrap();
+    assert!(decoded.header.security.is_none());
+    assert!(matches!(
+        decoded.body,
+        Body::Issue(soap::Issue {
+            request: soap::CertificateRequest::RenewalPkcs7(_),
+            ..
+        })
+    ));
+    // The codec accepts the CMS envelope; the channel still verifies its signature and TLS identity.
+}

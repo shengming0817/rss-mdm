@@ -1,0 +1,25 @@
+{
+  "tables": [],
+  "functions": [
+    {
+      "name": "mdm_commands.retirement_commands",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_commands.save_retired_command",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_commands.save_retired_action",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_commands.windows_pending_operations",
+      "search_path": "search_path=pg_catalog"
+    }
+  ],
+  "external_relations": [
+    "mdm_planning.remote_operations"
+  ],
+  "verified_schemas": []
+}

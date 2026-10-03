@@ -16,6 +16,7 @@ pub use fragment::{Fragment, fragment};
 /// Exact namespace URI for the supported SyncML 1.2 XML profile.
 pub const NS: &str = "SYNCML:SYNCML1.2";
 const META: &str = "syncml:metinf";
+const UNENROLLMENT: &str = "com.microsoft:mdm.unenrollment.userrequest";
 const LOGIN_STATUS: &str = "com.microsoft/MDM/LoginStatus";
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// SyncML session/message coordinates and untrusted endpoint/credential claims.
@@ -149,6 +150,8 @@ pub enum Command {
 /// Native alerts. Login state and asynchronous results are untrusted device claims.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Alert {
+    /// Request to disconnect, without proof that the client has removed management.
+    UnenrollmentRequested,
     /// Client-initiated management-session alert (1201).
     ClientInitiated,
     /// Request continuation of the peer's unfinished native package (1222).
@@ -603,7 +606,17 @@ fn read_commands(p: &mut Input<'_>, l: &CodecLimits, depth: usize) -> Result<Vec
                     if p.is(NS, "Correlator")? {
                         return Err(E::Unsupported);
                     }
-                    Alert::Generic { items: items(p)? }
+                    let values = items(p)?;
+                    if values.iter().any(|i| {
+                        i.meta.as_ref().and_then(|m| m.media_type.as_deref()) == Some(UNENROLLMENT)
+                    }) {
+                        if values != vec![unenrollment_item()] {
+                            return Err(E::InvalidValue);
+                        }
+                        Alert::UnenrollmentRequested
+                    } else {
+                        Alert::Generic { items: values }
+                    }
                 }
                 _ => return Err(E::Unsupported),
             };
@@ -927,8 +940,12 @@ pub(crate) fn validate_body(
                 count = count.checked_add(items.len()).ok_or(E::LimitExceeded)?;
             }
             Command::Alert { alert, .. } => {
-                initialization |=
-                    matches!(alert, Alert::ClientInitiated | Alert::LoginStatus { .. });
+                initialization |= matches!(
+                    alert,
+                    Alert::ClientInitiated
+                        | Alert::LoginStatus { .. }
+                        | Alert::UnenrollmentRequested
+                );
                 if let Alert::EndOfData { items } = alert {
                     if items.is_empty() {
                         return Err(E::Structure);
@@ -995,16 +1012,31 @@ pub(crate) fn validate_body(
             .iter()
             .filter(|c| !matches!(c, Command::Status(_)))
             .collect::<Vec<_>>();
-        if !matches!(
+        let unenrolling = matches!(
             init.as_slice(),
-            [
+            [Command::Alert {
+                alert: Alert::UnenrollmentRequested,
+                ..
+            }] | [
                 Command::Alert {
-                    alert: Alert::ClientInitiated | Alert::LoginStatus { .. },
+                    alert: Alert::UnenrollmentRequested,
                     ..
                 },
                 Command::DevInfo { .. }
             ]
-        ) || !final_message
+        );
+        if !(unenrolling
+            || matches!(
+                init.as_slice(),
+                [
+                    Command::Alert {
+                        alert: Alert::ClientInitiated | Alert::LoginStatus { .. },
+                        ..
+                    },
+                    Command::DevInfo { .. }
+                ]
+            ))
+            || !final_message
         {
             return Err(E::Structure);
         }
@@ -1210,12 +1242,15 @@ fn write_commands(w: &mut Output<'_>, commands: &[Command], l: &CodecLimits) -> 
                         Alert::SessionAbort => 1223,
                         Alert::EndOfData { .. } => 1225,
                         Alert::LoginStatus { .. } => 1224,
-                        Alert::Generic { .. } => 1226,
+                        Alert::Generic { .. } | Alert::UnenrollmentRequested => 1226,
                     },
                     l,
                 )?;
                 if let Alert::EndOfData { items } = alert {
                     write_items(w, items, l)?;
+                }
+                if matches!(alert, Alert::UnenrollmentRequested) {
+                    write_items(w, &[unenrollment_item()], l)?;
                 }
                 if let Alert::Generic { items } = alert {
                     write_items(w, items, l)?;
@@ -1377,4 +1412,18 @@ fn read_status(p: &mut Input<'_>, l: &CodecLimits) -> Result<Command> {
         code,
         items,
     }))
+}
+
+fn unenrollment_item() -> Item {
+    Item {
+        more_data: false,
+        target: None,
+        source: None,
+        meta: Some(Meta {
+            format: Some("int".into()),
+            media_type: Some(UNENROLLMENT.into()),
+            ..Meta::default()
+        }),
+        data: Some(Secret("1".into())),
+    }
 }

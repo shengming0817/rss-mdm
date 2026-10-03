@@ -58,7 +58,19 @@
         "origin": "https://manage.example.test:8444",
         "certificate_file": "/run/mdm/planning-tls.pem",
         "private_key_file": "/run/mdm/planning-tls.pk8"
-      }
+      },
+      "poll": {
+        "interval_for_first_set_of_retries": 15,
+        "number_of_first_retries": 10,
+        "interval_for_second_set_of_retries": 0,
+        "number_of_second_retries": 0,
+        "interval_for_remaining_scheduled_retries": 1440,
+        "number_of_remaining_scheduled_retries": 0,
+        "poll_on_login": false,
+        "all_users_poll_on_first_login": false
+      },
+      "additional_management": [],
+      "push": null
     }
   },
   "audit": {

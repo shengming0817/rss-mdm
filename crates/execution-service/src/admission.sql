@@ -2,6 +2,8 @@ WITH tables AS (
  SELECT c.* FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_commands' AND c.relkind='r'
 ), update_columns(relation, col) AS (VALUES
  ('mdm_windows.collections','channel_state'),
+ ('mdm_windows.push_channels','generation'),('mdm_windows.push_channels','revision'),('mdm_windows.push_channels','configuration'),('mdm_windows.push_channels','uri'),('mdm_windows.push_channels','digest'),('mdm_windows.push_channels','expires_at'),('mdm_windows.push_channels','next_push'),('mdm_windows.push_channels','lease_id'),('mdm_windows.push_channels','lease_until'),('mdm_windows.push_channels','settled_id'),('mdm_windows.push_channels','failures'),('mdm_windows.push_channels','status'),('mdm_windows.push_channels','outcome'),
+ ('mdm_windows.push_queries','results'),
  ('mdm_agent.bindings','execution_context'),
  ('mdm_planning.remote_operations','cancelled'),('mdm_planning.remote_operations','staged'),('mdm_planning.remote_operations','cursor'),('mdm_planning.remote_operations','run_after'),
  ('mdm_commands.policy_recovery','target_after'),('mdm_commands.policy_recovery','recovery_after'),('mdm_commands.action_polls','policy_after'),
@@ -46,7 +48,7 @@ WITH tables AS (
 
  ('mdm_commands.devices',true,true,false),('mdm_commands.operations',true,true,false),('mdm_commands.requests',true,true,false),('mdm_commands.attempts',true,true,false),('mdm_commands.attempt_items',true,true,false),('mdm_commands.attempt_frames',true,true,false),('mdm_planning.configuration_objects',true,true,false),
  ('mdm_access.devices',true,false,false),('mdm_access.registrations',true,false,false),('mdm_access.credentials',true,false,false),('mdm_access.report_sources',true,false,false),('mdm_access.enrollment_intents',true,false,false),('mdm_access.enrollment_certificates',true,false,false),('mdm_access.authorization_rules',true,false,false),('mdm_access.user_groups',true,false,false),
- ('mdm_access.management_sessions',true,true,false),('mdm_access.management_messages',true,true,false),('mdm_access.collection_runs',true,true,false),('mdm_windows.collections',true,true,false),('rss_audit.heads',true,false,false),('rss_audit.records',true,false,false),('rss_ledger.heads',true,false,false),('rss_ledger.entries',true,false,false),('mdm_audit.receipts',true,true,false),
+ ('mdm_access.management_sessions',true,true,false),('mdm_access.management_messages',true,true,false),('mdm_access.collection_runs',true,true,false),('mdm_windows.collections',true,true,false),('mdm_windows.push_channels',true,true,false),('mdm_windows.push_queries',true,true,false),('rss_audit.heads',true,false,false),('rss_audit.records',true,false,false),('rss_ledger.heads',true,false,false),('rss_ledger.entries',true,false,false),('mdm_audit.receipts',true,true,false),
  ('rss_device_command.commands',true,false,false),('rss_device_command.authorities',true,false,false),
  ('rss_reconcile.targets',true,false,false),
  ('rss_transactional_messaging.policy',true,false,false),('rss_transactional_messaging.outbox',true,false,false),('rss_transactional_messaging.inbox',true,true,true)

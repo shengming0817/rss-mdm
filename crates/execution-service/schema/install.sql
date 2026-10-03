@@ -15,6 +15,65 @@ $$;
 
 REVOKE ALL ON FUNCTION mdm_commands.installation_status(uuid) FROM PUBLIC;
 
+-- The registration owner participates on its original audit connection. Narrow
+-- product functions preserve the shared command component's exclusive runtime ACL.
+CREATE FUNCTION mdm_commands.retirement_commands(p_registration uuid, p_after text) RETURNS SETOF rss_device_command.commands
+ LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
+ AS $$
+ SELECT a.device_id FROM (
+  SELECT DISTINCT d.device_id FROM mdm_commands.operations o
+  JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text)
+  JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(o.tenant_id,o.registration)
+  WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+   AND o.registration=p_registration AND r.state<>'active' AND d.terminal_at IS NULL
+  ORDER BY d.device_id
+ ) scope CROSS JOIN LATERAL rss_device_command.lock_authority(nullif(current_setting('rss.tenant_id',true),'')::uuid,scope.device_id) a;
+ SELECT d.* FROM mdm_commands.operations o
+ JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text)
+ JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(o.tenant_id,o.registration)
+ WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+  AND o.registration=p_registration AND r.state<>'active' AND d.terminal_at IS NULL
+  AND d.command_id COLLATE "C" > p_after ORDER BY d.command_id COLLATE "C" LIMIT 64;
+$$;
+REVOKE ALL ON FUNCTION mdm_commands.retirement_commands(uuid,text) FROM PUBLIC;
+
+CREATE FUNCTION mdm_commands.save_retired_command(p_registration uuid, p_run uuid, p_previous bigint, p_terminal bigint) RETURNS boolean
+ LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
+ AS $$
+ SELECT a.device_id FROM mdm_commands.operations o
+ JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text)
+ JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(o.tenant_id,o.registration)
+ CROSS JOIN LATERAL rss_device_command.lock_authority(o.tenant_id,d.device_id) a
+ WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+  AND o.registration=p_registration AND o.id=p_run AND r.state<>'active';
+ SELECT coalesce((SELECT rss_device_command.save(d.tenant_id,d.device_id,d.command_id,p_previous,'cancelled',d.published_at,d.received_at,p_terminal)
+ FROM mdm_commands.operations o
+ JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text)
+ JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(o.tenant_id,o.registration)
+ WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+  AND o.registration=p_registration AND o.id=p_run AND r.state<>'active'
+  AND d.version=p_previous AND d.terminal_at IS NULL),false);
+$$;
+REVOKE ALL ON FUNCTION mdm_commands.save_retired_command(uuid,uuid,bigint,bigint) FROM PUBLIC;
+
+-- Retirement uses the action owner reducer and a narrow CAS projection on the
+-- original audit connection. The application role retains read-only table access.
+CREATE FUNCTION mdm_commands.save_retired_action(p_registration uuid, p_run uuid, p_previous jsonb, p_state jsonb) RETURNS boolean
+ LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
+ AS $$
+ WITH changed AS (
+  UPDATE mdm_commands.action_runs a SET state=p_state
+  WHERE a.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+   AND a.registration=p_registration AND a.id=p_run AND a.state=p_previous
+   AND a.state->>'execution' IN ('not_started','running','waiting_reboot','unknown')
+   AND a.state->>'cancellation'='none'
+   AND EXISTS(SELECT 1 FROM mdm_access.registrations r
+    WHERE (r.tenant_id,r.id)=(a.tenant_id,a.registration) AND r.state<>'active')
+  RETURNING a.id
+ ) SELECT EXISTS(SELECT 1 FROM changed);
+$$;
+REVOKE ALL ON FUNCTION mdm_commands.save_retired_action(uuid,uuid,jsonb,jsonb) FROM PUBLIC;
+
 CREATE TABLE mdm_commands.action_attempts (
     tenant_id uuid NOT NULL,
     id uuid NOT NULL,
@@ -477,6 +536,23 @@ ALTER TABLE mdm_commands.attempt_frames FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_commands.attempt_frames USING (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 
 
+
+-- Wake eligibility reads published work without giving the Windows role access
+-- to shared command storage. Approval and user scope remain checked in Rust.
+CREATE FUNCTION mdm_commands.windows_pending_operations(p_registration uuid, p_generation bigint, p_after uuid) RETURNS SETOF mdm_commands.operations
+ LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
+ AS $$
+ SELECT o.* FROM mdm_commands.operations o
+ JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text
+ JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(o.tenant_id,o.registration,o.registration_generation)
+ WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+  AND o.registration=p_registration AND o.registration_generation=p_generation AND o.id>p_after
+  AND r.state='active' AND o.gateway_accepted AND o.dispatch_failure IS NULL
+  AND o.input_context->>'platform'='windows' AND d.status IN ('published','received')
+  AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp())
+ ORDER BY o.id LIMIT 64;
+$$;
+REVOKE ALL ON FUNCTION mdm_commands.windows_pending_operations(uuid,bigint,uuid) FROM PUBLIC;
 
 COMMIT;
 
