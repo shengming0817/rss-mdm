@@ -1016,7 +1016,16 @@ pub(crate) fn validate_body(
     if initialization {
         let init = commands
             .iter()
-            .filter(|c| !matches!(c, Command::Status(_)))
+            .filter(|c| {
+                !matches!(
+                    c,
+                    Command::Status(_)
+                        | Command::Alert {
+                            alert: Alert::DeclaredConfiguration { .. },
+                            ..
+                        }
+                )
+            })
             .collect::<Vec<_>>();
         let unenrolling = matches!(
             init.as_slice(),

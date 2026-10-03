@@ -387,9 +387,22 @@ fn initialization(
         .iter()
         .filter(|c| !matches!(c, Command::Status(_) | Command::Results(_)))
         .collect();
+    let initialization = initial
+        .iter()
+        .copied()
+        .filter(|c| {
+            !matches!(
+                c,
+                Command::Alert {
+                    alert: syncml::Alert::DeclaredConfiguration { .. },
+                    ..
+                }
+            )
+        })
+        .collect::<Vec<_>>();
     if !authenticated_before
         && !matches!(
-            initial.as_slice(),
+            initialization.as_slice(),
             [Command::Alert { .. }, Command::DevInfo { .. }]
         )
         || authenticated_before

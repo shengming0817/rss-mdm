@@ -176,3 +176,29 @@ fn guid_scope_and_unknown_servicing_branches_fail_closed() {
             .is_err()
     );
 }
+
+#[test]
+fn current_summary_can_accompany_the_native_initialization_package() {
+    use rss_mdm_windows_mdm::{
+        CodecLimits, Secret,
+        syncml::{self, Alert, Command},
+    };
+    let limits = CodecLimits::default();
+    let mut packet =
+        syncml::decode(include_bytes!("fixtures/initialization.xml"), &limits).unwrap();
+    let id = packet.commands.iter().map(Command::id).max().unwrap() + 1;
+    packet.commands.push(Command::Alert {
+        id,
+        alert: Alert::DeclaredConfiguration {
+            summary: Secret(format!(r#"<DeclaredConfigurations schema="1.0"><DeclaredConfiguration id="{ID}" context="Device" checksum="version-1" result_checksum="result-1" state="20"/></DeclaredConfigurations>"#)),
+            explicit_format: true,
+        },
+    });
+    let wire = syncml::encode(&packet, &limits).unwrap();
+    assert_eq!(syncml::decode(&wire, &limits).unwrap(), packet);
+    // The summary does not replace the required device initialization facts.
+    packet
+        .commands
+        .retain(|c| !matches!(c, Command::DevInfo { .. }));
+    assert!(syncml::encode(&packet, &limits).is_err());
+}
