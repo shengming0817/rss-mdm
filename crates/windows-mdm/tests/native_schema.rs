@@ -2,6 +2,7 @@ use rss_mdm_windows_mdm::native::{Context, Error, Operation, Scope, Value, Verb}
 
 fn target(build: [u32; 4]) -> Context {
     Context {
+        enrollment: rss_mdm_windows_mdm::native::Enrollment::Primary,
         build: Some(build),
         edition: Some(48),
         scope: Scope::Device,
@@ -47,6 +48,7 @@ fn generated_ddf_controls_access_value_and_edition() {
             Verb::Replace,
             Some(Value::Boolean(true)),
             Context {
+                enrollment: rss_mdm_windows_mdm::native::Enrollment::Primary,
                 edition: Some(0),
                 ..context
             }
@@ -93,6 +95,7 @@ fn native_identity_and_context_are_not_interchangeable() {
             Verb::Get,
             None,
             Context {
+                enrollment: rss_mdm_windows_mdm::native::Enrollment::Primary,
                 scope: Scope::User,
                 ..context
             }
@@ -107,6 +110,7 @@ fn native_identity_and_context_are_not_interchangeable() {
             Verb::Get,
             None,
             Context {
+                enrollment: rss_mdm_windows_mdm::native::Enrollment::Primary,
                 scope: Scope::User,
                 build: None,
                 ..context
@@ -157,6 +161,7 @@ fn admx_elements_use_native_types_and_complete_parameter_sets() {
     use std::collections::BTreeMap;
     let path = "./Device/Vendor/MSFT/Policy/Config/AppVirtualization/StreamingAllowReestablishmentInterval";
     let context = Context {
+        enrollment: rss_mdm_windows_mdm::native::Enrollment::Primary,
         edition: Some(4),
         ..target([10, 0, 22621, 1])
     };
@@ -201,6 +206,7 @@ fn admx_elements_use_native_types_and_complete_parameter_sets() {
 fn insider_metadata_cannot_become_stable_by_rewriting_the_version_number() {
     let path = "./Device/Vendor/MSFT/Policy/Config/ApplicationManagement/RemoveDefaultMicrosoftStorePackages";
     let context = Context {
+        enrollment: rss_mdm_windows_mdm::native::Enrollment::Primary,
         edition: Some(4),
         ..target([10, 0, 26200, 9999])
     };
@@ -240,6 +246,7 @@ fn native_request_has_one_typed_shape_without_client_platform_evidence() {
 fn mutation_readback_requires_native_results_instead_of_an_acknowledgement() {
     use rss_mdm_windows_mdm::native::{Context, Request, Scope, Value, Verb};
     let context = Context {
+        enrollment: rss_mdm_windows_mdm::native::Enrollment::Primary,
         build: Some([10, 0, 22621, 0]),
         edition: Some(48),
         scope: Scope::Device,
@@ -309,6 +316,7 @@ fn admx_templates_do_not_cross_unverified_windows_release_branches() {
             Verb::Replace,
             Some(value),
             Context {
+                enrollment: rss_mdm_windows_mdm::native::Enrollment::Primary,
                 edition: Some(4),
                 ..target([10, 0, build, 1])
             },
@@ -355,7 +363,7 @@ fn effect_decision_keeps_partial_duplicate_and_default_restoration_unverified() 
     };
     let plan = request.effect_plan(context).unwrap();
     let fact = || EffectFact {
-        uri: request.objects().unwrap()[0].uri.clone(),
+        uri: request.objects().unwrap()[0].key().to_owned(),
         status: Some(200),
         value: Some("1".into()),
         receipt_accepted: true,
@@ -395,13 +403,13 @@ fn subtree_permissions_include_children_and_unknown_access_is_rejected() {
         operation: Verb::Delete,
         value: None,
     };
-    let targets = request.authorization_nodes().unwrap();
-    assert!(targets.iter().any(|(path, _)| path.ends_with("/Direction")));
+    let resolved = request.resolve().unwrap();
+    assert!(resolved.authorization().iter().any(|t| matches!(t, rss_mdm_windows_mdm::native::AuthorizationTarget::Csp { node, .. } if node.ends_with("/Direction"))));
     let invalid = Request::Node {
         node: "./DevInfo/Mod".into(),
         instance: vec![],
         operation: Verb::Replace,
         value: None,
     };
-    assert!(invalid.authorization_nodes().is_err());
+    assert!(invalid.resolve().is_err());
 }

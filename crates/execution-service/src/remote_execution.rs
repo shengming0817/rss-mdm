@@ -240,7 +240,13 @@ impl ExecutionService {
                 Platform::Windows => rss_mdm_inventory::ReportSource::MdmWindows,
                 Platform::Macos => rss_mdm_inventory::ReportSource::MdmApple,
             };
-            match storage::current_registration(tx, device).await {
+            match storage::current_registration(
+                tx,
+                device,
+                rss_mdm_registration_service::Purpose::Primary,
+            )
+            .await
+            {
                 Ok((registration, generation)) => {
                     if storage::require_source(tx, registration, source)
                         .await
@@ -311,30 +317,44 @@ impl ExecutionService {
             return Err(Error::Malformed.into());
         };
 
-        let (registration, _generation) = match storage::current_registration(tx, device).await {
-            Ok(v) => v,
-            Err(Fault::Request(Error::Conflict)) => {
-                return record_target(tx, id, device, None, Some("mdm_unavailable")).await;
-            }
-            Err(e) => return Err(e),
-        };
-        let source = match platform {
-            Platform::Windows => rss_mdm_inventory::ReportSource::MdmWindows,
-            Platform::Macos => rss_mdm_inventory::ReportSource::MdmApple,
-        };
-        match storage::require_source(tx, registration, source).await {
-            Ok(()) => (),
-            Err(Fault::Request(Error::Conflict | Error::Unsupported)) => {
-                return record_target(tx, id, device, None, Some("channel_unsupported")).await;
-            }
-            Err(e) => return Err(e),
-        };
         let native = native.open(
             &self.protection,
             self.tenant,
             crate::configuration::Owner::Remote { operation: id },
         )?;
         let input = native.request(delivery, id.to_string(), operation.deadline, false)?;
+        let purpose = input.task.purpose()?;
+        let (registration, _generation) =
+            match storage::current_registration(tx, device, purpose).await {
+                Ok(v) => v,
+                Err(Fault::Request(Error::WindowsDeclaredEnrollmentNotReady)) => {
+                    return record_target(
+                        tx,
+                        id,
+                        device,
+                        None,
+                        Some("windows_declared_enrollment_not_ready"),
+                    )
+                    .await;
+                }
+                Err(Fault::Request(Error::Conflict)) => {
+                    return record_target(tx, id, device, None, Some("mdm_unavailable")).await;
+                }
+                Err(e) => return Err(e),
+            };
+        if purpose == rss_mdm_registration_service::Purpose::Primary {
+            let source = match platform {
+                Platform::Windows => rss_mdm_inventory::ReportSource::MdmWindows,
+                Platform::Macos => rss_mdm_inventory::ReportSource::MdmApple,
+            };
+            match storage::require_source(tx, registration, source).await {
+                Ok(()) => (),
+                Err(Fault::Request(Error::Conflict | Error::Unsupported)) => {
+                    return record_target(tx, id, device, None, Some("channel_unsupported")).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
         record_target(tx, id, device, Some(delivery), None).await?;
         let authority = crate::authority::ExecutionAuthority::RemoteOperation {
             required: input.task.permissions()?,

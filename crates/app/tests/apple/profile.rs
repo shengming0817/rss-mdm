@@ -76,6 +76,40 @@ impl Fixture {
                 && read["observation"]["effect"] == "unknown",
             "profile presence receipt {read}"
         );
+        ensure!(
+            read["observation"]["receipts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r.get("fields").is_some()),
+            "authorized native Profile fields missing"
+        );
+        for permissions in [
+            vec!["operation_read"],
+            vec!["operation_read", "configuration_write"],
+            vec!["operation_read", "inventory_collect"],
+        ] {
+            crate::test_support::identity::set_grants(
+                case_tenant(),
+                crate::test_support::case::admin(),
+                crate::test_support::identity::device_grants(Some(case_device()), &permissions)?,
+            )
+            .await?;
+            let limited = self.operation(installed).await?;
+            ensure!(
+                limited["observation"]["result"] == "matched",
+                "limited Profile assessment lost"
+            );
+            ensure!(
+                limited["observation"]["receipts"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|r| r.get("fields").is_none()),
+                "limited reader obtained native ProfileList"
+            );
+        }
+        self.grant_native_actions(&[]).await?;
         let removed = self
             .create_operation(|_| remove_profile_task(installed))
             .await?;

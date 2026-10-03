@@ -372,6 +372,20 @@ impl<'a> Input<'a> {
             Ok(None)
         }
     }
+    /// Consume one bounded opaque element; callers still own semantic validation.
+    pub fn skip(&mut self, ns: &str, name: &str) -> Result<()> {
+        self.start(ns, name)?;
+        let mut depth = 1usize;
+        while depth > 0 {
+            match self.read()? {
+                Token::Start(_) => depth += 1,
+                Token::End(_, _) => depth -= 1,
+                Token::Text(_) => {}
+                Token::Eof => return Err(E::Structure),
+            }
+        }
+        Ok(())
+    }
     pub fn finish(&mut self) -> Result<()> {
         if matches!(self.significant()?, Token::Eof) && self.budget.depth == 0 {
             Ok(())

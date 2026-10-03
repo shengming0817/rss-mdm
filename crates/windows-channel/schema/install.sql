@@ -3,6 +3,15 @@ BEGIN;
 SET LOCAL check_function_bodies = false;
 
 CREATE SCHEMA mdm_windows;
+CREATE TABLE mdm_windows.linked_enrollments (
+ tenant_id uuid NOT NULL, id uuid NOT NULL, parent_id uuid NOT NULL, parent_generation bigint NOT NULL,
+ parent_credential uuid NOT NULL, request_id uuid NOT NULL, digest bytea NOT NULL CHECK(octet_length(digest)=32),
+ PRIMARY KEY(tenant_id,id), UNIQUE(tenant_id,request_id)
+);
+ALTER TABLE mdm_windows.linked_enrollments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_windows.linked_enrollments FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_windows.linked_enrollments USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
+
 
 CREATE TABLE mdm_windows.unenrollment_receipts (
     tenant_id uuid NOT NULL, registration uuid NOT NULL, generation bigint NOT NULL CHECK(generation>0),

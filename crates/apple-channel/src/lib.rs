@@ -4,8 +4,11 @@ pub mod attempt;
 mod checkin;
 pub mod collection;
 mod database;
+pub mod ddm;
 pub mod enrollment;
 mod error;
+mod evidence;
+pub mod exchange;
 pub mod flow_store;
 mod material;
 mod native;
@@ -132,6 +135,10 @@ pub fn router(app: Arc<HttpState>, envelope: boundary::Envelope) -> axum::Router
     boundary::wrap(
         axum::Router::new()
             .route("/checkin", put(checkin::checkin))
+            .route(
+                "/native/apple/ddm/assets/{operation}/{identifier}",
+                axum::routing::get(ddm::asset),
+            )
             .route("/mdm", put(checkin::manage))
             .route(
                 "/api/agent/v6/managed-registrations",
@@ -236,6 +243,7 @@ pub async fn retire_in(
     sqlx::query("UPDATE mdm_apple.channels SET state='retired',material=NULL,material_digest=NULL,push_lease_until=NULL WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("UPDATE mdm_apple.scep_attempts SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("UPDATE mdm_apple.profiles SET retired_at=coalesce(retired_at,floor(extract(epoch FROM clock_timestamp()))::bigint) WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.declarations SET retired_at=coalesce(retired_at,floor(extract(epoch FROM clock_timestamp()))::bigint) WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).execute(&mut *tx).await.map_err(db)?;
     Ok(())
 }
 

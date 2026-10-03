@@ -57,6 +57,13 @@ pub async fn approval_valid(
     operation: &Operation,
     now: i64,
 ) -> Result<bool> {
+    match current_registration(tx, &operation.device, operation.request.task.purpose()?).await {
+        Ok(current) if current == (operation.registration, operation.registration_generation) => {}
+        Ok(_) | Err(Fault::Request(Error::Conflict | Error::WindowsDeclaredEnrollmentNotReady)) => {
+            return Ok(false);
+        }
+        Err(e) => return Err(e),
+    }
     let key = key.clone();
     let source = source.clone();
     let approval = operation.approval.clone();
@@ -71,7 +78,11 @@ pub async fn approval_valid(
         })
         .await??)
 }
-pub async fn current_registration(tx: &mut PgTransaction<'_>, device: &str) -> Result<(Uuid, i64)> {
+pub async fn current_registration(
+    tx: &mut PgTransaction<'_>,
+    device: &str,
+    purpose: rss_mdm_registration_service::Purpose,
+) -> Result<(Uuid, i64)> {
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
     let t = tenant.clone();
@@ -92,11 +103,19 @@ pub async fn current_registration(tx: &mut PgTransaction<'_>, device: &str) -> R
                 tenant,
                 vec![device],
                 rss_mdm_inventory::Channel::Mdm,
+                purpose,
             ))
         })
         .await?;
     if rows.len() != 1 {
-        return Err(Error::Conflict.into());
+        return Err(
+            if purpose == rss_mdm_registration_service::Purpose::WindowsDeclared {
+                Error::WindowsDeclaredEnrollmentNotReady
+            } else {
+                Error::Conflict
+            }
+            .into(),
+        );
     }
     Ok((rows[0].1, rows[0].2))
 }
@@ -108,6 +127,19 @@ pub async fn authority(
     registration_generation: i64,
 ) -> Result<(dc::Scope, dc::Coordinate)> {
     let tenant = tx.tenant_id();
+    let (registration, registration_generation) = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                Ok(crate::device::read::management_root_in(
+                    c,
+                    tenant.to_string(),
+                    registration,
+                    registration_generation,
+                )
+                .await)
+            })
+        })
+        .await??;
     let name = device.to_owned();
     let row=tx.with_connection(|c|Box::pin(async move {sqlx::query("SELECT command_device::text,generation,epoch,registration::text,registration_generation FROM mdm_commands.devices WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE").bind(tenant.to_string()).bind(&name).fetch_optional(c).await})).await?;
     if let Some(row) = row {
@@ -239,7 +271,7 @@ pub async fn authorized_native(
     }
     let snapshot = crate::action_admission::current(tx, proof).await?;
     for &permission in permissions {
-        snapshot.require(proof, permission, Some(device))?;
+        snapshot.require(proof, permission, permission.device().then_some(device))?;
     }
     Ok(snapshot)
 }

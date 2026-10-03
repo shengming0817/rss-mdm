@@ -190,7 +190,7 @@ pub async fn send(
         return Ok(sealed.is_none());
     }
     let (id, scope, _) = channel::start_in(c, p, ReportSource::MdmWindows).await?;
-    let first = rss_mdm_inventory_service::collection::store::allocate_commands_in(c, p, 4).await?;
+    let first = crate::device::store::allocate_commands_in(c, p, 4).await?;
     let mut request = response.clone();
     request.commands.clear();
     let mut uris = vec![];

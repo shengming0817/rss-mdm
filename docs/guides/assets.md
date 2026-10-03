@@ -97,7 +97,7 @@ severity 为 low/medium/high/critical，仅用于解释；platform 为 all/windo
 
 ## 发布采集模板并复用策略
 
-原生读取使用 Resource 的 `native_collection` 类型，版本声明包含同名 declaration、canonical JSON artifact 及 definition。definition 指定 `adapter`、`mappings`、`timeoutSeconds`、`outputBytes`：`windows_csp` 只构造 CSP Get；`apple_device_information` 使用受限 Queries；`apple_installed_applications` 读取 InstalledApplicationList。Apple 当前落地的是 MDM adapter；不把尚未接入的 DDM status channel 计为已支持。
+原生读取使用 Resource 的 `native_collection` 类型，版本声明包含同名 declaration、canonical JSON artifact 及 definition。definition 指定 `adapter`、`mappings`、`timeoutSeconds`、`outputBytes`：`windows_csp` 只构造 CSP Get；`apple_device_information` 使用受限 Queries；`apple_installed_applications` 读取 InstalledApplicationList。Apple Inventory 采集使用 MDM adapter；DDM 状态由 operation 原生证据查询独立呈现，不自动组成 Inventory Snapshot。
 
 每个 mapping 的键为字段身份，值为 `{query,pointer,columns}`。columns 为空时直接按字段类型解码；非空时把清单条目投影到声明的结构化属性。模板的 canonical JSON 是上传 artifact 的原文，发布时校验字段、来源、平台和结构。脚本与 SQL 使用已有 `script` Resource，SQL profile 为 `osquery`，执行只接受固定版本模板及声明参数。
 

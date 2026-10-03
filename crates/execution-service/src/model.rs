@@ -50,6 +50,20 @@ pub enum Task {
     },
 }
 impl Task {
+    pub fn purpose(&self) -> Result<rss_mdm_registration_service::Purpose, Error> {
+        use rss_mdm_registration_service::Purpose;
+        Ok(match self {
+            Self::Windows {
+                request: rss_mdm_windows_mdm::native::Execution::SyncMl { request },
+            } if request
+                .requires_linked_enrollment()
+                .map_err(|_| Error::Malformed)? =>
+            {
+                Purpose::WindowsDeclared
+            }
+            _ => Purpose::Primary,
+        })
+    }
     pub fn source(&self) -> rss_mdm_inventory::ReportSource {
         match self {
             Self::Windows { .. } => rss_mdm_inventory::ReportSource::MdmWindows,
@@ -131,7 +145,7 @@ impl Create {
         } = &self.task
         {
             for object in request.objects().map_err(|_| Error::Malformed)? {
-                if (object.scope == rss_mdm_windows_mdm::native::Scope::User)
+                if (object.scope() == rss_mdm_windows_mdm::native::Scope::User)
                     != matches!(self.target, NativeTarget::User { .. })
                 {
                     return Err(Error::Malformed);
@@ -206,7 +220,7 @@ impl Task {
             Self::Windows {
                 request: W::SyncMl { request },
             } => {
-                json!({"platform":"windows","kind":"sync_ml","name":"SyncML","objects":request.objects().map_err(|_|Error::Malformed)?.into_iter().map(|o|o.uri).collect::<Vec<_>>()})
+                json!({"platform":"windows","kind":"sync_ml","name":"SyncML","objects":request.objects().map_err(|_|Error::Malformed)?.into_iter().map(|o|o.key().to_owned()).collect::<Vec<_>>()})
             }
             Self::Windows {
                 request: W::Msi { job },
@@ -221,7 +235,7 @@ impl Task {
                 A::RemoveProfile { identifier, .. } => {
                     json!({"platform":"macos","kind":"remove_profile","name":"RemoveProfile","objects":[identifier]})
                 }
-                A::Declarations { declarations } => {
+                A::Declarations { declarations, .. } => {
                     json!({"platform":"macos","kind":"declarations","name":"DeclarativeManagement","objects":declarations.iter().map(|d|&d.identifier).collect::<Vec<_>>()})
                 }
             },

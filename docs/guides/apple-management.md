@@ -1,6 +1,6 @@
 # Apple 原生注册、命令与 Profile 管理
 
-Rust 服务端支持设备和用户通道，使用外部 step-ca v0.30.2 完成 SCEP 签发。原生命令、查询、回执和多 payload Profile 复用现有 Execution、注册及采集 owner。组织/ADE 入网和 DDM 由各自业务持有；这里的 Bootstrap escrow 不代表已实现 ADE 入网。受控 T2 不代替真实 Apple 组织、APNs 和 Mac 验收，T3 证据另行登记。
+Rust 服务端支持设备和用户通道，使用外部 step-ca v0.30.2 完成 SCEP 签发。原生命令、查询、回执和多 payload Profile 复用现有 Execution、注册及采集 owner。DDM 的声明发布与状态证据由 Apple 原生 owner 持有；组织/ADE 入网独立实施，这里的 Bootstrap escrow 不代表已实现 ADE 入网。受控 T2 不代替真实 Apple 组织、APNs 和 Mac 验收，T3 证据另行登记。
 
 ## 注册与凭据
 
@@ -59,6 +59,20 @@ APNs 使用证书认证 HTTPS/HTTP2，token revision 和持久唤醒 lease 隔�
 
 APNs 唤醒在持久 lease 的授权事务完成时取得发送资格。已领取或已被 APNs 接受的提示可能在撤销后才到达；提示本身不包含业务命令，后续设备请求仍必须通过当前注册、代际、来源及操作授权校验。
 
+## DDM 声明与状态
+
+operation 的 Apple 请求为 `{"kind":"declarations","declarations":[…],"assets":[…]}`；两个数组都必填，空 declarations 撤回当前调用方的集合。声明包含 identifier、declarationType 和类型化 payload，四类原生声明使用同一冻结版本/条件编译。StatusItems 订阅是 `com.apple.configuration.management.status-subscriptions` 配置声明中的 Name 数组，Apple 自动报告 management.declarations，无需显式订阅。其它状态按当前作用域合并有效订阅；未知或当前平台不支持的名称被拒绝。
+
+原生客户端经现有 mTLS `PUT /checkin` 发送 DeclarativeManagement plist，Endpoint 支持 tokens、declaration-items、declaration/{activation|configuration|asset|management}/{identifier} 和 status。读取返回原生 JSON，缺少对象返回 404；status 的 Data 为原生 JSON 报告，成功返回 200 空 body。启用/唤醒同步使用现有 MDM attempt 的 DeclarativeManagement 命令，不建立第二套队列。
+
+下载资产的 binding 指定 identifier、resource、version、variant、versionDigest（32 字节数组）、contentType 和 profileSchemas。Resource 必须是已上传受保护内容的不可变 configuration 版本；版本摘要、内容长度/摘要、架构和当前 ResourceRead 均复核。服务器提供 HTTPS DataURL/ProfileURL 和原生 MDM Authentication，拒绝任意外部下载 URL。Legacy Profile 使用未签名 plist 内容，并按载荷顺序列出准确 Profile schema；签名 CMS 不作为这一路径的原始 Profile 输入。
+
+产品支持受保护的 `com.apple.configuration.legacy`；`com.apple.configuration.legacy.interactive` 在准入时拒绝。
+
+operation observation 分别返回 expected、synchronization、nativeStatus、effect 和 compliance。原生状态区分 valid/invalid/unknown、active 与 reasons；共同 applied 仅表示精确版本的声明核验完成。空集合撤回的 ACK 和无版本缺席报告不会证明终端移除。乱序的同版本冲突、未关联版本的增量状态保持 Unknown；receivedAt 只表示服务器收到证据的时间。详细值仍需要 operation_read 及原操作全部权限；Profile 原始清单还需要 inventory_collect，缺少权限时仍可读取核验摘要。每作用域最多 16 个有效 publication，累计状态预算为每个 512 KiB，预算耗尽后明确 Unknown；这些报告不自动成为 Inventory Snapshot 或合规成功。
+
+`make t2 MODULE=apple.ddm` 验证四类声明、资产、重启、Legacy 接管和 Policy 所有权；`MODULE=apple.status` 验证冲突、作用域和撤权。真实 Mac 的同步、状态与 Profile 交接属于独立 T3，缺口登记为 [#2647](https://dev.azure.com/shengming0923/rss/_workitems/edit/2647)。
+
 ## 产品配置
 
 完整配置仍由 [mdm-config.example.json](../../fixtures/mdm-config.example.json) 展示数据库与 Identity 装配。必填 `native_protocols` 是闭合对象：`{}` 为 Agent-only；只有 windows 为 Windows-only；只有 apple 为 Apple-only；两者同时存在则启动各自监听。成员缺席表示关闭，显式 null 和旧顶层 windows 均拒绝。Apple-only 不需要 Windows issuer 或 Windows 专用协议保护密钥，但仍必须提供顶层 `native_protection_key_file`（恰好 32 原始字节）。全局密钥保护 Apple 原生输入、回执与内容，多实例必须一致；生成、权限和配套恢复见 [安装](../deployment/installation.md) 与 [运维](../deployment/operations.md)。
@@ -110,3 +124,5 @@ challenge 是一次性事务，先消费提交再 allow；CA 的重复传输不�
 APNs 响应体最多读取 4096 字节，仅记录闭合原因类别和可选时间戳，不输出 provider 原始文本。失效 token 退回 pending_token；证书、topic、请求或 payload 错误暂停该配置；限流/网络/服务端错误退避，5xx 至少等待 15 分钟。未知或畸形响应按可重试协议错误处理。
 
 后台 `apple_push_health` 记录连续内部失败数和配置故障。连续三次内部失败使 readiness 返回 503；数据库恢复后自动解除。配置拒绝保持不健康直到有效发送恢复或更换配置并重启。临时 APNs 网络错误使用设备级持久退避，不伪造命令进度。
+
+Mac 的 Legacy 接管以关联的 `ProfileList(ManagedOnly=true)` 证明 MDM 所有权，不依赖 iOS 的 IsManaged 字段。资源读取权限按租户作用域冻结，与设备配置权限分别验证。

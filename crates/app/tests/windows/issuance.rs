@@ -165,6 +165,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     let credential = crate::device::ChannelMount::new(
         rss_request_context::TenantId::parse(case_tenant())?,
         rss_mdm_inventory::ReportSource::MdmWindows,
+        rss_mdm_registration_service::Purpose::Primary,
     )
     .credential(checked.fingerprint());
     let access = Arc::new(store);
@@ -916,7 +917,7 @@ async fn native_renewal_preserves_registration_and_activates_only_after_new_tls_
             .send()
             .await?
             .status()
-            == axum::http::StatusCode::FORBIDDEN,
+            == axum::http::StatusCode::UNAUTHORIZED,
         "old credential survived activation"
     );
     let scope = host

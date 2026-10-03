@@ -321,7 +321,9 @@
     "https://learn.microsoft.com/en-us/windows/client-management/mdm/windowsdefenderapplicationguard-csp": "f56159d8bbbf54d1b0c73872f5917aff47644e374c1eaaf68aa408b29aa898f6",
     "https://learn.microsoft.com/en-us/windows/client-management/mdm/windowslicensing-csp": "0797120c1a43f5fb3cdda7853df4c1771ea3c354065d80317d49aba4fece2cd0",
     "https://learn.microsoft.com/en-us/windows/client-management/mdm/wirednetwork-csp": "09e3e304b93993f29f5bda16454977eb31a0d46689ab4665f62ea8a3a6ef6a6c",
-    "https://learn.microsoft.com/en-us/windows/client-management/mdm/wirelessnetworkpreference-csp": "4d262b0525c55910f11160d15f65acedd6caf99e059f079c36a01daf46989b1e"
+    "https://learn.microsoft.com/en-us/windows/client-management/mdm/wirelessnetworkpreference-csp": "4d262b0525c55910f11160d15f65acedd6caf99e059f079c36a01daf46989b1e",
+    "https://learn.microsoft.com/en-us/windows/client-management/declared-configuration-extensibility": "28ea6d9e7fd15e891b3697379d626cf4d919beb7eb932202dbc56a2a98d45803",
+    "https://learn.microsoft.com/en-us/windows/client-management/declared-configuration-resource-access": "d7be2ad9f9e6ce1eec249ae5b1b1d114293742ac5c2a300e9835ca97258512e3"
   },
   "nodes": {
     "./DevDetail/DevTyp": {"builds":[[10,0,10586,0]],"preview_only":false,"source":"7181e1c99781946978af69ad7c0c4341843e5651451dc72b83c1b1620ddf5c20"},
@@ -6101,5 +6103,40 @@
     "./User/Vendor/MSFT/WiFi/Profile/*/WlanXml": {"builds":[[10,0,10586,0],[10,0,22000,0]],"preview_only":false,"source":"fdcab7d3bdbcc8b811b89c0c39a54ac90e6723de0f5332a9ac5df5614dadb668"},
     "./User/Vendor/MSFT/WiredNetwork/EnableBlockPeriod": {"builds":[[10,0,17763,0],[10,0,22000,0]],"preview_only":false,"source":"09e3e304b93993f29f5bda16454977eb31a0d46689ab4665f62ea8a3a6ef6a6c"},
     "./User/Vendor/MSFT/WiredNetwork/LanXML": {"builds":[[10,0,17763,0],[10,0,22000,0]],"preview_only":false,"source":"09e3e304b93993f29f5bda16454977eb31a0d46689ab4665f62ea8a3a6ef6a6c"}
-  }
+  },
+  "scenarios": [
+    [
+      "MSFTClientCertificateInstall",
+      "d7be2ad9f9e6ce1eec249ae5b1b1d114293742ac5c2a300e9835ca97258512e3"
+    ],
+    [
+      "MSFTExtensibilityMIProviderConfig",
+      "28ea6d9e7fd15e891b3697379d626cf4d919beb7eb932202dbc56a2a98d45803"
+    ],
+    [
+      "MSFTExtensibilityMIProviderInventory",
+      "28ea6d9e7fd15e891b3697379d626cf4d919beb7eb932202dbc56a2a98d45803"
+    ],
+    [
+      "MSFTInventory",
+      "d7be2ad9f9e6ce1eec249ae5b1b1d114293742ac5c2a300e9835ca97258512e3"
+    ],
+    [
+      "MSFTResource",
+      "d7be2ad9f9e6ce1eec249ae5b1b1d114293742ac5c2a300e9835ca97258512e3"
+    ],
+    [
+      "MSFTVPN",
+      "d7be2ad9f9e6ce1eec249ae5b1b1d114293742ac5c2a300e9835ca97258512e3"
+    ],
+    [
+      "MSFTWifi",
+      "d7be2ad9f9e6ce1eec249ae5b1b1d114293742ac5c2a300e9835ca97258512e3"
+    ],
+    [
+      "MSFTWiredNetwork",
+      "d7be2ad9f9e6ce1eec249ae5b1b1d114293742ac5c2a300e9835ca97258512e3"
+    ]
+  ],
+  "declared_certificate_builds": [[10, 0, 19045, 4717], [10, 0, 22621, 3958], [10, 0, 22631, 3958], [10, 0, 26100, 1301], [10, 0, 26200, 0], [10, 0, 26300, 0]]
 }

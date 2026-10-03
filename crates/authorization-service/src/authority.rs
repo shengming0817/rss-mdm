@@ -16,6 +16,11 @@ struct Basis {
     expires_at: Option<i64>,
 }
 impl UserGrant {
+    /// Stable actor identity for native ownership; this conveys no current authority.
+    pub fn user(&self) -> &User {
+        &self.user
+    }
+
     pub fn from_proof(
         snapshot: &Snapshot,
         proof: &AuthorizedPrincipal,
@@ -24,6 +29,25 @@ impl UserGrant {
     ) -> Result<Self, Error> {
         snapshot.require(proof, permission, Some(device))?;
         let scope = Scope::Device { id: device.into() };
+        let rules = snapshot.approval_bases(proof, &scope, permission)?;
+        Ok(Self {
+            permission,
+            user: proof.user(),
+            scope,
+            rules,
+        })
+    }
+    /// Freeze a real tenant permission independently of any device assignment.
+    pub fn tenant(
+        snapshot: &Snapshot,
+        proof: &AuthorizedPrincipal,
+        permission: Permission,
+    ) -> Result<Self, Error> {
+        if permission.device() {
+            return Err(Error::Malformed);
+        }
+        snapshot.require(proof, permission, None)?;
+        let scope = Scope::Tenant;
         let rules = snapshot.approval_bases(proof, &scope, permission)?;
         Ok(Self {
             permission,

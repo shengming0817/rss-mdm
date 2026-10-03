@@ -9,6 +9,10 @@ impl IntoResponse for Error {
         let (status, code) = match &self {
             Error::Archive(e) => archive_error(e),
             Error::Conflict => (StatusCode::CONFLICT, "operation_conflict"),
+            Error::WindowsDeclaredEnrollmentNotReady => (
+                StatusCode::CONFLICT,
+                "windows_declared_enrollment_not_ready",
+            ),
             Error::CommitUnknown => (StatusCode::SERVICE_UNAVAILABLE, "operation_unknown"),
             Error::RollbackFailed => (
                 StatusCode::SERVICE_UNAVAILABLE,

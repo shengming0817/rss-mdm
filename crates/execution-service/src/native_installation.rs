@@ -102,7 +102,13 @@ impl ExecutionService {
         if self.inputs.agent_installation.packages.is_empty() {
             return Ok(None);
         }
-        let (registration, generation) = match storage::current_registration(tx, device).await {
+        let (registration, generation) = match storage::current_registration(
+            tx,
+            device,
+            rss_mdm_registration_service::Purpose::Primary,
+        )
+        .await
+        {
             Ok(v) => v,
             Err(Fault::Request(Error::Conflict)) => return Ok(None),
             Err(e) => return Err(e),
@@ -307,7 +313,12 @@ impl ExecutionService {
                         status,
                         dc::Status::Published | dc::Status::Received | dc::Status::Applied
                     )
-                    || storage::current_registration(tx, &op.device).await?
+                    || storage::current_registration(
+                        tx,
+                        &op.device,
+                        rss_mdm_registration_service::Purpose::Primary,
+                    )
+                    .await?
                         != (op.registration, op.registration_generation)
                     || !storage::approval_valid(&s.source, &s.protection, tx, &op, now).await?
                 {
@@ -478,35 +489,34 @@ pub async fn installation_observation(
         installation = "installed";
     }
     if matches!(package.identity, Identity::Macos { .. }) {
+        use rss_mdm_apple_mdm::native::evidence::{Phase, ReceiptState};
+        let Task::Macos { request } = &op.request.task else {
+            return Err(Error::Malformed.into());
+        };
+        let request = request.clone();
         let rows = tx
             .with_connection(move |c| {
-                Box::pin(
-                    async move { Ok(apple.observations(c, tenant.to_string(), operation).await) },
-                )
+                Box::pin(async move {
+                    Ok(apple
+                        .observations(c, tenant.to_string(), operation, request, false)
+                        .await)
+                })
             })
             .await?
             .map_err(Error::from)?;
         for row in rows {
-            if row.phase == "execute" {
-                delivery = match row.state.as_str() {
-                    "acknowledged" => "acknowledged",
-                    "error" => "rejected",
-                    "not_now" => "deferred",
+            if row.phase == Phase::Execute {
+                delivery = match row.state {
+                    ReceiptState::Acknowledged => "acknowledged",
+                    ReceiptState::Error => "rejected",
+                    ReceiptState::NotNow => "deferred",
                     _ => "unknown",
                 };
-            } else if row.phase == "observe"
-                && let Some(bytes) = row.response
-                && let Identity::Macos { bundle, .. } = &package.identity
-            {
-                let d = rss_mdm_apple_mdm::protocol::decode(&bytes).map_err(Error::from)?;
+            } else if row.phase == Phase::Observe {
                 observed_at = row.received_at;
-                installation = match if row.state == "acknowledged" {
-                    rss_mdm_apple_mdm::software::presence(&d, bundle)
-                } else {
-                    Err(rss_mdm_apple_mdm::Error::Malformed)
-                } {
-                    Ok(rss_mdm_apple_mdm::software::Presence::Installing) => "installing",
-                    Ok(rss_mdm_apple_mdm::software::Presence::Absent) => "absent",
+                installation = match row.application {
+                    Some(rss_mdm_apple_mdm::software::Presence::Installing) => "installing",
+                    Some(rss_mdm_apple_mdm::software::Presence::Absent) => "absent",
                     _ => "unknown",
                 };
             }

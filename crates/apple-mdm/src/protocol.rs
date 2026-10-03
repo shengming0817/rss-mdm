@@ -174,6 +174,12 @@ pub enum CheckIn<'a> {
     SetBootstrapToken {
         token: Option<&'a [u8]>,
     },
+    DeclarativeManagement {
+        udid: &'a str,
+        user: Option<Uuid>,
+        endpoint: &'a str,
+        data: Option<&'a [u8]>,
+    },
     GetBootstrapToken,
 }
 pub fn checkin(d: &Dictionary) -> Result<CheckIn<'_>, Error> {
@@ -201,6 +207,25 @@ pub fn checkin(d: &Dictionary) -> Result<CheckIn<'_>, Error> {
         return Err(Error::Malformed);
     }
     match kind {
+        "DeclarativeManagement" => {
+            let endpoint = text(d, "Endpoint")?;
+            if endpoint.len() > 1024 {
+                return Err(Error::Malformed);
+            }
+            let data = d
+                .get("Data")
+                .map(|v| v.as_data().ok_or(Error::Malformed))
+                .transpose()?;
+            if endpoint == "status" && data.is_none() {
+                return Err(Error::Malformed);
+            }
+            Ok(CheckIn::DeclarativeManagement {
+                udid,
+                user: user(d)?,
+                endpoint,
+                data,
+            })
+        }
         "Authenticate" => {
             device(d)?;
             Ok(CheckIn::Authenticate {

@@ -19,7 +19,7 @@ pub(crate) async fn revoke_http_matrix(session: &Browser) -> Result<()> {
     pg(&format!("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','{grant}','revoke-fixture','{INSTANCE}','{device}','enrollment','consumed',clock_timestamp()+interval '200 seconds');
         INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source,windows_profile) VALUES('{TENANT}','{request}','{grant}','mdm.windows','Device');
         INSERT INTO mdm_access.devices VALUES('{TENANT}','{device}');
-        INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','{device}','mdm',1,'{request}','active');
+        INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state,purpose,epoch) VALUES('{TENANT}','{registration}','{device}','mdm',1,'{request}','active','primary',gen_random_uuid());
         INSERT INTO mdm_access.credentials VALUES('{TENANT}','{credential}','{registration}','mdm','{locator}','active');
         INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES('{TENANT}','{registration}','mdm.windows','{epoch}',true);", TENANT = case_tenant()))?;
     let path = format!("/api/v3/devices/{device}/registrations/{registration}/revoke");

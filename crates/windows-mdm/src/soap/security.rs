@@ -21,15 +21,26 @@ pub struct Timestamp {
     /// RFC 3339 expiry text bounded by `identifier_bytes`; no expiry/order enforcement.
     pub expires: String,
 }
+/// Unverified exported certificate token; neither token possession nor parsing authenticates it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// Supported WS-Security fields; at least one timestamp or username token is required.
-/// When both are present their IDs must differ. No signature, password or freshness
-/// verification is performed by codec construction, encoding or decoding.
+pub struct CertificateToken {
+    /// WS-Security token identity.
+    pub id: String,
+    /// Exported certificate bytes; the channel must verify a signature with the current parent.
+    pub certificate: Secret<Vec<u8>>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Supported unverified WS-Security fields; token and timestamp identities must differ.
+/// Signature, password and freshness verification belong to the certificate/channel owners.
 pub struct Security {
     /// Optional timestamp; required on IssueResponse by the SOAP profile.
     pub timestamp: Option<Timestamp>,
-    /// Optional username token; required on GetPolicies and Issue requests.
+    /// Optional PasswordText token for primary enrollment.
     pub username: Option<UsernameToken>,
+    /// Unverified certificate token; XCEP policy alone has no authentication side effects.
+    pub certificate: Option<CertificateToken>,
+    /// Presence only; signature verification must use the original XML bytes.
+    pub signature: bool,
 }
 fn id(p: &mut Input<'_>, ns: &str, name: &str) -> Result<String> {
     let s = p.start(ns, name)?;
@@ -42,6 +53,8 @@ pub(super) fn read(p: &mut Input<'_>) -> Result<Security> {
     understood(&p.start(SECURITY, "Security")?)?;
     let mut timestamp = None;
     let mut username = None;
+    let mut certificate = None;
+    let mut signature = false;
     loop {
         if p.is(UTILITY, "Timestamp")? {
             if timestamp.is_some() {
@@ -74,6 +87,45 @@ pub(super) fn read(p: &mut Input<'_>) -> Result<Security> {
                 username: Secret(user),
                 password: Secret(password),
             });
+        } else if p.is(SECURITY, "BinarySecurityToken")? {
+            if certificate.is_some() {
+                return Err(E::Duplicate);
+            }
+            let token = p.start(SECURITY, "BinarySecurityToken")?;
+            token.attrs(&[(UTILITY, "Id"), ("", "ValueType"), ("", "EncodingType")])?;
+            if token.attr("", "ValueType")
+                != Some(
+                    "http://schemas.microsoft.com/5.0.0.0/ConfigurationManager/Enrollment/DeviceEnrollmentUserToken",
+                )
+                || token.attr("", "EncodingType")
+                    != Some(
+                        "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd#base64binary",
+                    )
+            {
+                return Err(E::Unsupported);
+            }
+            let id = token.attr(UTILITY, "Id").ok_or(E::Structure)?.to_owned();
+            let value = p.content(
+                SECURITY,
+                "BinarySecurityToken",
+                p.limits.binary_bytes * 2,
+                false,
+            )?;
+            use base64::Engine;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(value.split_whitespace().collect::<String>())
+                .map_err(|_| E::InvalidValue)?;
+            bound(bytes.len(), p.limits.binary_bytes)?;
+            certificate = Some(CertificateToken {
+                id,
+                certificate: Secret(bytes),
+            });
+        } else if p.is("http://www.w3.org/2000/09/xmldsig#", "Signature")? {
+            if signature {
+                return Err(E::Duplicate);
+            }
+            p.skip("http://www.w3.org/2000/09/xmldsig#", "Signature")?;
+            signature = true;
         } else {
             break;
         }
@@ -82,13 +134,27 @@ pub(super) fn read(p: &mut Input<'_>) -> Result<Security> {
     let s = Security {
         timestamp,
         username,
+        certificate,
+        signature,
     };
     validate(&s, p.limits)?;
     Ok(s)
 }
 pub(super) fn validate(s: &Security, l: &CodecLimits) -> Result<()> {
-    if s.timestamp.is_none() && s.username.is_none() {
+    if s.timestamp.is_none() && s.username.is_none() && s.certificate.is_none() {
         return Err(E::Structure);
+    }
+    if s.username.is_some() && s.certificate.is_some()
+        || s.signature && (s.certificate.is_none() || s.timestamp.is_none())
+    {
+        return Err(E::Structure);
+    }
+    if let Some(t) = &s.certificate {
+        text(&t.id, l.identifier_bytes, false)?;
+        bound(t.certificate.0.len(), l.binary_bytes)?;
+        if t.certificate.0.is_empty() || s.timestamp.as_ref().is_some_and(|v| v.id == t.id) {
+            return Err(E::Structure);
+        }
     }
     if let Some(t) = &s.timestamp {
         for v in [&t.id, &t.created, &t.expires] {
@@ -112,6 +178,9 @@ pub(super) fn validate(s: &Security, l: &CodecLimits) -> Result<()> {
     Ok(())
 }
 pub(super) fn write(w: &mut Output<'_>, s: &Security, l: &CodecLimits) -> Result<()> {
+    if s.signature {
+        return Err(E::Unsupported);
+    }
     w.start("o:Security", &[("s:mustUnderstand", "1")])?;
     if let Some(t) = &s.timestamp {
         w.start("u:Timestamp", &[("u:Id", &t.id)])?;
@@ -126,6 +195,13 @@ pub(super) fn write(w: &mut Output<'_>, s: &Security, l: &CodecLimits) -> Result
         w.content(&t.password.0, l.field_bytes)?;
         w.end("o:Password")?;
         w.end("o:UsernameToken")?;
+    }
+    if let Some(t) = &s.certificate {
+        use base64::Engine;
+        let value = base64::engine::general_purpose::STANDARD.encode(&t.certificate.0);
+        w.start("o:BinarySecurityToken", &[("u:Id", &t.id), ("ValueType", "http://schemas.microsoft.com/5.0.0.0/ConfigurationManager/Enrollment/DeviceEnrollmentUserToken"), ("EncodingType", "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd#base64binary")])?;
+        w.content(&value, l.binary_bytes * 2)?;
+        w.end("o:BinarySecurityToken")?;
     }
     w.end("o:Security")
 }

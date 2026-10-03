@@ -139,6 +139,9 @@ pub(crate) async fn dispatch(
     };
     let user: String = row.try_get("user_key").map_err(db)?;
     let root: String = row.try_get("identifier").map_err(db)?;
+    if crate::ddm::profile_conflict(c, key, p, &user, &root, objects).await? {
+        return Ok(false);
+    }
     if let Some(objects) = objects
         && collides(c, key, &target, &user, &root, objects, true).await?
     {
@@ -163,81 +166,189 @@ pub(crate) async fn dispatch(
         .bind(&target.tenant).bind(operation).bind(manifest).execute(c).await.map_err(db)?;
     Ok(true)
 }
-pub(crate) async fn confirm(
+/// Read and interpret the latest native evidence once. No ownership mutation occurs here.
+pub(crate) async fn assessment(
     c: &mut PgConnection,
     key: &Protector,
-    target: &AppleRegistration,
+    tenant: &str,
     operation: Uuid,
-) -> Result<(), Error> {
-    let row=sqlx::query("SELECT * FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND operation=$2 AND device=$3 AND registration=$4 AND generation=$5 AND retired_at IS NULL AND dispatched_at IS NOT NULL FOR UPDATE")
-        .bind(&target.tenant).bind(operation).bind(&target.device).bind(target.registration).bind(target.generation).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Conflict)?;
-    let identifier: String = row.try_get("identifier").map_err(db)?;
+) -> Result<rss_mdm_apple_mdm::native::profiles::Verification, Error> {
+    use rss_mdm_apple_mdm::native::profiles::{Verification as V, verification};
+    let Some(row) = sqlx::query("SELECT * FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND operation=$2 AND dispatched_at IS NOT NULL")
+        .bind(tenant).bind(operation).fetch_optional(&mut *c).await.map_err(db)? else { return Ok(V::Unknown); };
+    let registration: Uuid = row.try_get("registration").map_err(db)?;
+    let generation: i64 = row.try_get("generation").map_err(db)?;
     let user: String = row.try_get("user_key").map_err(db)?;
+    let identifier: String = row.try_get("identifier").map_err(db)?;
     let uuid: Uuid = row.try_get("profile").map_err(db)?;
     let present: bool = row.try_get("present").map_err(db)?;
-    // Select the latest attempt before testing eligibility; an earlier ACK cannot supersede it.
-    let observe=sqlx::query("SELECT id,state,accepted,response FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3 AND generation=$4 AND user_key=$5 AND phase='observe' ORDER BY ordinal DESC LIMIT 1 FOR UPDATE")
-        .bind(&target.tenant).bind(operation).bind(target.registration).bind(target.generation).bind(&user).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Conflict)?;
+    let Some(observe) = sqlx::query("SELECT id,state,accepted,response FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3 AND generation=$4 AND user_key=$5 AND phase='observe' ORDER BY ordinal DESC LIMIT 1")
+        .bind(tenant).bind(operation).bind(registration).bind(generation).bind(&user).fetch_optional(&mut *c).await.map_err(db)? else { return Ok(V::Unknown); };
     if !observe.try_get::<bool, _>("accepted").map_err(db)?
         || observe.try_get::<String, _>("state").map_err(db)? != "acknowledged"
     {
-        return Err(Error::Conflict);
+        return Ok(V::Unknown);
     }
     let sealed: Vec<u8> = observe.try_get("response").map_err(db)?;
     let plain = crate::protection::open(
         key,
-        &target.tenant,
-        target.registration,
-        target.generation,
+        tenant,
+        registration,
+        generation,
         observe.try_get("id").map_err(db)?,
         crate::protection::Part::Response,
         &sealed,
     )?;
     let report = crate::protocol::decode(plain.expose())?;
-    let actual = rss_mdm_apple_mdm::profile::presence(&report, &identifier, uuid)
-        .map_err(|_| Error::Conflict)?;
-    let matched = if present {
-        // A root with partial or different payloads is not absence and does not release ownership.
-        rss_mdm_apple_mdm::native::profiles::observed_manifest(
-            &report,
-            &identifier,
-            uuid,
-            &open(key, &row)?,
-        )
-        .unwrap_or(false)
+    let failed = sqlx::query_scalar::<_,bool>("SELECT accepted AND state='error' FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3 AND generation=$4 AND user_key=$5 AND phase='execute' ORDER BY ordinal DESC LIMIT 1")
+        .bind(tenant).bind(operation).bind(registration).bind(generation).bind(&user).fetch_optional(&mut *c).await.map_err(db)?.unwrap_or(false);
+    let old = if failed && !present {
+        sqlx::query("SELECT * FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND registration=$4 AND generation=$5 AND identifier=$6 AND profile=$7 AND operation<>$8 AND retired_at IS NULL AND present AND observed_at IS NOT NULL AND dispatched_at IS NOT NULL LIMIT 2")
+            .bind(tenant).bind(row.try_get::<String,_>("device").map_err(db)?).bind(&user).bind(registration).bind(generation).bind(&identifier).bind(uuid).bind(operation).fetch_all(&mut *c).await.map_err(db)?
     } else {
-        !actual
+        Vec::new()
     };
-    if matched {
-        sqlx::query("UPDATE mdm_apple.profiles SET retired_at=floor(extract(epoch FROM clock_timestamp()))::bigint WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND registration=$4 AND generation=$5 AND identifier=$6 AND operation<>$7 AND retired_at IS NULL")
-            .bind(&target.tenant).bind(&target.device).bind(&user).bind(target.registration).bind(target.generation).bind(&identifier).bind(operation).execute(&mut *c).await.map_err(db)?;
+    let previous = if old.len() == 1 {
+        Some(open(key, &old[0])?)
     } else {
-        let failed=sqlx::query_scalar::<_,bool>("SELECT accepted AND state='error' FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3 AND generation=$4 AND user_key=$5 AND phase='execute' ORDER BY ordinal DESC LIMIT 1")
-            .bind(&target.tenant).bind(operation).bind(target.registration).bind(target.generation).bind(&user).fetch_optional(&mut *c).await.map_err(db)?.unwrap_or(false);
-        if !failed || (present && actual) {
-            return Err(Error::Conflict);
+        None
+    };
+    let manifest = if present {
+        open(key, &row)?
+    } else {
+        Vec::new()
+    };
+    Ok(verification(
+        &report,
+        &identifier,
+        uuid,
+        present,
+        &manifest,
+        failed,
+        previous.as_deref(),
+    ))
+}
+pub(crate) async fn confirm(
+    c: &mut PgConnection,
+    key: &Protector,
+    target: &AppleRegistration,
+    operation: Uuid,
+) -> Result<rss_mdm_apple_mdm::native::profiles::Verification, Error> {
+    use rss_mdm_apple_mdm::native::profiles::Verification as V;
+    let row = sqlx::query("SELECT identifier,user_key FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND operation=$2 AND device=$3 AND registration=$4 AND generation=$5 AND retired_at IS NULL AND dispatched_at IS NOT NULL FOR UPDATE")
+        .bind(&target.tenant).bind(operation).bind(&target.device).bind(target.registration).bind(target.generation).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Conflict)?;
+    let decision = assessment(c, key, &target.tenant, operation).await?;
+    match decision {
+        V::Matched => {
+            sqlx::query("UPDATE mdm_apple.profiles SET retired_at=floor(extract(epoch FROM clock_timestamp()))::bigint WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND registration=$4 AND generation=$5 AND identifier=$6 AND operation<>$7 AND retired_at IS NULL")
+                .bind(&target.tenant).bind(&target.device).bind(row.try_get::<String,_>("user_key").map_err(db)?).bind(target.registration).bind(target.generation).bind(row.try_get::<String,_>("identifier").map_err(db)?).bind(operation).execute(&mut *c).await.map_err(db)?;
         }
-        if !present {
-            // A failed removal needs the precise previously confirmed manifest, not root presence alone.
-            let old=sqlx::query("SELECT * FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND registration=$4 AND generation=$5 AND identifier=$6 AND profile=$7 AND operation<>$8 AND retired_at IS NULL AND present AND observed_at IS NOT NULL AND dispatched_at IS NOT NULL LIMIT 2 FOR UPDATE")
-                .bind(&target.tenant).bind(&target.device).bind(&user).bind(target.registration).bind(target.generation).bind(&identifier).bind(uuid).bind(operation).fetch_all(&mut *c).await.map_err(db)?;
-            if old.len() != 1
-                || !rss_mdm_apple_mdm::native::profiles::observed_manifest(
-                    &report,
-                    &identifier,
-                    uuid,
-                    &open(key, &old[0])?,
-                )
-                .unwrap_or(false)
-            {
-                return Err(Error::Conflict);
-            }
+        V::Failed => {
+            sqlx::query("UPDATE mdm_apple.profiles SET retired_at=floor(extract(epoch FROM clock_timestamp()))::bigint WHERE tenant_id=$1::uuid AND operation=$2")
+                .bind(&target.tenant).bind(operation).execute(&mut *c).await.map_err(db)?;
         }
-        // Retire only this failed reservation; the old installation and its guards remain owned.
-        sqlx::query("UPDATE mdm_apple.profiles SET retired_at=floor(extract(epoch FROM clock_timestamp()))::bigint WHERE tenant_id=$1::uuid AND operation=$2")
-            .bind(&target.tenant).bind(operation).execute(&mut *c).await.map_err(db)?;
+        V::Unknown | V::Mismatched => return Ok(decision),
     }
     sqlx::query("UPDATE mdm_apple.profiles SET observed_at=coalesce(observed_at,floor(extract(epoch FROM clock_timestamp()))::bigint) WHERE tenant_id=$1::uuid AND operation=$2")
         .bind(&target.tenant).bind(operation).execute(c).await.map_err(db)?;
-    Ok(())
+    Ok(decision)
+}
+
+/// DDM may adopt only the complete ordered structure of an observed classic MDM profile.
+pub(crate) async fn ddm_admission(
+    c: &mut PgConnection,
+    key: &Protector,
+    p: &DevicePrincipal,
+    user: &str,
+    profiles: &[rss_mdm_apple_mdm::native::ddm::LegacyProfile],
+) -> Result<bool, Error> {
+    let target = AppleRegistration {
+        tenant: p.tenant().to_string(),
+        device: p.device().into(),
+        registration: p.registration(),
+        generation: p.generation(),
+    };
+    for profile in profiles {
+        let root = profile.objects.first().ok_or(Error::Malformed)?;
+        let rows=sqlx::query("SELECT * FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND user_key=$4 AND identifier=$5 AND retired_at IS NULL")
+            .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(user).bind(&root.identifier).fetch_all(&mut *c).await.map_err(db)?;
+        for row in rows {
+            if !row.try_get::<bool, _>("present").map_err(db)?
+                || row
+                    .try_get::<Option<i64>, _>("observed_at")
+                    .map_err(db)?
+                    .is_none()
+                || row
+                    .try_get::<Option<Vec<u8>>, _>("manifest")
+                    .map_err(db)?
+                    .is_none()
+                || !rss_mdm_apple_mdm::native::profiles::same_structure(
+                    &profile.objects,
+                    &open(key, &row)?,
+                )
+            {
+                return Ok(false);
+            }
+            let old_operation: Uuid = row.try_get("operation").map_err(db)?;
+            let evidence=sqlx::query("SELECT id,request,response FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3 AND generation=$4 AND user_key=$5 AND phase='observe' AND accepted AND state='acknowledged' AND ordinal=(SELECT max(a.ordinal) FROM mdm_apple.attempts a WHERE a.tenant_id=$1::uuid AND a.operation=$2 AND a.phase='observe')")
+                .bind(p.tenant().to_string()).bind(old_operation).bind(p.registration()).bind(p.generation()).bind(user).fetch_optional(&mut *c).await.map_err(db)?;
+            let Some(evidence) = evidence else {
+                return Ok(false);
+            };
+            // macOS does not return IsManaged. A correlated ManagedOnly query proves MDM ownership.
+            let sealed: Vec<u8> = evidence.try_get("request").map_err(db)?;
+            let plain = crate::protection::open(
+                key,
+                &p.tenant().to_string(),
+                p.registration(),
+                p.generation(),
+                evidence.try_get("id").map_err(db)?,
+                crate::protection::Part::Request,
+                &sealed,
+            )?;
+            let request = crate::protocol::decode(plain.expose())?;
+            let Some(command) = request.get("Command").and_then(plist::Value::as_dictionary) else {
+                return Ok(false);
+            };
+            if command.get("RequestType").and_then(plist::Value::as_string) != Some("ProfileList")
+                || command
+                    .get("ManagedOnly")
+                    .and_then(plist::Value::as_boolean)
+                    != Some(true)
+            {
+                return Ok(false);
+            }
+            let sealed: Vec<u8> = evidence.try_get("response").map_err(db)?;
+            let plain = crate::protection::open(
+                key,
+                &p.tenant().to_string(),
+                p.registration(),
+                p.generation(),
+                evidence.try_get("id").map_err(db)?,
+                crate::protection::Part::Response,
+                &sealed,
+            )?;
+            let body = crate::protocol::decode(plain.expose())?;
+            if !matches!(
+                rss_mdm_apple_mdm::native::profiles::observed_structure(&body, &profile.objects),
+                Ok(true)
+            ) {
+                return Ok(false);
+            }
+        }
+        if collides(
+            c,
+            key,
+            &target,
+            user,
+            &root.identifier,
+            &profile.objects,
+            true,
+        )
+        .await?
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }

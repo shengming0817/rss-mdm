@@ -169,10 +169,12 @@ fn project(error: Error) -> Response {
 fn route_action(route: &str) -> &'static str {
     match route {
         "/api/agent/v6/managed-registrations" => "agent_registration",
-        "/EnrollmentServer/Discovery.svc" => "windows_discovery",
-        "/EnrollmentServer/Policy.svc" => "windows_policy",
-        "/EnrollmentServer/Enrollment.svc" => "enrollment_issue",
-        "/ManagementServer/MDM.svc" => "windows_management",
+        "/EnrollmentConfiguration" | "/EnrollmentServer/Discovery.svc" => "windows_discovery",
+        "/EnrollmentServer/LinkedPolicy.svc" | "/EnrollmentServer/Policy.svc" => "windows_policy",
+        "/EnrollmentServer/LinkedEnrollment.svc" | "/EnrollmentServer/Enrollment.svc" => {
+            "enrollment_issue"
+        }
+        "/ManagementServer/MDM.svc" | "/ManagementServer/Declared.svc" => "windows_management",
         _ => "protected_request",
     }
 }

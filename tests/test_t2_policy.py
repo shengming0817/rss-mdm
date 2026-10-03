@@ -27,6 +27,14 @@ class Policies(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 resolve_cases(value, ['fault::one'])
 
+    def test_ddm_damaged_material_has_a_disposable_database(self):
+        root = 'apple::tests::ddm::'
+        cases = ['four_families_assets_recovery_and_withdrawal',
+                 'legacy_takeover_retains_guards_until_correlated_absence',
+                 'policy_coowners_share_native_publication_without_fabricating_removal']
+        resolved = resolve_cases(MODULES['apple.ddm'], [root + name for name in cases])
+        self.assertEqual([item.db_mode for item in resolved], ['fresh', 'reuse', 'reuse'])
+
     def test_no_pg_has_no_database_mode_or_scope(self):
         module = MODULES['sources.winget']
         resolved, = resolve_cases(module, ['new_test'])

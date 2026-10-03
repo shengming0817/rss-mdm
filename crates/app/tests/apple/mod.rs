@@ -4,6 +4,7 @@
 )]
 //! Real Apple mTLS participant and fixed external SCEP provider; no principal or status stubs.
 mod commands;
+mod ddm;
 mod lifecycle;
 mod onboarding;
 mod oracle;
@@ -11,6 +12,7 @@ mod policy;
 mod scep;
 #[path = "support/scep.rs"]
 mod scep_client;
+mod status;
 mod users;
 use super::*;
 use crate::{
@@ -50,8 +52,16 @@ impl Fixture {
         Self::with_agent(None).await
     }
     async fn with_agent(agent: Option<serde_json::Value>) -> Result<Self> {
+        Self::with_endpoint(agent, None, false).await
+    }
+    async fn with_endpoint(
+        agent: Option<serde_json::Value>,
+        address: Option<std::net::SocketAddr>,
+        preserve_authorization: bool,
+    ) -> Result<Self> {
         let root = PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?);
-        let manage = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let manage =
+            tokio::net::TcpListener::bind(address.unwrap_or("127.0.0.1:0".parse()?)).await?;
         let webhook = tokio::net::TcpListener::bind(format!(
             "127.0.0.1:{}",
             std::env::var("MDM_APPLE_WEBHOOK_PORT").unwrap_or_else(|_| "0".into())
@@ -281,23 +291,25 @@ impl Fixture {
             );
             launch.finish();
         }
-        crate::test_support::identity::set_grants(
-            case_tenant(),
-            crate::test_support::case::admin(),
-            crate::test_support::identity::device_grants(
-                Some(case_device()),
-                &[
-                    "enrollment",
-                    "credentials",
-                    "inventory_read",
-                    "inventory_collect",
-                    "configuration_write",
-                    "operation_read",
-                    "operation_cancel",
-                ],
-            )?,
-        )
-        .await?;
+        if !preserve_authorization {
+            crate::test_support::identity::set_grants(
+                case_tenant(),
+                crate::test_support::case::admin(),
+                crate::test_support::identity::device_grants(
+                    Some(case_device()),
+                    &[
+                        "enrollment",
+                        "credentials",
+                        "inventory_read",
+                        "inventory_collect",
+                        "configuration_write",
+                        "operation_read",
+                        "operation_cancel",
+                    ],
+                )?,
+            )
+            .await?;
+        }
         let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
             "127.0.0.1".parse()?,
         )));
@@ -469,6 +481,29 @@ mod renewal;
 impl Fixture {
     async fn close(self) -> Result<()> {
         let report = self.owner.shutdown().join().await?;
+        if !report.is_clean() {
+            let diagnostics = self
+                .app
+                .inventory
+                .diagnostics(fixture_clock().now() + Duration::from_secs(1))
+                .await;
+            if let Some(rss_projection::ObservationStatus::Stopped(projection)) =
+                diagnostics.projection
+                && let rss_projection::Stop::Failed(error) = projection.stop
+            {
+                let detail = error.diagnostic();
+                eprintln!(
+                    "{}",
+                    json!({
+                        "event": "apple_fixture_inventory_projection_failure",
+                        "kind": format!("{:?}", error.kind()),
+                        "providerPhase": detail.map(|d| format!("{:?}", d.phase())),
+                        "sqlstate": detail.and_then(|d| d.sqlstate()),
+                        "position": detail.and_then(|d| d.position()).map(|p| p.get()),
+                    })
+                );
+            }
+        }
         ensure!(report.is_clean(), "Apple fixture shutdown: {report:?}");
         Ok(())
     }

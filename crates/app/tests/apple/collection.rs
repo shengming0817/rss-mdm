@@ -222,6 +222,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(automation.registration(f.signals.flow()).critical());
     launch.finish();
+    let result = async {
     let field = "custom.link_addresses";
     let definition = json!({"key":field,"version":1,"valueType":{"kind":"array","items":{"kind":"string","maxLength":128,"allowEmpty":false},"maxItems":100},"nullable":false,"manual":false,"sources":{"mdm.apple":0},"platforms":["macos"],"sensitivity":"standard","unit":null,"searchable":true,"itemKey":null});
     let published = f.browser.call(&f.router, Method::PUT, &format!("/api/v2/asset-fields/{field}"), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":definition}}))).await?;
@@ -403,7 +404,12 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
         Ok::<_, anyhow::Error>(())
     })
     .await??;
-    crate::test_support::stop_worker(Some(owner)).await?;
+        Ok::<_, anyhow::Error>(())
+    }.await;
+    let automation_shutdown = crate::test_support::stop_worker(Some(owner)).await;
     drop(device);
-    f.close().await
+    let fixture_shutdown = f.close().await;
+    result?;
+    automation_shutdown?;
+    fixture_shutdown
 }

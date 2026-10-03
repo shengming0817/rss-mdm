@@ -604,6 +604,15 @@
       ""
     ],
     [
+      "attempts",
+      "declared_versions",
+      "jsonb",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
       "capabilities",
       "tenant_id",
       "uuid",
@@ -1451,6 +1460,13 @@
       "attempt_items_value_check",
       "c",
       "CHECK (((value IS NULL) OR ((octet_length(value) >= 68) AND (octet_length(value) <= 16777284))))",
+      true
+    ],
+    [
+      "attempts",
+      "attempts_declared_versions_check",
+      "c",
+      "CHECK (((declared_versions IS NULL) OR ((jsonb_typeof(declared_versions) = 'object'::text) AND (octet_length((declared_versions)::text) <= 1048576))))",
       true
     ],
     [

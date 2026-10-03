@@ -54,13 +54,13 @@ async fn large_assignment_uses_published_scope_without_eager_execution() -> Resu
     let browser = &mut browser;
     let router = &router;
     let prefix = uuid::Uuid::new_v4();
-    // Prepare the pagination fixture in bounded batches; large ingress recovery is #2640.
-    // Every batch settles through the real worker before the next seed is committed.
+    // This case proves large assignment paging. Settle bounded fixture ingress batches
+    // so its setup does not also require a thousand per-device wakes in one attempt.
     for first in (1..=1001).step_by(32) {
+        let last = (first + 31).min(1001);
         pg(&format!(
-            "CREATE TEMP TABLE scale_devices AS SELECT '{prefix}-'||n::text AS device,gen_random_uuid() AS grant_id,gen_random_uuid() AS request,gen_random_uuid() AS registration FROM generate_series({first},{last}) n;INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) SELECT '{TENANT}',grant_id,'fixture','{INSTANCE}',device,'enrollment','consumed',clock_timestamp()+interval '200 seconds' FROM scale_devices;INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source,windows_profile) SELECT '{TENANT}',request,grant_id,'mdm.windows','Device' FROM scale_devices;INSERT INTO mdm_access.devices SELECT '{TENANT}',device FROM scale_devices;INSERT INTO mdm_access.registrations SELECT '{TENANT}',registration,device,'mdm',1,request,'active' FROM scale_devices; INSERT INTO mdm_access.credentials SELECT '{TENANT}',gen_random_uuid(),registration,'mdm',md5(registration::text)||md5(registration::text),'active' FROM scale_devices; INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) SELECT '{TENANT}',registration,'mdm.windows','77777777-7777-4777-8777-777777777777',true FROM scale_devices;",
-            TENANT = case_tenant(),
-            last = (first + 31).min(1001)
+            "CREATE TEMP TABLE scale_devices AS SELECT '{prefix}-'||n::text AS device,gen_random_uuid() AS grant_id,gen_random_uuid() AS request,gen_random_uuid() AS registration FROM generate_series({first},{last}) n;INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) SELECT '{TENANT}',grant_id,'fixture','{INSTANCE}',device,'enrollment','consumed',clock_timestamp()+interval '200 seconds' FROM scale_devices;INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source,windows_profile) SELECT '{TENANT}',request,grant_id,'mdm.windows','Device' FROM scale_devices;INSERT INTO mdm_access.devices SELECT '{TENANT}',device FROM scale_devices;INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state,purpose,epoch) SELECT '{TENANT}',registration,device,'mdm',1,request,'active','primary',gen_random_uuid() FROM scale_devices; INSERT INTO mdm_access.credentials SELECT '{TENANT}',gen_random_uuid(),registration,'mdm',md5(registration::text)||md5(registration::text),'active' FROM scale_devices; INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) SELECT '{TENANT}',registration,'mdm.windows','77777777-7777-4777-8777-777777777777',true FROM scale_devices;",
+            TENANT = case_tenant()
         ))?;
         await_ingress().await?;
     }

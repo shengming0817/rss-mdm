@@ -3,7 +3,12 @@ use super::*;
 use serde_json::Value;
 use sqlx::Connection;
 impl Fixture {
-    async fn policy_post(&mut self, path: &str, revision: u64, input: Value) -> Result<Value> {
+    pub(super) async fn policy_post(
+        &mut self,
+        path: &str,
+        revision: u64,
+        input: Value,
+    ) -> Result<Value> {
         let reply = self
             .browser
             .call(
@@ -18,7 +23,7 @@ impl Fixture {
         ensure!(reply.0.is_success(), "{path}: {reply:?}");
         Ok(reply.1)
     }
-    async fn policy_operation(&self, policy: Uuid) -> Result<Uuid> {
+    pub(super) async fn policy_operation(&self, policy: Uuid) -> Result<Uuid> {
         let mut db =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;

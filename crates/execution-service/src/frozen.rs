@@ -64,9 +64,7 @@ impl Frozen {
                     permissions
                         .iter()
                         .map(|&permission| {
-                            crate::authorization::UserGrant::from_proof(
-                                snapshot, proof, device, permission,
-                            )
+                            crate::permissions::grant(snapshot, proof, Some(device), permission)
                         })
                         .collect::<std::result::Result<_, _>>()?,
                 );
@@ -76,9 +74,7 @@ impl Frozen {
                 "*".into(),
                 permissions
                     .iter()
-                    .map(|&permission| {
-                        crate::authorization::UserGrant::all_devices(snapshot, proof, permission)
-                    })
+                    .map(|&permission| crate::permissions::grant(snapshot, proof, None, permission))
                     .collect::<std::result::Result<_, _>>()?,
             );
         }

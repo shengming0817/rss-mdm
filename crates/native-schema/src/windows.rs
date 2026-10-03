@@ -1,5 +1,6 @@
 //! Resolve fixed DDF references against actual Microsoft ADMX source inputs.
 mod ddf;
+mod declared;
 mod generate;
 mod learn;
 mod policy;

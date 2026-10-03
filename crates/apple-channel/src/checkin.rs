@@ -32,7 +32,9 @@ pub async fn checkin(
             }
             Some(udid)
         }
-        CheckIn::CheckOut { udid } | CheckIn::UserAuthenticate { udid, .. } => Some(udid),
+        CheckIn::CheckOut { udid }
+        | CheckIn::UserAuthenticate { udid, .. }
+        | CheckIn::DeclarativeManagement { udid, .. } => Some(udid),
         CheckIn::SetBootstrapToken { .. } | CheckIn::GetBootstrapToken => dictionary
             .get("UDID")
             .map(|_| protocol::text(&dictionary, "UDID"))
@@ -52,6 +54,25 @@ pub async fn checkin(
     audit.identify_device(principal.registration());
     audit.target(principal.device());
     audit.registration(principal.registration());
+    if matches!(input, CheckIn::DeclarativeManagement { .. }) {
+        let reply = app
+            .execution
+            .apple_ddm(
+                &principal,
+                crate::ddm::prepare(apple.clone(), &dictionary)?,
+                &audit,
+            )
+            .await?;
+        return Ok((
+            StatusCode::from_u16(reply.status).map_err(|_| Error::Malformed)?,
+            [
+                ("content-type", "application/json"),
+                ("cache-control", "no-store"),
+            ],
+            reply.bytes,
+        )
+            .into_response());
+    }
     let digest = apple
         .protection
         .mac(
@@ -166,6 +187,7 @@ async fn checkin_on(
         return Err(Error::Unauthorized);
     }
     let (key, details) = match input {
+        CheckIn::DeclarativeManagement { .. } => return Err(Error::Malformed),
         CheckIn::Authenticate { .. } => return Ok(Some("success")),
         CheckIn::TokenUpdate {
             token, magic, user, ..
@@ -347,7 +369,12 @@ pub async fn manage(
     }
     let bytes = app
         .execution
-        .apple_management(apple.clone(), &principal, &bytes, &audit)
+        .apple_management(
+            apple.clone(),
+            &principal,
+            crate::exchange::prepare(apple.clone(), dictionary, bytes.to_vec())?,
+            &audit,
+        )
         .await?;
     Ok((
         [

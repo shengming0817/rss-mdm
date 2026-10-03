@@ -10,6 +10,22 @@ pub struct Configuration {
     pub remove: Option<Task>,
 }
 impl Configuration {
+    pub fn unit_key(
+        &self,
+        key: &rss_mdm_native_protection::Protector,
+        tenant: rss_request_context::TenantId,
+        device: &str,
+    ) -> Result<String, Error> {
+        let digest = crate::protection::fingerprint(
+            key,
+            tenant,
+            device,
+            "native-configuration/unit/v1",
+            &(&self.target, self.objects()?),
+        )?;
+        Ok(digest.iter().map(|b| format!("{b:02x}")).collect())
+    }
+
     pub fn read(verified: &rss_mdm_content_service::Verified) -> Result<Self, Error> {
         let bytes = verified
             .read_plaintext(16 * 1024 * 1024)
@@ -54,10 +70,9 @@ impl Configuration {
             ) => {
                 mutations(request)?;
                 for object in request.objects().map_err(|_| Error::Malformed)? {
-                    if !owned
-                        .iter()
-                        .any(|o| o.platform == "windows" && o.kind == "csp" && o.key == object.uri)
-                    {
+                    if !owned.iter().any(|o| {
+                        o.platform == "windows" && o.kind == object.kind() && o.key == object.key()
+                    }) {
                         return Err(Error::Malformed);
                     }
                 }
@@ -75,7 +90,7 @@ impl Configuration {
                     request: A::Declarations { .. },
                 },
                 Task::Macos {
-                    request: A::Declarations { declarations },
+                    request: A::Declarations { declarations, .. },
                 },
             ) if declarations.is_empty() => {}
             _ => return Err(Error::Malformed),
@@ -142,15 +157,15 @@ impl Configuration {
                 request: W::SyncMl { request },
             } => {
                 for object in request.objects().map_err(|_| Error::Malformed)? {
-                    if (object.scope == Scope::User)
+                    if (object.scope() == Scope::User)
                         != matches!(self.target, NativeTarget::User { .. })
                     {
                         return Err(Error::Malformed);
                     }
                     objects.insert(Object {
                         platform: "windows".into(),
-                        kind: "csp".into(),
-                        key: object.uri,
+                        kind: object.kind().into(),
+                        key: object.key().into(),
                         user: user.clone(),
                     });
                 }
@@ -174,7 +189,7 @@ impl Configuration {
                 }
             }
             Task::Macos {
-                request: A::Declarations { declarations },
+                request: A::Declarations { declarations, .. },
             } => {
                 for declaration in declarations {
                     objects.insert(Object {
@@ -381,7 +396,7 @@ impl Configuration {
                             let objects = request.objects().map_err(|_| Error::Malformed)?;
                             for object in objects {
                                 let values = content
-                                    .entry(identity("windows", "csp", &object.uri))
+                                    .entry(identity("windows", object.kind(), object.key()))
                                     .or_insert_with(|| json!([]));
                                 values
                                     .as_array_mut()
@@ -410,12 +425,23 @@ impl Configuration {
                 }
             }
             Task::Macos {
-                request: A::Declarations { declarations },
+                request:
+                    A::Declarations {
+                        declarations,
+                        assets,
+                    },
             } => {
                 for declaration in declarations {
                     content.insert(
                         identity("macos", "declaration", &declaration.identifier),
-                        serde_json::to_value(declaration).map_err(|_| Error::Malformed)?,
+                        serde_json::to_value((
+                            declaration,
+                            assets
+                                .iter()
+                                .filter(|a| a.identifier == declaration.identifier)
+                                .collect::<Vec<_>>(),
+                        ))
+                        .map_err(|_| Error::Malformed)?,
                     );
                 }
             }
@@ -485,7 +511,7 @@ mod object_tests {
         let declaration = |id: &str| json!({"identifier":id,"declarationType":"com.apple.asset.data","payload":{"Reference":{"type":"dictionary","value":{"DataURL":{"type":"string","value":"https://example.test/profile.mobileconfig"},"ContentType":{"type":"string","value":"application/plist"}}}}});
         let ddm = |ids: &[&str]| {
             config(
-                json!({"platform":"macos","request":{"kind":"declarations","declarations":ids.iter().map(|id|declaration(id)).collect::<Vec<_>>()}}),
+                json!({"platform":"macos","request":{"kind":"declarations","assets":[],"declarations":ids.iter().map(|id|declaration(id)).collect::<Vec<_>>()}}),
             )
         };
         let a = digest(&ddm(&["X", "Y"]));
