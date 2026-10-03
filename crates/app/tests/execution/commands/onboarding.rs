@@ -634,7 +634,7 @@ async fn cancellation_blocks_registration_and_preserves_uncertain_native_effect(
         "/ManagementServer/MDM.svc",
         "/api/agent/enroll/v1/native-grants",
     );
-    let input = json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("cancelled-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v6"]});
+    let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("cancelled-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v6","task.execute.v6"]}});
     ensure!(peer.mutual.post(url).json(&input).send().await?.status() == StatusCode::FORBIDDEN);
     ensure!(package_status(&client.router, operation).await? == StatusCode::FORBIDDEN);
     let state = client
@@ -676,7 +676,7 @@ async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -
         "/ManagementServer/MDM.svc",
         "/api/agent/enroll/v1/native-grants",
     );
-    let input = json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("expired-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v6"]});
+    let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("expired-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v6","task.execute.v6"]}});
     ensure!(peer.mutual.post(url).json(&input).send().await?.status() == StatusCode::FORBIDDEN);
     ensure!(package_status(&client.router, operation).await? == StatusCode::FORBIDDEN);
     let state = client
@@ -701,7 +701,7 @@ async fn replacement_rejects_old_installation_and_requires_current_epoch_absence
         "/ManagementServer/MDM.svc",
         "/api/agent/enroll/v1/native-grants",
     );
-    let input = json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("replacement-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v6"]});
+    let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("replacement-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v6","task.execute.v6"]}});
     ensure!(peer.mutual.post(&url).json(&input).send().await?.status() == StatusCode::UNAUTHORIZED);
     ensure!(
         current
@@ -804,14 +804,22 @@ async fn scope_exit_preserves_dispatched_installation_authority_until_its_deadli
         "/ManagementServer/MDM.svc",
         "/api/agent/enroll/v1/native-grants",
     );
-    let input = json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("scope-exit-agent"),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v6"]});
+    let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("scope-exit-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v6","task.execute.v6"]}});
     let response = peer.mutual.post(&url).json(&input).send().await?;
     let status = response.status();
     let receipt: Value = response.json().await?;
     ensure!(
-        status == StatusCode::CREATED && receipt["deviceId"] != case_device(),
+        status == StatusCode::CREATED && receipt["state"] == "available",
         "{status}: {receipt}"
     );
+    let activated = crate::test_support::agent::complete_grant(
+        host.app.agent_enrollment.as_ref().unwrap(),
+        &receipt,
+        &input,
+        &credential("scope-exit-agent"),
+    )
+    .await?;
+    ensure!(activated["deviceId"] != case_device());
     ensure!(commands.shutdown().join().await?.is_clean());
     ensure!(owner.shutdown().join().await?.is_clean());
     host.close().await

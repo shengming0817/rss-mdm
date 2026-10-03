@@ -182,6 +182,6 @@ registration=$3 AND channel='mdm' AND state='active'
 // avoids granting the execution role lifecycle mutation rights or taking a
 // grant lock after the native-channel lock held by its caller.
 async fn native_grant_row(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<PgRow, Error> {
-    sqlx::query("SELECT * FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND id=$2 AND source='native'")
+    sqlx::query("SELECT *, floor(extract(epoch FROM expires_at))::bigint AS expiry, expires_at>clock_timestamp() AS live FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND id=$2 AND source='native'")
         .bind(tenant).bind(id).fetch_one(c).await.map_err(db)
 }
