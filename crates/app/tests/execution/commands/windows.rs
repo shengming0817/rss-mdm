@@ -2004,11 +2004,14 @@ async fn unsupported_config_refresh_does_not_abort_other_management_tasks() -> a
     .bind(unsupported)
     .fetch_one(&mut pg)
     .await?;
+    let admission: Value = sqlx::query_scalar(
+        "SELECT jsonb_build_object('gatewayAccepted',o.gateway_accepted,'commandStatus',d.status,'authority',o.approval->>'kind','osVersion',c.os_version,'edition',c.edition) FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text LEFT JOIN mdm_commands.capabilities c ON c.tenant_id=o.tenant_id AND c.registration=o.registration AND c.generation=o.registration_generation WHERE o.tenant_id=$1::uuid AND o.id=$2",
+    ).bind(case_tenant()).bind(unsupported).fetch_one(&mut pg).await?;
     ensure!(
         failure
             .as_ref()
             .is_some_and(|value| value["phase"] == "prepare"),
-        "per-operation rejection absent: {failure:?}"
+        "per-operation rejection absent: {failure:?}; admission={admission}"
     );
     let attempts: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2",
