@@ -608,7 +608,8 @@ async fn corrupt_user_material_does_not_block_healthy_device_push() -> Result<()
         .bind(case_tenant()).bind(user.to_string()).execute(&mut pg).await?;
     sqlx::query("UPDATE mdm_apple.channels SET next_push=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND user_key=''")
         .bind(case_tenant()).execute(&mut pg).await?;
-    let participant = push::test_support::Participant::start(vec![200, 200], vec![42; 32]).await?;
+    let participant =
+        crate::apple::push::test_support::Participant::start(vec![200, 200], vec![42; 32]).await?;
     rss_mdm_apple_channel::push::wake(&participant.push, &f.app.execution).await?;
     let bad: (String, Option<Uuid>, Option<String>) = sqlx::query_as("SELECT state,push_id,push_outcome FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND user_key=$2")
         .bind(case_tenant()).bind(user.to_string()).fetch_one(&mut pg).await?;
