@@ -1,9 +1,6 @@
 //! Typed native input and exact object identities for the flow execution envelope.
 use super::{Context, Error, Scope, Value, Verb};
-use crate::{
-    CodecLimits,
-    syncml::Command,
-};
+use crate::{CodecLimits, syncml::Command};
 use serde::{Deserialize, Serialize};
 
 /// Windows native operation tree. Target evidence and command IDs are server-owned.
@@ -61,11 +58,25 @@ pub enum Object {
 }
 impl Object {
     /// Native management scope.
-    pub fn scope(&self) -> Scope { match self { Self::Csp { scope, .. } | Self::Mi { scope, .. } => *scope } }
+    pub fn scope(&self) -> Scope {
+        match self {
+            Self::Csp { scope, .. } | Self::Mi { scope, .. } => *scope,
+        }
+    }
     /// Stable product claim namespace.
-    pub fn kind(&self) -> &'static str { match self { Self::Csp { .. } => "csp", Self::Mi { .. } => "mi" } }
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Csp { .. } => "csp",
+            Self::Mi { .. } => "mi",
+        }
+    }
     /// Native claim key; MI keys must never be used as wire URIs.
-    pub fn key(&self) -> &str { match self { Self::Csp { uri, .. } => uri, Self::Mi { class, .. } => class } }
+    pub fn key(&self) -> &str {
+        match self {
+            Self::Csp { uri, .. } => uri,
+            Self::Mi { class, .. } => class,
+        }
+    }
 }
 /// Compiled protocol payload and the native objects it addresses.
 pub struct Compiled {
@@ -140,7 +151,9 @@ pub enum Execution {
 
 impl Request {
     /// Resolve all claims through the same tree used by authorization and dispatch.
-    pub fn objects(&self) -> Result<Vec<Object>, Error> { Ok(self.resolve()?.objects().to_vec()) }
+    pub fn objects(&self) -> Result<Vec<Object>, Error> {
+        Ok(self.resolve()?.objects().to_vec())
+    }
 }
 
 impl Request {
@@ -153,7 +166,15 @@ impl Request {
     ) -> Result<Self, Error> {
         let mut candidates = vec![uri.to_owned()];
         if uri.starts_with("./Vendor/MSFT/") {
-            candidates = vec![uri.replacen("./Vendor/", if scope == Scope::User { "./User/Vendor/" } else { "./Device/Vendor/" }, 1)];
+            candidates = vec![uri.replacen(
+                "./Vendor/",
+                if scope == Scope::User {
+                    "./User/Vendor/"
+                } else {
+                    "./Device/Vendor/"
+                },
+                1,
+            )];
         }
         let mut selected = None;
         let mut specificity = 0;
@@ -178,7 +199,12 @@ impl Request {
                     .iter()
                     .zip(&parts)
                     .filter_map(|(t, v)| (*t == "*").then_some((*v).to_owned()))
-                    .map(|v| percent_encoding::percent_decode_str(&v).decode_utf8().map(|v| v.into_owned()).map_err(|_| Error::Identity))
+                    .map(|v| {
+                        percent_encoding::percent_decode_str(&v)
+                            .decode_utf8()
+                            .map(|v| v.into_owned())
+                            .map_err(|_| Error::Identity)
+                    })
                     .collect::<Result<_, _>>()?;
                 let candidate = Self::Node {
                     node: node.path.into(),

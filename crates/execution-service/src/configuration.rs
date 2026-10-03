@@ -54,10 +54,9 @@ impl Configuration {
             ) => {
                 mutations(request)?;
                 for object in request.objects().map_err(|_| Error::Malformed)? {
-                    if !owned
-                        .iter()
-                        .any(|o| o.platform == "windows" && o.kind == "csp" && o.kind == object.kind() && o.key == object.key())
-                    {
+                    if !owned.iter().any(|o| {
+                        o.platform == "windows" && o.kind == object.kind() && o.key == object.key()
+                    }) {
                         return Err(Error::Malformed);
                     }
                 }

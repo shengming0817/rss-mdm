@@ -208,3 +208,14 @@ pub async fn timeline_enrollment_in(
 ) -> Result<Option<String>, sqlx::Error> {
     sqlx::query_scalar("SELECT g.device FROM mdm_access.requests r JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(r.tenant_id,r.grant_id) WHERE r.tenant_id=$1::uuid AND r.id=$2").bind(tenant).bind(id).fetch_optional(c).await
 }
+
+/// Execution coordinates belong to the root registration, while operations retain their wire registration.
+pub async fn management_root_in(
+    c: &mut sqlx::PgConnection,
+    tenant: String,
+    registration: uuid::Uuid,
+    generation: i64,
+) -> Result<(uuid::Uuid, i64), crate::Error> {
+    sqlx::query_as("SELECT coalesce(parent_id,id),coalesce(parent_generation,generation) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 AND generation=$3 AND state='active'")
+        .bind(tenant).bind(registration).bind(generation).fetch_optional(c).await.map_err(crate::database::db)?.ok_or(crate::Error::Conflict)
+}

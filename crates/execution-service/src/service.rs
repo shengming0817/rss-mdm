@@ -153,17 +153,19 @@ impl ExecutionService {
             }
         }
         let (registration, registration_generation) =
-            storage::current_registration(tx, device).await?;
-        storage::require_source(tx, registration, input.task.source()).await?;
+            storage::current_registration(tx, device, input.task.purpose()?).await?;
+        if input.task.purpose()? == rss_mdm_registration_service::Purpose::Primary {
+            storage::require_source(tx, registration, input.task.source()).await?;
+        }
         if matches!(input.task, Task::Windows { .. })
             && matches!(input.target, NativeTarget::User { .. })
         {
             let tenant = self.tenant.to_string();
             let target = input.target.clone();
             let allowed = tx.with_connection(move |c| Box::pin(async move {
-                let profile: Option<String> = sqlx::query_scalar("SELECT q.windows_profile FROM mdm_access.registrations r JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.generation=$3 AND r.state='active'")
+                let (profile, context): (Option<String>, Uuid) = sqlx::query_as("SELECT q.windows_profile,coalesce(r.parent_id,r.id) FROM mdm_access.registrations r JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.generation=$3 AND r.state='active'")
                     .bind(tenant).bind(registration).bind(registration_generation).fetch_one(c).await?;
-                Ok(target.matches_windows_context((profile.as_deref()==Some("Full")).then_some(registration)))
+                Ok(target.matches_windows_context((profile.as_deref()==Some("Full")).then_some(context)))
             })).await?;
             if !allowed {
                 return Err(Error::Forbidden.into());
@@ -265,7 +267,7 @@ impl ExecutionService {
             if command.status().is_terminal() || now>=op.request.deadline {return Err(Error::Conflict.into());}
             let approval=if approve {
                 if !matches!(op.approval,ExecutionAuthority::User {..}) {return Err(Error::Conflict.into());}
-                if storage::current_registration(tx,device).await? != (op.registration,op.registration_generation) {return Err(Error::Conflict.into());}
+                if storage::current_registration(tx,device,op.request.task.purpose()?).await? != (op.registration,op.registration_generation) {return Err(Error::Conflict.into());}
                 ExecutionAuthority::from_proof(&auth,proof,device,op.approval.required())?
             } else {
                 let transition=service.store.cancel(tx,op.scope,&op.command_id()?,op.coordinate).await?;

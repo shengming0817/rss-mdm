@@ -153,8 +153,18 @@ fn family(start: &Start, dsc: bool, result: bool) -> Result<String, Error> {
             return Err(Error::Value);
         }
         let namespace = attr(start, "namespace")?.replace('\\', "/");
-        if namespace.len() > 256 || !namespace.split('/').all(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')) { return Err(Error::Identity); }
-        Ok(format!("{}:{}", namespace.to_ascii_lowercase(), class.to_ascii_lowercase()))
+        if namespace.len() > 256
+            || !namespace
+                .split('/')
+                .all(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+        {
+            return Err(Error::Identity);
+        }
+        Ok(format!(
+            "{}:{}",
+            namespace.to_ascii_lowercase(),
+            class.to_ascii_lowercase()
+        ))
     } else {
         let name = attr(start, "name")?;
         if !name.starts_with("./Vendor/MSFT/")
@@ -195,9 +205,17 @@ fn member(start: &Start, family: &str, dsc: bool, result: bool) -> Result<String
         return Err(Error::Value);
     }
     if dsc {
-        if !path.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') { return Err(Error::Identity); }
-        Ok(format!("{family}/{}/{}", start.name, path.to_ascii_lowercase()))
-    } else { Ok(format!("{family}/{path}")) }
+        if !path.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            return Err(Error::Identity);
+        }
+        Ok(format!(
+            "{family}/{}/{}",
+            start.name,
+            path.to_ascii_lowercase()
+        ))
+    } else {
+        Ok(format!("{family}/{path}"))
+    }
 }
 impl Document {
     /// Parse the bounded official document grammar without external XML resolution.
@@ -220,7 +238,9 @@ impl Document {
         while input.is("", family_tag).map_err(malformed)? {
             let start = input.start("", family_tag).map_err(malformed)?;
             let family = family(&start, dsc, false)?;
-            if dsc && !families.insert(family.clone()) { return Err(Error::Identity); }
+            if dsc && !families.insert(family.clone()) {
+                return Err(Error::Identity);
+            }
             while input
                 .is("", if dsc { "Key" } else { "URI" })
                 .map_err(malformed)?
@@ -258,7 +278,16 @@ impl Document {
         }
         input.end("", "DeclaredConfiguration").map_err(malformed)?;
         input.finish().map_err(malformed)?;
-        if resources.is_empty() || dsc && families.iter().any(|family| !resources.keys().any(|k| k.starts_with(&format!("{family}/Key/")))) { return Err(Error::Value); }
+        if resources.is_empty()
+            || dsc
+                && families.iter().any(|family| {
+                    !resources
+                        .keys()
+                        .any(|k| k.starts_with(&format!("{family}/Key/")))
+                })
+        {
+            return Err(Error::Value);
+        }
         Ok(Self {
             identity,
             resources,
@@ -296,9 +325,16 @@ impl ResultDocument {
         while input.is("", family_tag).map_err(malformed)? {
             let start = input.start("", family_tag).map_err(malformed)?;
             let family = family(&start, dsc, true)?;
-            if dsc && !families.insert(family.clone()) { return Err(Error::Identity); }
-            let inherited_status = if dsc { number(&start, "status")? } else { None };
-            let inherited_state = if dsc { number(&start, "state")? } else { None };
+            if dsc && !families.insert(family.clone()) {
+                return Err(Error::Identity);
+            }
+            let inherited_status = number(&start, "status")?;
+            let inherited_state = number(&start, "state")?;
+            if inherited_status.is_some_and(|v| v != 200)
+                || inherited_state.is_some_and(|v| v != state)
+            {
+                return Err(Error::Value);
+            }
             while input
                 .is("", if dsc { "Key" } else { "URI" })
                 .map_err(malformed)?
@@ -447,7 +483,9 @@ pub fn summaries(xml: &str) -> Result<Vec<Summary>, Error> {
 impl Document {
     /// Validate embedded CSP values using the same generated schema as ordinary native operations.
     pub fn requests(&self, operation: super::Verb) -> Result<Vec<super::Request>, Error> {
-        if self.dsc { return Err(Error::OperationNotAllowed); }
+        if self.dsc {
+            return Err(Error::OperationNotAllowed);
+        }
         let inventory = operation == super::Verb::Get;
         self.resources
             .iter()
@@ -482,4 +520,19 @@ impl Document {
             })
             .collect()
     }
+}
+
+/// Frozen servicing support for certificate-linked discovery; client claims are not identity proof.
+pub fn certificate_supported(build: [u32; 4]) -> bool {
+    super::generated::NODES
+        .iter()
+        .find(|n| {
+            n.path
+                == "./Device/Vendor/MSFT/DeclaredConfiguration/Host/Complete/Documents/*/Document"
+        })
+        .is_some_and(|n| {
+            n.certificate_builds
+                .iter()
+                .any(|b| build[..3] == b[..3] && build[3] >= b[3])
+        })
 }

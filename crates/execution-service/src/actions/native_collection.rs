@@ -173,7 +173,13 @@ pub async fn settle_device(
     tx: &mut PgTransaction<'_>,
     device: &str,
 ) -> Result<()> {
-    let registration = match storage::current_registration(tx, device).await {
+    let registration = match storage::current_registration(
+        tx,
+        device,
+        rss_mdm_registration_service::Purpose::Primary,
+    )
+    .await
+    {
         Ok(v) => Some(v),
         Err(crate::transaction::Fault::Request(Error::Conflict)) => None,
         Err(e) => return Err(e),

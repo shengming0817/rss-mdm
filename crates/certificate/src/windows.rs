@@ -1,8 +1,8 @@
 //! ref: RustCrypto formats x509-cert/v0.2.5 src/request.rs; ring 0.17.14 src/rsa/keypair.rs.
-mod renewal;
 mod linked;
-pub use linked::LinkedProof;
+mod renewal;
 use crate::Error;
+pub use linked::LinkedProof;
 pub use renewal::RenewalProof;
 use ring::{
     rand::SystemRandom,

@@ -186,6 +186,19 @@ async fn manage_on(
             alert: Alert::SessionAbort,
         });
     }
+    let mut declared_summaries = Vec::new();
+    for command in &prepared.input.commands {
+        if let Command::Alert {
+            alert: Alert::DeclaredConfiguration { summary, .. },
+            ..
+        } = command
+        {
+            declared_summaries.extend(
+                rss_mdm_windows_mdm::native::declared::summaries(&summary.0)
+                    .map_err(|_| Error::Malformed)?,
+            );
+        }
+    }
     let command_pending = native::send_on(
         source,
         c,
@@ -198,6 +211,7 @@ async fn manage_on(
             provider_id: &prepared.provider_id,
             management_urls: &prepared.management_urls,
             limits: &prepared.limits,
+            declared_summaries: &declared_summaries,
         },
     )
     .await?;

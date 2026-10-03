@@ -183,9 +183,15 @@ fn windows(
     for target in resolved.authorization() {
         match target {
             AuthorizationTarget::Csp { node, operation } => windows_node(node, *operation, out)?,
-            AuthorizationTarget::Mi { .. } => { out.insert(P::WindowsMiExecute); },
-            AuthorizationTarget::DeclaredInterval => { out.insert(P::ConfigurationWrite); },
-            AuthorizationTarget::DeclaredResult => { out.extend([P::InventoryCollect, P::SecurityOperate, P::Credentials]); },
+            AuthorizationTarget::Mi { .. } => {
+                out.insert(P::WindowsMiExecute);
+            }
+            AuthorizationTarget::DeclaredInterval => {
+                out.insert(P::ConfigurationWrite);
+            }
+            AuthorizationTarget::DeclaredResult => {
+                out.extend([P::InventoryCollect, P::SecurityOperate, P::Credentials]);
+            }
         }
     }
     Ok(())

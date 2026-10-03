@@ -360,7 +360,7 @@ async fn receive_capabilities(
             if statuses == [Some(200), Some(200)]
                 && let [Some(version), Some(edition)] = &values
                 && let Some(edition) = edition_id(edition)
-                && context(version, edition, Scope::Device).is_ok()
+                && context(version, edition, Scope::Device, p.purpose()).is_ok()
             {
                 let changed=sqlx::query_scalar::<_,bool>("SELECT NOT EXISTS(SELECT 1 FROM mdm_commands.capabilities WHERE tenant_id=$1::uuid AND registration=$2::uuid AND generation=$3 AND os_version=$4 AND edition=$5)").bind(&tenant).bind(&reg).bind(p.generation()).bind(version).bind(edition as i32).fetch_one(&mut *c).await.map_err(db)?;
                 sqlx::query("INSERT INTO mdm_commands.capabilities VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,floor(extract(epoch FROM clock_timestamp()))::bigint) ON CONFLICT(tenant_id,registration) DO UPDATE SET generation=excluded.generation,os_version=excluded.os_version,edition=excluded.edition,session=excluded.session,observed_at=excluded.observed_at")
@@ -394,7 +394,12 @@ fn edition_id(value: &str) -> Option<u32> {
     }
 }
 
-fn context(version: &str, edition: u32, scope: Scope) -> std::result::Result<Context, Error> {
+fn context(
+    version: &str,
+    edition: u32,
+    scope: Scope,
+    purpose: rss_mdm_registration_service::Purpose,
+) -> std::result::Result<Context, Error> {
     let parts = version.split('.').collect::<Vec<_>>();
     if parts.len() != 4 {
         return Err(protocol());
@@ -404,7 +409,14 @@ fn context(version: &str, edition: u32, scope: Scope) -> std::result::Result<Con
         build[i] = part.parse().map_err(|_| protocol())?;
     }
     Ok(Context {
-        enrollment: rss_mdm_windows_mdm::native::Enrollment::Primary,
+        enrollment: match purpose {
+            rss_mdm_registration_service::Purpose::Primary => {
+                rss_mdm_windows_mdm::native::Enrollment::Primary
+            }
+            rss_mdm_registration_service::Purpose::WindowsDeclared => {
+                rss_mdm_windows_mdm::native::Enrollment::LinkedCertificate
+            }
+        },
         build: Some(build),
         edition: Some(edition),
         scope,
@@ -440,6 +452,7 @@ pub(crate) struct Dispatch<'a> {
     pub provider_id: &'a str,
     pub management_urls: &'a [String],
     pub limits: &'a CodecLimits,
+    pub declared_summaries: &'a [rss_mdm_windows_mdm::native::declared::Summary],
 }
 pub(crate) async fn send_on(
     source: &dyn crate::source_authority::SourceAuthority,
@@ -455,6 +468,7 @@ pub(crate) async fn send_on(
         provider_id,
         management_urls,
         limits,
+        declared_summaries,
     } = dispatch;
     if !authenticated {
         return Ok(false);
@@ -527,8 +541,9 @@ pub(crate) async fn send_on(
             let reason = if request
                 .requires_linked_enrollment()
                 .map_err(|_| Error::Malformed)?
+                != (p.purpose() == rss_mdm_registration_service::Purpose::WindowsDeclared)
             {
-                Some("linked_enrollment_required")
+                Some("enrollment_purpose_mismatch")
             } else if request.validate_provider(provider_id).is_err() {
                 Some("enrollment_provider_scope")
             } else if request.management_addresses().map_or(true, |urls| {
@@ -584,6 +599,7 @@ pub(crate) async fn send_on(
                     } else {
                         Scope::Device
                     },
+                    p.purpose(),
                 )
             })
             .transpose()?;
@@ -645,6 +661,27 @@ pub(crate) async fn send_on(
                 continue;
             }
         }
+        let summary_changed = if let (W::SyncMl { request }, Some(platform)) = (request, platform) {
+            request
+                .effect_plan(platform)
+                .map_err(|_| Error::Unsupported)?
+                .readback()
+                .is_some_and(|plan| {
+                    plan.expected.values().any(|expected| match expected {
+                        rss_mdm_windows_mdm::native::verification::Expected::Declared {
+                            document,
+                            ..
+                        } => declared_summaries.iter().any(|summary| {
+                            summary.id == document.identity.id
+                                && summary.scope == document.identity.scope
+                                && summary.checksum == document.identity.checksum
+                        }),
+                        _ => false,
+                    })
+                })
+        } else {
+            false
+        };
         let (ordinal, phase) = match (&old, request) {
             (None, W::SyncMl { .. }) if binding.is_some() => (1, AttemptPhase::Prepare),
             (Some(old), W::SyncMl { .. })
@@ -694,7 +731,8 @@ pub(crate) async fn send_on(
             (Some(old), W::SyncMl { request })
                 if (old.try_get::<String, _>("phase").map_err(db)? == "execute" && accepted)
                     || (old.try_get::<String, _>("phase").map_err(db)? == "observe"
-                        && old.try_get::<i64, _>("session").map_err(db)? != session) =>
+                        && (old.try_get::<i64, _>("session").map_err(db)? != session
+                            || summary_changed)) =>
             {
                 let Some(platform) = platform else {
                     continue;

@@ -18,7 +18,11 @@ pub fn generate(root: &Path) -> Result<String, Box<dyn std::error::Error>> {
     );
     let certificate_builds = super::learn::facts(root)?.declared_certificate_builds;
     for mut n in nodes {
-        let linked_builds = if super::declared::leaf(&n.path) { certificate_builds.clone() } else { Vec::new() };
+        let linked_builds = if super::declared::leaf(&n.path) {
+            certificate_builds.clone()
+        } else {
+            Vec::new()
+        };
         let mut stable_source = None;
         let mut preview = false;
         if let Some(support) = sources.learn.get(&super::learn::canonical(&n.path)) {

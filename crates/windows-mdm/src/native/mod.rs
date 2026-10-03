@@ -318,11 +318,19 @@ impl Operation {
 impl Node {
     fn check(&self, target: Context) -> Result<(), Error> {
         let declared = self.path.contains("/Vendor/MSFT/DeclaredConfiguration");
-        if declared != (target.enrollment == Enrollment::LinkedCertificate) { return Err(Error::Scope); }
-        if self.preview && self.certificate_builds.is_empty() { return Err(Error::Unsupported); }
+        if declared != (target.enrollment == Enrollment::LinkedCertificate) {
+            return Err(Error::Scope);
+        }
+        if self.preview && self.certificate_builds.is_empty() {
+            return Err(Error::Unsupported);
+        }
         let build = target.build.ok_or(Error::MissingEvidence)?;
         let edition = target.edition.ok_or(Error::MissingEvidence)?;
-        let builds = if declared { self.certificate_builds } else { self.builds };
+        let builds = if declared {
+            self.certificate_builds
+        } else {
+            self.builds
+        };
         if builds.is_empty() {
             return Err(Error::UnresolvedConstraint);
         }

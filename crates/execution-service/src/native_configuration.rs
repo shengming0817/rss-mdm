@@ -189,6 +189,29 @@ impl ExecutionService {
                 .collect::<Vec<_>>();
             let diagnosis = claim_diagnosis(index, &inputs, &owners);
             let state = object_state(tx, device, &input.objects).await?;
+            let probe = input.native.request(
+                Uuid::new_v4(),
+                input.policy.version.to_string(),
+                storage::now(tx).await? + 3600,
+                false,
+            )?;
+            if matches!(
+                storage::current_registration(tx, device, probe.task.purpose()?).await,
+                Err(Fault::Request(Error::Conflict))
+            ) {
+                save_objects(
+                    tx,
+                    device,
+                    &input.objects,
+                    state,
+                    Some(&input.object_digests),
+                    Some(Diagnosis::WaitingRegistration),
+                )
+                .await?;
+                desired_claims(tx, device, &input.objects, &inputs, &owners, state).await?;
+                continue;
+            }
+
             if let Some(diagnosis) = diagnosis {
                 save_objects(
                     tx,
@@ -352,6 +375,21 @@ impl ExecutionService {
                 let request = old
                     .native
                     .request(id, policy.version.to_string(), deadline, true)?;
+                if matches!(
+                    storage::current_registration(tx, device, request.task.purpose()?).await,
+                    Err(Fault::Request(Error::Conflict))
+                ) {
+                    save_objects(
+                        tx,
+                        device,
+                        &old.objects,
+                        state,
+                        Some(&old.object_digests),
+                        Some(Diagnosis::WaitingRegistration),
+                    )
+                    .await?;
+                    continue;
+                }
                 self.queue_policy_configuration(tx, device, policy, &request, true, audit)
                     .await?;
                 id
@@ -379,7 +417,8 @@ impl ExecutionService {
         digest: &[u8],
     ) -> Result<bool> {
         let old = storage::load(tx, &self.protection, id).await?;
-        let current = storage::current_registration(tx, &old.device).await?;
+        let current =
+            storage::current_registration(tx, &old.device, old.request.task.purpose()?).await?;
         let foreign = current != (old.registration, old.registration_generation);
         let previous = crate::protection::fingerprint(
             &self.protection,

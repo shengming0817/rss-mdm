@@ -50,6 +50,20 @@ pub enum Task {
     },
 }
 impl Task {
+    pub fn purpose(&self) -> Result<rss_mdm_registration_service::Purpose, Error> {
+        use rss_mdm_registration_service::Purpose;
+        Ok(match self {
+            Self::Windows {
+                request: rss_mdm_windows_mdm::native::Execution::SyncMl { request },
+            } if request
+                .requires_linked_enrollment()
+                .map_err(|_| Error::Malformed)? =>
+            {
+                Purpose::WindowsDeclared
+            }
+            _ => Purpose::Primary,
+        })
+    }
     pub fn source(&self) -> rss_mdm_inventory::ReportSource {
         match self {
             Self::Windows { .. } => rss_mdm_inventory::ReportSource::MdmWindows,

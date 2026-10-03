@@ -3,10 +3,10 @@
 //! ref: sqlx v0.9.0 sqlx-core/src/transaction.rs
 pub mod coordinates;
 pub mod directory;
+pub mod linked;
+mod management;
 pub mod read;
 pub mod store;
-mod management;
-pub mod linked;
 use crate::{Error, Store, device::coordinates::Coordinates};
 #[cfg(any(test, feature = "integration"))]
 use rss_mdm_audit_integration::{FailureReason, WriteOutcome};
@@ -23,10 +23,24 @@ use rss_mdm_inventory::{Channel, ReportSource};
 /// Registration authority purpose. WinDC never publishes Inventory observations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Purpose { Primary, WindowsDeclared }
+pub enum Purpose {
+    Primary,
+    WindowsDeclared,
+}
 impl Purpose {
-    pub fn as_str(self) -> &'static str { match self { Self::Primary => "primary", Self::WindowsDeclared => "windows_declared" } }
-    pub(crate) fn parse(value: &str) -> Result<Self, Error> { match value { "primary" => Ok(Self::Primary), "windows_declared" => Ok(Self::WindowsDeclared), _ => Err(Error::Storage) } }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::WindowsDeclared => "windows_declared",
+        }
+    }
+    pub(crate) fn parse(value: &str) -> Result<Self, Error> {
+        match value {
+            "primary" => Ok(Self::Primary),
+            "windows_declared" => Ok(Self::WindowsDeclared),
+            _ => Err(Error::Storage),
+        }
+    }
 }
 /// Evidence from a trusted channel verifier, not a credential ID submitted by a device.
 /// I01 has no production constructor. F04 must verify the actual channel credential first.
@@ -52,7 +66,11 @@ pub struct ChannelMount {
 }
 impl ChannelMount {
     pub fn new(tenant: TenantId, source: ReportSource, purpose: Purpose) -> Self {
-        Self { tenant, source, purpose }
+        Self {
+            tenant,
+            source,
+            purpose,
+        }
     }
     pub fn tenant(&self) -> TenantId {
         self.tenant
@@ -85,9 +103,15 @@ pub struct DevicePrincipal {
     epoch: Uuid,
 }
 impl DevicePrincipal {
-    pub fn purpose(&self) -> Purpose { self.purpose }
-    pub fn parent(&self) -> Option<(Uuid, i64)> { self.parent }
-    pub fn epoch(&self) -> Uuid { self.epoch }
+    pub fn purpose(&self) -> Purpose {
+        self.purpose
+    }
+    pub fn parent(&self) -> Option<(Uuid, i64)> {
+        self.parent
+    }
+    pub fn epoch(&self) -> Uuid {
+        self.epoch
+    }
     pub fn tenant(&self) -> TenantId {
         self.tenant
     }
@@ -180,7 +204,9 @@ impl DeviceService {
         &self,
         credential: &VerifiedChannelCredential,
     ) -> Result<DevicePrincipal, Error> {
-        if self.tenant != credential.tenant.to_string() { return Err(Error::Forbidden); }
+        if self.tenant != credential.tenant.to_string() {
+            return Err(Error::Forbidden);
+        }
         let mut tx = self.access.begin(&self.tenant).await?;
         let principal = store::management_in(&mut tx, credential).await?;
         tx.commit().await.map_err(crate::database::db)?;

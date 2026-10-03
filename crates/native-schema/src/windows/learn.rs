@@ -36,11 +36,21 @@ pub fn facts(root: &Path) -> Result<Facts, Box<dyn std::error::Error>> {
     {
         return Err("invalid fixed Learn facts or source references".into());
     }
-    if facts.scenarios.is_empty() || facts.scenarios.iter().any(|(_, source)| !hashes.contains(source)) || facts.declared_certificate_builds.is_empty() { return Err("invalid declared source facts".into()); }
+    if facts.scenarios.is_empty()
+        || facts
+            .scenarios
+            .iter()
+            .any(|(_, source)| !hashes.contains(source))
+        || facts.declared_certificate_builds.is_empty()
+    {
+        return Err("invalid declared source facts".into());
+    }
     Ok(facts)
 }
 
-pub fn read(root: &Path) -> Result<BTreeMap<String, Support>, Box<dyn std::error::Error>> { Ok(facts(root)?.nodes) }
+pub fn read(root: &Path) -> Result<BTreeMap<String, Support>, Box<dyn std::error::Error>> {
+    Ok(facts(root)?.nodes)
+}
 
 #[cfg(test)]
 fn parse(

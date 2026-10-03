@@ -102,7 +102,13 @@ impl ExecutionService {
         if self.inputs.agent_installation.packages.is_empty() {
             return Ok(None);
         }
-        let (registration, generation) = match storage::current_registration(tx, device).await {
+        let (registration, generation) = match storage::current_registration(
+            tx,
+            device,
+            rss_mdm_registration_service::Purpose::Primary,
+        )
+        .await
+        {
             Ok(v) => v,
             Err(Fault::Request(Error::Conflict)) => return Ok(None),
             Err(e) => return Err(e),
@@ -307,7 +313,12 @@ impl ExecutionService {
                         status,
                         dc::Status::Published | dc::Status::Received | dc::Status::Applied
                     )
-                    || storage::current_registration(tx, &op.device).await?
+                    || storage::current_registration(
+                        tx,
+                        &op.device,
+                        rss_mdm_registration_service::Purpose::Primary,
+                    )
+                    .await?
                         != (op.registration, op.registration_generation)
                     || !storage::approval_valid(&s.source, &s.protection, tx, &op, now).await?
                 {

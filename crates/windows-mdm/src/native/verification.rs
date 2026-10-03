@@ -160,7 +160,15 @@ impl Expected {
     /// Interpret a correlated Get only; missing results and protocol failures remain unverified.
     pub fn matches(&self, status: Option<i32>, value: Option<&str>) -> bool {
         match self {
-            Self::Declared { document, operation } => status == Some(200) && value.and_then(|xml| super::declared::ResultDocument::parse(xml).ok()).is_some_and(|result| result.converged(document, operation)),
+            Self::Declared {
+                document,
+                operation,
+            } => {
+                status == Some(200)
+                    && value
+                        .and_then(|xml| super::declared::ResultDocument::parse(xml).ok())
+                        .is_some_and(|result| result.converged(document, operation))
+            }
             Self::Absent => status == Some(404) && value.is_none(),
             Self::Present => status == Some(200) && value.is_some(),
             Self::Value(expected) => status == Some(200) && value == Some(expected.as_str()),
