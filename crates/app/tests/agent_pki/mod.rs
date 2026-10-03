@@ -205,7 +205,7 @@ async fn explicit_development_limit_and_unknown_result_remain_auditable() -> any
         failures.push(serde_json::from_slice::<wire::ErrorBody>(
             &response.into_body().collect().await?.to_bytes(),
         )?);
-        let records = crate::test_support::audit::read(&mut owner).await?;
+        let records = crate::audit_test_support::read(&mut owner).await?;
         let facts: Vec<_> = records
             .iter()
             .filter(|r| r.request() == Some(id.as_str()))
@@ -219,9 +219,9 @@ async fn explicit_development_limit_and_unknown_result_remain_auditable() -> any
         assert_eq!(settlements[0].result(), "failed");
         if failures.len() == 1 {
             assert!(
-                facts
-                    .iter()
-                    .any(|r| r.source() != "mdm.request" && r.status() == 200),
+                records.iter().any(|r| r.source() == "mdm.business"
+                    && r.operation() == Some(input.operation_id.to_string().as_str())
+                    && r.status() == 200),
                 "durable claim fact must survive final CA failure settlement"
             );
         }
@@ -349,9 +349,10 @@ async fn agent_ingress_holds_one_global_permit_per_request() -> anyhow::Result<(
     let third = admission.connection("127.0.0.3".parse()?).unwrap();
     let release = Arc::new(Barrier::new(5));
     let (entered, mut entries) = mpsc::channel(4);
+    let handler_release = release.clone();
     let held = get(move || {
         let entered = entered.clone();
-        let release = release.clone();
+        let release = handler_release.clone();
         async move {
             entered.send(()).await.unwrap();
             release.wait().await;
@@ -502,7 +503,7 @@ async fn agent_http(
 #[ignore = "make t2 MODULE=agent.pki"]
 async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation()
 -> anyhow::Result<()> {
-    let host = crate::windows::t2::support::Host::open().await?;
+    let host = crate::windows::test_support::Host::open().await?;
     let routers = crate::api::from_state(
         host.app.clone(),
         "mdm.example.test".into(),

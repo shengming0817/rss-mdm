@@ -58,7 +58,7 @@ IMAGE 替换为 candidate.json 固定镜像身份。秘密和配置文件由 UID
 
 网关加载部署方配置的服务器证书链与私钥。使用私有 CA 时，把签发该服务器证书的 CA 公共证书通过可信部署渠道分发到设备；CA 私钥留在部署端，不放入 Agent 配置、客户端安装包或前端静态资源。数据库连接的 `ca_file` 属于 PostgreSQL 信任，不复用为组织网关 CA。
 
-组织连接和私有 CA 的部署输入统一放在客户端构建/部署所用 `.env`：`RSS_MDM_ORIGIN` 对应本服务的 HTTPS `product_origin`，`RSS_MDM_TENANT_ID` 对应 `identity.tenant_id`，可选 `RSS_MDM_CA_FILE` 指向签发网关证书的单个 PEM CA 公共证书绝对路径。桌面构建时嵌入公共证书，仅对该 origin/tenant 生效，不读取系统执行服务的配置。Agent 的 `execution.json.origin` 必须使用 `agent_pki.endpoint.origin`，tenant 对应 `identity.tenant_id`；`ca_file` 信任该 Agent TLS 入口服务器证书的签发 CA，并把公共 CA 文件放到受保护的设备路径。桌面网关和 Agent 入口由同一 CA 签发时可以分发同一公共证书；分别签发时各自配置对应信任。Agent/安装器的独立入口配置由后续消费任务适配，不能直接把桌面 `.env` 的 `RSS_MDM_ORIGIN` 复制为 Agent origin。
+桌面客户端的组织连接和私有 CA 部署输入放在构建/部署所用 `.env`：`RSS_MDM_ORIGIN` 对应本服务的 HTTPS `product_origin`，`RSS_MDM_TENANT_ID` 对应 `identity.tenant_id`，可选 `RSS_MDM_CA_FILE` 指向签发网关证书的单个 PEM CA 公共证书绝对路径。桌面构建时嵌入公共证书，仅对该 origin/tenant 生效，不读取系统执行服务的配置。Agent 的 `execution.json.origin` 必须使用 `agent_pki.endpoint.origin`，tenant 对应 `identity.tenant_id`；`ca_file` 信任该 Agent TLS 入口服务器证书的签发 CA，并把公共 CA 文件放到受保护的设备路径。桌面网关和 Agent 入口由同一 CA 签发时可以分发同一公共证书；分别签发时各自配置对应信任。现有 Agent 仓库的 `scripts/agent-organization.mjs` 仍从桌面 `.env` 复制 origin，尚未支持独立入口，不能用于生成本协议的安装配置；Agent/安装器消费任务须改为使用 Agent endpoint。
 
 服务端网关继续配置服务器证书链和私钥；它们不通过客户端 CA 环境变量传入。客户端 CA 留空时使用默认信任。CA 更新后桌面重新构建、Agent 重新加载配置，不修改系统证书库，也不跳过证书链或主机名校验。其它组织和个人 AI 连接不继承此 CA。
 
