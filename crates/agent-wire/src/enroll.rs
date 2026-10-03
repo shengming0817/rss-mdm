@@ -176,10 +176,12 @@ pub struct Progress {
     /// Authorization progress.
     pub grant: GrantReceipt,
     /// Persisted signing attempt, when consumed.
+    #[serde(deserialize_with = "optional_uuid")]
     pub issuance_id: Option<Uuid>,
     /// Signing is unknown; retry/status never causes another CA request.
     pub issuance_unknown: bool,
     /// Already committed activation result, if any.
+    #[serde(deserialize_with = "required_nullable")]
     pub activation: Option<ActivationReceipt>,
 }
 /// Administrator attaches the original CA result to a persisted unknown attempt.
@@ -233,6 +235,7 @@ pub struct ErrorBody {
     /// Closed error category.
     pub code: ErrorCode,
     /// Original signing attempt when a CA result is unknown.
+    #[serde(deserialize_with = "optional_uuid")]
     pub issuance_id: Option<Uuid>,
 }
 
@@ -294,4 +297,18 @@ pub struct AuthorizationRequest {
     pub grant: GrantReceipt,
     /// SHA-256 of the verified CSR public key, encoded as lowercase hexadecimal.
     pub public_key_fingerprint: String,
+}
+
+fn required_nullable<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Option::<T>::deserialize(d)
+}
+fn optional_uuid<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Uuid>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(transparent)]
+    struct Strict(#[serde(with = "crate::runtime::strict_uuid")] Uuid);
+    Ok(Option::<Strict>::deserialize(d)?.map(|v| v.0))
 }

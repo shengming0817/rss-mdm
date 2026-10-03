@@ -1,5 +1,6 @@
 //! Pinned CA, durable grant/issuance state and real TLS possession.
 use crate::device::test_support::{admin, case_a, case_b, options};
+use crate::test_support::agent_tls::peer;
 use crate::{
     Database,
     clock::{Clock, SystemClock},
@@ -7,27 +8,11 @@ use crate::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rss_mdm_agent_wire::{enroll as wire, runtime};
 use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_certificate::{
-    HandshakePeer,
-    agent::{AgentTrust, PROFILE, VerifiedAgentCsr},
-};
+use rss_mdm_certificate::agent::{AgentTrust, PROFILE, VerifiedAgentCsr};
 use rss_mdm_registration_service::agent::{Assembly, NativeAdmission, Pending, Service};
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::Duration,
-};
-use tokio_rustls::{
-    TlsAcceptor, TlsConnector,
-    rustls::{
-        self,
-        pki_types::{
-            CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, pem::PemObject,
-        },
-    },
-};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 use uuid::Uuid;
-use x509_cert::der::{Decode, DecodePem, Encode};
+use x509_cert::der::{Decode, Encode};
 fn root() -> PathBuf {
     PathBuf::from(std::env::var("MDM_APPLE_FIXTURES").unwrap())
 }
@@ -93,56 +78,6 @@ fn chain(c: &wire::Candidate) -> anyhow::Result<Vec<Vec<u8>>> {
         .iter()
         .map(|v| STANDARD.decode(v))
         .collect::<Result<_, _>>()?)
-}
-pub(crate) async fn peer(
-    trust: &AgentTrust,
-    chain: &[Vec<u8>],
-    root: &Path,
-) -> anyhow::Result<HandshakePeer> {
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let certificates = CertificateDer::pem_slice_iter(&std::fs::read(root.join("server.crt"))?)
-        .collect::<Result<Vec<_>, _>>()?;
-    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(std::fs::read(
-        root.join("apple-tls.pk8"),
-    )?));
-    let server = rustls::ServerConfig::builder_with_provider(provider.clone())
-        .with_safe_default_protocol_versions()?
-        .with_client_cert_verifier(trust.verifier())
-        .with_single_cert(certificates, key)?;
-    let mut roots = rustls::RootCertStore::empty();
-    roots.add(CertificateDer::from(
-        x509_cert::Certificate::from_pem(&std::fs::read(root.join("ca.crt"))?)?.to_der()?,
-    ))?;
-    let client = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()?
-        .with_root_certificates(roots)
-        .with_client_auth_cert(
-            chain.iter().cloned().map(CertificateDer::from).collect(),
-            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(std::fs::read(
-                root.join("agent.pk8"),
-            )?)),
-        )?;
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let address = listener.local_addr()?;
-    let accept = async {
-        let (stream, _) = listener.accept().await?;
-        let tls = TlsAcceptor::from(Arc::new(server)).accept(stream).await?;
-        Ok::<_, anyhow::Error>(HandshakePeer::from_completed_tls(tls.get_ref().1)?)
-    };
-    let connect = async {
-        let stream = tokio::net::TcpStream::connect(address).await?;
-        Ok::<_, anyhow::Error>(
-            TlsConnector::from(Arc::new(client))
-                .connect(ServerName::try_from("localhost")?, stream)
-                .await?,
-        )
-    };
-    let (peer, client) = tokio::time::timeout(Duration::from_secs(5), async {
-        tokio::join!(accept, connect)
-    })
-    .await?;
-    client?;
-    peer
 }
 
 #[tokio::test]
@@ -249,6 +184,26 @@ async fn explicit_development_limit_and_unknown_result_remain_auditable() -> any
     let retry = unknown.issue(&input, &audit()).await.unwrap_err();
     assert_eq!(first.code, wire::ErrorCode::IssuanceUnknown);
     assert_eq!(first.issuance_id, retry.issuance_id);
+    let restarted = service(deployment()).await?;
+    let recovered = restarted
+        .recover_issuance(
+            &p,
+            first.issuance_id.unwrap(),
+            &wire::RecoverIssuance {
+                wire_version: 1,
+                operation_id: Uuid::new_v4(),
+                certificate_chain: vec![],
+            },
+            &audit(),
+        )
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(
+        recovered.code,
+        wire::ErrorCode::PermissionDenied,
+        "a new provisioner cannot replace the original unknown issuer"
+    );
     let mut changed = input.clone();
     changed.operation_id = Uuid::new_v4();
     assert_eq!(

@@ -113,6 +113,17 @@ impl AgentIssuer {
             clock,
         })
     }
+    /// Freeze the signing issuer, provisioner and its public key without retaining secrets.
+    pub(crate) fn authority_digest(&self) -> String {
+        use ring::signature::KeyPair;
+        crate::enrollment::digest(&(
+            "agent-ca/v1",
+            self.trust.issuer_digest(),
+            "rss-agent",
+            &self.kid,
+            URL_SAFE_NO_PAD.encode(self.key.public_key().as_ref()),
+        ))
+    }
     pub fn trust(&self) -> &Arc<AgentTrust> {
         &self.trust
     }

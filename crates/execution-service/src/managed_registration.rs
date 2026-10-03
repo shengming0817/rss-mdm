@@ -35,10 +35,10 @@ impl ExecutionService {
                         let (service, p, source, input, policy, audit) = *ctx;
                         let (receipt, replay) = tx
                             .with_connection_context(
-                                &mut (service, p, source, input, policy, audit),
+                                &mut (service, p, source, input, policy),
                                 |ctx, c| {
                                     Box::pin(async move {
-                                        let (service, p, source, input, policy, audit) = *ctx;
+                                        let (service, p, source, input, policy) = *ctx;
                                         service
                                             .register_managed_on(c, p, source, input, policy)
                                             .await

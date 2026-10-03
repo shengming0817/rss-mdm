@@ -41,3 +41,36 @@ fn bootstrap_is_closed_and_cannot_claim_a_device_or_runtime_credential() {
         assert!(!validator.is_valid(&invalid));
     }
 }
+
+#[test]
+fn nullable_response_fields_are_required_and_uuid_values_are_canonical() {
+    let schema: Value =
+        serde_json::from_str(include_str!("../schema/enroll/error-body-v1.schema.json")).unwrap();
+    let validate = jsonschema::validator_for(&schema).unwrap();
+    for id in [json!(null), json!(Uuid::new_v4())] {
+        let value = json!({"code":"issuance_unknown","issuanceId":id});
+        assert!(validate.is_valid(&value));
+        assert!(serde_json::from_value::<wire::ErrorBody>(value).is_ok());
+    }
+    for value in [
+        json!({"code":"issuance_unknown"}),
+        json!({"code":"issuance_unknown","issuanceId":Uuid::nil()}),
+        json!({"code":"issuance_unknown","issuanceId":"AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"}),
+        json!({"code":"issuance_unknown","issuanceId":"aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa"}),
+    ] {
+        assert!(!validate.is_valid(&value));
+        assert!(serde_json::from_value::<wire::ErrorBody>(value).is_err());
+    }
+    let schema: Value =
+        serde_json::from_str(include_str!("../schema/enroll/progress-v1.schema.json")).unwrap();
+    let validate = jsonschema::validator_for(&schema).unwrap();
+    let value = json!({"grant":{"wireVersion":1,"grantId":Uuid::new_v4(),"state":"pending","expiresAt":1,"platform":"macos"},"issuanceId":null,"issuanceUnknown":false,"activation":null});
+    assert!(validate.is_valid(&value));
+    assert!(serde_json::from_value::<wire::Progress>(value.clone()).is_ok());
+    for field in ["issuanceId", "activation"] {
+        let mut invalid = value.clone();
+        invalid.as_object_mut().unwrap().remove(field);
+        assert!(!validate.is_valid(&invalid));
+        assert!(serde_json::from_value::<wire::Progress>(invalid).is_err());
+    }
+}

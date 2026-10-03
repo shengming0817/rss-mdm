@@ -27,57 +27,136 @@ impl Service {
         let spki = hex(verified.spki());
         let csr = STANDARD.decode(&input.csr).map_err(|_| Error::Malformed)?;
         a.operation(input.operation_id, "agent_certificate_authorize");
-        let claim=self.write(a,(self,input,a,request_digest,spki,csr),|ctx,c| { Box::pin(async move {
-            let (service,input,a,digest,spki,csr)=ctx;
-let tenant=service.tenant.to_string();
-let grant=grant_row(c,&tenant,input.grant_id).await?;
-            check_secret(&tenant,&grant,&input.secret)?;
-a.target(&grant.try_get::<String,_>("device").map_err(db)?);
-            if let Some(row)=sqlx::query(r#"
+        let claim = self
+            .write(a, (self, input, a, request_digest, spki, csr), |ctx, c| {
+                Box::pin(async move {
+                    let (service, input, a, digest, spki, csr) = ctx;
+                    let tenant = service.tenant.to_string();
+                    let grant = grant_row(c, &tenant, input.grant_id).await?;
+                    check_secret(&tenant, &grant, &input.secret)?;
+                    a.target(&grant.try_get::<String, _>("device").map_err(db)?);
+                    if let Some(row) = sqlx::query(
+                        r#"
 SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND grant_id=$2 FOR UPDATE
-"#).bind(&tenant).bind(input.grant_id).fetch_optional(&mut *c).await.map_err(db)?{
-                if row.try_get::<Uuid,_>("operation_id").map_err(db)?!=input.operation_id || row.try_get::<String,_>("request_digest").map_err(db)?!=*digest || row.try_get::<String,_>("spki").map_err(db)?!=*spki{
-return Err(Error::Conflict)}
-                service.grant_live(c,&grant).await?;
-                let value=if row.try_get::<String,_>("state").map_err(db)?=="issued"{
-Claim::Issued(candidate(&grant,&row)?)}
-else{
-Claim::Unknown(row.try_get("id").map_err(db)?)}
-;
-                return Ok(Change{
-value,replay:true,digest:digest.clone()}
-)
-            }
-            service.grant_live(c,&grant).await?;
-            if let Some(authority)=grant.try_get::<Option<serde_json::Value>,_>("native_authority").map_err(db)? {
-                if authority["runtime"]!=serde_json::to_value(&input.runtime).map_err(|_|Error::Malformed)?{
-return Err(Error::Forbidden)}
-            }
-            if !service.policy.platforms.contains(&input.runtime.platform) || row_platform(&grant)?!=input.runtime.platform || grant.try_get::<Option<String>,_>("spki").map_err(db)?.is_some_and(|v|v!=*spki){
-return Err(Error::Forbidden)}
-            if grant.try_get::<String,_>("state").map_err(db)?!="available"{
-return Err(Error::Conflict)}
-            let device:String=grant.try_get("device").map_err(db)?;
-            a.target(&device);
-            let start=now(c).await?;
-let end=service.issuer.end(start)?;
-            let identity=rss_mdm_certificate::agent::identity(Uuid::parse_str(&tenant).map_err(|_|Error::Configuration)?,&device).map_err(|_|Error::Configuration)?;
-            let attempt=Uuid::new_v4();
-            sqlx::query(r#"
+"#,
+                    )
+                    .bind(&tenant)
+                    .bind(input.grant_id)
+                    .fetch_optional(&mut *c)
+                    .await
+                    .map_err(db)?
+                    {
+                        if row.try_get::<Uuid, _>("operation_id").map_err(db)? != input.operation_id
+                            || row.try_get::<String, _>("request_digest").map_err(db)? != *digest
+                            || row.try_get::<String, _>("spki").map_err(db)? != *spki
+                        {
+                            return Err(Error::Conflict);
+                        }
+                        service.grant_live(c, &grant).await?;
+                        let value = if row.try_get::<String, _>("state").map_err(db)? == "issued" {
+                            Claim::Issued(candidate(&grant, &row)?)
+                        } else {
+                            Claim::Unknown(row.try_get("id").map_err(db)?)
+                        };
+                        return Ok(Change {
+                            value,
+                            replay: true,
+                            digest: digest.clone(),
+                        });
+                    }
+                    service.grant_live(c, &grant).await?;
+                    if let Some(authority) = grant
+                        .try_get::<Option<serde_json::Value>, _>("native_authority")
+                        .map_err(db)?
+                    {
+                        if authority["runtime"]
+                            != serde_json::to_value(&input.runtime).map_err(|_| Error::Malformed)?
+                        {
+                            return Err(Error::Forbidden);
+                        }
+                    }
+                    if !service.policy.platforms.contains(&input.runtime.platform)
+                        || row_platform(&grant)? != input.runtime.platform
+                        || grant
+                            .try_get::<Option<String>, _>("spki")
+                            .map_err(db)?
+                            .is_some_and(|v| v != *spki)
+                    {
+                        return Err(Error::Forbidden);
+                    }
+                    if grant.try_get::<String, _>("state").map_err(db)? != "available" {
+                        return Err(Error::Conflict);
+                    }
+                    let device: String = grant.try_get("device").map_err(db)?;
+                    a.target(&device);
+                    let start = now(c).await?;
+                    let end = service.issuer.end(start)?;
+                    let identity = rss_mdm_certificate::agent::identity(
+                        Uuid::parse_str(&tenant).map_err(|_| Error::Configuration)?,
+                        &device,
+                    )
+                    .map_err(|_| Error::Configuration)?;
+                    let attempt = Uuid::new_v4();
+                    sqlx::query(
+                        r#"
 INSERT INTO
-mdm_access.agent_issuances(tenant_id,id,grant_id,operation_id,request_digest,csr,spki,identity,profile,not_before,not_after,state)
-VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'signing')
-"#)
-                .bind(&tenant).bind(attempt).bind(input.grant_id).bind(input.operation_id).bind(&*digest).bind(&*csr).bind(&*spki).bind(&identity).bind(serde_json::to_value(&input.runtime).map_err(|_|Error::Malformed)?).bind(start).bind(end).execute(&mut *c).await.map_err(db)?;
-            sqlx::query(r#"
+mdm_access.agent_issuances(tenant_id,
+id,
+grant_id,
+operation_id,
+request_digest,
+csr,
+spki,
+identity,
+profile,
+not_before,
+not_after,
+authority_digest,
+state)
+VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'signing')
+"#,
+                    )
+                    .bind(&tenant)
+                    .bind(attempt)
+                    .bind(input.grant_id)
+                    .bind(input.operation_id)
+                    .bind(&*digest)
+                    .bind(&*csr)
+                    .bind(&*spki)
+                    .bind(&identity)
+                    .bind(serde_json::to_value(&input.runtime).map_err(|_| Error::Malformed)?)
+                    .bind(start)
+                    .bind(end)
+                    .bind(service.issuer.authority_digest())
+                    .execute(&mut *c)
+                    .await
+                    .map_err(db)?;
+                    sqlx::query(
+                        r#"
 UPDATE mdm_access.agent_grants SET state='consumed' WHERE tenant_id=$1::uuid AND id=$2
-"#).bind(&tenant).bind(input.grant_id).execute(&mut *c).await.map_err(db)?;
-            Ok(Change{
-value:Claim::New(Signing{
-attempt,grant:input.grant_id,csr:csr.clone(),identity,deadline:grant.try_get("expiry").map_err(db)?,start,end}
-),replay:false,digest:digest.clone()}
-)
-        }) }).await?;
+"#,
+                    )
+                    .bind(&tenant)
+                    .bind(input.grant_id)
+                    .execute(&mut *c)
+                    .await
+                    .map_err(db)?;
+                    Ok(Change {
+                        value: Claim::New(Signing {
+                            attempt,
+                            grant: input.grant_id,
+                            csr: csr.clone(),
+                            identity,
+                            deadline: grant.try_get("expiry").map_err(db)?,
+                            start,
+                            end,
+                        }),
+                        replay: false,
+                        digest: digest.clone(),
+                    })
+                })
+            })
+            .await?;
         let signing = match claim {
             Claim::Issued(c) => return Ok(c),
             Claim::Unknown(id) => return Err(unknown(id)),
@@ -155,6 +234,11 @@ UPDATE
                 .fetch_one(&mut *c)
                 .await
                 .map_err(db)?;
+                if old.try_get::<String, _>("authority_digest").map_err(db)?
+                    != service.issuer.authority_digest()
+                {
+                    return Err(Error::Forbidden);
+                }
                 let replay = old.try_get::<String, _>("state").map_err(db)? == "issued";
                 if replay
                     && old.try_get::<String, _>("fingerprint").map_err(db)?
@@ -228,6 +312,10 @@ SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2
         .fetch_one(&mut *tx)
         .await
         .map_err(db)?;
+        if i.try_get::<String, _>("authority_digest").map_err(db)? != self.issuer.authority_digest()
+        {
+            return Err(Error::Forbidden.into());
+        }
         let grant = i.try_get::<Uuid, _>("grant_id").map_err(db)?;
         let g = grant_row(&mut tx, &tenant, grant).await?;
         p.credentials(&g.try_get::<String, _>("device").map_err(db)?)?;

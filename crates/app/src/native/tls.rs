@@ -67,9 +67,15 @@ pub(crate) fn registration(
     tenant: String,
     kind: super::NativeListenerKind,
 ) -> ManagedTaskRegistration {
+    let router = if kind == super::NativeListenerKind::Agent {
+        app.router
+            .layer(middleware::from_fn(super::admission::admit_agent))
+    } else {
+        app.router
+    };
     rss_axum::serve_http1_registration(
         listener,
-        app.router.layer(middleware::from_fn(evidence)),
+        router.layer(middleware::from_fn(evidence)),
         TlsTransport {
             acceptor: TlsAcceptor::from(app.tls),
             admission: app.admission,

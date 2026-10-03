@@ -18,7 +18,6 @@ fn body<T>(v: Body<T>) -> Result<T, Error> {
 pub(crate) fn routes() -> Router<Arc<TaskState>> {
     Router::new()
         .route("/tasks/claim", post(claim))
-        .route("/installations/{id}/package", get(installation_package))
         .route(
             "/tasks/{id}/events",
             post(event).layer(DefaultBodyLimit::max(wire::MAX_TASK_REQUEST_BYTES)),
@@ -142,14 +141,17 @@ pub struct TaskState {
     pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
 }
 
+pub(crate) fn installation_routes() -> Router<Arc<rss_mdm_execution_service::ExecutionService>> {
+    Router::new().route("/installations/{id}/package", get(installation_package))
+}
+
 async fn installation_package(
-    State(app): State<Arc<TaskState>>,
+    State(execution): State<Arc<rss_mdm_execution_service::ExecutionService>>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<Response, crate::AgentError> {
-    let content = app
-        .execution
+    let content = execution
         .installation_content(id, &audit)
         .await
         .map_err(task_error)?;

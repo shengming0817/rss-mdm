@@ -68,6 +68,41 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
             == Some(operation.to_string().as_str())
     );
     ensure!(!payload.contains_key("RemoveAppUponMDMProfileRemoval"));
+    let manifest = payload["Manifest"].as_dictionary().unwrap();
+    let item = manifest["items"].as_array().unwrap()[0]
+        .as_dictionary()
+        .unwrap();
+    let asset = item["assets"].as_array().unwrap()[0]
+        .as_dictionary()
+        .unwrap();
+    let generated = url::Url::parse(asset["url"].as_string().unwrap())?;
+    ensure!(
+        generated
+            .path()
+            .starts_with("/api/agent/enroll/v1/installations/")
+    );
+    let package = f
+        .router
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .uri(generated.path())
+                .header(
+                    "host",
+                    generated[url::Position::BeforeHost..url::Position::AfterPort].to_string(),
+                )
+                .header("range", "bytes=0-3")
+                .body(axum::body::Body::empty())?,
+        )
+        .await?;
+    ensure!(package.status() == StatusCode::PARTIAL_CONTENT);
+    ensure!(
+        axum::body::to_bytes(package.into_body(), 1024)
+            .await?
+            .as_ref()
+            == &setup::bytes()[..4]
+    );
+
     ensure!(peer.manage("NotNow", Some(install), None).await?.is_empty());
     ensure!(f.operation(operation).await?["agentInstallation"]["delivery"] == "deferred");
     let (retry, _) = next_after_cooldown(&peer, "InstallEnterpriseApplication").await?;

@@ -47,56 +47,136 @@ impl Service {
                 "agent_grant_create"
             },
         );
-        self.write(a,(self,p,input,a,source,digest,bound,seconds),|ctx,c| { Box::pin(async move {
-            let (service,p,input,_a,source,digest,bound,seconds)=ctx;
-let tenant=service.tenant.to_string();
-            sqlx::query(r#"
+        self.write(
+            a,
+            (self, p, input, a, source, digest, bound, seconds),
+            |ctx, c| {
+                Box::pin(async move {
+                    let (service, p, input, _a, source, digest, bound, seconds) = ctx;
+                    let tenant = service.tenant.to_string();
+                    sqlx::query(
+                        r#"
 SELECT pg_advisory_xact_lock(hashtextextended($1,2630))
-"#).bind(format!("{tenant}:{source}:{}",input.operation_id)).execute(&mut *c).await.map_err(db)?;
-            if let Some(id)=sqlx::query_scalar::<_,Uuid>(r#"
+"#,
+                    )
+                    .bind(format!("{tenant}:{source}:{}", input.operation_id))
+                    .execute(&mut *c)
+                    .await
+                    .map_err(db)?;
+                    if let Some(id) = sqlx::query_scalar::<_, Uuid>(
+                        r#"
 SELECT id FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND source=$2 AND
 operation_id=$3
-"#).bind(&tenant).bind(*source).bind(input.operation_id).fetch_optional(&mut *c).await.map_err(db)? {
-                let row=grant_row(c,&tenant,id).await?;
-                if row.try_get::<String,_>("request_digest").map_err(db)?!=*digest || p.is_some_and(|p|row.get::<Option<String>,_>("actor").as_deref()!=Some(p.principal_id()) || row.get::<Option<String>,_>("instance").as_deref()!=Some(p.instance_id())){
-return Err(Error::Conflict)}
-                check_secret(&tenant,&row,&input.secret)?;
-                return Ok(Change{
-value:receipt(&row)?,replay:true,digest:digest.clone()}
-)
-            }
-            if let Some(p)=p {
- quota(c,&tenant,p.principal_id(),p.instance_id(),service.policy.user_device_limit).await?;
-p.check_live()?;
- }
-            // Anonymous pending requests are bounded per tenant independently of device quota.
-            if p.is_none() {
-                sqlx::query(r#"
+"#,
+                    )
+                    .bind(&tenant)
+                    .bind(*source)
+                    .bind(input.operation_id)
+                    .fetch_optional(&mut *c)
+                    .await
+                    .map_err(db)?
+                    {
+                        let row = grant_row(c, &tenant, id).await?;
+                        if row.try_get::<String, _>("request_digest").map_err(db)? != *digest
+                            || p.is_some_and(|p| {
+                                row.get::<Option<String>, _>("actor").as_deref()
+                                    != Some(p.principal_id())
+                                    || row.get::<Option<String>, _>("instance").as_deref()
+                                        != Some(p.instance_id())
+                            })
+                        {
+                            return Err(Error::Conflict);
+                        }
+                        check_secret(&tenant, &row, &input.secret)?;
+                        return Ok(Change {
+                            value: receipt(&row)?,
+                            replay: true,
+                            digest: digest.clone(),
+                        });
+                    }
+                    if let Some(p) = p {
+                        quota(
+                            c,
+                            &tenant,
+                            p.principal_id(),
+                            p.instance_id(),
+                            service.policy.user_device_limit,
+                        )
+                        .await?;
+                        p.check_live()?;
+                    }
+                    // Anonymous pending requests are bounded per tenant independently of device quota.
+                    if p.is_none() {
+                        sqlx::query(
+                            r#"
 SELECT pg_advisory_xact_lock(hashtextextended($1,2630))
-"#).bind(format!("{tenant}:pending")).execute(&mut *c).await.map_err(db)?;
-                let count:i64=sqlx::query_scalar(r#"
+"#,
+                        )
+                        .bind(format!("{tenant}:pending"))
+                        .execute(&mut *c)
+                        .await
+                        .map_err(db)?;
+                        let count: i64 = sqlx::query_scalar(
+                            r#"
 SELECT count(*) FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND state='pending' AND
 expires_at>clock_timestamp()
-"#).bind(&tenant).fetch_one(&mut *c).await.map_err(db)?;
-                if count>=1000{
-return Err(Error::Capacity)}
-            }
-            let id=Uuid::new_v4();
-let device=Uuid::new_v4().to_string();
-            sqlx::query(r#"
+"#,
+                        )
+                        .bind(&tenant)
+                        .fetch_one(&mut *c)
+                        .await
+                        .map_err(db)?;
+                        if count >= 1000 {
+                            return Err(Error::Capacity);
+                        }
+                    }
+                    let id = Uuid::new_v4();
+                    let device = Uuid::new_v4().to_string();
+                    sqlx::query(
+                        r#"
 INSERT INTO
-mdm_access.agent_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,spki,state,expires_at)
+mdm_access.agent_grants(tenant_id,
+id,
+operation_id,
+source,
+actor,
+instance,
+device,
+platform,
+secret_digest,
+request_digest,
+spki,
+state,
+expires_at)
 VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,clock_timestamp()+make_interval(secs=>$13))
-"#)
-                .bind(&tenant).bind(id).bind(input.operation_id).bind(*source).bind(p.map(|p|p.principal_id())).bind(p.map(|p|p.instance_id())).bind(device).bind(platform(input.platform)).bind(secret_digest(&tenant,id,&input.secret)).bind(&*digest).bind(&*bound).bind(if p.is_some(){
-"available"}
-else{
-"pending"}
-).bind(*seconds as f64).execute(&mut *c).await.map_err(db)?;
-            Ok(Change{
-value:receipt(&grant_row(c,&tenant,id).await?)?,replay:false,digest:digest.clone()}
-)
-        }) }).await.map_err(Into::into)
+"#,
+                    )
+                    .bind(&tenant)
+                    .bind(id)
+                    .bind(input.operation_id)
+                    .bind(*source)
+                    .bind(p.map(|p| p.principal_id()))
+                    .bind(p.map(|p| p.instance_id()))
+                    .bind(device)
+                    .bind(platform(input.platform))
+                    .bind(secret_digest(&tenant, id, &input.secret))
+                    .bind(&*digest)
+                    .bind(&*bound)
+                    .bind(if p.is_some() { "available" } else { "pending" })
+                    .bind(*seconds as f64)
+                    .execute(&mut *c)
+                    .await
+                    .map_err(db)?;
+                    Ok(Change {
+                        value: receipt(&grant_row(c, &tenant, id).await?)?,
+                        replay: false,
+                        digest: digest.clone(),
+                    })
+                })
+            },
+        )
+        .await
+        .map_err(Into::into)
     }
     pub async fn approve(
         &self,
@@ -309,42 +389,117 @@ UPDATE mdm_access.agent_grants SET state='revoked' WHERE tenant_id=$1::uuid AND 
         }
         a.operation(input.operation_id, "agent_recovery_grant");
         let digest = digest(&(registration, input))?;
-        self.write(a,(self,p,registration,input,a,bound,seconds,digest),|ctx,c| { Box::pin(async move {
-            let (service,p,registration,input,a,bound,seconds,digest)=ctx;
-let tenant=service.tenant.to_string();
-            let row=sqlx::query(r#"
+        self.write(
+            a,
+            (self, p, registration, input, a, bound, seconds, digest),
+            |ctx, c| {
+                Box::pin(async move {
+                    let (service, p, registration, input, a, bound, seconds, digest) = ctx;
+                    let tenant = service.tenant.to_string();
+                    let row = sqlx::query(
+                        r#"
 SELECT r.device,r.state,k.id FROM mdm_access.registrations r JOIN mdm_access.credentials k
 ON(k.tenant_id,k.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND
 r.channel='agent' AND k.state='active' FOR UPDATE OF r,k
-"#).bind(&tenant).bind(*registration).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Forbidden)?;
-            let device:String=row.try_get("device").map_err(db)?;
-p.credentials(&device)?;
-            if row.try_get::<String,_>("state").map_err(db)?!="active"{
-return Err(Error::Forbidden)}
-            a.target(&device);
-            if let Some(id)=sqlx::query_scalar::<_,Uuid>(r#"
+"#,
+                    )
+                    .bind(&tenant)
+                    .bind(*registration)
+                    .fetch_optional(&mut *c)
+                    .await
+                    .map_err(db)?
+                    .ok_or(Error::Forbidden)?;
+                    let device: String = row.try_get("device").map_err(db)?;
+                    p.credentials(&device)?;
+                    if row.try_get::<String, _>("state").map_err(db)? != "active" {
+                        return Err(Error::Forbidden);
+                    }
+                    a.target(&device);
+                    if let Some(id) = sqlx::query_scalar::<_, Uuid>(
+                        r#"
 SELECT id FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND source='recovery' AND
 operation_id=$2
-"#).bind(&tenant).bind(input.operation_id).fetch_optional(&mut *c).await.map_err(db)?{
-                let old=grant_row(c,&tenant,id).await?;
-owned(p,&old)?;
-                if old.try_get::<String,_>("request_digest").map_err(db)?!=*digest{
-return Err(Error::Conflict)}
-                return Ok(Change{
-value:receipt(&old)?,replay:true,digest:digest.clone()}
-)
-            }
-            let id=Uuid::new_v4();
-            sqlx::query(r#"
+"#,
+                    )
+                    .bind(&tenant)
+                    .bind(input.operation_id)
+                    .fetch_optional(&mut *c)
+                    .await
+                    .map_err(db)?
+                    {
+                        let old = grant_row(c, &tenant, id).await?;
+                        owned(p, &old)?;
+                        if old.try_get::<String, _>("request_digest").map_err(db)? != *digest {
+                            return Err(Error::Conflict);
+                        }
+                        return Ok(Change {
+                            value: receipt(&old)?,
+                            replay: true,
+                            digest: digest.clone(),
+                        });
+                    }
+                    let id = Uuid::new_v4();
+                    sqlx::query(
+                        r#"
 INSERT INTO
-mdm_access.agent_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,spki,state,expires_at,target_registration,predecessor)
-VALUES($1::uuid,$2,$3,'recovery',$4,$5,$6,$7,$8,$9,$10,'available',clock_timestamp()+make_interval(secs=>$11),$12,$13)
-"#)
-                .bind(&tenant).bind(id).bind(input.operation_id).bind(p.principal_id()).bind(p.instance_id()).bind(&device).bind(platform(input.platform)).bind(secret_digest(&tenant,id,&input.secret)).bind(&*digest).bind(&*bound).bind(*seconds as f64).bind(*registration).bind(row.try_get::<Uuid,_>("id").map_err(db)?).execute(&mut *c).await.map_err(db)?;
-            Ok(Change{
-value:receipt(&grant_row(c,&tenant,id).await?)?,replay:false,digest:digest.clone()}
-)
-        }) }).await.map_err(Into::into)
+mdm_access.agent_grants(tenant_id,
+id,
+operation_id,
+source,
+actor,
+instance,
+device,
+platform,
+secret_digest,
+request_digest,
+spki,
+state,
+expires_at,
+target_registration,
+predecessor)
+VALUES($1::uuid,
+$2,
+$3,
+'recovery',
+$4,
+$5,
+$6,
+$7,
+$8,
+$9,
+$10,
+'available',
+clock_timestamp()+make_interval(secs=>$11),
+$12,
+$13)
+"#,
+                    )
+                    .bind(&tenant)
+                    .bind(id)
+                    .bind(input.operation_id)
+                    .bind(p.principal_id())
+                    .bind(p.instance_id())
+                    .bind(&device)
+                    .bind(platform(input.platform))
+                    .bind(secret_digest(&tenant, id, &input.secret))
+                    .bind(&*digest)
+                    .bind(&*bound)
+                    .bind(*seconds as f64)
+                    .bind(*registration)
+                    .bind(row.try_get::<Uuid, _>("id").map_err(db)?)
+                    .execute(&mut *c)
+                    .await
+                    .map_err(db)?;
+                    Ok(Change {
+                        value: receipt(&grant_row(c, &tenant, id).await?)?,
+                        replay: false,
+                        digest: digest.clone(),
+                    })
+                })
+            },
+        )
+        .await
+        .map_err(Into::into)
     }
 }
 fn owned(p: &AuthorizedPrincipal, row: &PgRow) -> Result<(), Error> {
@@ -458,40 +613,115 @@ impl Service {
         a.identify_device(principal.registration());
         a.target(principal.device());
         a.operation(input.operation_id, "agent_renewal_grant");
-        self.write(a,(self,principal,input,bound,seconds,d),|ctx,c| { Box::pin(async move {
-            let (service,p,input,bound,seconds,d)=ctx;
-let tenant=service.tenant.to_string();
-            crate::device::store::revalidate_source(c,p,rss_mdm_inventory::ReportSource::AgentBuiltin).await?;
-            let row=sqlx::query(r#"
+        self.write(a, (self, principal, input, bound, seconds, d), |ctx, c| {
+            Box::pin(async move {
+                let (service, p, input, bound, seconds, d) = ctx;
+                let tenant = service.tenant.to_string();
+                crate::device::store::revalidate_source(
+                    c,
+                    p,
+                    rss_mdm_inventory::ReportSource::AgentBuiltin,
+                )
+                .await?;
+                let row = sqlx::query(
+                    r#"
 SELECT g.actor,g.instance,g.platform FROM mdm_access.registrations r JOIN
 mdm_access.agent_grants g ON(g.tenant_id,g.id)=(r.tenant_id,r.agent_grant_id) WHERE
 r.tenant_id=$1::uuid AND r.id=$2
-"#).bind(&tenant).bind(p.registration()).fetch_one(&mut *c).await.map_err(db)?;
-            if row.try_get::<String,_>("platform").map_err(db)?!=platform(input.platform){
-return Err(Error::Forbidden)}
-            if let Some(id)=sqlx::query_scalar::<_,Uuid>(r#"
+"#,
+                )
+                .bind(&tenant)
+                .bind(p.registration())
+                .fetch_one(&mut *c)
+                .await
+                .map_err(db)?;
+                if row.try_get::<String, _>("platform").map_err(db)? != platform(input.platform) {
+                    return Err(Error::Forbidden);
+                }
+                if let Some(id) = sqlx::query_scalar::<_, Uuid>(
+                    r#"
 SELECT id FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND source='renewal' AND
 operation_id=$2
-"#).bind(&tenant).bind(input.operation_id).fetch_optional(&mut *c).await.map_err(db)?{
-                let g=grant_row(c,&tenant,id).await?;
-                if g.try_get::<String,_>("request_digest").map_err(db)?!=*d{
-return Err(Error::Conflict)}
-                check_secret(&tenant,&g,&input.secret)?;
-return Ok(Change{
-value:receipt(&g)?,replay:true,digest:d.clone()}
-)
-            }
-            let id=Uuid::new_v4();
-            sqlx::query(r#"
+"#,
+                )
+                .bind(&tenant)
+                .bind(input.operation_id)
+                .fetch_optional(&mut *c)
+                .await
+                .map_err(db)?
+                {
+                    let g = grant_row(c, &tenant, id).await?;
+                    if g.try_get::<String, _>("request_digest").map_err(db)? != *d {
+                        return Err(Error::Conflict);
+                    }
+                    check_secret(&tenant, &g, &input.secret)?;
+                    return Ok(Change {
+                        value: receipt(&g)?,
+                        replay: true,
+                        digest: d.clone(),
+                    });
+                }
+                let id = Uuid::new_v4();
+                sqlx::query(
+                    r#"
 INSERT INTO
-mdm_access.agent_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,spki,state,expires_at,target_registration,predecessor)
-VALUES($1::uuid,$2,$3,'renewal',$4,$5,$6,$7,$8,$9,$10,'available',clock_timestamp()+make_interval(secs=>$11),$12,$13)
-"#)
-                .bind(&tenant).bind(id).bind(input.operation_id).bind(row.try_get::<String,_>("actor").map_err(db)?).bind(row.try_get::<String,_>("instance").map_err(db)?).bind(p.device()).bind(platform(input.platform)).bind(secret_digest(&tenant,id,&input.secret)).bind(&*d).bind(&*bound).bind(*seconds as f64).bind(p.registration()).bind(p.credential()).execute(&mut *c).await.map_err(db)?;
-            Ok(Change{
-value:receipt(&grant_row(c,&tenant,id).await?)?,replay:false,digest:d.clone()}
-)
-        }) }).await.map_err(Into::into)
+mdm_access.agent_grants(tenant_id,
+id,
+operation_id,
+source,
+actor,
+instance,
+device,
+platform,
+secret_digest,
+request_digest,
+spki,
+state,
+expires_at,
+target_registration,
+predecessor)
+VALUES($1::uuid,
+$2,
+$3,
+'renewal',
+$4,
+$5,
+$6,
+$7,
+$8,
+$9,
+$10,
+'available',
+clock_timestamp()+make_interval(secs=>$11),
+$12,
+$13)
+"#,
+                )
+                .bind(&tenant)
+                .bind(id)
+                .bind(input.operation_id)
+                .bind(row.try_get::<String, _>("actor").map_err(db)?)
+                .bind(row.try_get::<String, _>("instance").map_err(db)?)
+                .bind(p.device())
+                .bind(platform(input.platform))
+                .bind(secret_digest(&tenant, id, &input.secret))
+                .bind(&*d)
+                .bind(&*bound)
+                .bind(*seconds as f64)
+                .bind(p.registration())
+                .bind(p.credential())
+                .execute(&mut *c)
+                .await
+                .map_err(db)?;
+                Ok(Change {
+                    value: receipt(&grant_row(c, &tenant, id).await?)?,
+                    replay: false,
+                    digest: d.clone(),
+                })
+            })
+        })
+        .await
+        .map_err(Into::into)
     }
 }
 impl Service {

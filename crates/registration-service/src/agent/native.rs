@@ -53,12 +53,56 @@ native_authority->>'installation'= $2
     }
     let id = Uuid::new_v4();
     let device = Uuid::new_v4().to_string();
-    sqlx::query(r#"
+    sqlx::query(
+        r#"
 INSERT INTO
-mdm_access.agent_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,spki,state,expires_at,native_authority)
-VALUES($1::uuid,$2,$3,'native',$4,$5,$6,$7,$8,$9,$10,'available',least(to_timestamp($11),clock_timestamp()+make_interval(secs=>$13)),$12)
-"#)
-        .bind(&tenant).bind(id).bind(input.operation_id).bind(&authority.user().principal_id).bind(&authority.user().instance_id).bind(device).bind(platform(input.runtime.platform)).bind(secret_digest(&tenant,id,&input.secret)).bind(digest).bind(bound).bind(authority.deadline() as f64).bind(native).bind(f64::from(policy.grant_seconds)).execute(&mut *c).await.map_err(db)?;
+mdm_access.agent_grants(tenant_id,
+id,
+operation_id,
+source,
+actor,
+instance,
+device,
+platform,
+secret_digest,
+request_digest,
+spki,
+state,
+expires_at,
+native_authority)
+VALUES($1::uuid,
+$2,
+$3,
+'native',
+$4,
+$5,
+$6,
+$7,
+$8,
+$9,
+$10,
+'available',
+least(to_timestamp($11),
+clock_timestamp()+make_interval(secs=>$13)),
+$12)
+"#,
+    )
+    .bind(&tenant)
+    .bind(id)
+    .bind(input.operation_id)
+    .bind(&authority.user().principal_id)
+    .bind(&authority.user().instance_id)
+    .bind(device)
+    .bind(platform(input.runtime.platform))
+    .bind(secret_digest(&tenant, id, &input.secret))
+    .bind(digest)
+    .bind(bound)
+    .bind(authority.deadline() as f64)
+    .bind(native)
+    .bind(f64::from(policy.grant_seconds))
+    .execute(&mut *c)
+    .await
+    .map_err(db)?;
     Ok((receipt(&grant_row(c, &tenant, id).await?)?, false))
 }
 /// Native proof reconstructed only from a stored grant and its still-current registration.

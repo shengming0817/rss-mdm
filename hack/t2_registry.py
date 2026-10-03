@@ -316,7 +316,7 @@ app_family('execution.software',
 for name in ('execution.software.offer', 'execution.software.content', 'execution.software.recovery', 'planning.software'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs +
         ('crates/app/tests/support/software_execution.rs',))
-for name in ('execution.agent.delivery', 'execution.agent.content', 'execution.agent.history', 'execution.agent.poll', 'execution.agent.recovery', 'planning.agent_policy', 'planning.frequency', 'planning.remote', 'planning.onboarding','execution.commands.onboarding','apple.onboarding'):
+for name in ('execution.agent.delivery', 'execution.agent.content', 'execution.agent.history', 'execution.agent.poll', 'execution.agent.recovery', 'planning.agent_policy', 'planning.frequency', 'planning.remote', 'planning.onboarding'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs +
         ('crates/app/tests/support/agent_execution.rs',))
 add('software.catalog', build=Build('rss-mdm-software-service', 'test', 'catalog_t2'), selectors=('',),
@@ -789,6 +789,15 @@ for name in ('apple.apns', 'apple.push', 'apple.host'):
         ('crates/app/tests/apple/support/apns.rs',))
 for name, path in (('apple.push','push_cycle'), ('apple.host','production')):
     MODULES[name] = replace(MODULES[name], test_inputs=(f'crates/app/tests/apple/{path}.rs',))
+
+# Runtime fixture consumers sign durable candidates and use completed TLS peers.
+AGENT_FIXTURE_CONSUMERS = tuple(('agent.registration agent.reports execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.recovery execution.agent.history execution.software.offer execution.software.content execution.software.recovery planning.onboarding execution.commands.onboarding apple.onboarding planning.agent_policy planning.frequency planning.remote planning.http assets.http planning.software').split())
+AGENT_FIXTURES = ('identity','apple','scep','windows','agent_pki')
+for name in AGENT_FIXTURE_CONSUMERS:
+    module=MODULES[name]
+    policies=tuple(replace(policy, fixtures=tuple(dict.fromkeys((*policy.fixtures,*AGENT_FIXTURES)))) if policy.fixtures is not None else policy for policy in module.policies)
+    inputs=('crates/app/tests/support/agent.rs','crates/app/tests/support/agent_tls.rs','hack/agent_pki_fixtures.py')
+    MODULES[name]=replace(module,fixtures=tuple(dict.fromkeys((*module.fixtures,*AGENT_FIXTURES))),policies=policies,support_inputs=tuple(dict.fromkeys((*module.support_inputs,*inputs))))
 
 for name, module in tuple(MODULES.items()):
     support = tuple(path for path in module.support_inputs if path != 'tests/support/software/*')
@@ -1399,8 +1408,4 @@ REPRESENTATIVE_INPUTS = {
     'hack/t2_hosts.py': ('host.lifecycle',),
 }
 
-# Every runtime fixture signs a durable candidate and obtains real TLS possession evidence.
-for name in ('agent.registration','agent.reports','execution.agent.delivery','execution.agent.poll','execution.agent.content','execution.agent.recovery','execution.agent.history','execution.software.offer','execution.software.content','execution.software.recovery','planning.onboarding','execution.commands.onboarding','apple.onboarding'):
-    if name in MODULES:
-        MODULES[name]=replace(MODULES[name],fixtures=tuple(dict.fromkeys((*MODULES[name].fixtures,'identity','apple','scep','windows','agent_pki'))))
 consume(('crates/registration-service/src/agent*','crates/agent-wire/schema/enroll/*','crates/agent-channel/src/enroll.rs'), 'agent.pki agent.registration agent.reports execution.agent.delivery')

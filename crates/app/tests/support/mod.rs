@@ -449,12 +449,11 @@ pub(crate) async fn agent_call(
             content_type.as_deref() == Some("application/json"),
             "Agent error escaped JSON content type: {status} {content_type:?}"
         );
-        ensure!(
-            value
-                .as_object()
-                .is_some_and(|body| body.len() == 1 && body["code"].is_string()),
-            "Agent error escaped closed ErrorBody: {status} {value}"
-        );
+        if path.starts_with("/api/agent/enroll/v1/") {
+            let _: rss_mdm_agent_wire::enroll::ErrorBody = serde_json::from_value(value.clone())?;
+        } else {
+            let _: rss_mdm_agent_wire::runtime::ErrorBody = serde_json::from_value(value.clone())?;
+        }
     }
     Ok((status, value))
 }
@@ -591,3 +590,5 @@ pub(crate) fn secret(label: &str) -> [u8; 32] {
 }
 
 pub(crate) mod channel_onboarding;
+
+pub(crate) mod agent_tls;

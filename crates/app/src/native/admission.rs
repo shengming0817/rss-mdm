@@ -197,6 +197,38 @@ pub(crate) async fn admit(
     next.run(request).await
 }
 
+pub(crate) async fn admit_agent(
+    Extension(gate): Extension<RequestGate>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let Some(_slots) = gate.owner.request(gate.peer) else {
+        gate.owner.refused(1);
+        use axum::http::{HeaderValue, StatusCode, header};
+        let body = if request.uri().path().starts_with("/api/agent/enroll/v1/") {
+            serde_json::to_value(rss_mdm_agent_wire::enroll::ErrorBody {
+                code: rss_mdm_agent_wire::enroll::ErrorCode::ServiceUnavailable,
+                issuance_id: None,
+            })
+            .expect("closed error")
+        } else {
+            serde_json::to_value(rss_mdm_agent_wire::runtime::ErrorBody {
+                code: rss_mdm_agent_wire::runtime::ErrorCode::ServiceUnavailable,
+            })
+            .expect("closed error")
+        };
+        let mut response = crate::http_host::secure_response(
+            (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response(),
+            uuid::Uuid::new_v4(),
+        );
+        response
+            .headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+        return response;
+    };
+    next.run(request).await
+}
+
 #[cfg(test)]
 #[path = "../../tests/native/admission_unit.rs"]
 mod tests;

@@ -83,7 +83,7 @@ pub(crate) async fn complete_grant(
         .iter()
         .map(|v| STANDARD.decode(v))
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    let peer = crate::agent_pki_tests::peer(
+    let peer = crate::test_support::agent_tls::peer(
         service.trust(),
         &chain,
         &std::path::PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?),
@@ -168,7 +168,7 @@ pub(crate) async fn enroll_profile(
         .iter()
         .map(|v| STANDARD.decode(v.as_str().unwrap()))
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    let peer = crate::agent_pki_tests::peer(
+    let peer = crate::test_support::agent_tls::peer(
         pki.issuer.trust(),
         &chain,
         &std::path::PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?),

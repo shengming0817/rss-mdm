@@ -20,6 +20,12 @@ pub fn router(state: Arc<HttpState>, envelope: boundary::Envelope) -> Router {
 pub fn task_router(state: Arc<TaskState>, envelope: boundary::Envelope) -> Router {
     boundary::wrap(tasks::routes().with_state(state), envelope)
 }
+pub fn installation_router(
+    execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    envelope: boundary::Envelope,
+) -> Router {
+    boundary::wrap_enroll(tasks::installation_routes().with_state(execution), envelope)
+}
 pub use tasks::TaskState;
 
 use crate::database::db;

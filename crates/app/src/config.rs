@@ -230,6 +230,14 @@ impl Config {
                 .validate()
                 .map_err(|_| Error::Configuration(ConfigIssue::AgentPki))?;
         }
+        if !self.agent_installation.packages.is_empty() {
+            let crate::agent_pki::Config::StepCa { endpoint, .. } = &self.agent_pki else {
+                return Err(Error::Configuration(ConfigIssue::AgentPki));
+            };
+            if self.agent_installation.content_origin.trim_end_matches('/') != endpoint.origin {
+                return Err(Error::Configuration(ConfigIssue::AgentPki));
+            }
+        }
         let identity_management =
             crate::authorization::identity_management::IdentityManagementPolicy::new(
                 &self.identity.tenant_id,

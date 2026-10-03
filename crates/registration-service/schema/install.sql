@@ -142,6 +142,7 @@ CREATE TABLE mdm_access.agent_issuances (
  grant_id uuid NOT NULL,
  operation_id uuid NOT NULL,
  request_digest text NOT NULL CHECK(request_digest ~ '^[0-9a-f]{64}$'),
+ authority_digest text NOT NULL CHECK(authority_digest ~ '^[0-9a-f]{64}$'),
  csr bytea NOT NULL CHECK(octet_length(csr) BETWEEN 1 AND 32768),
  spki text NOT NULL CHECK(spki ~ '^[0-9a-f]{64}$'),
  identity text NOT NULL,

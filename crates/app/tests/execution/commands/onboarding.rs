@@ -168,11 +168,35 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
     wrong["runtime"]["architecture"] = json!("x86_64");
     wrong["installationOperation"] = json!(Uuid::new_v4());
     ensure!(peer.mutual.post(&url).json(&wrong).send().await?.status() == StatusCode::FORBIDDEN);
+    let installer = execute
+        .commands
+        .iter()
+        .find_map(|command| match command {
+            s::Command::Exec { items, .. } => {
+                items.first()?.data.as_ref().map(|data| data.0.as_str())
+            }
+            _ => None,
+        })
+        .expect("native installer command");
+    let generated = installer
+        .split_once("<ContentURL>")
+        .expect("installer URL")
+        .1
+        .split_once("</ContentURL>")
+        .unwrap()
+        .0;
+    let generated = url::Url::parse(generated)?;
+    ensure!(
+        generated
+            .path()
+            .starts_with("/api/agent/enroll/v1/installations/")
+    );
     let package = Request::builder()
-        .uri(format!(
-            "/api/agent/runtime/v1/installations/{operation}/package"
-        ))
-        .header("host", "mdm.example.test")
+        .uri(generated.path())
+        .header(
+            "host",
+            generated[url::Position::BeforeHost..url::Position::AfterPort].to_string(),
+        )
         .header("range", "bytes=0-3")
         .body(Body::empty())?;
     let package = client.router.clone().oneshot(package).await?;
@@ -356,9 +380,9 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
 async fn package_status(router: &Router, operation: Uuid) -> Result<StatusCode> {
     let request = Request::builder()
         .uri(format!(
-            "/api/agent/runtime/v1/installations/{operation}/package"
+            "/api/agent/enroll/v1/installations/{operation}/package"
         ))
-        .header("host", "mdm.example.test")
+        .header("host", "mdm.example.test:9445")
         .body(Body::empty())?;
     Ok(router.clone().oneshot(request).await?.status())
 }

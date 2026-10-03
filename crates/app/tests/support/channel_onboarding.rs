@@ -12,7 +12,7 @@ pub(crate) fn pin(windows: bool) -> Value {
     } else {
         json!({"platform":"macos","receipt":"com.rss.agent.pkg","bundle":"com.rss.agent","team":"RSS1234567"})
     };
-    json!({"content_origin":"https://mdm.example.test","packages":{if windows{"windows_x86_64"}else{"macos_aarch64"}:{"identity":identity,"package":"RSS.Agent","version":"1.2.3","sha256":Sha256::digest(bytes()).to_vec()}}})
+    json!({"content_origin":"https://mdm.example.test:9445","packages":{if windows{"windows_x86_64"}else{"macos_aarch64"}:{"identity":identity,"package":"RSS.Agent","version":"1.2.3","sha256":Sha256::digest(bytes()).to_vec()}}})
 }
 pub(crate) async fn grants(user: &Browser, router: &Router) -> Result<()> {
     let subject = browser_subject(user, router).await?;
@@ -96,7 +96,7 @@ pub(crate) async fn publish_until(
     let definition = json!({"source":registered["snapshot"],"package":"RSS.Agent","version":"1.2.3","artifacts":{"package":{"reference":"agent-installer","length":bytes().len(),"sha256":Sha256::digest(bytes()).to_vec()}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":if windows{"msi"}else{"pkg"},"installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":detect,"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
     write(user,router,&path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":platform,"architecture":arch,"key":"default","declaration":{"kind":"software","definition":definition}}]})).await?;
     let request=Request::builder().method(Method::POST).uri(format!("/api/v3/resources/{resource}/content?version=v1&variant=default&platform={platform}&architecture={arch}&operation={}",Uuid::new_v4()))
-        .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1").header("x-csrf-token",user.csrf.as_ref().unwrap())
+        .header("host","mdm.example.test").header("origin","https://mdm.example.test:9445").header("x-identity-request","1").header("x-csrf-token",user.csrf.as_ref().unwrap())
         .header("cookie",user.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; ")).header("content-type","application/octet-stream").body(Body::from(bytes()))?;
     {
         let _guard = software::content_setup_guard().await?;
