@@ -137,6 +137,13 @@ impl Fixture {
         )?;
         timeline.initialize().await?;
         let app = Arc::new(Assembly {
+            certificate_archive: crate::certificate_archive::assemble(
+                &access,
+                access
+                    .audit_store(&crate::config::AuditConfig::Plain)
+                    .await?,
+                Arc::new(crate::clock::SystemClock),
+            ),
             timeline,
             content_writer: execution.content.clone(),
             queries: execution.queries.clone(),

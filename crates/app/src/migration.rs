@@ -281,6 +281,10 @@ fn units() -> Vec<(&'static str, &'static str)> {
             "timeline-service-schema-v1",
             rss_mdm_timeline_service::INSTALL_SQL,
         ),
+        (
+            "certificate-archive-schema-v1",
+            rss_mdm_certificate_archive_service::INSTALL_SQL,
+        ),
     ]
 }
 /// Exact immutable migration units embedded in this executable, without database access.

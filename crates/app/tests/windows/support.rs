@@ -299,6 +299,11 @@ impl Host {
         .await
         .map_err(|e| anyhow::anyhow!("command startup: {e:?}"))?;
         let app = Arc::new(Assembly {
+            certificate_archive: crate::certificate_archive::assemble(
+                &store,
+                command_audit.clone(),
+                clock.clone(),
+            ),
             timeline,
             content_writer: execution.content.clone(),
             queries: execution.queries.clone(),

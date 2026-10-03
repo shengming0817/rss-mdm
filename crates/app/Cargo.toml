@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+rss-mdm-certificate-archive-service.workspace = true
 rss-mdm-execution-service.workspace = true
 rss-mdm-native-protection.workspace = true
 rss-mdm-timeline-service.workspace = true

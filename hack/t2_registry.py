@@ -261,6 +261,10 @@ add('installation.migration', selectors=('migration::tests::',), profile='empty'
     sources=('crates/app/src/migration.rs',),
     tests=('crates/app/tests/migration/mod.rs',),
     python='installation', support=('hack/t2_modules/installation.py',))
+add('certificate-archive.http',fixtures=('identity',),selectors=('certificate_archive_tests::',),
+    sources=('crates/certificate-archive-service/src/*','crates/certificate-archive-service/schema/*','crates/management-http/src/certificate_archive/*','crates/app/src/certificate_archive.rs'),
+    tests=('crates/app/tests/certificate_archive/mod.rs',),support=('crates/app/tests/support/authority.rs','crates/app/tests/device/support.rs'))
+MODULES['certificate-archive.http']=replace(MODULES['certificate-archive.http'],db_mode='fresh',scope='objects',policies=(CasePolicy('certificate_archive_tests::permissions_rls_immutable_versions_and_tampering_are_enforced','fresh','pair',('identity',)),))
 add('timeline.http',fixtures=('identity',),selectors=('timeline_tests::',),sources=('crates/timeline-service/src/*','crates/timeline-service/schema/*','crates/management-http/src/timeline.rs','crates/registration-service/src/device/read.rs','crates/inventory-service/src/assets/mod.rs','crates/execution-service/src/timeline.rs'),tests=('crates/app/tests/timeline/mod.rs',),support=('crates/app/tests/support/authority.rs','crates/app/tests/support/planning_http.rs','crates/app/tests/device/support.rs'))
 MODULES['timeline.http']=replace(MODULES['timeline.http'],db_mode='fresh',policies=(
     CasePolicy('timeline_tests::existing_business_facts_are_queryable_over_real_http','fresh','objects',('identity','windows')),

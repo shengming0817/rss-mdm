@@ -16,6 +16,9 @@ pub(crate) struct Database {
     pool: PgPool,
 }
 impl Database {
+    pub(crate) fn archive_pool(&self) -> PgPool {
+        self.pool.clone()
+    }
     pub(crate) fn authorization_store(
         &self,
     ) -> std::sync::Arc<rss_mdm_authorization_service::Store> {
@@ -142,6 +145,7 @@ async fn admission(pool: &PgPool) -> Result<(), Error> {
         rss_mdm_audit_integration::ACCESS_CONTRACT,
         rss_mdm_flow_service::ACCESS_CONTRACT,
         rss_mdm_timeline_service::ACCESS_CONTRACT,
+        rss_mdm_certificate_archive_service::ACCESS_CONTRACT,
     ];
     let valid = rss_mdm_backend_postgres_support::access_admission::verify(
         &mut tx,

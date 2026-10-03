@@ -18,6 +18,7 @@ use serde_json::Value;
 use serde_json::json;
 use std::sync::Arc;
 pub(crate) struct Assembly {
+    pub(crate) certificate_archive: Arc<rss_mdm_certificate_archive_service::Archive>,
     pub(crate) timeline: Arc<rss_mdm_timeline_service::Timeline>,
     pub(crate) content_writer: Option<Arc<rss_mdm_content_service::Store>>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
@@ -123,6 +124,11 @@ pub(crate) async fn application_fixture(
         from_compiled(
             compiled,
             AssemblyDependencies {
+                certificate_archive: crate::certificate_archive::assemble(
+                    &access,
+                    audit_store.clone(),
+                    clock.clone(),
+                ),
                 timeline,
                 audit_store,
                 execution,
@@ -140,6 +146,7 @@ pub(crate) async fn application_fixture(
     ))
 }
 pub(crate) struct AssemblyDependencies {
+    pub(crate) certificate_archive: Arc<rss_mdm_certificate_archive_service::Archive>,
     pub(crate) timeline: Arc<rss_mdm_timeline_service::Timeline>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) execution: crate::execution_assembly::Assembly,
@@ -159,6 +166,7 @@ pub(crate) fn from_compiled(
         identity_management,
     } = compiled;
     let AssemblyDependencies {
+        certificate_archive,
         timeline,
         audit_store,
         execution,
@@ -218,6 +226,7 @@ pub(crate) fn from_compiled(
         })
         .transpose()?;
     let state = Arc::new(Assembly {
+        certificate_archive,
         timeline,
         content_writer,
         inputs,
@@ -351,6 +360,7 @@ pub(crate) fn from_state(
         rss_mdm_management_http::authentication_routes(authentication, management_boundary.clone());
     let management = rss_mdm_management_http::router(
         rss_mdm_management_http::Services {
+            certificate_archive: state.certificate_archive.clone(),
             timeline: state.timeline.clone(),
             diagnostics: diagnostics.clone(),
             identity: state.identity.browser(),
