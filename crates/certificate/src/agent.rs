@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use std::{sync::Arc, time::Duration};
 use tokio_rustls::rustls::{self, pki_types::{CertificateDer, UnixTime}, server::danger::ClientCertVerifier};
 use uuid::Uuid;
-use x509_cert::{Certificate, request::CertReq, der::{Decode, DecodePem, Encode, Sequence, asn1::{Any, ObjectIdentifier, OctetString}}, ext::{Extension, pkix::{BasicConstraints, ExtendedKeyUsage, KeyUsage, KeyUsages, SubjectAltName, name::GeneralName}}, spki::AlgorithmIdentifierOwned};
+use x509_cert::{Certificate, request::CertReq, der::{Decode, DecodePem, Encode, asn1::{Any, ObjectIdentifier, OctetString}}, ext::{Extension, pkix::{BasicConstraints, ExtendedKeyUsage, KeyUsage, KeyUsages, SubjectAltName, name::GeneralName}}, spki::AlgorithmIdentifierOwned};
 const RSA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1");
 const SHA256_RSA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.11");
 const CLIENT_AUTH: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.3.2");
@@ -82,7 +82,6 @@ pub struct IssuedAgentCertificate { pub metadata: Metadata, pub csr_digest: [u8;
 /// Can only be constructed from completed TLS, never HTTP certificate text.
 pub struct VerifiedAgentPeer { metadata: Metadata }
 impl VerifiedAgentPeer { pub fn metadata(&self) -> &Metadata { &self.metadata } }
-#[derive(Sequence)]
 struct Provisioner { kind: u8, name: OctetString, credential: OctetString }
 pub struct AgentTrust {
     issuer: Certificate,
@@ -132,7 +131,7 @@ impl AgentTrust {
         if self::identity(tenant,std::str::from_utf8(&device).map_err(malformed)?)? != identity { return Err(Error::Unauthorized); }
         let extensions=t.extensions.as_ref().ok_or(Error::Unauthorized)?;
         let marker=extensions.iter().find(|ext| ext.extn_id==STEP).ok_or(Error::Unauthorized)?;
-        let provisioner=Provisioner::from_der(marker.extn_value.as_bytes()).map_err(malformed)?;
+        let provisioner=Any::from_der(marker.extn_value.as_bytes()).map_err(malformed)?.sequence(|reader| Ok(Provisioner { kind:u8::decode(reader)?, name:OctetString::decode(reader)?, credential:OctetString::decode(reader)? })).map_err(malformed)?;
         if provisioner.kind!=1 || provisioner.name.as_bytes()!=self.provisioner.as_bytes() || provisioner.credential.as_bytes()!=self.kid.as_bytes() { return Err(Error::Unauthorized); }
         Ok(Metadata { profile:PROFILE, identity, issuer:self.issuer_digest, fingerprint:Sha256::digest(&chain[0]).into(), spki:Sha256::digest(t.subject_public_key_info.to_der().map_err(malformed)?).into(), serial:t.serial_number.as_bytes().to_vec(), not_before:start, not_after:end, provisioner:self.provisioner.clone() })
     }

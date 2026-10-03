@@ -3145,6 +3145,7 @@ dependencies = [
  "libxml",
  "quick-xml 0.42.0",
  "ring",
+ "serde",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.20",
@@ -3556,10 +3557,13 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "rand 0.8.8",
+ "reqwest",
+ "ring",
  "rss-audit-postgres",
  "rss-identity-core",
  "rss-mdm-audit-integration",
  "rss-mdm-authorization-service",
+ "rss-mdm-certificate",
  "rss-mdm-inventory",
  "rss-observation",
  "rss-request-context",
@@ -3571,8 +3575,11 @@ dependencies = [
  "sqlx",
  "subtle",
  "thiserror 2.0.20",
+ "time",
  "tokio",
+ "url",
  "uuid",
+ "x509-cert",
  "zeroize",
 ]
 

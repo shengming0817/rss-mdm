@@ -1,4 +1,5 @@
 //! Channel-neutral registration identity, credential binding and retirement.
+pub mod agent_pki;
 mod database;
 pub mod device;
 pub mod enrollment;
