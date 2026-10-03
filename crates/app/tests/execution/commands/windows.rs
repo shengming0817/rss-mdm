@@ -1963,7 +1963,8 @@ async fn unsupported_config_refresh_does_not_abort_other_management_tasks() -> a
     let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
     client.accept_approved().await?;
     client.publish_operation(client.operation).await?;
-    let unsupported = Uuid::new_v4();
+    // Reject the earlier candidate before the one valid command this response may dispatch.
+    let unsupported = Uuid::from_u128(client.operation.as_u128() - 1);
     let input = json!({"operationId":unsupported,"inputVersion":"1","target":{"kind":"device"},"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/DMClient/Provider/*/ConfigRefresh/Enabled","instance":[host.app.windows()?.channel.provider_id],"operation":"get","value":null}}},"deadline":host.app.clock.unix_seconds()?+300});
     ensure!(client.call(Method::POST, "", Some(input)).await?.0 == StatusCode::ACCEPTED);
     ensure!(

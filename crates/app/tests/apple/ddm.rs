@@ -291,8 +291,8 @@ async fn four_families_assets_recovery_and_withdrawal() -> Result<()> {
             == StatusCode::NOT_FOUND
     );
     ensure!(
-        !peer.client.get(&url).send().await?.status().is_success(),
-        "retired asset authority"
+        peer.client.get(&url).send().await?.status() == StatusCode::NOT_FOUND,
+        "retired publication must return ordinary absence"
     );
     native(&peer, None, "status", Some(&status)).await?;
     ensure!(

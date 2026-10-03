@@ -8,12 +8,15 @@ pub async fn asset_binding(
     p: &DevicePrincipal,
     operation: Uuid,
     identifier: &str,
-) -> Result<native::ddm::AssetBinding, Error> {
+) -> Result<Option<native::ddm::AssetBinding>, Error> {
     crate::device::store::lock_channel(c, &p.tenant().to_string(), p.device(), p.channel()).await?;
     crate::device::store::revalidate_source(c, p, rss_mdm_inventory::ReportSource::MdmApple)
         .await?;
     let row=sqlx::query("SELECT user_key,snapshot FROM mdm_apple.declarations WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3 AND generation=$4 AND retired_at IS NULL")
-        .bind(p.tenant().to_string()).bind(operation).bind(p.registration()).bind(p.generation()).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::NotFound)?;
+        .bind(p.tenant().to_string()).bind(operation).bind(p.registration()).bind(p.generation()).fetch_optional(&mut *c).await.map_err(db)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
     let user: String = row.try_get("user_key").map_err(db)?;
     let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND user_key=$4 AND state='active')")
         .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(&user).fetch_one(c).await.map_err(db)?;
@@ -26,11 +29,10 @@ pub async fn asset_binding(
         .map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
     let publication: Publication = serde_json::from_slice(plain.expose())
         .map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
-    publication
+    Ok(publication
         .assets
         .into_iter()
-        .find(|a| a.selection.identifier == identifier)
-        .ok_or(Error::NotFound)
+        .find(|a| a.selection.identifier == identifier))
 }
 pub async fn asset(
     axum::extract::State(app): axum::extract::State<std::sync::Arc<crate::HttpState>>,
@@ -87,7 +89,7 @@ impl channels::AppleAssetRead for AssetRead {
         &'a self,
         c: &'a mut PgConnection,
         p: &'a DevicePrincipal,
-    ) -> channels::Pending<'a, native::ddm::AssetBinding> {
+    ) -> channels::Pending<'a, Option<native::ddm::AssetBinding>> {
         Box::pin(async move {
             asset_binding(c, &self.key, p, self.operation, &self.identifier)
                 .await

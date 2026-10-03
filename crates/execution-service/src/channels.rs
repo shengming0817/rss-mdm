@@ -566,5 +566,5 @@ pub trait AppleAssetRead: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         p: &'a DevicePrincipal,
-    ) -> Pending<'a, rss_mdm_apple_mdm::native::ddm::AssetBinding>;
+    ) -> Pending<'a, Option<rss_mdm_apple_mdm::native::ddm::AssetBinding>>;
 }

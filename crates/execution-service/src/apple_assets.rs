@@ -159,7 +159,8 @@ impl ExecutionService {
                             Box::pin(async move { Ok(reader.binding(c, &principal).await) })
                         })
                         .await?
-                        .map_err(Error::from)?;
+                        .map_err(Error::from)?
+                        .ok_or(Error::NotFound)?;
                     let expected = serde_json::to_vec(&selected).map_err(|_| Error::Malformed)?;
                     if !current
                         .iter()
