@@ -56,7 +56,11 @@ class ModuleImpactTests(unittest.TestCase):
             self.assertTrue({'apple.commands', 'apple.users'} <= set(selected.modules), path)
 
     def test_ddm_authority_and_reads_select_native_consumers(self):
-        for path in ('crates/execution-service/src/apple.rs',
+        for path in ('crates/authorization-service/src/authority.rs',
+                     'crates/authorization-service/src/model.rs',
+                     'crates/execution-service/src/frozen.rs',
+                     'crates/execution-service/src/storage.rs',
+                     'crates/execution-service/src/apple.rs',
                      'crates/execution-service/src/authority.rs',
                      'crates/execution-service/src/permissions.rs',
                      'crates/execution-service/src/queries.rs',

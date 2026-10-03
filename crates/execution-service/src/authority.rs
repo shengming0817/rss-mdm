@@ -68,7 +68,7 @@ impl ExecutionAuthority {
             required: permissions.to_vec(),
             evidence: permissions
                 .iter()
-                .map(|&p| UserGrant::from_proof(snapshot, proof, device, p))
+                .map(|&p| crate::permissions::grant(snapshot, proof, Some(device), p))
                 .collect::<Result<_, _>>()?,
         })
     }

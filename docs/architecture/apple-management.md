@@ -20,6 +20,6 @@ DDM 沿用同一 Execution 事务与设备锁。共同层只消费资格、类�
 
 StatusReport 没有可用于判定生产先后的原生序号。报告保留接收时的订阅及原生上下文，按精确 identifier/server-token 关联；重复报告幂等，旧版本不修改当前声明。原始历史独立保留，在线处理只折叠新证据并在同一事务保存加密累计状态；查询和重启恢复不重放历史。每作用域最多 16 个有效 publication，每个累计状态最多 512 KiB，超出状态预算后保留原始证据并明确 Unknown，直到新版本重新建立证据。增量数组按原生 identifier 合并非重叠事实；同版本的更新、移除或完整集合省略互相矛盾时保留 Unknown，不按接收时间决定胜者。原生 valid/active/reasons、同步进度、设置效果与合规分开呈现。
 
-Legacy Profile 只从受保护的不可变 Resource 下载，使用已验证的 schema 及真实目标条件编译。接管要求管理清单证明根和所有子载荷的类型、标识、UUID、数量和顺序一致；有效且激活的精确声明版本交接经典所有权。DDM guard 在撤回后继续存在，只能由发出时已关联该 guard 的独立完整 ProfileList 缺席证明释放；新的撤回不借用旧查询结果。
+Legacy Profile 只从受保护的不可变 Resource 下载，使用已验证的 schema 及真实目标条件编译。Mac 不返回 IsManaged；接管先核对加密保留的关联 ProfileList 请求确实为 ManagedOnly=true，再要求管理清单证明根和所有子载荷的类型、标识、UUID、数量和顺序一致；有效且激活的精确声明版本交接经典所有权。DDM guard 在撤回后继续存在，只能由发出时已关联该 guard 的独立完整 ProfileList 缺席证明释放；新的撤回不借用旧查询结果。
 
 操作、外部 CA 与恢复见 [Apple 指南](../guides/apple-management.md)。参考 [Apple 证书管理](https://developer.apple.com/documentation/devicemanagement/managing-certificates-for-device-management-services-and-devices)、[APNs 响应](https://developer.apple.com/documentation/usernotifications/handling-notification-responses-from-apns)，协议来源固定于 [Apple fixtures](../../fixtures/apple-tools.lock.json)。

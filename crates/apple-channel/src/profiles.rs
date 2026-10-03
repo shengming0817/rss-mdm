@@ -290,11 +290,34 @@ pub(crate) async fn ddm_admission(
                 return Ok(false);
             }
             let old_operation: Uuid = row.try_get("operation").map_err(db)?;
-            let evidence=sqlx::query("SELECT id,response FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3 AND generation=$4 AND user_key=$5 AND phase='observe' AND accepted AND state='acknowledged' AND ordinal=(SELECT max(a.ordinal) FROM mdm_apple.attempts a WHERE a.tenant_id=$1::uuid AND a.operation=$2 AND a.phase='observe')")
+            let evidence=sqlx::query("SELECT id,request,response FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3 AND generation=$4 AND user_key=$5 AND phase='observe' AND accepted AND state='acknowledged' AND ordinal=(SELECT max(a.ordinal) FROM mdm_apple.attempts a WHERE a.tenant_id=$1::uuid AND a.operation=$2 AND a.phase='observe')")
                 .bind(p.tenant().to_string()).bind(old_operation).bind(p.registration()).bind(p.generation()).bind(user).fetch_optional(&mut *c).await.map_err(db)?;
             let Some(evidence) = evidence else {
                 return Ok(false);
             };
+            // macOS does not return IsManaged. A correlated ManagedOnly query proves MDM ownership.
+            let sealed: Vec<u8> = evidence.try_get("request").map_err(db)?;
+            let plain = crate::protection::open(
+                key,
+                &p.tenant().to_string(),
+                p.registration(),
+                p.generation(),
+                evidence.try_get("id").map_err(db)?,
+                crate::protection::Part::Request,
+                &sealed,
+            )?;
+            let request = crate::protocol::decode(plain.expose())?;
+            let Some(command) = request.get("Command").and_then(plist::Value::as_dictionary) else {
+                return Ok(false);
+            };
+            if command.get("RequestType").and_then(plist::Value::as_string) != Some("ProfileList")
+                || command
+                    .get("ManagedOnly")
+                    .and_then(plist::Value::as_boolean)
+                    != Some(true)
+            {
+                return Ok(false);
+            }
             let sealed: Vec<u8> = evidence.try_get("response").map_err(db)?;
             let plain = crate::protection::open(
                 key,

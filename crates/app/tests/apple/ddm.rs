@@ -339,12 +339,12 @@ async fn legacy_takeover_retains_guards_until_correlated_absence() -> Result<()>
     let (execute, payload) = peer.next("InstallProfile").await?;
     let native_profile_bytes = payload["Payload"].as_data().unwrap().to_vec();
     let bytes = peer.manage("Acknowledged", Some(execute), None).await?;
-    let (observe, _) = lifecycle::command(&bytes, "ProfileList")?;
-    let mut managed = profile_manifest(classic, "com.apple.security.firewall");
-    managed.as_array_mut().unwrap()[0]
-        .as_dictionary_mut()
-        .unwrap()
-        .insert("IsManaged".into(), true.into());
+    let (observe, query) = lifecycle::command(&bytes, "ProfileList")?;
+    ensure!(
+        query["ManagedOnly"].as_boolean() == Some(true),
+        "takeover lacks managed-only native query"
+    );
+    let managed = profile_manifest(classic, "com.apple.security.firewall");
     peer.manage(
         "Acknowledged",
         Some(observe),

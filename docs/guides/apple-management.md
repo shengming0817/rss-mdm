@@ -122,3 +122,5 @@ challenge 是一次性事务，先消费提交再 allow；CA 的重复传输不�
 APNs 响应体最多读取 4096 字节，仅记录闭合原因类别和可选时间戳，不输出 provider 原始文本。失效 token 退回 pending_token；证书、topic、请求或 payload 错误暂停该配置；限流/网络/服务端错误退避，5xx 至少等待 15 分钟。未知或畸形响应按可重试协议错误处理。
 
 后台 `apple_push_health` 记录连续内部失败数和配置故障。连续三次内部失败使 readiness 返回 503；数据库恢复后自动解除。配置拒绝保持不健康直到有效发送恢复或更换配置并重启。临时 APNs 网络错误使用设备级持久退避，不伪造命令进度。
+
+Mac 的 Legacy 接管以关联的 `ProfileList(ManagedOnly=true)` 证明 MDM 所有权，不依赖 iOS 的 IsManaged 字段。资源读取权限按租户作用域冻结，与设备配置权限分别验证。

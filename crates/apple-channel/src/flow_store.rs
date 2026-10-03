@@ -475,7 +475,11 @@ async fn send_command(
         if let Some(query) = software_query {
             query.compile(&target)
         } else {
-            native::Command::new("ProfileList", plist::Dictionary::new(), &target)
+            native::Command::new(
+                "ProfileList",
+                crate::protocol::dictionary([("ManagedOnly", true.into())]),
+                &target,
+            )
         }
     } else {
         match &command.request {

@@ -103,7 +103,7 @@ impl Queries {
                 required.sort(); required.dedup();
                 let snapshot=crate::action_admission::current(tx,proof).await?;
                 for permission in required {
-                    match snapshot.require(proof,permission,Some(device)) {
+                    match snapshot.require(proof,permission,permission.device().then_some(device)) {
                         Ok(()) => {},
                         Err(crate::authorization::error::AuthorizationError::Forbidden) => native_values=false,
                         Err(error) => return Err(Error::from(error).into()),

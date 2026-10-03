@@ -626,7 +626,7 @@ pub fn same_structure(left: &[ProfileObject], right: &[ProfileObject]) -> bool {
         })
 }
 
-/// Takeover observes the managed profile's ordered structure, including complete payload content.
+/// Observe exact ordered structure and complete content; the channel proves query ownership.
 pub fn observed_structure(
     report: &Dictionary,
     objects: &[ProfileObject],
@@ -644,9 +644,6 @@ pub fn observed_structure(
             })
         })
         .ok_or(crate::Error::Malformed)?;
-    if profile.get("IsManaged").and_then(Value::as_boolean) != Some(true) {
-        return Ok(false);
-    }
     let children = profile
         .get("PayloadContent")
         .and_then(Value::as_array)

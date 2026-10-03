@@ -11,17 +11,17 @@ pub struct ReportEvidence {
     pub subscriptions: BTreeSet<String>,
     pub declarations_token: String,
 }
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StatusProjection {
     pub items: BTreeMap<String, Value>,
     pub unknown_items: BTreeSet<String>,
     pub declarations: Vec<Value>,
     pub errors: Vec<Value>,
-    pub completeness: &'static str,
-    pub effect: &'static str,
+    pub completeness: String,
+    pub effect: String,
     pub synchronized: bool,
-    pub compliance: &'static str,
+    pub compliance: String,
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct ArrayClaims {
@@ -369,9 +369,10 @@ impl<'a> Projection<'a> {
                 "full_report_observed"
             } else {
                 "unknown"
-            },
-            effect: "unverified",
-            compliance: "unknown",
+            }
+            .into(),
+            effect: "unverified".into(),
+            compliance: "unknown".into(),
         })
     }
 }

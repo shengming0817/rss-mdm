@@ -3,6 +3,23 @@ use super::Task;
 use crate::{Error, authorization::Permission as P};
 use std::collections::BTreeSet;
 
+pub(super) fn grant(
+    snapshot: &crate::authorization::Snapshot,
+    proof: &crate::authorization::context::AuthorizedPrincipal,
+    device: Option<&str>,
+    permission: P,
+) -> Result<crate::authorization::UserGrant, Error> {
+    use crate::authorization::UserGrant;
+    let grant = if !permission.device() {
+        UserGrant::tenant(snapshot, proof, permission)
+    } else if let Some(device) = device {
+        UserGrant::from_proof(snapshot, proof, device, permission)
+    } else {
+        UserGrant::all_devices(snapshot, proof, permission)
+    };
+    grant.map_err(Into::into)
+}
+
 pub(super) fn required(task: &Task) -> Result<Vec<P>, Error> {
     let mut permissions = BTreeSet::new();
     match task {

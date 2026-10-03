@@ -37,6 +37,25 @@ impl UserGrant {
             rules,
         })
     }
+    /// Freeze a real tenant permission independently of any device assignment.
+    pub fn tenant(
+        snapshot: &Snapshot,
+        proof: &AuthorizedPrincipal,
+        permission: Permission,
+    ) -> Result<Self, Error> {
+        if permission.device() {
+            return Err(Error::Malformed);
+        }
+        snapshot.require(proof, permission, None)?;
+        let scope = Scope::Tenant;
+        let rules = snapshot.approval_bases(proof, &scope, permission)?;
+        Ok(Self {
+            permission,
+            user: proof.user(),
+            scope,
+            rules,
+        })
+    }
     /// Freeze only actual all-device rule evidence; future Scope members need no browser session.
     pub fn all_devices(
         snapshot: &Snapshot,
