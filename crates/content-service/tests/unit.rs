@@ -776,6 +776,28 @@ async fn native_configuration_keeps_acknowledged_tail_encrypted_and_ranges_plain
     }
     store.finish("user", id, 102).await.unwrap();
     store.finish("user", id, 102).await.unwrap();
+    // The configuration encryption identity predates diagnostic storage and stays fixed.
+    // Authenticate the actual first file record with its independently specified domain.
+    let owner =
+        serde_json::to_string(&(artifact.digest().bytes(), artifact.length(), 0u64, 65536u64))
+            .unwrap();
+    let aad = rss_mdm_native_protection::ProtectionContext::new(
+        rss_request_context::TenantId::parse(tenant).unwrap(),
+        &owner,
+        "content.native-configuration.chunk/v1",
+        1,
+    )
+    .unwrap()
+    .derive();
+    let physical =
+        fs::read(store.path_class(&artifact, StorageClass::NativeConfiguration)).unwrap();
+    assert_eq!(
+        key.open_bytes(&physical[..65536 + 68], &aad)
+            .unwrap()
+            .expose(),
+        &bytes[..65536]
+    );
+
     let checkpoint_path = store.upload_path(upload::storage_key("user", id), "json");
     let checkpoint: serde_json::Value =
         serde_json::from_slice(&fs::read(&checkpoint_path).unwrap()).unwrap();

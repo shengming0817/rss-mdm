@@ -54,7 +54,7 @@ impl StorageClass {
     fn protection_domain(self) -> &'static str {
         match self {
             Self::Artifact => "content.artifact",
-            Self::NativeConfiguration => "content.native_configuration",
+            Self::NativeConfiguration => "content.native-configuration",
             Self::NativeDiagnostic => "content.native_diagnostic",
         }
     }
