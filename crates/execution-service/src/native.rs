@@ -571,7 +571,7 @@ pub(crate) async fn send_on(
         }
         let old=sqlx::query("SELECT a.id,a.ordinal,a.phase,a.session,a.platform,a.declared_versions FROM mdm_commands.attempts a WHERE a.tenant_id=$1::uuid AND a.operation=$2 ORDER BY a.ordinal DESC LIMIT 1").bind(&tenant).bind(op.operation_id).fetch_optional(&mut *c).await.map_err(db)?;
         let items = if let Some(old) = &old {
-            sqlx::query("SELECT command,item_ordinal,kind,uri,status,receipt_accepted,value,result_accepted FROM mdm_commands.attempt_items WHERE tenant_id=$1::uuid AND attempt=$2")
+            sqlx::query("SELECT command,item_ordinal,kind,uri,status,receipt_accepted,value,value IS NOT NULL AS has_value,result_accepted FROM mdm_commands.attempt_items WHERE tenant_id=$1::uuid AND attempt=$2")
                 .bind(&tenant).bind(old.try_get::<Uuid, _>("id").map_err(db)?)
                 .fetch_all(&mut *c).await.map_err(db)?
         } else {
@@ -892,7 +892,7 @@ pub(crate) async fn send_on(
         pending = true;
         break;
     }
-    let rows = sqlx::query("SELECT i.kind,i.status,i.value,i.receipt_accepted,i.result_accepted FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) WHERE a.tenant_id=$1::uuid AND o.registration=$2 AND a.session=$3 AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp())")
+    let rows = sqlx::query("SELECT i.kind,i.status,i.value IS NOT NULL AS has_value,i.receipt_accepted,i.result_accepted FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) WHERE a.tenant_id=$1::uuid AND o.registration=$2 AND a.session=$3 AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp())")
         .bind(&tenant).bind(p.registration()).bind(session).fetch_all(c).await.map_err(db)?;
     let outstanding = rows
         .iter()
@@ -978,10 +978,7 @@ pub(super) fn item_evidence(
             .try_get::<Option<bool>, _>("receipt_accepted")
             .map_err(db)?
             == Some(true),
-        has_value: row
-            .try_get::<Option<Vec<u8>>, _>("value")
-            .map_err(db)?
-            .is_some(),
+        has_value: row.try_get("has_value").map_err(db)?,
         result_accepted: row
             .try_get::<Option<bool>, _>("result_accepted")
             .map_err(db)?

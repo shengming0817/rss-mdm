@@ -602,7 +602,7 @@ async fn completed_observation(
             let attempt: Uuid = candidate.try_get("id")?;
             let tenant = tx.tenant_id().to_string();
             let rows = tx.with_connection(move |c|Box::pin(async move {
-                sqlx::query("SELECT a.id AS attempt,i.command,i.item_ordinal,i.kind,i.uri,i.status,i.value,i.receipt_accepted,i.result_accepted FROM mdm_commands.attempt_items i JOIN mdm_commands.attempts a ON(a.tenant_id,a.id)=(i.tenant_id,i.attempt) WHERE a.tenant_id=$1::uuid AND a.id=$2 ORDER BY i.command,i.item_ordinal")
+                sqlx::query("SELECT a.id AS attempt,i.command,i.item_ordinal,i.kind,i.uri,i.status,i.value,i.value IS NOT NULL AS has_value,i.receipt_accepted,i.result_accepted FROM mdm_commands.attempt_items i JOIN mdm_commands.attempts a ON(a.tenant_id,a.id)=(i.tenant_id,i.attempt) WHERE a.tenant_id=$1::uuid AND a.id=$2 ORDER BY i.command,i.item_ordinal")
                     .bind(tenant).bind(attempt).fetch_all(c).await
             })).await?;
             let evidence = rows
