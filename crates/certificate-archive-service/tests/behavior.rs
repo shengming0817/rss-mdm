@@ -202,6 +202,52 @@ fn pkcs12_password_key_binding_and_opaque_archive_are_explicit() {
     ));
 }
 #[test]
+fn pem_private_keys_never_request_a_terminal_password() {
+    use openssl::{
+        ec::{EcGroup, EcKey},
+        nid::Nid,
+        pkey::PKey,
+        symm::Cipher,
+    };
+    let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
+    let ec = EcKey::generate(&group).unwrap();
+    let key = PKey::from_ec_key(ec.clone()).unwrap();
+    // Cover PKCS#8 and the traditional encrypted PEM encoding.
+    for pem in [
+        key.private_key_to_pem_pkcs8_passphrase(Cipher::aes_256_cbc(), b"input password")
+            .unwrap(),
+        ec.private_key_to_pem_passphrase(Cipher::aes_256_cbc(), b"input password")
+            .unwrap(),
+    ] {
+        for password in [None, Some(""), Some("wrong"), Some("input password")] {
+            let file = ImportFile {
+                name: "key.pem".into(),
+                format: Format::PrivateKey,
+                data: Zeroizing::new(STANDARD.encode(&pem)),
+                password: password.map(|p| Zeroizing::new(p.to_owned())),
+            };
+            let result = materials::parse(&[file]);
+            if password == Some("input password") {
+                assert!(result.unwrap().1[0].contains_private_key);
+            } else {
+                assert!(matches!(result, Err(Error::Material)));
+            }
+        }
+    }
+    for pem in [
+        key.private_key_to_pem_pkcs8().unwrap(),
+        ec.private_key_to_pem().unwrap(),
+    ] {
+        let file = ImportFile {
+            name: "key.pem".into(),
+            format: Format::PrivateKey,
+            data: Zeroizing::new(STANDARD.encode(pem)),
+            password: None,
+        };
+        assert!(materials::parse(&[file]).unwrap().1[0].contains_private_key);
+    }
+}
+#[test]
 fn request_binding_rejects_another_generated_identity() {
     let (_, request) = generation::generate(&input(Profile::Csr), None, 1_790_000_000).unwrap();
     let (_, certs) = generation::generate(&input(Profile::Ca), None, 1_790_000_000).unwrap();

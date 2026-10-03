@@ -264,6 +264,7 @@ pub struct Version {
     pub created_at: i64,
     pub metadata: Metadata,
     pub facts: Vec<MaterialFacts>,
+    pub request_version: Option<VersionRef>,
     pub source: String,
 }
 #[derive(Clone, Serialize, Deserialize)]

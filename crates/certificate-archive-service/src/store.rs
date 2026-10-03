@@ -38,7 +38,7 @@ pub(crate) async fn version(
     tenant: &str,
     id: VersionRef,
 ) -> Result<(Version, Vec<u8>), Error> {
-    let r=sqlx::query("SELECT entry_id::text,version,actor::text,instance::text,operation_id::text,created_at,metadata::text,facts::text,source,sealed FROM mdm_certificate_archive.versions WHERE tenant_id=$1::uuid AND entry_id=$2::uuid AND version=$3").bind(tenant).bind(id.entry_id.to_string()).bind(id.version).fetch_optional(c).await?.ok_or(Error::NotFound)?;
+    let r=sqlx::query("SELECT entry_id::text,version,actor::text,instance::text,operation_id::text,created_at,metadata::text,facts::text,request_entry_id::text,request_version,source,sealed FROM mdm_certificate_archive.versions WHERE tenant_id=$1::uuid AND entry_id=$2::uuid AND version=$3").bind(tenant).bind(id.entry_id.to_string()).bind(id.version).fetch_optional(c).await?.ok_or(Error::NotFound)?;
     Ok((decode_version(&r)?, r.try_get("sealed")?))
 }
 pub(crate) fn decode_version(r: &sqlx::postgres::PgRow) -> Result<Version, Error> {
@@ -55,6 +55,17 @@ pub(crate) fn decode_version(r: &sqlx::postgres::PgRow) -> Result<Version, Error
             .map_err(|_| Error::Integrity)?,
         facts: serde_json::from_str(&r.try_get::<String, _>("facts")?)
             .map_err(|_| Error::Integrity)?,
+        request_version: match (
+            r.try_get::<Option<String>, _>("request_entry_id")?,
+            r.try_get::<Option<i64>, _>("request_version")?,
+        ) {
+            (None, None) => None,
+            (Some(entry), Some(version)) if version > 0 => Some(VersionRef {
+                entry_id: Uuid::parse_str(&entry).map_err(|_| Error::Integrity)?,
+                version,
+            }),
+            _ => return Err(Error::Integrity),
+        },
         source: r.try_get("source")?,
     })
 }
@@ -101,6 +112,7 @@ pub(crate) enum Mutation {
         metadata: Metadata,
         facts: Vec<MaterialFacts>,
         sealed: Vec<u8>,
+        request_version: Option<VersionRef>,
         source: &'static str,
     },
     Manage {
@@ -256,6 +268,7 @@ async fn apply(
             metadata,
             facts,
             sealed,
+            request_version,
             source,
         } => {
             generation(c, tenant, *expected_gen).await?;
@@ -269,7 +282,7 @@ async fn apply(
             } else {
                 sqlx::query("UPDATE mdm_certificate_archive.entries SET revision=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(entry.to_string()).bind(next).execute(&mut *c).await?;
             }
-            sqlx::query("INSERT INTO mdm_certificate_archive.versions(tenant_id,entry_id,version,actor,instance,operation_id,created_at,metadata,facts,sealed,source) VALUES($1::uuid,$2::uuid,$3,$4::uuid,$5::uuid,$6::uuid,floor(extract(epoch FROM clock_timestamp()))::bigint,$7::jsonb,$8::jsonb,$9,$10)").bind(tenant).bind(entry.to_string()).bind(next).bind(p.principal_id()).bind(p.instance_id()).bind(id.to_string()).bind(serde_json::to_string(metadata).map_err(|_|Error::Malformed)?).bind(serde_json::to_string(facts).map_err(|_|Error::Integrity)?).bind(sealed).bind(*source).execute(c).await?;
+            sqlx::query("INSERT INTO mdm_certificate_archive.versions(tenant_id,entry_id,version,actor,instance,operation_id,created_at,metadata,facts,sealed,source,request_entry_id,request_version) VALUES($1::uuid,$2::uuid,$3,$4::uuid,$5::uuid,$6::uuid,floor(extract(epoch FROM clock_timestamp()))::bigint,$7::jsonb,$8::jsonb,$9,$10,$11::uuid,$12)").bind(tenant).bind(entry.to_string()).bind(next).bind(p.principal_id()).bind(p.instance_id()).bind(id.to_string()).bind(serde_json::to_string(metadata).map_err(|_|Error::Malformed)?).bind(serde_json::to_string(facts).map_err(|_|Error::Integrity)?).bind(sealed).bind(*source).bind(request_version.map(|r|r.entry_id.to_string())).bind(request_version.map(|r|r.version)).execute(c).await?;
             result.entry_id = Some(*entry);
             result.version = Some(next);
             result.revision = next;

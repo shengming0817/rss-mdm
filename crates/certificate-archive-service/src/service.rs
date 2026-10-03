@@ -283,7 +283,8 @@ impl Archive {
         {
             return Ok(receipt);
         }
-        let request = match input.request_version {
+        let request_version = input.request_version;
+        let request = match request_version {
             None => None,
             Some(reference) => {
                 p.manage(P::CertificateArchiveRead)?;
@@ -311,6 +312,7 @@ impl Archive {
             metadata,
             bundle,
             facts,
+            request_version,
             "import",
             audit,
         )
@@ -360,6 +362,7 @@ impl Archive {
             metadata,
             bundle,
             facts,
+            None,
             "generate",
             audit,
         )
@@ -382,6 +385,7 @@ impl Archive {
         metadata: Metadata,
         bundle: Bundle,
         facts: Vec<MaterialFacts>,
+        request_version: Option<VersionRef>,
         source: &'static str,
         audit: &RequestAudit,
     ) -> Result<Receipt, Error> {
@@ -418,6 +422,7 @@ impl Archive {
                 metadata,
                 facts,
                 sealed,
+                request_version,
                 source,
             },
             audit,
@@ -471,6 +476,7 @@ impl Archive {
             input.metadata,
             bundle,
             previous.facts,
+            previous.request_version,
             "metadata",
             audit,
         )
@@ -514,7 +520,7 @@ impl Archive {
         p.manage(P::CertificateArchiveRead)?;
         let mut tx = store::begin(&self.pool, p.tenant_id()).await?;
         let settings = store::settings(&mut tx, p.tenant_id()).await?;
-        let rows=sqlx::query("SELECT e.id::text,e.revision,e.retired,e.recommended_version,v.entry_id::text,v.version,v.actor::text,v.instance::text,v.operation_id::text,v.created_at,v.metadata::text,v.facts::text,v.source FROM mdm_certificate_archive.entries e JOIN LATERAL(SELECT * FROM mdm_certificate_archive.versions x WHERE x.tenant_id=e.tenant_id AND x.entry_id=e.id ORDER BY x.version DESC LIMIT 1)v ON true WHERE e.tenant_id=$1::uuid AND ($2::uuid IS NULL OR e.id>$2::uuid) ORDER BY e.id LIMIT 51").bind(p.tenant_id()).bind(after.map(|id|id.to_string())).fetch_all(&mut *tx).await?;
+        let rows=sqlx::query("SELECT e.id::text,e.revision,e.retired,e.recommended_version,v.entry_id::text,v.version,v.actor::text,v.instance::text,v.operation_id::text,v.created_at,v.metadata::text,v.facts::text,v.request_entry_id::text,v.request_version,v.source FROM mdm_certificate_archive.entries e JOIN LATERAL(SELECT * FROM mdm_certificate_archive.versions x WHERE x.tenant_id=e.tenant_id AND x.entry_id=e.id ORDER BY x.version DESC LIMIT 1)v ON true WHERE e.tenant_id=$1::uuid AND ($2::uuid IS NULL OR e.id>$2::uuid) ORDER BY e.id LIMIT 51").bind(p.tenant_id()).bind(after.map(|id|id.to_string())).fetch_all(&mut *tx).await?;
         let more = rows.len() > 50;
         let items = rows
             .iter()
@@ -568,7 +574,7 @@ impl Archive {
             return Err(Error::Malformed);
         }
         let mut tx = store::begin(&self.pool, p.tenant_id()).await?;
-        let rows=sqlx::query("SELECT entry_id::text,version,actor::text,instance::text,operation_id::text,created_at,metadata::text,facts::text,source FROM mdm_certificate_archive.versions WHERE tenant_id=$1::uuid AND entry_id=$2::uuid AND ($3::bigint IS NULL OR version<$3) ORDER BY version DESC LIMIT 50").bind(p.tenant_id()).bind(entry.to_string()).bind(before).fetch_all(&mut *tx).await?;
+        let rows=sqlx::query("SELECT entry_id::text,version,actor::text,instance::text,operation_id::text,created_at,metadata::text,facts::text,request_entry_id::text,request_version,source FROM mdm_certificate_archive.versions WHERE tenant_id=$1::uuid AND entry_id=$2::uuid AND ($3::bigint IS NULL OR version<$3) ORDER BY version DESC LIMIT 50").bind(p.tenant_id()).bind(entry.to_string()).bind(before).fetch_all(&mut *tx).await?;
         let values = rows
             .iter()
             .map(store::decode_version)

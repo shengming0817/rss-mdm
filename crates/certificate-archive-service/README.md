@@ -36,7 +36,7 @@ App 持有数据库连接与生命周期，management-http 适配管理接口，
 |---|---|
 | 本地 CA | 自签 CA、对应密钥和 CSR；CA=true、keyCertSign/crlSign；默认十年 |
 | 私有 HTTPS | 使用同租户存档 CA 的匹配私钥签发；必须有 DNS/IP SAN，serverAuth，默认一年；不超过 CA 到期时间 |
-| 外部签发 CSR | 本地密钥和已验签的 PKCS#10 CSR；按实际外部平台提交，导入结果时关联 CSR 版本以检查公钥 |
+| 外部签发 CSR | 本地密钥和已验签的 PKCS#10 CSR；按实际外部平台提交，导入结果时关联 CSR 版本以检查公钥；精确条目/版本引用保存在签发结果的历史中，修改说明后仍保留 |
 | APNs 前置 CSR | RSA 2048、SHA-256 CSR 和对应私钥；没有 MDM Vendor 签名时不能直接当成 Apple 可接受的最终申请材料 |
 | SCEP 模板 | HTTPS 申请地址、主体、算法、设备持钥及信任配置说明；挑战由注册服务提供，不包含真实授权或设备私钥 |
 

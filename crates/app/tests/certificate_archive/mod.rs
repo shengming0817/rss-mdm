@@ -19,6 +19,7 @@ impl Clock for TestClock {
 }
 struct Fixture {
     authority: authority::Authority,
+    archive: Arc<Archive>,
     clock: Arc<TestClock>,
     router: Router,
     admin: Browser,
@@ -58,6 +59,7 @@ impl Fixture {
         .await?;
         Ok(Self {
             authority,
+            archive,
             clock,
             router,
             admin,
@@ -428,10 +430,166 @@ async fn generation_alerts_and_two_sessions_use_one_tenant_identity() -> Result<
     Ok(())
 }
 
-async fn wait_for_archive_locks(count: usize) -> Result<()> {
+#[tokio::test]
+#[ignore = "make t2 MODULE=certificate-archive.http"]
+async fn issued_results_keep_exact_request_versions_and_pem_work_drains() -> Result<()> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let mut f = Fixture::open().await?;
+    f.initialize().await?;
+    let mut owner = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(10))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    let startup = owner.startup()?;
+    let mut launch = startup.commit();
+    launch.stage_task_with_token(f.archive.clone().registration());
+    launch.finish();
+    let request = Uuid::new_v4();
+    f.write("/generate", json!({"entryId":request,"expectedRevision":0,"metadata":metadata("request"),"profile":"csr","algorithm":"p256","commonName":"issued.example","organization":"Test","sans":[],"days":0,"issuer":null,"scepUrl":null})).await?;
+    let exported = f
+        .write("/export", json!({"entryId":request,"version":1}))
+        .await?;
+    let files = exported["files"].as_array().unwrap();
+    let csr = files.iter().find(|v| v["name"] == "request.csr").unwrap();
+    let key = files
+        .iter()
+        .find(|v| v["name"].as_str().unwrap().ends_with(".pk8"))
+        .unwrap();
+    let work = tempfile::tempdir()?;
+    std::fs::write(
+        work.path().join("request.pem"),
+        STANDARD.decode(csr["data"].as_str().unwrap())?,
+    )?;
+    std::fs::write(
+        work.path().join("key.der"),
+        STANDARD.decode(key["data"].as_str().unwrap())?,
+    )?;
+    let signed = tokio::process::Command::new("openssl")
+        .current_dir(work.path())
+        .args([
+            "x509",
+            "-req",
+            "-in",
+            "request.pem",
+            "-signkey",
+            "key.der",
+            "-keyform",
+            "DER",
+            "-days",
+            "30",
+            "-set_serial",
+            "1",
+            "-out",
+            "certificate.pem",
+        ])
+        .output()
+        .await?;
+    ensure!(
+        signed.status.success(),
+        "fixture certificate signing failed"
+    );
+    let encrypted = tokio::process::Command::new("openssl")
+        .current_dir(work.path())
+        .args([
+            "pkey",
+            "-inform",
+            "DER",
+            "-in",
+            "key.der",
+            "-aes-256-cbc",
+            "-passout",
+            "pass:fixture",
+            "-out",
+            "encrypted.pem",
+        ])
+        .output()
+        .await?;
+    ensure!(encrypted.status.success(), "fixture key encryption failed");
+    let mut pem = import(Uuid::new_v4(), 0, "");
+    pem["files"][0]["format"] = json!("private_key");
+    pem["files"][0]["data"] =
+        json!(STANDARD.encode(std::fs::read(work.path().join("encrypted.pem"))?));
+    // More failures than the worker capacity must release every permit.
+    for _ in 0..3 {
+        f.admin.operation = Some(Uuid::new_v4());
+        let (status, body) = tokio::time::timeout(
+            Duration::from_secs(2),
+            f.call(Method::POST, "/import", Some(pem.clone())),
+        )
+        .await??;
+        ensure!(status == StatusCode::BAD_REQUEST);
+        ensure!(body["code"] == "archive_material_invalid");
+    }
+    pem["files"][0]["password"] = json!("fixture");
+    f.write("/import", pem).await?;
+    // A second request entry and a newer version have the same public key.
+    let duplicate = Uuid::new_v4();
+    let mut copy = import(duplicate, 0, "");
+    copy["files"] =
+        json!([{"name":"request.pem","format":"csr","data":csr["data"],"password":null}]);
+    f.write("/import", copy).await?;
+    f.admin.operation = Some(Uuid::new_v4());
+    f.ok(
+        Method::PUT,
+        &format!("/entries/{request}/metadata"),
+        Some(json!({"expectedRevision":1,"metadata":metadata("new request description")})),
+    )
+    .await?;
+    let result = Uuid::new_v4();
+    let original_ref = json!({"entryId":request,"version":1});
+    let duplicate_ref = json!({"entryId":duplicate,"version":1});
+    let mut issued = import(result, 0, "");
+    issued["requestVersion"] = original_ref.clone();
+    issued["files"] = json!([{"name":"certificate.pem","format":"certificate","data":STANDARD.encode(std::fs::read(work.path().join("certificate.pem"))?),"password":null}]);
+    f.write("/import", issued.clone()).await?;
+    issued["expectedRevision"] = json!(1);
+    issued["requestVersion"] = duplicate_ref.clone();
+    f.write("/import", issued).await?;
+    f.admin.operation = Some(Uuid::new_v4());
+    f.ok(
+        Method::PUT,
+        &format!("/entries/{result}/metadata"),
+        Some(json!({"expectedRevision":2,"metadata":metadata("issued result")})),
+    )
+    .await?;
+    ensure!(owner.shutdown().join().await?.is_clean());
+    let restarted = Arc::new(Archive::new(
+        f.authority.access.archive_pool(),
+        f.authority.audit.clone(),
+        f.clock.clone(),
+    ));
+    f.router = Fixture::routes(&f.authority, restarted)?;
+    let history = f
+        .ok(Method::GET, &format!("/entries/{result}/versions"), None)
+        .await?;
+    ensure!(history[2]["requestVersion"] == original_ref);
+    ensure!(history[1]["requestVersion"] == duplicate_ref);
+    ensure!(history[0]["requestVersion"] == duplicate_ref);
+    let page = f.ok(Method::GET, "/entries", None).await?;
+    let latest = &page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["id"] == json!(result))
+        .unwrap()["latest"];
+    ensure!(latest["requestVersion"] == duplicate_ref);
+    let history = f
+        .ok(Method::GET, &format!("/entries/{request}/versions"), None)
+        .await?;
+    ensure!(
+        history
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|v| v["requestVersion"].is_null())
+    );
+    Ok(())
+}
+
+async fn wait_for_archive_locks(blocker: i32, count: usize) -> Result<()> {
     tokio::time::timeout(Duration::from_secs(8), async {
         loop {
-            let n = pg("SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid=l.pid WHERE NOT l.granted AND a.datname=current_database()")?;
+            let n = pg(&format!("WITH RECURSIVE blocked(pid) AS (SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND {blocker}=ANY(pg_blocking_pids(pid)) UNION SELECT a.pid FROM pg_stat_activity a JOIN blocked b ON b.pid=ANY(pg_blocking_pids(a.pid)) WHERE a.datname=current_database()) SELECT count(*) FROM blocked"))?;
             if n.trim().parse::<usize>()? >= count {
                 return Ok::<_, anyhow::Error>(());
             }
@@ -475,10 +633,13 @@ async fn replayed_export_rechecks_generation_after_peer_password_change() -> Res
         .bind(case_tenant())
         .execute(&mut *blocker)
         .await?;
+    let blocker_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *blocker)
+        .await?;
     let change = tokio::spawn(async move {
         peer_browser.call(&peer_router, Method::POST, "/api/v1/certificate-archive/vault/password", Some(json!({"oldPassword":"first archive password","newPassword":"second archive password"}))).await
     });
-    wait_for_archive_locks(1).await?;
+    wait_for_archive_locks(blocker_pid, 1).await?;
     let router = f.router.clone();
     let mut browser = f.admin;
     let replay = tokio::spawn(async move {
@@ -491,7 +652,7 @@ async fn replayed_export_rechecks_generation_after_peer_password_change() -> Res
             )
             .await
     });
-    wait_for_archive_locks(2).await?;
+    wait_for_archive_locks(blocker_pid, 2).await?;
     blocker.rollback().await?;
     ensure!(change.await??.0 == StatusCode::OK);
     let (status, body) = replay.await??;

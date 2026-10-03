@@ -159,10 +159,14 @@ pub(crate) fn parse(files: &[ImportFile]) -> Result<(Bundle, Vec<MaterialFacts>)
             }
             Format::PrivateKey => {
                 let key = if bytes.starts_with(b"-----BEGIN") {
-                    match &file.password {
-                        Some(p) => PKey::private_key_from_pem_passphrase(&bytes, p.as_bytes()),
-                        None => PKey::private_key_from_pem(&bytes),
-                    }
+                    // An explicit password keeps OpenSSL from consulting the terminal.
+                    PKey::private_key_from_pem_passphrase(
+                        &bytes,
+                        file.password
+                            .as_deref()
+                            .map(|p| p.as_bytes())
+                            .unwrap_or(b""),
+                    )
                 } else if let Some(p) = &file.password {
                     PKey::private_key_from_pkcs8_passphrase(&bytes, p.as_bytes())
                 } else {
