@@ -676,7 +676,7 @@ case_fixtures('execution.agent.delivery', 'execution::t2::agent::delivery::offer
 for name in ('agent.reports', 'inventory.runtime', 'planning.assets', 'planning.scope',
              'planning.group_scope', 'planning.recovery', 'execution.commands.dispatch',
              'execution.commands.recovery', 'execution.commands.configuration', 'execution.commands.windows', 'execution.commands.onboarding', 'windows.retention',
-             'apple.push', 'apple.fairness', 'apple.renewal', 'apple.host'):
+             'windows.declared', 'apple.push', 'apple.fairness', 'apple.renewal', 'apple.host'):
     value = MODULES[name]
     # Local consumer controls are meaningful only in their own observation tenant.
     if value.scope == 'tenant' or value.db_mode in {'fresh', 'instance'}:
