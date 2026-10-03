@@ -271,7 +271,7 @@ pub async fn authorized_native(
     }
     let snapshot = crate::action_admission::current(tx, proof).await?;
     for &permission in permissions {
-        snapshot.require(proof, permission, Some(device))?;
+        snapshot.require(proof, permission, permission.device().then_some(device))?;
     }
     Ok(snapshot)
 }

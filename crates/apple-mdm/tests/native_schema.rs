@@ -628,78 +628,155 @@ fn ddm_status_null_and_incremental_removal_are_not_missing_fields() {
 }
 
 #[test]
-fn ddm_full_delta_and_errors_preserve_native_evidence_semantics() {
-    use crate::native::ddm::StatusReport;
-    use serde_json::{Value as Json, json};
-    use std::collections::BTreeMap;
+fn ddm_incremental_claims_merge_disjoint_objects_and_preserve_unordered_removal() {
+    use crate::native::{
+        ddm::{DeclarationInput, DeclarationSet, ReportEvidence, project},
+        input::{FieldValue as F, Fields},
+    };
+    use serde_json::json;
+    use std::collections::{BTreeMap, BTreeSet};
     let context = context();
     let target = Target {
         context: &context,
         access_rights: &[],
     };
-    let report = |full, items: Json, errors: Json| {
-        StatusReport::decode(
-            &serde_json::to_vec(&json!({"FullReport":full,"StatusItems":items,"Errors":errors}))
-                .unwrap(),
-            &target,
-        )
-        .unwrap()
+    let names = BTreeSet::from([
+        "management.declarations".to_string(),
+        "security.certificate.list".to_string(),
+    ]);
+    let input = DeclarationInput {
+        identifier: "subscriptions".into(),
+        declaration_type: "com.apple.configuration.management.status-subscriptions".into(),
+        payload: Fields(BTreeMap::from([(
+            "StatusItems".into(),
+            F::Array(
+                names
+                    .iter()
+                    .map(|name| {
+                        F::Dictionary(Fields(BTreeMap::from([(
+                            "Name".into(),
+                            F::String(name.clone()),
+                        )])))
+                    })
+                    .collect(),
+            ),
+        )])),
     };
-    let cert = |name: &str| json!({"identifier":"certificate","subject-summary":name,"is-identity":false,"data":"AQID","future-extension":{"value":null}});
-    let first = report(
-        true,
-        json!({"security":{"certificate":{"list":[cert("first")]}}}),
-        json!([]),
-    )
-    .merge(&BTreeMap::new(), &target)
-    .unwrap();
-    assert_eq!(first["security.certificate.list"][0]["data"], "AQID");
-    let mut updated = cert("second");
-    updated.as_object_mut().unwrap().remove("future-extension");
-    let next = report(
-        false,
-        json!({"security":{"certificate":{"list":[updated]}}}),
-        json!([]),
-    )
-    .merge(&first, &target)
-    .unwrap();
+    let declaration = input.compile("v1", &target).unwrap();
+    let token = declaration.server_token().to_string();
+    let set = DeclarationSet::new("scope", vec![declaration]).unwrap();
+    let evidence = |full, items, errors| {
+        ReportEvidence{
+        context:context.clone(),report:serde_json::to_vec(&json!({"FullReport":full,"Errors":errors,"StatusItems":{
+            "management":{"declarations":{"activations":[],"configurations":[{"identifier":"subscriptions","server-token":token,"active":true,"valid":"valid"}],"assets":[],"management":[]}},
+            "security":{"certificate":{"list":items}}}})).unwrap(),subscriptions:names.clone(),declarations_token:set.tokens()["SyncTokens"]["DeclarationsToken"].as_str().unwrap().into()}
+    };
+    let cert =
+        |id| json!({"identifier":id,"subject-summary":"fixture","is-identity":false,"data":"AQID"});
+    let first = evidence(false, json!([cert("a")]), json!([]));
+    let delta = evidence(false, json!([cert("b")]), json!([]));
+    let unassociated = ReportEvidence {
+        report: serde_json::to_vec(
+            &json!({"StatusItems":{"security":{"certificate":{"list":[cert("b")]}}},"Errors":[]}),
+        )
+        .unwrap(),
+        ..delta.clone()
+    };
+    let uncertain = project(&set, &[first.clone(), unassociated.clone()], &target).unwrap();
     assert!(
-        next["security.certificate.list"][0]
-            .get("future-extension")
-            .is_none()
-    );
-    let removed = report(
-        false,
-        json!({"security":{"certificate":{"list":[{"identifier":"certificate","_removed":true}]}}}),
-        json!([]),
-    )
-    .merge(&next, &target)
-    .unwrap();
-    assert_eq!(removed["security.certificate.list"], json!([]));
-    assert!(
-        report(true, json!({}), json!([]))
-            .merge(&first, &target)
-            .unwrap()
-            .is_empty()
+        uncertain
+            .unknown_items
+            .contains("security.certificate.list")
     );
     assert_eq!(
-        report(false, json!({}), json!([]))
-            .merge(&first, &target)
+        serde_json::to_value(uncertain).unwrap(),
+        serde_json::to_value(project(&set, &[unassociated, first.clone()], &target).unwrap())
             .unwrap(),
-        first
+    );
+    let mut streaming = crate::native::ddm::Projection::new(&set, &target).unwrap();
+    streaming.observe(&first).unwrap();
+    let checkpoint: crate::native::ddm::ProjectionState =
+        serde_json::from_slice(&serde_json::to_vec(&streaming.checkpoint()).unwrap()).unwrap();
+    let mut restored = crate::native::ddm::Projection::restore(&set, &target, checkpoint).unwrap();
+    restored.observe(&delta).unwrap();
+    assert_eq!(
+        serde_json::to_value(restored.finish().unwrap()).unwrap(),
+        serde_json::to_value(project(&set, &[first.clone(), delta.clone()], &target).unwrap())
+            .unwrap()
+    );
+    let budget = evidence(
+        false,
+        json!([{"identifier":"large","subject-summary":"x".repeat(crate::native::ddm::PROJECTION_BYTES),"is-identity":false,"data":"AQID"}]),
+        json!([]),
+    );
+    let mut bounded = crate::native::ddm::Projection::new(&set, &target).unwrap();
+    bounded.observe(&budget).unwrap();
+    assert!(
+        serde_json::to_vec(&bounded.checkpoint()).unwrap().len()
+            < crate::native::ddm::PROJECTION_BYTES
+    );
+    bounded.observe(&first).unwrap();
+    let exhausted = bounded.finish().unwrap();
+    assert!(!exhausted.synchronized);
+    assert!(
+        exhausted
+            .unknown_items
+            .contains("security.certificate.list")
+    );
+    let merged = project(&set, &[first.clone(), delta.clone()], &target).unwrap();
+    assert_eq!(
+        merged.items["security.certificate.list"],
+        json!([cert("a"), cert("b")])
+    );
+    assert_eq!(merged.completeness, "unknown");
+    let removed = evidence(
+        false,
+        json!([{"identifier":"a","_removed":true}]),
+        json!([]),
+    );
+    let claims = vec![first.clone(), delta.clone(), removed.clone()];
+    let projected = serde_json::to_value(project(&set, &claims, &target).unwrap()).unwrap();
+    let reverse = serde_json::to_value(
+        project(&set, &[removed, delta.clone(), first.clone()], &target).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(projected, reverse);
+    assert_eq!(
+        projected["items"]["security.certificate.list"],
+        json!([cert("b")])
     );
     assert!(
-        report(
-            false,
-            json!({}),
-            json!([{"StatusItem":"security.certificate.list","Reasons":[{"Code":"unavailable"}]}])
-        )
-        .merge(&first, &target)
-        .unwrap()
-        .is_empty()
+        projected["unknownItems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "security.certificate.list")
     );
-    let bad = json!({"StatusItems":{"security":{"certificate":{"list":[{"identifier":"bad","subject-summary":"x","is-identity":false,"data":"not base64!"}]}}},"Errors":[]});
-    assert!(StatusReport::decode(&serde_json::to_vec(&bad).unwrap(), &target).is_err());
+    let full = evidence(true, json!([cert("a")]), json!([]));
+    let projected = project(&set, &[full, delta], &target).unwrap();
+    assert!(
+        projected
+            .unknown_items
+            .contains("security.certificate.list")
+    );
+    let failed = evidence(
+        false,
+        json!([]),
+        json!([{"StatusItem":"security.certificate.list","Reasons":[{"Code":"unavailable"}]}]),
+    );
+    let projected = project(&set, &[first, failed], &target).unwrap();
+    assert!(
+        projected
+            .unknown_items
+            .contains("security.certificate.list")
+    );
+    assert_eq!(projected.errors.len(), 1);
+    let bad = evidence(
+        false,
+        json!([{"identifier":"a","subject-summary":"x","is-identity":false,"data":"not base64!"}]),
+        json!([]),
+    );
+    assert!(project(&set, &[bad], &target).is_err());
 }
 
 #[test]
@@ -1186,4 +1263,201 @@ fn mixed_native_results_do_not_hide_failures_when_reordered() {
             Outcome::Rejected
         );
     }
+}
+
+#[test]
+fn ddm_projection_separates_native_versions_from_unassociated_status_quality() {
+    use crate::native::{
+        ddm::{DeclarationInput, DeclarationSet, ReportEvidence, project},
+        input::{FieldValue as F, Fields},
+    };
+    use std::collections::{BTreeMap, BTreeSet};
+    let context = context();
+    let target = Target {
+        context: &context,
+        access_rights: &[],
+    };
+    let input = DeclarationInput {
+        identifier: "subscriptions".into(),
+        declaration_type: "com.apple.configuration.management.status-subscriptions".into(),
+        payload: Fields(BTreeMap::from([(
+            "StatusItems".into(),
+            F::Array(vec![F::Dictionary(Fields(BTreeMap::from([(
+                "Name".into(),
+                F::String("device.operating-system.version".into()),
+            )])))]),
+        )])),
+    };
+    let declaration = input.compile("v1", &target).unwrap();
+    let token = declaration.server_token().to_string();
+    let set = DeclarationSet::new("scope", vec![declaration]).unwrap();
+    let evidence = |token: &str, active: bool, version: &str| {
+        ReportEvidence{context:context.clone(),report:serde_json::to_vec(&serde_json::json!({"FullReport":true,"Errors":[],"StatusItems":{"management":{"declarations":{"activations":[],"configurations":[{"identifier":"subscriptions","server-token":token,"active":active,"valid":"valid"}],"assets":[],"management":[]}},"device":{"operating-system":{"version":version}}}})).unwrap(),subscriptions:BTreeSet::from(["device.operating-system.version".into()]),declarations_token:set.tokens()["SyncTokens"]["DeclarationsToken"].as_str().unwrap().into()}
+    };
+    let first = evidence(&token, true, "26.0");
+    let stale = evidence("older-token", false, "15.0");
+    let stable = project(
+        &set,
+        &[first.clone(), stale.clone(), first.clone()],
+        &target,
+    )
+    .unwrap();
+    assert!(stable.synchronized);
+    assert!(!stable.items.contains_key("device.operating-system.version"));
+    assert!(
+        stable
+            .unknown_items
+            .contains("device.operating-system.version")
+    );
+    let initial = project(&set, std::slice::from_ref(&first), &target).unwrap();
+    assert_eq!(initial.items["device.operating-system.version"], "26.0");
+    let item_only = ReportEvidence {
+        report:
+            br#"{"StatusItems":{"device":{"operating-system":{"version":"26.1"}}},"Errors":[]}"#
+                .to_vec(),
+        ..first.clone()
+    };
+    let error_only = ReportEvidence {
+        report: br#"{"StatusItems":{},"Errors":[{"StatusItem":"device.operating-system.version","Reasons":[{"Code":"unavailable"}]}]}"#.to_vec(),
+        ..first.clone()
+    };
+    for unassociated in [item_only, error_only] {
+        let mut streaming = crate::native::ddm::Projection::new(&set, &target).unwrap();
+        streaming.observe(&first).unwrap();
+        let checkpoint =
+            serde_json::from_slice(&serde_json::to_vec(&streaming.checkpoint()).unwrap()).unwrap();
+        let mut restored =
+            crate::native::ddm::Projection::restore(&set, &target, checkpoint).unwrap();
+        restored.observe(&unassociated).unwrap();
+        let value = restored.finish().unwrap();
+        assert!(value.synchronized);
+        assert!(!value.items.contains_key("device.operating-system.version"));
+        assert!(
+            value
+                .unknown_items
+                .contains("device.operating-system.version")
+        );
+        let forward = serde_json::to_value(value).unwrap();
+        let reverse =
+            serde_json::to_value(project(&set, &[unassociated, first.clone()], &target).unwrap())
+                .unwrap();
+        assert_eq!(forward, reverse);
+    }
+    let conflicting = evidence(&token, false, "26.1");
+    let forward = serde_json::to_value(
+        project(
+            &set,
+            &[first.clone(), stale.clone(), conflicting.clone()],
+            &target,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let reverse =
+        serde_json::to_value(project(&set, &[conflicting, stale, first], &target).unwrap())
+            .unwrap();
+    assert_eq!(forward, reverse);
+    assert_eq!(forward["synchronized"], false);
+    assert_eq!(forward["declarations"][0]["native"]["valid"], "unknown");
+    assert!(
+        forward["items"]
+            .get("device.operating-system.version")
+            .is_none()
+    );
+    assert_eq!(forward["effect"], "unverified");
+    assert_eq!(forward["compliance"], "unknown");
+    let mut unknown = input.clone();
+    unknown.payload = Fields(BTreeMap::from([(
+        "StatusItems".into(),
+        F::Array(vec![F::Dictionary(Fields(BTreeMap::from([(
+            "Name".into(),
+            F::String("invented.status".into()),
+        )])))]),
+    )]));
+    assert!(unknown.compile("v1", &target).is_err());
+}
+#[test]
+fn downloaded_asset_authority_and_legacy_structure_are_native_constraints() {
+    use crate::native::{
+        ddm::{AssetBinding, AssetInput, DeclarationInput, bind_assets},
+        input::{FieldValue as F, Fields},
+        profiles::{PayloadInput, ProfileInput, from_native, same_structure},
+    };
+    use std::collections::BTreeMap;
+    let context = context();
+    let target = Target {
+        context: &context,
+        access_rights: &[],
+    };
+    let input = DeclarationInput {
+        identifier: "data".into(),
+        declaration_type: "com.apple.asset.data".into(),
+        payload: Fields::default(),
+    };
+    let binding = AssetBinding {
+        selection: AssetInput {
+            identifier: "data".into(),
+            resource: "r".into(),
+            version: "v1".into(),
+            variant: "mac".into(),
+            version_digest: [0xab; 32],
+            content_type: "application/plist".into(),
+            profile_schemas: vec![],
+        },
+        reference: "opaque".into(),
+        length: 10,
+        sha256: [1; 32],
+        apple_silicon: true,
+        profile: None,
+    };
+    let bound = bind_assets(
+        std::slice::from_ref(&input),
+        std::slice::from_ref(&binding),
+        "https://mdm.test/native/assets/op",
+        &target,
+    )
+    .unwrap();
+    let document = bound[0].compile("v1", &target).unwrap().document();
+    assert_eq!(
+        document["Payload"]["Reference"]["DataURL"],
+        "https://mdm.test/native/assets/op/data"
+    );
+    assert_eq!(document["Payload"]["Authentication"]["Type"], "MDM");
+    assert!(bind_assets(&[input], &[binding], "http://mdm.test/", &target).is_err());
+    let unbound = DeclarationInput {
+        identifier: "data".into(),
+        declaration_type: "com.apple.asset.data".into(),
+        payload: Fields(BTreeMap::from([(
+            "Reference".into(),
+            F::Dictionary(Fields::default()),
+        )])),
+    };
+    assert!(bind_assets(&[unbound], &[], "https://mdm.test/", &target).is_err());
+    let profile = ProfileInput {
+        identifier: "legacy".into(),
+        uuid: uuid::Uuid::new_v4(),
+        metadata: Fields::default(),
+        payloads: vec![PayloadInput {
+            schema: "mdm/profiles/com.apple.dock.yaml".into(),
+            identifier: "legacy.dock".into(),
+            uuid: uuid::Uuid::new_v4(),
+            metadata: Fields::default(),
+            fields: Fields::default(),
+        }],
+    };
+    let compiled = profile.compile(&target).unwrap();
+    let schemas = profile
+        .payloads
+        .iter()
+        .map(|p| p.schema.clone())
+        .collect::<Vec<_>>();
+    let imported = from_native(&compiled.bytes, &schemas, Channel::Device)
+        .unwrap()
+        .compile(&target)
+        .unwrap();
+    assert!(same_structure(&compiled.objects, &imported.objects));
+    assert!(from_native(&compiled.bytes, &schemas, Channel::User).is_err());
+    let mut reordered = compiled.objects.clone();
+    reordered.reverse();
+    assert!(!same_structure(&compiled.objects, &reordered));
 }

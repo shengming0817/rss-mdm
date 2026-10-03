@@ -42,7 +42,7 @@ make ci-full
 | `planning.resource_archive` | 产品引用和 Resource archive 的同对象竞争，保留 App owner。 |
 | `sources.{winget,brew_git,brew_recovery}` | Sources 自有真实 HTTPS/TLS/凭据及 Git/ref/ACK 协议，无产品 PG/Identity。 |
 | `native.tls`、`windows.{issuance,enrollment,management,commands,retention,limits}` | TLS 生命周期、签发/注册、会话/nonce、轻量注册→命令、保留期和限流；删除两条完整 native 矩阵。 |
-| `apple.{cms,apns,scep,collection,profile,policy,renewal,identity,push,fairness,host}` | 各协议与持久化接缝独立。CMS/APNs 无 PG/Identity；普通原生前置不启动外部 SCEP。 |
+| `apple.{cms,apns,scep,collection,profile,policy,renewal,identity,push,fairness,host,commands,users,ddm,status}` | 各协议与持久化接缝独立。CMS/APNs 无 PG/Identity；普通原生前置不启动外部 SCEP。 |
 | `catalog.contract`、`gateway.admission` | 正式迁移后的全部 SQL catalog 在一个环境核对；真实 nginx 来源/限流/安全头单独验证。 |
 
 App 的测试实现统一放在 `crates/app/tests/`，按业务 owner 分目录；`src/` 只保留 `cfg(test)` 接入和必要测试钩子。现有 Rust 命名空间与 MODULE ID 保持独立，不要求物理路径包含 `t2`。单叶目录压平，`assets.http` 合并文件但保留独立测试函数。

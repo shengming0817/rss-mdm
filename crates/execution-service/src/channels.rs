@@ -113,12 +113,14 @@ pub trait Windows: Send + Sync {
     ) -> Pending<'a, WindowsReception>;
 }
 
-use rss_mdm_apple_mdm::protocol::Status;
 use uuid::Uuid;
 pub struct Observation {
-    pub phase: String,
-    pub state: String,
-    pub response: Option<Vec<u8>>,
+    pub phase: rss_mdm_apple_mdm::native::evidence::Phase,
+    pub state: rss_mdm_apple_mdm::native::evidence::ReceiptState,
+    pub fields: Option<rss_mdm_apple_mdm::native::input::Fields>,
+    pub error: Option<rss_mdm_apple_mdm::native::input::Fields>,
+    pub profile: Option<rss_mdm_apple_mdm::native::profiles::Verification>,
+    pub application: Option<rss_mdm_apple_mdm::software::Presence>,
     pub received_at: Option<i64>,
     pub accepted: bool,
     pub native_outcome: Option<rss_mdm_apple_mdm::native::outcome::Outcome>,
@@ -130,20 +132,28 @@ pub struct AppleRegistration {
     pub generation: i64,
 }
 pub trait AppleProfiles: Send + Sync {
+    fn declaration_candidates<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        p: &'a DevicePrincipal,
+        user: &'a str,
+    ) -> Pending<'a, Vec<Uuid>>;
+
+    fn previous_declarations<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        device: String,
+        user: String,
+        owner: String,
+    ) -> Pending<'a, Vec<Uuid>>;
+
     fn reserve_profile<'a>(
         &'a self,
         c: &'a mut PgConnection,
         target: AppleRegistration,
         command: AppleCommand,
     ) -> Pending<'a, ()>;
-    /// Confirm current manifest evidence; the channel also proves failed mutations before releasing reservations.
-    fn confirm_profile<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        target: AppleRegistration,
-        operation: uuid::Uuid,
-    ) -> Pending<'a, ()>;
-
     fn previous_profiles<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -219,32 +229,62 @@ pub trait ApplePush: Send + Sync {
     ) -> Pending<'a, bool>;
 }
 pub trait AppleResults: Send + Sync {
+    /// Server publication withdrawal is distinct from native object absence.
+    fn withdrawal_published<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        operation: Uuid,
+    ) -> Pending<'a, bool>;
+
+    fn declarations<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        operation: Uuid,
+        native_values: bool,
+    ) -> Pending<'a, Option<serde_json::Value>>;
+
     fn observations<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
         operation: Uuid,
+        request: rss_mdm_apple_mdm::native::request::Request,
+        native_values: bool,
     ) -> Pending<'a, Vec<Observation>>;
 }
-pub enum Reception {
-    Replay,
-    Ready(Box<dyn AppleAttempt>),
-}
 pub trait AppleAttempt: Send {
-    fn valid(&self) -> bool;
-    fn outcome(&self) -> Option<rss_mdm_apple_mdm::native::outcome::Outcome>;
-    fn latest(&self) -> bool;
     fn operation(&self) -> Option<Uuid>;
-    fn phase(&self) -> &str;
     fn settle<'a>(
         self: Box<Self>,
         c: &'a mut PgConnection,
-        status: Status,
         accepted: bool,
-    ) -> Pending<'a, ()>;
+        command: AppleCommand,
+        target: AppleRegistration,
+    ) -> Pending<'a, rss_mdm_apple_mdm::native::evidence::Settlement>;
+}
+/// An already decoded protocol request; only the channel can inspect its native content.
+pub trait AppleExchange: Send {
+    fn user_key(&self) -> &str;
+    fn current<'a>(&'a self, c: &'a mut PgConnection, p: &'a DevicePrincipal) -> Pending<'a, ()>;
+    fn reception<'a>(
+        self: Box<Self>,
+        c: &'a mut PgConnection,
+        p: &'a DevicePrincipal,
+    ) -> Pending<'a, AppleReception>;
+}
+pub enum AppleReception {
+    Idle,
+    Replay,
+    Collection(Vec<Fact>),
+    Command(Box<dyn AppleAttempt>),
 }
 pub struct AppleCommand {
     pub operation: Uuid,
+    pub owner: String,
+    pub authorized_declarations: Vec<Uuid>,
+    pub assets: Vec<rss_mdm_apple_mdm::native::ddm::AssetBinding>,
     pub deadline: i64,
     pub input_version: String,
     pub target: super::NativeTarget,
@@ -272,22 +312,6 @@ pub trait Apple: Send + Sync {
         udid: &'a str,
         user_key: &'a str,
     ) -> Pending<'a, ()>;
-    fn collect<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        p: &'a DevicePrincipal,
-        id: Uuid,
-        status: Status,
-        dictionary: &'a plist::Dictionary,
-        bytes: &'a [u8],
-    ) -> Pending<'a, (bool, Vec<Fact>)>;
-    fn lock_attempt<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        p: &'a DevicePrincipal,
-        id: Uuid,
-        bytes: &'a [u8],
-    ) -> Pending<'a, Option<Reception>>;
     fn command<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -513,4 +537,34 @@ impl Rejection {
         };
         (status, rss_mdm_agent_wire::ErrorBody { code })
     }
+}
+
+/// A native check-in participant retains protocol bytes at the channel owner.
+pub trait AppleDdmExchange: Send {
+    fn user_key(&self) -> &str;
+    fn current<'a>(&'a self, c: &'a mut PgConnection, p: &'a DevicePrincipal) -> Pending<'a, ()>;
+    fn candidates<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        p: &'a DevicePrincipal,
+    ) -> Pending<'a, Vec<Uuid>>;
+    fn respond<'a>(
+        self: Box<Self>,
+        c: &'a mut PgConnection,
+        p: &'a DevicePrincipal,
+        authorized: Vec<Uuid>,
+    ) -> Pending<'a, AppleDdmReply>;
+}
+pub struct AppleDdmReply {
+    pub status: u16,
+    pub bytes: Vec<u8>,
+    pub synchronized: Vec<Uuid>,
+}
+
+pub trait AppleAssetRead: Send + Sync {
+    fn binding<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        p: &'a DevicePrincipal,
+    ) -> Pending<'a, Option<rss_mdm_apple_mdm::native::ddm::AssetBinding>>;
 }

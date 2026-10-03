@@ -30,7 +30,7 @@ WITH tables AS (
  ('mdm_access.collection_runs','evidence'),('mdm_access.collection_runs','attempts'),('mdm_access.collection_runs','result'),('mdm_access.collection_runs','reason'),('mdm_access.collection_runs','batch'),('mdm_access.collection_runs','digest'),('mdm_access.collection_runs','sealed_at'),('mdm_access.collection_runs','delivery_pending')
 ,
  ('mdm_apple.attempts','native_outcome'),('mdm_apple.attempts','accepted'),('mdm_apple.attempts','state'),('mdm_apple.attempts','response'),('mdm_apple.attempts','response_digest'),('mdm_apple.attempts','received_at'),('mdm_apple.attempts','next_attempt'),
- ('mdm_apple.profiles','manifest'),('mdm_apple.profiles','dispatched_at'),('mdm_apple.profiles','observed_at'),('mdm_apple.profiles','retired_at'),('mdm_apple.devices','state'),('mdm_apple.channels','state'),('mdm_apple.channels','material'),('mdm_apple.channels','material_digest'),('mdm_apple.channels','push_id'),('mdm_apple.channels','push_lease_until'),('mdm_apple.channels','next_push'),('mdm_apple.channels','push_status'),('mdm_apple.channels','push_outcome'),('mdm_apple.channels','push_configuration'),('mdm_apple.channels','push_failures')
+ ('mdm_apple.declarations','retired_at'),('mdm_apple.declarations','legacy_released_at'),('mdm_apple.declarations','projection'),('mdm_apple.profiles','manifest'),('mdm_apple.profiles','dispatched_at'),('mdm_apple.profiles','observed_at'),('mdm_apple.profiles','retired_at'),('mdm_apple.devices','state'),('mdm_apple.channels','state'),('mdm_apple.channels','material'),('mdm_apple.channels','material_digest'),('mdm_apple.channels','push_id'),('mdm_apple.channels','push_lease_until'),('mdm_apple.channels','next_push'),('mdm_apple.channels','push_status'),('mdm_apple.channels','push_outcome'),('mdm_apple.channels','push_configuration'),('mdm_apple.channels','push_failures')
 ), allowed(relation,sel,ins,del) AS (VALUES
  ('mdm_flow.native_protection',true,true,false),
  ('mdm.inventory',true,false,false),
@@ -40,7 +40,7 @@ WITH tables AS (
  ('mdm_commands.output_chunks',true,true,false),('mdm_commands.action_polls',true,true,false),('mdm_commands.action_runs',true,true,false),('mdm_commands.action_receipts',true,true,false),('mdm_commands.action_attempts',true,true,false),('mdm_resource.aggregates',true,false,false),('mdm_resource.immutable',true,false,false),('mdm_agent.bindings',true,false,false),
  ('mdm_planning.scopes',true,false,false),('mdm_planning.scope_results',true,false,false),
  ('mdm_software.sources',true,false,false),('mdm_software.approvals',true,false,false),('mdm_software.materials',true,false,false),
- ('mdm_apple.attempts',true,true,false),('mdm_apple.profiles',true,true,false),('mdm_apple.devices',true,false,false),('mdm_apple.channels',true,false,false),('mdm_access.requests',true,false,false),
+ ('mdm_apple.declarations',true,true,false),('mdm_apple.status_reports',true,true,false),('mdm_apple.attempts',true,true,false),('mdm_apple.profiles',true,true,false),('mdm_apple.devices',true,false,false),('mdm_apple.channels',true,false,false),('mdm_access.requests',true,false,false),
 
 ('mdm_commands.capabilities',true,true,false),
 ('mdm_commands.capability_queries',true,true,false),

@@ -97,7 +97,12 @@ pub fn interpret(
     target: &Target<'_>,
 ) -> Result<Outcome, Error> {
     let compiled = command.compile(target)?;
-    let family = family(&command.request_type)?;
+    // DDM has its own declaration owner; its enablement receipt still validates this wire command.
+    let family = if command.request_type == "DeclarativeManagement" {
+        None
+    } else {
+        Some(family(&command.request_type)?)
+    };
     if status == Status::NotNow {
         return Ok(Outcome::Deferred);
     }
@@ -301,7 +306,7 @@ pub fn interpret(
     if command.request_type == "EraseDevice" {
         return Ok(Outcome::Unknown);
     }
-    Ok(if family == Family::Query {
+    Ok(if family == Some(Family::Query) {
         Outcome::QueryResult
     } else {
         Outcome::Acknowledged

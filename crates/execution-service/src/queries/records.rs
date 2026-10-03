@@ -190,13 +190,27 @@ pub struct NativeObservation {
     #[serde(skip_serializing_if = "Option::is_none")]
     result: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    native_status: Option<String>,
+    native_status: Option<NativeStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expected: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    synchronization: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compliance: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fields: Option<rss_mdm_apple_mdm::native::input::Fields>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<rss_mdm_apple_mdm::native::input::Fields>,
     #[serde(skip_serializing_if = "Option::is_none")]
     received_at: Option<i64>,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(untagged)]
+enum NativeStatus {
+    Command(String),
+    Declarations(rss_mdm_apple_mdm::native::ddm::StatusProjection),
 }
 #[derive(Deserialize, Serialize)]
 #[serde(untagged)]

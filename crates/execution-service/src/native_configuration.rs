@@ -163,10 +163,12 @@ impl ExecutionService {
             let uncertain = if let Some(id) = object_state(tx, device, &prior_input.objects).await?
             {
                 let operation = storage::load(tx, &self.protection, id).await?;
-                requires_sent_guard(
-                    &operation.request.task,
-                    self.required_command(tx, &operation).await?.status(),
-                ) && dispatched_in(tx, id).await?
+                let status = self.required_command(tx, &operation).await?.status();
+                requires_sent_guard(&operation.request.task, status)
+                    && !self
+                        .configuration_withdrawn_in(tx, &operation, status)
+                        .await?
+                    && dispatched_in(tx, id).await?
             } else {
                 false
             };
@@ -253,7 +255,7 @@ impl ExecutionService {
                     first
                         .native
                         .request(id, first.policy.version.to_string(), deadline, false)?;
-                self.queue_policy_configuration(tx, device, first.policy, &request, false, audit)
+                self.queue_policy_configuration(tx, device, first, &request, false, audit)
                     .await?;
                 id
             };
@@ -391,7 +393,10 @@ impl ExecutionService {
                     op.approval,
                     authority::ExecutionAuthority::Policy { remove: true, .. }
                 );
-                if is_remove && command.status() == dc::Status::Applied {
+                let publication_withdrawn = self
+                    .configuration_withdrawn_in(tx, &op, command.status())
+                    .await?;
+                if is_remove && (command.status() == dc::Status::Applied || publication_withdrawn) {
                     replace_claims(tx, device, &old.objects, &[], None).await?;
                     save_objects(
                         tx,
@@ -444,7 +449,7 @@ impl ExecutionService {
             }
             if operation.is_none() {
                 cancel_objects(self, tx, device, &old.objects).await?;
-                self.queue_policy_configuration(tx, device, policy, &request, true, audit)
+                self.queue_policy_configuration(tx, device, &old, &request, true, audit)
                     .await?;
             }
             save_objects(
@@ -463,6 +468,34 @@ impl ExecutionService {
         tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_planning.configuration_devices SET observed_revision=$3 WHERE tenant_id=$1::uuid AND device=$2").bind(tenant).bind(device).bind(revision).execute(c).await?;Ok(())})).await?;
         Ok(())
     }
+
+    // A native publication withdrawal settles logical ownership, while its OS effect
+    // and any Legacy Profile guards remain governed by their independent evidence.
+    async fn configuration_withdrawn_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        op: &storage::Operation,
+        status: dc::Status,
+    ) -> Result<bool> {
+        if !matches!(
+            op.approval,
+            authority::ExecutionAuthority::Policy { remove: true, .. }
+        ) || status != dc::Status::Received
+            || !matches!(&op.request.task, Task::Macos { request: rss_mdm_apple_mdm::native::request::Request::Declarations { declarations, .. } } if declarations.is_empty())
+        {
+            return Ok(false);
+        }
+        let results = self.apple_results.clone();
+        let tenant = self.tenant.to_string();
+        let id = op.id;
+        Ok(tx
+            .with_connection(move |c| {
+                Box::pin(async move { Ok(results.withdrawal_published(c, tenant, id).await) })
+            })
+            .await?
+            .map_err(Error::from)?)
+    }
+
     async fn publication_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -571,12 +604,17 @@ impl ExecutionService {
         &self,
         tx: &mut PgTransaction<'_>,
         device: &str,
-        policy: &Policy,
+        desired: &Desired<'_>,
         input: &Create,
         remove: bool,
         audit: &RequestAudit,
     ) -> Result<()> {
+        let policy = desired.policy;
+        let unit = desired
+            .native
+            .unit_key(&self.protection, self.tenant, device)?;
         let authority = crate::authority::ExecutionAuthority::Policy {
+            unit,
             required: input.task.permissions()?,
             tenant: tx.tenant_id().to_string(),
             policy: policy.id,

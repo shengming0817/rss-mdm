@@ -8,6 +8,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 pub use status::{DeclarationStatus, StatusReport, Validity};
+mod projection;
+pub use projection::{
+    PROJECTION_BYTES, Projection, ProjectionState, ReportEvidence, StatusProjection, project,
+};
+mod assets;
+pub use assets::{AssetBinding, AssetInput, LegacyProfile, bind_assets, legacy_profiles};
 use std::collections::BTreeMap;
 
 /// Apple's four native declaration families.
@@ -90,6 +96,25 @@ impl DeclarationInput {
         internal_identity(input_version)?;
         let payload =
             DeclarationPayload::new(&self.declaration_type, self.payload.to_plist()?, target)?;
+        if self.declaration_type == "com.apple.configuration.management.status-subscriptions" {
+            for item in payload
+                .fields()
+                .get("StatusItems")
+                .and_then(Plist::as_array)
+                .ok_or(Error::Field)?
+            {
+                let name = item
+                    .as_dictionary()
+                    .and_then(|i| i.get("Name"))
+                    .and_then(Plist::as_string)
+                    .ok_or(Error::Field)?;
+                let definition = super::generated::DEFINITIONS
+                    .iter()
+                    .find(|d| d.kind == super::Kind::Status && d.identity == name)
+                    .ok_or(Error::UnknownSchema)?;
+                definition.active(target)?.conditions.check(target)?;
+            }
+        }
         let kind = DeclarationKind::of(payload.declaration_type())?;
         let mut references = Vec::new();
         if self.declaration_type == "com.apple.activation.simple"

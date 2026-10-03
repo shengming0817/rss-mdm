@@ -33,7 +33,7 @@ impl ExecutionService {
             return Err(Error::Unsupported);
         }
         for permission in input.task.permissions()? {
-            proof.require(permission, Some(device))?;
+            proof.require(permission, permission.device().then_some(device))?;
         }
         let failure = Mutex::new(None);
         let timer = recovery::Timer::new();
@@ -107,6 +107,11 @@ impl ExecutionService {
             self.apple_profiles.clone(),
             device,
             input,
+            Some(format!(
+                "user:{}:{}",
+                proof.user().instance_id,
+                proof.user().principal_id
+            )),
         )
         .await?;
         let auth = storage::authorized_native(tx, proof, device, &required).await?;
@@ -215,6 +220,7 @@ impl ExecutionService {
             self.apple_profiles.clone(),
             device,
             input,
+            Some(approval.apple_owner(input.operation_id)?),
         )
         .await?;
         approval.bind_required(required.clone());

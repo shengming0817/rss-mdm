@@ -139,3 +139,24 @@ pub fn observation(
         fields: crate::native::input::Fields::from_plist(&fields).map_err(|_| Error::Malformed)?,
     }))
 }
+
+/// Typed native presence for the exact single bundle selected by a follow-up command.
+pub fn receipt_presence(
+    command: &crate::native::input::CommandInput,
+    report: &Dictionary,
+) -> Result<Option<Presence>, Error> {
+    let Some(query) = observation(command)? else {
+        return Ok(None);
+    };
+    let fields = query.fields.to_plist().map_err(|_| Error::Malformed)?;
+    let ids = fields
+        .get("Identifiers")
+        .and_then(Value::as_array)
+        .ok_or(Error::Malformed)?;
+    if ids.len() != 1 {
+        return Ok(None);
+    }
+    let bundle = ids[0].as_string().ok_or(Error::Malformed)?;
+    // A native query may omit optional content; it cannot establish presence in that case.
+    Ok(presence(report, bundle).ok())
+}

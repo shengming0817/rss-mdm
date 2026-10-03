@@ -58,7 +58,8 @@ pub enum Permission {
     ReleaseRecover,
 }
 impl Permission {
-    fn device(self) -> bool {
+    /// Whether this permission is granted for devices rather than the tenant.
+    pub fn device(self) -> bool {
         match self {
             Self::InventoryRead
             | Self::ComplianceRead

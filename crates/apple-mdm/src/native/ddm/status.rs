@@ -22,7 +22,7 @@ pub struct DeclarationStatus {
     pub validity: Validity,
     pub reasons: Vec<Value>,
 }
-/// Validated wire report. The channel persists evidence and owns full/delta reconciliation.
+/// Validated wire report. The channel persists evidence; core Projection owns full/delta interpretation.
 pub struct StatusReport {
     full: bool,
     items: BTreeMap<String, Value>,
@@ -235,7 +235,7 @@ fn validate_leaf(
     Payload::for_definition(d, converted, target)?;
     Ok(())
 }
-fn incremental_item<'a>(
+pub(super) fn incremental_item<'a>(
     d: &'a native::Definition,
     target: &Target<'_>,
 ) -> Result<Option<&'a native::Field>, Error> {
@@ -256,63 +256,4 @@ fn incremental_item<'a>(
                 .any(|&i| d.fields[i].key == *name)
         }))
     .then_some(child))
-}
-impl StatusReport {
-    /// Compute the native snapshot from an authenticated scope's previous snapshot.
-    /// This pure projection does not persist, advance authority, or infer compliance.
-    pub fn merge(
-        &self,
-        previous: &BTreeMap<String, Value>,
-        target: &Target<'_>,
-    ) -> Result<BTreeMap<String, Value>, Error> {
-        let mut next = if self.full {
-            BTreeMap::new()
-        } else {
-            previous.clone()
-        };
-        for (path, value) in &self.items {
-            let d = native::generated::DEFINITIONS
-                .iter()
-                .find(|d| d.kind == Kind::Status && d.identity == path)
-                .ok_or(Error::InvalidSchema)?;
-            if !value.is_null() && incremental_item(d, target)?.is_some() {
-                let mut objects = BTreeMap::new();
-                if let Some(old) = next.get(path).and_then(Value::as_array) {
-                    for item in old {
-                        let id = item
-                            .get("identifier")
-                            .and_then(Value::as_str)
-                            .ok_or(Error::Field)?;
-                        if objects.insert(id.to_owned(), item.clone()).is_some() {
-                            return Err(Error::Constraint);
-                        }
-                    }
-                }
-                for item in value.as_array().ok_or(Error::Field)? {
-                    let id = item
-                        .get("identifier")
-                        .and_then(Value::as_str)
-                        .ok_or(Error::Field)?;
-                    if item.get("_removed").and_then(Value::as_bool) == Some(true) {
-                        objects.remove(id);
-                    } else {
-                        objects.insert(id.into(), item.clone());
-                    }
-                }
-                next.insert(path.clone(), Value::Array(objects.into_values().collect()));
-            } else {
-                next.insert(path.clone(), value.clone());
-            }
-        }
-        // Failed collection is not a fresh successful observation. The raw errors
-        // are exposed separately and must be persisted with this report by the channel.
-        for error in &self.errors {
-            let path = error
-                .get("StatusItem")
-                .and_then(Value::as_str)
-                .ok_or(Error::Field)?;
-            next.remove(path);
-        }
-        Ok(next)
-    }
 }

@@ -1,5 +1,9 @@
 //! Platform-owned lifecycle inputs; shared flow envelopes do not invent Apple commands.
-use super::{ddm::DeclarationInput, input::CommandInput, profiles::ProfileInput};
+use super::{
+    ddm::{AssetInput, DeclarationInput},
+    input::CommandInput,
+    profiles::ProfileInput,
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -19,7 +23,10 @@ pub enum Request {
     /// Remove an owned profile, identifying both its native name and expected version UUID.
     RemoveProfile { identifier: String, uuid: Uuid },
     /// Replace the caller's desired declaration set. Omission withdraws that owner's declaration.
-    Declarations { declarations: Vec<DeclarationInput> },
+    Declarations {
+        declarations: Vec<DeclarationInput>,
+        assets: Vec<AssetInput>,
+    },
 }
 impl std::fmt::Debug for Request {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
