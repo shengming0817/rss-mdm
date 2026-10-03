@@ -1,6 +1,60 @@
 use rss_mdm_policy::*;
 use serde_json::json;
 use uuid::Uuid;
+
+#[test]
+fn stored_execution_identities_survive_typed_resource_selection() {
+    let fixtures: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/semantic-identities.json")).unwrap();
+    for fixture in fixtures.as_array().unwrap() {
+        let definition: Definition = serde_json::from_value(fixture["definition"].clone()).unwrap();
+        definition.validate().unwrap();
+        assert_eq!(
+            serde_json::to_value(&definition).unwrap(),
+            fixture["definition"]
+        );
+        let digest: String = definition
+            .semantic()
+            .unwrap()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(
+            digest,
+            fixture["digest"].as_str().unwrap(),
+            "{:?}",
+            definition.action.kind()
+        );
+    }
+}
+
+#[test]
+fn resource_selection_matches_the_authored_action() {
+    let fixtures: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/semantic-identities.json")).unwrap();
+    let exact = fixtures[0]["definition"]["action"]["resource"].clone();
+    let software = fixtures[3]["definition"]["action"]["resource"].clone();
+    for index in [0, 1, 2, 3, 4] {
+        let mut invalid = fixtures[index]["definition"].clone();
+        invalid["action"]["resource"] = if index < 3 {
+            software.clone()
+        } else {
+            exact.clone()
+        };
+        assert!(serde_json::from_value::<Definition>(invalid).is_err());
+    }
+}
+
+#[test]
+fn closed_action_identity_parses_every_kind_and_rejects_unknown() {
+    for kind in ActionKind::ALL {
+        assert_eq!(
+            serde_json::from_value::<ActionKind>(json!(kind.as_str())).unwrap(),
+            kind
+        );
+    }
+    assert!(serde_json::from_value::<ActionKind>(json!("plugin")).is_err());
+}
 #[test]
 fn targets_and_enablement_do_not_create_execution_versions() {
     let id = Uuid::new_v4();
