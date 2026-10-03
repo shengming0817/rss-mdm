@@ -164,17 +164,17 @@ async fn body(request: Request, next: Next, requests: Arc<tokio::sync::Semaphore
         .get::<axum::extract::MatchedPath>()
         .map(|p| p.as_str())
         .unwrap_or("");
-    if (route == "/api/v3/resources/{id}/content" && request.method() == axum::http::Method::POST)
-        || (route == "/api/v3/resources/{id}/uploads/{upload}"
+    if (route == "/api/v1/resources/{id}/content" && request.method() == axum::http::Method::POST)
+        || (route == "/api/v1/resources/{id}/uploads/{upload}"
             && request.method() == axum::http::Method::PATCH)
     {
         return next.run(request).await;
     }
-    let limit = if route == "/api/v3/devices/{device}/operations"
+    let limit = if route == "/api/v1/devices/{device}/operations"
         && request.method() == axum::http::Method::POST
     {
         16 * 1024 * 1024
-    } else if route == "/api/v4/resources/{id}" {
+    } else if route == "/api/v1/resources/{id}" {
         8 * 1024 * 1024
     } else {
         2 * 1024 * 1024
@@ -196,9 +196,9 @@ fn route_action(route: &str) -> &'static str {
     match route {
         "/api/v1/certificate-archive/vault/unlock" => "certificate_archive_unlock",
         "/api/v1/certificate-archive/vault/lock" => "certificate_archive_lock",
-        "/api/v3/devices/{device}/timeline" => "timeline_read",
-        "/api/v3/audit-events" => "audit_search",
-        "/api/v2/runtime/diagnostics" => "runtime_diagnostics_read",
+        "/api/v1/devices/{device}/timeline" => "timeline_read",
+        "/api/v1/audit-events" => "audit_search",
+        "/api/v1/runtime/diagnostics" => "runtime_diagnostics_read",
         "/api/v1/authorization" => "authorization_effective_read",
         "/api/v1/authorization/rules" => "authorization_rules_read",
         "/api/v1/authorization/user-groups" => "authorization_groups_read",
@@ -207,13 +207,13 @@ fn route_action(route: &str) -> &'static str {
         "/api/v1/authorization/rules/{id}" | "/api/v1/authorization/user-groups/{id}" => {
             "authorization_write"
         }
-        "/api/v3/enrollments" => "enrollment_create",
-        "/api/v3/enrollments/{id}" => "enrollment_read",
-        "/api/v3/devices/{device}/registrations" => "registration_read",
-        "/api/v3/enrollments/{id}/resume" => "enrollment_resume",
-        "/api/v3/enrollments/{id}/cancel" => "enrollment_cancel",
-        "/api/v3/devices/{device}/registrations/{registration}/revoke" => "credential_revoke",
-        "/api/v2/devices/{id}/inventory" => "inventory_read",
+        "/api/v1/enrollments" => "enrollment_create",
+        "/api/v1/enrollments/{id}" => "enrollment_read",
+        "/api/v1/devices/{device}/registrations" => "registration_read",
+        "/api/v1/enrollments/{id}/resume" => "enrollment_resume",
+        "/api/v1/enrollments/{id}/cancel" => "enrollment_cancel",
+        "/api/v1/devices/{device}/registrations/{registration}/revoke" => "credential_revoke",
+        "/api/v1/devices/{id}/inventory" => "inventory_read",
         "/api/v1/devices/{id}/collection-runs" => "collection_start",
         "/api/v1/devices/{id}/collection-runs/{run}" => "collection_read",
         "/api/v1/devices/{id}/actions" => "device_action",
@@ -227,11 +227,11 @@ mod tests {
     #[test]
     fn route_actions_precede_handler_rejections() {
         assert_eq!(
-            route_action("/api/v3/devices/{device}/registrations"),
+            route_action("/api/v1/devices/{device}/registrations"),
             "registration_read"
         );
         assert_eq!(
-            route_action("/api/v3/devices/{device}/registrations/{registration}/revoke"),
+            route_action("/api/v1/devices/{device}/registrations/{registration}/revoke"),
             "credential_revoke"
         );
         assert_eq!(

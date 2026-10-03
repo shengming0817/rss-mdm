@@ -387,7 +387,7 @@ impl Fixture {
             .call(
                 &self.router,
                 Method::POST,
-                "/api/v3/enrollments",
+                "/api/v1/enrollments",
                 Some(json!({"deviceId":case_device(),"source":"mdm.apple","password":password})),
             )
             .await?;
@@ -396,7 +396,7 @@ impl Fixture {
         let enrollment = Uuid::parse_str(reply.1["enrollmentId"].as_str().unwrap())?;
         let request = Request::builder()
             .method(Method::POST)
-            .uri(format!("/api/v3/enrollments/{enrollment}/profile"))
+            .uri(format!("/api/v1/enrollments/{enrollment}/profile"))
             .header("host", "mdm.example.test")
             .header("content-type", "application/json")
             .body(Body::from(json!({"password":password}).to_string()))?;

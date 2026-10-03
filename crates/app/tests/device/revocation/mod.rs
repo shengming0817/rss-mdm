@@ -22,8 +22,8 @@ pub(crate) async fn revoke_http_matrix(session: &Browser) -> Result<()> {
         INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state,purpose,epoch) VALUES('{TENANT}','{registration}','{device}','mdm',1,'{request}','active','primary',gen_random_uuid());
         INSERT INTO mdm_access.credentials VALUES('{TENANT}','{credential}','{registration}','mdm','{locator}','active');
         INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES('{TENANT}','{registration}','mdm.windows','{epoch}',true);", TENANT = case_tenant()))?;
-    let path = format!("/api/v3/devices/{device}/registrations/{registration}/revoke");
-    let listing = &format!("/api/v3/devices/{device}/registrations");
+    let path = format!("/api/v1/devices/{device}/registrations/{registration}/revoke");
+    let listing = &format!("/api/v1/devices/{device}/registrations");
     let fixture = authority::Authority::open().await?;
     let initial = fixture.router(fixture.authorization().merge(fixture.enrollment()))?;
     set_device_grants(&mut session.clone(), &initial, device, &["inventory_read"]).await?;
@@ -53,7 +53,7 @@ pub(crate) async fn revoke_http_matrix(session: &Browser) -> Result<()> {
             .call(
                 &allowed,
                 Method::GET,
-                "/api/v3/devices/outside/registrations",
+                "/api/v1/devices/outside/registrations",
                 None
             )
             .await?
@@ -86,9 +86,9 @@ pub(crate) async fn revoke_http_matrix(session: &Browser) -> Result<()> {
     );
     browser.operation = Some(uuid::Uuid::new_v4());
     for bad in [
-        "/api/v3/enrollments/not-a-uuid/resume",
-        "/api/v3/enrollments/not-a-uuid/cancel",
-        "/api/v3/devices/{device}/registrations/not-a-uuid/revoke",
+        "/api/v1/enrollments/not-a-uuid/resume",
+        "/api/v1/enrollments/not-a-uuid/cancel",
+        "/api/v1/devices/{device}/registrations/not-a-uuid/revoke",
     ] {
         let response = browser
             .call(&allowed, Method::POST, bad, Some(json!({})))

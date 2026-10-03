@@ -16,7 +16,7 @@ type BodyInput<T> = std::result::Result<Json<T>, axum::extract::rejection::JsonR
 fn body<T>(value: BodyInput<T>) -> std::result::Result<T, Error> {
     value.map(|v| v.0).map_err(|_| Error::Malformed)
 }
-pub fn routes_v2() -> Router<Arc<HttpState>> {
+pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route("/groups", get(group_directory))
         .route("/scopes", get(scope_directory))

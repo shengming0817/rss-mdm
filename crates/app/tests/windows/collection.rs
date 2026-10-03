@@ -140,16 +140,16 @@ async fn template_flow(
     )
     .await?;
     let scope = Uuid::new_v4();
-    post(&mut f.browser,&f.router,&format!("/api/v2/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}}})).await?;
+    post(&mut f.browser,&f.router,&format!("/api/v1/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}}})).await?;
     let policy = Uuid::new_v4();
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-    post(&mut f.browser,&f.router,&format!("/api/v3/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"native_collection","frequency":"every_trigger","schedule":{"trigger":{"kind":"interval","anchor":now-7200,"seconds":3600},"notBefore":0,"jitterSeconds":0,"misfire":{"kind":"coalesce_one"}},"resource":{"id":id,"version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"runLifetimeSeconds":300}}}})).await?;
+    post(&mut f.browser,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"native_collection","frequency":"every_trigger","schedule":{"trigger":{"kind":"interval","anchor":now-7200,"seconds":3600},"notBefore":0,"jitterSeconds":0,"misfire":{"kind":"coalesce_one"}},"resource":{"id":id,"version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"runLifetimeSeconds":300}}}})).await?;
     let directory = f
         .browser
         .call(
             &f.router,
             Method::GET,
-            &format!("/api/v3/policies?action=native_collection&resource={id}"),
+            &format!("/api/v1/policies?action=native_collection&resource={id}"),
             None,
         )
         .await?;
@@ -165,7 +165,7 @@ async fn template_flow(
         .call(
             &f.router,
             Method::GET,
-            "/api/v3/policies?action=plugin",
+            "/api/v1/policies?action=plugin",
             None,
         )
         .await?;
@@ -356,7 +356,7 @@ async fn template_flow(
         .call(
             &f.router,
             Method::GET,
-            &format!("/api/v2/devices/{}/collections/{}", case_device(), runs[0]),
+            &format!("/api/v1/devices/{}/collections/{}", case_device(), runs[0]),
             None,
         )
         .await?;

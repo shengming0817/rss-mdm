@@ -46,10 +46,10 @@ impl Config {
                         (&config.base, &config.artifacts_base)
                     }
                 };
-                if base != &format!("{origin}/software/native/sources/{}/{name}/", source.name)
+                if base != &format!("{origin}/api/v1/software/native/sources/{}/{name}/", source.name)
                     || artifacts
                         != &format!(
-                            "{origin}/software/native/sources/{}/artifacts/",
+                            "{origin}/api/v1/software/native/sources/{}/artifacts/",
                             source.name
                         )
                 {

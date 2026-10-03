@@ -15,9 +15,9 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
         (Method::GET, "/api/v1/authorization".to_owned()),
         (
             Method::GET,
-            format!("/api/v2/tenants/{TENANT}/session", TENANT = case_tenant()),
+            format!("/api/v1/identity/tenants/{TENANT}/session", TENANT = case_tenant()),
         ),
-        (Method::POST, "/api/v3/enrollments".to_owned()),
+        (Method::POST, "/api/v1/enrollments".to_owned()),
     ] {
         for cookie in [
             format!("__Host-identity-session={credential}; broken"),
@@ -70,7 +70,7 @@ async fn native_accounts(
     browser: &mut Browser,
     principal: &str,
 ) -> Result<()> {
-    let tenant = format!("/api/v2/tenants/{TENANT}", TENANT = case_tenant());
+    let tenant = format!("/api/v1/identity/tenants/{TENANT}", TENANT = case_tenant());
     let mut admin = Browser::default();
     ensure!(
         admin
@@ -287,7 +287,7 @@ async fn native_accounts(
     let mut managed = Browser::default();
     ensure!(managed.login(admin_router, "managed-user").await? == StatusCode::OK);
     ensure!(managed.call(admin_router, Method::POST, &format!("{tenant}/account/password"), Some(json!({"currentPassword":PASSWORD,"password":"Self-changed-fixture-password-2026!"}))).await?.0 == StatusCode::OK);
-    let wrong_tenant = &format!("/api/v2/tenants/{}/session", case::peer());
+    let wrong_tenant = &format!("/api/v1/identity/tenants/{}/session", case::peer());
     ensure!(
         admin
             .call(admin_router, Method::GET, wrong_tenant, None)

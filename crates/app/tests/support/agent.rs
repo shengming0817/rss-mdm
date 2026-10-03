@@ -141,7 +141,7 @@ pub(crate) async fn enroll_profile(
 ) -> Result<(Value, Value)> {
     let secret = super::credential(&Uuid::new_v4().to_string());
     let op = Uuid::new_v4();
-    let (status,grant)=browser.call(router,Method::POST,"/api/v3/agent-grants",Some(json!({"wireVersion":1,"operationId":op,"secret":secret,"platform":profile["platform"],"csr":csr()?}))).await?;
+    let (status,grant)=browser.call(router,Method::POST,"/api/v1/agent-grants",Some(json!({"wireVersion":1,"operationId":op,"secret":secret,"platform":profile["platform"],"csr":csr()?}))).await?;
     ensure!(status.is_success(), "grant {status} {grant}");
     let request = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"grantId":grant["grantId"],"secret":secret,"csr":csr()?,"runtime":profile});
     let (status, candidate) = agent_call(
@@ -245,7 +245,7 @@ pub(crate) async fn router(fixture: &authority::Authority) -> Result<Router> {
             crate::agent::enroll::router(service.clone(), envelope),
         );
     let browser = fixture.authorization().merge(fixture.enrollment()).nest(
-        "/api/v3",
+        "/api/v1",
         rss_mdm_management_http::agent_enrollment::routes(Some(service)),
     );
     fixture.router_with_public(browser, public)

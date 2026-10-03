@@ -16,14 +16,14 @@ async fn publish(
     if let Some(schedule) = schedule {
         definition["action"]["schedule"] = schedule;
     }
-    post(author,router,&format!("/api/v3/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":definition}})).await?;
+    post(author,router,&format!("/api/v1/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":definition}})).await?;
     Ok(id)
 }
 async fn disable(author: &mut Browser, router: &Router, id: Uuid) -> Result<()> {
     post(
         author,
         router,
-        &format!("/api/v3/policies/{id}"),
+        &format!("/api/v1/policies/{id}"),
         json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"disable"}}),
     )
     .await?;
@@ -62,12 +62,12 @@ async fn membership(
     present: bool,
     scope: Uuid,
 ) -> Result<()> {
-    let changed=post(author,router,&format!("/api/v2/groups/{group}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":{"action":"members","add":if present {vec![case_device_id()]}else{vec![]},"remove":if present {vec![]}else{vec![case_device_id()]}}})).await?;
+    let changed=post(author,router,&format!("/api/v1/groups/{group}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":{"action":"members","add":if present {vec![case_device_id()]}else{vec![]},"remove":if present {vec![]}else{vec![case_device_id()]}}})).await?;
     await_task(
         author,
         router,
         &format!(
-            "/api/v2/groups/{group}/tasks/{}",
+            "/api/v1/groups/{group}/tasks/{}",
             changed["task"].as_str().unwrap()
         ),
     )
@@ -99,23 +99,23 @@ async fn once_per_entry_tracks_membership_epochs() -> Result<()> {
     let automation = start_automation(base).await?;
     let group = Uuid::new_v4();
     let scope = Uuid::new_v4();
-    post(author,router,&format!("/api/v2/groups/{group}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create","name":"entry-frequency","description":"","criteria":null}})).await?;
-    let added=post(author,router,&format!("/api/v2/groups/{group}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"members","add":[case_device_id()],"remove":[]}})).await?;
+    post(author,router,&format!("/api/v1/groups/{group}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create","name":"entry-frequency","description":"","criteria":null}})).await?;
+    let added=post(author,router,&format!("/api/v1/groups/{group}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"members","add":[case_device_id()],"remove":[]}})).await?;
     await_task(
         author,
         router,
         &format!(
-            "/api/v2/groups/{group}/tasks/{}",
+            "/api/v1/groups/{group}/tasks/{}",
             added["task"].as_str().unwrap()
         ),
     )
     .await?;
-    let created=post(author,router,&format!("/api/v2/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}}})).await?;
+    let created=post(author,router,&format!("/api/v1/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}}})).await?;
     await_task(
         author,
         router,
         &format!(
-            "/api/v2/scopes/{scope}/tasks/{}",
+            "/api/v1/scopes/{scope}/tasks/{}",
             created["task"].as_str().unwrap()
         ),
     )

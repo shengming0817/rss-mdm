@@ -10,21 +10,21 @@
 
 三种来源统一进入独立 Agent 证书链路：
 
-1. 网页下载：已认证用户调用 `POST /api/v3/agent-grants`，提交稳定 operationId、客户端生成的 32 字节随机 secret、platform，可附 CSR；响应包含 grantId 与原期限。
-2. 已安装客户端浏览器授权：客户端调用 `POST /api/agent/enroll/v1/requests`，必须带本机私钥签名的 base64 DER CSR。用户通过 `/api/v3/agent-requests/{id}` 查看公钥指纹，并调用 `/api/v3/agent-grants/{id}/approve` 确认这一请求；会话和 CSRF 检查由浏览器边界持有。
+1. 网页下载：已认证用户调用 `POST /api/v1/agent-grants`，提交稳定 operationId、客户端生成的 32 字节随机 secret、platform，可附 CSR；响应包含 grantId 与原期限。
+2. 已安装客户端浏览器授权：客户端调用 `POST /api/agent/enroll/v1/requests`，必须带本机私钥签名的 base64 DER CSR。用户通过 `/api/v1/agent-requests/{id}` 查看公钥指纹，并调用 `/api/v1/agent-grants/{id}/approve` 确认这一请求；会话和 CSRF 检查由浏览器边界持有。
 3. 原生 MDM 安装：在原生管理 TLS 监听器调用 `POST /api/agent/enroll/v1/native-grants`，提交 installationOperation、operationId、secret、CSR、runtime profile。服务端验证真实原生客户端证书、当前来源注册、冻结安装/软件/策略授权、已下发事实与原期限，只返回 grant。
 
 持有 grant 的客户端调用 `POST /api/agent/enroll/v1/certificates`，提交 `wireVersion:1`、operationId、grantId、secret、CSR 和 runtime profile。服务端先持久化唯一签发意图，绑定 operation/CSR/SPKI，再请求 CA，并持久化已验证的候选证书链。精确重试返回相同候选；不同 operation、CSR 或 profile 拒绝。签发结果未知时保持同一个 issuanceId，不自动二次签发。
 
 候选还不是活跃设备身份。客户端持本机私钥，在真实 mTLS 下调用 `/api/agent/enroll/v1/activate`，提交 issuanceId 与稳定 operationId。服务端在一个审计事务内复查原授权、期限、来源与证书，并创建独立 DeviceId、Registration、一个活跃凭据及冻结采集定义。CA 信任、原生证书、DeviceId、主机名、HTTP 转发头都不能单独建立 Agent 身份。
 
-`POST /api/agent/enroll/v1/status` 用原 grantId/operationId/secret 查询持久进度；浏览器使用 `/api/v3/agent-grants/{id}`。成功激活回执固定，ACK 丢失后重试原 operation；不能通过换 operation 绕开未知结果。撤销未完成授权使用 `/api/v3/agent-grants/{id}/revoke`。注册后的撤销仍使用 `/api/v3/devices/{device}/registrations/{registration}/revoke`，要求资源级 credentials 权限。
+`POST /api/agent/enroll/v1/status` 用原 grantId/operationId/secret 查询持久进度；浏览器使用 `/api/v1/agent-grants/{id}`。成功激活回执固定，ACK 丢失后重试原 operation；不能通过换 operation 绕开未知结果。撤销未完成授权使用 `/api/v1/agent-grants/{id}/revoke`。注册后的撤销仍使用 `/api/v1/devices/{device}/registrations/{registration}/revoke`，要求资源级 credentials 权限。
 
 ## 同身份换证与未知签发恢复
 
-当前有效 mTLS 设备手动调用 `/api/agent/enroll/v1/renewal-grants`；证书已过期或私钥丢失时，管理员通过 `/api/v3/agent-registrations/{id}/recovery` 创建短期恢复授权。两者复用同一候选签发和持有者激活路径，激活以原凭据为 CAS 前驱，仅替换凭据，保留 DeviceId、registration、generation、epoch、能力、采集定义和执行日志。旧凭据立即成为 retired，不能继续运行或续期。
+当前有效 mTLS 设备手动调用 `/api/agent/enroll/v1/renewal-grants`；证书已过期或私钥丢失时，管理员通过 `/api/v1/agent-registrations/{id}/recovery` 创建短期恢复授权。两者复用同一候选签发和持有者激活路径，激活以原凭据为 CAS 前驱，仅替换凭据，保留 DeviceId、registration、generation、epoch、能力、采集定义和执行日志。旧凭据立即成为 retired，不能继续运行或续期。
 
-未知签发由管理员找回 CA 中原始证书链，并通过 `/api/v3/agent-issuances/{id}/recover` 提交。服务端验证原 CSR、公钥、SAN 身份、签发窗口、直接签发者和 provisioner；禁止用重新签发的不同结果替代已保存候选。无法找回结果时不猜测成功，也不自动重签。
+未知签发由管理员找回 CA 中原始证书链，并通过 `/api/v1/agent-issuances/{id}/recover` 提交。服务端验证原 CSR、公钥、SAN 身份、签发窗口、直接签发者和 provisioner；禁止用重新签发的不同结果替代已保存候选。无法找回结果时不猜测成功，也不自动重签。
 
 ## 报告与状态
 

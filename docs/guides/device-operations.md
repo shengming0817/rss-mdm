@@ -2,12 +2,12 @@
 
 ## 范围与接口
 
-`GET /api/v2/operations` 查询现有命令与 Agent action run，支持 `device/kind/policy/remoteOperation/status`
+`GET /api/v1/operations` 查询现有命令与 Agent action run，支持 `device/kind/policy/remoteOperation/status`
 筛选，以及 `limit`（默认 64、1–1000）和 `descending`。`nextCursor` 包含 `id/kind`，续页同时传入
 `after/afterKind`，避免两种执行记录使用相同 UUID 时丢失记录。统计与列表候选使用同一次数据库读取，
 先按当前 `operation_read` 设备范围限制；摘要不返回原始输出和诊断流，通过 `detailUrl` 下钻既有接口。
 
-`GET /api/v2/remote-operations` 提供一次性操作目录，可按 `resource/kind/cancelled` 筛选，
+`GET /api/v1/remote-operations` 提供一次性操作目录，可按 `resource/kind/cancelled` 筛选，
 支持 `limit/after/descending`。显式设备快照须全部可读，Scope 快照沿用全设备读取要求。
 普通脚本计划使用执行型 Policy 和一次性操作目录，没有独立 ScriptPlan。
 
@@ -15,7 +15,7 @@
 
 管理请求使用现有 Identity 会话、Origin/CSRF 和设备范围授权。端点为：
 
-| 方法与路径（前缀 `/api/v2/devices/{device}`） | 权限 | 请求 |
+| 方法与路径（前缀 `/api/v1/devices/{device}`） | 权限 | 请求 |
 |---|---|---|
 | POST `/operations` | `state_verify` | `operationId`、`task: {kind:"state_verify",field,expectedValue}`、`deadline`（Unix 秒） |
 | GET `/operations/{id}` | `operation_read` | 无 |
@@ -42,7 +42,7 @@
 
 Windows 使用固定 DDF/CSP/ADMX 来源和 Node/Atomic/Sequence 类型化操作树，通过现有 Resource/Policy/Scope 和受保护执行路径管理对象。动态身份、设备/用户 scope、build/edition 和实际操作权限分别校验；客户端不提供可信平台或权限事实。
 
-Resource 元数据入口为 `/api/v4/resources/{id}`，配置内容通过既有 `/api/v3/resources/{id}/content` 上传并保护。Policy、远程操作及设备 operation 使用 `/api/v3`。配置内容示例：
+Resource 元数据入口为 `/api/v1/resources/{id}`，配置内容通过既有 `/api/v1/resources/{id}/content` 上传并保护。Policy、远程操作及设备 operation 使用 `/api/v1`。配置内容示例：
 
 ```json
 {"target":{"kind":"device"},"apply":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/Policy/Config/Experience/AllowCortana","instance":[],"operation":"replace","value":{"type":"integer","value":"1"}}}},"remove":null}
@@ -58,7 +58,7 @@ Policy 引用精确资源版本/variant；它消费完整操作权限和多对�
 
 ## 设备时间线
 
-管理员通过 `GET /api/v3/devices/{device}/timeline` 检索现有注册、凭据、资产和管理审计事实，可用 `operationId` 和时间区间筛选。入口复用现有管理读取能力；不需要额外申请时间线权限。时间线只呈现已经持久化的事实，受理、请求结算、执行状态和实际效果分别解释；缺失结果保持未知，202 不表示设备执行成功。
+管理员通过 `GET /api/v1/devices/{device}/timeline` 检索现有注册、凭据、资产和管理审计事实，可用 `operationId` 和时间区间筛选。入口复用现有管理读取能力；不需要额外申请时间线权限。时间线只呈现已经持久化的事实，受理、请求结算、执行状态和实际效果分别解释；缺失结果保持未知，202 不表示设备执行成功。
 
 排序使用持久记录时间，发生时间另行显示。分页使用响应中的签名游标和相同筛选条件；第一页固定上界，新事实需要重新查询。响应的覆盖进度说明索引追赶情况，未完成追赶不表示设备没有历史事件。字段、筛选和预算的唯一契约见 [timeline-service](../../crates/timeline-service/src/model.rs)。
 

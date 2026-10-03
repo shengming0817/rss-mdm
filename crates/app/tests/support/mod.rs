@@ -190,7 +190,7 @@ impl Browser {
                 .call(
                     app,
                     Method::GET,
-                    &format!("/api/v2/tenants/{}/session", case_tenant()),
+                    &format!("/api/v1/identity/tenants/{}/session", case_tenant()),
                     None,
                 )
                 .await?
@@ -208,7 +208,7 @@ impl Browser {
             .call(
                 app,
                 Method::POST,
-                &format!("/api/v2/tenants/{TENANT}/login", TENANT = case_tenant()),
+                &format!("/api/v1/identity/tenants/{TENANT}/login", TENANT = case_tenant()),
                 Some(json!({"login":case::login(login),"password":password})),
             )
             .await?

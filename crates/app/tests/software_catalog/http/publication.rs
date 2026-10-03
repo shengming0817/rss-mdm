@@ -59,7 +59,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     crate::test_support::identity::set_grants(case_tenant(), &subject, grants).await?;
     let stack = execution::worker_for(&serde_json::from_value(cfg)?, f.execution.clone()).await?;
     let resource = Uuid::new_v4();
-    let resource_path = format!("/api/v4/resources/{resource}");
+    let resource_path = format!("/api/v1/resources/{resource}");
     let bytes = b"frozen native MSI bytes";
     let invocation = json!({"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}});
     let definition = json!({"source":f.source_snapshot,"package":"Acme.App","version":"1.0","provenance":{"kind":"private"},"artifacts":{"package":{"reference":"installer","length":bytes.len(),"sha256":<[u8;32]>::from(Sha256::digest(bytes))}},"behavior":{"kind":"winget","installer":"package","scope":"system","install":invocation,"upgradeInvocation":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1.0"}},"signatures":[],"reboot":"report","downgrade":"deny","dependencies":[],"export":{"kind":"winget","locale":"en-US","name":"Acme App","publisher":"Acme","description":"Frozen enterprise application","license":"Proprietary"}});
@@ -84,7 +84,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     let admitted = write(
         &mut f.author,
         &f.router,
-        &format!("/api/v3/software/resources/{resource}/versions/v1"),
+        &format!("/api/v1/software/resources/{resource}/versions/v1"),
         0,
         json!({"action":"approve","evidence":["frozen enterprise materials"]}),
     )
@@ -94,7 +94,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         .call(
             &f.router,
             Method::GET,
-            &format!("/api/v3/software/resources/{resource}/versions/v1"),
+            &format!("/api/v1/software/resources/{resource}/versions/v1"),
             None,
         )
         .await?;
@@ -197,7 +197,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         .map(|n| format!("{:02x}", n.as_u64().unwrap()))
         .collect::<String>();
     let native = format!(
-        "/software/native/sources/{}/test/exports/{id}",
+        "/api/v1/software/native/sources/{}/test/exports/{id}",
         server.logical
     );
     let public = |method: Method, url: String, body: Body| {
@@ -249,7 +249,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     ensure!(search["Data"][0]["PackageIdentifier"] == "Acme.App");
     for prefix in [
         native.clone(),
-        format!("/software/native/sources/{}/test", server.logical),
+        format!("/api/v1/software/native/sources/{}/test", server.logical),
     ] {
         let response = f
             .router
@@ -296,7 +296,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     ensure!(served.status() == StatusCode::OK);
     ensure!(served.into_body().collect().await?.to_bytes() == bytes.as_slice());
     let policy = Uuid::new_v4();
-    let policy_path = format!("/api/v3/policies/{policy}");
+    let policy_path = format!("/api/v1/policies/{policy}");
     write(&mut f.author,&f.router,&policy_path,0,json!({"action":"put","enabled":true,"definition":{"scope":f.scope,"action":{"kind":"software","resource":{"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"intent":"required_install","delivery":{"kind":"native","source":server.logical,"ring":"test"},"admissionOperation":admitted["admission"]["operation"],"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":f.scope,"opensAt":0}]}}}})).await?;
     {
         use sqlx::Connection;
@@ -309,7 +309,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
             .bind(&catalog_lock)
             .execute(&mut owner)
             .await?;
-        let probe_path = format!("/api/v3/policies/{policy}/devices");
+        let probe_path = format!("/api/v1/policies/{policy}/devices");
         let request = f.author.call(&f.router, Method::GET, &probe_path, None);
         tokio::pin!(request);
         tokio::select! {

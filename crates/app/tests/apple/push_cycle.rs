@@ -122,7 +122,7 @@ impl Fixture {
         recovered.close().await?;
         pg.close().await?;
         let operation_state = self.operation(operation).await?;
-        let cancelled=self.browser.call(&self.router,Method::POST,&format!("/api/v3/devices/{DEVICE}/operations/{operation}/cancel", DEVICE = case_device()),Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":operation_state["revision"]}))).await?;
+        let cancelled=self.browser.call(&self.router,Method::POST,&format!("/api/v1/devices/{DEVICE}/operations/{operation}/cancel", DEVICE = case_device()),Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":operation_state["revision"]}))).await?;
         ensure!(cancelled.0 == StatusCode::OK);
         Ok(())
     }

@@ -4,7 +4,7 @@
 )]
 use crate::test_support::*;
 pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) -> Result<()> {
-    let issue = "/api/v3/enrollments";
+    let issue = "/api/v1/enrollments";
     set_device_grants(
         browser,
         router,
@@ -71,7 +71,7 @@ pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) ->
     );
     ensure!(browser.call(router, Method::POST, issue, Some(json!({"deviceId":crate::test_support::case::name("device-1"),"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows","windowsProfile":"Full"}))).await?.0 == StatusCode::CONFLICT, "changing the authorized Windows profile reused an operation");
     let enrollment = grant["enrollmentId"].as_str().unwrap();
-    let status_path = format!("/api/v3/enrollments/{enrollment}");
+    let status_path = format!("/api/v1/enrollments/{enrollment}");
     let current = browser
         .call(router, Method::GET, &status_path, None)
         .await?;
@@ -80,7 +80,7 @@ pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) ->
             && current.1["status"] == "pending"
             && current.1["registrationId"].is_null()
     );
-    let resume = format!("/api/v3/enrollments/{enrollment}/resume");
+    let resume = format!("/api/v1/enrollments/{enrollment}/resume");
     browser.operation = Some(uuid::Uuid::new_v4());
     let (_, resumed) = browser
         .call(
@@ -136,7 +136,7 @@ pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) ->
         &["inventory_read", "enrollment"],
     )
     .await?;
-    let cancel = format!("/api/v3/enrollments/{enrollment}/cancel");
+    let cancel = format!("/api/v1/enrollments/{enrollment}/cancel");
     let (status, cancelled) = browser
         .call(router, Method::POST, &cancel, Some(json!({})))
         .await?;

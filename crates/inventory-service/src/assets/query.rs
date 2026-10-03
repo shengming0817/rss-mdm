@@ -81,7 +81,7 @@ impl AssetService {
         })).await?;
         Ok(Response::Accepted {
             task,
-            status_url: format!("/api/v2/device-queries/{task}"),
+            status_url: format!("/api/v1/device-queries/{task}"),
         })
     }
     pub async fn advance_asset_query_in(

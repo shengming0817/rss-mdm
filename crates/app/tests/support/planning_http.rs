@@ -20,7 +20,7 @@ pub(crate) async fn call(
         json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":revision,"input":input}),
     )
     .await?;
-    if status == StatusCode::CONFLICT && path.starts_with("/api/v2/groups/") {
+    if status == StatusCode::CONFLICT && path.starts_with("/api/v1/groups/") {
         let current = browser.call(router, Method::GET, path, None).await?;
         anyhow::bail!(
             "group write at expected revision {revision}: {status} {result}; observed {current:?}"
@@ -108,7 +108,7 @@ pub(crate) async fn native_configuration_bytes(
     architecture: &str,
     bytes: &[u8],
 ) -> Result<()> {
-    let path = format!("/api/v4/resources/{id}");
+    let path = format!("/api/v1/resources/{id}");
     call(
         browser,
         router,

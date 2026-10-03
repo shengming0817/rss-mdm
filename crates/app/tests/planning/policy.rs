@@ -41,13 +41,13 @@ async fn large_assignment_uses_published_scope_without_eager_execution() -> Resu
     call(
         &mut browser,
         &router,
-        &format!("/api/v2/scopes/{scope}"),
+        &format!("/api/v1/scopes/{scope}"),
         0,
         json!({"action":"put","definition":{"targets":[],"limitations":null,"exclusions":[]}}),
     )
     .await?;
     let id = Uuid::new_v4();
-    let path = format!("/api/v3/policies/{id}");
+    let path = format!("/api/v1/policies/{id}");
     call(&mut browser,&router,&path,0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action": {"resource": {"id":resource,"version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"kind":"configuration","exit":"retain"}}})).await?;
     let policy = path.as_str();
     let revision = 1;
@@ -66,7 +66,7 @@ async fn large_assignment_uses_published_scope_without_eager_execution() -> Resu
     }
     let group = uuid::Uuid::new_v4();
     let scope = uuid::Uuid::new_v4();
-    let group_path = format!("/api/v2/groups/{group}");
+    let group_path = format!("/api/v1/groups/{group}");
     call(
         browser,
         router,
@@ -88,7 +88,7 @@ async fn large_assignment_uses_published_scope_without_eager_execution() -> Resu
         )
         .await?;
     }
-    call(browser,router,&format!("/api/v2/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}})).await?;
+    call(browser,router,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}})).await?;
     let current = browser.call(router, Method::GET, policy, None).await?.1;
     let mut definition = current["definition"].clone();
     definition["scope"] = json!(scope);

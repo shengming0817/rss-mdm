@@ -49,7 +49,7 @@ async fn cleanup_preserves_resource_references(
         .call(
             router,
             Method::POST,
-            "/api/v3/software/content/cleanup",
+            "/api/v1/software/content/cleanup",
             None,
         )
         .await?;

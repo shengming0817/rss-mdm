@@ -1,6 +1,6 @@
 use crate::test_support::*;
 use anyhow::Context;
-const PATH: &str = "/api/v2/runtime/diagnostics";
+const PATH: &str = "/api/v1/runtime/diagnostics";
 
 #[tokio::test]
 #[ignore = "make t2 MODULE=diagnostics.http: real host wiring, session, permission and audit"]
@@ -270,7 +270,7 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
     let router = fixture.authority.router(
         fixture.authority.authorization().merge(
             Router::new().nest(
-                "/api/v2",
+                "/api/v1",
                 rss_mdm_management_http::runtime_diagnostics::routes()
                     .with_state(fixture.source.clone() as Arc<dyn Source>),
             ),
@@ -366,7 +366,7 @@ async fn dependency_failure_preserves_partial_results_and_authority() -> Result<
     let router = fixture.authority.router(
         fixture.authority.authorization().merge(
             Router::new().nest(
-                "/api/v2",
+                "/api/v1",
                 rss_mdm_management_http::runtime_diagnostics::routes()
                     .with_state(fixture.source.clone() as Arc<dyn Source>),
             ),

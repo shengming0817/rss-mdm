@@ -71,7 +71,7 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
                 .call(
                     &router,
                     Method::GET,
-                    &format!("/api/v2/devices/{device}/inventory"),
+                    &format!("/api/v1/devices/{device}/inventory"),
                     None
                 )
                 .await?
@@ -286,7 +286,7 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
             })),
         )
         .nest(
-            "/api/v3",
+            "/api/v1",
             crate::enrollment::http::routes().with_state(enrollment),
         )
         .route_layer(middleware::from_fn_with_state(
@@ -337,7 +337,7 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
             .call(
                 &router,
                 Method::POST,
-                &format!("/api/v2/tenants/{TENANT}/accounts", TENANT = case_tenant()),
+                &format!("/api/v1/identity/tenants/{TENANT}/accounts", TENANT = case_tenant()),
                 Some(json!({"login":"foundation-member","password":PASSWORD}))
             )
             .await?
@@ -362,7 +362,7 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
         .call(
             &router,
             Method::POST,
-            "/api/v3/enrollments",
+            "/api/v1/enrollments",
             Some(payload.clone()),
         )
         .await?;
@@ -371,7 +371,7 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
         "enrollment creation: {created:?}"
     );
     let path = format!(
-        "/api/v3/enrollments/{}",
+        "/api/v1/enrollments/{}",
         created.1["enrollmentId"].as_str().unwrap()
     );
     ensure!(
@@ -379,7 +379,7 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
             .call(
                 &router,
                 Method::POST,
-                "/api/v3/enrollments",
+                "/api/v1/enrollments",
                 Some(payload.clone())
             )
             .await?
@@ -407,7 +407,7 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
     ensure!(member.call(&router, Method::GET, &path, None).await?.0 == StatusCode::FORBIDDEN);
     ensure!(
         member
-            .call(&router, Method::POST, "/api/v3/enrollments", Some(payload))
+            .call(&router, Method::POST, "/api/v1/enrollments", Some(payload))
             .await?
             .0
             == StatusCode::FORBIDDEN

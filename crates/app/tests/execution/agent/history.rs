@@ -42,7 +42,7 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
         ))?
         .trim()
         .parse::<i64>()?;
-        let mut path = format!("/api/v2/policies/{plan}/runs");
+        let mut path = format!("/api/v1/policies/{plan}/runs");
         let mut ids = Vec::new();
         let mut unique = BTreeSet::new();
         loop {
@@ -75,11 +75,11 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
             let after_at = cursor["availableAt"].as_i64().context("cursor availableAt")?;
             let after_id = cursor["taskId"].as_str().context("cursor taskId")?;
             path = format!(
-                "/api/v2/policies/{plan}/runs?afterAt={after_at}&afterId={after_id}"
+                "/api/v1/policies/{plan}/runs?afterAt={after_at}&afterId={after_id}"
             );
         }
         ensure!(ids.len() == 26, "run history lost records: {ids:?}");
-        let mut path=format!("/api/v3/operations?kind=action_run&policy={plan}&limit=3&descending=true");
+        let mut path=format!("/api/v1/operations?kind=action_run&policy={plan}&limit=3&descending=true");
         let mut directory_ids=Vec::new();
         loop {
             let (status,page)=author.call(router,Method::GET,&path,None).await?;
@@ -91,11 +91,11 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
                 directory_ids.push(item["id"].as_str().context("directory id")?.to_owned());
             }
             let Some(cursor)=page["nextCursor"].as_object() else{break};
-            path=format!("/api/v3/operations?kind=action_run&policy={plan}&limit=3&descending=true&after={}&afterKind={}",cursor["id"].as_str().unwrap(),cursor["kind"].as_str().unwrap());
+            path=format!("/api/v1/operations?kind=action_run&policy={plan}&limit=3&descending=true&after={}&afterKind={}",cursor["id"].as_str().unwrap(),cursor["kind"].as_str().unwrap());
             ensure!(directory_ids.len()<=26,"directory repeated pages");
         }
         ensure!(directory_ids.len()==26 && directory_ids.windows(2).all(|pair|pair[0]>pair[1]));
-        let filtered=author.call(router,Method::GET,&format!("/api/v3/policies?action=execution&resource={resource}&limit=1"),None).await?;
+        let filtered=author.call(router,Method::GET,&format!("/api/v1/policies?action=execution&resource={resource}&limit=1"),None).await?;
         ensure!(filtered.0==StatusCode::OK && filtered.1["items"][0]["id"]==plan.to_string());
         let grants_without_read=fixture.grants.iter().filter(|g|g.operation!=crate::authorization::Permission::OperationRead).cloned().collect();
         crate::test_support::identity::set_grants(case_tenant(),&fixture.author_id,grants_without_read).await?;
@@ -111,7 +111,7 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
             .call(
                 router,
                 Method::GET,
-                &format!("/api/v2/policies/{plan}/runs/{task}"),
+                &format!("/api/v1/policies/{plan}/runs/{task}"),
                 None,
             )
             .await?;
@@ -127,7 +127,7 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
                 .call(
                     router,
                     Method::GET,
-                    &format!("/api/v2/policies/{}/runs/{task}", Uuid::new_v4()),
+                    &format!("/api/v1/policies/{}/runs/{task}", Uuid::new_v4()),
                     None,
                 )
                 .await?
@@ -139,7 +139,7 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
                 .call(
                     router,
                     Method::GET,
-                    &format!("/api/v2/policies/{plan}/runs?afterAt={available_at}"),
+                    &format!("/api/v1/policies/{plan}/runs?afterAt={available_at}"),
                     None,
                 )
                 .await?
@@ -180,7 +180,7 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
         .await?;
     let key = "custom.confidential_observation";
     let field = json!({"key":key,"version":1,"valueType":{"kind":"string","maxLength":128,"allowEmpty":false},"nullable":false,"manual":false,"sources":{"agent.script":100},"platforms":["macos"],"sensitivity":"sensitive","unit":null,"searchable":true,"itemKey":null});
-    ensure!(f.author.call(&f.router,Method::PUT,&format!("/api/v2/asset-fields/{key}"),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":field}}))).await?.0==StatusCode::OK);
+    ensure!(f.author.call(&f.router,Method::PUT,&format!("/api/v1/asset-fields/{key}"),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":field}}))).await?.0==StatusCode::OK);
     let id = Uuid::new_v4();
     let bytes = b"printf '{}'";
     let digest = rss_mdm_resource::Digest::of(bytes).bytes();
@@ -213,7 +213,7 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
         let parent = if remote {
             let parent = Uuid::new_v4();
             let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-            post(&mut f.author,&f.router,"/api/v3/remote-operations",json!({"operationId":parent,"resource":policy_definition(id,case_task_scope())["action"]["resource"],"targets":{"kind":"devices","devices":[case_device_id()]},"action":{"kind":"execute","parameters":{}},"deadline":now+600})).await?;
+            post(&mut f.author,&f.router,"/api/v1/remote-operations",json!({"operationId":parent,"resource":policy_definition(id,case_task_scope())["action"]["resource"],"targets":{"kind":"devices","devices":[case_device_id()]},"action":{"kind":"execute","parameters":{}},"deadline":now+600})).await?;
             parent
         } else {
             publish(&mut f.author, &f.router, id).await?

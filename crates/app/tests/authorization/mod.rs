@@ -60,7 +60,7 @@ async fn fixture() -> Result<Fixture> {
             .call(
                 &router,
                 Method::POST,
-                &format!("/api/v2/tenants/{TENANT}/accounts", TENANT = case_tenant()),
+                &format!("/api/v1/identity/tenants/{TENANT}/accounts", TENANT = case_tenant()),
                 Some(json!({"login":crate::test_support::case::name("authorization-member"),"password":PASSWORD}))
             )
             .await?

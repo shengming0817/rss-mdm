@@ -200,7 +200,7 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
             &router,
             Method::GET,
             &format!(
-                "/api/v2/devices/{DEVICE_ID}/inventory",
+                "/api/v1/devices/{DEVICE_ID}/inventory",
                 DEVICE_ID = case_device_id()
             ),
             None,

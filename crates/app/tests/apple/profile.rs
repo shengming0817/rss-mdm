@@ -158,7 +158,7 @@ impl Fixture {
             "mismatch became Applied {state}"
         );
         let path = format!(
-            "/api/v3/devices/{DEVICE}/operations",
+            "/api/v1/devices/{DEVICE}/operations",
             DEVICE = case_device()
         );
         let overlap=self.browser.call(&self.router,Method::POST,&path,Some(json!({"operationId":Uuid::new_v4(),"inputVersion":"1","target":{"kind":"device"},"task":profile_task(Uuid::new_v4(),false),"deadline":self.app.clock.unix_seconds()?+300}))).await?;
@@ -233,7 +233,7 @@ async fn security_profile_replacement_and_removal_keep_target_permissions() -> R
         }
         crate::test_support::identity::device_grants(Some(case_device()), &operations)
     };
-    let path = format!("/api/v3/devices/{}/operations", case_device());
+    let path = format!("/api/v1/devices/{}/operations", case_device());
     let security_task = |id| {
         let mut task = profile_task(id, true);
         let payload = &mut task["request"]["profile"]["payloads"][0];
@@ -378,7 +378,7 @@ async fn cross_root_guards_require_complete_removal_evidence() -> Result<()> {
         }
         task
     };
-    let path = format!("/api/v3/devices/{}/operations", case_device());
+    let path = format!("/api/v1/devices/{}/operations", case_device());
     let blocked = Uuid::new_v4();
     let reply = f.browser.call(&f.router,Method::POST,&path,Some(json!({"operationId":blocked,"inputVersion":"1","target":{"kind":"device"},"task":alternate(blocked,true),"deadline":f.app.clock.unix_seconds()?+300}))).await?;
     ensure!(

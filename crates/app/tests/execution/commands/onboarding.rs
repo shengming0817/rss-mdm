@@ -767,7 +767,7 @@ async fn scope_exit_preserves_dispatched_installation_authority_until_its_deadli
         .call(
             &client.router,
             Method::GET,
-            &format!("/api/v3/policies/{policy}"),
+            &format!("/api/v1/policies/{policy}"),
             None,
         )
         .await?;
@@ -775,7 +775,7 @@ async fn scope_exit_preserves_dispatched_installation_authority_until_its_deadli
     let scope = policy_view.1["definition"]["scope"]
         .as_str()
         .context("policy scope")?;
-    let scope_path = format!("/api/v2/scopes/{scope}");
+    let scope_path = format!("/api/v1/scopes/{scope}");
     let changed = software::write(
         &mut client.browser,
         &client.router,
@@ -836,7 +836,7 @@ async fn policy_freeze_distinguishes_superseded_identity_from_withdrawn_approval
         .call(
             &client.router,
             Method::GET,
-            &format!("/api/v3/policies/{policy}"),
+            &format!("/api/v1/policies/{policy}"),
             None,
         )
         .await?;
@@ -852,7 +852,7 @@ async fn policy_freeze_distinguishes_superseded_identity_from_withdrawn_approval
         .call(
             &client.router,
             Method::POST,
-            &format!("/api/v3/policies/{}", Uuid::new_v4()),
+            &format!("/api/v1/policies/{}", Uuid::new_v4()),
             Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,
             "input":{"action":"put","enabled":true,"definition":wrong}})),
         )
@@ -864,7 +864,7 @@ async fn policy_freeze_distinguishes_superseded_identity_from_withdrawn_approval
     crate::test_support::software::write(
         &mut client.browser,
         &client.router,
-        &format!("/api/v3/software/resources/{resource}/versions/v1"),
+        &format!("/api/v1/software/resources/{resource}/versions/v1"),
         1,
         json!({"action":"withdraw","evidence":["freeze-rejection-contract"]}),
     )
@@ -874,7 +874,7 @@ async fn policy_freeze_distinguishes_superseded_identity_from_withdrawn_approval
         .call(
             &client.router,
             Method::POST,
-            &format!("/api/v3/policies/{}", Uuid::new_v4()),
+            &format!("/api/v1/policies/{}", Uuid::new_v4()),
             Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,
             "input":{"action":"put","enabled":true,"definition":definition}})),
         )

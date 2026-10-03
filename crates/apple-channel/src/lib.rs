@@ -120,7 +120,7 @@ pub fn browser_routes(app: Arc<HttpState>, envelope: boundary::Envelope) -> axum
     boundary::wrap(
         axum::Router::new()
             .route(
-                "/api/v3/enrollments/{id}/profile",
+                "/api/v1/enrollments/{id}/profile",
                 post(enrollment::download),
             )
             .route("/native/apple/scep/challenge", post(enrollment::challenge))

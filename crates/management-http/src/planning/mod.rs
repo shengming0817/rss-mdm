@@ -3,7 +3,7 @@ pub mod http;
 pub mod policies;
 use crate::Error;
 use crate::http_operation::Operation;
-pub use http::routes_v2;
+pub use http::routes;
 use rss_mdm_audit_integration::RequestAudit;
 use std::sync::Arc;
 use uuid::Uuid;

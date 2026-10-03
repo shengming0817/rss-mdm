@@ -76,7 +76,7 @@ async fn registration_binding_and_replay() -> Result<()> {
         .await?
         .0 == StatusCode::UNAUTHORIZED
     );
-    let native_password=browser.call(&router,Method::POST,"/api/v3/enrollments",Some(json!({"deviceId":"claimed-device","password":agent.password,"source":"agent.builtin"}))).await?;
+    let native_password=browser.call(&router,Method::POST,"/api/v1/enrollments",Some(json!({"deviceId":"claimed-device","password":agent.password,"source":"agent.builtin"}))).await?;
     ensure!(native_password.0 == StatusCode::BAD_REQUEST);
     Ok(())
 }
@@ -95,7 +95,7 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
         .call(
             &router,
             Method::POST,
-            &format!("/api/v3/agent-registrations/{registration}/recovery"),
+            &format!("/api/v1/agent-registrations/{registration}/recovery"),
             Some(input),
         )
         .await?;

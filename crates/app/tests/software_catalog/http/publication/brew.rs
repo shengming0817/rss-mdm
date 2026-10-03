@@ -18,11 +18,11 @@ async fn immutable_native_tap_is_consumed_by_git_and_homebrew_and_withdrawn() ->
             unreachable!()
         };
         source.base = format!(
-            "https://mdm.example.test/software/native/sources/{}/{ring}/",
+            "https://mdm.example.test/api/v1/software/native/sources/{}/{ring}/",
             peer.logical
         );
         source.artifacts_base = format!(
-            "https://mdm.example.test/software/native/sources/{}/artifacts/",
+            "https://mdm.example.test/api/v1/software/native/sources/{}/artifacts/",
             peer.logical
         );
     }
@@ -69,7 +69,7 @@ async fn immutable_native_tap_is_consumed_by_git_and_homebrew_and_withdrawn() ->
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
     let url = format!(
-        "http://{address}/software/native/sources/{}/test/exports/{id}.git",
+        "http://{address}/api/v1/software/native/sources/{}/test/exports/{id}.git",
         peer.logical
     );
     let client = Client::builder().no_proxy().build()?;

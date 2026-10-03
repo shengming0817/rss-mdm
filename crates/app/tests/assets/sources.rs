@@ -2,7 +2,7 @@ use super::*;
 async fn source_matrix(browser: &mut Browser, router: &Router) -> Result<()> {
     let (mdm, _) = seed_source("asset-b", "mdm", "mdm.windows", "Same")?;
     let (agent, _) = seed_source("asset-b", "agent", "agent.builtin", "Same")?;
-    let path = "/api/v2/devices/asset-b/inventory";
+    let path = "/api/v1/devices/asset-b/inventory";
     let detail = ok(browser, router, Method::GET, path, None).await?;
     ensure!(detail["asset"]["device"]["fields"]["device.model"]["state"]["kind"] == "known");
     ensure!(
@@ -22,7 +22,7 @@ async fn source_matrix(browser: &mut Browser, router: &Router) -> Result<()> {
         browser,
         router,
         Method::POST,
-        "/api/v2/device-queries",
+        "/api/v1/device-queries",
         Some(query.clone()),
     )
     .await?;
@@ -83,7 +83,7 @@ async fn retained_collection_quality(browser: &mut Browser, router: &Router) -> 
             browser,
             router,
             Method::GET,
-            "/api/v2/devices/tie-b/inventory",
+            "/api/v1/devices/tie-b/inventory",
             None,
         )
         .await?;
@@ -92,7 +92,7 @@ async fn retained_collection_quality(browser: &mut Browser, router: &Router) -> 
             browser,
             router,
             Method::POST,
-            "/api/v2/device-queries",
+            "/api/v1/device-queries",
             Some(query.clone()),
         )
         .await?;

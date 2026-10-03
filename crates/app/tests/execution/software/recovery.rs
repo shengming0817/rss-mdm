@@ -15,7 +15,7 @@ async fn known_failure_has_bounded_retries() -> Result<()> {
     let scope = fixture.scope;
     let authored = |intent: &str, operation: &Value| authored(resource, scope, intent, operation);
     let failed_policy = Uuid::new_v4();
-    let failed_path = format!("/api/v3/policies/{failed_policy}");
+    let failed_path = format!("/api/v1/policies/{failed_policy}");
     write(&mut author,&router,&failed_path,0,json!({"action":"put","enabled":true,"definition":authored("required_install",&first_operation)})).await?;
     let failed_task = claim(&router).await?;
     ensure!(
@@ -44,7 +44,7 @@ async fn known_failure_has_bounded_retries() -> Result<()> {
             &router,
             Method::GET,
             &format!(
-                "/api/v2/policies/{failed_policy}/runs/{}",
+                "/api/v1/policies/{failed_policy}/runs/{}",
                 failed_task["payload"]["taskId"].as_str().unwrap()
             ),
             None,
@@ -116,7 +116,7 @@ async fn reboot_waits_for_detection() -> Result<()> {
     let scope = fixture.scope;
     let authored = |intent: &str, operation: &Value| authored(resource, scope, intent, operation);
     let reboot_policy = Uuid::new_v4();
-    let reboot_path = format!("/api/v3/policies/{reboot_policy}");
+    let reboot_path = format!("/api/v1/policies/{reboot_policy}");
     write(&mut author,&router,&reboot_path,0,json!({"action":"put","enabled":true,"definition":authored("required_install",&first_operation)})).await?;
     let reboot_task = claim(&router).await?;
     ensure!(
@@ -145,7 +145,7 @@ async fn reboot_waits_for_detection() -> Result<()> {
             &router,
             Method::GET,
             &format!(
-                "/api/v2/policies/{reboot_policy}/runs/{}",
+                "/api/v1/policies/{reboot_policy}/runs/{}",
                 reboot_task["payload"]["taskId"].as_str().unwrap()
             ),
             None,
@@ -197,7 +197,7 @@ async fn unknown_effect_survives_credential_recovery() -> Result<()> {
     let scope = fixture.scope;
     let authored = |intent: &str, operation: &Value| authored(resource, scope, intent, operation);
     let unknown_policy = Uuid::new_v4();
-    write(&mut author,&router,&format!("/api/v3/policies/{unknown_policy}"),0,json!({"action":"put","enabled":true,"definition":authored("required_install",&first_operation)})).await?;
+    write(&mut author,&router,&format!("/api/v1/policies/{unknown_policy}"),0,json!({"action":"put","enabled":true,"definition":authored("required_install",&first_operation)})).await?;
     let unknown_task = claim(&router).await?;
     ensure!(
         event(&router, &unknown_task, json!({"kind":"received"}))
@@ -240,7 +240,7 @@ async fn unknown_effect_survives_credential_recovery() -> Result<()> {
         .call(
             &router,
             Method::POST,
-            &format!("/api/v3/agent-registrations/{registration}/recovery"),
+            &format!("/api/v1/agent-registrations/{registration}/recovery"),
             Some(input.clone()),
         )
         .await?;
@@ -280,7 +280,7 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
     let scope = fixture.scope;
     let authored = |intent: &str, operation: &Value| authored(resource, scope, intent, operation);
     let policy = Uuid::new_v4();
-    let policy_path = format!("/api/v3/policies/{policy}");
+    let policy_path = format!("/api/v1/policies/{policy}");
     let published = write(
         &mut author,
         &router,
@@ -319,7 +319,7 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
         .call(
             &router,
             Method::GET,
-            &format!("/api/v2/policies/{policy}/software/rollout"),
+            &format!("/api/v1/policies/{policy}/software/rollout"),
             None,
         )
         .await?;
@@ -350,7 +350,7 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
         .call(
             &router,
             Method::GET,
-            &format!("/api/v2/policies/{policy}/software/rollout"),
+            &format!("/api/v1/policies/{policy}/software/rollout"),
             None,
         )
         .await?;
@@ -373,7 +373,7 @@ async fn withdrawn_software_does_not_poison_claims_for_other_policies_or_outside
         .call(
             &f.router,
             Method::GET,
-            &format!("/api/v3/software/resources/{}/versions/v1", f.dependency),
+            &format!("/api/v1/software/resources/{}/versions/v1", f.dependency),
             None,
         )
         .await?;
@@ -386,12 +386,12 @@ async fn withdrawn_software_does_not_poison_claims_for_other_policies_or_outside
         (ids[1], f.resource, outside, &f.first_operation),
         (ids[2], f.dependency, f.scope, &approval),
     ] {
-        write(&mut f.author,&f.router,&format!("/api/v3/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":authored(resource,scope,"required_install",operation)})).await?;
+        write(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":authored(resource,scope,"required_install",operation)})).await?;
     }
     write(
         &mut f.author,
         &f.router,
-        &format!("/api/v3/software/resources/{}/versions/v1", f.resource),
+        &format!("/api/v1/software/resources/{}/versions/v1", f.resource),
         1,
         json!({"action":"withdraw","evidence":["withdraw only the root"]}),
     )
@@ -409,7 +409,7 @@ async fn withdrawn_software_does_not_poison_claims_for_other_policies_or_outside
         .call(
             &f.router,
             Method::GET,
-            &format!("/api/v3/policies/{}/devices", ids[0]),
+            &format!("/api/v1/policies/{}/devices", ids[0]),
             None,
         )
         .await?;

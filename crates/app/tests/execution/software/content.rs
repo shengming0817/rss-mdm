@@ -16,7 +16,7 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
     let scope = fixture.scope;
     let authored = |intent: &str, operation: &Value| authored(resource, scope, intent, operation);
     let policy = Uuid::new_v4();
-    let policy_path = format!("/api/v3/policies/{policy}");
+    let policy_path = format!("/api/v1/policies/{policy}");
     let published = write(
         &mut author,
         &router,
@@ -87,7 +87,7 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
     write(
         &mut author,
         &router,
-        &format!("/api/v3/software/resources/{resource}/versions/v1"),
+        &format!("/api/v1/software/resources/{resource}/versions/v1"),
         1,
         json!({"action":"withdraw","evidence":["deployment-revocation"]}),
     )
@@ -125,7 +125,7 @@ async fn uninstall_content_permission() -> Result<()> {
     write(
         &mut author,
         &router,
-        &format!("/api/v3/policies/{uninstall}"),
+        &format!("/api/v1/policies/{uninstall}"),
         0,
         json!({"action":"put","enabled":true,"definition":authored("explicit_uninstall", &first_operation)}),
     )
@@ -171,7 +171,7 @@ async fn windows_variant_content() -> Result<()> {
     let windows_credential = fixture.credential;
     let first_operation = fixture.first_operation;
     let windows_policy = Uuid::new_v4();
-    write(&mut author,&router,&format!("/api/v3/policies/{windows_policy}"),0,json!({"action":"put","enabled":true,
+    write(&mut author,&router,&format!("/api/v1/policies/{windows_policy}"),0,json!({"action":"put","enabled":true,
         "definition":{"scope":windows_scope,
         "action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"kind":"software","intent":"required_install","delivery":{"kind":"direct"},"admissionOperation":first_operation,"runLifetimeSeconds":600,
         "rollout":{"stages":[{"scope":windows_scope,"opensAt":0}]}}}})).await?;
@@ -179,7 +179,7 @@ async fn windows_variant_content() -> Result<()> {
         .call(
             &router,
             Method::GET,
-            &format!("/api/v3/policies/{windows_policy}/devices"),
+            &format!("/api/v1/policies/{windows_policy}/devices"),
             None,
         )
         .await?;

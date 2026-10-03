@@ -22,7 +22,7 @@ async fn status(b: &mut Browser, r: &Router, device: &str, expected: &str) -> Re
                 b,
                 r,
                 Method::GET,
-                &format!("/api/v2/devices/{device}/compliance"),
+                &format!("/api/v1/devices/{device}/compliance"),
                 None,
             )
             .await?;
@@ -55,7 +55,7 @@ async fn assign(
         b,
         r,
         Method::PUT,
-        &format!("/api/v2/devices/{device}/manual-fields/custom.is_loaner"),
+        &format!("/api/v1/devices/{device}/manual-fields/custom.is_loaner"),
         Some(request(
             revision,
             json!({"action":"set","value":{"kind":"boolean","value":value}}),
@@ -154,7 +154,7 @@ impl Fixture {
     }
     async fn rule(&self) -> Result<(Uuid, String, Value)> {
         let id = Uuid::new_v4();
-        let path = format!("/api/v2/compliance-rules/{id}");
+        let path = format!("/api/v1/compliance-rules/{id}");
         let written = ok(
             &mut self.browser.clone(),
             &self.router,

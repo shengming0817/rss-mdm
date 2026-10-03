@@ -39,7 +39,7 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
             &router,
             Method::GET,
             &format!(
-                "/api/identity-host/v1/tenants/{TENANT}/context",
+                "/api/v1/identity-host/tenants/{TENANT}/context",
                 TENANT = case_tenant()
             ),
             None,
