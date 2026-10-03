@@ -307,6 +307,36 @@ impl Fixture {
             lose_notify,
         })
     }
+    async fn profile_query_due(&self, operation: Uuid) -> Result<()> {
+        use sqlx::Connection;
+        let mut pg =
+            sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+                .await?;
+        // Advance only the durable read retry clock; request, receipt and eligibility remain intact.
+        let count = sqlx::query("UPDATE mdm_apple.attempts SET next_attempt=clock_timestamp() WHERE tenant_id=$1::uuid AND operation=$2 AND phase='observe'")
+            .bind(case_tenant()).bind(operation).execute(&mut pg).await?.rows_affected();
+        ensure!(count > 0);
+        pg.close().await?;
+        Ok(())
+    }
+    async fn grant_native_actions(&self, extra: &[&str]) -> Result<()> {
+        let mut operations = vec![
+            "enrollment",
+            "credentials",
+            "inventory_read",
+            "inventory_collect",
+            "configuration_write",
+            "operation_read",
+            "operation_cancel",
+        ];
+        operations.extend_from_slice(extra);
+        crate::test_support::identity::set_grants(
+            case_tenant(),
+            crate::test_support::case::admin(),
+            crate::test_support::identity::device_grants(Some(case_device()), &operations)?,
+        )
+        .await
+    }
     async fn enrollment(&mut self) -> Result<(Uuid, Uuid, String)> {
         let password = crate::enrollment::random();
         self.browser.operation = Some(Uuid::new_v4());

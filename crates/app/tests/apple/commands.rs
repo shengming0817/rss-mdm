@@ -8,6 +8,14 @@ fn task(kind: &str, fields: serde_json::Value) -> serde_json::Value {
 #[ignore = "MODULE=apple.commands: native command families over real mTLS and PG"]
 async fn native_families_keep_results_separate_from_effects() -> Result<()> {
     let mut f = Fixture::start().await?;
+    f.grant_native_actions(&[
+        "device_control",
+        "security_operate",
+        "account_write",
+        "software_deploy",
+        "device_update",
+    ])
+    .await?;
     let (peer, device) = f.ready_local_peer().await?;
     let query = f
         .create_operation(|_| task("InstalledApplicationList", json!({})))

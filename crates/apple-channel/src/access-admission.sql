@@ -4,7 +4,7 @@ WITH tables AS (
  ('scep_attempts','state'),('scep_attempts','transaction_id'),('scep_attempts','csr_digest'),('scep_attempts','spki'),('scep_attempts','serial'),('scep_attempts','fingerprint'),('scep_attempts','certificate'),('scep_attempts','registration'),('scep_attempts','not_before'),('scep_attempts','not_after'),
  ('devices','state'),('devices','identity_health'),('devices','bootstrap'),('devices','bootstrap_revision'),
  ('channels','state'),('channels','material'),('channels','material_digest'),('channels','token_revision'),('channels','next_push'),('channels','push_id'),('channels','push_lease_until'),('channels','push_status'),('channels','push_outcome'),('channels','push_failures'),
- ('profiles','retired_at'),('attempts','accepted'),('attempts','state'),('attempts','response'),('attempts','response_digest'),('attempts','received_at'),('attempts','next_attempt')
+ ('profiles','retired_at'),('attempts','native_outcome'),('attempts','accepted'),('attempts','state'),('attempts','response'),('attempts','response_digest'),('attempts','received_at'),('attempts','next_attempt')
 )
 SELECT has_schema_privilege(current_user,'mdm_apple','USAGE')
  AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['attempts','channels','devices','profiles','scep_attempts'] FROM tables WHERE relkind='r')

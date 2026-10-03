@@ -132,7 +132,7 @@ impl Fixture {
         );
         ensure!(self.operation(operation).await?["commandStatus"] == "published");
         // APNs-only table failure must affect readiness even while general DB checks still work.
-        sqlx::query("REVOKE SELECT ON mdm_apple.devices FROM mdm_command_runtime")
+        sqlx::query("REVOKE SELECT ON mdm_apple.channels FROM mdm_command_runtime")
             .execute(&mut pg)
             .await?;
         let mut unhealthy = false;
@@ -143,7 +143,7 @@ impl Fixture {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        sqlx::query("GRANT SELECT ON mdm_apple.devices TO mdm_command_runtime")
+        sqlx::query("GRANT SELECT ON mdm_apple.channels TO mdm_command_runtime")
             .execute(&mut pg)
             .await?;
         ensure!(

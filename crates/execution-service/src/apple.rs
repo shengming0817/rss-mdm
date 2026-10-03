@@ -415,8 +415,31 @@ async fn receive(
             ("observe", wire::Status::Acknowledged) => {
                 let (identifier, profile, present) =
                     op.request.profile_target().ok_or(Error::Conflict)?;
-                if profile_observed(&op.request, d, identifier, profile).ok() != Some(present) {
+                let Some(actual) = profile_observed(&op.request, d, identifier, profile).ok()
+                else {
                     return Ok(());
+                };
+                let matched = actual == present;
+                if !matched {
+                    let results = service.apple_results.clone();
+                    let tenant = service.tenant.to_string();
+                    let operation = op.id;
+                    let evidence = tx
+                        .with_connection(move |c| {
+                            Box::pin(
+                                async move { Ok(results.observations(c, tenant, operation).await) },
+                            )
+                        })
+                        .await?
+                        .map_err(Error::from)?;
+                    if !evidence
+                        .iter()
+                        .rev()
+                        .find(|r| r.phase == "execute")
+                        .is_some_and(|r| r.accepted && r.state == "error")
+                    {
+                        return Ok(());
+                    }
                 }
                 let owner = service.apple_profiles.clone();
                 let target = super::channels::AppleRegistration {
@@ -426,16 +449,26 @@ async fn receive(
                     generation: op.registration_generation,
                 };
                 let operation = op.id;
-                tx.with_connection(move |c| {
-                    Box::pin(async move { Ok(owner.confirm_profile(c, target, operation).await) })
-                })
-                .await?
-                .map_err(Error::from)?;
-                dc::DeviceEvent::Reported(op.request.digest(
-                    &service.protection,
-                    service.tenant,
-                    &op.device,
-                )?)
+                let confirmation = tx
+                    .with_connection(move |c| {
+                        Box::pin(
+                            async move { Ok(owner.confirm_profile(c, target, operation).await) },
+                        )
+                    })
+                    .await?;
+                match confirmation {
+                    Err(channels::Rejection::Conflict) if !matched => return Ok(()),
+                    result => result.map_err(Error::from)?,
+                }
+                if matched {
+                    dc::DeviceEvent::Reported(op.request.digest(
+                        &service.protection,
+                        service.tenant,
+                        &op.device,
+                    )?)
+                } else {
+                    dc::DeviceEvent::Rejected
+                }
             }
             _ => return Err(Error::Conflict.into()),
         }

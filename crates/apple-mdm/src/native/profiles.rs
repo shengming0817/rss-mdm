@@ -76,63 +76,24 @@ impl ProfileInput {
     /// Compare the complete returned manifest, never infer settings or compliance from its presence.
     /// Missing/encrypted content cannot establish that an earlier payload was replaced.
     pub fn observed(&self, report: &Dictionary) -> Result<bool, crate::Error> {
-        use crate::protocol::text;
-        if !crate::profile::presence(report, &self.identifier, self.uuid)? {
-            return Ok(false);
-        }
-        let item = report
-            .get("ProfileList")
-            .and_then(Value::as_array)
-            .and_then(|items| {
-                items.iter().filter_map(Value::as_dictionary).find(|d| {
-                    d.get("PayloadIdentifier").and_then(Value::as_string) == Some(&self.identifier)
-                })
-            })
-            .ok_or(crate::Error::Malformed)?;
-        if item
-            .get("IsEncrypted")
-            .is_some_and(|v| v.as_boolean() != Some(false))
-        {
-            return Err(crate::Error::Malformed);
-        }
-        let children = item
-            .get("PayloadContent")
-            .and_then(Value::as_array)
-            .ok_or(crate::Error::Malformed)?;
-        let mut identifiers = BTreeSet::new();
-        let mut uuids = BTreeSet::from([self.uuid]);
-        let mut actual = BTreeSet::new();
-        for value in children {
-            let child = value.as_dictionary().ok_or(crate::Error::Malformed)?;
-            let identifier = text(child, "PayloadIdentifier")?;
-            let uuid = Uuid::parse_str(text(child, "PayloadUUID")?)
-                .map_err(|_| crate::Error::Malformed)?;
-            if identifier.is_empty()
-                || uuid.is_nil()
-                || !identifiers.insert(identifier)
-                || !uuids.insert(uuid)
-                || child
-                    .get("PayloadVersion")
-                    .and_then(Value::as_unsigned_integer)
-                    != Some(1)
-            {
-                return Err(crate::Error::Malformed);
-            }
-            actual.insert((text(child, "PayloadType")?, identifier, uuid));
-        }
-        let expected = self
+        let objects = self
             .payloads
             .iter()
             .map(|p| {
-                Ok((
-                    p.payload_type().map_err(|_| crate::Error::Malformed)?,
-                    p.identifier.as_str(),
-                    p.uuid,
-                ))
+                Ok(ProfileObject {
+                    payload_type: p
+                        .payload_type()
+                        .map_err(|_| crate::Error::Malformed)?
+                        .into(),
+                    identifier: p.identifier.clone(),
+                    uuid: p.uuid,
+                    multiple: true,
+                })
             })
-            .collect::<Result<BTreeSet<_>, crate::Error>>()?;
-        Ok(actual == expected)
+            .collect::<Result<Vec<_>, crate::Error>>()?;
+        observed_manifest(report, &self.identifier, self.uuid, &objects)
     }
+
     /// Compile one scope-consistent profile and reject duplicate identities or singleton types.
     pub fn compile(&self, target: &Target<'_>) -> Result<CompiledProfile, Error> {
         identity(&self.identifier, self.uuid)?;
@@ -206,6 +167,71 @@ impl ProfileInput {
         Ok(CompiledProfile { bytes, objects })
     }
 }
+/// Compare a complete native payload manifest with retained compiled object identities.
+/// The envelope is identified separately; compiled manifests may include its Configuration object.
+pub fn observed_manifest(
+    report: &Dictionary,
+    identifier: &str,
+    uuid: Uuid,
+    objects: &[ProfileObject],
+) -> Result<bool, crate::Error> {
+    use crate::protocol::text;
+    if !crate::profile::presence(report, identifier, uuid)? {
+        return Ok(false);
+    }
+    let item = report
+        .get("ProfileList")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_dictionary)
+                .find(|d| d.get("PayloadIdentifier").and_then(Value::as_string) == Some(identifier))
+        })
+        .ok_or(crate::Error::Malformed)?;
+    if item
+        .get("IsEncrypted")
+        .is_some_and(|v| v.as_boolean() != Some(false))
+        || item
+            .get("PayloadVersion")
+            .and_then(Value::as_unsigned_integer)
+            != Some(1)
+    {
+        return Err(crate::Error::Malformed);
+    }
+    let children = item
+        .get("PayloadContent")
+        .and_then(Value::as_array)
+        .ok_or(crate::Error::Malformed)?;
+    let mut identifiers = BTreeSet::from([identifier]);
+    let mut uuids = BTreeSet::from([uuid]);
+    let mut actual = BTreeSet::new();
+    for value in children {
+        let child = value.as_dictionary().ok_or(crate::Error::Malformed)?;
+        let identifier = text(child, "PayloadIdentifier")?;
+        let uuid =
+            Uuid::parse_str(text(child, "PayloadUUID")?).map_err(|_| crate::Error::Malformed)?;
+        if identifier.is_empty()
+            || uuid.is_nil()
+            || !identifiers.insert(identifier)
+            || !uuids.insert(uuid)
+            || child
+                .get("PayloadVersion")
+                .and_then(Value::as_unsigned_integer)
+                != Some(1)
+        {
+            return Err(crate::Error::Malformed);
+        }
+        actual.insert((text(child, "PayloadType")?, identifier, uuid));
+    }
+    let expected = objects
+        .iter()
+        .filter(|p| p.uuid != uuid)
+        .map(|p| (p.payload_type.as_str(), p.identifier.as_str(), p.uuid))
+        .collect::<BTreeSet<_>>();
+    Ok(actual == expected)
+}
+
 fn identity(identifier: &str, uuid: Uuid) -> Result<(), Error> {
     if uuid.is_nil()
         || identifier.trim().is_empty()

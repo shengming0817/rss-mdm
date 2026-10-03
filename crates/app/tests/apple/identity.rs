@@ -185,7 +185,15 @@ impl Fixture {
         ensure!(wrong.0 == StatusCode::UNAUTHORIZED);
         let rejected = self.create_operation(|id| profile_task(id, false)).await?;
         let (id, _) = peer.next("InstallProfile").await?;
-        peer.manage("CommandFormatError", Some(id), None).await?;
+        let next = peer.manage("CommandFormatError", Some(id), None).await?;
+        ensure!(self.operation(rejected).await?["commandStatus"] == "published");
+        let (observe, _) = lifecycle::command(&next, "ProfileList")?;
+        peer.manage(
+            "Acknowledged",
+            Some(observe),
+            Some(("ProfileList", plist::Value::Array(vec![]))),
+        )
+        .await?;
         ensure!(self.operation(rejected).await?["commandStatus"] == "rejected");
         // Token revision fences a late APNs 410 from an earlier token.
         let queued = self.create_operation(|id| profile_task(id, true)).await?;

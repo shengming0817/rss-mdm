@@ -140,7 +140,7 @@ pub async fn lock(
             fields: rss_mdm_apple_mdm::native::input::Fields::from_plist(&fields)
                 .map_err(|_| Error::Malformed)?,
         };
-        let rights:i32=sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'").bind(&tenant).bind(p.registration()).fetch_one(&mut *c).await.map_err(db)?;
+        let rights:i32=sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state<>'retired'").bind(&tenant).bind(p.registration()).fetch_one(&mut *c).await.map_err(db)?;
         let rights = crate::native::rights(rights);
         let target = rss_mdm_apple_mdm::native::Target {
             context: &context,

@@ -50,7 +50,7 @@ GRANT UPDATE(response) ON TABLE mdm_apple.attempts TO mdm_command_runtime;
 GRANT UPDATE(response_digest) ON TABLE mdm_apple.attempts TO mdm_access;
 GRANT UPDATE(response_digest) ON TABLE mdm_apple.attempts TO mdm_command_runtime;
 
-GRANT UPDATE(native_outcome) ON mdm_apple.attempts TO mdm_command_runtime;
+GRANT UPDATE(native_outcome) ON mdm_apple.attempts TO mdm_access, mdm_command_runtime;
 GRANT UPDATE(accepted) ON TABLE mdm_apple.attempts TO mdm_access;
 GRANT UPDATE(accepted) ON TABLE mdm_apple.attempts TO mdm_command_runtime;
 

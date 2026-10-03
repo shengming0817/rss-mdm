@@ -14,7 +14,7 @@ CN 为 enrollment UUID 的 32 位小写 hex 与 attempt UUID 的 32 位小写 he
 
 ## 用户通道与 Bootstrap Token
 
-原生用户 GUID 绑定当前租户、设备注册及世代，共用设备身份凭据。UserAuthenticate 不授予资源权限；用户 TokenUpdate 分别保存加密 token/PushMagic、revision、租约与失效状态。operation 的 `target` 为 `{"kind":"user","userId":"规范小写非零 UUID"}`。设备前提只从设备通道查询，实际用户命令、回执和 ProfileList 只在该用户通道关联。用户 410 不停用设备或其他用户；设备 CheckOut/撤销/换代统一退役所有通道、Profile history 和 Bootstrap 材料。
+原生用户 GUID 绑定当前租户、设备注册及世代，共用设备身份凭据。UserAuthenticate 不授予资源权限；用户 TokenUpdate 分别保存加密 token/PushMagic、revision、租约与失效状态。operation 的 `target` 为 `{"kind":"user","userId":"规范小写非零 UUID"}`。设备前提只从设备通道查询，实际用户命令、回执和 ProfileList 只在该用户通道关联。每个通道的 410 只停用该通道；设备 token 失效后，已取得设备前提的用户命令仍可收发。设备 CheckOut/撤销/换代统一退役所有通道、Profile history 和 Bootstrap 材料。
 
 GetBootstrapToken/SetBootstrapToken 由已绑定的设备证书认证，只有同世代已接受的原生证据明确确认监督、ADE 及 device enrollment 后可使用；缺失证据返回 Unsupported。没有 token 时 GET 成功但省略 BootstrapToken，SET 缺失或零长度 token 清除 escrow。材料按租户、注册世代、用途及 revision 加密，响应禁止缓存。此接口不把 token、UserID 或 AuthToken 变成浏览器业务授权。
 
@@ -40,7 +40,7 @@ GetBootstrapToken/SetBootstrapToken 由已绑定的设备证书认证，只有�
 
 Profile 使用 `request.kind:"install_profile"` 和 `profile`，其中根及每个 payload 分别指定原生 identifier/UUID、metadata、schema 路径与 fields；移除使用 `request.kind:"remove_profile"`、identifier 和拥有的 UUID。完整输入见 [Profile 类型](../../crates/apple-mdm/src/native/profiles.rs)。`PayloadVersion=1` 属于 Apple 格式，`inputVersion` 属于内容版本。编译器决定 System/User scope，拒绝重复身份、单实例冲突和无效同 Profile 证书引用；客户端不能覆盖这些编译器字段。
 
-同一注册世代及通道内的 identifier 串行。已发出的未知副作用继续占有 guards；取消、超时或错误不释放它们。Profile owner 加密保存完整派发 manifest；替换或移除必须经当前、关联、接受的 ProfileList 证据确认。安装观测同时比较根和全部 payload 的 type/identifier/UUID/version；缺失、加密或不完整清单不证明替换完成。旧世代、旧尝试、晚到或越权回执不能覆盖新所有权。
+同一注册世代及通道内的 identifier 串行。已发出的未知副作用继续占有 guards；取消、超时或错误回执本身不释放它们。Profile owner 加密保存完整派发 manifest；替换或移除必须经当前、关联、接受的 ProfileList 证据确认。安装观测同时比较根和全部 payload 的 type/identifier/UUID/version；缺失、加密或不完整清单不证明替换完成。同一操作的接受 Error 后，完整清单证明安装目标确实缺席，或精确证明待移除的旧安装及全部 payload 仍在，才终结为 rejected 并退休该次失败预留；旧安装所有权继续保留。旧世代、旧尝试、晚到或越权回执不能覆盖新所有权。
 
 | 证据 | 含义 |
 | --- | --- |
@@ -51,6 +51,7 @@ Profile 使用 `request.kind:"install_profile"` 和 `profile`，其中根及每�
 | NotNow | 延迟重投同一 UUID 和不可变请求 |
 | Profile Error / CommandFormatError | 保留未知副作用，独立查询存在性 |
 | 完整且接受的 ProfileList 匹配 | applied，仅证明原生对象存在性 |
+| Error 后完整反向证据 | rejected，仅释放本次失败预留，保留旧安装 guards |
 
 不重投已发送且结果未知的变更；只读恢复复用现有 attempt 流并有次数与期限上限。Profile 存在、OS 设置效果及合规分别记录，`effect:"unknown"` 不证明防火墙或其他设置已生效。查询、取消和重新批准沿用 [Execution](device-operations.md) 的 requestId 与 expectedRevision 契约。
 

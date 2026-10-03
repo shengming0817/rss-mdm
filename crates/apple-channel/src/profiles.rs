@@ -165,15 +165,78 @@ pub(crate) async fn dispatch(
 }
 pub(crate) async fn confirm(
     c: &mut PgConnection,
+    key: &Protector,
     target: &AppleRegistration,
     operation: Uuid,
 ) -> Result<(), Error> {
-    let row=sqlx::query("SELECT identifier,user_key FROM mdm_apple.profiles p WHERE p.tenant_id=$1::uuid AND p.operation=$2 AND p.device=$3 AND p.registration=$4 AND p.generation=$5 AND p.retired_at IS NULL AND p.dispatched_at IS NOT NULL AND EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE a.tenant_id=p.tenant_id AND a.operation=p.operation AND a.phase='observe' AND a.state='acknowledged' AND a.accepted) FOR UPDATE")
+    let row=sqlx::query("SELECT * FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND operation=$2 AND device=$3 AND registration=$4 AND generation=$5 AND retired_at IS NULL AND dispatched_at IS NOT NULL FOR UPDATE")
         .bind(&target.tenant).bind(operation).bind(&target.device).bind(target.registration).bind(target.generation).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Conflict)?;
     let identifier: String = row.try_get("identifier").map_err(db)?;
     let user: String = row.try_get("user_key").map_err(db)?;
-    sqlx::query("UPDATE mdm_apple.profiles SET retired_at=floor(extract(epoch FROM clock_timestamp()))::bigint WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND registration=$4 AND generation=$5 AND identifier=$6 AND operation<>$7 AND retired_at IS NULL")
-        .bind(&target.tenant).bind(&target.device).bind(user).bind(target.registration).bind(target.generation).bind(identifier).bind(operation).execute(&mut *c).await.map_err(db)?;
+    let uuid: Uuid = row.try_get("profile").map_err(db)?;
+    let present: bool = row.try_get("present").map_err(db)?;
+    // Select the latest attempt before testing eligibility; an earlier ACK cannot supersede it.
+    let observe=sqlx::query("SELECT id,state,accepted,response FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3 AND generation=$4 AND user_key=$5 AND phase='observe' ORDER BY ordinal DESC LIMIT 1 FOR UPDATE")
+        .bind(&target.tenant).bind(operation).bind(target.registration).bind(target.generation).bind(&user).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Conflict)?;
+    if !observe.try_get::<bool, _>("accepted").map_err(db)?
+        || observe.try_get::<String, _>("state").map_err(db)? != "acknowledged"
+    {
+        return Err(Error::Conflict);
+    }
+    let sealed: Vec<u8> = observe.try_get("response").map_err(db)?;
+    let plain = crate::protection::open(
+        key,
+        &target.tenant,
+        target.registration,
+        target.generation,
+        observe.try_get("id").map_err(db)?,
+        crate::protection::Part::Response,
+        &sealed,
+    )?;
+    let report = crate::protocol::decode(plain.expose())?;
+    let actual = rss_mdm_apple_mdm::profile::presence(&report, &identifier, uuid)
+        .map_err(|_| Error::Conflict)?;
+    let matched = if present {
+        // A root with partial or different payloads is not absence and does not release ownership.
+        rss_mdm_apple_mdm::native::profiles::observed_manifest(
+            &report,
+            &identifier,
+            uuid,
+            &open(key, &row)?,
+        )
+        .unwrap_or(false)
+    } else {
+        !actual
+    };
+    if matched {
+        sqlx::query("UPDATE mdm_apple.profiles SET retired_at=floor(extract(epoch FROM clock_timestamp()))::bigint WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND registration=$4 AND generation=$5 AND identifier=$6 AND operation<>$7 AND retired_at IS NULL")
+            .bind(&target.tenant).bind(&target.device).bind(&user).bind(target.registration).bind(target.generation).bind(&identifier).bind(operation).execute(&mut *c).await.map_err(db)?;
+    } else {
+        let failed=sqlx::query_scalar::<_,bool>("SELECT accepted AND state='error' FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3 AND generation=$4 AND user_key=$5 AND phase='execute' ORDER BY ordinal DESC LIMIT 1")
+            .bind(&target.tenant).bind(operation).bind(target.registration).bind(target.generation).bind(&user).fetch_optional(&mut *c).await.map_err(db)?.unwrap_or(false);
+        if !failed || (present && actual) {
+            return Err(Error::Conflict);
+        }
+        if !present {
+            // A failed removal needs the precise previously confirmed manifest, not root presence alone.
+            let old=sqlx::query("SELECT * FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND registration=$4 AND generation=$5 AND identifier=$6 AND profile=$7 AND operation<>$8 AND retired_at IS NULL AND present AND observed_at IS NOT NULL AND dispatched_at IS NOT NULL LIMIT 2 FOR UPDATE")
+                .bind(&target.tenant).bind(&target.device).bind(&user).bind(target.registration).bind(target.generation).bind(&identifier).bind(uuid).bind(operation).fetch_all(&mut *c).await.map_err(db)?;
+            if old.len() != 1
+                || !rss_mdm_apple_mdm::native::profiles::observed_manifest(
+                    &report,
+                    &identifier,
+                    uuid,
+                    &open(key, &old[0])?,
+                )
+                .unwrap_or(false)
+            {
+                return Err(Error::Conflict);
+            }
+        }
+        // Retire only this failed reservation; the old installation and its guards remain owned.
+        sqlx::query("UPDATE mdm_apple.profiles SET retired_at=floor(extract(epoch FROM clock_timestamp()))::bigint WHERE tenant_id=$1::uuid AND operation=$2")
+            .bind(&target.tenant).bind(operation).execute(&mut *c).await.map_err(db)?;
+    }
     sqlx::query("UPDATE mdm_apple.profiles SET observed_at=coalesce(observed_at,floor(extract(epoch FROM clock_timestamp()))::bigint) WHERE tenant_id=$1::uuid AND operation=$2")
         .bind(&target.tenant).bind(operation).execute(c).await.map_err(db)?;
     Ok(())

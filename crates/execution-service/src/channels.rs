@@ -136,7 +136,7 @@ pub trait AppleProfiles: Send + Sync {
         target: AppleRegistration,
         command: AppleCommand,
     ) -> Pending<'a, ()>;
-    /// Flow calls only after a current accepted, correlated manifest proves the intended presence.
+    /// Confirm current manifest evidence; the channel also proves failed mutations before releasing reservations.
     fn confirm_profile<'a>(
         &'a self,
         c: &'a mut PgConnection,

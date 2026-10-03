@@ -215,6 +215,7 @@ async fn user_commands_push_and_retirement_are_scoped() -> Result<()> {
 #[ignore = "MODULE=apple.users: Bootstrap Token escrow over real mTLS and PG"]
 async fn bootstrap_escrow_requires_evidence_and_clears_secrets() -> Result<()> {
     let mut f = Fixture::start().await?;
+    f.grant_native_actions(&["device_control"]).await?;
     let (peer, device) = f.ready_local_peer().await?;
     let get = protocol::dictionary([
         ("MessageType", "GetBootstrapToken".into()),
@@ -465,6 +466,7 @@ async fn same_profile_identifier_has_independent_user_and_device_ownership() -> 
 #[ignore = "MODULE=apple.users: another scope cannot truncate user dispatch or APNs pending scan"]
 async fn user_queue_survives_a_full_page_of_received_device_commands() -> Result<()> {
     let mut f = Fixture::start().await?;
+    f.grant_native_actions(&["device_control"]).await?;
     let (peer, device) = f.ready_local_peer().await?;
     let user = Uuid::new_v4();
     peer.user_token(user, 46).await?;
@@ -500,6 +502,93 @@ async fn user_queue_survives_a_full_page_of_received_device_commands() -> Result
     )
     .await?;
     ensure!(f.operation(op).await?["commandStatus"] == "applied");
+    drop(device);
+    f.close().await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=apple.users: device APNs 410 cannot revoke an active user protocol channel"]
+async fn device_push_invalidation_preserves_user_idle_and_receipts() -> Result<()> {
+    let mut f = Fixture::start().await?;
+    let (peer, device) = f.ready_local_peer().await?;
+    let user = Uuid::new_v4();
+    peer.user_token(user, 47).await?;
+    let profile = Uuid::new_v4();
+    let mut dock = profile_task(profile, true);
+    dock["request"]["profile"]["payloads"][0]["schema"] = json!("mdm/profiles/com.apple.dock.yaml");
+    dock["request"]["profile"]["payloads"][0]["fields"] =
+        json!({"autohide":{"type":"boolean","value":true}});
+    let operation = user_operation(&mut f, user, dock).await?;
+    resolve_user(&peer).await?;
+    let next = peer.user_manage(user, "Idle", None, None).await?;
+    let (execute, _) = command(&next.1, "InstallProfile")?;
+    let next = peer
+        .user_manage(user, "Acknowledged", Some(execute), None)
+        .await?;
+    let (observe, _) = command(&next.1, "ProfileList")?;
+    let device_operation = f.create_operation(|_| json!({"platform":"macos","request":{"kind":"command","command":{"requestType":"InstalledApplicationList","fields":{}}}})).await?;
+    let configuration = f.app.apple()?.channel.push_fixture().configuration;
+    let mut wake = f
+        .app
+        .execution
+        .apple_wake(&configuration)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("missing pending wake"))?;
+    if !wake.user_key.is_empty() {
+        ensure!(wake.user_key == user.to_string());
+        f.app
+            .execution
+            .apple_pushed(
+                &wake,
+                Some(200),
+                rss_mdm_execution_service::channels::PushOutcome::Accepted,
+            )
+            .await?;
+        wake = f
+            .app
+            .execution
+            .apple_wake(&configuration)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("missing device wake"))?;
+    }
+    ensure!(wake.user_key.is_empty());
+    f.app
+        .execution
+        .apple_pushed(
+            &wake,
+            Some(410),
+            rss_mdm_execution_service::channels::PushOutcome::Unregistered,
+        )
+        .await?;
+    ensure!(peer.user_manage(user, "Idle", None, None).await?.0 == StatusCode::OK);
+    let reply = peer
+        .user_manage(
+            user,
+            "Acknowledged",
+            Some(observe),
+            Some(("ProfileList", profile_manifest(profile, "com.apple.dock"))),
+        )
+        .await?;
+    ensure!(
+        reply.0 == StatusCode::OK && f.operation(operation).await?["commandStatus"] == "applied"
+    );
+    let idle = protocol::dictionary([
+        (
+            "UDID",
+            crate::test_support::case::name("rss-t2-apple").into(),
+        ),
+        ("Status", "Idle".into()),
+    ]);
+    ensure!(peer.send("/mdm", idle).await?.0 == StatusCode::UNAUTHORIZED);
+    peer.token_value(48).await?;
+    let (execute, _) = peer.next("InstalledApplicationList").await?;
+    peer.manage(
+        "Acknowledged",
+        Some(execute),
+        Some(("InstalledApplicationList", plist::Value::Array(vec![]))),
+    )
+    .await?;
+    ensure!(f.operation(device_operation).await?["commandStatus"] == "applied");
     drop(device);
     f.close().await
 }

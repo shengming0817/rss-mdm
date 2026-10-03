@@ -27,7 +27,7 @@ impl channels::AppleProfiles for Store {
         operation: Uuid,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
-            crate::profiles::confirm(c, &target, operation)
+            crate::profiles::confirm(c, &self.protection, &target, operation)
                 .await
                 .map_err(Into::into)
         })
@@ -474,7 +474,7 @@ async fn current(
     crate::device::store::lock_channel(c, &p.tenant().to_string(), p.device(), p.channel()).await?;
     crate::device::store::revalidate_source(c, p, rss_mdm_inventory::ReportSource::MdmApple)
         .await?;
-    let valid=sqlx::query_scalar::<_,bool>("SELECT true FROM mdm_apple.devices d JOIN mdm_apple.channels ch USING(tenant_id,registration) WHERE d.tenant_id=$1::uuid AND d.registration=$2::uuid AND d.state='active' AND d.udid=$3 AND ch.user_key=$4 AND ch.generation=$5 AND ch.state='active' FOR UPDATE OF d,ch").bind(p.tenant().to_string()).bind(p.registration()).bind(udid).bind(user_key).bind(p.generation()).fetch_optional(c).await.map_err(db)?.unwrap_or(false);
+    let valid=sqlx::query_scalar::<_,bool>("SELECT true FROM mdm_apple.devices d JOIN mdm_apple.channels ch USING(tenant_id,registration) WHERE d.tenant_id=$1::uuid AND d.registration=$2::uuid AND d.state<>'retired' AND d.udid=$3 AND ch.user_key=$4 AND ch.generation=$5 AND ch.state='active' FOR UPDATE OF d,ch").bind(p.tenant().to_string()).bind(p.registration()).bind(udid).bind(user_key).bind(p.generation()).fetch_optional(c).await.map_err(db)?.unwrap_or(false);
     if !valid {
         return Err(Error::Unauthorized);
     }
@@ -494,7 +494,7 @@ async fn send_command(
         }
         return super::native::resolve(c, &apple.protection, p, command).await;
     };
-    let rights:i32=sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'").bind(p.tenant().to_string()).bind(p.registration()).fetch_one(&mut *c).await.map_err(db)?;
+    let rights:i32=sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state<>'retired'").bind(p.tenant().to_string()).bind(p.registration()).fetch_one(&mut *c).await.map_err(db)?;
     let rights = super::native::rights(rights);
     let target = native::Target {
         context: &context,
