@@ -111,6 +111,18 @@ impl ExecutionService {
                 Err(e) => return Err(Error::from(e)),
             };
             #[cfg(feature = "integration")]
+            {
+                let gate = self
+                    .diagnostic_association_gate
+                    .lock()
+                    .expect("diagnostic association gate")
+                    .take();
+                if let Some((ready, resume)) = gate {
+                    ready.notify_one();
+                    resume.notified().await;
+                }
+            }
+            #[cfg(feature = "integration")]
             if let Some(fault) = self
                 .diagnostic_commit_fault
                 .lock()

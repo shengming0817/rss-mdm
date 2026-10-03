@@ -74,6 +74,8 @@ pub fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
     rss_reconcile::Scope::new(tenant, DOMAIN).expect("fixed scope")
 }
 
+#[cfg(feature = "integration")]
+type DiagnosticAssociationGate = (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>);
 pub struct ExecutionService {
     pub(crate) inputs: Arc<Inputs>,
     pub(crate) source: Arc<dyn source_authority::SourceAuthority>,
@@ -97,6 +99,8 @@ pub struct ExecutionService {
     #[cfg(feature = "integration")]
     pub(crate) diagnostic_commit_fault:
         Mutex<Option<rss_transactional_messaging_postgres::PgTransactionFault>>,
+    #[cfg(feature = "integration")]
+    pub(crate) diagnostic_association_gate: Mutex<Option<DiagnosticAssociationGate>>,
 }
 pub struct Dependencies {
     pub inputs: Arc<Inputs>,
@@ -124,6 +128,8 @@ impl ExecutionService {
             readiness: Default::default(),
             #[cfg(feature = "integration")]
             diagnostic_commit_fault: Mutex::new(None),
+            #[cfg(feature = "integration")]
+            diagnostic_association_gate: Mutex::new(None),
             inputs: dependencies.inputs,
             source: dependencies.source,
             protection: dependencies.protection,
@@ -173,6 +179,17 @@ impl ExecutionService {
 
 #[cfg(feature = "integration")]
 impl ExecutionService {
+    /// Pause after real file work and before the fenced association transaction.
+    pub fn pause_diagnostic_association_after_file_work(
+        &self,
+        ready: Arc<tokio::sync::Notify>,
+        resume: Arc<tokio::sync::Notify>,
+    ) {
+        *self
+            .diagnostic_association_gate
+            .lock()
+            .expect("diagnostic association gate") = Some((ready, resume));
+    }
     /// Inject only the association transaction after real diagnostic content publication.
     pub fn inject_diagnostic_association_fault(
         &self,

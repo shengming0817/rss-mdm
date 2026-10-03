@@ -305,22 +305,38 @@ impl ExecutionService {
             if op.revision!=change.expected_revision{return Err(Error::Conflict.into());}
             let command=service.required_command(tx,&op).await?;
             let now=storage::now(tx).await?;
-            if command.status().is_terminal() || now>=op.request.deadline {return Err(Error::Conflict.into());}
+            let mut diagnostic = if native::diagnostic::input(&op.request.task).is_some() {
+                let tenant=service.tenant;let id=op.id;
+                Some(tx.with_connection(move|c|Box::pin(async move {Ok(native::diagnostic::load(c,tenant,id).await)})).await??)
+            } else {None};
+            let cancel_pending = !approve && diagnostic.as_ref().is_some_and(native::diagnostic::State::pending);
+            if (command.status().is_terminal() && !cancel_pending) || now>=op.request.deadline {return Err(Error::Conflict.into());}
             let approval=if approve {
                 if !matches!(op.approval,ExecutionAuthority::User {..}) {return Err(Error::Conflict.into());}
                 if storage::current_registration(tx,device,op.request.task.purpose()?).await? != (op.registration,op.registration_generation) {return Err(Error::Conflict.into());}
                 ExecutionAuthority::from_proof(&auth,proof,device,op.approval.required())?
             } else {
-                let transition=service.store.cancel(tx,op.scope,&op.command_id()?,op.coordinate).await?;
-                if transition.outcome==dc::Outcome::OutOfOrder {return Err(Error::Conflict.into());}
+                if cancel_pending {
+                    let state=diagnostic.as_mut().expect("pending diagnostic");
+                    state.transfer=native::diagnostic::Transfer::Abandoned;
+                    state.reason=Some("diagnostic_cancelled".into());
+                }
+                // A completed device output remains Applied; cancellation stops only its pending transfer.
+                if !command.status().is_terminal() {
+                    let transition=service.store.cancel(tx,op.scope,&op.command_id()?,op.coordinate).await?;
+                    if transition.outcome==dc::Outcome::OutOfOrder {return Err(Error::Conflict.into());}
+                }
                 op.approval
             };
             let approval=checked_input(serde_json::to_string(&approval))?;let tenant=service.tenant.to_string();let operation_key=id.to_string();
-            tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_commands.operations SET approval=$3::jsonb,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(operation_key).bind(approval).execute(c).await?;Ok(())})).await?;
+            let diagnostic=diagnostic.map(|state|checked_input(serde_json::to_value(state))).transpose()?;
+            tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_commands.operations SET approval=$3::jsonb,diagnostic_progress=coalesce($4::jsonb,diagnostic_progress),revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(operation_key).bind(approval).bind(diagnostic).execute(c).await?;Ok(())})).await?;
             crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRecovery).await?;
             crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Apple).await?;
             let result=json!({"operationId":id,"revision":op.revision+1});
-            let fact = Fact::business(audit, &event_key, &fingerprint, 200, "success", None)?; service.audit_store.append_in(tx, &fact, false).await?;receipt(tx,change.request_id,id,fingerprint,&result,audit).await?;proof.check_live()?;Ok(result)
+            let fact = Fact::business(audit, &event_key, &fingerprint, 200, "success", None)?;
+            let fact=if cancel_pending {fact.with_details(json!({"diagnosticTransfer":"abandoned","reason":"diagnostic_cancelled"}))?}else{fact};
+            service.audit_store.append_in(tx, &fact, false).await?;receipt(tx,change.request_id,id,fingerprint,&result,audit).await?;proof.check_live()?;Ok(result)
         })).await
     }
 }

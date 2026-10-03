@@ -628,3 +628,111 @@ async fn cancelled_and_replaced_registration_do_not_materialize() -> anyhow::Res
     host.close().await?;
     Ok(())
 }
+
+#[cfg(feature = "integration")]
+#[tokio::test]
+#[ignore = "make t2 MODULE=execution.commands.windows"]
+async fn completed_output_cancels_pending_transfer_before_and_after_file_work() -> anyhow::Result<()>
+{
+    let mut host = crate::windows::test_support::Host::open().await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    warm(&peer, 1400).await?;
+    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    grants(&mut client, Uuid::new_v4(), 0, true).await?;
+    for (session, in_flight) in [(1401, false), (1402, true)] {
+        create(&mut client).await?;
+        let bytes = collect(&peer, &mut client, session, false).await?;
+        let before = operation(&mut client).await?;
+        ensure!(
+            before["commandStatus"] == "applied"
+                && before["observation"]["diagnostic"]["artifact"].is_null()
+        );
+        let mut waiting = None;
+        if in_flight {
+            let ready = Arc::new(tokio::sync::Notify::new());
+            let resume = Arc::new(tokio::sync::Notify::new());
+            client
+                .app
+                .execution
+                .pause_diagnostic_association_after_file_work(ready.clone(), resume.clone());
+            let worker = Client::with_browser(
+                client.router.clone(),
+                client.app.clone(),
+                client.browser.clone(),
+            );
+            let task = tokio::spawn(async move { recover(&worker).await });
+            tokio::time::timeout(Duration::from_secs(5), ready.notified()).await?;
+            let directory = client
+                .app
+                .content_writer
+                .as_ref()
+                .unwrap()
+                .config
+                .directory
+                .join(case_tenant());
+            ensure!(
+                std::fs::read_dir(directory)?
+                    .filter_map(Result::ok)
+                    .any(|entry| entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("diagnostic-")),
+                "test never reached physical publication"
+            );
+            waiting = Some((task, resume));
+        }
+        let request = json!({"requestId":Uuid::new_v4(),"expectedRevision":before["revision"]});
+        let path = format!("/{}/cancel", client.operation);
+        let cancelled = client
+            .call(Method::POST, &path, Some(request.clone()))
+            .await?;
+        ensure!(
+            cancelled.0 == StatusCode::OK,
+            "completed-output cancellation: {cancelled:?}"
+        );
+        ensure!(
+            cancelled.1["revision"].as_i64() == before["revision"].as_i64().map(|n| n + 1),
+            "cancellation revision advanced twice"
+        );
+        let replay = client.call(Method::POST, &path, Some(request)).await?;
+        ensure!(
+            replay == cancelled,
+            "cancellation replay changed its receipt"
+        );
+        if let Some((task, resume)) = waiting {
+            resume.notify_one();
+            task.await??;
+        } else {
+            recover(&client).await?;
+        }
+        let after = operation(&mut client).await?;
+        ensure!(
+            after["commandStatus"] == "applied"
+                && after["observation"]["diagnostic"]["transfer"] == "abandoned"
+                && after["observation"]["diagnostic"]["reason"] == "diagnostic_cancelled"
+                && after["observation"]["diagnostic"]["receivedBytes"] == bytes.len()
+                && after["observation"]["diagnostic"]["artifact"].is_null(),
+            "cancelled transfer changed completed device facts: {after}"
+        );
+        let stale = client
+            .call(
+                Method::POST,
+                &path,
+                Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":before["revision"]})),
+            )
+            .await?;
+        ensure!(
+            stale.0 == StatusCode::CONFLICT,
+            "stale cancellation accepted"
+        );
+        let mut pg =
+            sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+                .await?;
+        let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_content.diagnostic_artifacts WHERE tenant_id=$1::uuid AND operation=$2").bind(case_tenant()).bind(client.operation).fetch_one(&mut pg).await?;
+        ensure!(count == 0, "cancelled file acquired an association");
+        pg.close().await?;
+    }
+    host.close().await?;
+    Ok(())
+}

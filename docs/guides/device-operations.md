@@ -68,7 +68,7 @@ Windows 已登记的 DiagnosticLog Provider、Collector 或 Channel 可沿现有
 
 普通 operation 查询仅投影诊断阶段、长度和受限制品元数据，隐藏所有诊断 Results 原文。文件完成转存及不可变关联后，元数据给出 `downloadUrl`，指向 `GET /api/v3/devices/{device}/operations/{operation}/diagnostic-artifact`。每次下载都核验当前 `operation_read` 与 `device_diagnostics`、租户、设备、当前注册世代及保留期限；全部文件读取和响应内容准备前后分别检查，响应禁止缓存。保留期结束后查询显示 `transfer: expired`、`reason: diagnostic_retention_expired`，并保留固定的 `expiresAt`；持久化的已完成转存事实不变。
 
-转存沿现有命令恢复 worker 运行：先提交接受事实，事务外完成加密文件 I/O，再在原租约保护的短事务内重新核验资格、登记关联与审计。重复及重启恢复使用相同物理上传身份；转存重试不会延长保留期。取消、到期、旧世代或当前授权失效时停止新的取块、转存和关联，保留既有事实；重新授权不会自动恢复已停止的文件。无引用的孤儿文件由现有 content 清理回收，已下载响应与正在关联的文件使用同一保护锁。
+转存沿现有命令恢复 worker 运行：先提交接受事实，事务外完成加密文件 I/O，再在原租约保护的短事务内重新核验资格、登记关联与审计。重复及重启恢复使用相同物理上传身份；转存重试不会延长保留期。设备输出已 Applied 而文件仍 Pending 时，取消只将转存置为 Abandoned，保留 Applied 与已接受字节；尚在事务外写入的文件不得再登记关联。取消、到期、旧世代或当前授权失效时停止新的取块、转存和关联，保留既有事实；重新授权不会自动恢复已停止的文件。无引用的孤儿文件由现有 content 清理回收，已下载响应与正在关联的文件使用同一保护锁。
 
 Apple 只返回固定原生命令可提供的事实。Enhanced Log Collection 使用 Apple 要求的用户交互与 AppleCare 会话条件，不向 RSS 声明任意文件上传；无法建立真实原生映射时保持 Unsupported。平台依据为 [Microsoft DiagnosticLog CSP](https://learn.microsoft.com/en-us/windows/client-management/mdm/diagnosticlog-csp) 和 [Apple 固定 command schema](../../crates/native-schema/sources/lock.json)。这些后端协议测试不能替代真实设备验收。
 
