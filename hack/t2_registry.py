@@ -960,6 +960,8 @@ TOOL_INPUTS = {
     'hack/t2_execution.py': ('test_t2_execution', 'test_t2_runner'),
     'hack/t2_processes.py': ('test_t2_execution', 'test_t2_fixtures', 'test_t2_runner'),
     'hack/source_fixtures.py': ('test_source_t2',),
+    'hack/s3_fixtures.py': ('test_s3_fixtures',),
+    'fixtures/s3-provider.lock.json': ('test_s3_fixtures',),
     'hack/t2_environment.py': ('test_t2_environment', 'test_t2_runner'),
     'hack/t2_fixtures.py': ('test_t2_fixtures', 'test_t2_environment', 'test_t2_runner'),
     'hack/verification_result.py': ('test_t2_runner', 'test_t2_modules', 'test_ci_selection', 'test_ci'),
@@ -974,7 +976,7 @@ TOOL_INPUTS = {
     'hack/candidate_runtime.py': ('test_candidate_smoke',),
     'hack/candidate_smoke.py': ('test_candidate_smoke',),
 }
-T1_INPUTS = ('crates/app/tests/agent_pki/health.rs','crates/certificate/tests/agent.rs','crates/certificate-archive-service/tests/behavior.rs','crates/authorization-service/tests/unit.rs','crates/inventory-service/tests/runtime.rs','crates/software-service/tests/management/*') + tuple(f'crates/{name}/tests/*' for name in (
+T1_INPUTS = ('crates/content-s3/tests/unit.rs',) + ('crates/app/tests/agent_pki/health.rs','crates/certificate/tests/agent.rs','crates/certificate-archive-service/tests/behavior.rs','crates/authorization-service/tests/unit.rs','crates/inventory-service/tests/runtime.rs','crates/software-service/tests/management/*') + tuple(f'crates/{name}/tests/*' for name in (
     'inventory', 'group', 'scope', 'policy', 'resource', 'software-release',
     'compliance', 'agent-wire', 'windows-mdm', 'apple-mdm', 'content-service')) + (
     'crates/app/tests/agent/unit.rs',
@@ -1467,3 +1469,7 @@ for provider in ('flow-service','inventory-service','authorization-service','aud
     prefix=f'crates/{provider}/'
     consumers={name for name,module in MODULES.items() if any(path.startswith(prefix) for path in module.production_inputs)}
     consume_dependencies(consumers, dev=f'rss-mdm-{provider}')
+
+add('content.s3', build=Build('rss-mdm-content-s3'), selectors=('s3_tests::',), profile='none', fixtures=('s3',),
+    sources=('crates/content-s3/src/*',), tests=('crates/content-s3/tests/s3.rs',),
+    support=('hack/s3_fixtures.py','fixtures/s3-provider.lock.json'))

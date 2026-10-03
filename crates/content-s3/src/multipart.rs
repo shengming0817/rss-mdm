@@ -14,11 +14,15 @@ impl Store {
     }
     fn upload_key(&self, upload: &Upload, budget: &Budget) -> Result<String> {
         self.upload(upload.write.clone(), &upload.id)?;
-        self.check_write(&upload.write, budget)
+        self.check_budget(budget, 0)?;
+        self.key(&upload.write.target)
     }
     /// Caller persists Write before polling. Initiation can succeed without delivering an ID.
     pub async fn begin(&self, write: &Write, budget: Budget) -> Result<Mutation<Upload>> {
         let key = self.check_write(write, &budget)?;
+        if write.content.length == 0 {
+            return Err(Error::Input);
+        }
         let _permit = self.permit()?;
         let request = self
             .client
@@ -198,6 +202,7 @@ impl Store {
     ) -> Result<Mutation<Written>> {
         let key = self.upload_key(upload, &budget)?;
         validate_manifest(upload, parts)?;
+        self.check_budget(&budget, upload.write.content.length)?;
         let _permit = self.permit()?;
         match self.status_inner(upload, &budget).await? {
             UploadState::Active(actual) if actual == parts => (),

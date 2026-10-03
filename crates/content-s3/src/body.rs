@@ -166,3 +166,22 @@ pub(crate) fn download(
         },
     ))
 }
+
+pub(crate) async fn empty_input(
+    source: &mut ByteStreamInput,
+    content: Content,
+    budget: &Budget,
+) -> Result<()> {
+    if content.length != 0 {
+        return Ok(());
+    }
+    if content.sha256 != <[u8; 32]>::from(Sha256::digest([])) {
+        return Err(Error::Integrity);
+    }
+    while let Some(bytes) = next(source, budget).await? {
+        if !bytes.is_empty() {
+            return Err(Error::Integrity);
+        }
+    }
+    Ok(())
+}

@@ -42,6 +42,7 @@ class RunFixtures:
         self.case_contexts = {}
         self.shared = {}
         self.hosts = {}
+        self.s3 = None
 
     def __enter__(self):
         self.process_ownership = owned_by(self.builds.processes)
@@ -71,6 +72,11 @@ class RunFixtures:
                     environment.reset()
             except Exception as error:
                 errors.append(error)
+        try:
+            if self.s3 is not None:
+                self.s3.reset()
+        except Exception as error:
+            errors.append(error)
         if errors:
             raise RuntimeError('failed to clean owned T2 environments') from errors[0]
 
@@ -306,6 +312,12 @@ class RunFixtures:
             if 'oracle' in module.fixtures:
                 from apple_oracle import running as oracle
                 stack.enter_context(oracle(root, env))
+            if 's3' in module.fixtures:
+                with self.lock:
+                    if self.s3 is None:
+                        from s3_fixtures import S3Environment
+                        self.s3 = S3Environment()
+                    env.update(self.s3.environment())
             if 'idp' in module.fixtures:
                 from enterprise_idp import fixture
                 env.update(stack.enter_context(fixture(root, owner)))

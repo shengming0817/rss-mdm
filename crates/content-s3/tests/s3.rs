@@ -102,9 +102,18 @@ fn content(bytes: &[u8]) -> Content {
     }
 }
 fn source(bytes: Bytes) -> ByteStreamInput {
-    let pieces: Vec<_> = bytes.chunks(65_536).map(Bytes::copy_from_slice).collect();
-    Box::pin(futures::stream::iter(pieces.into_iter().map(Ok)))
+    Box::pin(futures::stream::unfold(
+        (bytes, 0usize),
+        |(bytes, offset)| async move {
+            if offset == bytes.len() {
+                return None;
+            }
+            let end = (offset + 65_536).min(bytes.len());
+            Some((Ok(bytes.slice(offset..end)), (bytes, end)))
+        },
+    ))
 }
+
 fn confirmed<T>(result: Mutation<T>) -> TestResult<T> {
     match result {
         Mutation::Confirmed(value) => Ok(value),
@@ -142,9 +151,18 @@ async fn stream_range_condition_and_two_clients() -> TestResult {
     let target = a.target("race")?;
     let one = a.write(target.clone(), "one", content(b"one"))?;
     let two = b.write(target, "two", content(b"two"))?;
+    let barrier = tokio::sync::Barrier::new(2);
     let (left, right) = tokio::join!(
-        a.put(&one, source(Bytes::from_static(b"one")), budget()?),
-        b.put(&two, source(Bytes::from_static(b"two")), budget()?)
+        async {
+            barrier.wait().await;
+            a.put(&one, source(Bytes::from_static(b"one")), budget()?)
+                .await
+        },
+        async {
+            barrier.wait().await;
+            b.put(&two, source(Bytes::from_static(b"two")), budget()?)
+                .await
+        },
     );
     let chosen = match (left, right) {
         (Ok(Mutation::Confirmed(w)), Err(Error::Conflict)) => verified(w)?,

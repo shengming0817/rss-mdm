@@ -3,7 +3,16 @@ use aws_sdk_s3::error::{ProvideErrorMetadata, SdkError};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::future::Future;
 
-pub(crate) fn classify<E: ProvideErrorMetadata>(error: &SdkError<E>) -> Error {
+pub(crate) fn classify<E: ProvideErrorMetadata + std::error::Error + 'static>(
+    error: &SdkError<E>,
+) -> Error {
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        if let Some(safe) = cause.downcast_ref::<Error>() {
+            return *safe;
+        }
+        source = cause.source();
+    }
     if matches!(error, SdkError::ConstructionFailure(_)) {
         return Error::Configuration;
     }
@@ -41,7 +50,9 @@ pub(crate) fn classify<E: ProvideErrorMetadata>(error: &SdkError<E>) -> Error {
         (_, _) => Error::Transient,
     }
 }
-pub(crate) fn uncertain<E: ProvideErrorMetadata>(error: &SdkError<E>) -> bool {
+pub(crate) fn uncertain<E: ProvideErrorMetadata + std::error::Error + 'static>(
+    error: &SdkError<E>,
+) -> bool {
     match error {
         SdkError::ConstructionFailure(_) => false,
         SdkError::ServiceError(_) => {
@@ -53,7 +64,7 @@ pub(crate) fn uncertain<E: ProvideErrorMetadata>(error: &SdkError<E>) -> bool {
         _ => true,
     }
 }
-pub(crate) async fn call<T, E: ProvideErrorMetadata>(
+pub(crate) async fn call<T, E: ProvideErrorMetadata + std::error::Error + 'static>(
     budget: &Budget,
     future: impl Future<Output = std::result::Result<T, SdkError<E>>>,
 ) -> Result<T> {
@@ -62,7 +73,7 @@ pub(crate) async fn call<T, E: ProvideErrorMetadata>(
         .map_err(|_| Error::Budget)?
         .map_err(|e| classify(&e))
 }
-pub(crate) async fn mutation<T, E: ProvideErrorMetadata>(
+pub(crate) async fn mutation<T, E: ProvideErrorMetadata + std::error::Error + 'static>(
     budget: &Budget,
     future: impl Future<Output = std::result::Result<T, SdkError<E>>>,
 ) -> Result<crate::Mutation<T>> {

@@ -184,7 +184,7 @@ impl Store {
     pub async fn put(
         &self,
         write: &Write,
-        source: ByteStreamInput,
+        mut source: ByteStreamInput,
         budget: Budget,
     ) -> Result<Mutation<Written>> {
         let key = self.check_write(write, &budget)?;
@@ -192,6 +192,7 @@ impl Store {
             return Err(Error::Input);
         }
         let _permit = self.permit()?;
+        body::empty_input(&mut source, write.content, &budget).await?;
         let request = self
             .client
             .put_object()
