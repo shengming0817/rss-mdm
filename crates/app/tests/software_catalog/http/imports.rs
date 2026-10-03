@@ -73,7 +73,7 @@ async fn exact_rest_community_and_brew_imports_preserve_evidence_and_replay() ->
     let base = f.peer.as_ref().unwrap().base.clone();
     let native = json!({"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}});
     let msi = json!({"kind":"msi","installer":"installer","scope":"system","install":native,"upgradeInvocation":native,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1.2"}});
-    let dmg = json!({"kind":"dmg","image":"installer","volume":"App","scope":"system","invocation":native,"upgrade":"in_place","payload":{"kind":"app_copy","application":{"path":"App.app","bundleId":"com.acme.app","version":"1.2","materialSha256":vec![7;32],"targetName":"App.app"},"uninstall":true}});
+    let dmg = json!({"kind":"dmg","image":"installer","volume":"App","scope":"system","invocation":native,"upgrade":"in_place","payload":{"kind":"app_copy","application":{"path":"App.app","bundleId":"com.acme.app","version":"1.2","targetName":"App.app"},"uninstall":true}});
     let user_invocation = json!({"runAs":"logged_in_user","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}});
     let brew_behavior = json!({"kind":"brew","installer":"installer","scope":"user","install":user_invocation,"upgradeInvocation":user_invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"file","scope":"user","path":"bin/app","version":"1.2","sha256":<[u8;32]>::from(Sha256::digest(b"abc"))}});
     for (revision, protocol, selection, behavior, platform, package, raw) in [
@@ -127,7 +127,7 @@ async fn exact_rest_community_and_brew_imports_preserve_evidence_and_replay() ->
         .await?;
         let resource = Uuid::new_v4();
         let operation = Uuid::new_v4();
-        let request = json!({"operationId":operation,"expectedRevision":0,"input":{"asOfUnixSeconds":1700000000,"source":registered["snapshot"],"resource":resource,"resourceVersion":"v1","package":package,"packageVersion":"1.2","platform":platform,"architecture":"x86_64","variant":"default","selection":selection,"behavior":behavior,"installerLength":3,"additionalArtifacts":{},"dependencies":[],"signatures":[],"reboot":"report","downgrade":"deny","ownership":"managed_only","nativeExport":true}});
+        let request = json!({"operationId":operation,"expectedRevision":0,"input":{"asOfUnixSeconds":1700000000,"source":registered["snapshot"],"resource":resource,"resourceVersion":"v1","package":package,"packageVersion":"1.2","platform":platform,"architecture":"x86_64","variant":"default","selection":selection,"behavior":behavior,"installerLength":3,"additionalArtifacts":{},"dependencies":[],"signatures":[],"reboot":"report","downgrade":"deny","nativeExport":true}});
         let mut request = request;
         if revision == "bottle" {
             request["input"]["additionalArtifacts"] = json!({"source":{"reference":"source","origin":format!("{base}artifacts/source.tar.gz"),"length":3,"sha256":<[u8;32]>::from(Sha256::digest(b"abc"))}});

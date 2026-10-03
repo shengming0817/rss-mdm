@@ -876,7 +876,6 @@
         "path",
         "bundleId",
         "version",
-        "materialSha256",
         "targetName"
       ],
       "properties": {
@@ -897,16 +896,6 @@
           "minLength": 1,
           "maxLength": 1024,
           "pattern": "^[^\\p{Cc}]*$"
-        },
-        "materialSha256": {
-          "type": "array",
-          "minItems": 32,
-          "maxItems": 32,
-          "items": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 255
-          }
         },
         "targetName": {
           "type": "string",
@@ -1902,12 +1891,6 @@
         "allow"
       ]
     },
-    "SoftwareTaskOwnership": {
-      "enum": [
-        "managed_only",
-        "allow_user_existing"
-      ]
-    },
     "SoftwareTaskBundleEntry": {
       "type": "object",
       "additionalProperties": false,
@@ -1978,8 +1961,7 @@
         "behavior",
         "signatures",
         "reboot",
-        "downgrade",
-        "ownership"
+        "downgrade"
       ],
       "properties": {
         "package": {
@@ -2009,9 +1991,6 @@
         },
         "downgrade": {
           "$ref": "#/$defs/SoftwareTaskDowngrade"
-        },
-        "ownership": {
-          "$ref": "#/$defs/SoftwareTaskOwnership"
         }
       }
     },

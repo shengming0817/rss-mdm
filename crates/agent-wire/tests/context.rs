@@ -17,7 +17,7 @@ fn context() -> SoftwareExecutionContext {
     }
 }
 fn msix(provisioning: bool) -> SoftwareTaskAction {
-    serde_json::from_value(json!({"package":"Acme.Editor","version":"2.0.0.0","reboot":"report","downgrade":"deny","ownership":"managed_only","signatures":[],"behavior":{"kind":"msix","container":{"kind":"package","installer":"package"},"identity":{"name":"Acme.Editor","publisher":"CN=Acme","version":[2,0,0,0],"architecture":"x86_64","resourceId":""},"dependencies":[],"deployment":if provisioning{json!({"kind":"device_provisioning"})}else{json!({"kind":"target_user_registration","target":{"kind":"active_interactive"}})},"minimumOs":[10,0,19041,0],"requireSideload":true,"allowUnsigned":true,"uninstall":true,"invocation":{"runAs":if provisioning{"system"}else{"logged_in_user"},"arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place"}})).unwrap()
+    serde_json::from_value(json!({"package":"Acme.Editor","version":"2.0.0.0","reboot":"report","downgrade":"deny","signatures":[],"behavior":{"kind":"msix","container":{"kind":"package","installer":"package"},"identity":{"name":"Acme.Editor","publisher":"CN=Acme","version":[2,0,0,0],"architecture":"x86_64","resourceId":""},"dependencies":[],"deployment":if provisioning{json!({"kind":"device_provisioning"})}else{json!({"kind":"target_user_registration","target":{"kind":"active_interactive"}})},"minimumOs":[10,0,19041,0],"requireSideload":true,"allowUnsigned":true,"uninstall":true,"invocation":{"runAs":if provisioning{"system"}else{"logged_in_user"},"arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place"}})).unwrap()
 }
 #[test]
 fn user_registration_binds_sid_and_login_while_provisioning_remains_device_scoped() {
@@ -97,7 +97,7 @@ fn context_updates_cannot_reuse_a_revision_or_restore_a_previous_login() {
 #[test]
 fn brew_requires_a_non_root_interactive_account() {
     let invocation = json!({"runAs":"logged_in_user","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}});
-    let action:SoftwareTaskAction=serde_json::from_value(json!({"package":"tool","version":"1","reboot":"report","downgrade":"deny","ownership":"managed_only","signatures":[],"behavior":{"kind":"brew","installer":"package","scope":"user","install":invocation,"upgradeInvocation":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"pkg_receipt","receipt":"com.acme.tool","version":"1"}}})).unwrap();
+    let action:SoftwareTaskAction=serde_json::from_value(json!({"package":"tool","version":"1","reboot":"report","downgrade":"deny","signatures":[],"behavior":{"kind":"brew","installer":"package","scope":"user","install":invocation,"upgradeInvocation":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"pkg_receipt","receipt":"com.acme.tool","version":"1"}}})).unwrap();
     let mut live = context();
     live.msix_sideload = false;
     live.msix_unsigned = false;

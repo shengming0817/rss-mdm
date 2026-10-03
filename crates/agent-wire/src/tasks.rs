@@ -763,15 +763,6 @@ pub enum SoftwareTaskDowngrade {
     /// Permit the exact approved downgrade.
     Allow,
 }
-/// Whether user-owned installs may be changed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SoftwareTaskOwnership {
-    /// Change only organization-managed installations.
-    ManagedOnly,
-    /// May change a user-owned installation.
-    AllowUserExisting,
-}
 /// A declared member of a bounded bundle.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -810,8 +801,6 @@ pub struct SoftwareTaskAction {
     pub reboot: SoftwareTaskReboot,
     /// Exact downgrade permission.
     pub downgrade: SoftwareTaskDowngrade,
-    /// Existing-installation ownership boundary.
-    pub ownership: SoftwareTaskOwnership,
 }
 impl SoftwareTaskAction {
     /// One concrete format/scope/execution-context capability; no generic fallback.

@@ -22,7 +22,7 @@ pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/agent-v5.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "bd3b2c18d590c7d168ae0ba05f2f4d634654751712c6eac093157e710c450c9e";
+    "912369e736e1c023de1d2a6b4baa7e321b5564944f42a20ca839b8580204324c";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

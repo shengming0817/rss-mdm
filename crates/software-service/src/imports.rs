@@ -28,7 +28,6 @@ pub struct ImportRequest {
     pub signatures: Vec<r::SoftwareSignature>,
     pub reboot: r::SoftwareReboot,
     pub downgrade: r::SoftwareDowngrade,
-    pub ownership: r::SoftwareOwnership,
     pub native_export: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -132,7 +131,6 @@ pub fn prepare(
         signatures: input.signatures.clone(),
         reboot: input.reboot,
         downgrade: input.downgrade,
-        ownership: input.ownership,
         dependencies: input
             .dependencies
             .iter()

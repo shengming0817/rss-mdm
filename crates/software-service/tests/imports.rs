@@ -61,7 +61,7 @@ fn brew_source_tag_is_bound_to_resource_architecture_even_without_export() {
     );
     let user = json!({"runAs":"logged_in_user","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":1024,"exitCodes":{"success":[0],"reboot":[]}});
     let behavior = json!({"kind":"brew","installer":"installer","scope":"user","install":user,"upgradeInvocation":user,"upgrade":"in_place","uninstall":null,"detect":{"kind":"file","scope":"user","path":"bin/app","version":"1.2","sha256":vec![2;32]}});
-    let dmg = json!({"kind":"dmg","image":"installer","volume":"App","scope":"system","invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":1024,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","payload":{"kind":"app_copy","application":{"path":"App.app","targetName":"App.app","bundleId":"com.acme.app","version":"1.2","materialSha256":vec![2;32]},"uninstall":true}});
+    let dmg = json!({"kind":"dmg","image":"installer","volume":"App","scope":"system","invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":1024,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","payload":{"kind":"app_copy","application":{"path":"App.app","targetName":"App.app","bundleId":"com.acme.app","version":"1.2"},"uninstall":true}});
     for native_export in [true, false] {
         for (path, document, behavior) in [
             ("Formula/app.rb", formula.as_str(), behavior.clone()),
@@ -69,7 +69,7 @@ fn brew_source_tag_is_bound_to_resource_architecture_even_without_export() {
         ] {
             for arch in ["x86_64", "aarch64"] {
                 for tag in ["sonoma", "arm64_sonoma"] {
-                    let request=serde_json::from_value(json!({"asOfUnixSeconds":1700000000,"source":source.snapshot().unwrap(),"resource":"app","resourceVersion":"1","package":"app","packageVersion":"1.2","platform":"macos","architecture":arch,"variant":"default","selection":{"kind":"brew","path":path,"bottleTag":tag,"sourceLength":if path.starts_with("Formula"){json!(3)}else{json!(null)}},"behavior":behavior,"installerLength":3,"additionalArtifacts":if path.starts_with("Formula"){json!({"source":{"reference":"source","origin":"https://cdn.example.test/app-source.tar.gz","length":3,"sha256":vec![0x11;32]}})}else{json!({})},"dependencies":[],"signatures":[],"reboot":"report","downgrade":"deny","ownership":"managed_only","nativeExport":native_export})).unwrap();
+                    let request=serde_json::from_value(json!({"asOfUnixSeconds":1700000000,"source":source.snapshot().unwrap(),"resource":"app","resourceVersion":"1","package":"app","packageVersion":"1.2","platform":"macos","architecture":arch,"variant":"default","selection":{"kind":"brew","path":path,"bottleTag":tag,"sourceLength":if path.starts_with("Formula"){json!(3)}else{json!(null)}},"behavior":behavior,"installerLength":3,"additionalArtifacts":if path.starts_with("Formula"){json!({"source":{"reference":"source","origin":"https://cdn.example.test/app-source.tar.gz","length":3,"sha256":vec![0x11;32]}})}else{json!({})},"dependencies":[],"signatures":[],"reboot":"report","downgrade":"deny","nativeExport":native_export})).unwrap();
                     let docs = BTreeMap::from([(path.into(), document.as_bytes().to_vec())]);
                     assert_eq!(
                         prepare(tenant, &source, &request, &docs).is_ok(),
@@ -79,5 +79,14 @@ fn brew_source_tag_is_bound_to_resource_architecture_even_without_export() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn import_rejects_retired_ownership_including_null() {
+    for ownership in [json!("managed_only"), json!("allow_user_existing"), json!(null)] {
+        let mut request = input();
+        request["ownership"] = ownership;
+        assert!(serde_json::from_value::<ImportRequest>(request).is_err());
     }
 }

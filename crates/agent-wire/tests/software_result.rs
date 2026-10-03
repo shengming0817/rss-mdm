@@ -21,7 +21,7 @@ fn task() -> SoftwareTaskSpec {
         msix_unsigned: true,
     };
     let invocation = json!({"runAs":"logged_in_user","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}});
-    let action=serde_json::from_value::<SoftwareTaskAction>(json!({"package":"Acme.Editor","version":"2.0.0.0","reboot":"report","downgrade":"deny","ownership":"managed_only","signatures":[],"behavior":{"kind":"msix","container":{"kind":"package","installer":"package"},"identity":{"name":"Acme.Editor","publisher":"CN=Acme","version":[2,0,0,0],"architecture":"x86_64","resourceId":""},"dependencies":[],"deployment":{"kind":"target_user_registration","target":{"kind":"exact","identity":"S-1-5-21-1-2-3-1001"}},"minimumOs":[10,0,19041,0],"requireSideload":true,"allowUnsigned":true,"uninstall":true,"invocation":invocation,"upgrade":"in_place"}})).unwrap();
+    let action=serde_json::from_value::<SoftwareTaskAction>(json!({"package":"Acme.Editor","version":"2.0.0.0","reboot":"report","downgrade":"deny","signatures":[],"behavior":{"kind":"msix","container":{"kind":"package","installer":"package"},"identity":{"name":"Acme.Editor","publisher":"CN=Acme","version":[2,0,0,0],"architecture":"x86_64","resourceId":""},"dependencies":[],"deployment":{"kind":"target_user_registration","target":{"kind":"exact","identity":"S-1-5-21-1-2-3-1001"}},"minimumOs":[10,0,19041,0],"requireSideload":true,"allowUnsigned":true,"uninstall":true,"invocation":invocation,"upgrade":"in_place"}})).unwrap();
     let step = SoftwareTaskStep {
         action,
         target: SoftwareExecutionTarget::User {

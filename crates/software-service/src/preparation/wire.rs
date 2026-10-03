@@ -10,7 +10,6 @@ pub(crate) fn software_action(spec: &r::SoftwareSpec) -> w::SoftwareTaskAction {
         signatures: spec.signatures.iter().map(map_software_signature).collect(),
         reboot: map_software_reboot(&spec.reboot),
         downgrade: map_software_downgrade(&spec.downgrade),
-        ownership: map_software_ownership(&spec.ownership),
     }
 }
 fn map_run_as(v: &r::RunAs) -> w::ExecutionIdentity {
@@ -117,7 +116,6 @@ fn map_mac_application(input: &r::MacApplication) -> w::SoftwareTaskMacApplicati
         path: input.path.clone(),
         bundle_id: input.bundle_id.clone(),
         version: input.version.clone(),
-        material_sha256: input.material_sha256,
         target_name: input.target_name.clone(),
     }
 }
@@ -323,12 +321,6 @@ fn map_software_downgrade(input: &r::SoftwareDowngrade) -> w::SoftwareTaskDowngr
     match input {
         r::SoftwareDowngrade::Deny => w::SoftwareTaskDowngrade::Deny,
         r::SoftwareDowngrade::Allow => w::SoftwareTaskDowngrade::Allow,
-    }
-}
-fn map_software_ownership(input: &r::SoftwareOwnership) -> w::SoftwareTaskOwnership {
-    match input {
-        r::SoftwareOwnership::ManagedOnly => w::SoftwareTaskOwnership::ManagedOnly,
-        r::SoftwareOwnership::AllowUserExisting => w::SoftwareTaskOwnership::AllowUserExisting,
     }
 }
 

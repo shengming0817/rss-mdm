@@ -95,7 +95,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
             b"controlled offline executable".to_vec(),
         ),
         "dmg_app" => (
-            json!({"kind":"dmg","image":"package","volume":"Acme","scope":"system","invocation":invocation(false),"upgrade":"in_place","payload":{"kind":"app_copy","application":{"path":"Acme.app","bundleId":"com.acme.app","version":"1.0","materialSha256":vec![7;32],"targetName":"Acme.app"},"uninstall":true}}),
+            json!({"kind":"dmg","image":"package","volume":"Acme","scope":"system","invocation":invocation(false),"upgrade":"in_place","payload":{"kind":"app_copy","application":{"path":"Acme.app","bundleId":"com.acme.app","version":"1.0","targetName":"Acme.app"},"uninstall":true}}),
             b"controlled app disk image".to_vec(),
         ),
         "dmg_pkg" => (
@@ -114,7 +114,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
     } else {
         json!([{"resource":f.dependency,"version":"v1","sha256":f.dependency_digest}])
     };
-    let definition = json!({"source":f.source_snapshot,"package":"Acme.App","version":version,"provenance":{"kind":"private"},"artifacts":{"package":{"reference":"installer","length":bytes.len(),"sha256":<[u8;32]>::from(Sha256::digest(&bytes))}},"behavior":behavior,"signatures":[],"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":deps,"export":{"kind":"disabled"}});
+    let definition = json!({"source":f.source_snapshot,"package":"Acme.App","version":version,"provenance":{"kind":"private"},"artifacts":{"package":{"reference":"installer","length":bytes.len(),"sha256":<[u8;32]>::from(Sha256::digest(&bytes))}},"behavior":behavior,"signatures":[],"reboot":"report","downgrade":"deny","dependencies":deps,"export":{"kind":"disabled"}});
     write(
         &mut f.author,
         &f.router,

@@ -3,7 +3,7 @@ use serde_json::json;
 #[test]
 fn a_hash_marker_cannot_stand_in_for_a_frozen_native_source() {
     let invocation = json!({"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}});
-    let step = json!({"action":{"package":"Acme.App","version":"1","behavior":{"kind":"winget","installer":"installer","scope":"system","install":invocation,"upgradeInvocation":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"}},"signatures":[],"reboot":"report","downgrade":"deny","ownership":"managed_only"},"artifacts":[{"key":"0/installer","length":1,"sha256":vec![1;32]}],"target":{"kind":"device"},"exportIdentity":"sha256.marker"});
+    let step = json!({"action":{"package":"Acme.App","version":"1","behavior":{"kind":"winget","installer":"installer","scope":"system","install":invocation,"upgradeInvocation":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"}},"signatures":[],"reboot":"report","downgrade":"deny"},"artifacts":[{"key":"0/installer","length":1,"sha256":vec![1;32]}],"target":{"kind":"device"},"exportIdentity":"sha256.marker"});
     assert!(serde_json::from_value::<SoftwareTaskStep>(step).is_err());
 }
 #[test]
@@ -19,7 +19,7 @@ fn frozen_source_binds_tenant_material_and_scoped_credentials_without_a_token_fi
     };
     let id = uuid::Uuid::new_v4();
     let invocation = json!({"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}});
-    let action:SoftwareTaskAction=serde_json::from_value(json!({"package":"Acme.App","version":"1","behavior":{"kind":"winget","installer":"installer","scope":"system","install":invocation,"upgradeInvocation":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"}},"signatures":[],"reboot":"report","downgrade":"deny","ownership":"managed_only"})).unwrap();
+    let action:SoftwareTaskAction=serde_json::from_value(json!({"package":"Acme.App","version":"1","behavior":{"kind":"winget","installer":"installer","scope":"system","install":invocation,"upgradeInvocation":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"}},"signatures":[],"reboot":"report","downgrade":"deny"})).unwrap();
     let binding = SoftwareExportBinding {
         source: "enterprise".into(),
         tenant_id: id,
@@ -92,7 +92,7 @@ fn invocation_schema_matches_literal_argument_and_environment_validation() {
     ] {
         let invocation = serde_json::json!({"runAs":"system","arguments":[argument],"environment":{key:value},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}});
         assert_eq!(validator.is_valid(&invocation), accepted, "{invocation}");
-        let action:SoftwareTaskAction=serde_json::from_value(serde_json::json!({"package":"App","version":"1","reboot":"report","downgrade":"deny","ownership":"managed_only","signatures":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":invocation,"upgradeInvocation":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"}}})).unwrap();
+        let action:SoftwareTaskAction=serde_json::from_value(serde_json::json!({"package":"App","version":"1","reboot":"report","downgrade":"deny","signatures":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":invocation,"upgradeInvocation":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"}}})).unwrap();
         let id = uuid::Uuid::new_v4();
         let steps = vec![SoftwareTaskStep {
             action,
