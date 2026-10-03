@@ -29,6 +29,7 @@ def result(stdout='', returncode=0):
 
 class Selection(unittest.TestCase):
     def test_failed_selector_diagnostic_reaches_formal_entry(self):
+        location = ['version=baseline:base', 'stage=metadata', 'exit=7', 'diagnostic=dependency-fetch']
         failure = SimpleNamespace(
             stdout=json.dumps(
                 {
@@ -36,7 +37,7 @@ class Selection(unittest.TestCase):
                     'error': {
                         'code': 'selector-internal',
                         'phase': 'selection',
-                        'inputs': [],
+                        'inputs': location,
                     },
                 }
             ),
@@ -48,10 +49,11 @@ class Selection(unittest.TestCase):
             patch.dict(ci.os.environ, {'CI_FULL': '0', 'CI_T2': 'none'}),
             patch.object(ci, 'command', side_effect=[result('base'), failure]),
             contextlib.redirect_stderr(diagnostic),
-            self.assertRaises(SelectionError),
+            self.assertRaises(SelectionError) as caught,
         ):
             ci.select_impact('head')
         self.assertEqual(diagnostic.getvalue(), failure.stderr)
+        self.assertEqual(caught.exception.inputs, location)
 
     def test_native_source_checks_follow_their_actual_owners(self):
         selection = make_selection(['rss-mdm-winget-source'], [], [], [])
@@ -327,6 +329,7 @@ class EntryModes(unittest.TestCase):
                 ci.select_impact('head')
 
     def test_failed_selection_does_not_run_gates_or_publish_passed(self):
+        failure = SelectionError('metadata-unavailable', 'version=baseline:base', 'stage=metadata', 'exit=7')
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
             (out / 'result.json').write_text('{"status":"passed"}')
@@ -334,7 +337,7 @@ class EntryModes(unittest.TestCase):
                 patch.object(ci, 'require_lease'),
                 patch.object(ci, 'OUT', out),
                 patch.object(
-                    ci, 'select_impact', side_effect=SelectionError('base-unavailable')
+                    ci, 'select_impact', side_effect=failure
                 ),
                 patch.object(ci, 'command', return_value=result('head')),
                 patch.object(ci, 'working_source_state', return_value='stable'),
@@ -346,7 +349,8 @@ class EntryModes(unittest.TestCase):
             gate.assert_not_called()
             evidence = json.loads((out / 'result.json').read_text())
             self.assertEqual(evidence['status'], 'failed')
-            self.assertEqual(evidence['selection']['error']['code'], 'base-unavailable')
+            self.assertEqual(evidence['selection']['error']['code'], failure.code)
+            self.assertEqual(evidence['selection']['error']['inputs'], failure.inputs)
 
     def test_explicit_full_bypasses_unavailable_baseline(self):
         with (

@@ -220,14 +220,44 @@ def validate_registry(data):
         raise SelectionError('registry-invalid') from error
 
 
-def snapshot(root):
+def analysis_failure(code, version, stage, result=None):
+    diagnostic = 'invalid-analysis-result'
+    if result is not None and result.returncode:
+        text = result.stderr.decode(errors='replace')
+        diagnostic = next(
+            (
+                label
+                for token, label in (
+                    ('lock file', 'lock-resolution'),
+                    ('failed to parse manifest', 'manifest-parse'),
+                    ('failed to fetch', 'dependency-fetch'),
+                    ('failed to download', 'dependency-fetch'),
+                    ('failed to select', 'dependency-resolution'),
+                )
+                if token in text
+            ),
+            'process-failed',
+        )
+        exception = re.search(
+            r'(?m)^(TypeError|ValueError|NameError|ImportError|ModuleNotFoundError|SyntaxError|AttributeError|RuntimeError|OSError|KeyError):',
+            text,
+        )
+        if stage == 'registry' and exception:
+            diagnostic = exception.group(1)
+    inputs = [f'version={version}', f'stage={stage}', f'diagnostic={diagnostic}']
+    if result is not None:
+        inputs.append(f'exit={result.returncode}')
+    return SelectionError(code, *inputs)
+
+
+def snapshot(root, version='current'):
     result = run([sys.executable, '-I', '-B', '-c', EXPORT, str(root), json.dumps(REGISTRY_ATTRIBUTES)], root)
     if result.returncode:
-        raise SelectionError('registry-unavailable')
+        raise analysis_failure('registry-unavailable', version, 'registry', result)
     try:
         return validate_registry(strict_json(result.stdout))
-    except (ValueError, UnicodeDecodeError) as error:
-        raise SelectionError('registry-invalid') from error
+    except (ValueError, UnicodeDecodeError, SelectionError) as error:
+        raise analysis_failure('registry-invalid', version, 'registry', result) from error
 
 
 def current_registry():
@@ -404,17 +434,17 @@ class Graph:
         return {self.packages[k]['name'] for k in keys if k in self.members}
 
 
-def metadata(root):
+def metadata(root, version='current'):
     result = run(
         ['cargo', 'metadata', '--locked', '--all-features', '--format-version', '1'],
         root,
     )
     if result.returncode:
-        raise SelectionError('metadata-unavailable')
+        raise analysis_failure('metadata-unavailable', version, 'metadata', result)
     try:
         return Graph(root, strict_json(result.stdout))
-    except (ValueError, UnicodeDecodeError) as error:
-        raise SelectionError('metadata-invalid') from error
+    except (ValueError, UnicodeDecodeError, SelectionError) as error:
+        raise analysis_failure('metadata-invalid', version, 'metadata', result) from error
 
 
 def package_consumers(graph, registry, key, kind='normal'):
@@ -577,6 +607,15 @@ def analyze_dependencies(oldroot, root, changes, graphs, registries):
     }
     for g, reg in zip(graphs, registries):
         seeds = set()
+        if runtime_common:
+            consumers = runtime_consumers(reg)
+            modules.update(consumers)
+            seeds.update(g.members)
+            reasons.append(
+                dict(
+                    kind='business', input='Cargo.toml', modules=sorted(consumers), detail='shared-compiler-environment'
+                )
+            )
         for key, manifest in g.manifests.items():
             fields = manifest_fields.get(manifest, ())
             behavioral = any(
@@ -584,7 +623,7 @@ def analyze_dependencies(oldroot, root, changes, graphs, registries):
                 and not (f[0] == 'package' and f[1] in PACKAGE_DOC_FIELDS)
                 for f in fields
             )
-            if behavioral or runtime_common:
+            if behavioral:
                 consumers = package_consumers(g, reg, key)
                 if g.packages[key]['name'] == 'rss-mdm-app':
                     consumers = {
@@ -738,7 +777,7 @@ def select(root, base):
     if all(is_docs(path) and not path.startswith('crates/') for path in paths):
         return selected([], [], reasons=[dict(kind='documentation', input='docs-only', modules=[])])
     with baseline_tree(root, base) as oldroot:
-        before, after = snapshot(oldroot), snapshot(root)
+        before, after = snapshot(oldroot, 'baseline:' + base), snapshot(root)
         modules, tools, packages, reasons, removed = set(), set(), set(), [], []
         for name in before.modules.keys() | after.modules.keys():
             old, new = before.modules.get(name), after.modules.get(name)
@@ -757,7 +796,7 @@ def select(root, base):
                 modules.update(old | new)
                 reasons.append(dict(kind='representative', input=path, modules=sorted(old | new)))
         cargo_inputs = any(p.startswith('crates/') or p in {'Cargo.toml', 'Cargo.lock'} for p in paths)
-        graphs = (metadata(oldroot), metadata(root)) if cargo_inputs else (None, None)
+        graphs = (metadata(oldroot, 'baseline:' + base), metadata(root)) if cargo_inputs else (None, None)
         for path in sorted(paths):
             if path in {'Cargo.toml', 'Cargo.lock'} or path.endswith('/Cargo.toml'):
                 continue

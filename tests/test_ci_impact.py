@@ -453,6 +453,8 @@ class CiImpactContract(unittest.TestCase):
             ]
         )
         for path, content, detail in (
+            ('Cargo.toml', (self.repo.root / 'Cargo.toml').read_text() + '\n[profile.dev]\nopt-level=1\n',
+             'shared-compiler-environment'),
             (
                 'Makefile',
                 'export RUSTFLAGS := -C debuginfo=1\n',
@@ -479,7 +481,7 @@ class CiImpactContract(unittest.TestCase):
                     decision['t2'], {'mode': 'affected', 'modules': expected}
                 )
                 self.assertEqual(len(decision['cargo']['packages']), 8)
-                self.assertEqual(decision['toolTests'], ['test_registry'])
+                self.assertEqual(decision['toolTests'], [] if path == 'Cargo.toml' else ['test_registry'])
                 self.assertTrue(
                     any(r.get('detail') == detail for r in decision['reasons'])
                 )
@@ -512,6 +514,26 @@ class CiImpactContract(unittest.TestCase):
             )[1]
         self.assertEqual(decision['status'], 'failed')
         self.assertEqual(decision['error']['code'], 'metadata-unavailable')
+        self.assertIn('version=baseline:' + self.repo.base, decision['error']['inputs'])
+        self.assertIn('stage=metadata', decision['error']['inputs'])
+        self.assertIn('exit=1', decision['error']['inputs'])
+
+    def test_current_metadata_failure_has_safe_location(self):
+        self.repo.change('crates/leaf/src/lib.rs')
+        with tempfile.TemporaryDirectory() as directory:
+            cargo = Path(directory) / 'cargo'
+            actual = shutil.which('cargo')
+            cargo.write_text('#!/bin/sh\nif [ "$PWD" = ' + shlex.quote(str(self.repo.root.resolve()))
+                             + ' ]; then echo "failed to fetch credential-secret" >&2; exit 7; fi\nexec '
+                             + shlex.quote(actual) + ' "$@"\n')
+            cargo.chmod(0o755)
+            raw, decision = self.repo.select(environment={'PATH': directory + os.pathsep + os.environ['PATH']})
+        self.assertEqual(decision['status'], 'failed')
+        self.assertIn('version=current', decision['error']['inputs'])
+        self.assertIn('stage=metadata', decision['error']['inputs'])
+        self.assertIn('exit=7', decision['error']['inputs'])
+        self.assertIn('diagnostic=dependency-fetch', decision['error']['inputs'])
+        self.assertNotIn(b'credential-secret', raw + self.repo._last_result.stderr)
 
     def test_new_module_and_changed_fixture_selector_are_local(self):
         p = self.repo.root / 'hack/t2_registry.py'
@@ -585,6 +607,10 @@ class CiImpactContract(unittest.TestCase):
         decision = self.repo.select()[1]
         self.assertEqual(decision['status'], 'failed')
         self.assertEqual(decision['error']['code'], 'registry-unavailable')
+        self.assertIn('version=current', decision['error']['inputs'])
+        self.assertIn('stage=registry', decision['error']['inputs'])
+        self.assertIn('exit=1', decision['error']['inputs'])
+        self.assertIn('diagnostic=TypeError', decision['error']['inputs'])
 
     def test_optional_dependency_not_enabled_by_build_selects_no_t2(self):
         p = self.repo.root / 'crates/optional-consumer/Cargo.toml'
