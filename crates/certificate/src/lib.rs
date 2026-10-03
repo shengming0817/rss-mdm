@@ -1,4 +1,5 @@
 //! Purpose-bound certificate validation and signing; callers own enrollment state.
+pub mod agent;
 pub mod apple;
 mod peer;
 pub mod windows;
