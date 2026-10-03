@@ -10,12 +10,14 @@ pub struct Support {
 }
 
 #[derive(Deserialize)]
-struct Facts {
-    sources: BTreeMap<String, String>,
-    nodes: BTreeMap<String, Support>,
+pub(super) struct Facts {
+    pub sources: BTreeMap<String, String>,
+    pub nodes: BTreeMap<String, Support>,
+    pub scenarios: Vec<(String, String)>,
+    pub declared_certificate_builds: Vec<[u32; 4]>,
 }
 
-pub fn read(root: &Path) -> Result<BTreeMap<String, Support>, Box<dyn std::error::Error>> {
+pub fn facts(root: &Path) -> Result<Facts, Box<dyn std::error::Error>> {
     let facts: Facts = serde_json::from_slice(&fs::read(root.join("schema/learn-facts.json"))?)?;
     let hashes = facts
         .sources
@@ -34,7 +36,20 @@ pub fn read(root: &Path) -> Result<BTreeMap<String, Support>, Box<dyn std::error
     {
         return Err("invalid fixed Learn facts or source references".into());
     }
-    Ok(facts.nodes)
+    if facts.scenarios.is_empty()
+        || facts
+            .scenarios
+            .iter()
+            .any(|(_, source)| !hashes.contains(source))
+        || facts.declared_certificate_builds.is_empty()
+    {
+        return Err("invalid declared source facts".into());
+    }
+    Ok(facts)
+}
+
+pub fn read(root: &Path) -> Result<BTreeMap<String, Support>, Box<dyn std::error::Error>> {
+    Ok(facts(root)?.nodes)
 }
 
 #[cfg(test)]

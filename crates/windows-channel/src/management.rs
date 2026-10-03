@@ -15,6 +15,7 @@ pub(crate) async fn manage(
     Extension(audit): Extension<RequestAudit>,
     headers: HeaderMap,
     Extension(endpoint): Extension<ManagementEndpoint>,
+    uri: axum::http::Uri,
     bytes: Bytes,
 ) -> Result<Response, Error> {
     if headers.keys().any(|k| {
@@ -45,10 +46,15 @@ pub(crate) async fn manage(
             .ok_or(Error::Unavailable(Failure::Clock))?,
     )?;
     let message = syncml::decode(&bytes, &CodecLimits::default()).map_err(|_| Error::Malformed)?;
-    if message.header.target != endpoint.0
+    let purpose = match uri.path() {
+        "/ManagementServer/MDM.svc" => rss_mdm_registration_service::Purpose::Primary,
+        "/ManagementServer/Declared.svc" => rss_mdm_registration_service::Purpose::WindowsDeclared,
+        _ => return Err(Error::Forbidden),
+    };
+    if message.header.target != format!("{}{}", endpoint.0, uri.path())
         || !app
             .windows()?
-            .management_urls()
+            .management_urls(purpose)
             .contains(&message.header.target)
     {
         return Err(Error::Forbidden);
@@ -62,8 +68,13 @@ pub(crate) async fn manage(
             }
         )
     });
-    crate::renewal::activate(&app, &checked, &message.header.source).await?;
-    let credential = app.mount.credential(checked.fingerprint());
+    crate::renewal::activate(&app, &checked, &message.header.source, purpose).await?;
+    let mount = crate::device::ChannelMount::new(
+        app.identity.tenant(),
+        rss_mdm_inventory::ReportSource::MdmWindows,
+        purpose,
+    );
+    let credential = mount.credential(checked.fingerprint());
     let principal = match app
         .devices
         .management_principal(&credential)
@@ -81,13 +92,16 @@ pub(crate) async fn manage(
         }
         Err(error) => return Err(error),
     };
+    if let Some((parent, _)) = principal.parent() {
+        linked::current_parent(&app, parent).await?;
+    }
     audit.identify_device(principal.registration());
     audit.registration(principal.registration());
     audit.target(principal.device());
     if message.header.source != principal.device()
         || !app
             .windows()?
-            .management_urls()
+            .management_urls(purpose)
             .contains(&message.header.target)
     {
         return Err(Error::Forbidden);
@@ -143,6 +157,33 @@ async fn lock_sessions(
     Ok(())
 }
 
+async fn supersede_sessions(
+    tx: &mut sqlx::PgConnection,
+    facts: &mut Vec<rss_mdm_audit_integration::Fact>,
+    principal: &DevicePrincipal,
+) -> Result<(), Error> {
+    let tenant = principal.tenant().to_string();
+    let registration = principal.registration().to_string();
+    if principal.purpose() == crate::device::Purpose::Primary {
+        let sessions: Vec<String> = sqlx::query_scalar("SELECT session_id FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state IN ('challenge','collecting')")
+            .bind(&tenant).bind(&registration).fetch_all(&mut *tx).await.map_err(db)?;
+        for session in sessions {
+            crate::collection::terminate_session(
+                tx,
+                facts,
+                &tenant,
+                &registration,
+                &session,
+                "superseded",
+            )
+            .await?;
+        }
+    }
+    sqlx::query("UPDATE mdm_access.management_sessions SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state IN ('challenge','collecting')")
+        .bind(&tenant).bind(&registration).execute(tx).await.map_err(db)?;
+    Ok(())
+}
+
 async fn collect(
     tx: &mut sqlx::PgConnection,
     effects: (&mut Vec<rss_mdm_audit_integration::Fact>, &RequestAudit),
@@ -174,23 +215,6 @@ async fn collect(
             .any(|c| matches!(c, Command::Results(_)))
     {
         return Err(Error::Unauthorized);
-    }
-    if stored.is_none() {
-        let sessions: Vec<String> = sqlx::query_scalar("SELECT session_id FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state IN ('challenge','collecting')")
-            .bind(&tenant).bind(&registration).fetch_all(&mut *tx).await.map_err(db)?;
-        for session in sessions {
-            crate::collection::terminate_session(
-                tx,
-                facts,
-                &tenant,
-                &registration,
-                &session,
-                "superseded",
-            )
-            .await?;
-        }
-        sqlx::query("UPDATE mdm_access.management_sessions SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state IN ('challenge','collecting')")
-                .bind(&tenant).bind(&registration).execute(&mut *tx).await.map_err(db)?;
     }
     let mut complete = false;
     if let Some(id) = run_id {
@@ -363,9 +387,22 @@ fn initialization(
         .iter()
         .filter(|c| !matches!(c, Command::Status(_) | Command::Results(_)))
         .collect();
+    let initialization = initial
+        .iter()
+        .copied()
+        .filter(|c| {
+            !matches!(
+                c,
+                Command::Alert {
+                    alert: syncml::Alert::DeclaredConfiguration { .. },
+                    ..
+                }
+            )
+        })
+        .collect::<Vec<_>>();
     if !authenticated_before
         && !matches!(
-            initial.as_slice(),
+            initialization.as_slice(),
             [Command::Alert { .. }, Command::DevInfo { .. }]
         )
         || authenticated_before
@@ -373,7 +410,8 @@ fn initialization(
                 !matches!(
                     c,
                     Command::Alert {
-                        alert: syncml::Alert::Generic { .. }
+                        alert: syncml::Alert::DeclaredConfiguration { .. }
+                            | syncml::Alert::Generic { .. }
                             | syncml::Alert::SessionAbort
                             | syncml::Alert::MoreMessages
                             | syncml::Alert::EndOfData { .. },

@@ -178,11 +178,21 @@ fn windows(
     request: &rss_mdm_windows_mdm::native::Request,
     out: &mut BTreeSet<P>,
 ) -> Result<(), Error> {
-    for (node, operation) in request
-        .authorization_nodes()
-        .map_err(|_| Error::Malformed)?
-    {
-        windows_node(&node, operation, out)?;
+    use rss_mdm_windows_mdm::native::AuthorizationTarget;
+    let resolved = request.resolve().map_err(|_| Error::Malformed)?;
+    for target in resolved.authorization() {
+        match target {
+            AuthorizationTarget::Csp { node, operation } => windows_node(node, *operation, out)?,
+            AuthorizationTarget::Mi { .. } => {
+                out.insert(P::WindowsMiExecute);
+            }
+            AuthorizationTarget::DeclaredInterval => {
+                out.insert(P::ConfigurationWrite);
+            }
+            AuthorizationTarget::DeclaredResult => {
+                out.extend([P::InventoryCollect, P::SecurityOperate, P::Credentials]);
+            }
+        }
     }
     Ok(())
 }

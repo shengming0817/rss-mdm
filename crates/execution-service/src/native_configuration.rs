@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub enum Diagnosis {
     WaitingScope,
     WaitingRegistration,
+    WindowsDeclaredEnrollmentNotReady,
     WaitingCapability,
     NotApplicable,
     Conflict,
@@ -23,6 +24,7 @@ impl Diagnosis {
         match self {
             Self::WaitingScope => "waiting_scope",
             Self::WaitingRegistration => "waiting_registration",
+            Self::WindowsDeclaredEnrollmentNotReady => "windows_declared_enrollment_not_ready",
             Self::WaitingCapability => "waiting_capability",
             Self::NotApplicable => "not_applicable",
             Self::Conflict => "configuration_conflict",
@@ -189,6 +191,35 @@ impl ExecutionService {
                 .collect::<Vec<_>>();
             let diagnosis = claim_diagnosis(index, &inputs, &owners);
             let state = object_state(tx, device, &input.objects).await?;
+            let probe = input.native.request(
+                Uuid::new_v4(),
+                input.policy.version.to_string(),
+                storage::now(tx).await? + 3600,
+                false,
+            )?;
+            let unavailable =
+                match storage::current_registration(tx, device, probe.task.purpose()?).await {
+                    Ok(_) => None,
+                    Err(Fault::Request(Error::Conflict)) => Some(Diagnosis::WaitingRegistration),
+                    Err(Fault::Request(Error::WindowsDeclaredEnrollmentNotReady)) => {
+                        Some(Diagnosis::WindowsDeclaredEnrollmentNotReady)
+                    }
+                    Err(error) => return Err(error),
+                };
+            if let Some(diagnosis) = unavailable {
+                save_objects(
+                    tx,
+                    device,
+                    &input.objects,
+                    state,
+                    Some(&input.object_digests),
+                    Some(diagnosis),
+                )
+                .await?;
+                desired_claims(tx, device, &input.objects, &inputs, &owners, state).await?;
+                continue;
+            }
+
             if let Some(diagnosis) = diagnosis {
                 save_objects(
                     tx,
@@ -256,7 +287,13 @@ impl ExecutionService {
             let Frozen::Configuration { exit, .. } = frozen else {
                 return Err(Error::Malformed.into());
             };
-            let state = object_state(tx, device, &old.objects).await?;
+            let state = self.publication_in(tx, device, &old).await?;
+            if state.is_none() {
+                // A conflicting desired claim never established this native publication.
+                // Withdraw only this owner's expectation, without touching another owner's work.
+                withdraw_claims(tx, device, policy).await?;
+                continue;
+            }
             let mut removal_contracts = BTreeSet::new();
             let mut retain = !matches!(exit, Exit::Remove);
             for (co_policy, co_frozen) in &prior {
@@ -376,22 +413,40 @@ impl ExecutionService {
                     operation = Some(id);
                 }
             }
-            let id = if let Some(id) = operation {
-                id
-            } else {
+            let id = operation.unwrap_or_else(Uuid::new_v4);
+            let deadline = storage::now(tx)
+                .await?
+                .checked_add(3600)
+                .ok_or(Error::Malformed)?;
+            let request = old
+                .native
+                .request(id, policy.version.to_string(), deadline, true)?;
+            let unavailable =
+                match storage::current_registration(tx, device, request.task.purpose()?).await {
+                    Ok(_) => None,
+                    Err(Fault::Request(Error::Conflict)) => Some(Diagnosis::WaitingRegistration),
+                    Err(Fault::Request(Error::WindowsDeclaredEnrollmentNotReady)) => {
+                        Some(Diagnosis::WindowsDeclaredEnrollmentNotReady)
+                    }
+                    Err(error) => return Err(error),
+                };
+            if let Some(diagnosis) = unavailable {
+                save_objects(
+                    tx,
+                    device,
+                    &old.objects,
+                    state,
+                    Some(&old.object_digests),
+                    Some(diagnosis),
+                )
+                .await?;
+                continue;
+            }
+            if operation.is_none() {
                 cancel_objects(self, tx, device, &old.objects).await?;
-                let id = Uuid::new_v4();
-                let deadline = storage::now(tx)
-                    .await?
-                    .checked_add(3600)
-                    .ok_or(Error::Malformed)?;
-                let request = old
-                    .native
-                    .request(id, policy.version.to_string(), deadline, true)?;
                 self.queue_policy_configuration(tx, device, policy, &request, true, audit)
                     .await?;
-                id
-            };
+            }
             save_objects(
                 tx,
                 device,
@@ -408,6 +463,48 @@ impl ExecutionService {
         tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_planning.configuration_devices SET observed_revision=$3 WHERE tenant_id=$1::uuid AND device=$2").bind(tenant).bind(device).bind(revision).execute(c).await?;Ok(())})).await?;
         Ok(())
     }
+    async fn publication_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        device: &str,
+        desired: &Desired<'_>,
+    ) -> Result<Option<Uuid>> {
+        let removal = desired
+            .native
+            .remove
+            .as_ref()
+            .map(|task| {
+                crate::protection::fingerprint(
+                    &self.protection,
+                    self.tenant,
+                    device,
+                    "native-configuration/v3",
+                    &(&desired.native.target, task),
+                )
+            })
+            .transpose()?;
+        let ids = object_rows(tx, device, &desired.objects)
+            .await?
+            .into_iter()
+            .filter_map(|row| row.0)
+            .collect::<BTreeSet<_>>();
+        for id in ids {
+            let operation = storage::load(tx, &self.protection, id).await?;
+            let digest = crate::protection::fingerprint(
+                &self.protection,
+                self.tenant,
+                device,
+                "native-configuration/v3",
+                &(&operation.request.target, &operation.request.task),
+            )?;
+            // A co-owner can replace one object's operation. The immutable whole task
+            // still proves this publication; an overlapping desired claim alone cannot.
+            if digest == desired.digest || removal.as_ref() == Some(&digest) {
+                return Ok(Some(id));
+            }
+        }
+        Ok(None)
+    }
     async fn reuse_configuration_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -415,7 +512,8 @@ impl ExecutionService {
         digest: &[u8],
     ) -> Result<bool> {
         let old = storage::load(tx, &self.protection, id).await?;
-        let current = storage::current_registration(tx, &old.device).await?;
+        let current =
+            storage::current_registration(tx, &old.device, old.request.task.purpose()?).await?;
         let foreign = current != (old.registration, old.registration_generation);
         let previous = crate::protection::fingerprint(
             &self.protection,
@@ -551,6 +649,9 @@ async fn desired_in(
             let p = policies::storage::read_in(&service.policy_reader, tx, id)
                 .await?
                 .ok_or(Error::NotFound)?;
+            if !p.enabled {
+                continue;
+            }
             let eligible = policies::storage::eligible_in(&service.source, tx, &p, device)
                 .await?
                 .is_some();
@@ -681,6 +782,20 @@ async fn replace_claims(
         sqlx::query("DELETE FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND platform=$4 AND object_kind=$5 AND object_key=$6 AND NOT(policy=ANY($7))").bind(&tenant).bind(&device).bind(&o.user).bind(&o.platform).bind(&o.kind).bind(&o.key).bind(ids).execute(&mut *c).await?;
         for &(policy,version) in &policies {sqlx::query("INSERT INTO mdm_planning.configuration_claims(tenant_id,device,user_key,platform,object_kind,object_key,policy,version,operation) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(tenant_id,policy,device,user_key,platform,object_kind,object_key) DO UPDATE SET version=excluded.version,operation=excluded.operation").bind(&tenant).bind(&device).bind(&o.user).bind(&o.platform).bind(&o.kind).bind(&o.key).bind(policy).bind(version).bind(operation).execute(&mut *c).await?;}
     }Ok(())})).await?;
+    Ok(())
+}
+async fn withdraw_claims(tx: &mut PgTransaction<'_>, device: &str, policy: &Policy) -> Result<()> {
+    let tenant = tx.tenant_id().to_string();
+    let device = device.to_owned();
+    let id = policy.id;
+    let version = policy.version;
+    tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query("DELETE FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2 AND policy=$3 AND version=$4")
+            .bind(&tenant).bind(&device).bind(id).bind(version).execute(&mut *c).await?;
+        sqlx::query("UPDATE mdm_planning.configuration_objects o SET digest=NULL,diagnosis='unassigned' WHERE o.tenant_id=$1::uuid AND o.device=$2 AND o.operation IS NULL AND NOT EXISTS(SELECT 1 FROM mdm_planning.configuration_claims k WHERE (k.tenant_id,k.device,k.user_key,k.platform,k.object_kind,k.object_key)=(o.tenant_id,o.device,o.user_key,o.platform,o.object_kind,o.object_key))")
+            .bind(&tenant).bind(&device).execute(&mut *c).await?;
+        Ok(())
+    })).await?;
     Ok(())
 }
 async fn desired_claims(

@@ -19,6 +19,8 @@ pub enum Permission {
     Credentials,
     DeviceWipe,
     ConfigurationWrite,
+    /// Per-device permission to invoke installed Windows MI providers.
+    WindowsMiExecute,
     DeviceControl,
     DeviceUpdate,
     AccountWrite,
@@ -70,6 +72,7 @@ impl Permission {
             | Self::AccountWrite
             | Self::SecurityOperate
             | Self::DeviceDiagnostics
+            | Self::WindowsMiExecute
             | Self::ConfigurationWrite
             | Self::ScriptExecute
             | Self::SoftwareDeploy

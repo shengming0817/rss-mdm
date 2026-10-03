@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+percent-encoding.workspace = true
 quick-xml.workspace = true
 url.workspace = true
 uuid.workspace = true

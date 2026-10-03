@@ -25,7 +25,7 @@ WITH tables AS (
  ('mdm_commands.capability_queries','edition_status'),
  ('mdm_commands.devices','generation'),('mdm_commands.devices','epoch'),('mdm_commands.devices','registration'),('mdm_commands.devices','registration_generation'),('mdm_commands.devices','recovery_after'),
  ('mdm_commands.operations','dispatch_failure'),('mdm_commands.operations','approval'),('mdm_commands.operations','revision'),('mdm_commands.operations','gateway_accepted'),
- ('mdm_access.report_sources','next_sequence'),('mdm_access.report_sources','next_command'),('mdm_access.enrollment_certificates','server_nonce'),
+ ('mdm_access.report_sources','next_sequence'),('mdm_access.registrations','next_command'),('mdm_access.registrations','ready'),('mdm_access.enrollment_certificates','server_nonce'),
  ('mdm_access.management_sessions','state'),('mdm_access.management_sessions','last_message'),('mdm_access.management_sessions','client_authenticated'),('mdm_access.management_sessions','nonce'),('mdm_access.management_sessions','run_id'),
  ('mdm_access.collection_runs','evidence'),('mdm_access.collection_runs','attempts'),('mdm_access.collection_runs','result'),('mdm_access.collection_runs','reason'),('mdm_access.collection_runs','batch'),('mdm_access.collection_runs','digest'),('mdm_access.collection_runs','sealed_at'),('mdm_access.collection_runs','delivery_pending')
 ,

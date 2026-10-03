@@ -462,6 +462,29 @@ mod renewal;
 impl Fixture {
     async fn close(self) -> Result<()> {
         let report = self.owner.shutdown().join().await?;
+        if !report.is_clean() {
+            let diagnostics = self
+                .app
+                .inventory
+                .diagnostics(fixture_clock().now() + Duration::from_secs(1))
+                .await;
+            if let Some(rss_projection::ObservationStatus::Stopped(projection)) =
+                diagnostics.projection
+                && let rss_projection::Stop::Failed(error) = projection.stop
+            {
+                let detail = error.diagnostic();
+                eprintln!(
+                    "{}",
+                    json!({
+                        "event": "apple_fixture_inventory_projection_failure",
+                        "kind": format!("{:?}", error.kind()),
+                        "providerPhase": detail.map(|d| format!("{:?}", d.phase())),
+                        "sqlstate": detail.and_then(|d| d.sqlstate()),
+                        "position": detail.and_then(|d| d.position()).map(|p| p.get()),
+                    })
+                );
+            }
+        }
         ensure!(report.is_clean(), "Apple fixture shutdown: {report:?}");
         Ok(())
     }

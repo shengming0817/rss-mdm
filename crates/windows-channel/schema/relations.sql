@@ -67,4 +67,7 @@ GRANT UPDATE(results) ON mdm_windows.push_queries TO mdm_command_runtime;
 GRANT DELETE ON mdm_windows.push_queries TO mdm_access;
 ALTER TABLE mdm_windows.unenrollment_receipts ADD CONSTRAINT unenrollment_receipts_registration_fkey FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id);
 GRANT SELECT,INSERT ON mdm_windows.unenrollment_receipts TO mdm_access;
+ALTER TABLE mdm_windows.linked_enrollments ADD CONSTRAINT linked_request FOREIGN KEY(tenant_id,request_id) REFERENCES mdm_access.requests(tenant_id,id);
+ALTER TABLE mdm_windows.linked_enrollments ADD CONSTRAINT linked_parent FOREIGN KEY(tenant_id,parent_id,parent_generation) REFERENCES mdm_access.registrations(tenant_id,id,generation);
+GRANT SELECT,INSERT ON mdm_windows.linked_enrollments TO mdm_access;
 COMMIT;

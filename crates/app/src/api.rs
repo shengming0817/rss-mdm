@@ -256,6 +256,7 @@ pub(crate) fn from_state(
         mount: crate::device::ChannelMount::new(
             state.identity.tenant,
             rss_mdm_inventory::ReportSource::AgentBuiltin,
+            rss_mdm_registration_service::Purpose::Primary,
         ),
         audit_store: state.audit_store.clone(),
         access: Arc::new(state.access.agent_store()),
@@ -273,6 +274,7 @@ pub(crate) fn from_state(
         mount: crate::device::ChannelMount::new(
             state.identity.tenant,
             rss_mdm_inventory::ReportSource::MdmApple,
+            rss_mdm_registration_service::Purpose::Primary,
         ),
         audit_store: state.audit_store.clone(),
         access: state.access.apple_store(),
@@ -295,6 +297,7 @@ pub(crate) fn from_state(
         mount: crate::device::ChannelMount::new(
             state.identity.tenant,
             rss_mdm_inventory::ReportSource::MdmWindows,
+            rss_mdm_registration_service::Purpose::Primary,
         ),
         audit_store: state.audit_store.clone(),
         access: state.access.windows_store(),
@@ -485,6 +488,7 @@ pub(crate) fn from_state(
                         mount: crate::device::ChannelMount::new(
                             state.identity.tenant,
                             rss_mdm_inventory::ReportSource::AgentBuiltin,
+                            rss_mdm_registration_service::Purpose::Primary,
                         ),
                         devices: state.devices.clone(),
                         execution: state.execution.clone(),

@@ -19,6 +19,7 @@ pub(crate) fn proof(tenant: &str, channel: Channel, key: u8) -> VerifiedChannelC
             Channel::Agent => ReportSource::AgentBuiltin,
             Channel::Mdm => ReportSource::MdmWindows,
         },
+        rss_mdm_registration_service::Purpose::Primary,
     )
     .credential(crate::test_support::secret(&format!("channel-proof-{key}")))
 }

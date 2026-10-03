@@ -130,7 +130,12 @@ async fn report_on(
     statuses: [u16; 2],
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
 ) -> Result<(Scope, Uuid)> {
-    let scope = crate::device::store::revalidate(tx, principal).await?;
+    let scope = crate::device::store::revalidate_source(
+        tx,
+        principal,
+        rss_mdm_inventory::ReportSource::MdmWindows,
+    )
+    .await?;
     let mut request = Message {
         header: Header {
             session_id: 1,

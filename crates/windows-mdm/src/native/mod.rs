@@ -10,7 +10,10 @@ use serde::{Deserialize, Serialize};
 mod generated;
 pub mod admx;
 mod decimal;
+pub mod declared;
 mod request;
+mod resolved;
+pub use resolved::{AuthorizationTarget, Prepared, Resolved};
 mod value;
 pub mod verification;
 pub use request::{Compiled, Execution, Object, Request};
@@ -35,6 +38,17 @@ pub struct Context {
     pub edition: Option<u32>,
     /// Authorized target channel.
     pub scope: Scope,
+    /// Cryptographically authenticated enrollment purpose, supplied by the channel owner.
+    pub enrollment: Enrollment,
+}
+/// Enrollment identity bound by the registration owner; no implicit primary fallback.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Enrollment {
+    /// Ordinary management registration.
+    Primary,
+    /// Independent certificate authenticated WinDC registration.
+    LinkedCertificate,
 }
 /// Native operation, rather than a product purpose or brand.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -166,6 +180,8 @@ struct Node {
     source: &'static str,
     stable_source: Option<&'static str>,
     preview: bool,
+    bounded_branches: bool,
+    certificate_builds: &'static [[u32; 4]],
     format: Format,
     access: u8,
     builds: &'static [[u32; 4]],
@@ -301,19 +317,28 @@ impl Operation {
 }
 impl Node {
     fn check(&self, target: Context) -> Result<(), Error> {
-        if self.preview {
+        let declared = self.path.contains("/Vendor/MSFT/DeclaredConfiguration");
+        if declared != (target.enrollment == Enrollment::LinkedCertificate) {
+            return Err(Error::Scope);
+        }
+        if self.preview && self.certificate_builds.is_empty() {
             return Err(Error::Unsupported);
         }
         let build = target.build.ok_or(Error::MissingEvidence)?;
         let edition = target.edition.ok_or(Error::MissingEvidence)?;
-        if self.builds.is_empty() {
+        let builds = if declared {
+            self.certificate_builds
+        } else {
+            self.builds
+        };
+        if builds.is_empty() {
             return Err(Error::UnresolvedConstraint);
         }
         // A servicing revision applies to its branch, not every numerically newer build.
-        if !self.builds.iter().any(|b| {
+        if !builds.iter().any(|b| {
             b[0..2] == [10, 0]
                 && build[0..2] == b[0..2]
-                && if b[3] == 0 {
+                && if b[3] == 0 && !self.bounded_branches && !declared {
                     build[2] >= b[2]
                 } else {
                     build[2] == b[2] && build[3] >= b[3]

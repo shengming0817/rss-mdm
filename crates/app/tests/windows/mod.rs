@@ -7,3 +7,5 @@ mod retention;
 mod commands;
 
 mod issuance;
+
+mod declared;
