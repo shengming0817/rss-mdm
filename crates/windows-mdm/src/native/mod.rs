@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 mod generated;
 pub mod admx;
 mod decimal;
+pub mod declared;
 mod request;
 mod value;
 pub mod verification;
@@ -166,6 +167,8 @@ struct Node {
     source: &'static str,
     stable_source: Option<&'static str>,
     preview: bool,
+    bounded_branches: bool,
+    certificate_builds: &'static [[u32; 4]],
     format: Format,
     access: u8,
     builds: &'static [[u32; 4]],
@@ -313,7 +316,7 @@ impl Node {
         if !self.builds.iter().any(|b| {
             b[0..2] == [10, 0]
                 && build[0..2] == b[0..2]
-                && if b[3] == 0 {
+                && if b[3] == 0 && !self.bounded_branches {
                     build[2] >= b[2]
                 } else {
                     build[2] == b[2] && build[3] >= b[3]

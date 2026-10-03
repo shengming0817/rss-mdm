@@ -5,6 +5,7 @@ ARG TARGETPLATFORM
 ARG CACHE_NAMESPACE
 ARG CARGO_BUILD_JOBS=4
 RUN test -n "$CACHE_NAMESPACE"
+RUN apt-get update && apt-get install -y --no-install-recommends libxml2-dev clang pkg-config && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY source/ .
 ENV RUSTC_WRAPPER="" CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
@@ -25,6 +26,7 @@ RUN --network=none --mount=type=cache,id=mdm-${CACHE_NAMESPACE}-registry-${TARGE
     --mount=type=cache,id=mdm-${CACHE_NAMESPACE}-target-${TARGETPLATFORM}-rust196,target=/build/target,sharing=locked \
     rustc -vV && cargo build --offline --locked --release -p rss-mdm-app --bin rss-mdm && mkdir /out && cp /build/target/release/rss-mdm /out/rss-mdm
 FROM ${RUNTIME_IMAGE} AS server
+RUN apt-get update && apt-get install -y --no-install-recommends libxml2 && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/rss-mdm /usr/local/bin/rss-mdm
 USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/rss-mdm"]
