@@ -1,5 +1,6 @@
 //! Production DDM native HTTP, protected Resource inputs and restart recovery.
 use super::*;
+use anyhow::Context;
 use lifecycle::Peer;
 use serde_json::Value;
 use sqlx::{Connection, Row};
@@ -587,7 +588,7 @@ async fn policy_coowners_share_native_publication_without_fabricating_removal() 
         let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2").bind(case_tenant()).bind(case_device()).fetch_one(&mut pg).await?;
         if count==0 {return Ok::<_,anyhow::Error>(());}
         tokio::time::sleep(Duration::from_millis(50)).await;
-    }}).await??;
+    }}).await.context("logical configuration claims were not released after publication withdrawal")??;
     ensure!(
         f.operation(withdrawal).await?["commandStatus"] == "received",
         "publication withdrawal claimed native removal"
