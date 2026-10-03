@@ -192,3 +192,9 @@ mod certificate_archive;
 #[cfg(test)]
 #[path = "../tests/certificate_archive/mod.rs"]
 mod certificate_archive_tests;
+
+pub mod agent_pki;
+
+#[cfg(all(test, feature = "integration"))]
+#[path = "../tests/agent_pki/mod.rs"]
+mod agent_pki_tests;

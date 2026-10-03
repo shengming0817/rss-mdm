@@ -147,6 +147,7 @@ impl Fixture {
         )?;
         timeline.initialize().await?;
         let app = Arc::new(Assembly {
+            agent_pki: None,
             certificate_archive: crate::certificate_archive::assemble(
                 &access,
                 access

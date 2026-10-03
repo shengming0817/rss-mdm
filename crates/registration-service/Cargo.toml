@@ -7,6 +7,12 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+rss-mdm-certificate.workspace = true
+ring.workspace = true
+x509-cert.workspace = true
+url.workspace = true
+time = { workspace = true, features = ["formatting"] }
+reqwest = { workspace = true, features = ["json"] }
 rss-mdm-authorization-service.workspace = true
 rss-mdm-inventory.workspace = true
 rss-identity-core.workspace = true

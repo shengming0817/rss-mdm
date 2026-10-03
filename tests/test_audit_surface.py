@@ -14,6 +14,7 @@ def production_paths():
 
 # Each entry binds an action to its declaration or dispatch entry in the production call path.
 OWNERS = {
+ 'agent_certificate_issue':'crates/registration-service/src/agent_pki.rs',
  'certificate_archive_unlock':'crates/management-http/src/boundary.rs',
  'certificate_archive_lock':'crates/management-http/src/boundary.rs',
 
@@ -78,6 +79,7 @@ OWNERS = {
  'windows_policy': 'crates/windows-channel/src/boundary.rs'}
 
 DECLARATIONS = {
+ ('agent_certificate_issue','crates/registration-service/src/agent_pki.rs'),
  ('certificate_archive_unlock','crates/management-http/src/boundary.rs'),
  ('certificate_archive_lock','crates/management-http/src/boundary.rs'),
 

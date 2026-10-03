@@ -293,9 +293,15 @@ class RunFixtures:
                 receipt['environment']['host'] = host.address
             if 'examples' in module.fixtures:
                 env['MDM_FIXTURE_BIN'] = self.builds.executables['rss-mdm-fixture']
+            if 'agent_pki' in module.fixtures:
+                env['MDM_AGENT_PKI_FIXTURE'] = '1'
             if 'scep' in module.fixtures:
                 from apple_ca import running
                 stack.enter_context(running(root, env))
+                if 'agent_pki' in module.fixtures:
+                    value = json.loads(Path(env['MDM_TEST_CONFIG']).read_text())
+                    value['agent_pki'] = json.loads((root / 'agent-pki.json').read_text())
+                    private(Path(env['MDM_TEST_CONFIG']), value)
             if 'oracle' in module.fixtures:
                 from apple_oracle import running as oracle
                 stack.enter_context(oracle(root, env))

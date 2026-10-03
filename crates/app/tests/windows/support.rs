@@ -300,6 +300,7 @@ impl Host {
         .await
         .map_err(|e| anyhow::anyhow!("command startup: {e:?}"))?;
         let app = Arc::new(Assembly {
+            agent_pki: None,
             certificate_archive: crate::certificate_archive::assemble(
                 &store,
                 command_audit.clone(),

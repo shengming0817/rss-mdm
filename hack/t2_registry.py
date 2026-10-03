@@ -285,6 +285,18 @@ def app_family(owner, *, namespace=None, identity=True,
             support=(f'crates/app/tests/{test_root}/mod.rs',))
 
 
+add('agent.pki', selectors=('agent_pki_tests::',), fixtures=('identity','apple','scep','windows','agent_pki'),
+    sources=('crates/certificate/src/agent.rs','crates/registration-service/src/agent_pki.rs',
+             'crates/app/src/agent_pki.rs','deployment/agent-leaf.tpl',
+             'crates/registration-service/src/operations.rs'),
+    tests=('crates/app/tests/agent_pki/mod.rs',),
+    support=('hack/agent_pki_fixtures.py','crates/app/tests/device/support.rs',
+             'crates/app/tests/enrollment/support.rs','crates/app/tests/support/audit.rs'))
+MODULES['agent.pki'] = replace(MODULES['agent.pki'], policies=(
+    CasePolicy('agent_pki_tests::restored_ca_signs_only_live_authorized_agent_csrs_and_tls_preserves_purpose',
+               'reuse', 'pair'),
+))
+
 add('installation.migration', selectors=('migration::tests::',), profile='empty',
     sources=('crates/app/src/migration.rs',),
     tests=('crates/app/tests/migration/mod.rs',),
@@ -767,14 +779,14 @@ consume(('crates/software-service/src/lib.rs', 'crates/software-service/src/publ
         'software.catalog software.http publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery publication.artifact')
 consume(('crates/software-service/src/catalog/*',),
         'software.http planning.software execution.software.offer execution.software.content execution.software.recovery')
-AUTH_CONSUMERS = 'certificate-archive.http diagnostics.http authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission api.identity_context enrollment.http enrollment.recovery assets.http planning.http planning.policy planning.agent_policy planning.frequency planning.remote planning.software compliance.http software.http content.http content.mirror content.gc execution.commands.admission windows.issuance windows.management apple.scep apple.profile apple.policy apple.onboarding apple.renewal'
+AUTH_CONSUMERS = 'agent.pki certificate-archive.http diagnostics.http authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission api.identity_context enrollment.http enrollment.recovery assets.http planning.http planning.policy planning.agent_policy planning.frequency planning.remote planning.software compliance.http software.http content.http content.mirror content.gc execution.commands.admission windows.issuance windows.management apple.scep apple.profile apple.policy apple.onboarding apple.renewal'
 consume(('crates/authorization-service/src/*.rs','crates/management-http/src/authorization/http.rs','crates/management-http/src/lib.rs'), AUTH_CONSUMERS)
 consume(('crates/flow-service/src/planning/automation.rs','crates/inventory-service/src/inventory_runtime.rs','crates/inventory-service/src/inventory_runtime/*','crates/flow-service/src/automation/runtime.rs','crates/flow-service/src/automation/completion.rs','crates/flow-service/src/planning/mod.rs','crates/app/src/identity_audit.rs','crates/app/src/identity.rs','crates/apple-channel/src/lib.rs','crates/inventory-service/src/collection/*'), 'diagnostics.http')
 consume(('crates/app/src/identity.rs',), 'identity.local identity.sso identity.audit api.identity_context')
 consume(('crates/registration-service/src/device/*', 'crates/registration-service/src/device.rs', 'crates/app/src/registration_lifecycle.rs'),
         'device.binding device.revocation device.recovery device.admission agent.registration agent.reports windows.issuance windows.management apple.identity inventory.runtime execution.agent.delivery')
 consume(('crates/registration-service/src/enrollment.rs', 'crates/registration-service/src/enrollment/*'),
-        'enrollment.http enrollment.recovery agent.registration windows.enrollment apple.scep')
+        'agent.pki enrollment.http enrollment.recovery agent.registration windows.enrollment apple.scep')
 consume(('crates/execution-service/src/remote_operations/*',), 'planning.remote')
 consume(('crates/execution-service/src/sources/software.rs',),
         'planning.software execution.software.offer execution.software.recovery')
@@ -786,7 +798,7 @@ consume(('crates/execution-service/src/actions/history.rs',), 'execution.agent.h
 consume(('crates/execution-service/src/actions/software.rs',), 'execution.software.offer execution.software.content execution.software.recovery')
 consume(('crates/execution-service/src/actions/agent.rs',), 'execution.agent.delivery execution.agent.content execution.agent.recovery')
 consume(('crates/execution-service/src/actions/recovery.rs',), 'execution.agent.recovery execution.software.recovery')
-AUDITED_MODULES = 'certificate-archive.http diagnostics.http audit.receipts audit.integrity audit.recovery audit.budget authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission identity.audit enrollment.http enrollment.recovery device.binding device.revocation device.recovery device.admission agent.registration agent.reports assets.http planning.http planning.policy planning.agent_policy planning.frequency planning.remote planning.software planning.onboarding planning.group_scope planning.recovery planning.resource_archive compliance.http compliance.recovery software.catalog software.http content.http content.mirror content.gc execution.agent.delivery execution.agent.content execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery execution.commands.admission execution.commands.dispatch execution.commands.recovery execution.commands.windows execution.commands.configuration execution.commands.onboarding windows.issuance windows.management windows.commands apple.scep apple.collection apple.profile apple.policy apple.onboarding apple.renewal apple.identity apple.push apple.ddm apple.status publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery'
+AUDITED_MODULES = 'agent.pki certificate-archive.http diagnostics.http audit.receipts audit.integrity audit.recovery audit.budget authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission identity.audit enrollment.http enrollment.recovery device.binding device.revocation device.recovery device.admission agent.registration agent.reports assets.http planning.http planning.policy planning.agent_policy planning.frequency planning.remote planning.software planning.onboarding planning.group_scope planning.recovery planning.resource_archive compliance.http compliance.recovery software.catalog software.http content.http content.mirror content.gc execution.agent.delivery execution.agent.content execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery execution.commands.admission execution.commands.dispatch execution.commands.recovery execution.commands.windows execution.commands.configuration execution.commands.onboarding windows.issuance windows.management windows.commands apple.scep apple.collection apple.profile apple.policy apple.onboarding apple.renewal apple.identity apple.push apple.ddm apple.status publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery'
 consume(('crates/audit-integration/src/*',), AUDITED_MODULES)
 consume(('crates/flow-service/src/transaction.rs',), 'planning.http planning.policy planning.agent_policy planning.frequency planning.group_scope planning.recovery planning.resource_archive planning.scope planning.assets planning.software planning.onboarding')
 consume(('crates/audit-integration/src/budget.rs',), 'audit.budget enrollment.http enrollment.recovery device.binding device.revocation device.recovery agent.registration windows.issuance windows.management apple.scep apple.profile apple.renewal content.http content.mirror content.gc')
@@ -794,7 +806,7 @@ consume(('crates/software-service/src/publication/references.rs',), 'planning.re
 consume(('crates/software-service/src/publication/*.sql', 'crates/software-service/src/publication/*catalog.json'),
         'publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery catalog.contract')
 
-consume(('crates/certificate/src/*',), 'windows.issuance windows.management apple.scep apple.identity apple.renewal apple.cms native.tls')
+consume(('crates/certificate/src/*',), 'agent.pki windows.issuance windows.management apple.scep apple.identity apple.renewal apple.cms native.tls')
 consume(('crates/apple-mdm/src/*',), 'apple.scep apple.collection apple.profile apple.policy apple.onboarding apple.renewal apple.identity')
 
 
@@ -1040,7 +1052,7 @@ def matches(path, patterns):
     return any(fnmatchcase(path, pattern) for pattern in patterns)
 
 
-T1_INPUTS = ('crates/certificate-archive-service/tests/behavior.rs','crates/authorization-service/tests/unit.rs','crates/inventory-service/tests/runtime.rs','crates/software-service/tests/management/*') + tuple(f'crates/{name}/tests/*' for name in (
+T1_INPUTS = ('crates/app/tests/agent_pki/health.rs','crates/certificate/tests/agent.rs','crates/certificate-archive-service/tests/behavior.rs','crates/authorization-service/tests/unit.rs','crates/inventory-service/tests/runtime.rs','crates/software-service/tests/management/*') + tuple(f'crates/{name}/tests/*' for name in (
     'inventory', 'group', 'scope', 'policy', 'resource', 'software-release',
     'compliance', 'agent-wire', 'windows-mdm', 'apple-mdm', 'content-service')) + (
     'crates/app/tests/agent/unit.rs',

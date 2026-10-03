@@ -18,6 +18,7 @@ use serde_json::Value;
 use serde_json::json;
 use std::sync::Arc;
 pub(crate) struct Assembly {
+    pub(crate) agent_pki: Option<Arc<crate::agent_pki::AgentPki>>,
     pub(crate) certificate_archive: Arc<rss_mdm_certificate_archive_service::Archive>,
     pub(crate) timeline: Arc<rss_mdm_timeline_service::Timeline>,
     pub(crate) content_writer: Option<Arc<rss_mdm_content_service::Store>>,
@@ -225,7 +226,9 @@ pub(crate) fn from_compiled(
             .map(Arc::new)
         })
         .transpose()?;
+    let agent_pki = config.agent_pki.load(audit_store.clone(), clock.clone())?;
     let state = Arc::new(Assembly {
+        agent_pki,
         certificate_archive,
         timeline,
         content_writer,
@@ -520,6 +523,7 @@ pub(crate) fn from_state(
         )
         .layer(DefaultBodyLimit::max(16384));
     crate::native::Routers {
+        agent_pki: state.agent_pki.clone(),
         windows: state.windows.clone(),
         apple,
         browser,

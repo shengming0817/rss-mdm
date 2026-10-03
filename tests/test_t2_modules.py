@@ -8,6 +8,19 @@ from t2_registry import MODULES, select_paths
 
 
 class ModuleImpactTests(unittest.TestCase):
+    def test_agent_pki_consumes_authorization_registration_audit_and_tls_inputs(self):
+        for path in ('crates/authorization-service/src/context.rs',
+                     'crates/registration-service/src/enrollment/store.rs',
+                     'crates/registration-service/src/operations.rs',
+                     'crates/audit-integration/src/store.rs',
+                     'crates/certificate/src/peer.rs'):
+            selected = select_paths([path])
+            self.assertFalse(selected.full, path)
+            self.assertIn('agent.pki', selected.modules, path)
+        selected = select_paths(['crates/certificate/tests/agent.rs'])
+        self.assertFalse(selected.full)
+        self.assertEqual(selected.modules, ())
+
     def test_archive_selects_real_consumers_and_keeps_t1_independent(self):
         for path in ('crates/native-protection/src/lib.rs',
                      'crates/authorization-service/src/model.rs',
