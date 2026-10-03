@@ -33,7 +33,7 @@ impl ExecutionService {
             return Err(Error::Unsupported);
         }
         for permission in input.task.permissions()? {
-            proof.require(permission, Some(device))?;
+            proof.require(permission, permission.device().then_some(device))?;
         }
         let failure = Mutex::new(None);
         let timer = recovery::Timer::new();

@@ -354,7 +354,10 @@ async fn receive(
     if transition.outcome == dc::Outcome::OutOfOrder {
         return Err(Error::Conflict.into());
     }
-    if transition.command.status().is_terminal() {
+    let withdrawal_received = transition.command.status() == dc::Status::Received
+        && matches!(&op.request.task,Task::Macos{request:rss_mdm_apple_mdm::native::request::Request::Declarations{declarations,..}} if declarations.is_empty());
+    if transition.command.status().is_terminal() || withdrawal_received {
+        // Logical publication withdrawal can release desired claims without claiming an OS effect.
         crate::wake::wake_native_in(service.source.clone(), tx, &op.device).await?;
     }
     Ok(())
