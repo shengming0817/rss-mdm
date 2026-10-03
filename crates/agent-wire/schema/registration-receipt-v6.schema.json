@@ -1,101 +1,97 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/mdm/agent/v5/report-request.schema.json",
+  "$id": "https://rss.example/mdm/agent/v6/registration-receipt.schema.json",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "wireVersion",
-    "reportId",
-    "sequence",
-    "observedAt",
-    "body",
-    "collection"
+    "operationId",
+    "deviceId",
+    "registrationId",
+    "generation",
+    "source",
+    "epoch",
+    "capabilities",
+    "collections"
   ],
   "properties": {
     "wireVersion": {
-      "const": 5
+      "const": 6
     },
-    "reportId": {
+    "operationId": {
+      "$ref": "#/$defs/nonNilUuid"
+    },
+    "deviceId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^(?=.*\\S)[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+    },
+    "registrationId": {
+      "$ref": "#/$defs/nonNilUuid"
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9223372036854775807
+    },
+    "source": {
+      "const": "agent.builtin"
+    },
+    "epoch": {
+      "$ref": "#/$defs/nonNilUuid"
+    },
+    "capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "uniqueItems": true,
+      "prefixItems": [
+        {
+          "const": "inventory.collect.v6"
+        }
+      ],
+      "items": {
+        "enum": [
+          "inventory.collect.v6",
+          "task.execute.v6",
+          "software.msi.system.v6",
+          "software.msi.user.v6",
+          "software.pkg.system.v6",
+          "software.bundle.windows.system.v6",
+          "software.bundle.windows.user.v6",
+          "software.bundle.macos.system.v6",
+          "software.bundle.macos.user.v6",
+          "software.winget.system.v6",
+          "software.winget.user.v6",
+          "software.brew.bottle.user.v6",
+          "software.exe.system.v6",
+          "software.exe.user.v6",
+          "software.dmg.app.system.v6",
+          "software.dmg.app.user.v6",
+          "software.dmg.pkg.system.v6",
+          "software.msix.registration.user.v6",
+          "software.msix.provisioning.system.v6",
+          "mdm.enrollment.v6"
+        ]
+      }
+    },
+    "collections": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {
+        "$ref": "#/$defs/collection"
+      }
+    }
+  },
+  "$defs": {
+    "nonNilUuid": {
       "type": "string",
       "format": "uuid",
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
       "not": {
         "const": "00000000-0000-0000-0000-000000000000"
-      }
-    },
-    "sequence": {
-      "type": "integer",
-      "minimum": 0,
-      "maximum": 9223372036854775807
-    },
-    "observedAt": {
-      "type": "integer",
-      "minimum": 0,
-      "maximum": 9223372036854775807
-    },
-    "body": {
-      "oneOf": [
-        {
-          "$ref": "#/$defs/valuesBody",
-          "properties": {
-            "kind": {
-              "const": "snapshot"
-            }
-          }
-        },
-        {
-          "$ref": "#/$defs/valuesBody",
-          "properties": {
-            "kind": {
-              "const": "partial"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "code"
-          ],
-          "properties": {
-            "kind": {
-              "const": "failed"
-            },
-            "code": {
-              "enum": [
-                "permissionDenied",
-                "temporarilyUnavailable",
-                "collectionFailed"
-              ]
-            }
-          }
-        }
-      ]
-    },
-    "collection": {
-      "$ref": "#/$defs/collection"
-    }
-  },
-  "$defs": {
-    "valuesBody": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "kind",
-        "values"
-      ],
-      "properties": {
-        "kind": {
-          "type": "string"
-        },
-        "values": {
-          "type": "array",
-          "maxItems": 128,
-          "items": {
-            "$ref": "#/$defs/fieldValue"
-          }
-        }
       }
     },
     "fieldType": {

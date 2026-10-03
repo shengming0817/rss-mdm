@@ -701,7 +701,7 @@ impl TaskSpec {
         {
             return Err(WireError::InvalidValue);
         }
-        let mut bytes = b"rss-mdm-agent-script-task-v5-ed25519\0".to_vec();
+        let mut bytes = b"rss-mdm-agent-script-task-v6-ed25519\0".to_vec();
         bytes.extend((key_id.len() as u32).to_be_bytes());
         bytes.extend(key_id.as_bytes());
         bytes.extend(serde_json::to_vec(self).map_err(|_| WireError::InvalidValue)?);
@@ -763,15 +763,6 @@ pub enum SoftwareTaskDowngrade {
     /// Permit the exact approved downgrade.
     Allow,
 }
-/// Whether user-owned installs may be changed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SoftwareTaskOwnership {
-    /// Change only organization-managed installations.
-    ManagedOnly,
-    /// May change a user-owned installation.
-    AllowUserExisting,
-}
 /// A declared member of a bounded bundle.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -810,8 +801,6 @@ pub struct SoftwareTaskAction {
     pub reboot: SoftwareTaskReboot,
     /// Exact downgrade permission.
     pub downgrade: SoftwareTaskDowngrade,
-    /// Existing-installation ownership boundary.
-    pub ownership: SoftwareTaskOwnership,
 }
 impl SoftwareTaskAction {
     /// One concrete format/scope/execution-context capability; no generic fallback.
@@ -835,41 +824,41 @@ impl SoftwareTaskAction {
             })
         };
         match &self.behavior {
-            B::Msi(n) => native(n.scope, C::SoftwareMsiSystemV5, C::SoftwareMsiUserV5),
-            B::Pkg(n) if n.scope == S::System => Some(C::SoftwarePkgSystemV5),
+            B::Msi(n) => native(n.scope, C::SoftwareMsiSystemV6, C::SoftwareMsiUserV6),
+            B::Pkg(n) if n.scope == S::System => Some(C::SoftwarePkgSystemV6),
             B::Pkg(_) => None,
-            B::Winget(n) => native(n.scope, C::SoftwareWingetSystemV5, C::SoftwareWingetUserV5),
-            B::Brew(n) if n.scope == S::User => Some(C::SoftwareBrewBottleUserV5),
+            B::Winget(n) => native(n.scope, C::SoftwareWingetSystemV6, C::SoftwareWingetUserV6),
+            B::Brew(n) if n.scope == S::User => Some(C::SoftwareBrewBottleUserV6),
             B::Brew(_) => None,
-            B::Exe(n) => native(n.scope, C::SoftwareExeSystemV5, C::SoftwareExeUserV5),
+            B::Exe(n) => native(n.scope, C::SoftwareExeSystemV6, C::SoftwareExeUserV6),
             B::Bundle(n) => Some(match (platform, n.install.invocation.run_as) {
                 (TaskPlatform::Windows, ExecutionIdentity::System) => {
-                    C::SoftwareBundleWindowsSystemV5
+                    C::SoftwareBundleWindowsSystemV6
                 }
                 (TaskPlatform::Windows, ExecutionIdentity::LoggedInUser) => {
-                    C::SoftwareBundleWindowsUserV5
+                    C::SoftwareBundleWindowsUserV6
                 }
-                (TaskPlatform::Macos, ExecutionIdentity::System) => C::SoftwareBundleMacosSystemV5,
+                (TaskPlatform::Macos, ExecutionIdentity::System) => C::SoftwareBundleMacosSystemV6,
                 (TaskPlatform::Macos, ExecutionIdentity::LoggedInUser) => {
-                    C::SoftwareBundleMacosUserV5
+                    C::SoftwareBundleMacosUserV6
                 }
             }),
             B::Dmg(n) => match (&n.payload, n.scope) {
                 (SoftwareTaskDmgPayload::AppCopy { .. }, S::System) => {
-                    Some(C::SoftwareDmgAppSystemV5)
+                    Some(C::SoftwareDmgAppSystemV6)
                 }
-                (SoftwareTaskDmgPayload::AppCopy { .. }, S::User) => Some(C::SoftwareDmgAppUserV5),
+                (SoftwareTaskDmgPayload::AppCopy { .. }, S::User) => Some(C::SoftwareDmgAppUserV6),
                 (SoftwareTaskDmgPayload::ContainedPkg { .. }, S::System) => {
-                    Some(C::SoftwareDmgPkgSystemV5)
+                    Some(C::SoftwareDmgPkgSystemV6)
                 }
                 _ => None,
             },
             B::Msix(n) => Some(match n.deployment {
                 SoftwareTaskMsixDeployment::TargetUserRegistration { .. } => {
-                    C::SoftwareMsixRegistrationUserV5
+                    C::SoftwareMsixRegistrationUserV6
                 }
                 SoftwareTaskMsixDeployment::DeviceProvisioning => {
-                    C::SoftwareMsixProvisioningSystemV5
+                    C::SoftwareMsixProvisioningSystemV6
                 }
             }),
         }
@@ -1008,7 +997,7 @@ impl SoftwareTaskSpec {
         {
             return Err(WireError::InvalidValue);
         }
-        let mut bytes = b"rss-mdm-agent-software-task-v5-ed25519\0".to_vec();
+        let mut bytes = b"rss-mdm-agent-software-task-v6-ed25519\0".to_vec();
         bytes.extend((key_id.len() as u32).to_be_bytes());
         bytes.extend(key_id.as_bytes());
         bytes.extend(serde_json::to_vec(self).map_err(|_| WireError::InvalidValue)?);

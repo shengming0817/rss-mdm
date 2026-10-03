@@ -1,4 +1,8 @@
 //! One accepted operation owns one immutable target snapshot, without creating a Policy.
+//! Scope freeze: #2623 must resolve whether to retire this entrypoint or retain a defined scope.
+//! Until it is complete, do not extend actions, target semantics, scheduling, authorization uses
+//! or execution branches (including software). Existing fixes and required wire updates remain
+//! permitted; completion permits only changes within the approved scope.
 use crate::ExecutionService;
 use crate::frozen::Frozen;
 use crate::{
@@ -30,6 +34,7 @@ pub enum Targets {
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+// #2623: keep this closed action set unchanged until the Remote boundary is resolved.
 pub enum Action {
     Execute { parameters: Value },
     ApplyConfiguration,

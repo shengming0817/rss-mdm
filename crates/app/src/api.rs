@@ -487,7 +487,7 @@ pub(crate) fn from_state(
             apple_boundary,
         ))
         .nest(
-            "/api/agent/v5",
+            "/api/agent/v6",
             rss_mdm_agent_channel::router(agent, agent_boundary.clone()).merge(
                 rss_mdm_agent_channel::task_router(
                     Arc::new(rss_mdm_agent_channel::TaskState {

@@ -5,7 +5,7 @@ fn invocation() -> Value {
     json!({"runAs":"system","arguments":["/quiet"],"environment":{},"timeoutSeconds":600,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[3010]}})
 }
 fn definition(behavior: Value, version: &str) -> Value {
-    json!({"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"Acme.App","version":version,"provenance":{"kind":"private"},"artifacts":{"installer":{"reference":"installer","origin":null,"length":3,"sha256":vec![2;32]}},"behavior":behavior,"signatures":[],"reboot":"report","downgrade":"deny","ownership":"managed_only","dependencies":[],"export":{"kind":"disabled"}})
+    json!({"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"Acme.App","version":version,"provenance":{"kind":"private"},"artifacts":{"installer":{"reference":"installer","origin":null,"length":3,"sha256":vec![2;32]}},"behavior":behavior,"signatures":[],"reboot":"report","downgrade":"deny","dependencies":[],"export":{"kind":"disabled"}})
 }
 fn exe() -> Value {
     definition(
@@ -94,7 +94,7 @@ fn msix(deployment: Value, bundle: bool) -> Value {
 
 #[test]
 fn dmg_explicit_app_and_pkg_payloads_are_distinct_frozen_forms() {
-    let app = json!({"kind":"app_copy","application":{"path":"Applications/企业.app","bundleId":"com.acme.app","version":"1.0","materialSha256":vec![3;32],"targetName":"企业.app"},"uninstall":true});
+    let app = json!({"kind":"app_copy","application":{"path":"Applications/企业.app","bundleId":"com.acme.app","version":"1.0","targetName":"企业.app"},"uninstall":true});
     let pkg = json!({"kind":"contained_pkg","path":"Packages/Acme.pkg","length":123,"sha256":vec![3;32],"receipt":"com.acme.app","uninstall":null});
     for payload in [app, pkg] {
         let input = definition(
@@ -182,4 +182,21 @@ fn current_native_behavior_requires_explicit_removal_support() {
         .unwrap()
         .remove("uninstall");
     assert!(serde_json::from_value::<SoftwareDefinition>(input).is_err());
+}
+
+#[test]
+fn app_copy_rejects_retired_directory_digest_including_null() {
+    let input = definition(
+        json!({"kind":"dmg","image":"installer","volume":"Acme","scope":"system","invocation":native_budget(),"upgrade":"in_place","payload":{"kind":"app_copy","application":{"path":"Acme.app","targetName":"Acme.app","bundleId":"com.acme.app","version":"1.0"},"uninstall":true}}),
+        "1.0",
+    );
+    let definition: SoftwareDefinition = serde_json::from_value(input.clone()).unwrap();
+    definition
+        .validate_target(Platform::MacOS, Architecture::Aarch64)
+        .unwrap();
+    for digest in [json!(vec![2; 32]), json!(null)] {
+        let mut old = input.clone();
+        old["behavior"]["payload"]["application"]["materialSha256"] = digest;
+        assert!(serde_json::from_value::<SoftwareDefinition>(old).is_err());
+    }
 }

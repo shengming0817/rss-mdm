@@ -468,7 +468,7 @@ pub(crate) async fn wait_agent_status(
             let (status, body) = agent_call(
                 router,
                 Method::GET,
-                &format!("/api/agent/v5/reports/{report_id}"),
+                &format!("/api/agent/v6/reports/{report_id}"),
                 Some(credential),
                 None,
             )

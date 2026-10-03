@@ -3,7 +3,7 @@ use serde_json::json;
 use uuid::Uuid;
 #[test]
 fn task_events_are_closed_bounded_and_cannot_claim_identity() {
-    let value = json!({"wireVersion":5,"executionContext":{"revision":1,"osVersion":[14,0,0,0],"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false},"operationId":Uuid::new_v4(),"attemptId":Uuid::new_v4(),"event":{"kind":"received"}});
+    let value = json!({"wireVersion":6,"executionContext":{"revision":1,"osVersion":[14,0,0,0],"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false},"operationId":Uuid::new_v4(),"attemptId":Uuid::new_v4(),"event":{"kind":"received"}});
     let request: TaskEventRequest = serde_json::from_value(value.clone()).unwrap();
     assert!(matches!(request.event(), TaskEvent::Received));
     for mutate in [
@@ -38,7 +38,7 @@ fn signatures_bind_attempt_artifact_and_permission_and_fail_closed() {
     let key = Ed25519KeyPair::from_pkcs8(document.as_ref()).unwrap();
     let id = Uuid::new_v4();
     let spec = TaskSpec {
-        wire_version: 5,
+        wire_version: 6,
         tenant_id: id,
         device_id: "device".into(),
         platform: TaskPlatform::Macos,
@@ -163,7 +163,7 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
     use rss_mdm_agent_wire::*;
     let id = Uuid::new_v4();
     let steps = vec![SoftwareTaskStep {
-        action: serde_json::from_value(json!({"package":"acme.editor","version":"2","reboot":"report","downgrade":"deny","ownership":"managed_only","behavior":{"kind":"msi","installer":"installer","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"2"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[]})).unwrap(),
+        action: serde_json::from_value(json!({"package":"acme.editor","version":"2","reboot":"report","downgrade":"deny","behavior":{"kind":"msi","installer":"installer","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"2"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[]})).unwrap(),
         artifacts: vec![SoftwareTaskArtifact {
             key: "0/installer".into(),
             length: 20_000_000,
@@ -187,7 +187,7 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
             msix_sideload: false,
             msix_unsigned: false,
         },
-        wire_version: 5,
+        wire_version: 6,
         tenant_id: id,
         device_id: "device".into(),
         platform: TaskPlatform::Windows,
@@ -205,7 +205,7 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
     };
     let payload: TaskPayload = spec.clone().try_into().unwrap();
     let schema: serde_json::Value =
-        serde_json::from_str(include_str!("../schema/task-payload-v5.schema.json")).unwrap();
+        serde_json::from_str(include_str!("../schema/task-payload-v6.schema.json")).unwrap();
     let validator = jsonschema::draft202012::new(&schema).unwrap();
     assert!(validator.is_valid(&serde_json::to_value(&payload).unwrap()));
     for change in [
@@ -218,6 +218,11 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
             v["steps"][0]["action"]["behavior"]["install"]["timeoutSeconds"] = json!("never")
         },
         |v: &mut serde_json::Value| v["publicationId"] = json!(null),
+        |v: &mut serde_json::Value| v["steps"][0]["action"]["ownership"] = json!("managed_only"),
+        |v: &mut serde_json::Value| {
+            v["steps"][0]["action"]["ownership"] = json!("allow_user_existing")
+        },
+        |v: &mut serde_json::Value| v["steps"][0]["action"]["ownership"] = json!(null),
     ] {
         let mut bad = serde_json::to_value(&spec).unwrap();
         change(&mut bad);
@@ -267,12 +272,12 @@ fn task_response_schemas_and_rust_reject_unknown_major_and_authority() {
     use rss_mdm_agent_wire::{MAX_TASK_CANCELLATIONS, TaskClaimResponse, TaskEventAck};
     let samples = [
         (
-            include_str!("../schema/task-claim-response-v5.schema.json"),
-            json!({"wireVersion":5,"task":null,"cancellations":[]}),
+            include_str!("../schema/task-claim-response-v6.schema.json"),
+            json!({"wireVersion":6,"task":null,"cancellations":[]}),
         ),
         (
-            include_str!("../schema/task-event-ack-v5.schema.json"),
-            json!({"wireVersion":5,"accepted":true,"permit":null,"cancelRequested":false}),
+            include_str!("../schema/task-event-ack-v6.schema.json"),
+            json!({"wireVersion":6,"accepted":true,"permit":null,"cancelRequested":false}),
         ),
     ];
     for (index, (schema, value)) in samples.into_iter().enumerate() {
@@ -303,17 +308,17 @@ fn task_response_schemas_and_rust_reject_unknown_major_and_authority() {
     }
     let cancellation = json!({"taskId":Uuid::new_v4(),"attemptId":Uuid::new_v4()});
     let boundary = json!({
-        "wireVersion":5,
+        "wireVersion":6,
         "task":null,
         "cancellations":vec![cancellation.clone(); MAX_TASK_CANCELLATIONS]
     });
     let schema: serde_json::Value =
-        serde_json::from_str(include_str!("../schema/task-claim-response-v5.schema.json")).unwrap();
+        serde_json::from_str(include_str!("../schema/task-claim-response-v6.schema.json")).unwrap();
     let validator = jsonschema::draft202012::new(&schema).unwrap();
     assert!(validator.is_valid(&boundary));
     assert!(serde_json::from_value::<TaskClaimResponse>(boundary).is_ok());
     let overflow = json!({
-        "wireVersion":5,
+        "wireVersion":6,
         "task":null,
         "cancellations":vec![cancellation; MAX_TASK_CANCELLATIONS + 1]
     });
@@ -341,7 +346,7 @@ fn task_response_producers_can_only_construct_valid_shapes() {
         .expect("boundary response");
     assert!(response.task().is_none());
     assert_eq!(response.cancellations().len(), MAX_TASK_CANCELLATIONS);
-    assert_eq!(serde_json::to_value(&response).unwrap()["wireVersion"], 5);
+    assert_eq!(serde_json::to_value(&response).unwrap()["wireVersion"], 6);
     assert_eq!(
         TaskClaimResponse::new(
             None,
@@ -400,7 +405,7 @@ fn task_results_require_bounded_coherent_diagnostics() {
     assert_eq!(encoded["event"]["kind"], "result");
     assert_eq!(encoded["event"]["diagnostics"]["durationMs"], 42);
     let schema: serde_json::Value =
-        serde_json::from_str(include_str!("../schema/task-event-request-v5.schema.json")).unwrap();
+        serde_json::from_str(include_str!("../schema/task-event-request-v6.schema.json")).unwrap();
     assert!(
         jsonschema::draft202012::new(&schema)
             .unwrap()
@@ -551,7 +556,7 @@ fn task_results_require_bounded_coherent_diagnostics() {
 #[test]
 fn claims_require_current_unique_executor_profiles() {
     use rss_mdm_agent_wire::TaskClaimRequest;
-    let base = json!({"wireVersion":5,"executionContext":{"revision":1,"osVersion":[14,0,0,0],"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false},"operationId":Uuid::new_v4(),"profiles":["osquery"]});
+    let base = json!({"wireVersion":6,"executionContext":{"revision":1,"osVersion":[14,0,0,0],"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false},"operationId":Uuid::new_v4(),"profiles":["osquery"]});
     assert!(serde_json::from_value::<TaskClaimRequest>(base.clone()).is_ok());
     for profiles in [json!([]), json!(["posix_sh", "osquery"])] {
         let mut value = base.clone();
@@ -572,12 +577,12 @@ fn claims_require_current_unique_executor_profiles() {
 fn software_support_is_a_closed_format_scope_context_profile() {
     use rss_mdm_agent_wire::Capability;
     for name in [
-        "software.msi.system.v5",
-        "software.exe.user.v5",
-        "software.dmg.app.system.v5",
-        "software.msix.registration.user.v5",
-        "software.msix.provisioning.system.v5",
-        "software.brew.bottle.user.v5",
+        "software.msi.system.v6",
+        "software.exe.user.v6",
+        "software.dmg.app.system.v6",
+        "software.msix.registration.user.v6",
+        "software.msix.provisioning.system.v6",
+        "software.brew.bottle.user.v6",
     ] {
         assert!(
             serde_json::from_value::<Capability>(serde_json::json!(name)).is_ok(),
@@ -585,10 +590,10 @@ fn software_support_is_a_closed_format_scope_context_profile() {
         );
     }
     assert!(
-        serde_json::from_value::<Capability>(serde_json::json!("software.execute.v5")).is_err()
+        serde_json::from_value::<Capability>(serde_json::json!("software.execute.v6")).is_err()
     );
     assert!(
-        serde_json::from_value::<Capability>(serde_json::json!("software.msix.generic.v5"))
+        serde_json::from_value::<Capability>(serde_json::json!("software.msix.generic.v6"))
             .is_err()
     );
 }

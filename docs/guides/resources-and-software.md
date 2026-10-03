@@ -1,16 +1,16 @@
 # 资源与软件发布
 
-Resource 持有唯一不可变软件定义，企业目录持有来源与版本准入，Policy 持有设备分配，Run/Attempt 持有执行事实，publication/reconcile 持有导出、发布与恢复事实。Script 执行见[企业任务](enterprise-tasks.md)。仅支持全新安装；当前软件模型、接口、初始化 SQL 和 Agent V4 shape 直接替换，不提供历史解码或迁移。
+Resource 持有唯一不可变软件定义，企业目录持有来源与版本准入，Policy 持有设备分配，Run/Attempt 持有执行事实，publication/reconcile 持有导出、发布与恢复事实。Script 执行见[企业任务](enterprise-tasks.md)。仅支持全新安装；当前软件模型、接口、初始化 SQL 和当前 Agent wire 直接替换，不提供历史解码或迁移。
 
 ## 软件定义与批准
 
-`Resource.Software.definition` 的共同部分为来源快照、包和精确生态版本、原始来源证据、完整材料集合、签名要求、重启/降级/所有权策略、精确依赖和导出元数据。`behavior` 是闭合 MSI、PKG、Bundle、WinGet、Brew、EXE、DMG、MSIX 变体；格式由行为派生。完整契约以 `rss-mdm-resource::SoftwareSpec` 和当前 Agent wire schema 为准。
+`Resource.Software.definition` 的共同部分为来源快照、包和精确生态版本、原始来源证据、完整材料集合、签名要求、重启/降级策略、精确依赖和导出元数据。`behavior` 是闭合 MSI、PKG、Bundle、WinGet、Brew、EXE、DMG、MSIX 变体；格式由行为派生。完整契约以 `rss-mdm-resource::SoftwareSpec` 和当前 Agent wire schema 为准。
 
-EXE 固定安装/升级/卸载调用、完整离线文件布局和独立检测。DMG 明确一个 volume，以及 AppCopy 或 ContainedPkg；应用身份、目标名称与材料摘要不能由扫描猜测。MSIX 明确 Package 或 Bundle、精确包/依赖/member 身份以及 TargetUserRegistration 或 DeviceProvisioning，两者不能互相满足结果。原生行为没有脚本兜底；脚本只出现在明确的 Bundle 或受控检测中。
+EXE 固定安装/升级/卸载调用、完整离线文件布局和独立检测。DMG 明确一个 volume，以及 AppCopy 或 ContainedPkg；应用身份和目标名称不能由扫描猜测；AppCopy 使用完整 DMG 长度/SHA-256，不要求 App 目录摘要。内含 PKG 仍声明单文件长度/SHA-256。MSIX 明确 Package 或 Bundle、精确包/依赖/member 身份以及 TargetUserRegistration 或 DeviceProvisioning，两者不能互相满足结果。原生行为没有脚本兜底；脚本只出现在明确的 Bundle 或受控检测中。
 
 完整长度/SHA-256 是内容基本检查。未签名内容可以批准；需要签名时必须显式冻结 mechanism/publisher，变更要求会改变摘要。批准不代表已通过 Windows/Apple 信任检查。服务端核对 MSIX 的实际 XML 命名空间、包身份、依赖和选定 bundle member 字节，不调用平台安装或信任工具。DMG 内部声明仍须由设备执行端核实。
 
-所有材料、行为、依赖、来源证据和导出元数据参与冻结摘要。同版本不得换字节，旧批准不能批准另一份定义。Resource.Active 或 Published 不能代替企业批准；撤回阻止新准入、下载和启动，不自动卸载。历史回执和未知事实保留。
+所有材料、行为、依赖、来源证据和导出元数据参与冻结摘要。同版本不得换字节，旧批准不能批准另一份定义。Resource.Active 或 Published 不能代替企业批准；撤回阻止新准入、下载和启动，不自动卸载。历史回执和未知事实保留。已授权任务可处理匹配的用户已有安装；目标已满足可无修改完成，核实成功不代表本次发生安装，也不伪造历史安装来源或原生管理状态。
 
 管理写使用 `operationId`、`expectedRevision` 和 `input`；相同身份重放相同请求，更换内容冲突。以下路径位于 `/api/v3`：
 
@@ -63,4 +63,4 @@ Native Policy 明确 `delivery: {kind: native, source, ring}`，直接材料则�
 
 WinGet fixture、schema 与许可见[fixture 来源](../../crates/winget-source/tests/fixtures/README.md)。参考 [WinGet REST contract](https://github.com/microsoft/winget-cli-restsource/blob/21cd5dda3dab39aa059f4d34914959736af7ee70/documentation/WinGet-1.0.0.yaml)、[Homebrew 固定源码](https://github.com/Homebrew/brew/tree/7cce6eac8d897b0b8440e16f33dbcb21770da7cf) 和 [Git namespace](https://github.com/git/git/blob/v2.51.0/Documentation/gitnamespaces.adoc)。安装和恢复见[运维](../deployment/operations.md)。真实 Windows WinGet 源接入、精确解析和产物获取须由 Windows 环境补证；后端验收不代替该证据。
 
-Brew 派生只接受能保留冻结行为的子集：PKG/DMG 的 system scope、无额外参数或环境、标准退出码和 in-place 升级；PKG/ContainedPkg 的显式卸载必须为 null，导出不合成 pkgutil 卸载。AppCopy 必须明确允许删除对应 managed target。Bottle 使用非 root 用户、相同安装/升级调用及明确的原生卸载；其它行为返回 Unsupported。MSIX Bundle 的实际 manifest 成员必须与完整冻结声明相等；未声明 application/resource 成员均拒绝。
+Brew 派生只接受能保留冻结行为的子集：PKG/DMG 的 system scope、无额外参数或环境、标准退出码和 in-place 升级；PKG/ContainedPkg 的显式卸载必须为 null，导出不合成 pkgutil 卸载。AppCopy 必须明确允许删除声明的精确目标；授权来自当前可信任务和执行上下文，不依赖历史安装来源。Bottle 使用非 root 用户、相同安装/升级调用及明确的原生卸载；其它行为返回 Unsupported。MSIX Bundle 的实际 manifest 成员必须与完整冻结声明相等；未声明 application/resource 成员均拒绝。
