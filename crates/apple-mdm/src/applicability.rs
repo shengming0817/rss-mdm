@@ -55,7 +55,8 @@ pub enum Enrollment {
 }
 
 /// Facts supplied by the registration/platform owner, not a grant to execute.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Context {
     pub version: Option<Version>,
     pub channel: Channel,
@@ -63,6 +64,8 @@ pub struct Context {
     pub supervised: Option<bool>,
     pub automated_enrollment: Option<bool>,
     pub user_approved: Option<bool>,
+    /// Authenticated DeviceInformation evidence; absence is not Intel or Apple silicon.
+    pub apple_silicon: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

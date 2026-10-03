@@ -9,6 +9,7 @@ fn context() -> Context {
         supervised: Some(true),
         automated_enrollment: Some(true),
         user_approved: Some(true),
+        apple_silicon: Some(true),
     }
 }
 
@@ -718,4 +719,126 @@ fn plist_conversion_shares_one_budget_and_preserves_native_atoms() {
     let mut invalid = plist::Dictionary::new();
     invalid.insert("real".into(), plist::Value::Real(f64::NAN));
     assert!(Fields::from_plist(&invalid).is_err());
+}
+
+#[test]
+fn every_frozen_command_has_a_behavior_owner() {
+    for definition in generated::DEFINITIONS
+        .iter()
+        .filter(|d| d.kind == Kind::Command)
+    {
+        if definition.identity == "DeclarativeManagement" {
+            assert_eq!(
+                outcome::family(definition.identity),
+                Err(Error::Unsupported)
+            );
+        } else {
+            assert!(
+                outcome::family(definition.identity).is_ok(),
+                "{}",
+                definition.identity
+            );
+        }
+    }
+    assert_eq!(
+        Command::new(
+            "RunScript",
+            Dictionary::new(),
+            &Target {
+                context: &context(),
+                access_rights: &[]
+            }
+        )
+        .err(),
+        Some(Error::Unsupported)
+    );
+}
+
+#[test]
+fn dynamic_application_dictionary_is_native_evidence_and_unknown_never_means_installed() {
+    let ctx = context();
+    let target = Target {
+        context: &ctx,
+        access_rights: &[
+            "AllowQueryApplications",
+            "QueryInstalledApps",
+            "AllowAppInstallation",
+        ],
+    };
+    let input = input::CommandInput {
+        request_type: "ManagedApplicationList".into(),
+        fields: Default::default(),
+    };
+    for (status, expected) in [
+        ("Managed", outcome::Outcome::QueryResult),
+        ("Unknown", outcome::Outcome::Unknown),
+        ("UserRejected", outcome::Outcome::Rejected),
+    ] {
+        let response = crate::protocol::dictionary([(
+            "ManagedApplicationList",
+            Value::Dictionary(crate::protocol::dictionary([(
+                "com.example.app",
+                Value::Dictionary(crate::protocol::dictionary([
+                    ("Status", status.into()),
+                    ("ExternalVersionIdentifier", 1.into()),
+                    ("HasConfiguration", false.into()),
+                    ("ManagementFlags", 0.into()),
+                ])),
+            )])),
+        )]);
+        assert_eq!(
+            outcome::interpret(
+                &input,
+                &response,
+                crate::protocol::Status::Acknowledged,
+                &target
+            )
+            .unwrap(),
+            expected
+        );
+    }
+    let response = crate::protocol::dictionary([(
+        "ManagedApplicationList",
+        Value::Dictionary(crate::protocol::dictionary([(
+            "com.example.app",
+            "invalid".into(),
+        )])),
+    )]);
+    assert!(
+        outcome::interpret(
+            &input,
+            &response,
+            crate::protocol::Status::Acknowledged,
+            &target
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn recovery_lock_requires_actual_hardware_and_update_deferrals_require_install_later() {
+    let mut ctx = context();
+    ctx.apple_silicon = None;
+    let target = Target {
+        context: &ctx,
+        access_rights: &["AllowPasscodeRemovalAndLock"],
+    };
+    assert_eq!(
+        Command::new(
+            "SetRecoveryLock",
+            crate::protocol::dictionary([("NewPassword", "secret".into())]),
+            &target
+        )
+        .err(),
+        Some(Error::Unsupported)
+    );
+    let updates = crate::protocol::dictionary([(
+        "Updates",
+        Value::Array(vec![Value::Dictionary(crate::protocol::dictionary([
+            ("ProductKey", "update".into()),
+            ("InstallAction", "InstallASAP".into()),
+            ("MaxUserDeferrals", 1.into()),
+        ]))]),
+    )]);
+    assert!(Command::new("ScheduleOSUpdate", updates, &target).is_err());
 }

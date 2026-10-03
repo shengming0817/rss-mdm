@@ -11,6 +11,7 @@ pub mod ddm;
 mod decimal;
 pub mod input;
 mod json;
+pub mod outcome;
 pub mod profiles;
 pub mod request;
 mod semantics;
@@ -162,6 +163,7 @@ impl Conditions {
 
 pub(super) struct Field {
     key: &'static str,
+    wildcard: bool,
     variants: &'static [Variant<FieldRule>],
 }
 pub(super) struct FieldRule {
@@ -307,6 +309,10 @@ impl Payload {
 pub struct Command(Payload);
 impl Command {
     pub fn new(request_type: &str, fields: Dictionary, target: &Target<'_>) -> Result<Self, Error> {
+        if request_type == "RunScript" {
+            return Err(Error::Unsupported);
+        }
+        outcome::prerequisites(request_type, &fields, target.context)?;
         Payload::new(Kind::Command, request_type, fields, target).map(Self)
     }
     pub fn request_type(&self) -> &'static str {
