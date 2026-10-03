@@ -347,7 +347,12 @@ pub async fn manage(
     }
     let bytes = app
         .execution
-        .apple_management(apple.clone(), &principal, &bytes, &audit)
+        .apple_management(
+            apple.clone(),
+            &principal,
+            crate::exchange::prepare(apple.clone(), dictionary, bytes.to_vec())?,
+            &audit,
+        )
         .await?;
     Ok((
         [

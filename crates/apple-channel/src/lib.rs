@@ -6,6 +6,8 @@ pub mod collection;
 mod database;
 pub mod enrollment;
 mod error;
+mod evidence;
+pub mod exchange;
 pub mod flow_store;
 mod material;
 mod native;

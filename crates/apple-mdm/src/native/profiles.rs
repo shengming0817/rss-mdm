@@ -232,6 +232,54 @@ pub fn observed_manifest(
     Ok(actual == expected)
 }
 
+/// Closed evidence decision. Only Matched and Failed permit ownership updates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Verification {
+    Matched,
+    Mismatched,
+    Unknown,
+    Failed,
+}
+/// One interpretation for live settlement and read-only queries.
+pub fn verification(
+    report: &Dictionary,
+    identifier: &str,
+    uuid: Uuid,
+    present: bool,
+    manifest: &[ProfileObject],
+    failed: bool,
+    previous: Option<&[ProfileObject]>,
+) -> Verification {
+    let actual = match crate::profile::presence(report, identifier, uuid) {
+        Ok(value) => value,
+        Err(crate::Error::Conflict) => return Verification::Mismatched,
+        Err(_) => return Verification::Unknown,
+    };
+    let matched = if present {
+        match observed_manifest(report, identifier, uuid, manifest) {
+            Ok(value) => value,
+            Err(_) => return Verification::Unknown,
+        }
+    } else {
+        !actual
+    };
+    if matched {
+        return Verification::Matched;
+    }
+    if failed && present && !actual {
+        return Verification::Failed;
+    }
+    if failed
+        && !present
+        && previous
+            .is_some_and(|old| matches!(observed_manifest(report, identifier, uuid, old), Ok(true)))
+    {
+        return Verification::Failed;
+    }
+    Verification::Mismatched
+}
+
 fn identity(identifier: &str, uuid: Uuid) -> Result<(), Error> {
     if uuid.is_nil()
         || identifier.trim().is_empty()

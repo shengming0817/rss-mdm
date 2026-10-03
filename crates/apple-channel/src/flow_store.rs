@@ -1,5 +1,5 @@
 use crate::device::DevicePrincipal;
-use crate::execution::channels::{self, AppleCommand, AppleDispatch, Pending, Reception};
+use crate::execution::channels::{self, AppleCommand, AppleDispatch, Pending};
 use crate::{Error, database::db};
 use rss_mdm_apple_mdm::protocol as wire;
 use sqlx::{PgConnection, Row};
@@ -20,19 +20,6 @@ impl channels::AppleProfiles for Store {
                 .map_err(Into::into)
         })
     }
-    fn confirm_profile<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        target: channels::AppleRegistration,
-        operation: Uuid,
-    ) -> Pending<'a, ()> {
-        Box::pin(async move {
-            crate::profiles::confirm(c, &self.protection, &target, operation)
-                .await
-                .map_err(Into::into)
-        })
-    }
-
     fn previous_profiles<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -289,83 +276,20 @@ impl channels::AppleResults for Store {
         c: &'a mut PgConnection,
         tenant: String,
         operation: Uuid,
+        request: rss_mdm_apple_mdm::native::request::Request,
+        native_values: bool,
     ) -> Pending<'a, Vec<channels::Observation>> {
         Box::pin(async move {
-            let rows=sqlx::query("SELECT id,registration,generation,phase,state,response,received_at,accepted,native_outcome FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2::uuid ORDER BY ordinal,phase").bind(&tenant).bind(operation).fetch_all(c).await.map_err(|e|channels::Rejection::from(db(e)))?;
-            rows.into_iter()
-                .map(|r| {
-                    Ok(channels::Observation {
-                        accepted: r.try_get("accepted").map_err(storage)?,
-                        native_outcome: r
-                            .try_get::<Option<String>, _>("native_outcome")
-                            .map_err(storage)?
-                            .map(|s| {
-                                serde_json::from_value(serde_json::Value::String(s)).map_err(|_| {
-                                    channels::Rejection::from(Error::Unavailable(
-                                        crate::Failure::AppleStorage,
-                                    ))
-                                })
-                            })
-                            .transpose()?,
-                        phase: r
-                            .try_get("phase")
-                            .map_err(|e| channels::Rejection::from(db(e)))?,
-                        state: r
-                            .try_get("state")
-                            .map_err(|e| channels::Rejection::from(db(e)))?,
-                        response: r
-                            .try_get::<Option<Vec<u8>>, _>("response")
-                            .map_err(storage)?
-                            .map(|sealed| {
-                                crate::protection::open(
-                                    &self.protection,
-                                    &tenant,
-                                    r.try_get("registration").map_err(db)?,
-                                    r.try_get("generation").map_err(db)?,
-                                    r.try_get("id").map_err(db)?,
-                                    crate::protection::Part::Response,
-                                    &sealed,
-                                )
-                                .map(|v| v.expose().to_vec())
-                            })
-                            .transpose()
-                            .map_err(channels::Rejection::from)?,
-                        received_at: r
-                            .try_get("received_at")
-                            .map_err(|e| channels::Rejection::from(db(e)))?,
-                    })
-                })
-                .collect()
-        })
-    }
-}
-impl channels::AppleAttempt for super::attempt::Attempt {
-    fn valid(&self) -> bool {
-        self.valid
-    }
-    fn outcome(&self) -> Option<rss_mdm_apple_mdm::native::outcome::Outcome> {
-        self.outcome
-    }
-    fn latest(&self) -> bool {
-        self.latest
-    }
-    fn operation(&self) -> Option<Uuid> {
-        self.operation
-    }
-    fn phase(&self) -> &str {
-        &self.phase
-    }
-    fn settle<'a>(
-        self: Box<Self>,
-        c: &'a mut PgConnection,
-        status: wire::Status,
-        accepted: bool,
-    ) -> Pending<'a, ()> {
-        Box::pin(async move {
-            (*self)
-                .settle(c, status, accepted)
-                .await
-                .map_err(Into::into)
+            crate::evidence::observations(
+                c,
+                &self.protection,
+                &tenant,
+                operation,
+                &request,
+                native_values,
+            )
+            .await
+            .map_err(Into::into)
         })
     }
 }
@@ -378,77 +302,6 @@ impl channels::Apple for super::Apple {
         user_key: &'a str,
     ) -> Pending<'a, ()> {
         Box::pin(async move { current(c, p, udid, user_key).await.map_err(Into::into) })
-    }
-    fn collect<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        p: &'a DevicePrincipal,
-        id: Uuid,
-        status: wire::Status,
-        dictionary: &'a plist::Dictionary,
-        bytes: &'a [u8],
-    ) -> Pending<'a, (bool, Vec<rss_mdm_audit_integration::Fact>)> {
-        Box::pin(async move {
-            if crate::protocol::user(dictionary)
-                .map_err(Error::from)
-                .map_err(channels::Rejection::from)?
-                .is_some()
-            {
-                return Ok((false, Vec::new()));
-            }
-            if let Some(facts) = crate::agent_collection::receive(
-                c,
-                &self.protection,
-                p,
-                id,
-                status,
-                dictionary,
-                bytes,
-            )
-            .await
-            .map_err(channels::Rejection::from)?
-            {
-                return Ok((true, facts));
-            }
-            let mut facts = Vec::new();
-            let collected = crate::collection::receive(
-                c,
-                &self.protection,
-                &mut facts,
-                p,
-                id,
-                status,
-                dictionary,
-                bytes,
-            )
-            .await
-            .map_err(channels::Rejection::from)?;
-            Ok((collected, facts))
-        })
-    }
-    fn lock_attempt<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        p: &'a DevicePrincipal,
-        id: Uuid,
-        bytes: &'a [u8],
-    ) -> Pending<'a, Option<Reception>> {
-        Box::pin(async move {
-            Ok(super::attempt::lock(
-                c,
-                &self.protection,
-                p,
-                id,
-                super::attempt::Owner::Command,
-                bytes,
-            )
-            .await
-            .map_err(channels::Rejection::from)?
-            .map(|r| match r {
-                super::attempt::Reception::Replay => Reception::Replay,
-                super::attempt::Reception::Ready(a) => Reception::Ready(Box::new(a)),
-            }))
-        })
     }
     fn command<'a>(
         &'a self,
@@ -496,7 +349,7 @@ impl channels::Apple for super::Apple {
         })
     }
 }
-async fn current(
+pub(crate) async fn current(
     c: &mut PgConnection,
     p: &DevicePrincipal,
     udid: &str,

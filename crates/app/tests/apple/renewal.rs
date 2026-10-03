@@ -199,13 +199,23 @@ impl Fixture {
             .apple_management(
                 self.app.apple()?.channel.clone(),
                 &old_principal,
-                &protocol::xml(protocol::dictionary([
-                    ("Status", "Idle".into()),
-                    (
-                        "UDID",
-                        crate::test_support::case::name("rss-t2-apple").into(),
-                    ),
-                ]))?,
+                rss_mdm_apple_channel::exchange::prepare(
+                    self.app.apple()?.channel.clone(),
+                    protocol::dictionary([
+                        ("Status", "Idle".into()),
+                        (
+                            "UDID",
+                            crate::test_support::case::name("rss-t2-apple").into(),
+                        ),
+                    ]),
+                    protocol::xml(protocol::dictionary([
+                        ("Status", "Idle".into()),
+                        (
+                            "UDID",
+                            crate::test_support::case::name("rss-t2-apple").into(),
+                        ),
+                    ]))?,
+                )?,
                 &audit,
             )
             .await;

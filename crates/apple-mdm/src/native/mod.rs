@@ -9,6 +9,7 @@ use plist::{Dictionary, Value};
 mod generated;
 pub mod ddm;
 mod decimal;
+pub mod evidence;
 pub mod input;
 mod json;
 pub mod outcome;
