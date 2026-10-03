@@ -141,14 +141,12 @@ impl Exchange {
             )
             .await?
             {
-                if value["nativeStatus"]["synchronized"] == true {
+                if value.status.synchronized {
                     synchronized.push(*id);
                 }
                 // A valid, active exact-version native declaration may take over its
                 // identical managed Profile. The DDM guard remains until native absence.
-                let statuses = value["nativeStatus"]["declarations"]
-                    .as_array()
-                    .ok_or(Error::Malformed)?;
+                let statuses = &value.status.declarations;
                 for profile in &publication.legacy {
                     if statuses.iter().any(|d| {
                         d["identifier"] == profile.declaration
@@ -206,7 +204,7 @@ pub(crate) async fn observation(
     tenant: &str,
     operation: Uuid,
     native_values: bool,
-) -> Result<Option<serde_json::Value>, Error> {
+) -> Result<Option<native::evidence::DeclarationEvidence>, Error> {
     let row=sqlx::query("SELECT registration,generation,user_key,snapshot,projection,retired_at FROM mdm_apple.declarations WHERE tenant_id=$1::uuid AND operation=$2")
         .bind(tenant).bind(operation).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else { return Ok(None) };
@@ -267,24 +265,20 @@ pub(crate) async fn observation(
         accumulated.map(|s| s.state).unwrap_or_default(),
     )
     .map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
-    let mut projection = serde_json::to_value(
-        projection
-            .finish()
-            .map_err(|_| Error::Unavailable(Failure::AppleStorage))?,
-    )
-    .map_err(|_| Error::Malformed)?;
+    let mut status = projection.finish().map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
     if !native_values {
-        projection["items"] = serde_json::json!({});
-        projection["errors"] = serde_json::json!([]);
-        if let Some(rows) = projection["declarations"].as_array_mut() {
-            for row in rows {
-                row["native"]["reasons"] = serde_json::json!([]);
-            }
-        }
+        status.items.clear();
+        status.errors.clear();
+        for row in &mut status.declarations { row["native"]["reasons"] = serde_json::json!([]); }
     }
-    Ok(Some(
-        serde_json::json!({"protocol":"mdm.apple","observationScope":"declarations","inputVersion":publication.input_version,"expected":set.manifest()["Declarations"],"synchronization":if retired.is_some(){"withdrawn"}else{"published"},"receivedAt":received_at,"nativeStatus":projection,"effect":"unverified","compliance":"unknown"}),
-    ))
+    Ok(Some(native::evidence::DeclarationEvidence {
+        input_version: publication.input_version,
+        expected: set.manifest()["Declarations"].clone(),
+        publication: if retired.is_some() { native::evidence::PublicationState::Withdrawn }
+            else { native::evidence::PublicationState::Published },
+        received_at,
+        status,
+    }))
 }
 
 /// Logical desired ownership can leave after withdrawal without fabricating an OS effect.

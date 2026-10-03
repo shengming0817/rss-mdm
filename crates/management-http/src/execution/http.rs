@@ -73,7 +73,7 @@ async fn read(
     audit.target(&device);
     app.read(&auth.proof, &device, id, &audit)
         .await
-        .map(|v| Json(serde_json::to_value(v).expect("command facts serialize")))
+        .map(|v| Json(crate::execution::projection::command(v)))
         .map_err(Error::from)
 }
 async fn cancel(

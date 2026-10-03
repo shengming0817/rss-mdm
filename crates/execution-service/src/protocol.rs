@@ -384,7 +384,7 @@ pub async fn observation(
     op: &storage::Operation,
     command_status: dc::Status,
     native_values: bool,
-) -> Result<Value> {
+) -> Result<crate::queries::records::NativeObservation> {
     if matches!(op.request.task, Task::Macos { .. }) {
         return super::apple::observation(tx, apple_results, op, command_status, native_values)
             .await;
@@ -407,33 +407,23 @@ pub async fn observation(
         } else {
             result_value(protection, tenant, op, &row)?
         };
-        let mut receipt = json!({
-            "phase":row.try_get::<String,_>("phase")?,
-            "ordinal":row.try_get::<i64,_>("ordinal")?,
-            "session":row.try_get::<i64,_>("session")?,
-            "message":row.try_get::<i64,_>("message")?,
-            "command":row.try_get::<i64,_>("command")?,
-            "parentCommand":row.try_get::<Option<i64>,_>("parent_command")?,
-            "item":row.try_get::<i32,_>("item_ordinal")?,
-            "kind":row.try_get::<String,_>("kind")?,
-            "uri":row.try_get::<Option<String>,_>("uri")?,
-            "status":row.try_get::<Option<i32>,_>("status")?,
-            "value":value,
-            "accepted":row.try_get::<Option<bool>,_>("receipt_accepted")?,
-            "receivedAt":row.try_get::<Option<i64>,_>("received_at")?,
-            "resultAccepted":row.try_get::<Option<bool>,_>("result_accepted")?,
-            "resultReceivedAt":row.try_get::<Option<i64>,_>("result_received_at")?,
-            "frames":row.try_get::<Value,_>("frames")?
-        });
-        if sensitive {
-            receipt["redacted"] = json!(true);
-        }
+        use crate::queries::records::WindowsReceipt;
+        let receipt = WindowsReceipt {
+            phase: crate::AttemptPhase::parse(&row.try_get::<String,_>("phase")?)?,
+            ordinal: row.try_get("ordinal")?, session: row.try_get("session")?, message: row.try_get("message")?,
+            command: row.try_get("command")?, parent_command: row.try_get("parent_command")?,
+            item: row.try_get("item_ordinal")?, kind: row.try_get("kind")?, uri: row.try_get("uri")?,
+            status: row.try_get("status")?, value, accepted: row.try_get("receipt_accepted")?,
+            received_at: row.try_get("received_at")?, result_accepted: row.try_get("result_accepted")?,
+            result_received_at: row.try_get("result_received_at")?,
+            frames: stored(serde_json::from_value(row.try_get::<Value,_>("frames")?))?, redacted: sensitive,
+        };
         receipts.push(receipt);
     }
     let assessment = effect_assessment(protection, tx, op).await?;
-    Ok(
-        json!({"protocol":"syncml","observationScope":"native_objects","receipts":receipts,"progress":super::service::status(command_status),"effect":assessment.state,"effectReason":assessment.reason}),
-    )
+    Ok(crate::queries::records::NativeObservation::Windows {
+        receipts, progress: super::service::status(command_status).into(), effect: assessment.state, reason: assessment.reason,
+    })
 }
 fn result_value(
     protection: &rss_mdm_native_protection::Protector,

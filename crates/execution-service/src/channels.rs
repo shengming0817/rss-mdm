@@ -114,17 +114,6 @@ pub trait Windows: Send + Sync {
 }
 
 use uuid::Uuid;
-pub struct Observation {
-    pub phase: rss_mdm_apple_mdm::native::evidence::Phase,
-    pub state: rss_mdm_apple_mdm::native::evidence::ReceiptState,
-    pub fields: Option<rss_mdm_apple_mdm::native::input::Fields>,
-    pub error: Option<rss_mdm_apple_mdm::native::input::Fields>,
-    pub profile: Option<rss_mdm_apple_mdm::native::profiles::Verification>,
-    pub application: Option<rss_mdm_apple_mdm::software::Presence>,
-    pub received_at: Option<i64>,
-    pub accepted: bool,
-    pub native_outcome: Option<rss_mdm_apple_mdm::native::outcome::Outcome>,
-}
 pub struct AppleRegistration {
     pub tenant: String,
     pub device: String,
@@ -243,7 +232,7 @@ pub trait AppleResults: Send + Sync {
         tenant: String,
         operation: Uuid,
         native_values: bool,
-    ) -> Pending<'a, Option<serde_json::Value>>;
+    ) -> Pending<'a, Option<rss_mdm_apple_mdm::native::evidence::DeclarationEvidence>>;
 
     fn observations<'a>(
         &'a self,
@@ -252,7 +241,7 @@ pub trait AppleResults: Send + Sync {
         operation: Uuid,
         request: rss_mdm_apple_mdm::native::request::Request,
         native_values: bool,
-    ) -> Pending<'a, Vec<Observation>>;
+    ) -> Pending<'a, Vec<rss_mdm_apple_mdm::native::evidence::Observation>>;
 }
 pub trait AppleAttempt: Send {
     fn operation(&self) -> Option<Uuid>;

@@ -77,29 +77,33 @@ impl crate::queries::Queries {
             })).await?;
             let items=value["items"].as_array_mut().ok_or(Error::Malformed)?;let more=items.len()>page.limit;items.truncate(page.limit);
             let next=if more{items.last().map(|v|json!({"id":v["id"],"kind":v["kind"]}))}else{None};value["nextCursor"]=next.unwrap_or(Value::Null);
-            for item in value["items"].as_array_mut().ok_or(Error::Malformed)? {
-                if item["kind"]=="command" {
-                    let id=stored(Uuid::parse_str(item["id"].as_str().ok_or(Error::Malformed)?))?;
-                    let op=storage::load(tx,&s.protection,id).await?;let command=s.command_status(tx,&op).await?;
-                    let mut observation=super::protocol::observation(tx,&s.protection,s.apple_results.clone(),&op,command,false).await?;
-                    if op.approval.agent_package().is_some(){item["evidence"]["agentInstallation"]=super::native_installation::installation_observation(tx,s.apple_results.clone(),s.agent_store.clone(),&op).await?;}
-                    if let Some(receipts) = observation.get_mut("receipts").and_then(Value::as_array_mut) {
-                        for receipt in receipts {
-                            if let Some(fields) = receipt.as_object_mut()
-                                && fields.contains_key("value")
-                            {
-                                fields.insert("value".into(), Value::Null);
-                                fields.insert("redacted".into(), json!(true));
-                            }
-                        }
+            use crate::queries::records::{self, Directory, DirectoryItem, ExecutionEvidence, ExecutionSummary};
+            let raw: Directory<DirectoryItem, records::ExecutionCursor, records::ExecutionStatistics> = records::decode(value)?;
+            let mut items = Vec::with_capacity(raw.items.len());
+            for item in raw.items {
+                let evidence = match item.metadata.kind {
+                    records::ExecutionKind::Command => {
+                        let op = storage::load(tx, &s.protection, item.metadata.id).await?;
+                        let command = s.command_status(tx, &op).await?;
+                        let mut observation = super::protocol::observation(tx, &s.protection,
+                            s.apple_results.clone(), &op, command, false).await?;
+                        observation.redact_values();
+                        let agent_installation = if op.approval.agent_package().is_some() {
+                            Some(records::decode(super::native_installation::installation_observation(
+                                tx, s.apple_results.clone(), s.agent_store.clone(), &op).await?)?)
+                        } else { None };
+                        ExecutionEvidence::Command(Box::new(records::CommandEvidence {
+                            command_status: crate::service::status(command).into(), observation,
+                            dispatch_failure: op.dispatch_failure, agent_installation,
+                        }))
                     }
-                    item["evidence"]["observation"]=observation;
-                    item["evidence"]["dispatchFailure"]=json!(op.dispatch_failure);
-
-                }
+                    records::ExecutionKind::ActionRun => ExecutionEvidence::Run(records::decode(item.evidence)?),
+                };
+                items.push(ExecutionSummary { metadata: item.metadata, evidence });
             }
-            a.check_live()?;s.audit_store.append_request_in(tx,audit,200,"success").await?;
-            crate::queries::records::decode(value)
+            a.check_live()?;
+            s.audit_store.append_request_in(tx,audit,200,"success").await?;
+            Ok(Directory { items, next_cursor: raw.next_cursor, statistics: raw.statistics, as_of: raw.as_of })
         })).await.map_err(Into::into)
     }
 

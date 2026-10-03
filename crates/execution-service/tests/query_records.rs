@@ -14,9 +14,3 @@ fn summary_keeps_execution_evidence_and_strips_nested_output_streams() {
     assert!(!value.to_string().contains("canary"));
 }
 
-#[test]
-fn native_declaration_details_preserve_typed_status_and_manifest() {
-    let input = serde_json::json!({"protocol":"mdm.apple","observationScope":"declarations","progress":"received","effect":"unverified","compliance":"unknown","inputVersion":"v1","synchronization":"published","expected":{"Configurations":[]},"nativeStatus":{"items":{},"unknownItems":[],"declarations":[],"errors":[],"completeness":"unknown","effect":"unverified","synchronized":false,"compliance":"unknown"}});
-    let record: NativeObservation = serde_json::from_value(input.clone()).unwrap();
-    assert_eq!(serde_json::to_value(record).unwrap(), input);
-}

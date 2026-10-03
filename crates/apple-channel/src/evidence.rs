@@ -1,7 +1,7 @@
 //! Protected native results are decoded and interpreted at their sole channel owner.
-use crate::{Error, Failure, database::db, execution::channels::Observation, protocol};
+use crate::{Error, Failure, database::db, protocol};
 use rss_mdm_apple_mdm::native::{
-    evidence::{Phase, ReceiptState},
+    evidence::{Observation, Phase, ReceiptState},
     input::Fields,
     request::Request,
 };

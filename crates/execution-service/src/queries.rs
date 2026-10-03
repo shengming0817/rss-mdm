@@ -113,7 +113,12 @@ impl Queries {
             let observation=protocol::observation(tx,&service.protection,service.apple_results.clone(),&op,command,native_values).await?;
             let agent_installation=if op.approval.agent_package().is_some(){Some(super::native_installation::installation_observation(tx,service.apple_results.clone(),service.agent_store.clone(),&op).await?)}else{None};
             service.audit_store.append_request_in(tx,audit,200,"success").await?;
-            records::decode(json!({"operationId":op.id,"commandId":op.id,"revision":op.revision,"task":op.request.task.summary()?,"target":op.request.target,"inputVersion":op.request.input_version,"deadline":op.request.deadline,"dispatchFailure":op.dispatch_failure,"authorization":if approved{"approved"}else{"blocked"},"commandStatus":crate::service::status(command),"observation":observation,"agentInstallation":agent_installation}))
+            Ok(records::CommandDetail { operation_id: op.id, command_id: op.id, revision: op.revision,
+                task: op.request.task.summary()?, target: op.request.target, input_version: op.request.input_version,
+                deadline: op.request.deadline, dispatch_failure: op.dispatch_failure,
+                authorization: if approved {"approved"} else {"blocked"}.into(),
+                command_status: crate::service::status(command).into(), observation,
+                agent_installation: agent_installation.map(records::decode).transpose()? })
         })).await.map_err(Into::into)
     }
 }
