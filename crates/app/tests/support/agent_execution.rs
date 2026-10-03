@@ -89,15 +89,15 @@ pub(crate) async fn task_event_request(
         };
         kind["diagnostics"] = json!({"stdout":"captured stdout","stderr":"captured stderr","durationMs":1,"executedAt":1,"failure":failure});
     }
-    agent_call(router,Method::POST,&format!("/api/agent/runtime/v1/tasks/{}/events",task["payload"]["taskId"].as_str().unwrap()),Some(case_credential()),Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":operation,"attemptId":task["payload"]["attemptId"],"event":kind}))).await
+    agent_call(router,Method::POST,&format!("/api/v1/agent/runtime/tasks/{}/events",task["payload"]["taskId"].as_str().unwrap()),Some(case_credential()),Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":operation,"attemptId":task["payload"]["attemptId"],"event":kind}))).await
 }
 pub(crate) async fn claim_request(router: &Router, operation: Uuid) -> Result<(StatusCode, Value)> {
     agent_call(
         router,
         Method::POST,
-        "/api/agent/runtime/v1/tasks/claim",
+        "/api/v1/agent/runtime/tasks/claim",
         Some(case_credential()),
-        Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":operation})),
+        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":operation})),
     )
     .await
 }
@@ -219,7 +219,7 @@ impl Fixture {
         })
     }
     pub(crate) async fn register(&mut self) -> Result<Value> {
-        self.register_profile(json!(["inventory.collect.v6", "task.execute.v6"]))
+        self.register_profile(json!(["inventory.collect.v1", "task.execute.v1"]))
             .await
     }
     pub(crate) async fn register_profile(&mut self, capabilities: Value) -> Result<Value> {

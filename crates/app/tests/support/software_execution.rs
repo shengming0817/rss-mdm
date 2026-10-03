@@ -51,8 +51,8 @@ pub(crate) async fn event_with(
     task: &Value,
     event: Value,
 ) -> Result<(StatusCode, Value)> {
-    agent_call(router,Method::POST,&format!("/api/agent/runtime/v1/tasks/{}/events", task["payload"]["taskId"].as_str().unwrap()),Some(credential),
-        Some(json!({"wireVersion":6,"executionContext":task["payload"]["executionContext"],"operationId":Uuid::new_v4(),"attemptId":task["payload"]["attemptId"],"event":event}))).await
+    agent_call(router,Method::POST,&format!("/api/v1/agent/runtime/tasks/{}/events", task["payload"]["taskId"].as_str().unwrap()),Some(credential),
+        Some(json!({"wireVersion":1,"executionContext":task["payload"]["executionContext"],"operationId":Uuid::new_v4(),"attemptId":task["payload"]["attemptId"],"event":event}))).await
 }
 pub(crate) fn result_event(
     task: &Value,
@@ -124,9 +124,9 @@ pub(crate) async fn claim_with(
             let response = agent_call(
                 router,
                 Method::POST,
-                "/api/agent/runtime/v1/tasks/claim",
+                "/api/v1/agent/runtime/tasks/claim",
                 Some(credential),
-                Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(platform),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
+                Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(platform),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
             )
             .await?;
             ensure!(response.0 == StatusCode::OK, "claim: {response:?}");
@@ -190,8 +190,8 @@ pub(crate) struct Fixture {
 impl Fixture {
     pub(crate) async fn approved(platform: Platform) -> Result<Self> {
         let capabilities = match platform {
-            Platform::Windows => json!(["inventory.collect.v6", "software.msi.system.v6"]),
-            Platform::MacOs => json!(["inventory.collect.v6", "software.pkg.system.v6"]),
+            Platform::Windows => json!(["inventory.collect.v1", "software.msi.system.v1"]),
+            Platform::MacOs => json!(["inventory.collect.v1", "software.pkg.system.v1"]),
         };
         Self::with_profiles(platform, capabilities, context(platform)).await
     }

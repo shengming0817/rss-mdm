@@ -141,7 +141,7 @@ pub fn router(app: Arc<HttpState>, envelope: boundary::Envelope) -> axum::Router
             )
             .route("/mdm", put(checkin::manage))
             .route(
-                "/api/agent/enroll/v1/native-grants",
+                "/api/v1/agent/enroll/native-grants",
                 axum::routing::post(checkin::register_agent),
             )
             .with_state(app)

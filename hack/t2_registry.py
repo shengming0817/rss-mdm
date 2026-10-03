@@ -653,10 +653,10 @@ consume(('crates/execution-service/src/freeze_inputs.rs', 'crates/flow-service/s
         'planning.agent_policy planning.remote planning.onboarding')
 TASK_CONSUMERS = 'planning.onboarding planning.policy planning.agent_policy planning.frequency planning.remote planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
 consume(('crates/agent-wire/src/tasks.rs', 'crates/agent-wire/schema/runtime/task-*.json',
-         'crates/agent-wire/schema/runtime/signed-task-v6.schema.json', 'crates/execution-service/src/task_signing.rs'), TASK_CONSUMERS)
+         'crates/agent-wire/schema/runtime/signed-task-v1.schema.json', 'crates/execution-service/src/task_signing.rs'), TASK_CONSUMERS)
 # lib.rs owns shared identities, capability, errors, registration and report shapes.
-consume(('crates/agent-wire/src/lib.rs','crates/agent-wire/src/runtime.rs','crates/agent-wire/schema/runtime/error-body-v6.schema.json',
-         'crates/agent-wire/schema/runtime/agent-v6.schema-manifest.json'), TASK_CONSUMERS + ' agent.registration agent.reports execution.commands.onboarding apple.onboarding')
+consume(('crates/agent-wire/src/lib.rs','crates/agent-wire/src/runtime.rs','crates/agent-wire/schema/runtime/error-body-v1.schema.json',
+         'crates/agent-wire/schema/runtime/agent-v1.schema-manifest.json'), TASK_CONSUMERS + ' agent.registration agent.reports execution.commands.onboarding apple.onboarding')
 consume(('crates/agent-wire/schema/runtime/binding-profile-*.json',), 'agent.registration')
 consume(('crates/agent-wire/schema/runtime/report-*.json',), 'agent.reports planning.onboarding')
 consume(('crates/agent-wire/src/onboarding.rs',),

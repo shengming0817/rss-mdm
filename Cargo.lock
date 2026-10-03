@@ -2896,7 +2896,7 @@ dependencies = [
 
 [[package]]
 name = "rss-mdm-agent-wire"
-version = "6.0.0"
+version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
  "jsonschema",

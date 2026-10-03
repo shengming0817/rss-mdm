@@ -43,7 +43,7 @@ def verify(context):
         if status!=200 or json.loads(body)!=public:raise RuntimeError('MDM host configuration was not served by the exact static route')
         status,body=request('/api/unsupported-test',method='GET')
         if status!=404 or json.loads(body)!={'code':'not_found'}:raise RuntimeError('API error fell through to SPA')
-        for path in ['/api/agent/enroll/v1/certificates', '/api/agent/runtime/v1/tasks/task/content', '/api/agent/runtime/v1/installations/operation/package']:
+        for path in ['/api/v1/agent/enroll/certificates', '/api/v1/agent/runtime/tasks/task/content', '/api/v1/agent/runtime/installations/operation/package']:
             if request(path,method='GET')[0] != 404: raise RuntimeError('Agent route leaked through browser gateway: '+path)
         status, forwarded=request('/api/probe','203.0.113.254')
         if status!=200 or not forwarded or forwarded==b'203.0.113.254':raise RuntimeError('gateway failed to overwrite source header')

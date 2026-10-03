@@ -79,7 +79,7 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
     ensure!(
         generated
             .path()
-            .starts_with("/api/agent/enroll/v1/installations/")
+            .starts_with("/api/v1/agent/enroll/installations/")
     );
     let package = f
         .router
@@ -188,8 +188,8 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
             && state["commandStatus"] != "applied",
         "unverified bundle promoted to installed: {state}"
     );
-    let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("managed-apple-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v6","mdm.enrollment.v6"]}});
-    let url = format!("{}/api/agent/enroll/v1/native-grants", peer.origin);
+    let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("managed-apple-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v1","mdm.enrollment.v1"]}});
+    let url = format!("{}/api/v1/agent/enroll/native-grants", peer.origin);
     for (field, value, code) in [
         ("wireVersion", json!(3), "malformed_request"),
         (
@@ -199,7 +199,7 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         ),
         (
             "capabilities",
-            json!(["inventory.collect.v6", "inventory.collect.v6"]),
+            json!(["inventory.collect.v1", "inventory.collect.v1"]),
             "malformed_request",
         ),
         ("deviceId", json!("untrusted"), "malformed_request"),

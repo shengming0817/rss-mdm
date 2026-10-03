@@ -501,8 +501,8 @@ pub(crate) fn from_state(
             }),
             envelope.clone(),
         ));
-        let router = Router::new().nest("/api/agent/runtime/v1", runtime).nest(
-            "/api/agent/enroll/v1",
+        let router = Router::new().nest("/api/v1/agent/runtime", runtime).nest(
+            "/api/v1/agent/enroll",
             rss_mdm_agent_channel::enroll::router(service.clone(), envelope.clone()).merge(
                 rss_mdm_agent_channel::installation_router(state.execution.clone(), envelope),
             ),

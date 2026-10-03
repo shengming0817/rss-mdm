@@ -4,7 +4,7 @@ use uuid::Uuid;
 #[test]
 fn enrollment_reports_keep_unknown_and_third_party_distinct_from_unenrolled() {
     let schema: serde_json::Value = serde_json::from_str(include_str!(
-        "../schema/runtime/report-request-v6.schema.json"
+        "../schema/runtime/report-request-v1.schema.json"
     ))
     .unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
@@ -14,13 +14,13 @@ fn enrollment_reports_keep_unknown_and_third_party_distinct_from_unenrolled() {
         "other_organization",
         "unknown",
     ] {
-        let value = json!({"wireVersion":6,"reportId":Uuid::new_v4(),"sequence":2,"observedAt":3,"collection":enrollment_collection(),"body":{"kind":"snapshot","values":[{"field":"channel.mdm.enrollment","value":{"kind":"value","value":{"kind":"string","value":state}}}]}});
+        let value = json!({"wireVersion":1,"reportId":Uuid::new_v4(),"sequence":2,"observedAt":3,"collection":enrollment_collection(),"body":{"kind":"snapshot","values":[{"field":"channel.mdm.enrollment","value":{"kind":"value","value":{"kind":"string","value":state}}}]}});
         let request: ReportRequest = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(request).unwrap(), value);
         assert!(validator.is_valid(&value));
     }
     for state in ["offline", "absent", "permissionDenied"] {
-        let value = json!({"wireVersion":6,"reportId":Uuid::new_v4(),"sequence":2,"observedAt":3,"collection":enrollment_collection(),"body":{"kind":"snapshot","values":[{"field":"channel.mdm.enrollment","value":{"kind":"value","value":{"kind":"string","value":state}}}]}});
+        let value = json!({"wireVersion":1,"reportId":Uuid::new_v4(),"sequence":2,"observedAt":3,"collection":enrollment_collection(),"body":{"kind":"snapshot","values":[{"field":"channel.mdm.enrollment","value":{"kind":"value","value":{"kind":"string","value":state}}}]}});
         assert!(serde_json::from_value::<ReportRequest>(value.clone()).is_err());
     }
 }
@@ -28,12 +28,12 @@ fn enrollment_reports_keep_unknown_and_third_party_distinct_from_unenrolled() {
 fn enrollment_schema_and_signing_agree_on_text_and_expiry_boundaries() {
     use rss_mdm_agent_wire::runtime::EnrollmentTaskSpec;
     let schema: serde_json::Value = serde_json::from_str(include_str!(
-        "../schema/runtime/task-payload-v6.schema.json"
+        "../schema/runtime/task-payload-v1.schema.json"
     ))
     .unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
     let tenant = Uuid::new_v4();
-    let base = json!({"wireVersion":6,"tenantId":tenant,"deviceId":"agent","platform":"macos","architecture":"aarch64","registrationId":Uuid::new_v4(),"generation":1,"taskId":Uuid::new_v4(),"attemptId":Uuid::new_v4(),"permit":"offer","expiresAt":1,"organization":tenant,"entry":{"kind":"macos","url":"https://mdm.example.test/enroll"}});
+    let base = json!({"wireVersion":1,"tenantId":tenant,"deviceId":"agent","platform":"macos","architecture":"aarch64","registrationId":Uuid::new_v4(),"generation":1,"taskId":Uuid::new_v4(),"attemptId":Uuid::new_v4(),"permit":"offer","expiresAt":1,"organization":tenant,"entry":{"kind":"macos","url":"https://mdm.example.test/enroll"}});
     for (field, value, expected) in [
         ("expiresAt", json!(0), false),
         ("expiresAt", json!(1), true),

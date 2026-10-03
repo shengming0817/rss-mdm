@@ -147,7 +147,7 @@ pub(crate) async fn enroll_profile(
     let (status, candidate) = agent_call(
         router,
         Method::POST,
-        "/api/agent/enroll/v1/certificates",
+        "/api/v1/agent/enroll/certificates",
         None,
         Some(request.clone()),
     )
@@ -180,7 +180,7 @@ pub(crate) async fn enroll_profile(
     let (status, receipt) = agent_call(
         router,
         Method::POST,
-        "/api/agent/enroll/v1/activate",
+        "/api/v1/agent/enroll/activate",
         Some(label),
         Some(activation),
     )
@@ -196,7 +196,7 @@ pub(crate) async fn enroll_profile(
 }
 pub(crate) async fn register(router: &Router, browser: &mut Browser) -> Result<Agent> {
     let label = Box::leak(super::credential(&Uuid::new_v4().to_string()).into_boxed_str());
-    let (request,registration)=enroll_profile(router,browser,label,json!({"capabilities":["inventory.collect.v6"],"platform":"macos","architecture":"aarch64","executionContext":software_execution::context(software_execution::Platform::MacOs)})).await?;
+    let (request,registration)=enroll_profile(router,browser,label,json!({"capabilities":["inventory.collect.v1"],"platform":"macos","architecture":"aarch64","executionContext":software_execution::context(software_execution::Platform::MacOs)})).await?;
     let device = registration["deviceId"].as_str().unwrap();
     set_device_grants(browser, router, device, &["inventory_read", "credentials"]).await?;
     Ok(Agent {
@@ -229,7 +229,7 @@ pub(crate) async fn router(fixture: &authority::Authority) -> Result<Router> {
     };
     let public = Router::new()
         .nest(
-            "/api/agent/runtime/v1",
+            "/api/v1/agent/runtime",
             crate::agent::router(
                 Arc::new(crate::agent::HttpState {
                     enrollment: service.clone(),
@@ -241,7 +241,7 @@ pub(crate) async fn router(fixture: &authority::Authority) -> Result<Router> {
             ),
         )
         .nest(
-            "/api/agent/enroll/v1",
+            "/api/v1/agent/enroll",
             crate::agent::enroll::router(service.clone(), envelope),
         );
     let browser = fixture.authorization().merge(fixture.enrollment()).nest(
@@ -280,7 +280,7 @@ INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enable
  JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(s.tenant_id,s.registration)
  WHERE r.tenant_id='{TENANT}' AND r.device='{canonical_sql}' AND r.channel='agent' AND r.state='active' AND s.enabled;
 INSERT INTO mdm_agent.bindings(tenant_id,registration,wire_version,capabilities,platform,architecture,execution_context)
- SELECT '{TENANT}',registration,6,'["inventory.collect.v6","task.execute.v6"]','macos','aarch64','{execution_context}'::jsonb FROM task_targets;
+ SELECT '{TENANT}',registration,1,'["inventory.collect.v1","task.execute.v1"]','macos','aarch64','{execution_context}'::jsonb FROM task_targets;
 DO $$ BEGIN
  IF (SELECT count(*) FROM task_targets t JOIN mdm_access.registrations r ON r.id=t.registration
      JOIN mdm_agent.bindings b ON b.registration=r.id
@@ -288,7 +288,7 @@ DO $$ BEGIN
      JOIN mdm_access.agent_grants q ON q.id=r.agent_grant_id
      JOIN mdm_access.devices d ON (d.tenant_id,d.id)=(r.tenant_id,r.device)
      WHERE r.state='active' AND c.state='active'
-       AND b.capabilities='["inventory.collect.v6","task.execute.v6"]'
+       AND b.capabilities='["inventory.collect.v1","task.execute.v1"]'
        AND (SELECT count(*) FROM mdm_access.report_sources s WHERE s.registration=r.id AND s.enabled
             AND s.source IN ('agent.builtin','agent.script','agent.osquery'))=3) <> {count}
  THEN RAISE EXCEPTION 'incomplete task target fixture'; END IF;

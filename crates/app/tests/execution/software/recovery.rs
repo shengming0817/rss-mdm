@@ -85,8 +85,8 @@ async fn known_failure_has_bounded_retries() -> Result<()> {
     }
     let exhausted = agent(
         &router,
-        "/api/agent/runtime/v1/tasks/claim",
-        Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
+        "/api/v1/agent/runtime/tasks/claim",
+        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(
@@ -157,8 +157,8 @@ async fn reboot_waits_for_detection() -> Result<()> {
     );
     let reboot_retry = agent(
         &router,
-        "/api/agent/runtime/v1/tasks/claim",
-        Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
+        "/api/v1/agent/runtime/tasks/claim",
+        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(
@@ -246,7 +246,7 @@ async fn unknown_effect_survives_credential_recovery() -> Result<()> {
         .await?;
     ensure!(grant.0 == StatusCode::OK, "{grant:?}");
     let mut signing = input;
-    signing["runtime"] = json!({"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v6","software.pkg.system.v6"],"executionContext":context(Platform::MacOs)});
+    signing["runtime"] = json!({"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v1","software.pkg.system.v1"],"executionContext":context(Platform::MacOs)});
     let service = crate::test_support::agent::service(&authority::Authority::open().await?)?;
     let next_credential = &credential("replacement");
     let next_registration =
@@ -256,9 +256,9 @@ async fn unknown_effect_survives_credential_recovery() -> Result<()> {
     let after_reenroll = agent_call(
         &router,
         Method::POST,
-        "/api/agent/runtime/v1/tasks/claim",
+        "/api/v1/agent/runtime/tasks/claim",
         Some(next_credential),
-        Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
+        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(
@@ -294,11 +294,11 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
     ensure!(event(&router, &task, json!({"kind":"received"})).await?.0 == StatusCode::OK);
     ensure!(event(&router, &task, json!({"kind":"start"})).await?.0 == StatusCode::OK);
     let unknown_operation = Uuid::new_v4();
-    let unknown_request = json!({"wireVersion":6,"executionContext":task["payload"]["executionContext"],"operationId":unknown_operation,"attemptId":task["payload"]["attemptId"],"event":result_event(&task,"install",Some(0),"unknown",false)?});
+    let unknown_request = json!({"wireVersion":1,"executionContext":task["payload"]["executionContext"],"operationId":unknown_operation,"attemptId":task["payload"]["attemptId"],"event":result_event(&task,"install",Some(0),"unknown",false)?});
     let result = agent(
         &router,
         &format!(
-            "/api/agent/runtime/v1/tasks/{}/events",
+            "/api/v1/agent/runtime/tasks/{}/events",
             task["payload"]["taskId"].as_str().unwrap()
         ),
         Some(unknown_request.clone()),
@@ -308,7 +308,7 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
     let replay = agent(
         &router,
         &format!(
-            "/api/agent/runtime/v1/tasks/{}/events",
+            "/api/v1/agent/runtime/tasks/{}/events",
             task["payload"]["taskId"].as_str().unwrap()
         ),
         Some(unknown_request),
@@ -331,8 +331,8 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
     );
     let no_retry = agent(
         &router,
-        "/api/agent/runtime/v1/tasks/claim",
-        Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
+        "/api/v1/agent/runtime/tasks/claim",
+        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(

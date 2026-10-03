@@ -61,29 +61,29 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
     }
     let profiles = match format {
         "exe" => json!([
-            "inventory.collect.v6",
-            "software.msi.system.v6",
-            "software.exe.system.v6"
+            "inventory.collect.v1",
+            "software.msi.system.v1",
+            "software.exe.system.v1"
         ]),
         "dmg_app" => json!([
-            "inventory.collect.v6",
-            "software.pkg.system.v6",
-            "software.dmg.app.system.v6"
+            "inventory.collect.v1",
+            "software.pkg.system.v1",
+            "software.dmg.app.system.v1"
         ]),
         "dmg_pkg" => json!([
-            "inventory.collect.v6",
-            "software.pkg.system.v6",
-            "software.dmg.pkg.system.v6"
+            "inventory.collect.v1",
+            "software.pkg.system.v1",
+            "software.dmg.pkg.system.v1"
         ]),
         "msix" if user => json!([
-            "inventory.collect.v6",
-            "software.msi.system.v6",
-            "software.msix.registration.user.v6"
+            "inventory.collect.v1",
+            "software.msi.system.v1",
+            "software.msix.registration.user.v1"
         ]),
         "msix" => json!([
-            "inventory.collect.v6",
-            "software.msi.system.v6",
-            "software.msix.provisioning.system.v6"
+            "inventory.collect.v1",
+            "software.msi.system.v1",
+            "software.msix.provisioning.system.v1"
         ]),
         _ => anyhow::bail!("unknown matrix entry"),
     };
@@ -196,10 +196,10 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
             let r = agent_call(
                 &f.router,
                 Method::POST,
-                "/api/agent/runtime/v1/tasks/claim",
+                "/api/v1/agent/runtime/tasks/claim",
                 Some(&f.credential),
                 Some(
-                    json!({"wireVersion":6,"profiles":[],"executionContext":local,"operationId":Uuid::new_v4()}),
+                    json!({"wireVersion":1,"profiles":[],"executionContext":local,"operationId":Uuid::new_v4()}),
                 ),
             )
             .await?;
@@ -265,7 +265,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
     let content = Request::builder()
         .method(Method::GET)
         .uri(format!(
-            "/api/agent/runtime/v1/tasks/{}/content?attempt={}&artifact={}%2Fpackage",
+            "/api/v1/agent/runtime/tasks/{}/content?attempt={}&artifact={}%2Fpackage",
             task["payload"]["taskId"].as_str().unwrap(),
             task["payload"]["attemptId"].as_str().unwrap(),
             spec.steps.len() - 1

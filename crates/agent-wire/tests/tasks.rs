@@ -3,12 +3,12 @@ use serde_json::json;
 use uuid::Uuid;
 #[test]
 fn task_events_are_closed_bounded_and_cannot_claim_identity() {
-    let value = json!({"wireVersion":6,"executionContext":{"revision":1,"osVersion":[14,0,0,0],"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false},"operationId":Uuid::new_v4(),"attemptId":Uuid::new_v4(),"event":{"kind":"received"}});
+    let value = json!({"wireVersion":1,"executionContext":{"revision":1,"osVersion":[14,0,0,0],"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false},"operationId":Uuid::new_v4(),"attemptId":Uuid::new_v4(),"event":{"kind":"received"}});
     let request: TaskEventRequest = serde_json::from_value(value.clone()).unwrap();
     assert!(matches!(request.event(), TaskEvent::Received));
     for mutate in [
         |v: &mut serde_json::Value| {
-            v["wireVersion"] = json!(1);
+            v["wireVersion"] = json!(6);
         },
         |v: &mut serde_json::Value| {
             v["tenant"] = json!("attacker");
@@ -38,7 +38,7 @@ fn signatures_bind_attempt_artifact_and_permission_and_fail_closed() {
     let key = Ed25519KeyPair::from_pkcs8(document.as_ref()).unwrap();
     let id = Uuid::new_v4();
     let spec = TaskSpec {
-        wire_version: 6,
+        wire_version: 1,
         tenant_id: id,
         device_id: "device".into(),
         platform: TaskPlatform::Macos,
@@ -187,7 +187,7 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
             msix_sideload: false,
             msix_unsigned: false,
         },
-        wire_version: 6,
+        wire_version: 1,
         tenant_id: id,
         device_id: "device".into(),
         platform: TaskPlatform::Windows,
@@ -205,7 +205,7 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
     };
     let payload: TaskPayload = spec.clone().try_into().unwrap();
     let schema: serde_json::Value = serde_json::from_str(include_str!(
-        "../schema/runtime/task-payload-v6.schema.json"
+        "../schema/runtime/task-payload-v1.schema.json"
     ))
     .unwrap();
     let validator = jsonschema::draft202012::new(&schema).unwrap();
@@ -274,12 +274,12 @@ fn task_response_schemas_and_rust_reject_unknown_major_and_authority() {
     use rss_mdm_agent_wire::runtime::{MAX_TASK_CANCELLATIONS, TaskClaimResponse, TaskEventAck};
     let samples = [
         (
-            include_str!("../schema/runtime/task-claim-response-v6.schema.json"),
-            json!({"wireVersion":6,"task":null,"cancellations":[]}),
+            include_str!("../schema/runtime/task-claim-response-v1.schema.json"),
+            json!({"wireVersion":1,"task":null,"cancellations":[]}),
         ),
         (
-            include_str!("../schema/runtime/task-event-ack-v6.schema.json"),
-            json!({"wireVersion":6,"accepted":true,"permit":null,"cancelRequested":false}),
+            include_str!("../schema/runtime/task-event-ack-v1.schema.json"),
+            json!({"wireVersion":1,"accepted":true,"permit":null,"cancelRequested":false}),
         ),
     ];
     for (index, (schema, value)) in samples.into_iter().enumerate() {
@@ -310,19 +310,19 @@ fn task_response_schemas_and_rust_reject_unknown_major_and_authority() {
     }
     let cancellation = json!({"taskId":Uuid::new_v4(),"attemptId":Uuid::new_v4()});
     let boundary = json!({
-        "wireVersion":6,
+        "wireVersion":1,
         "task":null,
         "cancellations":vec![cancellation.clone(); MAX_TASK_CANCELLATIONS]
     });
     let schema: serde_json::Value = serde_json::from_str(include_str!(
-        "../schema/runtime/task-claim-response-v6.schema.json"
+        "../schema/runtime/task-claim-response-v1.schema.json"
     ))
     .unwrap();
     let validator = jsonschema::draft202012::new(&schema).unwrap();
     assert!(validator.is_valid(&boundary));
     assert!(serde_json::from_value::<TaskClaimResponse>(boundary).is_ok());
     let overflow = json!({
-        "wireVersion":6,
+        "wireVersion":1,
         "task":null,
         "cancellations":vec![cancellation; MAX_TASK_CANCELLATIONS + 1]
     });
@@ -350,7 +350,7 @@ fn task_response_producers_can_only_construct_valid_shapes() {
         .expect("boundary response");
     assert!(response.task().is_none());
     assert_eq!(response.cancellations().len(), MAX_TASK_CANCELLATIONS);
-    assert_eq!(serde_json::to_value(&response).unwrap()["wireVersion"], 6);
+    assert_eq!(serde_json::to_value(&response).unwrap()["wireVersion"], 1);
     assert_eq!(
         TaskClaimResponse::new(
             None,
@@ -411,7 +411,7 @@ fn task_results_require_bounded_coherent_diagnostics() {
     assert_eq!(encoded["event"]["kind"], "result");
     assert_eq!(encoded["event"]["diagnostics"]["durationMs"], 42);
     let schema: serde_json::Value = serde_json::from_str(include_str!(
-        "../schema/runtime/task-event-request-v6.schema.json"
+        "../schema/runtime/task-event-request-v1.schema.json"
     ))
     .unwrap();
     assert!(
@@ -564,7 +564,7 @@ fn task_results_require_bounded_coherent_diagnostics() {
 #[test]
 fn claims_require_current_unique_executor_profiles() {
     use rss_mdm_agent_wire::runtime::TaskClaimRequest;
-    let base = json!({"wireVersion":6,"executionContext":{"revision":1,"osVersion":[14,0,0,0],"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false},"operationId":Uuid::new_v4(),"profiles":["osquery"]});
+    let base = json!({"wireVersion":1,"executionContext":{"revision":1,"osVersion":[14,0,0,0],"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false},"operationId":Uuid::new_v4(),"profiles":["osquery"]});
     assert!(serde_json::from_value::<TaskClaimRequest>(base.clone()).is_ok());
     for profiles in [json!([]), json!(["posix_sh", "osquery"])] {
         let mut value = base.clone();
@@ -585,12 +585,12 @@ fn claims_require_current_unique_executor_profiles() {
 fn software_support_is_a_closed_format_scope_context_profile() {
     use rss_mdm_agent_wire::runtime::Capability;
     for name in [
-        "software.msi.system.v6",
-        "software.exe.user.v6",
-        "software.dmg.app.system.v6",
-        "software.msix.registration.user.v6",
-        "software.msix.provisioning.system.v6",
-        "software.brew.bottle.user.v6",
+        "software.msi.system.v1",
+        "software.exe.user.v1",
+        "software.dmg.app.system.v1",
+        "software.msix.registration.user.v1",
+        "software.msix.provisioning.system.v1",
+        "software.brew.bottle.user.v1",
     ] {
         assert!(
             serde_json::from_value::<Capability>(serde_json::json!(name)).is_ok(),
@@ -598,10 +598,10 @@ fn software_support_is_a_closed_format_scope_context_profile() {
         );
     }
     assert!(
-        serde_json::from_value::<Capability>(serde_json::json!("software.execute.v6")).is_err()
+        serde_json::from_value::<Capability>(serde_json::json!("software.execute.v1")).is_err()
     );
     assert!(
-        serde_json::from_value::<Capability>(serde_json::json!("software.msix.generic.v6"))
+        serde_json::from_value::<Capability>(serde_json::json!("software.msix.generic.v1"))
             .is_err()
     );
 }

@@ -106,8 +106,8 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
     owner.close().await?;
     let repeated = agent(
         &router,
-        "/api/agent/runtime/v1/tasks/claim",
-        Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
+        "/api/v1/agent/runtime/tasks/claim",
+        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(

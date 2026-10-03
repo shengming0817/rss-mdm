@@ -13,7 +13,7 @@ async fn registration_binding_and_replay() -> Result<()> {
     let replay = agent_call(
         &router,
         Method::POST,
-        "/api/agent/enroll/v1/certificates",
+        "/api/v1/agent/enroll/certificates",
         None,
         Some(agent.request.clone()),
     )
@@ -25,7 +25,7 @@ async fn registration_binding_and_replay() -> Result<()> {
         agent_call(
             &router,
             Method::POST,
-            "/api/agent/enroll/v1/certificates",
+            "/api/v1/agent/enroll/certificates",
             None,
             Some(changed)
         )
@@ -53,12 +53,12 @@ async fn registration_binding_and_replay() -> Result<()> {
             "retired route {path}"
         );
     }
-    let body = json!({"wireVersion":6,"collection":agent.registration["collections"][0],"reportId":Uuid::new_v4(),"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"collectionFailed"}});
+    let body = json!({"wireVersion":1,"collection":agent.registration["collections"][0],"reportId":Uuid::new_v4(),"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"collectionFailed"}});
     ensure!(
         agent_call(
             &router,
             Method::POST,
-            "/api/agent/runtime/v1/reports",
+            "/api/v1/agent/runtime/reports",
             Some(agent.credential),
             Some(body.clone())
         )
@@ -69,7 +69,7 @@ async fn registration_binding_and_replay() -> Result<()> {
         agent_call(
             &router,
             Method::POST,
-            "/api/agent/runtime/v1/reports",
+            "/api/v1/agent/runtime/reports",
             Some(agent.password),
             Some(body)
         )
@@ -104,7 +104,7 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
     let candidate = agent_call(
         &router,
         Method::POST,
-        "/api/agent/enroll/v1/certificates",
+        "/api/v1/agent/enroll/certificates",
         None,
         Some(sign),
     )
@@ -181,7 +181,7 @@ async fn browser_approval_quota_expiry_and_restart_are_durable() -> Result<()> {
     let pending = service.request(&input, &a()).await?;
     ensure!(pending.state == wire::GrantState::Pending);
     let sign: wire::CertificateRequest = serde_json::from_value(
-        json!({"wireVersion":1,"operationId":Uuid::new_v4(),"grantId":pending.grant_id,"secret":input.secret,"csr":input.csr,"runtime":{"capabilities":["inventory.collect.v6"],"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)}}),
+        json!({"wireVersion":1,"operationId":Uuid::new_v4(),"grantId":pending.grant_id,"secret":input.secret,"csr":input.csr,"runtime":{"capabilities":["inventory.collect.v1"],"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)}}),
     )?;
     ensure!(
         service.issue(&sign, &a()).await.err().unwrap().code == wire::ErrorCode::PermissionDenied

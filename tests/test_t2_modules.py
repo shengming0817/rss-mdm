@@ -338,15 +338,15 @@ class ModuleImpactTests(unittest.TestCase):
                     'execution.agent.recovery','execution.software.offer','execution.software.content',
                     'execution.software.recovery'}
         for path in ('crates/agent-wire/src/tasks.rs',
-                     'crates/agent-wire/schema/runtime/signed-task-v6.schema.json',
+                     'crates/agent-wire/schema/runtime/signed-task-v1.schema.json',
                      'crates/execution-service/src/task_signing.rs'):
             selected = self.selected(path)
             self.assertTrue(expected <= selected, expected - selected)
             self.assertTrue(selected.isdisjoint({'agent.registration','agent.reports','windows.management',
                                                 'apple.policy','identity.sso','gateway.admission'}))
-        self.assertEqual(self.selected('crates/agent-wire/schema/runtime/binding-profile-v6.schema.json'),
+        self.assertEqual(self.selected('crates/agent-wire/schema/runtime/binding-profile-v1.schema.json'),
                          {'agent.registration'})
-        self.assertEqual(self.selected('crates/agent-wire/schema/runtime/report-request-v6.schema.json'),
+        self.assertEqual(self.selected('crates/agent-wire/schema/runtime/report-request-v1.schema.json'),
                          {'agent.reports','planning.onboarding'})
 
     def test_onboarding_wire_selects_its_actual_consumers(self):

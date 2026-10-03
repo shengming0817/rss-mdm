@@ -19,7 +19,7 @@ async fn task_content_range_and_attempt_authorization() -> Result<()> {
     let task = claim(&router).await?;
     let expected = bytes;
     let path = format!(
-        "/api/agent/runtime/v1/tasks/{}/content?attempt={}",
+        "/api/v1/agent/runtime/tasks/{}/content?attempt={}",
         task["payload"]["taskId"].as_str().unwrap(),
         task["payload"]["attemptId"].as_str().unwrap()
     );

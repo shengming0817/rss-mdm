@@ -14,7 +14,7 @@ fn secret() -> String {
 #[test]
 fn published_schemas_match_wire_rejections() {
     let report_schema: Value = serde_json::from_str(include_str!(
-        "../schema/runtime/report-request-v6.schema.json"
+        "../schema/runtime/report-request-v1.schema.json"
     ))
     .unwrap();
     let report_validator = jsonschema::validator_for(&report_schema).unwrap();
@@ -46,7 +46,7 @@ fn published_schemas_match_wire_rejections() {
 #[test]
 fn manifest_covers_and_fingerprints_every_public_shape() {
     let manifest: Value = serde_json::from_str(SCHEMA_MANIFEST).unwrap();
-    assert_eq!(manifest["wireVersion"], 6);
+    assert_eq!(manifest["wireVersion"], 1);
     assert_eq!(
         manifest["schemas"]
             .as_array()
@@ -69,17 +69,17 @@ fn manifest_covers_and_fingerprints_every_public_shape() {
         ]
     );
     let schemas = [
-        include_bytes!("../schema/runtime/binding-profile-v6.schema.json").as_slice(),
-        include_bytes!("../schema/runtime/report-request-v6.schema.json").as_slice(),
-        include_bytes!("../schema/runtime/report-ack-v6.schema.json").as_slice(),
-        include_bytes!("../schema/runtime/report-status-v6.schema.json").as_slice(),
-        include_bytes!("../schema/runtime/error-body-v6.schema.json").as_slice(),
-        include_bytes!("../schema/runtime/task-claim-request-v6.schema.json").as_slice(),
-        include_bytes!("../schema/runtime/task-event-request-v6.schema.json").as_slice(),
-        include_bytes!("../schema/runtime/task-payload-v6.schema.json").as_slice(),
-        include_bytes!("../schema/runtime/signed-task-v6.schema.json").as_slice(),
-        include_bytes!("../schema/runtime/task-claim-response-v6.schema.json").as_slice(),
-        include_bytes!("../schema/runtime/task-event-ack-v6.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/binding-profile-v1.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/report-request-v1.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/report-ack-v1.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/report-status-v1.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/error-body-v1.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/task-claim-request-v1.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/task-event-request-v1.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/task-payload-v1.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/signed-task-v1.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/task-claim-response-v1.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/task-event-ack-v1.schema.json").as_slice(),
     ];
     let mut digest = Sha256::new();
     for schema in schemas {
@@ -95,18 +95,18 @@ fn response_and_error_schemas_match_strict_consumers() {
     let epoch = Uuid::new_v4();
     let report = Uuid::new_v4();
     let receipt = BindingProfile {
-        wire_version: 6,
+        wire_version: 1,
         operation_id: operation,
         device_id: "device-1".into(),
         registration_id: registration,
         generation: 1,
         source: ReportSource::AgentBuiltin,
         epoch,
-        capabilities: vec![Capability::InventoryCollectionV6],
+        capabilities: vec![Capability::InventoryCollectionV1],
         collections: vec![collection()],
     };
     let ack = ReportAck {
-        wire_version: 6,
+        wire_version: 1,
         report_id: report,
         received_at: 1,
         intake: IntakeStatus::Durable,
@@ -119,22 +119,22 @@ fn response_and_error_schemas_match_strict_consumers() {
     let values: [(Value, &str); 4] = [
         (
             serde_json::to_value(receipt).unwrap(),
-            include_str!("../schema/runtime/binding-profile-v6.schema.json"),
+            include_str!("../schema/runtime/binding-profile-v1.schema.json"),
         ),
         (
             serde_json::to_value(ack).unwrap(),
-            include_str!("../schema/runtime/report-ack-v6.schema.json"),
+            include_str!("../schema/runtime/report-ack-v1.schema.json"),
         ),
         (
             serde_json::to_value(status).unwrap(),
-            include_str!("../schema/runtime/report-status-v6.schema.json"),
+            include_str!("../schema/runtime/report-status-v1.schema.json"),
         ),
         (
             serde_json::to_value(ErrorBody {
                 code: ErrorCode::OperationUnknown,
             })
             .unwrap(),
-            include_str!("../schema/runtime/error-body-v6.schema.json"),
+            include_str!("../schema/runtime/error-body-v1.schema.json"),
         ),
     ];
     for (value, schema) in values {
@@ -143,11 +143,11 @@ fn response_and_error_schemas_match_strict_consumers() {
     }
 
     let uppercase = json!({
-        "wireVersion":6,"reportId":report.to_string().to_uppercase(),
+        "wireVersion":1,"reportId":report.to_string().to_uppercase(),
         "receivedAt":1,"intake":"durable"
     });
     let schema: Value =
-        serde_json::from_str(include_str!("../schema/runtime/report-ack-v6.schema.json")).unwrap();
+        serde_json::from_str(include_str!("../schema/runtime/report-ack-v1.schema.json")).unwrap();
     assert!(
         !jsonschema::validator_for(&schema)
             .unwrap()
@@ -168,7 +168,7 @@ fn canonical_secrets_are_exactly_256_bits() {
 fn report_profile_is_closed_bounded_and_canonical() {
     let id = Uuid::new_v4();
     let a = json!({
-        "wireVersion": 6,
+        "wireVersion": 1,
         "reportId": id,
         "sequence": 7,
         "observedAt": 1_800_000_000,
@@ -179,7 +179,7 @@ fn report_profile_is_closed_bounded_and_canonical() {
         ]}
     });
     let b = json!({
-        "wireVersion": 6,
+        "wireVersion": 1,
         "reportId": id,
         "sequence": 7,
         "observedAt": 1_800_000_000,
@@ -197,7 +197,7 @@ fn report_profile_is_closed_bounded_and_canonical() {
     assert_eq!(a.values()[0].value, CollectedValue::Unsupported);
 
     let duplicate = json!({
-        "wireVersion":6,"reportId":Uuid::new_v4(),"sequence":1,"observedAt":1,"collection":collection(),
+        "wireVersion":1,"reportId":Uuid::new_v4(),"sequence":1,"observedAt":1,"collection":collection(),
         "body":{"kind":"partial","values":[
             {"field":"device.model","value":{"kind":"value","value":{"kind":"string","value":"A"}}},
             {"field":"device.model","value":{"kind":"value","value":{"kind":"string","value":"B"}}}
@@ -205,7 +205,7 @@ fn report_profile_is_closed_bounded_and_canonical() {
     });
     assert!(serde_json::from_value::<ReportRequest>(duplicate).is_err());
     let delta = json!({
-        "wireVersion":6,"reportId":Uuid::new_v4(),"sequence":1,"observedAt":1,"collection":collection(),
+        "wireVersion":1,"reportId":Uuid::new_v4(),"sequence":1,"observedAt":1,"collection":collection(),
         "body":{"kind":"delta","values":[]}
     });
     assert!(serde_json::from_value::<ReportRequest>(delta).is_err());
@@ -214,7 +214,7 @@ fn report_profile_is_closed_bounded_and_canonical() {
 #[test]
 fn failed_reports_and_error_codes_are_closed() {
     let request: ReportRequest = serde_json::from_value(json!({
-        "wireVersion":6,"reportId":Uuid::new_v4(),"sequence":1,"observedAt":1,"collection":collection(),
+        "wireVersion":1,"reportId":Uuid::new_v4(),"sequence":1,"observedAt":1,"collection":collection(),
         "body":{"kind":"failed","code":"temporarilyUnavailable"}
     }))
     .unwrap();

@@ -7,22 +7,22 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
     let fixture = Fixture::new().await?;
     let router = fixture.router;
     let mut author = fixture.author;
-    let (_,registration)=crate::test_support::agent::enroll_profile(&router,&mut author,case_inventory_credential(),json!({"capabilities":["inventory.collect.v6"],"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)})).await?;
-    ensure!(registration["capabilities"] == json!(["inventory.collect.v6"]));
+    let (_,registration)=crate::test_support::agent::enroll_profile(&router,&mut author,case_inventory_credential(),json!({"capabilities":["inventory.collect.v1"],"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)})).await?;
+    ensure!(registration["capabilities"] == json!(["inventory.collect.v1"]));
     let taskless = agent_call(
         &router,
         Method::POST,
-        "/api/agent/runtime/v1/tasks/claim",
+        "/api/v1/agent/runtime/tasks/claim",
         Some(case_inventory_credential()),
-        Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
+        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(
         taskless.0 == StatusCode::FORBIDDEN,
         "inventory-only registration entered task API: {taskless:?}"
     );
-    let (_,registration)=crate::test_support::agent::enroll_profile(&router,&mut author,case_credential(),json!({"capabilities":["inventory.collect.v6","task.execute.v6"],"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)})).await?;
-    ensure!(registration["capabilities"] == json!(["inventory.collect.v6", "task.execute.v6"]));
+    let (_,registration)=crate::test_support::agent::enroll_profile(&router,&mut author,case_credential(),json!({"capabilities":["inventory.collect.v1","task.execute.v1"],"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)})).await?;
+    ensure!(registration["capabilities"] == json!(["inventory.collect.v1", "task.execute.v1"]));
     // Legacy URL and major cannot enter task intake.
     let old = router
         .clone()
@@ -39,7 +39,7 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
         agent_call(
             &router,
             Method::POST,
-            "/api/agent/runtime/v1/tasks/claim",
+            "/api/v1/agent/runtime/tasks/claim",
             Some(case_credential()),
             Some(json!({"wireVersion":2,"operationId":Uuid::new_v4()}))
         )
