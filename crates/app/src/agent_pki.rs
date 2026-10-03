@@ -8,7 +8,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 pub enum Config {
     Disabled {},
     StepCa {
-        endpoint: crate::native::TlsEndpoint,
+        endpoint: Box<crate::native::TlsEndpoint>,
         #[serde(default)]
         policy: rss_mdm_registration_service::agent::Policy,
         ca_url: String,

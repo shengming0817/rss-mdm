@@ -5,7 +5,7 @@ use crate::test_support::{channel_onboarding as setup, credential, pg};
 #[ignore = "MODULE=apple.onboarding: real native peer and durable Policy"]
 async fn absent_agent_group_installs_fixed_package_and_registers_independently() -> Result<()> {
     let mut f = Fixture::with_agent(Some(setup::pin(false))).await?;
-    let (peer, device) = f.ready_local_peer().await?;
+    let (peer, device) = f.ready_scep_peer().await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
@@ -253,7 +253,9 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
 async fn enabling_agent_installation_preserves_existing_native_identity_and_rights() -> Result<()> {
     use sqlx::{Connection, Row};
     let mut f = Fixture::start().await?;
-    let (_peer, device) = f.ready_local_peer().await?;
+    let (device, der) = f.scep_leaf().await?;
+    let peer = f.authenticate_peer(&device, &der).await?;
+    peer.token().await?;
     let mut config: config::Config =
         serde_json::from_slice(&std::fs::read(f.root.join("apple.json"))?)?;
     config.management.origin = f.app.apple()?.config.management.origin.clone();
@@ -273,13 +275,11 @@ async fn enabling_agent_installation_preserves_existing_native_identity_and_righ
         pin.identity(rss_mdm_policy::Platform::Macos).cloned(),
     )?;
     let trust = rss_mdm_certificate::apple::AppleDeviceTrust::from_bytes(
-        &std::fs::read(f.root.join("apple-issuer.pem"))?,
+        &std::fs::read(&f.app.apple()?.config.issuer_certificate_file)?,
         f.app.clock.unix_seconds()?,
     )?;
     let leaf = trust.verify(
-        &[tokio_rustls::rustls::pki_types::CertificateDer::from(
-            std::fs::read(device.root.path().join("leaf.der"))?,
-        )],
+        &[tokio_rustls::rustls::pki_types::CertificateDer::from(der)],
         f.app.clock.unix_seconds()?,
     )?;
     let mut c =
@@ -328,7 +328,7 @@ async fn next_after_cooldown(
 #[ignore = "MODULE=apple.onboarding: native bundle evidence never verifies the publisher"]
 async fn collected_bundle_presence_remains_unknown() -> Result<()> {
     let mut f = Fixture::with_agent(Some(setup::pin(false))).await?;
-    let (peer, device) = f.ready_local_peer().await?;
+    let (peer, device) = f.ready_scep_peer().await?;
     let (platform, _) = peer.next("DeviceInformation").await?;
     let bytes = peer
         .manage(

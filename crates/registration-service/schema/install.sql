@@ -169,9 +169,8 @@ ALTER TABLE mdm_access.agent_grants ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_access.agent_grants FORCE ROW LEVEL SECURITY;
 ALTER TABLE mdm_access.agent_issuances ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_access.agent_issuances FORCE ROW LEVEL SECURITY;
-CREATE POLICY tenant ON mdm_access.agent_grants TO mdm_access USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
-CREATE POLICY runtime_read ON mdm_access.agent_grants FOR SELECT TO mdm_command_runtime USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
-CREATE POLICY native_grant ON mdm_access.agent_grants FOR INSERT TO mdm_command_runtime WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND source='native');
+CREATE POLICY tenant ON mdm_access.agent_grants USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+CREATE POLICY insert_only ON mdm_access.agent_grants AS RESTRICTIVE FOR INSERT WITH CHECK(current_user <> 'mdm_command_runtime' OR source='native');
 CREATE POLICY tenant ON mdm_access.agent_issuances USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 CREATE INDEX agent_quota ON mdm_access.agent_grants(tenant_id,actor,instance,expires_at);
 CREATE TABLE mdm_access.registrations (

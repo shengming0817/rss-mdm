@@ -226,10 +226,10 @@ impl Fixture {
         let old_device = case_device_id();
         let (_,registration)=crate::test_support::agent::enroll_profile(&self.router,&mut self.author,case_credential(),json!({"capabilities":capabilities,"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)})).await?;
         for grant in &mut self.grants {
-            if let crate::authorization::Scope::Device { id } = &mut grant.scope {
-                if id == old_device {
-                    *id = registration["deviceId"].as_str().unwrap().into()
-                }
+            if let crate::authorization::Scope::Device { id } = &mut grant.scope
+                && id == old_device
+            {
+                *id = registration["deviceId"].as_str().unwrap().into()
             }
         }
         crate::test_support::identity::set_grants(

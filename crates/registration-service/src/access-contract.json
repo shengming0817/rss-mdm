@@ -80,7 +80,8 @@
         "instance",
         "state"
       ],
-      "delete_policy": null
+      "delete_policy": null,
+      "insert_policy": "current_user<>'mdm_command_runtime'::nameorsource='native'::text"
     },
     {
       "schema": "mdm_access",
