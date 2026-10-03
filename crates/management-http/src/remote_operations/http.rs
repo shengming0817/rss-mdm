@@ -11,6 +11,9 @@ use std::sync::Arc;
 struct Page {
     after: Option<String>,
 }
+// #2623: Remote scope is frozen pending retirement/scope analysis. Do not add actions, target
+// semantics, scheduling, authorization uses or execution branches, including software.
+// Existing fixes and required wire updates are permitted; no compatibility route is added.
 pub fn routes(
     queries: Arc<rss_mdm_execution_service::queries::Queries>,
 ) -> Router<Arc<ExecutionService>> {

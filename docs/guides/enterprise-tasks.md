@@ -67,11 +67,13 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）
 
 ## 一次性远程操作
 
-`POST /api/v2/remote-operations` 接受 `operationId`、Resource 绑定、`targets`、`deadline` 和 `action`。脚本动作是 `{"kind":"execute","parameters":{}}`，当前原生配置动作是 `{"kind":"apply_configuration"}`。不创建长期 Policy，也不接受触发器或频率。`targets` 使用 `{"kind":"devices","devices":["device-id"]}` 或 `{"kind":"scope","id":"scope-uuid"}`。Scope 输入在受理时固定结果引用；后续入组或退出不改变本次目标。交付受理绑定当前注册世代；后续重新注册会使旧交付取消，查询保留该子任务状态。需要向新世代再次执行时，提交新的显式远程操作。
+该入口的清理或保留范围由 [#2623](https://dev.azure.com/shengming0923/rss/_workitems/edit/2623) 持有；该项完成前禁止扩展动作、目标语义、调度、授权用途及执行分支，包括软件动作。既有缺陷修复与必要合同版本同步可继续，完成后也只允许按已确认范围变更。软件继续通过 Policy 分配。
+
+`POST /api/v3/remote-operations` 接受 `operationId`、Resource 绑定、`targets`、`deadline` 和 `action`。脚本动作是 `{"kind":"execute","parameters":{}}`，当前原生配置动作是 `{"kind":"apply_configuration"}`。不创建长期 Policy，也不接受触发器或频率。`targets` 使用 `{"kind":"devices","devices":["device-id"]}` 或 `{"kind":"scope","id":"scope-uuid"}`。Scope 输入在受理时固定结果引用；后续入组或退出不改变本次目标。交付受理绑定当前注册世代；后续重新注册会使旧交付取消，查询保留该子任务状态。需要向新世代再次执行时，提交新的显式远程操作。
 
 一个持久分页任务受理目标，Agent Run 等待主动领取，MDM 子 Operation 进入已有原生队列。单设备缺少通道、能力或容量会留下阻断原因并继续后续设备；离线但已有有效注册的设备仍可在期限内领取。过期后不再产生新子项或发放 Start permit。
 
-`GET /api/v2/remote-operations/{id}?after=<device>` 返回有界目标页、子执行身份和状态；`POST /{id}/cancel` 携带新的 `operationId` 请求取消。重试创建时使用原 operationId 和原正文，恢复首次快照。取消只撤销本次尚未完成的执行资格，不表示已发生的副作用被回滚。
+`GET /api/v3/remote-operations/{id}?after=<device>` 返回有界目标页、子执行身份和状态；`POST /{id}/cancel` 携带新的 `operationId` 请求取消。重试创建时使用原 operationId 和原正文，恢复首次快照。取消只撤销本次尚未完成的执行资格，不表示已发生的副作用被回滚。
 
 ## Agent 状态与结果
 
@@ -89,7 +91,7 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）
 
 ### 一次性结果与恢复阶段
 
-`GET /api/v2/remote-operations/{id}` 的结果摘要省略 output/stdout/stderr；`GET /api/v2/remote-operations/{id}/runs/{task}` 先检查设备 OperationRead；采集结果另需 InventoryRead，冻结字段含敏感项还需 InventorySensitiveRead，才读取完整结果和诊断。Policy 与 Remote 使用同一 Run 结果过滤与详情投影。
+`GET /api/v3/remote-operations/{id}` 的结果摘要省略 output/stdout/stderr；`GET /api/v3/remote-operations/{id}/runs/{task}` 先检查设备 OperationRead；采集结果另需 InventoryRead，冻结字段含敏感项还需 InventorySensitiveRead，才读取完整结果和诊断。Policy 与 Remote 使用同一 Run 结果过滤与详情投影。
 
 `cancellationRequested` 与 `deadlineElapsed` 是意图/时间事实。仍有工作时，phase 为 preparing、dispatched、cancelling 或 expiring；全部工作收敛后为 completed，存在无法确认的执行则为 unknown。completed 表示处理收敛，不表示每个设备执行成功，更不证明脚本效果回滚；各设备结果仍独立展示。取消返回 cancellationRequested，不把写入取消意图称为设备取消完成。
 
