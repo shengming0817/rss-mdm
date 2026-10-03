@@ -9,7 +9,8 @@ from types import SimpleNamespace
 from build_run import require_lease
 from t2_environment import Environment
 from t2_fixtures import RunFixtures
-from t2_registry import ROOT, MODULES
+from t2_registry import MODULES
+from t2_model import ROOT
 
 
 def main(argv=None):

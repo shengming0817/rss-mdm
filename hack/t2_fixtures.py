@@ -18,7 +18,8 @@ from t2_context import contexts, installation, validate
 from t2_database import Costs, DatabasePool, measure
 from t2_hosts import Host
 from t2_environment import Environment, private, run
-from t2_registry import ROOT, IDENTITY_SETUP
+from t2_registry import IDENTITY_SETUP
+from t2_model import ROOT
 from t2_processes import diagnostic_phase, owned_by
 from verification_result import require
 

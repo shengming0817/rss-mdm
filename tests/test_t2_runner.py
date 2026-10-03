@@ -13,6 +13,8 @@ from unittest.mock import patch, Mock
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'hack'))
+from ci_impact import selected as make_selection, explicit_selection, SelectionError
+
 import t2
 import t2_fixtures
 from t2_database import Costs
@@ -24,8 +26,8 @@ class Selection(unittest.TestCase):
     def test_named_all_and_empty_are_distinct(self):
         self.assertEqual(t2.select_modules('content.http', {}), ['content.http'])
         self.assertEqual(t2.select_modules('all', {}), sorted(MODULES))
-        self.assertEqual(t2.select_modules('affected', {'t2Full': False, 'modules': []}), [])
-        self.assertEqual(t2.select_modules('affected', {'t2Full': True, 'modules': []}), sorted(MODULES))
+        self.assertEqual(t2.select_modules('affected', make_selection([], [], [], [])), [])
+        self.assertEqual(t2.select_modules('affected', explicit_selection([], MODULES, cargo_mode='affected')), sorted(MODULES))
 
     def test_unknown_and_removed_selectors_never_fall_back(self):
         with self.assertRaisesRegex(ValueError, 'available'):

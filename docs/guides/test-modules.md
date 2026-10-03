@@ -54,9 +54,9 @@ Identity 用户组与设备 Group 各自归属。Assets 验证资产输入，Pla
 
 ## affected 与执行证据
 
-选择器对 merge-base、已提交差异、工作区修改、未跟踪和删除输入取并集。独立 T1 文件只贡献 Cargo 检查；独立 T2 文件只选择自身；helper 变化只选择实际消费者；生产变化按登记的输入与消费接缝选择。模块被选中不会继续递归扩大。混合职责的生产文件按整个文件选择，不做 Rust 语义 diff。未知输入、不能可靠判断的 rename/copy、工具链或选择失败保守全量。
+选择器对 merge-base、已提交差异、工作区修改、未跟踪和删除输入取并集。独立 T1 文件只贡献 Cargo 检查；独立 T2 文件只选择自身；helper 变化只选择实际消费者；生产变化按登记的输入与消费接缝选择。模块被选中不会继续递归扩大。登记描述与选择机制分离，基线完整版本树仅导出描述，不运行历史 selector；执行描述和业务输入变化选模块，依赖归属注释等机制变化由工具行为测试证明，实际依赖变化合并旧新消费者。混合职责的生产文件按整个文件选择，不做 Rust 语义 diff。发现、调度、日志和汇总由工具测试持有；真实执行、隔离或故障变化在同一 registry 的 `REPRESENTATIVE_INPUTS` 声明最小现有模块集合，共享 fixture/profile 输入按真实消费者选择。可识别 rename/copy 合并两端输入。未知输入、不可用基线、异常或非法选择结果必须失败，由实现者修复归属或分析问题；不通过隐式全量、静默跳过或手工 MODULE 掩盖。
 
-Cargo 反向依赖决定编译/Clippy/T1/rustdoc 范围，T2 不继承整个 Cargo 闭包。输出字段为 `cargoFull`、`packages`、`toolTests`、`t2Full`、`modules`、`reasons`。Resource `behavior.rs` 只选 `resource.persistence`；Content T1 和 Scope 模型测试不推荐 T2；Content Range 生产输入选择 HTTP 和两类 Agent task-content 消费接缝。相应 must-select/must-not-select 由工具行为测试固定。
+Cargo 反向依赖决定编译/Clippy/T1/rustdoc 范围，T2 不继承整个 Cargo 闭包。成功输出包含 `status=selected`、`cargo.mode/packages`、`t2.mode/modules`、`toolTests`、`reasons` 和 `removedModules`；失败输出为 `status=failed` 与 `error`，进程非零退出。Resource `behavior.rs` 只选 `resource.persistence`；Content T1 和 Scope 模型测试不推荐 T2；Content Range 生产输入选择 HTTP 和两类 Agent task-content 消费接缝。相应 must-select/must-not-select 由工具行为测试固定。
 
 `JOBS` 默认 2，只控制同时运行的独立 case 数量，预算覆盖准备、执行和清理；模块归属不构成互斥。数据库数量由状态影响范围决定，不按模块或 worker 分库：
 
@@ -84,3 +84,9 @@ T2 PG 的连接容量按 `JOBS` 预算准备：每个活动 case 预留 128 个�
 `artifacts/local-t2/<runId>/` 保存 discovery、逐模块/逐调用结果，以及准备/执行/清理耗时。case 结果包含实际 database、tenant、PG、host、调用 ID 与单调时钟区间；`resources.json` 的 `counts` 和 `operations` 分别记录服务、克隆、身份账户/会话、宿主与故障恢复的数量和耗时。共享准备单独记录，不把它重复计入每条 case。顶层 result 区分执行与 skipped；正式执行开始前撤销旧 result，LIST 开始前只撤销旧 list，避免硬中断后误读上轮成功；另一模式证据保留，ci-plan 不覆盖正式证据。比较资源消耗应同时查看选择集合、PG/Identity/SCEP 等实际准备次数、并发时间区间和耗时；文件拆分不代表 Rust crate 编译量同比下降。
 
 历史证据最多保留本入口最近 5 轮已确认归属的 runId 目录，保留当前运行及正式 result/LIST 引用的记录。LIST 不删除当前正式结果所指证据；空选择不创建运行目录。未知目录和符号链接不在清理范围。失败 case 的 `log` 指向实际输出，`failureLog` 指向异常栈；控制台同时打印两个路径。`fixtureLog` 保存该场景准备/清理命令失败时捕获的 stdout/stderr，并标明阶段；共享准备/清理失败关联 run 级 fixtureLog。命令参数不进入异常日志，包含已登记私有输入或敏感环境值的输出保守记为 `diagnostic-withheld`。
+
+### 选择失败与结果
+
+选择器成功返回 `status=selected`、独立 Cargo/T2 模式和唯一执行集合；原因记录包含输入与业务／工具／代表／显式全量归属。失败返回 `status=failed` 与错误类别、阶段、相关输入，并非零退出，正式 CI/T2 在准备依赖与执行前终止，撤销本入口旧通过结果。内部结果格式整体迁移，不接受旧 full 布尔格式。
+
+`ci-plan` 只预览。`make ci` 执行选中工具测试并推荐 T2；独立 `make t2` 的 `toolVerification` 如实记录工具测试未运行，空模块结果为 skipped。`MODULE=all`、指定模块及 `ci-full` 不需要 affected 基线；`CI_FULL=1` 单独使用时仍只扩大快速检查。

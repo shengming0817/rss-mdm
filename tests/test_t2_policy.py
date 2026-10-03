@@ -5,7 +5,8 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'hack'))
-from t2_registry import MODULES, CasePolicy, resolve_cases
+from t2_registry import MODULES
+from t2_model import CasePolicy, resolve_cases
 
 
 class Policies(unittest.TestCase):

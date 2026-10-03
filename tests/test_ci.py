@@ -7,6 +7,8 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hack"))
 
+from ci_impact import selected as make_selection, explicit_selection, SelectionError
+
 spec = importlib.util.spec_from_file_location("local_ci", Path(__file__).resolve().parents[1] / "hack/ci.py")
 ci = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ci)
@@ -219,7 +221,7 @@ class WorkingTreeStability(unittest.TestCase):
                 if edit and args[0] != '/usr/bin/git':
                     source.write_text('after')
                 return subprocess.CompletedProcess(args, 0, 'revision')
-            selection = {'cargoFull': False, 't2Full': False, 'packages': [], 'modules': [], 'toolTests': []}
+            selection = make_selection([], [], [], [])
             with mock.patch.object(ci, "require_lease"), mock.patch.object(ci, 'ROOT', root), mock.patch.object(ci, 'OUT', root / 'artifacts'), mock.patch.object(ci, 'command', side_effect=command), mock.patch.object(ci, 'select_impact', return_value=selection), mock.patch.object(ci, 'selected_gate', side_effect=lambda name, _: name == 'fmt'), mock.patch.object(ci, 'gate_command', side_effect=lambda name, args, selection: args), mock.patch.object(ci, 'workspace_pin', return_value=('url', 'rev')), mock.patch.object(ci, 'identity_pin', return_value=('url', 'rev')), mock.patch.object(ci, 'clear_execution_evidence'), mock.patch.dict(ci.os.environ, {'CI_PLAN':'0','CI_T2':'none'}):
                 self.assertEqual(ci.main(), int(edit))
             result = json.loads((root / 'artifacts/result.json').read_text())
@@ -272,7 +274,7 @@ class T2Controls(unittest.TestCase):
             stack.enter_context(patch.object(ci,'fast_gates',return_value=[]))
             stack.enter_context(patch.object(ci,'command',return_value=subprocess.CompletedProcess([],0,'head')))
             stack.enter_context(patch.object(ci,'working_source_state',return_value='stable'))
-            stack.enter_context(patch.object(ci,'select_impact',return_value={'cargoFull':False,'packages':[], 'modules':['agent.registration']}))
+            stack.enter_context(patch.object(ci,'select_impact',return_value=make_selection([], ['agent.registration'], [], [])))
             stack.enter_context(patch.object(ci,'workspace_pin',return_value=('url','rev')))
             stack.enter_context(patch.object(ci,'identity_pin',return_value=('url','rev')))
             run = stack.enter_context(patch.object(t2,'run_modules',return_value={'agent.registration':{'status':'passed'}}))

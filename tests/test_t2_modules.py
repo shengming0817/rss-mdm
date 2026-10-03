@@ -4,7 +4,8 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'hack'))
-from t2_registry import MODULES, select_paths
+from t2_registry import MODULES
+from ci_impact import select_inputs, SelectionError
 
 
 class ModuleImpactTests(unittest.TestCase):
@@ -14,11 +15,9 @@ class ModuleImpactTests(unittest.TestCase):
                      'crates/registration-service/src/operations.rs',
                      'crates/audit-integration/src/store.rs',
                      'crates/certificate/src/peer.rs'):
-            selected = select_paths([path])
-            self.assertFalse(selected.full, path)
+            selected = select_inputs([path])
             self.assertIn('agent.pki', selected.modules, path)
-        selected = select_paths(['crates/certificate/tests/agent.rs'])
-        self.assertFalse(selected.full)
+        selected = select_inputs(['crates/certificate/tests/agent.rs'])
         self.assertEqual(selected.modules, ())
 
     def test_archive_selects_real_consumers_and_keeps_t1_independent(self):
@@ -27,11 +26,9 @@ class ModuleImpactTests(unittest.TestCase):
                      'crates/audit-integration/src/lib.rs',
                      'crates/management-http/src/boundary.rs',
                      'crates/app/tests/support/planning_http.rs'):
-            selected = select_paths([path])
-            self.assertFalse(selected.full, path)
+            selected = select_inputs([path])
             self.assertIn('certificate-archive.http', selected.modules, path)
-        selected = select_paths(['crates/certificate-archive-service/tests/behavior.rs'])
-        self.assertFalse(selected.full)
+        selected = select_inputs(['crates/certificate-archive-service/tests/behavior.rs'])
         self.assertEqual(selected.modules, ())
 
     def test_collection_inputs_select_their_actual_protocol_consumers(self):
@@ -41,32 +38,27 @@ class ModuleImpactTests(unittest.TestCase):
             'crates/execution-service/src/actions/recovery.rs': {'windows.management','apple.collection','execution.agent.recovery','execution.software.recovery'},
         }
         for path,expected in cases.items():
-            selected=select_paths([path])
-            self.assertFalse(selected.full)
+            selected=select_inputs([path])
             self.assertEqual(expected, set(selected.modules),(path,selected.modules))
 
     def test_flow_settlement_selects_its_actual_owners(self):
-        selected = select_paths(['crates/flow-service/src/transaction.rs'])
-        self.assertFalse(selected.full)
+        selected = select_inputs(['crates/flow-service/src/transaction.rs'])
         self.assertTrue({'planning.http', 'planning.recovery', 'planning.resource_archive', 'planning.software', 'planning.onboarding'} <= set(selected.modules))
         self.assertFalse({'enrollment.http', 'agent.registration', 'audit.recovery'} & set(selected.modules))
 
     def test_export_reader_selects_publication_read_and_withdrawal_consumers(self):
-        selected = select_paths(['crates/software-service/src/publication/execution.rs'])
-        self.assertFalse(selected.full)
+        selected = select_inputs(['crates/software-service/src/publication/execution.rs'])
         self.assertTrue({'publication.winget', 'publication.brew', 'publication.withdrawal', 'execution.software.offer'} <= set(selected.modules))
 
     def test_http_projection_selects_diagnostic_and_management_consumers(self):
         for path in ('crates/management-http/src/response.rs', 'crates/management-http/src/diagnostic.rs'):
-            selected = select_paths([path])
-            self.assertFalse(selected.full, path)
+            selected = select_inputs([path])
             self.assertTrue({'api.diagnostics', 'planning.http', 'software.http', 'content.http'} <= set(selected.modules), path)
 
     def test_execution_queries_select_read_consumers_without_unrelated_protocols(self):
         for path in ('crates/execution-service/src/queries/records.rs',
                      'crates/execution-service/src/queries/error.rs'):
-            selected = select_paths([path])
-            self.assertFalse(selected.full)
+            selected = select_inputs([path])
             self.assertEqual(set(selected.modules), {
                 'execution.agent.history', 'execution.commands.windows', 'planning.http',
                 'planning.agent_policy', 'planning.remote', 'planning.software'}
@@ -77,8 +69,7 @@ class ModuleImpactTests(unittest.TestCase):
                      'crates/execution-service/src/queries/records.rs',
                      'crates/execution-service/src/permissions.rs',
                      'crates/app/tests/device/support.rs'):
-            selected = select_paths([path])
-            self.assertFalse(selected.full, path)
+            selected = select_inputs([path])
             self.assertTrue({'apple.commands', 'apple.users'} <= set(selected.modules), path)
 
     def test_ddm_authority_and_reads_select_native_consumers(self):
@@ -92,7 +83,7 @@ class ModuleImpactTests(unittest.TestCase):
                      'crates/execution-service/src/queries.rs',
                      'crates/execution-service/src/transaction.rs',
                      'crates/apple-mdm/src/native/request.rs'):
-            selected = select_paths([path])
+            selected = select_inputs([path])
             self.assertTrue({'apple.ddm', 'apple.status'} <= set(selected.modules), path)
 
     def test_script_preparation_selects_all_script_entrances(self):
@@ -100,8 +91,7 @@ class ModuleImpactTests(unittest.TestCase):
                      'crates/execution-service/src/input_preparation.rs',
                      'crates/execution-service/src/freeze_inputs.rs',
                      'crates/flow-service/src/resource_catalog/mod.rs'):
-            selected = select_paths([path])
-            self.assertFalse(selected.full, path)
+            selected = select_inputs([path])
             self.assertTrue({'planning.agent_policy', 'planning.remote'} <= set(selected.modules), path)
         self.assertIn('execution.agent.recovery', self.selected('crates/resource/src/script.rs'))
 
@@ -134,7 +124,7 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertIn('execution.agent.history', self.selected('crates/execution-service/src/directory.rs'))
         self.assertIn('planning.http', self.selected('crates/app/tests/support/agent_execution.rs'))
     def selected(self, path):
-        return set(select_paths([path]).modules)
+        return set(select_inputs([path]).modules)
 
     def test_channel_registrars_select_their_live_consumers(self):
         app = self.selected('crates/app/src/api.rs')
@@ -166,8 +156,7 @@ class ModuleImpactTests(unittest.TestCase):
             self.assertIn('api.diagnostics', self.selected(path), path)
 
     def test_installation_python_selects_only_its_module_and_guards(self):
-        selection = select_paths(['hack/t2_modules/installation.py'])
-        self.assertFalse(selection.full)
+        selection = select_inputs(['hack/t2_modules/installation.py'])
         self.assertEqual(selection.modules, ('installation.migration',))
         self.assertIn('test_t2_guards', selection.tools)
 
@@ -175,9 +164,10 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertEqual(MODULES['inventory.reader'].db_mode, 'instance')
         self.assertEqual(MODULES['inventory.manual'].db_mode, 'reuse')
 
-    def test_unknown_ci_or_nextest_inputs_cannot_silently_skip_integration(self):
+    def test_unknown_ci_or_nextest_inputs_are_rejected(self):
         for path in ('.github/workflows/new.yml', '.github/actions/new/action.yml', '.config/nextest.toml'):
-            self.assertTrue(select_paths([path]).full)
+            with self.assertRaises(SelectionError):
+                select_inputs([path])
 
     def test_test_module_carriers_select_exact_children(self):
         expected = {
@@ -186,8 +176,7 @@ class ModuleImpactTests(unittest.TestCase):
             'crates/app/tests/execution/mod.rs': {name for name in MODULES if name.startswith('execution.')},
         }
         for path, modules in expected.items():
-            selection=select_paths([path])
-            self.assertFalse(selection.full,path)
+            selection=select_inputs([path])
             self.assertEqual(set(selection.modules),modules,path)
 
     def test_app_helpers_select_all_actual_consumers(self):
@@ -266,19 +255,31 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertEqual(self.selected('deny.toml'), set())
         self.assertEqual(self.selected('clippy.toml'), set())
 
-    def test_unknown_and_execution_infrastructure_are_fail_closed(self):
-        for path in ('unknown.file', 'hack/t2.py', 'hack/t2_environment.py',
-                     'crates/app/src/new_owner/tests.rs'):
-            with self.subTest(path=path):
-                selection = select_paths([path])
-                self.assertTrue(selection.full)
-                self.assertEqual(set(selection.modules), set(MODULES))
+    def test_unknown_inputs_fail_and_runner_changes_select_tools(self):
+        for path in ('unknown.file', 'crates/app/src/new_owner/tests.rs'):
+            with self.assertRaises(SelectionError):
+                select_inputs([path])
+        for path in ('hack/t2.py', 'hack/t2_environment.py'):
+            self.assertTrue(select_inputs([path]).tools)
 
     def test_multiple_inputs_union_without_broadening(self):
-        selection = select_paths(['crates/resource-postgres/tests/behavior.rs',
+        selection = select_inputs(['crates/resource-postgres/tests/behavior.rs',
                                   'crates/app/tests/apple/apns.rs',
                                   'crates/resource-postgres/tests/behavior.rs'])
         self.assertEqual(selection.modules, ('apple.apns', 'resource.persistence'))
+
+    def test_real_execution_tools_select_existing_representatives(self):
+        pg = {'api.identity_context', 'group.persistence', 'policy.persistence'}
+        for path in ('hack/t2_database.py', 'hack/t2_context.py'):
+            selection = select_inputs([path])
+            self.assertEqual(set(selection.modules), pg)
+            self.assertTrue(selection.tools)
+        for path in ('hack/t2_environment.py', 'hack/t2_fixtures.py'):
+            self.assertEqual(self.selected(path), pg | {'host.lifecycle', 'gateway.admission'})
+        self.assertEqual(self.selected('hack/t2_hosts.py'), {'host.lifecycle'})
+        self.assertEqual(self.selected('hack/t2_execution.py'), {'policy.persistence'})
+        for path in ('hack/ci_impact.py', 'hack/t2.py', 'hack/verification_result.py'):
+            self.assertEqual(self.selected(path), set())
 
     def test_authorization_and_audit_module_inputs_stay_local(self):
         self.assertEqual(self.selected('crates/app/tests/authorization/capacity.rs'),
@@ -339,8 +340,7 @@ class ModuleImpactTests(unittest.TestCase):
                 'execution.commands.onboarding','apple.onboarding'},
         }
         for path, expected in inputs.items():
-            selected = select_paths([path])
-            self.assertFalse(selected.full, path)
+            selected = select_inputs([path])
             self.assertEqual(set(selected.modules), expected, path)
 
     def test_shared_onboarding_paths_reach_both_native_protocols(self):
@@ -348,8 +348,7 @@ class ModuleImpactTests(unittest.TestCase):
                      'crates/execution-service/src/managed_registration.rs',
                      'crates/execution-service/src/native_installation.rs',
                      'crates/inventory-service/src/collection/channel.rs'):
-            selection = select_paths([path])
-            self.assertFalse(selection.full, path)
+            selection = select_inputs([path])
             self.assertTrue({'execution.commands.onboarding','apple.onboarding'} <= set(selection.modules), path)
 
     def test_group_inputs_reach_published_scope_consumers_only(self):
@@ -406,7 +405,8 @@ class ModuleImpactTests(unittest.TestCase):
 
     def test_new_deleted_and_mixed_test_paths_remain_owned(self):
         from unittest.mock import patch
-        from t2_registry import APP, Module
+        from t2_registry import APP
+        from t2_model import Module
         # Selection does not depend on whether a test file still exists on disk.
         self.assertEqual(self.selected('crates/app/tests/execution/agent/history/deleted.rs'),
                          {'execution.agent.history'})
@@ -414,12 +414,12 @@ class ModuleImpactTests(unittest.TestCase):
                         test_inputs=('crates/app/tests/new/mod.rs',))
         with patch.dict(MODULES, {'new.owner': module}):
             self.assertEqual(self.selected('crates/app/tests/new/mod.rs'), {'new.owner'})
-        selected = set(select_paths(['crates/content-service/tests/unit.rs',
+        selected = set(select_inputs(['crates/content-service/tests/unit.rs',
                                     'crates/content-service/src/range.rs',
                                     'crates/resource-postgres/tests/behavior.rs']).modules)
         self.assertEqual(selected, {'content.http','execution.agent.content',
                                     'execution.software.content','resource.persistence'})
-        self.assertEqual(select_paths([]).modules, ())
+        self.assertEqual(select_inputs([]).modules, ())
 
 
 if __name__ == '__main__':

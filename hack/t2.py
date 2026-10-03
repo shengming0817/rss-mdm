@@ -17,7 +17,9 @@ import traceback
 import uuid
 
 from build_run import require_lease
-from t2_registry import ROOT, MODULES, resolve_cases
+from t2_registry import MODULES
+from t2_model import ROOT, resolve_cases
+from ci_impact import selected, explicit_selection, SelectionError, failure
 from t2_execution import Builds, Processes, Invocation, CASE_TIMEOUT
 from t2_processes import diagnostic_phase, diagnostics
 from verification_result import result as stage_result, publish, require
@@ -81,7 +83,7 @@ def select_modules(module, selection):
     if module == 'all':
         return sorted(MODULES)
     if module == 'affected':
-        return sorted(MODULES) if selection['t2Full'] else sorted(selection['modules'])
+        return selection['t2']['modules']
     if module not in MODULES:
         raise ValueError('unknown MODULE; available: ' + ', '.join(module_choices()))
     return [module]
@@ -350,21 +352,25 @@ def main(argv=None):
             head = ci.command(['/usr/bin/git', 'rev-parse', 'HEAD']).stdout.strip()
             selection = ci.select_impact(head, base=args.base)
         else:
-            selection = {'t2Full': args.module == 'all', 'modules': select_modules(args.module, {})}
+            selection = (explicit_selection([], MODULES, cargo_mode='affected') if args.module == 'all' else
+                         selected([], [args.module], t2_mode='module'))
         names = select_modules(args.module, selection)
         results = run_modules(names, output, jobs=args.jobs, selected_case=args.case, listing=args.list == '1',
                               reuse_plan=json.loads(args.reuse_plan.read_text()) if args.reuse_plan else None)
         require(ci.working_source_state() == source, 'source changed during T2')
         status = ('failed' if any(item['status'] == 'failed' for item in results.values()) else
                   'skipped' if not names or args.list == '1' else 'passed')
-        evidence = {'module': args.module, 'selection': selection, 'status': status, 'modules': results}
+        evidence = {'module': args.module, 'selection': selection, 'status': status, 'modules': results,
+                    'toolVerification': {name:'not-run' for name in selection['toolTests']}}
         if not names:
             evidence['reason'] = 'no-modules-selected'
         publish(result_path, evidence)
         return int(status == 'failed')
     except BaseException as error:
-        publish(result_path,
-                {'status': 'failed', 'module': args.module, 'execution': error.evidence if isinstance(error, RunFailure) else stage_result('failed', started, reason=type(error).__name__)})
+        evidence = {'status': 'failed', 'module': args.module, 'execution': error.evidence if isinstance(error, RunFailure) else stage_result('failed', started, reason=type(error).__name__)}
+        if isinstance(error, SelectionError):
+            evidence['selection'] = failure(error, 'selection')
+        publish(result_path, evidence)
         raise
 
 
