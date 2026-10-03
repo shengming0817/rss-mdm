@@ -43,6 +43,8 @@ def verify(context):
         if status!=200 or json.loads(body)!=public:raise RuntimeError('MDM host configuration was not served by the exact static route')
         status,body=request('/api/unsupported-test',method='GET')
         if status!=404 or json.loads(body)!={'code':'not_found'}:raise RuntimeError('API error fell through to SPA')
+        status,body=request('/software/native/sources/retired/test/information',method='GET')
+        if status!=404 or json.loads(body)!={'code':'not_found'}:raise RuntimeError('retired native software API fell through to SPA')
         for path in ['/api/v1/agent/enroll/certificates', '/api/v1/agent/runtime/tasks/task/content', '/api/v1/agent/enroll/installations/operation/package']:
             if request(path,method='GET')[0] != 404: raise RuntimeError('Agent route leaked through browser gateway: '+path)
         status, forwarded=request('/api/probe','203.0.113.254')
@@ -57,7 +59,7 @@ def verify(context):
         for path,limit in [('/api/v1/devices/device/operations',16777216),('/api/v1/resources/resource',8388608)]:
             if request(path,body=b'x'*limit)[0]!=200:raise RuntimeError('native JSON budget rejected exact boundary: '+path)
             if request(path,body=b'x'*(limit+1))[0]!=413:raise RuntimeError('native JSON budget exceeded: '+path)
-        for path in ['/api/v1/devices/device/operations/id/cancel','/api/v1/resources/resource']:
+        for path in ['/api/v1/devices/device/operations/id/cancel','/api/v1/resources/resource/unrelated']:
             if request(path,body=b'x'*16385)[0]!=413:raise RuntimeError('unrelated route inherited native body budget: '+path)
         if request('/api/probe',body='x'*16385)[0]!=413:raise RuntimeError('oversized request was not rejected')
         if request('/api/probe?credential=synthetic-sensitive-value')[0]!=200:raise RuntimeError('gateway probe failed')

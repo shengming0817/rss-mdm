@@ -158,7 +158,7 @@ fn route_action(route: &str) -> &'static str {
         "/checkin" => "apple_checkin",
         "/native/apple/ddm/assets/{operation}/{identifier}" => "apple_asset",
         "/mdm" => "apple_management",
-        "/native/apple/scep/challenge" | "/native/apple/scep/notify" => "apple_scep",
+        "/api/v1/apple/scep/challenge" | "/api/v1/apple/scep/notify" => "apple_scep",
         p if p.starts_with("/api/v1/enrollments/") && p.ends_with("/profile") => "apple_profile",
         _ => "protected_request",
     }

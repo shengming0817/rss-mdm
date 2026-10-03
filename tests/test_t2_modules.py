@@ -46,6 +46,23 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertTrue({'planning.http', 'planning.recovery', 'planning.resource_archive', 'planning.software', 'planning.onboarding'} <= set(selected.modules))
         self.assertFalse({'enrollment.http', 'agent.registration', 'audit.recovery'} & set(selected.modules))
 
+    def test_shared_job_and_route_owners_are_selected(self):
+        expected = {
+            'crates/flow-service/src/automation/jobs.rs': {
+                'assets.queries', 'assets.group_input', 'compliance.http', 'compliance.group_input',
+                'planning.group_scope', 'planning.scope', 'planning.policy', 'planning.agent_policy',
+                'planning.frequency', 'planning.recovery', 'diagnostics.http'},
+            'crates/management-http/src/planning/mod.rs': {
+                'planning.http', 'planning.policy', 'planning.agent_policy', 'planning.frequency',
+                'planning.remote', 'planning.software'},
+            'crates/management-http/src/software_native.rs': {
+                'publication.winget', 'publication.brew', 'publication.withdrawal'},
+            'hack/enrollment-password.py': {'enrollment.http', 'enrollment.recovery'},
+        }
+        for path, modules in expected.items():
+            with self.subTest(path=path):
+                self.assertEqual(set(select_inputs([path]).modules), modules)
+
     def test_export_reader_selects_publication_read_and_withdrawal_consumers(self):
         selected = select_inputs(['crates/software-service/src/publication/execution.rs'])
         self.assertTrue({'publication.winget', 'publication.brew', 'publication.withdrawal', 'execution.software.offer'} <= set(selected.modules))
@@ -417,6 +434,8 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertTrue(selected.isdisjoint({'publication.artifact','sources.brew_git','apple.apns','apple.cms'}))
 
     def test_publication_files_select_their_real_semantic_modules(self):
+        self.assertEqual(self.selected('crates/app/src/publication_config.rs'),
+                         {'publication.winget','publication.brew','publication.mapping','publication.withdrawal','publication.recovery'})
         self.assertEqual(self.selected('crates/software-service/src/publication/driver.rs'),
                          {'publication.winget','publication.brew','publication.withdrawal','publication.recovery'})
         self.assertEqual(self.selected('crates/software-service/src/publication/references.rs'),

@@ -123,8 +123,8 @@ pub fn browser_routes(app: Arc<HttpState>, envelope: boundary::Envelope) -> axum
                 "/api/v1/enrollments/{id}/profile",
                 post(enrollment::download),
             )
-            .route("/native/apple/scep/challenge", post(enrollment::challenge))
-            .route("/native/apple/scep/notify", post(enrollment::notify))
+            .route("/api/v1/apple/scep/challenge", post(enrollment::challenge))
+            .route("/api/v1/apple/scep/notify", post(enrollment::notify))
             .with_state(app)
             .layer(axum::extract::DefaultBodyLimit::max(128 * 1024)),
         envelope,

@@ -105,7 +105,7 @@ SCEP provisioner 名为 rss，最小 RSA 公钥 2048、禁用 renewal，默认�
 {"subject":{"commonName":{{ toJson .Webhooks.rss.subject }}},"keyUsage":["digitalSignature"],"extKeyUsage":["clientAuth"],"basicConstraints":{"isCA":false}}
 ```
 
-通过 `step ca provisioner webhook add rss rss --kind SCEPCHALLENGE --url https://mdm.example.test/native/apple/scep/challenge` 配置 challenge；通过 `step ca provisioner webhook add rss rss_notify --kind NOTIFYING --url https://mdm.example.test/native/apple/scep/notify` 配置通知。命令需附该部署的 ca-url/root/admin 身份参数；分别将输出 ID 和 secret 写入受保护配置。不能把通知类型写成不存在的 SCEPNOTIFY。
+通过 `step ca provisioner webhook add rss rss --kind SCEPCHALLENGE --url https://mdm.example.test/api/v1/apple/scep/challenge` 配置 challenge；通过 `step ca provisioner webhook add rss rss_notify --kind NOTIFYING --url https://mdm.example.test/api/v1/apple/scep/notify` 配置通知。命令需附该部署的 ca-url/root/admin 身份参数；分别将输出 ID 和 secret 写入受保护配置。不能把通知类型写成不存在的 SCEPNOTIFY。
 
 配置后重启 CA，确认 `/scep/rss?operation=GetCACaps` 可访问：该版本只在启动时安装 SCEP HTTP authority。Webhook HTTPS 证书须被 CA 的系统信任根或配置 root 信任；`federatedRoots` 不参与该版本 webhook TLS 客户端验证。生产应使用受信任服务证书，不能禁用 TLS 校验。产品要求 Host 与 product_origin 精确一致，反向代理保持 Host 并转发原始请求体和 X-Smallstep-Webhook-ID/X-Smallstep-Signature。
 

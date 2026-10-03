@@ -242,7 +242,7 @@ impl Fixture {
                 let failure = failure.clone();
                 async move {
                     use axum::response::IntoResponse;
-                    if request.uri().path() == "/native/apple/scep/notify"
+                    if request.uri().path() == "/api/v1/apple/scep/notify"
                         && failure.load(std::sync::atomic::Ordering::SeqCst)
                     {
                         return StatusCode::SERVICE_UNAVAILABLE.into_response();
@@ -571,7 +571,7 @@ impl Fixture {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/native/apple/scep/challenge")
+                    .uri("/api/v1/apple/scep/challenge")
                     .header("host", "mdm.example.test")
                     .header("content-type", "application/json")
                     .header("x-smallstep-webhook-id", &apple.config.challenge_webhook.id)

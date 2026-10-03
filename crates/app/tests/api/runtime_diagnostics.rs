@@ -48,6 +48,16 @@ async fn runtime_diagnostics_requires_explicit_permission() -> Result<()> {
             "retired HTTP mount accepted {path}"
         );
     }
+    for path in ["/native/apple/scep/challenge", "/native/apple/scep/notify"] {
+        ensure!(
+            member
+                .call(&router, Method::POST, path, Some(json!({})))
+                .await?
+                .0
+                == StatusCode::NOT_FOUND,
+            "retired Apple provider callback accepted {path}"
+        );
+    }
     set_management_grants(&subject, json!([])).await?;
     ensure!(member.call(&router, Method::GET, PATH, None).await?.0 == StatusCode::FORBIDDEN);
     reader.close().await;
