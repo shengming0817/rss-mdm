@@ -310,6 +310,17 @@ class CiImpactContract(unittest.TestCase):
                     ['leaf', 'other'],
                 )
 
+    def test_edited_rename_accepts_git_padded_similarity(self):
+        old = 'crates/leaf/src/obsolete.rs'
+        original = ''.join(f'pub const ITEM_{i}: usize = {i};\n' for i in range(20))
+        self.repo.change(old, original)
+        self.repo.base = self.repo.git('rev-parse', 'HEAD').stdout.strip()
+        self.repo.rename(old, 'crates/other/src/copied.rs')
+        self.repo.change('crates/other/src/copied.rs', original.replace('ITEM_0', 'RENAMED_0'))
+        status = self.repo.git('diff', '--name-status', '--find-renames', self.repo.base).stdout
+        self.assertRegex(status, r'R0[0-9]{2}')
+        self.assert_selected(self.repo.select()[1], ['leaf', 'leaf-integration', 'other', 'other-integration'], ['leaf', 'other'])
+
     def test_unknown_input_and_bad_baseline_fail(self):
         self.repo.change('unknown.file')
         decision = self.repo.select()[1]

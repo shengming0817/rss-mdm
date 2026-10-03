@@ -96,7 +96,7 @@ def changed_paths(root, base):
         while cursor < len(fields):
             status = fields[cursor]
             cursor += 1
-            if not re.fullmatch(r'[ADM]|[RC](100|[0-9]{1,2})', status):
+            if not re.fullmatch(r'[ADM]|[RC](100|0[0-9]{2}|[0-9]{1,2})', status):
                 raise ValueError('invalid status')
             count = 2 if status[0] in 'RC' else 1
             paths = fields[cursor : cursor + count]
@@ -675,7 +675,23 @@ def analyze_dependencies(oldroot, root, changes, graphs, registries):
                     )
                     if not changed_declaration and not resolved_change:
                         continue
-                    consumers, owned_tools = dependency_consumers(g, reg, key, dep, kind)
+                    # Ownership declarations may be completed in the same change.
+                    # Retain both revisions, as for renamed source paths, without
+                    # permitting a dependency unowned by either registry.
+                    consumers, owned_tools = set(), set()
+                    owned = False
+                    for owner_registry in registries:
+                        try:
+                            names, checks = dependency_consumers(g, owner_registry, key, dep, kind)
+                        except SelectionError as error:
+                            if error.code != 'unowned-dependency':
+                                raise
+                            continue
+                        owned = True
+                        consumers.update(names)
+                        owned_tools.update(checks)
+                    if not owned:
+                        raise SelectionError('unowned-dependency', manifest, kind + ':' + alias)
                     seeds.add(key)
                     modules.update(consumers)
                     tools.update(owned_tools)

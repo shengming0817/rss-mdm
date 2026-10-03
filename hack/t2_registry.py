@@ -1409,3 +1409,24 @@ REPRESENTATIVE_INPUTS = {
 }
 
 consume(('crates/registration-service/src/agent*','crates/agent-wire/schema/enroll/*','crates/agent-channel/src/enroll.rs'), 'agent.pki agent.registration agent.reports execution.agent.delivery')
+
+consume(('crates/agent-channel/src/database.rs',), 'agent.registration agent.reports execution.agent.delivery execution.agent.poll execution.agent.content')
+consume(('crates/agent-wire/src/enroll.rs','crates/management-http/src/agent_enrollment.rs'), 'agent.registration agent.pki execution.commands.onboarding apple.onboarding')
+consume(('crates/agent-wire/src/chunks.rs','crates/agent-wire/src/tasks/context.rs','crates/agent-wire/src/tasks/export.rs'), TASK_CONSUMERS)
+consume(('crates/registration-service/src/lib.rs','crates/registration-service/src/error.rs'), 'agent.registration agent.pki device.binding device.revocation enrollment.http')
+consume(('crates/windows-channel/src/error.rs',), 'windows.enrollment windows.management execution.commands.onboarding api.diagnostics')
+consume(('crates/apple-channel/src/error.rs',), 'apple.profile apple.onboarding apple.collection api.diagnostics')
+consume(('crates/inventory-service/src/error.rs',), 'agent.reports planning.onboarding assets.http api.diagnostics')
+
+consume_dependencies('api.diagnostics apple.onboarding apple.push apple.users', dev='rss-mdm-apple-channel')
+consume_dependencies('api.diagnostics windows.declared execution.commands.onboarding', dev='rss-mdm-windows-channel')
+consume_dependencies('agent.registration agent.reports agent.pki device.binding device.revocation device.recovery', dev='rss-mdm-registration-service')
+consume_dependencies(AGENT_FIXTURE_CONSUMERS, normal='x509-cert tokio-rustls')
+
+consume_dependencies(TASK_CONSUMERS + ' execution.commands.admission execution.commands.configuration execution.commands.dispatch execution.commands.onboarding execution.commands.recovery execution.commands.windows', dev='rss-mdm-execution-service')
+
+# App test composition enables provider-owned integration/test-support features.
+for provider in ('flow-service','inventory-service','authorization-service','audit-integration'):
+    prefix=f'crates/{provider}/'
+    consumers={name for name,module in MODULES.items() if any(path.startswith(prefix) for path in module.production_inputs)}
+    consume_dependencies(consumers, dev=f'rss-mdm-{provider}')
