@@ -139,6 +139,8 @@ impl<'a> Projection<'a> {
                 }
             }
         }
+        // Automatic declaration evidence is folded by exact native identity below.
+        wanted.remove("management.declarations");
         let claims: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut arrays: BTreeMap<String, ArrayClaims> = BTreeMap::new();
         for name in &wanted {
