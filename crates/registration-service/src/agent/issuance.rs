@@ -50,7 +50,7 @@ value,replay:true,digest:digest.clone()}
             }
             service.grant_live(c,&grant).await?;
             if let Some(authority)=grant.try_get::<Option<serde_json::Value>,_>("native_authority").map_err(db)? {
-                if authority["input"]["runtime"]!=serde_json::to_value(&input.runtime).map_err(|_|Error::Malformed)?{
+                if authority["runtime"]!=serde_json::to_value(&input.runtime).map_err(|_|Error::Malformed)?{
 return Err(Error::Forbidden)}
             }
             if !service.policy.platforms.contains(&input.runtime.platform) || row_platform(&grant)?!=input.runtime.platform || grant.try_get::<Option<String>,_>("spki").map_err(db)?.is_some_and(|v|v!=*spki){

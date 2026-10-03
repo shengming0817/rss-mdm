@@ -40,7 +40,7 @@ impl ExecutionService {
                                     Box::pin(async move {
                                         let (service, p, source, input, policy, audit) = *ctx;
                                         service
-                                            .register_managed_on(c, p, source, input, policy, audit)
+                                            .register_managed_on(c, p, source, input, policy)
                                             .await
                                     })
                                 },
@@ -104,12 +104,11 @@ impl ExecutionService {
         source: rss_mdm_inventory::ReportSource,
         input: &enroll::NativeGrantRequest,
         policy: &rss_mdm_registration_service::agent::Policy,
-        audit: &RequestAudit,
     ) -> std::result::Result<(enroll::GrantReceipt, bool), Error> {
         let grant = self
-            .authorize_managed_on(c, p, source, input, audit)
+            .authorize_managed_on(c, p, source, input.installation_operation, &input.runtime)
             .await?;
-        let native = serde_json::json!({"installation":input.installation_operation,"registration":p.registration(),"credential":p.credential(),"generation":p.generation(),"source":source,"input":input});
+        let native = serde_json::json!({"installation":input.installation_operation,"registration":p.registration(),"credential":p.credential(),"generation":p.generation(),"source":source,"runtime":input.runtime});
         rss_mdm_registration_service::agent::native::create_in(c, grant, input, &native, policy)
             .await
             .map_err(Into::into)
@@ -119,8 +118,8 @@ impl ExecutionService {
         c: &mut PgConnection,
         p: &DevicePrincipal,
         source: rss_mdm_inventory::ReportSource,
-        input: &enroll::NativeGrantRequest,
-        _audit: &RequestAudit,
+        installation: Uuid,
+        runtime: &enroll::RuntimeProfile,
     ) -> std::result::Result<rss_mdm_registration_service::enrollment::managed::Authority, Error>
     {
         let tenant = self.tenant.to_string();
@@ -138,11 +137,11 @@ impl ExecutionService {
         crate::device::store::revalidate_source(c, p, source).await?;
         // The existing request lock serializes absent receipts and distinct retry IDs for one install.
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2348))")
-            .bind(format!("install:{tenant}:{}", input.installation_operation))
+            .bind(format!("install:{tenant}:{}", installation))
             .execute(&mut *c)
             .await
             .map_err(crate::database::db)?;
-        let row=sqlx::query("SELECT o.device,o.registration,o.registration_generation,o.request,o.input_context,o.approval,mdm_commands.installation_status(o.id) AS status FROM mdm_commands.operations o WHERE o.tenant_id=$1::uuid AND o.id=$2").bind(&tenant).bind(input.installation_operation).fetch_optional(&mut *c).await.map_err(crate::database::db)?.ok_or(Error::Forbidden)?;
+        let row=sqlx::query("SELECT o.device,o.registration,o.registration_generation,o.request,o.input_context,o.approval,mdm_commands.installation_status(o.id) AS status FROM mdm_commands.operations o WHERE o.tenant_id=$1::uuid AND o.id=$2").bind(&tenant).bind(installation).fetch_optional(&mut *c).await.map_err(crate::database::db)?.ok_or(Error::Forbidden)?;
         if row
             .try_get::<Uuid, _>("registration")
             .map_err(crate::database::db)?
@@ -161,7 +160,7 @@ impl ExecutionService {
         let request = super::input_storage::open_row(
             &self.protection,
             self.tenant,
-            input.installation_operation,
+            installation,
             &row,
             "request",
         )?;
@@ -174,13 +173,13 @@ impl ExecutionService {
         }
         let (profile, arch) = package.target.parts();
         if !matches!(
-            (profile, input.runtime.platform),
+            (profile, runtime.platform),
             (
                 rss_mdm_policy::Platform::Windows,
                 wire::TaskPlatform::Windows
             ) | (rss_mdm_policy::Platform::Macos, wire::TaskPlatform::Macos)
         ) || !matches!(
-            (arch, input.runtime.architecture),
+            (arch, runtime.architecture),
             (
                 rss_mdm_policy::Architecture::X86_64,
                 wire::TaskArchitecture::X86_64
@@ -239,7 +238,7 @@ impl ExecutionService {
             c,
             p,
             source,
-            input.installation_operation,
+            installation,
             request.deadline,
             &action.enrollment,
         )
@@ -264,13 +263,12 @@ impl rss_mdm_registration_service::agent::NativeAdmission for ExecutionService {
         source: &'a rss_mdm_registration_service::agent::native::Source,
     ) -> rss_mdm_registration_service::agent::Pending<'a, ()> {
         Box::pin(async move {
-            let audit = RequestAudit::new(self.tenant.to_string(), "agent_native_revalidate");
             self.authorize_managed_on(
                 c,
                 source.principal(),
                 source.report_source(),
-                source.input(),
-                &audit,
+                source.installation(),
+                source.runtime(),
             )
             .await
             .map(|_| ())

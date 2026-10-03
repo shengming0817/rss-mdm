@@ -65,7 +65,8 @@ VALUES($1::uuid,$2,$3,'native',$4,$5,$6,$7,$8,$9,$10,'available',least(to_timest
 pub struct Source {
     principal: crate::device::DevicePrincipal,
     report_source: rss_mdm_inventory::ReportSource,
-    input: wire::NativeGrantRequest,
+    installation: Uuid,
+    runtime: wire::RuntimeProfile,
 }
 impl Source {
     pub fn principal(&self) -> &crate::device::DevicePrincipal {
@@ -74,8 +75,11 @@ impl Source {
     pub fn report_source(&self) -> rss_mdm_inventory::ReportSource {
         self.report_source
     }
-    pub fn input(&self) -> &wire::NativeGrantRequest {
-        &self.input
+    pub fn installation(&self) -> Uuid {
+        self.installation
+    }
+    pub fn runtime(&self) -> &wire::RuntimeProfile {
+        &self.runtime
     }
 }
 #[derive(Deserialize)]
@@ -86,7 +90,7 @@ struct Stored {
     credential: Uuid,
     generation: i64,
     source: rss_mdm_inventory::ReportSource,
-    input: wire::NativeGrantRequest,
+    runtime: wire::RuntimeProfile,
 }
 pub(super) async fn source(
     c: &mut PgConnection,
@@ -94,9 +98,7 @@ pub(super) async fn source(
     value: serde_json::Value,
 ) -> Result<Source, Error> {
     let s: Stored = serde_json::from_value(value).map_err(|_| Error::Corrupt)?;
-    if s.source.channel() != rss_mdm_inventory::Channel::Mdm
-        || s.installation != s.input.installation_operation
-    {
+    if s.source.channel() != rss_mdm_inventory::Channel::Mdm || s.installation.is_nil() {
         return Err(Error::Corrupt);
     }
     let locator: String = sqlx::query_scalar(
@@ -127,6 +129,7 @@ registration=$3 AND channel='mdm' AND state='active'
     Ok(Source {
         principal,
         report_source: s.source,
-        input: s.input,
+        installation: s.installation,
+        runtime: s.runtime,
     })
 }
