@@ -537,9 +537,28 @@ def dependency_consumers(graph, registry, key, dep, kind, registrations=()):
 def lock_entries(root):
     try:
         doc = tomllib.loads((root / 'Cargo.lock').read_text())
-        return {(p['name'], p['version'], p.get('source')): p for p in doc.get('package', ())}
+        packages = doc.get('package', ())
+        entries = {}
+        for package in packages:
+            normalized = dict(package)
+            normalized['dependencies'] = sorted(lock_dependency(dep, packages) for dep in package.get('dependencies', ()))
+            entries[(package['name'], package['version'], package.get('source'))] = normalized
+        return entries
     except (OSError, ValueError, KeyError) as error:
         raise SelectionError('lock-invalid') from error
+
+
+def lock_dependency(reference, packages):
+    # Cargo adds version/source qualifiers when a new duplicate name is introduced.
+    # Compare resolved identities, so serialization-only changes do not affect consumers.
+    fields = reference.split(' ', 2)
+    matches = [p for p in packages if p['name'] == fields[0]
+               and (len(fields) < 2 or p['version'] == fields[1])
+               and (len(fields) < 3 or p.get('source') == fields[2].removeprefix('(').removesuffix(')'))]
+    if len(matches) != 1:
+        raise SelectionError('lock-invalid')
+    package = matches[0]
+    return package['name'], package['version'], package.get('source') or ''
 
 
 def flatten(value, prefix=()):

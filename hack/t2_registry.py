@@ -1406,11 +1406,6 @@ consume_dependencies(
     normal='plist cms',
 )
 
-# JSON schema is consumed only by the execution model's registered T1 tests.
-DEPENDENCY_POLICIES['crates/execution-service/Cargo.toml'] = {
-    'dev:jsonschema': {'cargoOnly': True},
-}
-
 DEPENDENCY_POLICIES['crates/app/Cargo.toml'] = {
     'normal:jiff': {'cargoOnly': True},
     'normal:subtle': {'cargoOnly': True},
