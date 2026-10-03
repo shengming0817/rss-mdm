@@ -105,10 +105,11 @@ async fn versions_in(
 ) -> Result<Vec<Uuid>> {
     let tenant = tx.tenant_id().to_string();
     let kinds = if native {
-        vec!["native_collection"]
+        rss_mdm_policy::AssignmentBehavior::NativeCollectionRecovery
     } else {
-        vec!["execution", "software", "request_mdm_enrollment"]
-    };
+        rss_mdm_policy::AssignmentBehavior::AgentCheckIn
+    }
+    .kinds();
     let ids=tx.with_connection(move|c|Box::pin(async move {
         sqlx::query("INSERT INTO mdm_commands.action_polls(tenant_id,registration) VALUES($1::uuid,$2::uuid) ON CONFLICT DO NOTHING").bind(&tenant).bind(registration.to_string()).execute(&mut *c).await?;
         let after=sqlx::query_scalar::<_,Option<Uuid>>("SELECT policy_after FROM mdm_commands.action_polls WHERE tenant_id=$1::uuid AND registration=$2::uuid FOR UPDATE").bind(&tenant).bind(registration.to_string()).fetch_one(&mut *c).await?;

@@ -97,15 +97,6 @@ impl From<rss_mdm_inventory_service::Error> for Error {
     }
 }
 
-impl From<rss_mdm_content_service::Error> for Error {
-    fn from(e: rss_mdm_content_service::Error) -> Self {
-        match e {
-            rss_mdm_content_service::Error::Malformed => Self::Malformed,
-            rss_mdm_content_service::Error::Conflict => Self::Conflict,
-            other => Self::Unavailable(Failure::ResourceContent(other)),
-        }
-    }
-}
 impl From<rss_mdm_execution_service::Error> for Error {
     fn from(e: rss_mdm_execution_service::Error) -> Self {
         use rss_mdm_execution_service::Error as E;

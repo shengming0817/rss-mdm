@@ -8,7 +8,7 @@ pub struct DirectoryQuery {
     #[serde(default)]
     pub descending: bool,
     pub enabled: Option<bool>,
-    pub action: Option<String>,
+    pub action: Option<rss_mdm_policy::ActionKind>,
     pub scope: Option<Uuid>,
     pub resource: Option<String>,
 }
@@ -65,16 +65,6 @@ pub async fn list(
             .resource
             .as_ref()
             .is_some_and(|v| resource::Id::new(v).is_err())
-        || query.action.as_deref().is_some_and(|v| {
-            ![
-                "execution",
-                "configuration",
-                "software",
-                "ensure_agent_installed",
-                "request_mdm_enrollment",
-            ]
-            .contains(&v)
-        })
     {
         return Err(Error::Malformed);
     }
@@ -85,7 +75,7 @@ pub async fn list(
         let tenant=tx.tenant_id().to_string();let query=q.clone();
         let mut ids=tx.with_connection(move|c|Box::pin(async move {
             sqlx::query_scalar::<_,String>("SELECT id::text FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND ($2::uuid IS NULL OR CASE WHEN $3 THEN id<$2 ELSE id>$2 END) AND ($4::boolean IS NULL OR enabled=$4) AND ($5::text IS NULL OR definition->'action'->>'kind'=$5) AND ($6::uuid IS NULL OR definition->>'scope'=$6::text) AND ($7::text IS NULL OR definition->'action'->'resource'->>'id'=$7) ORDER BY CASE WHEN NOT $3 THEN id END ASC,CASE WHEN $3 THEN id END DESC LIMIT $8")
-                .bind(tenant).bind(query.after).bind(query.descending).bind(query.enabled).bind(query.action).bind(query.scope).bind(query.resource).bind((query.limit+1) as i64).fetch_all(c).await
+                .bind(tenant).bind(query.after).bind(query.descending).bind(query.enabled).bind(query.action.map(rss_mdm_policy::ActionKind::as_str)).bind(query.scope).bind(query.resource).bind((query.limit+1) as i64).fetch_all(c).await
         })).await?;
         let more=ids.len()>q.limit;ids.truncate(q.limit);
         let mut items=Vec::new();for id in &ids {items.push(storage::view(&storage::read_in(s.policy_store.reader(),tx,stored(Uuid::parse_str(id))?).await?.ok_or(Error::Planning(crate::planning::error::PlanningError::Missing(crate::planning::error::Missing::Policy)))?)?);}

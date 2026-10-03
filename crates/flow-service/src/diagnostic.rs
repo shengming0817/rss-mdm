@@ -6,7 +6,6 @@ pub enum Failure {
     PreparationConfiguration(rss_mdm_execution_service::ConfigIssue),
     PreparationContract,
     Inventory(rss_mdm_inventory_service::Failure),
-    ResourceContent(rss_mdm_content_service::Error),
     ResourceSoftwareIntegrity,
     ResourceAdmission,
     PlanningAdmission,

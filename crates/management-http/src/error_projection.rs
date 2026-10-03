@@ -383,7 +383,6 @@ impl From<rss_mdm_flow_service::Error> for Error {
                 rss_mdm_flow_service::Failure::Inventory(f) => {
                     rss_mdm_inventory_service::Error::Unavailable(f).into()
                 }
-                rss_mdm_flow_service::Failure::ResourceContent(e) => e.into(),
                 rss_mdm_flow_service::Failure::ResourceSoftwareIntegrity => {
                     Self::Unavailable(Failure::SoftwareCatalogInvariant)
                 }

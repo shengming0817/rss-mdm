@@ -1,0 +1,185 @@
+[
+  {
+    "definition": {
+      "action": {
+        "frequency": "once_per_version",
+        "kind": "execution",
+        "parameters": {
+          "message": "hello"
+        },
+        "resource": {
+          "architecture": "x86_64",
+          "id": "resource",
+          "platform": "windows",
+          "variant": "default",
+          "version": "v1"
+        },
+        "runLifetimeSeconds": 300,
+        "schedule": {
+          "jitterSeconds": 0,
+          "misfire": {
+            "kind": "coalesce_one"
+          },
+          "notBefore": 0,
+          "trigger": {
+            "kind": "check_in",
+            "minimumSeconds": 60
+          },
+          "until": null,
+          "window": null
+        }
+      },
+      "scope": "11111111-1111-4111-8111-111111111111"
+    },
+    "digest": "e3430ec4aa3fea9b903d4ce02b2e5a0edc6382569b2c76af84dff77fff07d385"
+  },
+  {
+    "definition": {
+      "action": {
+        "frequency": "once_per_version",
+        "kind": "native_collection",
+        "resource": {
+          "architecture": "x86_64",
+          "id": "resource",
+          "platform": "windows",
+          "variant": "default",
+          "version": "v1"
+        },
+        "runLifetimeSeconds": 300,
+        "schedule": {
+          "jitterSeconds": 0,
+          "misfire": {
+            "kind": "coalesce_one"
+          },
+          "notBefore": 0,
+          "trigger": {
+            "kind": "check_in",
+            "minimumSeconds": 60
+          },
+          "until": null,
+          "window": null
+        }
+      },
+      "scope": "11111111-1111-4111-8111-111111111111"
+    },
+    "digest": "63cc57a1c7a1894e0c9e4dd5347a5bd1f6488b61746b26eac2b60996157f8f8a"
+  },
+  {
+    "definition": {
+      "action": {
+        "exit": "retain",
+        "kind": "configuration",
+        "resource": {
+          "architecture": "x86_64",
+          "id": "resource",
+          "platform": "windows",
+          "variant": "default",
+          "version": "v1"
+        }
+      },
+      "scope": "11111111-1111-4111-8111-111111111111"
+    },
+    "digest": "2278d83da98efcf3d8a07f3775f6e83f43ae99f5f33cd57f1804db98bbc5bdd4"
+  },
+  {
+    "definition": {
+      "action": {
+        "admissionOperation": "11111111-1111-4111-8111-111111111111",
+        "delivery": {
+          "kind": "direct"
+        },
+        "intent": "required_install",
+        "kind": "software",
+        "resource": {
+          "id": "resource",
+          "kind": "software",
+          "variants": {
+            "windows_x86_64": "default"
+          },
+          "version": "v1"
+        },
+        "rollout": {
+          "stages": [
+            {
+              "minimumVerifiedPercent": null,
+              "opensAt": 0,
+              "scope": "11111111-1111-4111-8111-111111111111"
+            }
+          ]
+        },
+        "runLifetimeSeconds": 300,
+        "schedule": {
+          "jitterSeconds": 0,
+          "misfire": {
+            "kind": "coalesce_one"
+          },
+          "notBefore": 0,
+          "trigger": {
+            "kind": "check_in",
+            "minimumSeconds": 60
+          },
+          "until": null,
+          "window": null
+        }
+      },
+      "scope": "11111111-1111-4111-8111-111111111111"
+    },
+    "digest": "efa38aa779fbf09df97004fe09a0c80aa846d5faf7f6ca402987fd4ac6bc192f"
+  },
+  {
+    "definition": {
+      "action": {
+        "admissionOperation": "11111111-1111-4111-8111-111111111111",
+        "kind": "ensure_agent_installed",
+        "resource": {
+          "id": "resource",
+          "kind": "software",
+          "variants": {
+            "windows_x86_64": "default"
+          },
+          "version": "v1"
+        },
+        "runLifetimeSeconds": 300,
+        "schedule": {
+          "jitterSeconds": 0,
+          "misfire": {
+            "kind": "coalesce_one"
+          },
+          "notBefore": 0,
+          "trigger": {
+            "kind": "check_in",
+            "minimumSeconds": 60
+          },
+          "until": null,
+          "window": null
+        }
+      },
+      "scope": "11111111-1111-4111-8111-111111111111"
+    },
+    "digest": "83a6569b68250f499ff4354e40baccad506980addd4f48397a98be6bea083a8e"
+  },
+  {
+    "definition": {
+      "action": {
+        "kind": "request_mdm_enrollment",
+        "organization": "11111111-1111-4111-8111-111111111111",
+        "runLifetimeSeconds": 300,
+        "schedule": {
+          "jitterSeconds": 0,
+          "misfire": {
+            "kind": "coalesce_one"
+          },
+          "notBefore": 0,
+          "trigger": {
+            "kind": "check_in",
+            "minimumSeconds": 60
+          },
+          "until": null,
+          "window": null
+        }
+      },
+      "scope": "11111111-1111-4111-8111-111111111111"
+    },
+    "digest": "d223c8579c227c68822671603a3eca64dcb35231b0cfeaecea90d002e7ecb6b8"
+  }
+]

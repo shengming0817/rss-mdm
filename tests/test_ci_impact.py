@@ -713,6 +713,20 @@ class DependencyOwnership(unittest.TestCase):
                 dependency_consumers(graph, registry, 'app', dependency, 'dev'),
                 ({'dev'}, set()),
             )
+            registered = registry
+            baseline_modules = {name: {**module, 'dependency_inputs': []}
+                                for name, module in registry.modules.items()}
+            baseline = Registry(baseline_modules, (), {}, {}, {}, (), {})
+            with self.assertRaisesRegex(SelectionError, 'unowned-dependency'):
+                dependency_consumers(graph, baseline, 'app', dependency, 'normal')
+            self.assertEqual(
+                dependency_consumers(graph, baseline, 'app', dependency, 'normal', (registered,)),
+                ({'normal'}, set()),
+            )
+            # New registration does not admit a removed or unrelated module.
+            unrelated = Registry({'dev': baseline_modules['dev']}, (), {}, {}, {}, (), {})
+            with self.assertRaisesRegex(SelectionError, 'unowned-dependency'):
+                dependency_consumers(graph, unrelated, 'app', dependency, 'normal', (registered,))
             registry = Registry({}, (), {}, {}, {}, (), {})
             with self.assertRaisesRegex(SelectionError, 'unowned-dependency'):
                 dependency_consumers(graph, registry, 'app', dependency, 'normal')

@@ -43,6 +43,20 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
         preview.1["items"][0]["taskAdmission"]["state"] == "scheduled",
         "preview misstates execution eligibility: {preview:?}"
     );
+    let draft_gate = future_definition(1, Some(80));
+    let draft_gate = author
+        .call(
+            &router,
+            Method::POST,
+            "/api/v3/policies/previews",
+            Some(json!({"definition":draft_gate})),
+        )
+        .await?;
+    ensure!(
+        draft_gate.0 == StatusCode::OK
+            && draft_gate.1["items"][0]["taskAdmission"]["state"] == "success_gate",
+        "draft gate must use actual denominator and zero historical success: {draft_gate:?}"
+    );
     let waiting = agent(
         &router,
         "/api/agent/v6/tasks/claim",

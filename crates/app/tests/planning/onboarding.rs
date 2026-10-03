@@ -106,6 +106,32 @@ async fn explicit_source_absence_drives_one_standard_entry_without_creating_mdm_
     ensure!(
         run_count(id)?.trim().parse::<u64>()? + run_count(overlapping)?.trim().parse::<u64>()? == 1
     );
+    let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+    let rerun = Uuid::new_v4();
+    let path = format!("/api/v3/policies/{id}/reruns");
+    let request = json!({"operationId":rerun,"expectedRevision":1,"input":{"deadline":now+600}});
+    let accepted = post(&mut f.author, &f.router, &path, request.clone()).await?;
+    ensure!(post(&mut f.author, &f.router, &path, request).await? == accepted);
+    let explicit = claim(&f.router).await?;
+    ensure!(explicit["payload"]["taskId"] != task["payload"]["taskId"]);
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{}' AND occurrence='explicit:{rerun}'", case_tenant()))?.trim() == "1");
+    task_event(&f.router, &explicit, json!({"kind":"received"})).await?;
+    task_event(&f.router, &explicit, json!({"kind":"start"})).await?;
+    task_event(
+        &f.router,
+        &explicit,
+        json!({"kind":"enrollment_result","outcome":"opened"}),
+    )
+    .await?;
+    ensure!(claim_request(&f.router, Uuid::new_v4()).await?.1["task"].is_null());
+    ensure!(
+        pg(&format!(
+            "SELECT revision FROM mdm_policy.policies WHERE tenant_id='{}' AND id='{id}'",
+            case_tenant()
+        ))?
+        .trim()
+            == "1"
+    );
     ensure!(
         pg(&format!(
             "SELECT count(*) FROM mdm_access.registrations WHERE tenant_id='{}' AND channel='mdm'",

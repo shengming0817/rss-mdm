@@ -12,7 +12,6 @@ rss-mdm-inventory-postgres.workspace = true
 rss-mdm-inventory-service.workspace = true
 rss-mdm-registration-service.workspace = true
 rss-mdm-authorization-service.workspace = true
-rss-mdm-content-service.workspace = true
 rss-mdm-software-service.workspace = true
 rss-mdm-inventory.workspace = true
 rss-mdm-group-postgres.workspace = true

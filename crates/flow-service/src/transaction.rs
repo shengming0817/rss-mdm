@@ -314,17 +314,6 @@ impl From<catalog::Error> for Fault {
     }
 }
 
-impl From<rss_mdm_content_service::bindings::Error> for Fault {
-    fn from(e: rss_mdm_content_service::bindings::Error) -> Self {
-        use rss_mdm_content_service::bindings::Error as C;
-        match e {
-            C::Content(e) => Self::Request(e.into()),
-            C::Storage(e) => Self::Storage(e),
-            C::Sql(e) => Self::Sql(e),
-        }
-    }
-}
-
 impl From<rss_mdm_execution_service::Error> for Fault {
     fn from(error: rss_mdm_execution_service::Error) -> Self {
         Error::from(error).into()

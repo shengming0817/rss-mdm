@@ -34,18 +34,18 @@ pub enum Frozen {
 
 use crate::{Error, authorization::context::AuthorizedPrincipal};
 impl Frozen {
-    pub fn authorize_native(
+    pub(crate) fn authorize_native(
         &mut self,
         proof: &AuthorizedPrincipal,
         snapshot: &crate::authorization::Snapshot,
         devices: Option<&std::collections::BTreeSet<String>>,
         key: &rss_mdm_native_protection::Protector,
         tenant: rss_request_context::TenantId,
-        owner: Option<configuration::Owner>,
+        owner: configuration::Owner,
     ) -> std::result::Result<(), Error> {
         let (mut permissions, grants) = match self {
             Self::Configuration { native, grants, .. } => {
-                let native = native.open(key, tenant, owner.ok_or(Error::Malformed)?)?;
+                let native = native.open(key, tenant, owner)?;
                 let mut permissions = native.apply.permissions()?;
                 if let Some(remove) = &native.remove {
                     permissions.extend(remove.permissions()?);

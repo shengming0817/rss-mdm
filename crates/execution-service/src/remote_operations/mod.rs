@@ -5,13 +5,14 @@
 //! permitted; completion permits only changes within the approved scope.
 use crate::ExecutionService;
 use crate::frozen::Frozen;
+use crate::input_preparation::{PublicationAuthority, PublicationInput, ResourcePreparation};
 use crate::{
     Error,
     authorization::{Permission, context::AuthorizedPrincipal},
     transaction::*,
 };
 use rss_mdm_audit_integration::{Fact, RequestAudit};
-use rss_mdm_policy::{Action as PolicyAction, Exit, Frequency, ResourceBinding};
+use rss_mdm_policy::{ExactResourceBinding, Exit, Frequency};
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -44,7 +45,7 @@ pub enum Action {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Input {
     pub operation_id: Uuid,
-    pub resource: ResourceBinding,
+    pub resource: ExactResourceBinding,
     pub targets: Targets,
     pub action: Action,
     pub deadline: i64,
@@ -102,9 +103,6 @@ impl Input {
                 return Err(Error::Malformed);
             }
             _ => (),
-        }
-        if self.resource.exact().is_none() {
-            return Err(Error::Malformed);
         }
         self.schedule(now).validate()?;
         Ok(())
@@ -173,55 +171,19 @@ impl ExecutionService {
         proof.manage(Permission::ResourceRead)?;
         input.validate(input.deadline.saturating_sub(60))?;
         input.authorize(proof)?;
-        let artifact = if matches!(input.action, Action::Execute { .. }) {
-            None
-        } else {
-            inspect(&self.runtime, self.tenant, (self, input), |ctx, tx| {
-                Box::pin(async move {
-                    let version = ctx
-                        .0
-                        .inputs
-                        .active_version_in(tx, ctx.1.resource.id(), ctx.1.resource.version())
-                        .await?;
-                    Ok(
-                        match crate::input_preparation::variant(&version, &ctx.1.resource)?
-                            .declaration()
-                        {
-                            rss_mdm_resource::Declaration::Configuration { artifact } => Some((
-                                artifact.clone(),
-                                rss_mdm_content_service::StorageClass::NativeConfiguration,
-                            )),
-                            rss_mdm_resource::Declaration::Script { artifact, .. }
-                            | rss_mdm_resource::Declaration::NativeCollection {
-                                artifact, ..
-                            } => Some((
-                                artifact.clone(),
-                                rss_mdm_content_service::StorageClass::Artifact,
-                            )),
-                            _ => None,
-                        },
-                    )
-                })
-            })
-            .await?
+        let request = match &input.action {
+            Action::Execute { parameters } => ResourcePreparation::Script {
+                binding: &input.resource,
+                parameters,
+            },
+            Action::ApplyConfiguration => ResourcePreparation::Configuration {
+                binding: &input.resource,
+            },
+            Action::CollectNative => ResourcePreparation::NativeCollection {
+                binding: &input.resource,
+            },
         };
-        let verified = if let Action::Execute { parameters } = &input.action {
-            Some(
-                self.inputs
-                    .verify_script(&input.resource, parameters)
-                    .await?,
-            )
-        } else if let Some((a, class)) = &artifact {
-            Some(
-                self.content
-                    .as_ref()
-                    .ok_or(Error::Unsupported)?
-                    .verify_class(a, *class)
-                    .await?,
-            )
-        } else {
-            None
-        };
+        let verified = self.inputs.prepare_resource(Some(request)).await?;
         run(&self.audit_store,&self.runtime,self.tenant,audit,(self,proof,input,audit,verified.as_ref()),|ctx,tx|Box::pin(async move {
             let (s,proof,input,audit,verified)=*ctx;
             let auth=crate::action_admission::current(tx,proof).await?;
@@ -232,30 +194,19 @@ impl ExecutionService {
             if let Some(receipt)=receipts::replay(tx,audit,input.operation_id,&hash).await? {return Ok(receipt);}
             let at=crate::action_admission::now(tx).await?;
             input.validate(at)?;
-            let owner=Some(crate::configuration::Owner::Remote { operation: input.operation_id });
-            let mut frozen=match &input.action {
-                Action::Execute { parameters } => {
-                    if s.signer.is_none() { return Err(Error::Conflict.into()); }
-                    let version=s.inputs.active_version_in(tx,input.resource.id(),input.resource.version()).await?;
-                    let prepared=crate::input_preparation::script(&version,&input.resource,parameters,verified.ok_or(Error::Conflict)?)?;
-                    Frozen::Execution {
-                        action:Box::new(crate::freeze_inputs::freeze_script_in(tx,s.tenant,&prepared,
-                            input.schedule(at),(input.deadline-at) as u32,
-                        ).await?),
-                        frequency:Frequency::OncePerVersion,
-                    }
-                },
-                Action::CollectNative => s.inputs.freeze_in(tx,&PolicyAction::NativeCollection {
-                    resource:input.resource.clone(),schedule:input.schedule(at),
-                    frequency:Frequency::OncePerVersion,run_lifetime_seconds:(input.deadline-at) as u32,
-                },verified,owner).await?,
-                Action::ApplyConfiguration => s.inputs.freeze_in(tx,&PolicyAction::Configuration {
-                    resource:input.resource.clone(),exit:Exit::Retain,
-                },verified,owner).await?,
+            let schedule = input.schedule(at);
+            let lifetime = (input.deadline-at) as u32;
+            let request = match &input.action {
+                Action::Execute { parameters } => PublicationInput::Script { binding: &input.resource, parameters, schedule: &schedule, frequency: Frequency::OncePerVersion, lifetime },
+                Action::CollectNative => PublicationInput::NativeCollection { binding: &input.resource, schedule: &schedule, frequency: Frequency::OncePerVersion, lifetime },
+                Action::ApplyConfiguration => PublicationInput::Configuration { binding: &input.resource, exit: Exit::Retain },
             };
-            frozen.authorize_native(proof,&auth,match &input.targets {Targets::Devices{devices}=>Some(devices),Targets::Scope{..}=>None},&s.protection,tx.tenant_id(),owner)?;
+            let frozen = s.inputs.publish_in(tx, &request, verified, &PublicationAuthority {
+                proof, snapshot: &auth, owner: crate::configuration::Owner::Remote { operation: input.operation_id },
+                devices: match &input.targets { Targets::Devices { devices } => Some(devices), Targets::Scope { .. } => None },
+            }).await?;
             let snapshot=s.capture_remote_targets_in(tx,&input.targets).await?;
-            let tenant=tx.tenant_id().to_string();let id=input.operation_id;let resource=input.resource.id().to_owned();let version=input.resource.version().to_owned();let snapshot=checked_input(serde_json::to_value(snapshot))?;let content=checked_input(serde_json::to_value(frozen))?;let deadline=input.deadline;let author=checked_input(serde_json::to_value(proof.user()))?;
+            let tenant=tx.tenant_id().to_string();let id=input.operation_id;let resource=input.resource.id.as_str().to_owned();let version=input.resource.version.as_str().to_owned();let snapshot=checked_input(serde_json::to_value(snapshot))?;let content=checked_input(serde_json::to_value(frozen))?;let deadline=input.deadline;let author=checked_input(serde_json::to_value(proof.user()))?;
             tx.with_connection(move|c|Box::pin(async move {
                 sqlx::query("INSERT INTO mdm_planning.remote_operations(tenant_id,id,resource,resource_version,frozen,snapshot,created_at,deadline,author) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)").bind(tenant).bind(id).bind(resource).bind(version).bind(content).bind(snapshot).bind(at).bind(deadline).bind(author).execute(c).await?;Ok(())
             })).await?;
