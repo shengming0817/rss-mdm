@@ -95,6 +95,13 @@
       "read_write": true,
       "updates": [],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_windows",
+      "table": "linked_enrollments",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
     }
   ],
   "functions": [],

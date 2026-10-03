@@ -1,5 +1,5 @@
 use super::*;
-use crate::{database::db, device::DevicePrincipal};
+use crate::database::db;
 use rss_observation::{Batch, Scope};
 use sqlx::{Row, postgres::PgRow};
 use uuid::Uuid;
@@ -419,24 +419,6 @@ impl Delivery {
             .map_err(db)?;
         tx.commit().await.map_err(db)
     }
-}
-
-pub async fn allocate_commands_in(
-    c: &mut sqlx::PgConnection,
-    p: &DevicePrincipal,
-    count: i64,
-) -> std::result::Result<u32, Error> {
-    let n = crate::device::store::allocate_request_ids_in(
-        c,
-        p,
-        rss_mdm_inventory::ReportSource::MdmWindows,
-        count,
-        i64::from(u32::MAX),
-    )
-    .await
-    .map_err(db)?;
-    n.try_into()
-        .map_err(|_| Error::Unavailable(crate::Failure::Protocol))
 }
 
 pub async fn expire_timed(

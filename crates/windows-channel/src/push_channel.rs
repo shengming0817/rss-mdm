@@ -60,7 +60,7 @@ pub(crate) async fn send(
                 || (v.status == Some(200) && v.value.is_none())
         }));
     }
-    let id = rss_mdm_inventory_service::collection::store::allocate_commands_in(c, p, 1).await?;
+    let id = crate::device::store::allocate_commands_in(c, p, 1).await?;
     let command = s::Command::Get {
         id,
         meta: None,

@@ -72,6 +72,7 @@ pub(crate) async fn router(fixture: &authority::Authority) -> Result<Router> {
             mount: crate::device::ChannelMount::new(
                 fixture.identity.tenant,
                 rss_mdm_inventory::ReportSource::AgentBuiltin,
+                rss_mdm_registration_service::Purpose::Primary,
             ),
             audit_store: fixture.audit.clone(),
             access: Arc::new(fixture.access.agent_store()),
@@ -129,8 +130,8 @@ INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,e
 INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source,windows_profile)
  SELECT '{TENANT}',request,grant_id,'agent.builtin',NULL FROM task_targets;
 INSERT INTO mdm_access.devices(tenant_id,id) SELECT '{TENANT}',device FROM task_targets;
-INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state)
- SELECT '{TENANT}',registration,device,'agent',1,request,'active' FROM task_targets;
+INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state,purpose,epoch)
+ SELECT '{TENANT}',registration,device,'agent',1,request,'active','primary',gen_random_uuid() FROM task_targets;
 INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state)
  SELECT '{TENANT}',gen_random_uuid(),registration,'agent',
         md5(registration::text)||md5(registration::text),'active' FROM task_targets;

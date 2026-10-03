@@ -17,6 +17,7 @@ pub use fragment::{Fragment, fragment};
 pub const NS: &str = "SYNCML:SYNCML1.2";
 const META: &str = "syncml:metinf";
 const UNENROLLMENT: &str = "com.microsoft:mdm.unenrollment.userrequest";
+const DECLARED_SUMMARY: &str = "com.microsoft.mdm.declaredconfigurationdocuments";
 const LOGIN_STATUS: &str = "com.microsoft/MDM/LoginStatus";
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// SyncML session/message coordinates and untrusted endpoint/credential claims.
@@ -150,6 +151,14 @@ pub enum Command {
 /// Native alerts. Login state and asynchronous results are untrusted device claims.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Alert {
+    /// WinDC document state summary (1224); full native results must be retrieved separately.
+    DeclaredConfiguration {
+        /// Bounded native XML, validated independently of transport authentication.
+        summary: Secret<String>,
+        /// Whether the sender included the optional native character format marker.
+        explicit_format: bool,
+    },
+
     /// Request to disconnect, without proof that the client has removed management.
     UnenrollmentRequested,
     /// Client-initiated management-session alert (1201).
@@ -443,46 +452,38 @@ fn items(p: &mut Input<'_>) -> Result<Vec<Item>> {
 fn read_login_status(p: &mut Input<'_>) -> Result<Alert> {
     p.item()?;
     p.open(NS, "Item")?;
-    p.open(NS, "Meta")?;
-    let mut media_type = false;
-    let mut explicit_format = false;
-    loop {
-        if p.is(META, "Type")? {
-            if media_type {
-                return Err(E::Duplicate);
-            }
-            if p.scalar(META, "Type", p.limits.uri_bytes, false)? != LOGIN_STATUS {
-                return Err(E::Unsupported);
-            }
-            media_type = true;
-        } else if p.is(META, "Format")? {
-            if explicit_format {
-                return Err(E::Duplicate);
-            }
-            if p.scalar(META, "Format", p.limits.identifier_bytes, false)? != "chr" {
-                return Err(E::Unsupported);
-            }
-            explicit_format = true;
-        } else {
-            break;
-        }
+    let metadata = meta(p)?.ok_or(E::Structure)?;
+    if metadata.format.as_deref().is_some_and(|v| v != "chr")
+        || metadata.size.is_some()
+        || metadata.max_message_size.is_some()
+        || metadata.max_object_size.is_some()
+    {
+        return Err(E::Unsupported);
     }
-    p.end(NS, "Meta")?;
-    if !media_type {
-        return Err(E::Structure);
-    }
-    let status = match p.scalar(NS, "Data", p.limits.field_bytes, false)?.as_str() {
-        "user" => LoginStatus::User,
-        "others" => LoginStatus::Others,
-        "none" => LoginStatus::None,
-        _ => return Err(E::Unsupported),
-    };
+    let explicit_format = metadata.format.is_some();
+    let value = p.scalar(NS, "Data", p.limits.field_bytes, false)?;
     p.end(NS, "Item")?;
-    Ok(Alert::LoginStatus {
-        status,
-        explicit_format,
-    })
+    match metadata.media_type.as_deref() {
+        Some(LOGIN_STATUS) => Ok(Alert::LoginStatus {
+            status: match value.as_str() {
+                "user" => LoginStatus::User,
+                "others" => LoginStatus::Others,
+                "none" => LoginStatus::None,
+                _ => return Err(E::Unsupported),
+            },
+            explicit_format,
+        }),
+        Some(DECLARED_SUMMARY) => {
+            crate::native::declared::summaries(&value).map_err(|_| E::InvalidValue)?;
+            Ok(Alert::DeclaredConfiguration {
+                summary: Secret(value),
+                explicit_format,
+            })
+        }
+        _ => Err(E::Unsupported),
+    }
 }
+
 fn refs(p: &mut Input<'_>, name: &str) -> Result<Vec<String>> {
     let mut out = Vec::new();
     while p.is(NS, name)? {
@@ -975,6 +976,11 @@ pub(crate) fn validate_body(
                     }
                     count = count.checked_add(items.len()).ok_or(E::LimitExceeded)?;
                 }
+                if let Alert::DeclaredConfiguration { summary, .. } = alert {
+                    text(&summary.0, l.field_bytes, false)?;
+                    crate::native::declared::summaries(&summary.0).map_err(|_| E::InvalidValue)?;
+                    count = count.checked_add(1).ok_or(E::LimitExceeded)?;
+                }
                 if let Alert::LoginStatus {
                     status,
                     explicit_format,
@@ -1010,7 +1016,16 @@ pub(crate) fn validate_body(
     if initialization {
         let init = commands
             .iter()
-            .filter(|c| !matches!(c, Command::Status(_)))
+            .filter(|c| {
+                !matches!(
+                    c,
+                    Command::Status(_)
+                        | Command::Alert {
+                            alert: Alert::DeclaredConfiguration { .. },
+                            ..
+                        }
+                )
+            })
             .collect::<Vec<_>>();
         let unenrolling = matches!(
             init.as_slice(),
@@ -1202,6 +1217,53 @@ fn write_refs(w: &mut Output<'_>, s: &Status, l: &CodecLimits) -> Result<()> {
     Ok(())
 }
 
+fn write_typed_alert(
+    w: &mut Output<'_>,
+    kind: &str,
+    value: &str,
+    explicit_format: bool,
+    l: &CodecLimits,
+) -> Result<()> {
+    w.item()?;
+    w.start("Item", &[])?;
+    w.start("Meta", &[])?;
+    w.start("Type", &[("xmlns", META)])?;
+    w.content(kind, l.uri_bytes)?;
+    w.end("Type")?;
+    if explicit_format {
+        w.start("Format", &[("xmlns", META)])?;
+        w.content("chr", l.identifier_bytes)?;
+        w.end("Format")?;
+    }
+    w.end("Meta")?;
+    w.scalar("Data", value, l.field_bytes, false)?;
+    w.end("Item")
+}
+fn write_alert(w: &mut Output<'_>, alert: &Alert, l: &CodecLimits) -> Result<()> {
+    let code = match alert {
+        Alert::ClientInitiated => 1201,
+        Alert::MoreMessages => 1222,
+        Alert::SessionAbort => 1223,
+        Alert::EndOfData { .. } => 1225,
+        Alert::LoginStatus { .. } | Alert::DeclaredConfiguration { .. } => 1224,
+        Alert::Generic { .. } | Alert::UnenrollmentRequested => 1226,
+    };
+    write_num(w, "Data", code, l)?;
+    match alert {
+        Alert::EndOfData { items } | Alert::Generic { items } => write_items(w, items, l),
+        Alert::UnenrollmentRequested => write_items(w, &[unenrollment_item()], l),
+        Alert::DeclaredConfiguration {
+            summary,
+            explicit_format,
+        } => write_typed_alert(w, DECLARED_SUMMARY, &summary.0, *explicit_format, l),
+        Alert::LoginStatus {
+            status,
+            explicit_format,
+        } => write_typed_alert(w, LOGIN_STATUS, status.as_str(), *explicit_format, l),
+        Alert::ClientInitiated | Alert::MoreMessages | Alert::SessionAbort => Ok(()),
+    }
+}
+
 fn write_commands(w: &mut Output<'_>, commands: &[Command], l: &CodecLimits) -> Result<()> {
     for c in commands {
         w.command()?;
@@ -1232,50 +1294,7 @@ fn write_commands(w: &mut Output<'_>, commands: &[Command], l: &CodecLimits) -> 
                 write_items(w, items, l)?;
             }
             Command::DevInfo { items, .. } => write_items(w, items, l)?,
-            Command::Alert { alert, .. } => {
-                write_num(
-                    w,
-                    "Data",
-                    match alert {
-                        Alert::ClientInitiated => 1201,
-                        Alert::MoreMessages => 1222,
-                        Alert::SessionAbort => 1223,
-                        Alert::EndOfData { .. } => 1225,
-                        Alert::LoginStatus { .. } => 1224,
-                        Alert::Generic { .. } | Alert::UnenrollmentRequested => 1226,
-                    },
-                    l,
-                )?;
-                if let Alert::EndOfData { items } = alert {
-                    write_items(w, items, l)?;
-                }
-                if matches!(alert, Alert::UnenrollmentRequested) {
-                    write_items(w, &[unenrollment_item()], l)?;
-                }
-                if let Alert::Generic { items } = alert {
-                    write_items(w, items, l)?;
-                }
-                if let Alert::LoginStatus {
-                    status,
-                    explicit_format,
-                } = alert
-                {
-                    w.item()?;
-                    w.start("Item", &[])?;
-                    w.start("Meta", &[])?;
-                    w.start("Type", &[("xmlns", META)])?;
-                    w.content(LOGIN_STATUS, l.uri_bytes)?;
-                    w.end("Type")?;
-                    if *explicit_format {
-                        w.start("Format", &[("xmlns", META)])?;
-                        w.content("chr", l.identifier_bytes)?;
-                        w.end("Format")?;
-                    }
-                    w.end("Meta")?;
-                    w.scalar("Data", status.as_str(), l.field_bytes, false)?;
-                    w.end("Item")?;
-                }
-            }
+            Command::Alert { alert, .. } => write_alert(w, alert, l)?,
             Command::Status(s) => write_status(w, s, l)?,
             Command::Results(r) => {
                 if let Some(v) = r.message_ref {

@@ -19,7 +19,14 @@ pub async fn retire(
     state: &str,
     participant: &dyn Retirement,
 ) -> Result<(), Error> {
+    // The caller owns the device/channel lock; parent before children is the common order.
+    let children = sqlx::query_scalar::<_, uuid::Uuid>("SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND parent_id=$2 AND state='active' ORDER BY id FOR UPDATE")
+        .bind(tenant).bind(registration).fetch_all(&mut *tx).await.map_err(crate::database::db)?;
     crate::device::store::retire_state_in(tx, tenant, registration, state).await?;
+    for child in children {
+        crate::device::store::retire_state_in(tx, tenant, child, state).await?;
+        participant.retire(tx, facts, tenant, child, state).await?;
+    }
     participant
         .retire(tx, facts, tenant, registration, state)
         .await

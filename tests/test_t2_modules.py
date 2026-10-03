@@ -44,7 +44,7 @@ class ModuleImpactTests(unittest.TestCase):
             self.assertEqual(set(selected.modules), {
                 'execution.agent.history', 'execution.commands.windows', 'planning.http',
                 'planning.agent_policy', 'planning.remote', 'planning.software'}
-                | ({'apple.commands','apple.users','apple.ddm','apple.status'} if path.endswith('/records.rs') else set()))
+                | ({'apple.commands','apple.users','apple.ddm','apple.status'} if path.endswith('/records.rs') else {'windows.declared'}))
 
     def test_native_modules_select_actual_write_read_permission_and_helper_inputs(self):
         for path in ('crates/execution-service/src/service.rs',
@@ -83,6 +83,23 @@ class ModuleImpactTests(unittest.TestCase):
         for path in ('crates/windows-mdm/src/native/request.rs', 'crates/windows-mdm/src/native/verification.rs'):
             self.assertIn('execution.commands.configuration', self.selected(path), path)
 
+    def test_declared_protocol_consumers_select_linked_end_to_end_proof(self):
+        for path in (
+            'crates/execution-service/src/protocol.rs',
+            'crates/execution-service/src/native_configuration.rs',
+            'crates/registration-service/src/enrollment/store.rs',
+            'crates/registration-service/src/device/read.rs',
+            'crates/registration-service/src/device/store.rs',
+            'crates/windows-channel/src/management/session.rs',
+            'crates/windows-channel/src/renewal.rs',
+            'crates/windows-mdm/src/native/request.rs',
+            'crates/windows-mdm/src/native/declared.rs',
+            'crates/windows-mdm/src/native/verification.rs',
+            'crates/certificate/src/windows/linked.rs',
+            'crates/management-http/src/error_projection.rs',
+        ):
+            self.assertIn('windows.declared', self.selected(path), path)
+
     def test_console_projection_inputs_select_their_http_consumers(self):
         for path in ('crates/resource-postgres/src/codec.rs',
                      'crates/inventory-postgres/src/lib.rs',
@@ -105,7 +122,7 @@ class ModuleImpactTests(unittest.TestCase):
             'execution.software.content', 'execution.software.recovery'})
         self.assertEqual(self.selected('crates/windows-channel/src/lib.rs'), {
             'windows.enrollment', 'windows.issuance', 'windows.management',
-            'windows.commands', 'windows.retention', 'windows.limits'})
+            'windows.commands', 'windows.retention', 'windows.limits', 'windows.declared'})
 
     def test_runtime_diagnostics_has_exact_tests_and_live_owner_inputs(self):
         self.assertEqual(self.selected('crates/app/tests/api/runtime_diagnostics.rs'), {'diagnostics.http'})
@@ -154,7 +171,8 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertEqual(self.selected('crates/app/tests/support/process.rs'),
                          {'inventory.runtime','execution.commands.recovery'})
         self.assertEqual(self.selected('crates/app/tests/execution/support.rs'),
-                         {'execution.commands.'+part for part in ('admission','dispatch','recovery','windows','configuration','onboarding')} | {'windows.commands'})
+                         {'execution.commands.'+part for part in ('admission','dispatch','recovery','windows','configuration','onboarding')} | {'windows.commands','windows.declared'})
+        self.assertEqual(self.selected('crates/app/tests/execution/support/configuration.rs'), {'execution.commands.configuration','windows.declared'})
         self.assertEqual(self.selected('crates/app/tests/execution/support/native.rs'),
                          self.selected('crates/app/tests/execution/support.rs'))
         device = self.selected('crates/app/tests/device/support.rs')

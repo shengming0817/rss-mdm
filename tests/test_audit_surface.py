@@ -147,6 +147,7 @@ DECLARATIONS = {
  ('enrollment_create', 'crates/registration-service/src/device.rs'),
  ('enrollment_issue', 'crates/windows-channel/src/boundary.rs'),
  ('enrollment_issue', 'crates/windows-channel/src/lib.rs'),
+ ('enrollment_issue', 'crates/windows-channel/src/linked.rs'),
  ('enrollment_read', 'crates/management-http/src/boundary.rs'),
  ('enrollment_resume', 'crates/management-http/src/boundary.rs'),
  ('inventory_read', 'crates/management-http/src/assets/http.rs'),

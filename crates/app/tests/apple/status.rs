@@ -115,7 +115,39 @@ async fn status_authority_and_user_scope_are_independent() -> Result<()> {
     }
     // Late authenticated evidence is retained, but cannot recover withdrawn authority.
     ensure!(native(&peer, None, "status", Some(&first)).await?.0 == StatusCode::OK);
+    let read = f
+        .browser
+        .call(
+            &f.router,
+            Method::GET,
+            &format!(
+                "/api/v3/devices/{}/operations/{device_operation}",
+                case_device()
+            ),
+            None,
+        )
+        .await?;
+    ensure!(
+        read.0 == StatusCode::FORBIDDEN,
+        "revoked raw status read: {read:?}"
+    );
+    crate::test_support::identity::set_grants(
+        case_tenant(),
+        crate::test_support::case::admin(),
+        crate::test_support::identity::device_grants(
+            Some(case_device()),
+            &["operation_read", "inventory_read", "configuration_write"],
+        )?,
+    )
+    .await?;
     ensure!(f.operation(device_operation).await?["observation"]["synchronization"] == "withdrawn");
+    ensure!(
+        manifest(&peer, None).await?["Declarations"]["Configurations"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "restoring read permission resurrected a retired publication"
+    );
     drop(device);
     f.close().await
 }

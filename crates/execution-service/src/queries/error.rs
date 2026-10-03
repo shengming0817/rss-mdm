@@ -19,6 +19,8 @@ pub enum QueryError {
     Forbidden,
     #[error("query input conflicts with current facts")]
     Conflict,
+    #[error("Windows declared enrollment is not ready")]
+    WindowsDeclaredEnrollmentNotReady,
     #[error("read target not found: {0:?}")]
     Missing(Missing),
     #[error("query prerequisite unavailable")]
@@ -39,6 +41,7 @@ impl From<crate::Error> for QueryError {
             Error::Unauthorized => Self::Unauthorized,
             Error::Forbidden => Self::Forbidden,
             Error::Conflict => Self::Conflict,
+            Error::WindowsDeclaredEnrollmentNotReady => Self::WindowsDeclaredEnrollmentNotReady,
             Error::CommitUnknown => Self::CommitUnknown,
             Error::RollbackFailed => Self::RollbackFailed,
             Error::NotFound => Self::Missing(Missing::Inventory),

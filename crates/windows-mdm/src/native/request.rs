@@ -1,11 +1,7 @@
 //! Typed native input and exact object identities for the flow execution envelope.
-use super::{Context, Error, Operation, Scope, Value, Verb};
-use crate::{
-    CodecLimits,
-    syncml::{self, Command},
-};
+use super::{Context, Error, Scope, Value, Verb};
+use crate::{CodecLimits, syncml::Command};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
 
 /// Windows native operation tree. Target evidence and command IDs are server-owned.
 #[derive(Clone, Deserialize, Serialize)]
@@ -43,11 +39,44 @@ impl std::fmt::Debug for Request {
 /// Exact native claim key. Device/registration/tenant are supplied by the execution envelope.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Object {
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Object {
+    /// CSP subtree identity, including management scope.
+    Csp {
+        /// Native management context.
+        scope: Scope,
+        /// Canonical native URI.
+        uri: String,
+    },
+    /// Conservative class-wide MI ownership; MOF keys are not known by the service.
+    Mi {
+        /// Native management context.
+        scope: Scope,
+        /// Canonical namespace and class; keys remain inside the document.
+        class: String,
+    },
+}
+impl Object {
     /// Native management scope.
-    pub scope: Scope,
-    /// Canonical native object URI, including escaped dynamic components.
-    pub uri: String,
+    pub fn scope(&self) -> Scope {
+        match self {
+            Self::Csp { scope, .. } | Self::Mi { scope, .. } => *scope,
+        }
+    }
+    /// Stable product claim namespace.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Csp { .. } => "csp",
+            Self::Mi { .. } => "mi",
+        }
+    }
+    /// Native claim key; MI keys must never be used as wire URIs.
+    pub fn key(&self) -> &str {
+        match self {
+            Self::Csp { uri, .. } => uri,
+            Self::Mi { class, .. } => class,
+        }
+    }
 }
 /// Compiled protocol payload and the native objects it addresses.
 pub struct Compiled {
@@ -100,66 +129,7 @@ impl Request {
     }
     /// Compile against authenticated platform evidence after the caller allocates command IDs.
     pub fn compile(&self, context: Context, first: u32) -> Result<Compiled, Error> {
-        let count = self.command_count()?;
-        if first == 0 || first.checked_add(count - 1).is_none() {
-            return Err(Error::Identity);
-        }
-        let mut next = u64::from(first);
-        let mut objects = BTreeSet::new();
-        let command = self.lower(context, &mut next, false, &mut objects)?;
-        syncml::validate_body(
-            std::slice::from_ref(&command),
-            true,
-            &CodecLimits::default(),
-        )
-        .map_err(|_| Error::Value)?;
-        Ok(Compiled {
-            command,
-            objects: objects.into_iter().collect(),
-        })
-    }
-    fn lower(
-        &self,
-        context: Context,
-        next: &mut u64,
-        atomic: bool,
-        objects: &mut BTreeSet<Object>,
-    ) -> Result<Command, Error> {
-        let id = u32::try_from(*next).map_err(|_| Error::Identity)?;
-        *next += 1;
-        match self {
-            Self::Node {
-                node,
-                instance,
-                operation,
-                value,
-            } => {
-                let op = Operation::compile(node, instance, *operation, value.clone(), context)?;
-                if op.semantics().atomic_required && !atomic && !matches!(operation, Verb::Get) {
-                    return Err(Error::AtomicRequired);
-                }
-                objects.insert(Object {
-                    scope: context.scope,
-                    uri: op.uri().into(),
-                });
-                Ok(op.command(id))
-            }
-            Self::Atomic { operations } | Self::Sequence { operations } => {
-                let is_atomic = matches!(self, Self::Atomic { .. });
-                if atomic && is_atomic {
-                    return Err(Error::OperationNotAllowed);
-                }
-                let commands = operations
-                    .iter()
-                    .map(|request| request.lower(context, next, atomic || is_atomic, objects))
-                    .collect::<Result<_, _>>()?;
-                if is_atomic {
-                    Ok(Command::Atomic { id, commands })
-                } else {
-                    Ok(Command::Sequence { id, commands })
-                }
-            }
-        }
+        self.resolve()?.prepare(context)?.command(first)
     }
 }
 
@@ -180,77 +150,9 @@ pub enum Execution {
 }
 
 impl Request {
-    /// Resolve native claim identities without claiming OS applicability or execution authority.
-    /// Actual dispatch must still call `compile` with authenticated target evidence.
+    /// Resolve all claims through the same tree used by authorization and dispatch.
     pub fn objects(&self) -> Result<Vec<Object>, Error> {
-        self.command_count()?;
-        let mut pending = vec![self];
-        let mut objects = BTreeSet::new();
-        while let Some(request) = pending.pop() {
-            match request {
-                Self::Node { node, instance, .. } => {
-                    if !super::known_node(node) {
-                        return Err(Error::UnknownObject);
-                    }
-                    objects.insert(Object {
-                        scope: if node.starts_with("./User/") {
-                            Scope::User
-                        } else {
-                            Scope::Device
-                        },
-                        uri: super::identity(node, instance)?,
-                    });
-                }
-                Self::Atomic { operations } | Self::Sequence { operations } => {
-                    pending.extend(operations)
-                }
-            }
-        }
-        Ok(objects.into_iter().collect())
-    }
-}
-
-impl Request {
-    /// Resolve schema-owned authorization targets, including descendants of subtree reads/deletes.
-    /// This supplies native identities only; the product owns permissions and authenticated scope.
-    pub fn authorization_nodes(&self) -> Result<Vec<(String, Verb)>, Error> {
-        self.objects()?;
-        let mut pending = vec![self];
-        let mut result = Vec::new();
-        while let Some(request) = pending.pop() {
-            match request {
-                Self::Node {
-                    node, operation, ..
-                } => {
-                    result.push((node.clone(), *operation));
-                    let selected = super::generated::NODES
-                        .binary_search_by_key(&node.as_str(), |n| n.path)
-                        .map_err(|_| Error::UnknownObject)?;
-                    if super::generated::NODES[selected].access & operation.mask() == 0 {
-                        return Err(Error::OperationNotAllowed);
-                    }
-                    if *operation == Verb::Delete
-                        || (*operation == Verb::Get
-                            && matches!(
-                                super::generated::NODES[selected].format,
-                                super::Format::Node
-                            ))
-                    {
-                        let prefix = format!("{node}/");
-                        for child in &super::generated::NODES[selected + 1..] {
-                            if !child.path.starts_with(&prefix) {
-                                break;
-                            }
-                            result.push((child.path.into(), *operation));
-                        }
-                    }
-                }
-                Self::Atomic { operations } | Self::Sequence { operations } => {
-                    pending.extend(operations)
-                }
-            }
-        }
-        Ok(result)
+        Ok(self.resolve()?.objects().to_vec())
     }
 }
 
@@ -264,7 +166,15 @@ impl Request {
     ) -> Result<Self, Error> {
         let mut candidates = vec![uri.to_owned()];
         if uri.starts_with("./Vendor/MSFT/") {
-            candidates.push(uri.replacen("./Vendor/", "./Device/Vendor/", 1));
+            candidates = vec![uri.replacen(
+                "./Vendor/",
+                if scope == Scope::User {
+                    "./User/Vendor/"
+                } else {
+                    "./Device/Vendor/"
+                },
+                1,
+            )];
         }
         let mut selected = None;
         let mut specificity = 0;
@@ -285,18 +195,24 @@ impl Request {
                     continue;
                 }
                 let score = template.iter().filter(|t| **t != "*").count();
-                let instance = template
+                let instance: Vec<String> = template
                     .iter()
                     .zip(&parts)
                     .filter_map(|(t, v)| (*t == "*").then_some((*v).to_owned()))
-                    .collect();
+                    .map(|v| {
+                        percent_encoding::percent_decode_str(&v)
+                            .decode_utf8()
+                            .map(|v| v.into_owned())
+                            .map_err(|_| Error::Identity)
+                    })
+                    .collect::<Result<_, _>>()?;
                 let candidate = Self::Node {
                     node: node.path.into(),
                     instance,
                     operation,
                     value: value.clone(),
                 };
-                candidate.authorization_nodes()?;
+                candidate.resolve()?;
                 if selected.is_none() || score > specificity {
                     selected = Some(candidate);
                     specificity = score;

@@ -132,8 +132,9 @@ pub async fn active_channel_in(
     tenant: String,
     devices: Vec<String>,
     channel: rss_mdm_inventory::Channel,
+    purpose: super::Purpose,
 ) -> Result<Vec<(String, uuid::Uuid, i64)>, sqlx::Error> {
-    sqlx::query_as("SELECT device,id,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=ANY($2) AND channel=$3 AND state='active' ORDER BY device,id").bind(tenant).bind(devices).bind(channel.as_str()).fetch_all(c).await
+    sqlx::query_as("SELECT device,id,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=ANY($2) AND channel=$3 AND purpose=$4 AND state='active' AND (purpose='primary' OR ready) AND (parent_id IS NULL OR EXISTS(SELECT 1 FROM mdm_access.registrations p WHERE p.tenant_id=registrations.tenant_id AND p.id=registrations.parent_id AND p.generation=registrations.parent_generation AND p.state='active')) ORDER BY device,id").bind(tenant).bind(devices).bind(channel.as_str()).bind(purpose.as_str()).fetch_all(c).await
 }
 
 /// Read-only worker hints; a mutating caller must recheck under the channel lock.
@@ -206,4 +207,15 @@ pub async fn timeline_enrollment_in(
     id: uuid::Uuid,
 ) -> Result<Option<String>, sqlx::Error> {
     sqlx::query_scalar("SELECT g.device FROM mdm_access.requests r JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(r.tenant_id,r.grant_id) WHERE r.tenant_id=$1::uuid AND r.id=$2").bind(tenant).bind(id).fetch_optional(c).await
+}
+
+/// Execution coordinates belong to the root registration, while operations retain their wire registration.
+pub async fn management_root_in(
+    c: &mut sqlx::PgConnection,
+    tenant: String,
+    registration: uuid::Uuid,
+    generation: i64,
+) -> Result<(uuid::Uuid, i64), crate::Error> {
+    sqlx::query_as("SELECT coalesce(parent_id,id),coalesce(parent_generation,generation) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 AND generation=$3 AND state='active'")
+        .bind(tenant).bind(registration).bind(generation).fetch_optional(c).await.map_err(crate::database::db)?.ok_or(crate::Error::Conflict)
 }

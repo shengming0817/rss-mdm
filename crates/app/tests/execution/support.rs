@@ -11,6 +11,8 @@ use rss_transactional_messaging_postgres::PgOutboxStore;
 use serde_json::{Value, json};
 pub(crate) use std::{sync::Arc, time::Duration};
 pub(crate) use uuid::Uuid;
+#[path = "support/configuration.rs"]
+pub(crate) mod configuration;
 #[path = "support/native.rs"]
 pub(crate) mod native;
 pub(crate) fn case_tenant() -> &'static str {

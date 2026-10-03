@@ -51,6 +51,7 @@ pub async fn register(
     let mount = crate::device::ChannelMount::new(
         authority.principal().tenant(),
         rss_mdm_inventory::ReportSource::AgentBuiltin,
+        rss_mdm_registration_service::Purpose::Primary,
     );
     let credential = crate::credential(&mount, &input.credential);
     let receipt = rss_mdm_registration_service::enrollment::managed::bind_in(

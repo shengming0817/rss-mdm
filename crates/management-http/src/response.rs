@@ -8,6 +8,10 @@ impl IntoResponse for Error {
     fn into_response(self) -> Response {
         let (status, code) = match &self {
             Error::Conflict => (StatusCode::CONFLICT, "operation_conflict"),
+            Error::WindowsDeclaredEnrollmentNotReady => (
+                StatusCode::CONFLICT,
+                "windows_declared_enrollment_not_ready",
+            ),
             Error::CommitUnknown => (StatusCode::SERVICE_UNAVAILABLE, "operation_unknown"),
             Error::RollbackFailed => (
                 StatusCode::SERVICE_UNAVAILABLE,

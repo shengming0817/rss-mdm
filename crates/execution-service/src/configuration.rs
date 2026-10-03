@@ -71,10 +71,9 @@ impl Configuration {
             ) => {
                 mutations(request)?;
                 for object in request.objects().map_err(|_| Error::Malformed)? {
-                    if !owned
-                        .iter()
-                        .any(|o| o.platform == "windows" && o.kind == "csp" && o.key == object.uri)
-                    {
+                    if !owned.iter().any(|o| {
+                        o.platform == "windows" && o.kind == object.kind() && o.key == object.key()
+                    }) {
                         return Err(Error::Malformed);
                     }
                 }
@@ -159,15 +158,15 @@ impl Configuration {
                 request: W::SyncMl { request },
             } => {
                 for object in request.objects().map_err(|_| Error::Malformed)? {
-                    if (object.scope == Scope::User)
+                    if (object.scope() == Scope::User)
                         != matches!(self.target, NativeTarget::User { .. })
                     {
                         return Err(Error::Malformed);
                     }
                     objects.insert(Object {
                         platform: "windows".into(),
-                        kind: "csp".into(),
-                        key: object.uri,
+                        kind: object.kind().into(),
+                        key: object.key().into(),
                         user: user.clone(),
                     });
                 }
@@ -398,7 +397,7 @@ impl Configuration {
                             let objects = request.objects().map_err(|_| Error::Malformed)?;
                             for object in objects {
                                 let values = content
-                                    .entry(identity("windows", "csp", &object.uri))
+                                    .entry(identity("windows", object.kind(), object.key()))
                                     .or_insert_with(|| json!([]));
                                 values
                                     .as_array_mut()

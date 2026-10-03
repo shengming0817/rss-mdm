@@ -1,6 +1,5 @@
 //! Readback evidence for queryable native mutations. ACKs never satisfy this contract.
 use super::{Context, Error, Operation, Request, Verb};
-use crate::syncml::Command;
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -13,6 +12,13 @@ pub enum Expected {
     Present,
     /// A native 404 for this exact object after its Delete.
     Absent,
+    /// Full result must match the immutable desired document and native operation.
+    Declared {
+        /// Immutable desired identity, version and resources.
+        document: super::declared::Document,
+        /// Expected native Set, Get or Delete lifecycle.
+        operation: String,
+    },
 }
 impl std::fmt::Debug for Expected {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -87,7 +93,27 @@ impl EffectPlan {
             {
                 return EffectAssessment::waiting("ineligible_or_incomplete_evidence");
             }
-            if !expected.matches(fact.status, fact.value.as_deref()) {
+            let matches = if let Expected::Declared {
+                document,
+                operation,
+            } = expected
+            {
+                let result = fact
+                    .value
+                    .as_deref()
+                    .filter(|_| fact.status == Some(200))
+                    .and_then(|xml| super::declared::ResultDocument::parse(xml).ok());
+                if result
+                    .as_ref()
+                    .is_some_and(|result| result.in_progress(document, operation))
+                {
+                    return EffectAssessment::waiting("declared_operation_in_progress");
+                }
+                result.is_some_and(|result| result.converged(document, operation))
+            } else {
+                expected.matches(fact.status, fact.value.as_deref())
+            };
+            if !matches {
                 return EffectAssessment {
                     state: EffectState::Diverged,
                     reason: Some("native_value_mismatch"),
@@ -147,83 +173,22 @@ impl Request {
     /// Build readback only if every mutation has a valid native Get on the same target.
     /// Exec has no universal effect query; its platform lifecycle must supply one explicitly.
     pub fn effect_plan(&self, context: Context) -> Result<EffectPlan, Error> {
-        self.command_count()?;
-        let mut pending = vec![self];
-        let mut operations = BTreeMap::new();
-        let mut expected = BTreeMap::new();
-        while let Some(request) = pending.pop() {
-            match request {
-                Self::Atomic { operations } | Self::Sequence { operations } => {
-                    pending.extend(operations.iter().rev())
-                }
-                Self::Node {
-                    node,
-                    instance,
-                    operation,
-                    value,
-                } => {
-                    if *operation == Verb::Get {
-                        continue;
-                    }
-                    if *operation == Verb::Exec {
-                        return Ok(EffectPlan::Unverifiable(
-                            "operation_requires_family_effect_evidence",
-                        ));
-                    }
-                    let op =
-                        Operation::compile(node, instance, *operation, value.clone(), context)?;
-                    if Operation::compile(node, instance, Verb::Get, None, context).is_err() {
-                        return Ok(EffectPlan::Unverifiable("native_object_is_not_queryable"));
-                    }
-                    let goal = if *operation == Verb::Delete {
-                        if node.contains("/Policy/Config/") || op.semantics().lifetime != "Dynamic"
-                        {
-                            return Ok(EffectPlan::Unverifiable(
-                                "delete_restores_default_without_frozen_detector",
-                            ));
-                        }
-                        Expected::Absent
-                    } else {
-                        match op.command(1) {
-                            Command::Add { items, .. } | Command::Replace { items, .. } => items
-                                .into_iter()
-                                .next()
-                                .and_then(|i| i.data)
-                                .map(|v| Expected::Value(v.0))
-                                .unwrap_or(Expected::Present),
-                            _ => return Err(Error::Value),
-                        }
-                    };
-                    // Repeated writes to one object in a Sequence describe its last desired value.
-                    expected.insert(op.uri().into(), goal);
-                    operations.insert(
-                        op.uri().to_owned(),
-                        Self::Node {
-                            node: node.clone(),
-                            instance: instance.clone(),
-                            operation: Verb::Get,
-                            value: None,
-                        },
-                    );
-                }
-            }
-        }
-        if operations.is_empty() {
-            return Ok(EffectPlan::ReadOnly);
-        }
-        let mut operations = operations.into_values().collect::<Vec<_>>();
-        let request = if operations.len() == 1 {
-            operations.remove(0)
-        } else {
-            Self::Sequence { operations }
-        };
-        Ok(EffectPlan::Readback(Verification { request, expected }))
+        Ok(self.resolve()?.prepare(context)?.effect)
     }
 }
 impl Expected {
     /// Interpret a correlated Get only; missing results and protocol failures remain unverified.
     pub fn matches(&self, status: Option<i32>, value: Option<&str>) -> bool {
         match self {
+            Self::Declared {
+                document,
+                operation,
+            } => {
+                status == Some(200)
+                    && value
+                        .and_then(|xml| super::declared::ResultDocument::parse(xml).ok())
+                        .is_some_and(|result| result.converged(document, operation))
+            }
             Self::Absent => status == Some(404) && value.is_none(),
             Self::Present => status == Some(200) && value.is_some(),
             Self::Value(expected) => status == Some(200) && value == Some(expected.as_str()),

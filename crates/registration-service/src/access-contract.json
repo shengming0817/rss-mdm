@@ -42,7 +42,9 @@
       "table": "registrations",
       "read_write": true,
       "updates": [
-        "state"
+        "state",
+        "next_command",
+        "ready"
       ],
       "delete_policy": null
     },
@@ -52,7 +54,6 @@
       "read_write": true,
       "updates": [
         "enabled",
-        "next_command",
         "next_sequence"
       ],
       "delete_policy": null

@@ -381,7 +381,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                 let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT command_device::text,generation,epoch,recovery_after FROM mdm_commands.devices WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE").bind(tenant).bind(key).fetch_one(c).await})).await?;
                 let scope=dc::Scope::new(service.tenant,stored(dc::DeviceId::parse(&row.try_get::<String,_>("command_device")?))?);
                 let after=row.try_get::<Option<String>,_>("recovery_after")?.map(|s|stored(dc::CommandId::parse(&s))).transpose()?;
-                let registration=storage::current_registration(tx,&name).await;
+                let registration=storage::current_registration(tx, &name, rss_mdm_registration_service::Purpose::Primary).await;
                 if let Ok((id,generation))=registration {storage::authority(service,tx,&name,id,generation).await?;}
                 let tenant=service.tenant.to_string();let command_device=scope.device().as_uuid().to_string();let cursor=after.as_ref().map(|v|v.as_str().to_owned());
                 let previous=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(String,i64,String)>("SELECT command_id,version,status FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND device_id=$2::uuid AND terminal_at IS NULL AND ($3::text IS NULL OR command_id COLLATE \"C\">$3 COLLATE \"C\") ORDER BY command_id COLLATE \"C\" LIMIT 64").bind(tenant).bind(command_device).bind(cursor).fetch_all(c).await})).await?;
