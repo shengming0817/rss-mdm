@@ -4,7 +4,7 @@ Rust 服务端支持设备和用户通道，使用外部 step-ca v0.30.2 完成 
 
 ## 注册与凭据
 
-管理员在线登录并拥有目标设备的 `enrollment` 权限后，调用 `POST /api/v1/enrollments`，提交 `deviceId`、`source:"mdm.apple"`、256 位随机 `password`，以及非零 UUID `Idempotency-Key`。返回 HTTP 200 的 pending 授权。生命周期整组已切换 v3，旧版本不挂载；Windows 使用 `mdm.windows`，Agent 使用 `agent.builtin`，不接受请求 `channel`。
+管理员在线登录并拥有目标设备的 `enrollment` 权限后，调用 `POST /api/v1/enrollments`，提交 `deviceId`、`source:"mdm.apple"`、256 位随机 `password`，以及非零 UUID `Idempotency-Key`。返回 HTTP 200 的 pending 授权。注册生命周期管理入口统一使用 V1；Windows 原生注册使用 `mdm.windows`，不接受请求 `channel`。
 
 设备通过 HTTPS `POST /api/v1/enrollments/{id}/profile` 提交 `{"password":"…"}` 下载附带 CMS 签名的 mobileconfig；响应不缓存。口令和配置只交付给授权设备。Profile 配置 RSA 2048 SCEP 身份、设备范围、AccessRights 8191、生产 APNs topic、CheckOutWhenRemoved，以及 `per-user-connections`、`bootstraptoken` capability；`SignMessage=false`，管理传输必须使用原生 mTLS。UserAuthenticate 在已绑定 mTLS 身份下返回空 DigestChallenge；不接收目录密码或建立业务账户身份。服务端保存设备实际安装 profile 的权限；后来启用 Agent 安装配置不会增加已有设备权限，也不会使其原生身份失效。缺少查询或安装权限时，策略返回 missing_native_rights，需通过正常注册流程取得用户/系统授权。
 
