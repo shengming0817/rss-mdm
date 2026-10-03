@@ -307,78 +307,6 @@
       ""
     ],
     [
-      "apple_profiles",
-      "tenant_id",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "apple_profiles",
-      "device",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "apple_profiles",
-      "user_key",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "apple_profiles",
-      "identifier",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "apple_profiles",
-      "profile",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "apple_profiles",
-      "operation",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "apple_profiles",
-      "registration",
-      "uuid",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
-      "apple_profiles",
-      "version",
-      "text",
-      true,
-      null,
-      "",
-      ""
-    ],
-    [
       "attempt_frames",
       "tenant_id",
       "uuid",
@@ -1414,48 +1342,6 @@
       true
     ],
     [
-      "apple_profiles",
-      "profiles_pkey",
-      "p",
-      "PRIMARY KEY (tenant_id, device, user_key, identifier)",
-      true
-    ],
-    [
-      "apple_profiles",
-      "profiles_tenant_id_device_fkey",
-      "f",
-      "FOREIGN KEY (tenant_id, device) REFERENCES mdm_access.devices(tenant_id, id)",
-      true
-    ],
-    [
-      "apple_profiles",
-      "profiles_tenant_id_identifier_key",
-      "u",
-      "UNIQUE (tenant_id, identifier)",
-      true
-    ],
-    [
-      "apple_profiles",
-      "profiles_tenant_id_operation_fkey",
-      "f",
-      "FOREIGN KEY (tenant_id, operation) REFERENCES mdm_commands.operations(tenant_id, id)",
-      true
-    ],
-    [
-      "apple_profiles",
-      "profiles_tenant_id_registration_fkey",
-      "f",
-      "FOREIGN KEY (tenant_id, registration) REFERENCES mdm_access.registrations(tenant_id, id)",
-      true
-    ],
-    [
-      "apple_profiles",
-      "profiles_version_check",
-      "c",
-      "CHECK (((octet_length(version) >= 1) AND (octet_length(version) <= 128)))",
-      true
-    ],
-    [
       "attempt_frames",
       "attempt_frames_attempt_fkey",
       "f",
@@ -1951,22 +1837,6 @@
       "action_runs",
       "action_runs_tenant_id_remote_operation_device_key",
       "CREATE UNIQUE INDEX action_runs_tenant_id_remote_operation_device_key ON mdm_commands.action_runs USING btree (tenant_id, remote_operation, device)",
-      true,
-      true,
-      true
-    ],
-    [
-      "apple_profiles",
-      "profiles_pkey",
-      "CREATE UNIQUE INDEX profiles_pkey ON mdm_commands.apple_profiles USING btree (tenant_id, device, user_key, identifier)",
-      true,
-      true,
-      true
-    ],
-    [
-      "apple_profiles",
-      "profiles_tenant_id_identifier_key",
-      "CREATE UNIQUE INDEX profiles_tenant_id_identifier_key ON mdm_commands.apple_profiles USING btree (tenant_id, identifier)",
       true,
       true,
       true
