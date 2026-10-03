@@ -543,7 +543,7 @@ MODULES['resource.persistence'] = replace(MODULES['resource.persistence'], db_mo
     CasePolicy('artifact_reference_index_covers_reuse_without_another_upload_and_archive_rollback', 'reuse', 'objects'),
     CasePolicy('resource_cas_events_and_owner_admission', 'fresh', 'objects'),
     CasePolicy('resource_immutable_versions_restart_and_reference_rollback', 'reuse', 'objects'),
-    CasePolicy('software_storage_v4_rejects_v3_without_rewriting_immutable_bytes', 'reuse', 'objects'),
+    CasePolicy('software_storage_v4_rejects_v3_without_rewriting_immutable_bytes', 'fresh', 'objects'),
 ))
 MODULES['resource.recovery'] = replace(MODULES['resource.recovery'], db_mode='fresh', scope='objects')
 MODULES['software_release.persistence'] = replace(MODULES['software_release.persistence'], db_mode='reuse', scope='objects', policies=(

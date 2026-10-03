@@ -484,10 +484,9 @@ async fn software_storage_v4_rejects_v3_without_rewriting_immutable_bytes() {
     assert_eq!(document[0], 4);
     assert!(document[5][0][3][1].get("ownership").is_none());
     document[0] = serde_json::json!(3);
-    document[5][0][3][1]["ownership"] = serde_json::json!("managed_only");
     let old = serde_json::to_string(&document).unwrap();
     // Deliberately install an intact outer digest so rejection exercises the format boundary.
-    // Use this resource's own row; other fixture consumers retain their immutable records.
+    // The damaged material belongs to this case's disposable database.
     let replace = |bytes: &str| {
         sql(&format!(
             "UPDATE mdm_resource.immutable SET document=convert_to('{bytes}','UTF8'),digest=sha256(convert_to('{bytes}','UTF8')) WHERE tenant_id='{}' AND owner='{}' AND kind='version'",
