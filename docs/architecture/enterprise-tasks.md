@@ -1,6 +1,6 @@
 # Policy 与设备交付
 
-Resource 持有不可变内容。Policy 持有组织持续分配，Execution 与 Configuration 是闭合类型；Operation、Run、Attempt 持有实际设备执行。管理员会话、岗位或权限变化不撤销已经发布的 Policy；当前管理员可显式停用或修改分配。
+Resource 持有不可变内容。Policy 持有组织持续分配及六类闭合 Action；Operation、Run、Attempt 持有实际设备执行。管理员会话、岗位或权限变化不撤销已经发布的 Policy；当前管理员可显式停用或修改分配。
 
 执行型 Policy 在 Agent 签入时按当前 Scope、触发、频率、窗口和历史原子受理。发布不展开全部设备 Run，没有 Policy×设备×周期任务矩阵。每次签入分页查询，持久游标循环访问后续策略。Offer、内容下载、Start permit 和事件回执复用原通道，签名绑定 tenant/device/registration/generation/task/attempt、内容摘要与预算。
 
@@ -11,6 +11,14 @@ Resource 持有不可变内容。Policy 持有组织持续分配，Execution 与
 ## 持有与事务
 
 `policy` / `policy-postgres` 持有 Policy 合同和配置存储，`flow-service` 的 `planning` 编排 Group、Scope 与 Policy。独立 `execution-service` 持有冻结执行输入、命令、Run、Attempt、远程操作、签名和交付恢复。Policy 发布只持有 Execution 的 `Inputs` 准备能力；Flow 不持有 `ExecutionService`、`Queries` 或私有 `ExecutionRead`。资源目录等非执行的 Flow 余项另行收敛。
+
+Action 直接持有对应资源选择：脚本、原生采集和配置使用 Exact，软件和 Agent 安装使用 Software，Enrollment 无资源。`ResourceIdentity` 只借用资源及版本坐标。`ActionKind` 持有持久标签、目录解析及 AssignmentBehavior 分类；Agent check-in、原生采集恢复与原生期望核对的 SQL 参数从该分类派生。显式重跑只支持已有消费者的脚本和 Enrollment。
+
+Execution 的 `ResourcePreparation` 是四类资源预检输入，`PublicationInput` 是六类冻结输入，均为借用的内部请求，不持有 Policy 身份、Scope 或 rollout。Policy 和 Remote 在自己的事务里提交授权、收据、审计和 wake；Execution 在同一事务里复查 active version、绑定内容证明、冻结并封存原生授权。Remote 直接映射现有三类 Action。
+
+预览复用资源和内容校验，但不登记采集定义、不封存配置、不发布版本或执行任务。软件草稿只持有 Scope、rollout 和冻结内容，历史版本为 `None`；阶段分母仍读取当前真实 Scope，成功事实为零。持久软件分配使用真实版本并共享准入计算。
+
+合法定义的 JSON 及执行指纹不因类型收敛改变。Action 自身持有指纹材料；软件指纹包含完整变体选择而排除 rollout，Scope 变化也不产生新执行版本。固定的六类身份 fixture 验证此约束，不保留旧 ResourceBinding 或冻结接口。
 
 Execution 不依赖 Flow。App 注入 Flow 实现的 `SourceAuthority`，在执行方原事务连接上读取类型化 Scope 准入、稳定快照、预览和分配设备页及 Policy 候选；不创建第二事务，也不传递完整 Flow 对象或授权黑盒。原生交付、回执及 Windows 缓存重放都重验当前来源、世代和授权。分配页锁定当前不可变 Scope 结果，在执行方合并有界来源页与自有执行记录。软件阶段计数保留单 SQL 的声明级快照，避免拆查询造成分母与 Run 事实不一致。
 
@@ -31,3 +39,6 @@ Content 持有内容流及其锁、permit 与截止时间，Execution 持有任�
 - ring `2723abbca9e83347d82b056d5b239c6604f786df`，`src/signature.rs`。
 - Jiff `4100a7c71125b9523029566d1d18f8b227ecd18c`，`crates/jiff/src/tz/ambiguous.rs`。
 - osquery `1889d51f0d1680672016a801e9d65799eb5fc5dc`，`osquery/config/packs.cpp`、`specs/utility/osquery_info.table`。
+
+- serde `a866b336f14aa57a07f0d0be9f8762746e64ecb4`，`serde_derive/src/ser.rs`（newtype 直接委托内部序列化）。
+- kube `45f9c9b18b6ef72ad65769781c5b1e2e90bc3243`，`kube-runtime/src/controller/mod.rs`（闭合调度行为）。

@@ -452,6 +452,14 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
         script_effects()? == before,
         "preview or rejected script wrote execution facts"
     );
+    let mut without_signing = fixture.base.clone();
+    without_signing["task_signing"] = serde_json::Value::Null;
+    let mut unsigned = Fixture::from_config(without_signing).await?;
+    reject_script_at_all_entrances(&mut unsigned, definition.clone(), StatusCode::CONFLICT).await?;
+    ensure!(
+        script_effects()? == before,
+        "unsigned draft or publication wrote execution facts"
+    );
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
     let input = json!({"operationId":Uuid::new_v4(),"resource":definition["action"]["resource"],"targets":{"kind":"devices","devices":[case_device_id()]},"action":{"kind":"execute","parameters":{}},"deadline":now+600});
     let accepted = post(

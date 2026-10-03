@@ -627,7 +627,7 @@ consume(('crates/group/src/*', 'crates/group-postgres/src/*', 'crates/group-post
 consume(('crates/scope/src/*',),
         'planning.scope planning.group_scope planning.policy planning.frequency planning.remote planning.software')
 consume(('crates/policy/src/*', 'crates/policy-postgres/src/*', 'crates/policy-postgres/migrations/*'),
-        'policy.persistence policy.recovery planning.policy planning.agent_policy planning.frequency planning.software execution.agent.delivery execution.software.offer')
+        'policy.persistence policy.recovery planning.policy planning.agent_policy planning.frequency planning.software planning.onboarding windows.management apple.collection execution.agent.delivery execution.software.offer')
 consume(('crates/resource/src/*', 'crates/resource-postgres/src/*', 'crates/resource-postgres/migrations/*'),
         'resource.persistence resource.recovery software.catalog software.http content.http content.mirror content.gc planning.policy planning.resource_archive planning.software publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery')
 consume(('crates/software-release/src/*', 'crates/software-release-postgres/src/*', 'crates/software-release-postgres/migrations/*'),
@@ -636,8 +636,11 @@ consume(('crates/inventory/src/*', 'crates/inventory-postgres/src/*', 'crates/in
         'inventory.manual inventory.reader inventory.projection inventory.recovery inventory.runtime assets.http assets.queries assets.sources assets.group_input planning.assets planning.group_scope compliance.evaluation')
 consume(('crates/compliance/src/*', 'crates/compliance-postgres/src/*', 'crates/compliance-postgres/migrations/*'),
         'compliance.storage compliance.http compliance.evaluation compliance.recovery compliance.group_input')
-consume(('crates/resource/src/script.rs', 'crates/execution-service/src/input_preparation.rs'),
+consume(('crates/resource/src/script.rs',),
         'planning.agent_policy planning.remote planning.frequency execution.agent.delivery execution.agent.content execution.agent.recovery')
+consume(('crates/execution-service/src/input_preparation.rs',
+         'crates/execution-service/src/input_preparation/*'),
+        'planning.policy planning.agent_policy planning.remote planning.software planning.onboarding execution.commands.onboarding windows.management apple.collection')
 consume(('crates/execution-service/src/freeze_inputs.rs', 'crates/flow-service/src/resource_catalog/mod.rs'),
         'planning.agent_policy planning.remote planning.onboarding')
 TASK_CONSUMERS = 'planning.onboarding planning.policy planning.agent_policy planning.frequency planning.remote planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
@@ -1138,6 +1141,14 @@ def consume_dependencies(names, *, normal='', dev=''):
     for name in sorted(names):
         module = MODULES[name]
         MODULES[name] = replace(module, dependency_inputs=(*module.dependency_inputs, *entries))
+
+
+# App's integration-enabled Flow dev dependency exercises the same declared seams.
+consume_dependencies(
+    {name for name, module in MODULES.items()
+     if any(path.startswith('crates/flow-service/src/') for path in module.production_inputs)},
+    dev='rss-mdm-flow-service',
+)
 
 
 consume_dependencies(
