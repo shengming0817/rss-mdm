@@ -255,18 +255,8 @@ impl ExecutionService {
                     first
                         .native
                         .request(id, first.policy.version.to_string(), deadline, false)?;
-                self.queue_policy_configuration(
-                    tx,
-                    device,
-                    first.policy,
-                    &request,
-                    first
-                        .native
-                        .unit_key(&self.protection, self.tenant, device)?,
-                    false,
-                    audit,
-                )
-                .await?;
+                self.queue_policy_configuration(tx, device, first, &request, false, audit)
+                    .await?;
                 id
             };
             save_objects(
@@ -459,16 +449,8 @@ impl ExecutionService {
             }
             if operation.is_none() {
                 cancel_objects(self, tx, device, &old.objects).await?;
-                self.queue_policy_configuration(
-                    tx,
-                    device,
-                    policy,
-                    &request,
-                    old.native.unit_key(&self.protection, self.tenant, device)?,
-                    true,
-                    audit,
-                )
-                .await?;
+                self.queue_policy_configuration(tx, device, &old, &request, true, audit)
+                    .await?;
             }
             save_objects(
                 tx,
@@ -622,12 +604,15 @@ impl ExecutionService {
         &self,
         tx: &mut PgTransaction<'_>,
         device: &str,
-        policy: &Policy,
+        desired: &Desired<'_>,
         input: &Create,
-        unit: String,
         remove: bool,
         audit: &RequestAudit,
     ) -> Result<()> {
+        let policy = desired.policy;
+        let unit = desired
+            .native
+            .unit_key(&self.protection, self.tenant, device)?;
         let authority = crate::authority::ExecutionAuthority::Policy {
             unit,
             required: input.task.permissions()?,

@@ -22,8 +22,7 @@ impl Configuration {
             device,
             "native-configuration/unit/v1",
             &(&self.target, self.objects()?),
-        )
-        .map_err(Error::from)?;
+        )?;
         Ok(digest.iter().map(|b| format!("{b:02x}")).collect())
     }
 

@@ -225,7 +225,7 @@ impl<'a> Projection<'a> {
             });
         if current {
             *full |= report.full_report();
-            for name in evidence.subscriptions.intersection(&wanted) {
+            for name in evidence.subscriptions.intersection(wanted) {
                 if let Some(value) = report.items().get(name) {
                     if let Some(array) = arrays.get_mut(name) {
                         array.observe(value, report.full_report())?;

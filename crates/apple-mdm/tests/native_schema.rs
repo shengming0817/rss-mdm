@@ -1354,8 +1354,8 @@ fn downloaded_asset_authority_and_legacy_structure_are_native_constraints() {
         profile: None,
     };
     let bound = bind_assets(
-        &[input.clone()],
-        &[binding.clone()],
+        std::slice::from_ref(&input),
+        std::slice::from_ref(&binding),
         "https://mdm.test/native/assets/op",
         &target,
     )

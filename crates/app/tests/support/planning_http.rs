@@ -117,10 +117,10 @@ pub(crate) async fn native_configuration_bytes(
         json!({"action":"create","kind":"configuration"}),
     )
     .await?;
-    let digest = rss_mdm_resource::Digest::of(&bytes).bytes();
+    let digest = rss_mdm_resource::Digest::of(bytes).bytes();
     call(browser, router, &path, 1, json!({"action":"version","version":"v1","kind":"configuration","variants":[{"platform":platform,"architecture":architecture,"key":"default","declaration":{"kind":"configuration","artifact":{"reference":"native-input","length":bytes.len(),"sha256":digest}}}]})).await?;
     ensure!(
-        super::agent_execution::upload_for(browser, router, id, &bytes, platform, architecture)
+        super::agent_execution::upload_for(browser, router, id, bytes, platform, architecture)
             .await?
             == StatusCode::CREATED
     );
