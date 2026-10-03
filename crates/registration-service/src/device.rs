@@ -75,14 +75,17 @@ impl ChannelMount {
     pub fn tenant(&self) -> TenantId {
         self.tenant
     }
-    pub fn credential(&self, locator: [u8; 32]) -> VerifiedChannelCredential {
-        VerifiedChannelCredential {
+    pub fn credential(&self, locator: [u8; 32]) -> Result<VerifiedChannelCredential, Error> {
+        if self.source.channel() != Channel::Mdm {
+            return Err(Error::Forbidden);
+        }
+        Ok(VerifiedChannelCredential {
             tenant: self.tenant,
             channel: self.source.channel(),
             source: self.source,
             locator,
             purpose: self.purpose,
-        }
+        })
     }
 }
 /// Immutable request-scoped identity resolved from the authoritative registration mapping.
@@ -417,4 +420,50 @@ impl DeviceService {
         audit.finalize(None);
         Ok(receipt.enrollment_id)
     }
+}
+
+/// Resolve an Agent only from the certificate owner's sealed TLS verification result.
+pub(crate) async fn agent_in(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    peer: &rss_mdm_certificate::agent::VerifiedAgentPeer,
+) -> Result<DevicePrincipal, Error> {
+    use crate::database::db;
+    use rss_mdm_agent_wire::enroll::ErrorCode as C;
+    use sqlx::Row;
+    let fingerprint: String = peer
+        .metadata()
+        .fingerprint
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let row=sqlx::query("SELECT r.id,r.device,r.generation,r.epoch,r.state,k.id AS credential,k.state AS credential_state,i.identity FROM mdm_access.agent_issuances i JOIN mdm_access.credentials k ON(k.tenant_id,k.id)=(i.tenant_id,i.credential) JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(k.tenant_id,k.registration) WHERE i.tenant_id=$1::uuid AND i.fingerprint=$2 AND r.channel='agent'").bind(tenant.to_string()).bind(fingerprint).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+    let device: String = row.try_get("device").map_err(db)?;
+    store::lock_channel(c, &tenant.to_string(), &device, Channel::Agent).await?;
+    let p = DevicePrincipal {
+        tenant,
+        device,
+        registration: row.try_get("id").map_err(db)?,
+        generation: row.try_get("generation").map_err(db)?,
+        epoch: row.try_get("epoch").map_err(db)?,
+        credential: row.try_get("credential").map_err(db)?,
+        channel: Channel::Agent,
+        purpose: Purpose::Primary,
+        parent: None,
+        user_context: None,
+    };
+    if row.try_get::<String, _>("identity").map_err(db)? != peer.metadata().identity {
+        return Err(Error::Unauthorized);
+    }
+    match row
+        .try_get::<String, _>("credential_state")
+        .map_err(db)?
+        .as_str()
+    {
+        "revoked" => return Err(Error::Agent(C::CredentialRevoked)),
+        "superseded" => return Err(Error::Agent(C::CredentialRetired)),
+        _ => {}
+    }
+    management::revalidate(c, &p).await?;
+    Ok(p)
 }

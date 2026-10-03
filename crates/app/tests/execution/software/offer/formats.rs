@@ -196,7 +196,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
             let r = agent_call(
                 &f.router,
                 Method::POST,
-                "/api/agent/v6/tasks/claim",
+                "/api/agent/runtime/v1/tasks/claim",
                 Some(&f.credential),
                 Some(
                     json!({"wireVersion":6,"profiles":[],"executionContext":local,"operationId":Uuid::new_v4()}),
@@ -211,13 +211,13 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
         }
     })
     .await??;
-    let spec: rss_mdm_agent_wire::SoftwareTaskSpec =
+    let spec: rss_mdm_agent_wire::runtime::SoftwareTaskSpec =
         serde_json::from_value(task["payload"].clone())?;
     use ring::signature::KeyPair;
     let key_file = f.base["task_signing"]["private_key_file"].as_str().unwrap();
     let key = ring::signature::Ed25519KeyPair::from_pkcs8(&std::fs::read(key_file)?).unwrap();
-    let signed: rss_mdm_agent_wire::SignedTask = serde_json::from_value(task.clone())?;
-    let verification = rss_mdm_agent_wire::TaskVerification {
+    let signed: rss_mdm_agent_wire::runtime::SignedTask = serde_json::from_value(task.clone())?;
+    let verification = rss_mdm_agent_wire::runtime::TaskVerification {
         key_id: "t2",
         public_key: key.public_key().as_ref(),
         tenant_id: Uuid::parse_str(case_tenant())?,
@@ -232,7 +232,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
         generation: spec.generation,
         task_id: spec.task_id,
         attempt_id: spec.attempt_id,
-        permit: rss_mdm_agent_wire::TaskPermit::Offer,
+        permit: rss_mdm_agent_wire::runtime::TaskPermit::Offer,
         now: crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?,
     };
     signed.verify(&verification)?;
@@ -249,7 +249,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
     ensure!(
         root.target
             == if user {
-                rss_mdm_agent_wire::SoftwareExecutionTarget::User {
+                rss_mdm_agent_wire::runtime::SoftwareExecutionTarget::User {
                     identity: local["interactiveUser"]["identity"]
                         .as_str()
                         .unwrap()
@@ -259,19 +259,21 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
                     )?,
                 }
             } else {
-                rss_mdm_agent_wire::SoftwareExecutionTarget::Device
+                rss_mdm_agent_wire::runtime::SoftwareExecutionTarget::Device
             }
     );
     let content = Request::builder()
         .method(Method::GET)
         .uri(format!(
-            "/api/agent/v6/tasks/{}/content?attempt={}&artifact={}%2Fpackage",
+            "/api/agent/runtime/v1/tasks/{}/content?attempt={}&artifact={}%2Fpackage",
             task["payload"]["taskId"].as_str().unwrap(),
             task["payload"]["attemptId"].as_str().unwrap(),
             spec.steps.len() - 1
         ))
-        .header("host", "mdm.example.test")
-        .header("authorization", format!("Bearer {}", f.credential))
+        .header("host", "mdm.example.test:9445")
+        .extension(
+            crate::test_support::agent::evidence(&f.credential).expect("registered TLS peer"),
+        )
         .body(Body::empty())?;
     let content = f.router.clone().oneshot(content).await?;
     ensure!(content.status() == StatusCode::OK);
@@ -280,11 +282,11 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
         let r = event_with(&f.router, &f.credential, &task, json!({"kind":kind})).await?;
         ensure!(r.0 == StatusCode::OK, "{kind}: {r:?}");
         if kind == "start" {
-            let ack: rss_mdm_agent_wire::TaskEventAck = serde_json::from_value(r.1)?;
+            let ack: rss_mdm_agent_wire::runtime::TaskEventAck = serde_json::from_value(r.1)?;
             ack.into_permit()
                 .unwrap()
-                .verify(&rss_mdm_agent_wire::TaskVerification {
-                    permit: rss_mdm_agent_wire::TaskPermit::Start,
+                .verify(&rss_mdm_agent_wire::runtime::TaskVerification {
+                    permit: rss_mdm_agent_wire::runtime::TaskPermit::Start,
                     ..verification
                 })?;
         }

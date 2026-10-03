@@ -30,7 +30,7 @@ impl Fixture {
                     rss_mdm_inventory::ReportSource::MdmApple,
                     rss_mdm_registration_service::Purpose::Primary,
                 )
-                .credential(old_leaf.fingerprint()),
+                .credential(old_leaf.fingerprint())?,
             )
             .await?;
         ensure!(!rss_mdm_apple_channel::renewal::due(before, after, now));

@@ -294,6 +294,31 @@ impl Client {
                 "command role reads private owner relation {relation}"
             );
         }
+        // Native delivery may append native grants, never self/recovery authority
+        // or lifecycle mutations. Verify the real runtime session, including RLS.
+        let mut runtime = sqlx::PgConnection::connect_with(
+            &crate::device::test_support::options("mdm_command_runtime")?
+                .password("runtime-fixture"),
+        )
+        .await?;
+        let mut denied = runtime.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(case_tenant())
+            .execute(&mut *denied)
+            .await?;
+        let error = sqlx::query("INSERT INTO mdm_access.agent_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,state,expires_at) VALUES($1::uuid,$2,$3,'download','fixture','mdm','runtime-cannot-authorize-self','windows',repeat('00',32),repeat('00',32),'available',clock_timestamp()+interval '1 hour')")
+            .bind(case_tenant()).bind(Uuid::new_v4()).bind(Uuid::new_v4()).execute(&mut *denied).await.unwrap_err();
+        ensure!(
+            error.as_database_error().and_then(|e| e.code()).as_deref() == Some("42501"),
+            "runtime manufactured non-native authority: {error}"
+        );
+        denied.rollback().await?;
+        let lifecycle_update:bool=sqlx::query_scalar("SELECT has_column_privilege(current_user,'mdm_access.agent_grants','state','UPDATE') OR has_table_privilege(current_user,'mdm_access.agent_issuances','INSERT,UPDATE')")
+            .fetch_one(&mut runtime).await?;
+        ensure!(
+            !lifecycle_update,
+            "execution role can mutate Agent lifecycle"
+        );
         // Formal migration 0021 grants these reads for software rollout admission.
         for relation in ["mdm_planning.scopes", "mdm_planning.scope_results"] {
             let permitted: bool =

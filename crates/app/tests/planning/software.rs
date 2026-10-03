@@ -59,7 +59,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
     );
     let waiting = agent(
         &router,
-        "/api/agent/v6/tasks/claim",
+        "/api/agent/runtime/v1/tasks/claim",
         Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
@@ -97,7 +97,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
     .await?;
     let gated = agent(
         &router,
-        "/api/agent/v6/tasks/claim",
+        "/api/agent/runtime/v1/tasks/claim",
         Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;

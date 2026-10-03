@@ -2,7 +2,7 @@
 use super::*;
 use crate::Target;
 use crate::actions::storage::{TaskIssue, agent_profile_in};
-use rss_mdm_agent_wire as wire;
+use rss_mdm_agent_wire::runtime as wire;
 
 use crate::enrollment::FrozenEnrollment;
 pub struct EnrollmentPolicy {
@@ -89,7 +89,7 @@ impl EnrollmentPolicy {
             .ok_or(Error::Unsupported)?;
         checked_input(
             wire::EnrollmentTaskSpec {
-                wire_version: wire::WIRE_VERSION,
+                wire_version: wire::PAYLOAD_VERSION,
                 tenant_id: checked_input(Uuid::parse_str(&tx.tenant_id().to_string()))?,
                 device_id: target.device.clone(),
                 platform: match platform {

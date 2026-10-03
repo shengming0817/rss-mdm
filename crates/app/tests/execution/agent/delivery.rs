@@ -7,26 +7,12 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
     let fixture = Fixture::new().await?;
     let router = fixture.router;
     let mut author = fixture.author;
-    author.operation = Some(Uuid::new_v4());
-    let password = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-    let enrollment = post(
-        &mut author,
-        &router,
-        "/api/v3/enrollments",
-        json!({"deviceId":case_device_id(),"password":password,"source":"agent.builtin"}),
-    )
-    .await?;
-    author.operation = None;
-    let registration=agent_call(&router,Method::POST,"/api/agent/v6/registrations",None,Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_inventory_credential(),"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v6"]}))).await?;
-    ensure!(
-        registration.0 == StatusCode::CREATED
-            && registration.1["capabilities"] == json!(["inventory.collect.v6"]),
-        "registration: {registration:?}"
-    );
+    let (_,registration)=crate::test_support::agent::enroll_profile(&router,&mut author,case_inventory_credential(),json!({"capabilities":["inventory.collect.v6"],"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)})).await?;
+    ensure!(registration["capabilities"] == json!(["inventory.collect.v6"]));
     let taskless = agent_call(
         &router,
         Method::POST,
-        "/api/agent/v6/tasks/claim",
+        "/api/agent/runtime/v1/tasks/claim",
         Some(case_inventory_credential()),
         Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
@@ -35,21 +21,8 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
         taskless.0 == StatusCode::FORBIDDEN,
         "inventory-only registration entered task API: {taskless:?}"
     );
-    author.operation = Some(Uuid::new_v4());
-    let enrollment = post(
-        &mut author,
-        &router,
-        "/api/v3/enrollments",
-        json!({"deviceId":case_device_id(),"password":password,"source":"agent.builtin"}),
-    )
-    .await?;
-    author.operation = None;
-    let registration=agent_call(&router,Method::POST,"/api/agent/v6/registrations",None,Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_credential(),"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v6","task.execute.v6"]}))).await?;
-    ensure!(
-        registration.0 == StatusCode::CREATED
-            && registration.1["capabilities"] == json!(["inventory.collect.v6", "task.execute.v6"]),
-        "task registration: {registration:?}"
-    );
+    let (_,registration)=crate::test_support::agent::enroll_profile(&router,&mut author,case_credential(),json!({"capabilities":["inventory.collect.v6","task.execute.v6"],"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)})).await?;
+    ensure!(registration["capabilities"] == json!(["inventory.collect.v6", "task.execute.v6"]));
     // Legacy URL and major cannot enter task intake.
     let old = router
         .clone()
@@ -66,7 +39,7 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
         agent_call(
             &router,
             Method::POST,
-            "/api/agent/v6/tasks/claim",
+            "/api/agent/runtime/v1/tasks/claim",
             Some(case_credential()),
             Some(json!({"wireVersion":2,"operationId":Uuid::new_v4()}))
         )
@@ -122,19 +95,19 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
         "claim retry receipt changed"
     );
     let task = claim_response.1["task"].clone();
-    let signed: rss_mdm_agent_wire::SignedTask = serde_json::from_value(task.clone())?;
-    let context = rss_mdm_agent_wire::TaskVerification {
+    let signed: rss_mdm_agent_wire::runtime::SignedTask = serde_json::from_value(task.clone())?;
+    let context = rss_mdm_agent_wire::runtime::TaskVerification {
         key_id: "t2",
         public_key: key.public_key().as_ref(),
         tenant_id: Uuid::parse_str(case_tenant())?,
         device_id: case_device_id(),
-        platform: rss_mdm_agent_wire::TaskPlatform::Macos,
-        architecture: rss_mdm_agent_wire::TaskArchitecture::Aarch64,
+        platform: rss_mdm_agent_wire::runtime::TaskPlatform::Macos,
+        architecture: rss_mdm_agent_wire::runtime::TaskArchitecture::Aarch64,
         registration_id: Uuid::parse_str(registration["registrationId"].as_str().unwrap())?,
         generation: registration["generation"].as_u64().unwrap(),
         task_id: signed.payload.task_id(),
         attempt_id: signed.payload.attempt_id(),
-        permit: rss_mdm_agent_wire::TaskPermit::Offer,
+        permit: rss_mdm_agent_wire::runtime::TaskPermit::Offer,
         now,
     };
     signed.verify(&context)?;
@@ -149,11 +122,11 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
     );
     task_event(&router, &task, json!({"kind":"received"})).await?;
     let permit = task_event(&router, &task, json!({"kind":"start"})).await?;
-    let ack: rss_mdm_agent_wire::TaskEventAck = serde_json::from_value(permit)?;
+    let ack: rss_mdm_agent_wire::runtime::TaskEventAck = serde_json::from_value(permit)?;
     ack.into_permit()
         .unwrap()
-        .verify(&rss_mdm_agent_wire::TaskVerification {
-            permit: rss_mdm_agent_wire::TaskPermit::Start,
+        .verify(&rss_mdm_agent_wire::runtime::TaskVerification {
+            permit: rss_mdm_agent_wire::runtime::TaskPermit::Start,
             ..context
         })?;
     let result_operation = Uuid::new_v4();
@@ -247,7 +220,7 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.agent.delivery"]
 async fn chunked_results_require_complete_output_and_preserve_attempt_identity() -> Result<()> {
-    use rss_mdm_agent_wire as wire;
+    use rss_mdm_agent_wire::runtime as wire;
     let mut fixture = Fixture::new().await?;
     fixture.register().await?;
     let (resource, _, _) = fixture.resource_with_output_limit(524288).await?;
@@ -312,7 +285,7 @@ async fn chunked_results_require_complete_output_and_preserve_attempt_identity()
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.agent.delivery"]
 async fn collection_structure_budget_precedes_partial_field_acceptance() -> Result<()> {
-    use rss_mdm_agent_wire as wire;
+    use rss_mdm_agent_wire::runtime as wire;
     let mut fixture = Fixture::new().await?;
     fixture.register().await?;
     fixture

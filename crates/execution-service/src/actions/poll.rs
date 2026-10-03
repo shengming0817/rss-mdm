@@ -1,6 +1,6 @@
 //! Offers and cancellation pages have independent progress coordinates.
 use crate::{Result, stored};
-use rss_mdm_agent_wire as wire;
+use rss_mdm_agent_wire::runtime as wire;
 use rss_transactional_messaging_postgres::PgTransaction;
 use sqlx::Row;
 use uuid::Uuid;

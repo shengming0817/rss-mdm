@@ -116,7 +116,7 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
  'execution.commands.recovery': ('crates/execution-service/src/recovery.rs',
                                  'crates/execution-service/src/lifecycle.rs'),
  'execution.commands.windows': ('crates/execution-service/src/native.rs',),
- 'execution.commands.onboarding': ('crates/execution-service/src/agent_preparation.rs','crates/windows-mdm/src/software.rs','crates/execution-service/src/native_installation.rs','crates/execution-service/src/managed_registration.rs','crates/windows-channel/src/agent_collection.rs','crates/agent-channel/src/managed.rs','crates/registration-service/src/enrollment/managed.rs'),
+ 'execution.commands.onboarding': ('crates/execution-service/src/agent_preparation.rs','crates/windows-mdm/src/software.rs','crates/execution-service/src/native_installation.rs','crates/execution-service/src/managed_registration.rs','crates/windows-channel/src/agent_collection.rs','crates/registration-service/src/enrollment/managed.rs'),
  'execution.commands.configuration': ('crates/execution-service/src/native_configuration.rs',
                                  'crates/execution-service/src/native.rs'),
  'execution.software.offer': ('crates/execution-service/src/actions/software.rs',
@@ -187,11 +187,14 @@ add('agent.pki', selectors=('agent_pki_tests::',), fixtures=('identity','apple',
              'crates/app/src/agent_pki.rs','deployment/agent-leaf.tpl',
              'crates/registration-service/src/operations.rs'),
     tests=('crates/app/tests/agent_pki/mod.rs',),
-    support=('hack/agent_pki_fixtures.py','crates/app/tests/device/support.rs',
-             'crates/app/tests/enrollment/support.rs','crates/app/tests/support/audit.rs'))
+    support=('hack/agent_pki_fixtures.py','crates/app/tests/support/agent_tls.rs','crates/app/tests/device/support.rs',
+             'crates/app/tests/enrollment/support.rs','crates/app/tests/support/audit.rs',
+             'crates/app/tests/windows/support.rs'))
 MODULES['agent.pki'] = replace(MODULES['agent.pki'], policies=(
     CasePolicy('agent_pki_tests::restored_ca_signs_only_live_authorized_agent_csrs_and_tls_preserves_purpose',
                'reuse', 'pair'),
+    CasePolicy('agent_pki_tests::agent_ingress_holds_one_global_permit_per_request', 'reuse', 'tenant'),
+    CasePolicy('agent_pki_tests::production_agent_listener_bootstraps_activates_and_rechecks_revocation', 'reuse', 'tenant'),
 ))
 
 add('installation.migration', selectors=('migration::tests::',), profile='empty',
@@ -649,22 +652,22 @@ consume(('crates/execution-service/src/input_preparation.rs',
 consume(('crates/execution-service/src/freeze_inputs.rs', 'crates/flow-service/src/resource_catalog/mod.rs'),
         'planning.agent_policy planning.remote planning.onboarding')
 TASK_CONSUMERS = 'planning.onboarding planning.policy planning.agent_policy planning.frequency planning.remote planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
-consume(('crates/agent-wire/src/tasks.rs', 'crates/agent-wire/schema/task-*.json',
-         'crates/agent-wire/schema/signed-task-v6.schema.json', 'crates/execution-service/src/task_signing.rs'), TASK_CONSUMERS)
+consume(('crates/agent-wire/src/tasks.rs', 'crates/agent-wire/schema/runtime/task-*.json',
+         'crates/agent-wire/schema/runtime/signed-task-v6.schema.json', 'crates/execution-service/src/task_signing.rs'), TASK_CONSUMERS)
 # lib.rs owns shared identities, capability, errors, registration and report shapes.
-consume(('crates/agent-wire/src/lib.rs','crates/agent-wire/schema/error-body-v6.schema.json',
-         'crates/agent-wire/schema/agent-v6.schema-manifest.json'), TASK_CONSUMERS + ' agent.registration agent.reports execution.commands.onboarding apple.onboarding')
-consume(('crates/agent-wire/schema/registration-*.json',), 'agent.registration')
-consume(('crates/agent-wire/schema/report-*.json',), 'agent.reports planning.onboarding')
+consume(('crates/agent-wire/src/lib.rs','crates/agent-wire/src/runtime.rs','crates/agent-wire/schema/runtime/error-body-v6.schema.json',
+         'crates/agent-wire/schema/runtime/agent-v6.schema-manifest.json'), TASK_CONSUMERS + ' agent.registration agent.reports execution.commands.onboarding apple.onboarding')
+consume(('crates/agent-wire/schema/runtime/binding-profile-*.json',), 'agent.registration')
+consume(('crates/agent-wire/schema/runtime/report-*.json',), 'agent.reports planning.onboarding')
 consume(('crates/agent-wire/src/onboarding.rs',),
         'agent.reports planning.onboarding execution.commands.onboarding apple.onboarding execution.agent.delivery execution.agent.poll execution.agent.recovery')
-consume(('crates/agent-wire/schema/managed-registration-request-v6.schema.json',),
+consume(('crates/agent-wire/schema/enroll/native-grant-request-v1.schema.json',),
         'execution.commands.onboarding apple.onboarding')
 # Native onboarding shares one durable installation and managed-registration owner.
 consume(('crates/execution-service/src/native_installation.rs',
          'crates/execution-service/src/managed_registration.rs',
          'crates/execution-service/src/agent_preparation.rs',
-         'crates/agent-channel/src/managed.rs',
+
          'crates/registration-service/src/enrollment/managed.rs'),
         'execution.commands.onboarding apple.onboarding')
 consume(('crates/execution-service/src/sources/onboarding.rs',
@@ -798,7 +801,34 @@ for name in ('apple.apns', 'apple.push', 'apple.host'):
 for name, path in (('apple.push','push_cycle'), ('apple.host','production')):
     MODULES[name] = replace(MODULES[name], test_inputs=(f'crates/app/tests/apple/{path}.rs',))
 
+# Runtime fixture consumers sign durable candidates and use completed TLS peers.
+AGENT_FIXTURE_CONSUMERS = tuple(('agent.registration agent.reports execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.recovery execution.agent.history execution.software.offer execution.software.content execution.software.recovery planning.onboarding execution.commands.onboarding apple.onboarding planning.agent_policy planning.frequency planning.remote planning.http assets.http planning.software').split())
+AGENT_FIXTURES = ('identity','apple','scep','windows','agent_pki')
+AGENT_FIXTURE_INPUTS = ('crates/app/tests/support/agent.rs','crates/app/tests/support/agent_tls.rs','hack/agent_pki_fixtures.py')
+for name in AGENT_FIXTURE_CONSUMERS:
+    module=MODULES[name]
+    policies=tuple(replace(policy, fixtures=tuple(dict.fromkeys((*policy.fixtures,*AGENT_FIXTURES)))) if policy.fixtures is not None else policy for policy in module.policies)
+    MODULES[name]=replace(module,fixtures=tuple(dict.fromkeys((*module.fixtures,*AGENT_FIXTURES))),policies=policies,support_inputs=tuple(dict.fromkeys((*module.support_inputs,*AGENT_FIXTURE_INPUTS))))
+
+# Only these mixed cases consume Agent enrollment; other native cases keep their fixtures.
+AGENT_FIXTURE_CASES = {
+    'execution.commands.windows': 'execution::t2::commands::windows::console_mixed_kind_cursor_and_device_visibility',
+    'software.http': 'software_catalog::t2::http::publication::publication_http_authority_receipts_and_public_native_binding',
+}
+for name, selector in AGENT_FIXTURE_CASES.items():
+    module = MODULES[name]
+    policies = list(module.policies)
+    existing = next((i for i, policy in enumerate(policies) if policy.selector == selector), None)
+    policy = policies[existing] if existing is not None else CasePolicy(selector, module.db_mode, module.scope)
+    policy = replace(policy, fixtures=tuple(dict.fromkeys((*(policy.fixtures or module.fixtures), *AGENT_FIXTURES))))
+    if existing is None:
+        policies.append(policy)
+    else:
+        policies[existing] = policy
+    MODULES[name] = replace(module, policies=tuple(policies), support_inputs=tuple(dict.fromkeys((*module.support_inputs, *AGENT_FIXTURE_INPUTS))))
+
 for name, module in tuple(MODULES.items()):
+    fixtures = set(module.fixtures).union(*(policy.fixtures or () for policy in module.policies))
     support = tuple(path for path in module.support_inputs if path != 'tests/support/software/*')
     if name in ('software.catalog','software.http','authorization.rules','content.http','content.mirror','content.gc','planning.resource_archive') or name.startswith('publication.'):
         support += ('tests/support/software/mod.rs',)
@@ -806,15 +836,15 @@ for name, module in tuple(MODULES.items()):
         support += ('tests/support/software/pg.rs',)
     if name == 'publication.recovery':
         support += ('tests/support/software/ack.rs',)
-    if 'windows' in module.fixtures:
+    if 'windows' in fixtures:
         support += ('hack/windows_fixtures.py',)
-    if 'apple' in module.fixtures:
+    if 'apple' in fixtures:
         support += ('hack/apple_fixtures.py',)
-    if set(module.fixtures) & {'scep','oracle'}:
+    if fixtures & {'scep','oracle'}:
         support += ('hack/apple_tools.py','fixtures/apple-tools.lock.json')
-    if 'scep' in module.fixtures:
+    if 'scep' in fixtures:
         support += ('hack/apple_ca.py',)
-    if 'idp' in module.fixtures:
+    if 'idp' in fixtures:
         support += ('hack/enterprise_idp.py',)
     if name in ('apple.cms','apple.apns','native.tls'):
         support = tuple(path for path in support if not path.startswith('crates/app/tests/support/'))
@@ -1414,3 +1444,26 @@ REPRESENTATIVE_INPUTS = {
     'hack/t2_context.py': PG_REPRESENTATIVES,
     'hack/t2_hosts.py': ('host.lifecycle',),
 }
+
+consume(('crates/registration-service/src/agent*','crates/agent-wire/schema/enroll/*','crates/agent-channel/src/enroll.rs'), 'agent.pki agent.registration agent.reports execution.agent.delivery')
+
+consume(('crates/agent-channel/src/database.rs',), 'agent.registration agent.reports execution.agent.delivery execution.agent.poll execution.agent.content')
+consume(('crates/agent-wire/src/enroll.rs','crates/management-http/src/agent_enrollment.rs'), 'agent.registration agent.pki execution.commands.onboarding apple.onboarding')
+consume(('crates/agent-wire/src/chunks.rs','crates/agent-wire/src/tasks/context.rs','crates/agent-wire/src/tasks/export.rs'), TASK_CONSUMERS)
+consume(('crates/registration-service/src/lib.rs','crates/registration-service/src/error.rs'), 'agent.registration agent.pki device.binding device.revocation enrollment.http')
+consume(('crates/windows-channel/src/error.rs',), 'windows.enrollment windows.management execution.commands.onboarding api.diagnostics')
+consume(('crates/apple-channel/src/error.rs',), 'apple.profile apple.onboarding apple.collection api.diagnostics')
+consume(('crates/inventory-service/src/error.rs',), 'agent.reports planning.onboarding assets.http api.diagnostics')
+
+consume_dependencies('api.diagnostics apple.onboarding apple.push apple.users', dev='rss-mdm-apple-channel')
+consume_dependencies('api.diagnostics windows.declared execution.commands.onboarding', dev='rss-mdm-windows-channel')
+consume_dependencies('agent.registration agent.reports agent.pki device.binding device.revocation device.recovery', dev='rss-mdm-registration-service')
+consume_dependencies((*AGENT_FIXTURE_CONSUMERS, *AGENT_FIXTURE_CASES), normal='x509-cert tokio-rustls')
+
+consume_dependencies(TASK_CONSUMERS + ' execution.commands.admission execution.commands.configuration execution.commands.dispatch execution.commands.onboarding execution.commands.recovery execution.commands.windows', dev='rss-mdm-execution-service')
+
+# App test composition enables provider-owned integration/test-support features.
+for provider in ('flow-service','inventory-service','authorization-service','audit-integration'):
+    prefix=f'crates/{provider}/'
+    consumers={name for name,module in MODULES.items() if any(path.startswith(prefix) for path in module.production_inputs)}
+    consume_dependencies(consumers, dev=f'rss-mdm-{provider}')

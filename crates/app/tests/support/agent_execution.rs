@@ -17,7 +17,10 @@ pub(crate) fn case_empty_scope() -> Uuid {
     Uuid::from_u128(crate::test_support::case::id("EMPTY_SCOPE"))
 }
 pub(crate) fn case_device_id() -> &'static str {
-    crate::test_support::case::name("enterprise-device")
+    crate::test_support::agent::device(
+        case_credential(),
+        crate::test_support::case::name("enterprise-device"),
+    )
 }
 
 pub(crate) async fn post(
@@ -86,13 +89,13 @@ pub(crate) async fn task_event_request(
         };
         kind["diagnostics"] = json!({"stdout":"captured stdout","stderr":"captured stderr","durationMs":1,"executedAt":1,"failure":failure});
     }
-    agent_call(router,Method::POST,&format!("/api/agent/v6/tasks/{}/events",task["payload"]["taskId"].as_str().unwrap()),Some(case_credential()),Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":operation,"attemptId":task["payload"]["attemptId"],"event":kind}))).await
+    agent_call(router,Method::POST,&format!("/api/agent/runtime/v1/tasks/{}/events",task["payload"]["taskId"].as_str().unwrap()),Some(case_credential()),Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":operation,"attemptId":task["payload"]["attemptId"],"event":kind}))).await
 }
 pub(crate) async fn claim_request(router: &Router, operation: Uuid) -> Result<(StatusCode, Value)> {
     agent_call(
         router,
         Method::POST,
-        "/api/agent/v6/tasks/claim",
+        "/api/agent/runtime/v1/tasks/claim",
         Some(case_credential()),
         Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":operation})),
     )
@@ -103,7 +106,7 @@ pub(crate) async fn claim(router: &Router) -> Result<Value> {
         loop {
             let response = claim_request(router, Uuid::new_v4()).await?;
             ensure!(response.0 == StatusCode::OK, "claim: {response:?}");
-            let _: rss_mdm_agent_wire::TaskClaimResponse =
+            let _: rss_mdm_agent_wire::runtime::TaskClaimResponse =
                 serde_json::from_value(response.1.clone())?;
             if !response.1["task"].is_null() {
                 return Ok::<_, anyhow::Error>(response.1["task"].clone());
@@ -220,25 +223,23 @@ impl Fixture {
             .await
     }
     pub(crate) async fn register_profile(&mut self, capabilities: Value) -> Result<Value> {
-        let router = &self.router;
-        let author = &mut self.author;
-        author.operation = Some(Uuid::new_v4());
-        let password = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-        let enrollment = post(
-            author,
-            router,
-            "/api/v3/enrollments",
-            json!({"deviceId":case_device_id(),"password":password,"source":"agent.builtin"}),
+        let old_device = case_device_id();
+        let (_,registration)=crate::test_support::agent::enroll_profile(&self.router,&mut self.author,case_credential(),json!({"capabilities":capabilities,"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)})).await?;
+        for grant in &mut self.grants {
+            if let crate::authorization::Scope::Device { id } = &mut grant.scope
+                && id == old_device
+            {
+                *id = registration["deviceId"].as_str().unwrap().into()
+            }
+        }
+        crate::test_support::identity::set_grants(
+            case_tenant(),
+            &self.author_id,
+            self.grants.clone(),
         )
         .await?;
-        author.operation = None;
-        let registration=agent_call(router,Method::POST,"/api/agent/v6/registrations",None,Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":Uuid::new_v4(),"enrollmentId":enrollment["enrollmentId"],"password":password,"credential":case_credential(),"platform":"macos","architecture":"aarch64","capabilities":capabilities}))).await?;
-        ensure!(
-            registration.0 == StatusCode::CREATED && registration.1["capabilities"] == capabilities,
-            "task registration: {registration:?}"
-        );
-        self.builtin_collections = registration.1["collections"].as_array().unwrap().clone();
-        Ok(registration.1)
+        self.builtin_collections = registration["collections"].as_array().unwrap().clone();
+        Ok(registration)
     }
     pub(crate) async fn scope(&mut self, scope: Uuid, targets: Value) -> Result<()> {
         let base = &self.base;

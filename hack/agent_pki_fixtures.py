@@ -74,6 +74,7 @@ def install(root, cli, admin, origin):
         '--x509-template', template, '--disable-renewal', '--ssh=false',
         '--x509-default-dur', '8760h', '--x509-max-dur', '87600h', *admin)
     value = dict(mode='step_ca', ca_url=origin, kid='agent-t2-key',
+                 endpoint=dict(listen='127.0.0.1:0',origin='https://mdm.example.test:9445',certificate_file=str(root/'server.crt'),private_key_file=str(root/'apple-tls.pk8')),
                  tls_root_file=str(root/'step/certs/root_ca.crt'),
                  issuer_certificate_file=str(root/'step/certs/intermediate_ca.crt'),
                  provisioner_key_file=str(root/'agent-provisioner.pk8'), lifetime=dict(mode='standard'))

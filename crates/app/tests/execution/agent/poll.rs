@@ -35,7 +35,7 @@ async fn cancellation_backlog_does_not_starve_live_offer() -> Result<()> {
         let response = agent_call(
             router,
             Method::POST,
-            "/api/agent/v6/tasks/claim",
+            "/api/agent/runtime/v1/tasks/claim",
             Some(case_credential()),
             Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
         )

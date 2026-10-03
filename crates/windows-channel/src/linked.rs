@@ -173,7 +173,7 @@ async fn issue_message(
                 rss_mdm_inventory::ReportSource::MdmWindows,
                 Purpose::Primary,
             )
-            .credential(proof.fingerprint()),
+            .credential(proof.fingerprint())?,
         )
         .await?;
     let operation = message
@@ -380,7 +380,7 @@ async fn complete(
         rss_mdm_inventory::ReportSource::MdmWindows,
         Purpose::WindowsDeclared,
     )
-    .credential(leaf.fingerprint());
+    .credential(leaf.fingerprint())?;
     let budget = app.devices.retirement_budget();
     let control = budget.control();
     let result = app.audit_store.write(parent.tenant(),&control,(app,parent,id,intent,certificate,audit,&credential,digest,Vec::new()),|(app,parent,id,intent,certificate,audit,credential,digest,facts),tx|Box::pin(async move {

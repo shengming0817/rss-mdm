@@ -362,7 +362,7 @@ async fn dependency_admission_uses_exact_current_approval() -> Result<()> {
         uninstall: false,
     };
     let targets = [(target, "default".to_owned())];
-    let context = rss_mdm_agent_wire::SoftwareExecutionContext {
+    let context = rss_mdm_agent_wire::runtime::SoftwareExecutionContext {
         revision: 1,
         msix_sideload: false,
         msix_unsigned: false,

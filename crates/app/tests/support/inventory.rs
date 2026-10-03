@@ -31,8 +31,27 @@ pub(crate) fn seed_source(
     let fingerprint = definition.fingerprint()?;
     let value = serde_json::to_string(&rss_mdm_inventory::Scalar::String(value.into()))?
         .replace('\'', "''");
+    let origin = if channel == "agent" {
+        format!(
+            "INSERT INTO mdm_access.agent_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,state,expires_at) VALUES('{tenant}','{grant}','{request}','download','fixture','{instance}','{device}','macos',repeat('0',64),repeat('0',64),'consumed',clock_timestamp()+interval '24 hours');",
+            tenant = case_tenant(),
+            instance = INSTANCE
+        )
+    } else {
+        format!(
+            "INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{tenant}','{grant}','fixture','{instance}','{device}','enrollment','consumed',clock_timestamp()+interval '60 seconds'); INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source,windows_profile) VALUES('{tenant}','{request}','{grant}','{source}',CASE WHEN '{source}'='mdm.windows' THEN 'Device' END);",
+            tenant = case_tenant(),
+            instance = INSTANCE
+        )
+    };
+    let origin_column = if channel == "agent" {
+        "agent_grant_id"
+    } else {
+        "request_id"
+    };
+    let origin_id = if channel == "agent" { grant } else { request };
     pg(&format!(
-        "INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{TENANT}','{device}') ON CONFLICT DO NOTHING; INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','{grant}','fixture','{INSTANCE}','{device}','enrollment','consumed',clock_timestamp()+interval '60 seconds'); INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source,windows_profile) VALUES('{TENANT}','{request}','{grant}','{source}',CASE WHEN '{source}'='mdm.windows' THEN 'Device' END); INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state,purpose,epoch) VALUES('{TENANT}','{registration}','{device}','{channel}',1,'{request}','active','primary',gen_random_uuid()); INSERT INTO mdm_access.credentials VALUES('{TENANT}','{credential}','{registration}','{channel}',md5('{credential}')||md5('{registration}'),'active'); INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES('{TENANT}','{registration}','{source}','{epoch}',true); INSERT INTO mdm.collection_definitions(tenant_id,dataset,version,source,fingerprint,coverage,definition) VALUES('{TENANT}','inventory','fixture','{source}','{fingerprint}','{coverage}','{document}') ON CONFLICT DO NOTHING; INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES('{TENANT}','mdm.observation.v1','inventory-v4','{encoded}','{coverage}','device.model','{value}','fixture',1,2,'known','{value}','fixture',1,2,'{registration}','{source}','{epoch}',0);",
+        "INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{TENANT}','{device}') ON CONFLICT DO NOTHING; {origin}; INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,{origin_column},state,purpose,epoch) VALUES('{TENANT}','{registration}','{device}','{channel}',1,'{origin_id}','active','primary',gen_random_uuid()); INSERT INTO mdm_access.credentials VALUES('{TENANT}','{credential}','{registration}','{channel}',md5('{credential}')||md5('{registration}'),'active'); INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES('{TENANT}','{registration}','{source}','{epoch}',true); INSERT INTO mdm.collection_definitions(tenant_id,dataset,version,source,fingerprint,coverage,definition) VALUES('{TENANT}','inventory','fixture','{source}','{fingerprint}','{coverage}','{document}') ON CONFLICT DO NOTHING; INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES('{TENANT}','mdm.observation.v1','inventory-v4','{encoded}','{coverage}','device.model','{value}','fixture',1,2,'known','{value}','fixture',1,2,'{registration}','{source}','{epoch}',0);",
         TENANT = case_tenant()
     ))?;
     Ok((registration, epoch))

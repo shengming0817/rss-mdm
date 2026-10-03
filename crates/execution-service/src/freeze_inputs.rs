@@ -1,6 +1,6 @@
 //! Publication prepares Execution-owned immutable inputs in the existing transaction.
 use crate::action_contract::*;
-use rss_mdm_agent_wire as wire;
+use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_policy::schedule::Schedule;
 use rss_mdm_resource as r;
 use rss_transactional_messaging_postgres::PgTransaction;

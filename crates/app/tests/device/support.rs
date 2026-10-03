@@ -22,6 +22,7 @@ pub(crate) fn proof(tenant: &str, channel: Channel, key: u8) -> VerifiedChannelC
         rss_mdm_registration_service::Purpose::Primary,
     )
     .credential(crate::test_support::secret(&format!("channel-proof-{key}")))
+    .expect("native credential proof")
 }
 pub(crate) async fn admin(tenant: &str, token: &str) -> anyhow::Result<AuthorizedPrincipal> {
     let identity = crate::test_support::identity::identity(tenant).await?;

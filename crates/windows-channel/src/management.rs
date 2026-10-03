@@ -74,7 +74,7 @@ pub(crate) async fn manage(
         rss_mdm_inventory::ReportSource::MdmWindows,
         purpose,
     );
-    let credential = mount.credential(checked.fingerprint());
+    let credential = mount.credential(checked.fingerprint())?;
     let principal = match app
         .devices
         .management_principal(&credential)
@@ -620,15 +620,18 @@ pub async fn register_agent(
     )?;
     let principal = app
         .devices
-        .management_principal(&app.mount.credential(checked.fingerprint()))
+        .management_principal(&app.mount.credential(checked.fingerprint())?)
         .await?;
-    let input = match rss_mdm_agent_wire::ManagedRegistrationRequest::decode(&bytes) {
+    let input = match rss_mdm_agent_wire::enroll::NativeGrantRequest::decode(&bytes) {
         Ok(input) => input,
         Err(code) => {
             let mut response = Error::Malformed.into_response();
             response
                 .extensions_mut()
-                .insert(rss_mdm_agent_wire::ErrorBody { code });
+                .insert(rss_mdm_agent_wire::enroll::ErrorBody {
+                    code,
+                    issuance_id: None,
+                });
             return Ok(response);
         }
     };
@@ -638,6 +641,7 @@ pub async fn register_agent(
             &principal,
             rss_mdm_inventory::ReportSource::MdmWindows,
             &input,
+            app.agent_policy.as_ref().ok_or(Error::Unsupported)?,
             &audit,
         )
         .await?;

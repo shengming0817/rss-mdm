@@ -12,7 +12,7 @@ pub(crate) fn pin(windows: bool) -> Value {
     } else {
         json!({"platform":"macos","receipt":"com.rss.agent.pkg","bundle":"com.rss.agent","team":"RSS1234567"})
     };
-    json!({"content_origin":"https://mdm.example.test","packages":{if windows{"windows_x86_64"}else{"macos_aarch64"}:{"identity":identity,"package":"RSS.Agent","version":"1.2.3","sha256":Sha256::digest(bytes()).to_vec()}}})
+    json!({"content_origin":"https://mdm.example.test:9445","packages":{if windows{"windows_x86_64"}else{"macos_aarch64"}:{"identity":identity,"package":"RSS.Agent","version":"1.2.3","sha256":Sha256::digest(bytes()).to_vec()}}})
 }
 pub(crate) async fn grants(user: &Browser, router: &Router) -> Result<()> {
     let subject = browser_subject(user, router).await?;

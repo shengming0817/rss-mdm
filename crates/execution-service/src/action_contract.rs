@@ -1,6 +1,6 @@
 //! Frozen execution contract. It deliberately excludes authors, approval rows and Scope internals.
 use crate::Error;
-use rss_mdm_agent_wire as wire;
+use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_policy::schedule::Schedule;
 pub use rss_mdm_policy::{Architecture, Platform};
 use rss_mdm_resource as r;

@@ -167,7 +167,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         rss_mdm_inventory::ReportSource::MdmWindows,
         rss_mdm_registration_service::Purpose::Primary,
     )
-    .credential(checked.fingerprint());
+    .credential(checked.fingerprint())?;
     let access = Arc::new(store);
     let audit_store = access
         .audit_store(&crate::config::AuditConfig::Plain)

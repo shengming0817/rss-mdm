@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rss.example/agent/enroll/v1/Candidate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "wireVersion",
+    "issuanceId",
+    "operationId",
+    "certificateChain",
+    "activateBefore"
+  ],
+  "properties": {
+    "wireVersion": {
+      "const": 1
+    },
+    "issuanceId": {
+      "$ref": "#/$defs/nonNilUuid"
+    },
+    "operationId": {
+      "$ref": "#/$defs/nonNilUuid"
+    },
+    "certificateChain": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 43692
+      }
+    },
+    "activateBefore": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "$defs": {
+    "nonNilUuid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      }
+    }
+  }
+}

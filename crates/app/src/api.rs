@@ -18,6 +18,7 @@ use serde_json::Value;
 use serde_json::json;
 use std::sync::Arc;
 pub(crate) struct Assembly {
+    pub(crate) agent_enrollment: Option<Arc<rss_mdm_registration_service::agent::Service>>,
     pub(crate) agent_pki: Option<Arc<crate::agent_pki::AgentPki>>,
     pub(crate) certificate_archive: Arc<rss_mdm_certificate_archive_service::Archive>,
     pub(crate) timeline: Arc<rss_mdm_timeline_service::Timeline>,
@@ -121,30 +122,32 @@ pub(crate) async fn application_fixture(
         .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
     let plan_runtime = planning.runtime.clone();
     let execution_service = execution.clone();
-    Ok((
-        from_compiled(
-            compiled,
-            AssemblyDependencies {
-                certificate_archive: crate::certificate_archive::assemble(
-                    &access,
-                    audit_store.clone(),
-                    clock.clone(),
-                ),
-                timeline,
-                audit_store,
-                execution,
-                clock,
-                monotonic,
-                access,
-                runtime,
-                flow: planning,
-                identity,
-            },
-        )?
-        .browser,
-        execution_service,
-        plan_runtime,
-    ))
+    let mut fixture_routers = from_compiled(
+        compiled,
+        AssemblyDependencies {
+            certificate_archive: crate::certificate_archive::assemble(
+                &access,
+                audit_store.clone(),
+                clock.clone(),
+            ),
+            timeline,
+            audit_store,
+            execution,
+            clock,
+            monotonic,
+            access,
+            runtime,
+            flow: planning,
+            identity,
+        },
+    )?;
+    // Test carrier projects real, completed TLS evidence; the production browser router stays separate.
+    for (kind, tls) in fixture_routers.listeners {
+        if kind == crate::native::NativeListenerKind::Agent {
+            fixture_routers.browser = fixture_routers.browser.merge(tls.router)
+        }
+    }
+    Ok((fixture_routers.browser, execution_service, plan_runtime))
 }
 pub(crate) struct AssemblyDependencies {
     pub(crate) certificate_archive: Arc<rss_mdm_certificate_archive_service::Archive>,
@@ -227,7 +230,27 @@ pub(crate) fn from_compiled(
         })
         .transpose()?;
     let agent_pki = config.agent_pki.load(audit_store.clone(), clock.clone())?;
+    let agent_enrollment = agent_pki
+        .as_ref()
+        .map(|pki| {
+            rss_mdm_registration_service::agent::Service::new(
+                rss_mdm_registration_service::agent::Assembly {
+                    tenant: identity.tenant,
+                    store: access.registration(),
+                    audit: audit_store.clone(),
+                    issuer: pki.issuer.clone(),
+                    clock: pki.pki_clock.clone(),
+                    policy: pki.policy.clone(),
+                    binding: Arc::new(rss_mdm_agent_channel::Bindings),
+                    native: execution.clone(),
+                },
+            )
+            .map(Arc::new)
+            .map_err(Error::from)
+        })
+        .transpose()?;
     let state = Arc::new(Assembly {
+        agent_enrollment,
         agent_pki,
         certificate_archive,
         timeline,
@@ -264,25 +287,8 @@ pub(crate) fn from_state(
     host: String,
     monotonic: Arc<dyn rss_observation::Clock>,
 ) -> crate::native::Routers {
-    let agent = Arc::new(crate::agent::HttpState {
-        mount: crate::device::ChannelMount::new(
-            state.identity.tenant,
-            rss_mdm_inventory::ReportSource::AgentBuiltin,
-            rss_mdm_registration_service::Purpose::Primary,
-        ),
-        audit_store: state.audit_store.clone(),
-        access: Arc::new(state.access.agent_store()),
-        identity: Arc::new(
-            rss_mdm_authorization_service::session::SessionAuthority::new(
-                state.identity.authority.clone(),
-                state.identity.tenant,
-            ),
-        ),
-        credentials: state.credentials.clone(),
-        devices: state.devices.clone(),
-        collection: state.collection.clone(),
-    });
     let apple_state = Arc::new(rss_mdm_apple_channel::HttpState {
+        agent_policy: state.agent_pki.as_ref().map(|p| p.policy.clone()),
         mount: crate::device::ChannelMount::new(
             state.identity.tenant,
             rss_mdm_inventory::ReportSource::MdmApple,
@@ -305,6 +311,7 @@ pub(crate) fn from_state(
         requests: state.requests.clone(),
     });
     let windows_state = Arc::new(rss_mdm_windows_channel::HttpState {
+        agent_policy: state.agent_pki.as_ref().map(|p| p.policy.clone()),
         protection: state.protection.clone(),
         mount: crate::device::ChannelMount::new(
             state.identity.tenant,
@@ -366,6 +373,7 @@ pub(crate) fn from_state(
         rss_mdm_management_http::authentication_routes(authentication, management_boundary.clone());
     let management = rss_mdm_management_http::router(
         rss_mdm_management_http::Services {
+            agent_enrollment: state.agent_enrollment.clone(),
             certificate_archive: state.certificate_archive.clone(),
             timeline: state.timeline.clone(),
             diagnostics: diagnostics.clone(),
@@ -473,6 +481,46 @@ pub(crate) fn from_state(
     ) {
         listeners.push((crate::native::NativeListenerKind::AppleManagement, apple));
     }
+    if let (Some(pki), Some(service)) = (&state.agent_pki, &state.agent_enrollment) {
+        let mut envelope = agent_boundary;
+        envelope.host = pki.origin.trim_start_matches("https://").to_string();
+        let runtime = rss_mdm_agent_channel::router(
+            Arc::new(crate::agent::HttpState {
+                enrollment: service.clone(),
+                audit_store: state.audit_store.clone(),
+                access: Arc::new(state.access.agent_store()),
+                collection: state.collection.clone(),
+            }),
+            envelope.clone(),
+        )
+        .merge(rss_mdm_agent_channel::task_router(
+            Arc::new(crate::agent::TaskState {
+                enrollment: service.clone(),
+                access: Arc::new(state.access.agent_store()),
+                execution: state.execution.clone(),
+            }),
+            envelope.clone(),
+        ));
+        let router = Router::new().nest("/api/agent/runtime/v1", runtime).nest(
+            "/api/agent/enroll/v1",
+            rss_mdm_agent_channel::enroll::router(service.clone(), envelope.clone()).merge(
+                rss_mdm_agent_channel::installation_router(state.execution.clone(), envelope),
+            ),
+        );
+        listeners.push((
+            crate::native::NativeListenerKind::Agent,
+            crate::native::TlsRouter {
+                listen: pki.listen,
+                tls: pki.tls.clone(),
+                router,
+                admission: crate::native::admission::Admission::new(
+                    monotonic.clone(),
+                    state.requests.clone(),
+                    "agent-tls",
+                ),
+            },
+        ));
+    }
     let apple = state.apple.clone();
     let host_routes = Router::new()
         .route("/livez", get(|| async { Json(json!({"alive":true})) }))
@@ -491,24 +539,6 @@ pub(crate) fn from_state(
             apple_state,
             apple_boundary,
         ))
-        .nest(
-            "/api/agent/v6",
-            rss_mdm_agent_channel::router(agent, agent_boundary.clone()).merge(
-                rss_mdm_agent_channel::task_router(
-                    Arc::new(rss_mdm_agent_channel::TaskState {
-                        access: Arc::new(state.access.agent_store()),
-                        mount: crate::device::ChannelMount::new(
-                            state.identity.tenant,
-                            rss_mdm_inventory::ReportSource::AgentBuiltin,
-                            rss_mdm_registration_service::Purpose::Primary,
-                        ),
-                        devices: state.devices.clone(),
-                        execution: state.execution.clone(),
-                    }),
-                    agent_boundary,
-                ),
-            ),
-        )
         .merge(authentication)
         .merge(host_routes)
         .merge(

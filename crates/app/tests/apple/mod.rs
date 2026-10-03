@@ -146,8 +146,24 @@ impl Fixture {
             &management.cursor_key,
         )?;
         timeline.initialize().await?;
+        let agent_audit = access
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?;
+        let agent_pki = config.agent_pki.load(agent_audit.clone(), clock.clone())?;
+        let agent_enrollment = agent_pki
+            .as_ref()
+            .map(|pki| {
+                crate::test_support::agent::application_service(
+                    pki,
+                    &access,
+                    agent_audit.clone(),
+                    execution.service.clone(),
+                )
+            })
+            .transpose()?;
         let app = Arc::new(Assembly {
-            agent_pki: None,
+            agent_enrollment,
+            agent_pki,
             certificate_archive: crate::certificate_archive::assemble(
                 &access,
                 access
@@ -194,10 +210,16 @@ impl Fixture {
             requests: Arc::new(tokio::sync::Semaphore::new(4)),
         });
         let native::Routers {
-            browser: router,
+            browser: mut router,
             mut listeners,
             ..
         } = crate::api::from_state(app.clone(), "mdm.example.test".into(), monotonic.clone());
+        if let Some(i) = listeners
+            .iter()
+            .position(|(kind, _)| *kind == crate::native::NativeListenerKind::Agent)
+        {
+            router = router.merge(listeners.remove(i).1.router);
+        }
         ensure!(listeners.len() == 1, "Apple-only assembly loaded Windows");
         let (_, native) = listeners.pop().unwrap();
         let hook_origin = format!("https://localhost:{}", webhook.local_addr()?.port());

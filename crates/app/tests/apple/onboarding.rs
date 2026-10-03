@@ -5,7 +5,7 @@ use crate::test_support::{channel_onboarding as setup, credential, pg};
 #[ignore = "MODULE=apple.onboarding: real native peer and durable Policy"]
 async fn absent_agent_group_installs_fixed_package_and_registers_independently() -> Result<()> {
     let mut f = Fixture::with_agent(Some(setup::pin(false))).await?;
-    let (peer, device) = f.ready_local_peer().await?;
+    let (peer, device) = f.ready_scep_peer().await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
@@ -68,6 +68,41 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
             == Some(operation.to_string().as_str())
     );
     ensure!(!payload.contains_key("RemoveAppUponMDMProfileRemoval"));
+    let manifest = payload["Manifest"].as_dictionary().unwrap();
+    let item = manifest["items"].as_array().unwrap()[0]
+        .as_dictionary()
+        .unwrap();
+    let asset = item["assets"].as_array().unwrap()[0]
+        .as_dictionary()
+        .unwrap();
+    let generated = url::Url::parse(asset["url"].as_string().unwrap())?;
+    ensure!(
+        generated
+            .path()
+            .starts_with("/api/agent/enroll/v1/installations/")
+    );
+    let package = f
+        .router
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .uri(generated.path())
+                .header(
+                    "host",
+                    generated[url::Position::BeforeHost..url::Position::AfterPort].to_string(),
+                )
+                .header("range", "bytes=0-3")
+                .body(axum::body::Body::empty())?,
+        )
+        .await?;
+    ensure!(package.status() == StatusCode::PARTIAL_CONTENT);
+    ensure!(
+        axum::body::to_bytes(package.into_body(), 1024)
+            .await?
+            .as_ref()
+            == &setup::bytes()[..4]
+    );
+
     ensure!(peer.manage("NotNow", Some(install), None).await?.is_empty());
     ensure!(f.operation(operation).await?["agentInstallation"]["delivery"] == "deferred");
     let (retry, _) = next_after_cooldown(&peer, "InstallEnterpriseApplication").await?;
@@ -153,24 +188,28 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
             && state["commandStatus"] != "applied",
         "unverified bundle promoted to installed: {state}"
     );
-    let input = json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":Uuid::new_v4(),"installationOperation":operation,"credential":credential("managed-apple-agent"),"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v6","mdm.enrollment.v6"]});
-    let url = format!("{}/api/agent/v6/managed-registrations", peer.origin);
+    let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("managed-apple-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v6","mdm.enrollment.v6"]}});
+    let url = format!("{}/api/agent/enroll/v1/native-grants", peer.origin);
     for (field, value, code) in [
-        ("wireVersion", json!(3), "unsupported_wire"),
+        ("wireVersion", json!(3), "malformed_request"),
         (
             "capabilities",
             json!(["inventory.basic.v3"]),
-            "unsupported_capability",
+            "malformed_request",
         ),
         (
             "capabilities",
             json!(["inventory.collect.v6", "inventory.collect.v6"]),
-            "unsupported_capability",
+            "malformed_request",
         ),
         ("deviceId", json!("untrusted"), "malformed_request"),
     ] {
         let mut invalid = input.clone();
-        invalid[field] = value;
+        if field == "capabilities" {
+            invalid["runtime"][field] = value;
+        } else {
+            invalid[field] = value;
+        }
         let response = peer.client.post(&url).json(&invalid).send().await?;
         ensure!(response.status() == StatusCode::BAD_REQUEST);
         ensure!(response.json::<serde_json::Value>().await?["code"] == code);
@@ -182,11 +221,20 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         status == StatusCode::CREATED,
         "register {status}: {receipt}"
     );
-    ensure!(receipt["deviceId"] != case_device());
+    ensure!(receipt["state"] == "available");
     let response = peer.client.post(&url).json(&input).send().await?;
     ensure!(response.status() == StatusCode::OK);
     ensure!(response.json::<serde_json::Value>().await? == receipt);
     ensure!(pg(&format!("SELECT count(*) FROM mdm_apple.attempts WHERE tenant_id='{}' AND operation='{operation}' AND phase='execute'",case_tenant()))?.trim()=="1");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_access.agent_grants WHERE tenant_id='{}' AND source='native' AND (native_authority ? 'secret' OR native_authority ? 'input')",case_tenant()))?.trim()=="0", "native authority must not persist bootstrap secrets");
+    let receipt = crate::test_support::agent::complete_grant(
+        f.app.agent_enrollment.as_ref().unwrap(),
+        &receipt,
+        &input,
+        &credential("managed-apple-agent"),
+    )
+    .await?;
+    ensure!(receipt["deviceId"] != case_device());
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id='{}' AND channel='agent'",case_tenant()))?.trim()=="1");
     let state = f.operation(operation).await?;
     ensure!(
@@ -205,7 +253,9 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
 async fn enabling_agent_installation_preserves_existing_native_identity_and_rights() -> Result<()> {
     use sqlx::{Connection, Row};
     let mut f = Fixture::start().await?;
-    let (_peer, device) = f.ready_local_peer().await?;
+    let (device, der) = f.scep_leaf().await?;
+    let peer = f.authenticate_peer(&device, &der).await?;
+    peer.token().await?;
     let mut config: config::Config =
         serde_json::from_slice(&std::fs::read(f.root.join("apple.json"))?)?;
     config.management.origin = f.app.apple()?.config.management.origin.clone();
@@ -225,13 +275,11 @@ async fn enabling_agent_installation_preserves_existing_native_identity_and_righ
         pin.identity(rss_mdm_policy::Platform::Macos).cloned(),
     )?;
     let trust = rss_mdm_certificate::apple::AppleDeviceTrust::from_bytes(
-        &std::fs::read(f.root.join("apple-issuer.pem"))?,
+        &std::fs::read(&f.app.apple()?.config.issuer_certificate_file)?,
         f.app.clock.unix_seconds()?,
     )?;
     let leaf = trust.verify(
-        &[tokio_rustls::rustls::pki_types::CertificateDer::from(
-            std::fs::read(device.root.path().join("leaf.der"))?,
-        )],
+        &[tokio_rustls::rustls::pki_types::CertificateDer::from(der)],
         f.app.clock.unix_seconds()?,
     )?;
     let mut c =
@@ -280,7 +328,7 @@ async fn next_after_cooldown(
 #[ignore = "MODULE=apple.onboarding: native bundle evidence never verifies the publisher"]
 async fn collected_bundle_presence_remains_unknown() -> Result<()> {
     let mut f = Fixture::with_agent(Some(setup::pin(false))).await?;
-    let (peer, device) = f.ready_local_peer().await?;
+    let (peer, device) = f.ready_scep_peer().await?;
     let (platform, _) = peer.next("DeviceInformation").await?;
     let bytes = peer
         .manage(

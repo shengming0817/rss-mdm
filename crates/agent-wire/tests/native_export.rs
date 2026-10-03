@@ -1,4 +1,4 @@
-use rss_mdm_agent_wire::*;
+use rss_mdm_agent_wire::runtime::*;
 use serde_json::json;
 #[test]
 fn a_hash_marker_cannot_stand_in_for_a_frozen_native_source() {
@@ -79,8 +79,10 @@ fn frozen_source_binds_tenant_material_and_scoped_credentials_without_a_token_fi
 
 #[test]
 fn invocation_schema_matches_literal_argument_and_environment_validation() {
-    let canonical: serde_json::Value =
-        serde_json::from_str(include_str!("../schema/task-payload-v6.schema.json")).unwrap();
+    let canonical: serde_json::Value = serde_json::from_str(include_str!(
+        "../schema/runtime/task-payload-v6.schema.json"
+    ))
+    .unwrap();
     let schema =
         serde_json::json!({"$ref":"#/$defs/SoftwareTaskInvocation","$defs":canonical["$defs"]});
     let validator = jsonschema::draft202012::new(&schema).unwrap();
@@ -137,8 +139,10 @@ fn invocation_schema_matches_literal_argument_and_environment_validation() {
 
 #[test]
 fn app_copy_rust_and_schema_reject_the_retired_directory_digest() {
-    let canonical: serde_json::Value =
-        serde_json::from_str(include_str!("../schema/task-payload-v6.schema.json")).unwrap();
+    let canonical: serde_json::Value = serde_json::from_str(include_str!(
+        "../schema/runtime/task-payload-v6.schema.json"
+    ))
+    .unwrap();
     let schema = json!({"$ref":"#/$defs/SoftwareTaskAction","$defs":canonical["$defs"]});
     let validator = jsonschema::draft202012::new(&schema).unwrap();
     let action = json!({"package":"Acme.App","version":"1","reboot":"report","downgrade":"deny","signatures":[],"behavior":{"kind":"dmg","image":"installer","volume":"Acme","scope":"system","invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","payload":{"kind":"app_copy","application":{"path":"Acme.app","targetName":"Acme.app","bundleId":"com.acme.app","version":"1"},"uninstall":true}}});

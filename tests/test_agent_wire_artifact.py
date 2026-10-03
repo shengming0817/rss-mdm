@@ -20,7 +20,7 @@ class WireArtifactTests(unittest.TestCase):
     def fixture(self):
         directory = tempfile.TemporaryDirectory()
         schema = Path(directory.name) / "schema"
-        shutil.copytree(ROOT / "crates/agent-wire/schema", schema)
+        shutil.copytree(ROOT / "crates/agent-wire/schema/runtime", schema)
         return directory, schema
 
     def check_copy(self, schema):

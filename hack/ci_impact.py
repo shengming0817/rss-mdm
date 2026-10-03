@@ -96,7 +96,7 @@ def changed_paths(root, base):
         while cursor < len(fields):
             status = fields[cursor]
             cursor += 1
-            if not re.fullmatch(r'[ADM]|[RC](100|[0-9]{1,2})', status):
+            if not re.fullmatch(r'[ADM]|[RC](100|0[0-9]{2}|[0-9]{1,2})', status):
                 raise ValueError('invalid status')
             count = 2 if status[0] in 'RC' else 1
             paths = fields[cursor : cursor + count]

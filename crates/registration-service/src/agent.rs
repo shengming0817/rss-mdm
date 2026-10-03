@@ -1,0 +1,310 @@
+//! Persistent Agent enrollment and online certificate authority.
+//! ref: smallstep/certificates api/sign.go@v0.30.2; sqlx-core/src/transaction.rs@v0.9.0.
+mod activation;
+mod grants;
+pub(crate) mod issuance;
+pub mod native;
+use crate::agent_pki::{AgentIssuer, Clock};
+use crate::{Error, Store, database::db};
+use base64::{Engine, engine::general_purpose::STANDARD};
+use rss_mdm_agent_wire::{enroll as wire, runtime};
+use rss_mdm_audit_integration::{AuditStore, Fact, RequestAudit, budget::AuditBudget};
+use rss_mdm_authorization_service::context::AuthorizedPrincipal;
+use rss_mdm_certificate::agent::{AgentTrust, VerifiedAgentCsr};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use sqlx::{PgConnection, Row, postgres::PgRow};
+use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use uuid::Uuid;
+
+/// Closed enrollment failure; the optional source is for internal classification only.
+#[derive(Debug, thiserror::Error)]
+#[error("Agent enrollment rejected: {code:?}")]
+pub struct Failure {
+    pub code: wire::ErrorCode,
+    pub issuance_id: Option<Uuid>,
+    pub source: Option<Error>,
+}
+impl From<Error> for Failure {
+    fn from(e: Error) -> Self {
+        use wire::ErrorCode as C;
+        let code = match e {
+            Error::Agent(c) => c,
+            Error::Malformed => C::MalformedRequest,
+            Error::Unauthorized => C::InvalidIdentity,
+            Error::Forbidden => C::PermissionDenied,
+            Error::Conflict => C::OperationConflict,
+            Error::CommitUnknown | Error::RollbackFailed => C::ActivationUnknown,
+            Error::Capacity => C::RegistrationLimit,
+            _ => C::ServiceUnavailable,
+        };
+        Self {
+            code,
+            issuance_id: None,
+            source: Some(e),
+        }
+    }
+}
+impl From<rss_mdm_authorization_service::Error> for Failure {
+    fn from(e: rss_mdm_authorization_service::Error) -> Self {
+        Error::from(e).into()
+    }
+}
+/// Tenant policy. A zero limit disables new user registrations, not existing devices.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct Policy {
+    pub user_device_limit: u32,
+    pub grant_seconds: u32,
+    pub platforms: Vec<runtime::TaskPlatform>,
+}
+impl Default for Policy {
+    fn default() -> Self {
+        Self {
+            user_device_limit: 10,
+            grant_seconds: 86400,
+            platforms: vec![runtime::TaskPlatform::Windows, runtime::TaskPlatform::Macos],
+        }
+    }
+}
+impl Policy {
+    pub fn validate(&self) -> Result<(), Error> {
+        if !(1..=604800).contains(&self.grant_seconds)
+            || self.platforms.is_empty()
+            || self.platforms.len() > 2
+            || self
+                .platforms
+                .iter()
+                .enumerate()
+                .any(|(i, p)| self.platforms[..i].contains(p))
+        {
+            return Err(Error::Configuration);
+        }
+        Ok(())
+    }
+}
+pub type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + Send + 'a>>;
+/// Coordinates allocated only by the registration owner at activation.
+pub struct Binding {
+    pub tenant: rss_request_context::TenantId,
+    pub device: String,
+    pub registration: Uuid,
+    pub generation: i64,
+    pub epoch: Uuid,
+    pub operation: Uuid,
+}
+/// The Agent channel owns capability bindings and collection definitions.
+pub trait RuntimeBinding: Send + Sync {
+    fn bind<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        binding: Binding,
+        profile: &'a wire::RuntimeProfile,
+    ) -> Pending<'a, runtime::BindingProfile>;
+}
+/// Execution owns rechecking the exact frozen native installation authorization.
+pub trait NativeAdmission: Send + Sync {
+    fn validate<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        authority: &'a native::Source,
+    ) -> Pending<'a, ()>;
+}
+pub struct Service {
+    tenant: rss_request_context::TenantId,
+    store: Arc<Store>,
+    audit: Arc<AuditStore>,
+    issuer: Arc<AgentIssuer>,
+    clock: Arc<dyn Clock>,
+    policy: Policy,
+    binding: Arc<dyn RuntimeBinding>,
+    native: Arc<dyn NativeAdmission>,
+}
+pub struct Assembly {
+    pub tenant: rss_request_context::TenantId,
+    pub store: Arc<Store>,
+    pub audit: Arc<AuditStore>,
+    pub issuer: Arc<AgentIssuer>,
+    pub clock: Arc<dyn Clock>,
+    pub policy: Policy,
+    pub binding: Arc<dyn RuntimeBinding>,
+    pub native: Arc<dyn NativeAdmission>,
+}
+struct Change<R> {
+    value: R,
+    replay: bool,
+    digest: String,
+}
+impl Service {
+    pub fn new(a: Assembly) -> Result<Self, Error> {
+        a.policy.validate()?;
+        Ok(Self {
+            tenant: a.tenant,
+            store: a.store,
+            audit: a.audit,
+            issuer: a.issuer,
+            clock: a.clock,
+            policy: a.policy,
+            binding: a.binding,
+            native: a.native,
+        })
+    }
+    pub fn trust(&self) -> &Arc<AgentTrust> {
+        self.issuer.trust()
+    }
+    pub fn now(&self) -> Result<i64, Error> {
+        self.clock.unix_seconds()
+    }
+    fn proof(&self, p: &AuthorizedPrincipal, a: &RequestAudit) -> Result<(), Error> {
+        if p.tenant_id() != self.tenant.to_string() || a.tenant() != p.tenant_id() {
+            return Err(Error::Forbidden);
+        }
+        p.check_live()?;
+        p.bind_audit(a).map_err(Into::into)
+    }
+    async fn write<C: Send, R: Send>(
+        &self,
+        a: &RequestAudit,
+        context: C,
+        f: impl for<'a> FnOnce(&'a mut C, &'a mut PgConnection) -> Pending<'a, Change<R>> + Send,
+    ) -> Result<R, Error> {
+        if a.tenant() != self.tenant.to_string() {
+            return Err(Error::Forbidden);
+        }
+        let budget = AuditBudget::new(Duration::from_secs(6));
+        let control = budget.control();
+        let out = self
+            .audit
+            .write(
+                self.tenant,
+                &control,
+                (&self.audit, a, context, Some(f)),
+                |ctx, tx| {
+                    Box::pin(async move {
+                        let (store, a, context, f) = ctx;
+                        let f = f.take().ok_or(Error::Corrupt)?;
+                        let change = tx
+                            .with_connection_context(context, |ctx, c| f(ctx, c))
+                            .await?;
+                        let snapshot = a.snapshot();
+                        let op = snapshot.operation_id.ok_or(Error::Malformed)?;
+                        let fact = Fact::business(
+                            a,
+                            &format!("agent-enroll:{}:{op}", snapshot.action),
+                            change.digest.as_bytes(),
+                            200,
+                            "success",
+                            None,
+                        )?;
+                        store
+                            .append(tx, &fact, change.replay)
+                            .await
+                            .map_err(Error::from)?;
+                        if change.replay {
+                            a.management_result(
+                                rss_mdm_audit_integration::ManagementResult::Replayed,
+                            )
+                        }
+                        a.mark_commit_started();
+                        Ok(change.value)
+                    })
+                },
+            )
+            .await;
+        crate::operations::settle(out, a)
+    }
+    async fn grant_live(&self, c: &mut PgConnection, row: &PgRow) -> Result<(), Error> {
+        if row.try_get::<String, _>("state").map_err(db)? == "revoked" {
+            return Err(Error::Agent(wire::ErrorCode::GrantRevoked));
+        }
+        if !row.try_get::<bool, _>("live").map_err(db)? {
+            return Err(Error::Agent(wire::ErrorCode::GrantExpired));
+        }
+        if row.try_get::<String, _>("state").map_err(db)? == "pending" {
+            return Err(Error::Agent(wire::ErrorCode::PermissionDenied));
+        }
+        if let Some(authority) = row
+            .try_get::<Option<serde_json::Value>, _>("native_authority")
+            .map_err(db)?
+        {
+            let source = native::source(c, self.tenant, authority).await?;
+            self.native.validate(c, &source).await?
+        }
+        Ok(())
+    }
+}
+fn digest(value: &impl Serialize) -> Result<String, Error> {
+    serde_json::to_vec(value)
+        .map(|v| hex(Sha256::digest(v)))
+        .map_err(|_| Error::Malformed)
+}
+fn hex(value: impl AsRef<[u8]>) -> String {
+    value.as_ref().iter().map(|b| format!("{b:02x}")).collect()
+}
+fn secret_digest(tenant: &str, id: Uuid, secret: &runtime::Secret) -> String {
+    let mut h = Sha256::new();
+    h.update(b"rss-mdm-agent-bootstrap/v1\0");
+    h.update(tenant.as_bytes());
+    h.update(id.as_bytes());
+    h.update(secret.expose().as_bytes());
+    hex(h.finalize())
+}
+fn check_secret(tenant: &str, row: &PgRow, secret: &runtime::Secret) -> Result<(), Error> {
+    use subtle::ConstantTimeEq;
+    let id: Uuid = row.try_get("id").map_err(db)?;
+    let expected: String = row.try_get("secret_digest").map_err(db)?;
+    if !bool::from(
+        secret_digest(tenant, id, secret)
+            .as_bytes()
+            .ct_eq(expected.as_bytes()),
+    ) {
+        return Err(Error::Unauthorized);
+    }
+    Ok(())
+}
+fn version(v: u8, operation: Uuid) -> Result<(), Error> {
+    if v != wire::API_VERSION || operation.is_nil() {
+        Err(Error::Malformed)
+    } else {
+        Ok(())
+    }
+}
+fn csr(encoded: &str) -> Result<VerifiedAgentCsr, Error> {
+    if encoded.len() > 43692 {
+        return Err(Error::Malformed);
+    }
+    let der = STANDARD.decode(encoded).map_err(|_| Error::Malformed)?;
+    VerifiedAgentCsr::verify(&der).map_err(|_| Error::Malformed)
+}
+async fn grant_row(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<PgRow, Error> {
+    sqlx::query("SELECT *, floor(extract(epoch FROM expires_at))::bigint AS expiry, expires_at>clock_timestamp() AS live FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
+        .bind(tenant).bind(id).fetch_optional(c).await.map_err(db)?.ok_or(Error::Unauthorized)
+}
+fn receipt(row: &PgRow) -> Result<wire::GrantReceipt, Error> {
+    let state = match row.try_get::<String, _>("state").map_err(db)?.as_str() {
+        "revoked" => wire::GrantState::Revoked,
+        _ if !row.try_get::<bool, _>("live").map_err(db)? => wire::GrantState::Expired,
+        "pending" => wire::GrantState::Pending,
+        "available" => wire::GrantState::Available,
+        "consumed" => wire::GrantState::Consumed,
+        _ => return Err(Error::Corrupt),
+    };
+    let platform = match row.try_get::<String, _>("platform").map_err(db)?.as_str() {
+        "windows" => runtime::TaskPlatform::Windows,
+        "macos" => runtime::TaskPlatform::Macos,
+        _ => return Err(Error::Corrupt),
+    };
+    Ok(wire::GrantReceipt {
+        wire_version: wire::API_VERSION,
+        grant_id: row.try_get("id").map_err(db)?,
+        state,
+        expires_at: row.try_get("expiry").map_err(db)?,
+        platform,
+    })
+}
+fn platform(p: runtime::TaskPlatform) -> &'static str {
+    match p {
+        runtime::TaskPlatform::Windows => "windows",
+        runtime::TaskPlatform::Macos => "macos",
+    }
+}

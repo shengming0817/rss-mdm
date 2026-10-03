@@ -141,7 +141,7 @@ pub fn router(app: Arc<HttpState>, envelope: boundary::Envelope) -> axum::Router
             )
             .route("/mdm", put(checkin::manage))
             .route(
-                "/api/agent/v6/managed-registrations",
+                "/api/agent/enroll/v1/native-grants",
                 axum::routing::post(checkin::register_agent),
             )
             .with_state(app)
@@ -214,6 +214,7 @@ impl Apple {
 }
 
 pub struct HttpState {
+    pub agent_policy: Option<rss_mdm_registration_service::agent::Policy>,
     pub mount: crate::device::ChannelMount,
     pub audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
     pub access: std::sync::Arc<crate::Store>,

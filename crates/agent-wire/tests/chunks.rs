@@ -1,4 +1,4 @@
-use rss_mdm_agent_wire::*;
+use rss_mdm_agent_wire::runtime::*;
 #[test]
 fn output_chunks_are_bounded_complete_and_digest_bound() {
     let value = serde_json::json!([{"name":"x".repeat(400000)}]);

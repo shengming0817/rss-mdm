@@ -54,11 +54,11 @@ docker run --name rss-mdm --network host --mount type=bind,src=/private/mdm-runt
 
 IMAGE 替换为 candidate.json 固定镜像身份。秘密和配置文件由 UID 10001 持有且权限 0600。安装目录与运行目录分开准备；镜像不嵌入配置或私钥。
 
-## 客户端与网关使用同一组织 CA
+## 桌面与 Agent 入口及服务器证书信任
 
 网关加载部署方配置的服务器证书链与私钥。使用私有 CA 时，把签发该服务器证书的 CA 公共证书通过可信部署渠道分发到设备；CA 私钥留在部署端，不放入 Agent 配置、客户端安装包或前端静态资源。数据库连接的 `ca_file` 属于 PostgreSQL 信任，不复用为组织网关 CA。
 
-组织连接和私有 CA 的部署输入统一放在客户端构建/部署所用 `.env`：`RSS_MDM_ORIGIN` 对应本服务的 HTTPS `product_origin`，`RSS_MDM_TENANT_ID` 对应 `identity.tenant_id`，可选 `RSS_MDM_CA_FILE` 指向签发网关证书的单个 PEM CA 公共证书绝对路径。桌面构建时嵌入公共证书，仅对该 origin/tenant 生效，不读取系统执行服务的配置。Agent 部署从同一 `.env` 生成 `execution.json` 的 origin、tenant、ca_file，并将同一 CA 复制到受保护设备路径；生成入口由 rss-mdm-agent 的 `scripts/agent-organization.mjs` 持有。
+桌面客户端的组织连接和私有 CA 部署输入放在构建/部署所用 `.env`：`RSS_MDM_ORIGIN` 对应本服务的 HTTPS `product_origin`，`RSS_MDM_TENANT_ID` 对应 `identity.tenant_id`，可选 `RSS_MDM_CA_FILE` 指向签发网关证书的单个 PEM CA 公共证书绝对路径。桌面构建时嵌入公共证书，仅对该 origin/tenant 生效，不读取系统执行服务的配置。Agent 的 `execution.json.origin` 必须使用 `agent_pki.endpoint.origin`，tenant 对应 `identity.tenant_id`；`ca_file` 信任该 Agent TLS 入口服务器证书的签发 CA，并把公共 CA 文件放到受保护的设备路径。桌面网关和 Agent 入口由同一 CA 签发时可以分发同一公共证书；分别签发时各自配置对应信任。现有 Agent 仓库的 `scripts/agent-organization.mjs` 仍从桌面 `.env` 复制 origin，尚未支持独立入口，不能用于生成本协议的安装配置；Agent/安装器消费任务须改为使用 Agent endpoint。
 
 服务端网关继续配置服务器证书链和私钥；它们不通过客户端 CA 环境变量传入。客户端 CA 留空时使用默认信任。CA 更新后桌面重新构建、Agent 重新加载配置，不修改系统证书库，也不跳过证书链或主机名校验。其它组织和个人 AI 连接不继承此 CA。
 
@@ -105,6 +105,13 @@ Linux host 网络使回环浏览器监听与同机 HTTPS 网关配合；Windows 
 ```json
 "agent_pki": {
   "mode": "step_ca",
+  "endpoint": {
+    "listen": "0.0.0.0:9445",
+    "origin": "https://agent.example.test:9445",
+    "certificate_file": "/private/agent-tls.crt",
+    "private_key_file": "/private/agent-tls.pk8"
+  },
+  "policy": {"user_device_limit": 10, "grant_seconds": 86400, "platforms": ["windows", "macos"]},
   "ca_url": "https://ca.example.com:9000",
   "tls_root_file": "/run/pki/root_ca.crt",
   "issuer_certificate_file": "/run/pki/intermediate_ca.crt",
@@ -126,4 +133,6 @@ step ca provisioner add rss-agent --type JWK --public-key agent-provisioner.pub.
 
 模板唯一使用已验签 token 的 `.SANs`，固定 CN、非 CA、digitalSignature 和 clientAuth；不得换成 `.Insecure.CR` 或增加 serverAuth/其它目的。默认叶证书为 365 天。根 CA 可以设为十年；直接签发者须覆盖**完整**叶证书窗口，剩余不足拒绝签发，不截短期限。开发部署可显式改为 `{"mode":"development","days":3650}` 并将此 Agent provisioner 的 max/default 同步改至 87600h；上限 3650 天，直接签发者及根必须留出完整窗口。此设置不修改 Windows/Apple provisioner 的期限，也不启用自动 renewal。
 
-当前能力只提供 registration owner 的受控签发接口和 TLS peer 校验类型，没有 Agent mTLS HTTP 注册入口。持久 grant、候选证书激活、在线业务撤销和现有 Bearer 退出由 #2630 接入；启用此配置不能解释为已切换线上认证。
+服务端已经提供持久 Agent 授权、候选签发、真实 mTLS 激活、在线撤销及人工恢复；旧 Bearer 注册与业务入口退出。终端 Agent、安装器、网页消费及真机 T3 由各自后续产品任务验收。
+
+Agent 注册与运行共用独立 Rust TLS 监听器，匿名 bootstrap 可无客户端证书，激活和运行必须有真实 TLS 客户端证书。不得经终止 TLS 的 HTTP 代理转发，不能信任证书头。浏览器 nginx 明确拒绝 `/api/agent/`；Agent 直接访问配置的 endpoint origin。

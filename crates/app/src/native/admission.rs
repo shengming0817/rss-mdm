@@ -166,7 +166,7 @@ impl Admission {
         }
         Some(slot)
     }
-    fn request(&self, address: IpAddr) -> Option<(OwnedSemaphorePermit, OwnedSemaphorePermit)> {
+    fn peer_request(&self, address: IpAddr) -> Option<OwnedSemaphorePermit> {
         let now = self.clock.now();
         let mut state = self.state.lock().ok()?;
         let peer = state.peers.get_mut(&address)?;
@@ -175,7 +175,11 @@ impl Admission {
         if !peer.request_rate.take(now) || !state.requests.take(now) {
             return None;
         }
-        Some((slot, self.requests.clone().try_acquire_owned().ok()?))
+        Some(slot)
+    }
+    fn request(&self, address: IpAddr) -> Option<(OwnedSemaphorePermit, OwnedSemaphorePermit)> {
+        let peer = self.peer_request(address)?;
+        Some((peer, self.requests.clone().try_acquire_owned().ok()?))
     }
 }
 pub(crate) async fn admit(
@@ -193,6 +197,38 @@ pub(crate) async fn admit(
                 .into_response(),
             uuid::Uuid::new_v4(),
         );
+    };
+    next.run(request).await
+}
+
+pub(crate) async fn admit_agent(
+    Extension(gate): Extension<RequestGate>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let Some(_peer_slot) = gate.owner.peer_request(gate.peer) else {
+        gate.owner.refused(1);
+        use axum::http::{HeaderValue, StatusCode, header};
+        let body = if request.uri().path().starts_with("/api/agent/enroll/v1/") {
+            serde_json::to_value(rss_mdm_agent_wire::enroll::ErrorBody {
+                code: rss_mdm_agent_wire::enroll::ErrorCode::ServiceUnavailable,
+                issuance_id: None,
+            })
+            .expect("closed error")
+        } else {
+            serde_json::to_value(rss_mdm_agent_wire::runtime::ErrorBody {
+                code: rss_mdm_agent_wire::runtime::ErrorCode::ServiceUnavailable,
+            })
+            .expect("closed error")
+        };
+        let mut response = crate::http_host::secure_response(
+            (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response(),
+            uuid::Uuid::new_v4(),
+        );
+        response
+            .headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+        return response;
     };
     next.run(request).await
 }

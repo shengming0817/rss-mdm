@@ -317,6 +317,7 @@ impl From<rss_mdm_registration_service::Error> for OwnerDiagnostic {
     fn from(e: rss_mdm_registration_service::Error) -> Self {
         use rss_mdm_registration_service::Error as E;
         match e {
+            E::Agent(_) => Self::Unauthorized,
             E::Malformed => Self::Malformed,
             E::Unauthorized => Self::Unauthorized,
             E::Forbidden => Self::Forbidden,

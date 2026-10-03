@@ -164,7 +164,7 @@ pub async fn complete_issuance(
     let checked = windows
         .ca
         .verify(&[CertificateDer::from(certificate)], now)?;
-    let credential = mount.credential(checked.fingerprint());
+    let credential = mount.credential(checked.fingerprint())?;
     let digest = crate::enrollment::digest(&(
         "enrollment_issue",
         auth.id,
@@ -323,7 +323,7 @@ async fn complete_on(
     .await
     .map_err(db)?;
     // Evaluate again after channel/registration lock waits, immediately before committing.
-    crate::enrollment::store::mark_bound_in(tx, proof.tenant_id(), auth, false).await?;
+    crate::enrollment::store::mark_bound_in(tx, proof.tenant_id(), auth).await?;
     audit.registration(receipt.registration);
     proof.enrollment(&auth.device)?;
     crate::operations::save(

@@ -1,46 +1,42 @@
-#![allow(
-    clippy::cognitive_complexity,
-    reason = "test scenarios preserve distinct recovery assertions"
-)]
+//! Persistent grants, candidate possession, activation ACK recovery and same-identity rotation.
 use crate::test_support::*;
+use rss_mdm_agent_wire::enroll as wire;
+use rss_mdm_audit_integration::RequestAudit;
 #[tokio::test]
-#[ignore = "MODULE=agent.registration: capability binding, re-registration and commit recovery"]
+#[ignore = "MODULE=agent.registration"]
 async fn registration_binding_and_replay() -> Result<()> {
     let fixture = authority::Authority::open().await?;
-    let owned_router = app_with_access(&fixture.base, fixture.access.clone())
-        .await?
-        .0;
-    let router = &owned_router;
-    let mut session = fixture.browser("other")?;
-    let browser = &mut session;
-    set_device_grants(
-        browser,
-        router,
-        crate::test_support::case::name("device-1"),
-        &["inventory_read", "enrollment"],
+    let router = crate::test_support::agent::router(&fixture).await?;
+    let mut browser = fixture.browser("other")?;
+    // Self enrollment requires a live identity, not an enrollment permission.
+    let agent = crate::test_support::agent::register(&router, &mut browser).await?;
+    let replay = agent_call(
+        &router,
+        Method::POST,
+        "/api/agent/enroll/v1/certificates",
+        None,
+        Some(agent.request.clone()),
     )
     .await?;
-    let agent = crate::test_support::agent::register(router, browser).await?;
-    let credential = agent.credential;
-    let registration = agent.registration;
-    let registration_request = agent.request;
+    ensure!(replay.0 == StatusCode::OK);
+    let mut changed = agent.request.clone();
+    changed["operationId"] = json!(Uuid::new_v4());
     ensure!(
-        browser
-            .call(router, Method::POST, "/api/v1/enrollments", Some(json!({})))
-            .await?
-            .0
-            == StatusCode::NOT_FOUND
+        agent_call(
+            &router,
+            Method::POST,
+            "/api/agent/enroll/v1/certificates",
+            None,
+            Some(changed)
+        )
+        .await?
+        .0 == StatusCode::CONFLICT
     );
     for path in [
         "/api/agent/v3/registrations",
-        "/api/agent/v3/reports",
-        "/api/agent/v3/tasks/claim",
-        "/api/agent/v4/registrations",
-        "/api/agent/v4/reports",
-        "/api/agent/v4/tasks/claim",
-        "/api/agent/v5/registrations",
-        "/api/agent/v5/reports",
-        "/api/agent/v5/tasks/claim",
+        "/api/agent/v6/registrations",
+        "/api/agent/v6/reports",
+        "/api/agent/v6/tasks/claim",
     ] {
         let response = router
             .clone()
@@ -49,163 +45,212 @@ async fn registration_binding_and_replay() -> Result<()> {
                     .method(Method::POST)
                     .uri(path)
                     .header("host", "mdm.example.test")
-                    .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {credential}"))
-                    .body(Body::from(r#"{"wireVersion":3}"#))?,
+                    .body(Body::empty())?,
             )
             .await?;
         ensure!(
             response.status() == StatusCode::NOT_FOUND,
-            "retired Agent route survived: {path}"
+            "retired route {path}"
         );
     }
-    let mut unsupported_wire = registration_request.clone();
-    unsupported_wire["wireVersion"] = json!(5);
-    let response = agent_call(
-        router,
-        Method::POST,
-        "/api/agent/v6/registrations",
-        None,
-        Some(unsupported_wire),
-    )
-    .await?;
-    ensure!(response == (StatusCode::BAD_REQUEST, json!({"code":"unsupported_wire"})));
-    let mut unsupported_capability = registration_request.clone();
-    unsupported_capability["capabilities"] = json!(["future"]);
-    let response = agent_call(
-        router,
-        Method::POST,
-        "/api/agent/v6/registrations",
-        None,
-        Some(unsupported_capability),
-    )
-    .await?;
-    ensure!(
-        response
-            == (
-                StatusCode::BAD_REQUEST,
-                json!({"code":"unsupported_capability"})
-            )
-    );
+    let body = json!({"wireVersion":6,"collection":agent.registration["collections"][0],"reportId":Uuid::new_v4(),"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"collectionFailed"}});
     ensure!(
         agent_call(
-            router,
+            &router,
             Method::POST,
-            "/api/agent/v6/registrations",
-            None,
-            Some(registration_request)
-        )
-        .await?
-        .0 == StatusCode::OK,
-        "registration replay was not recovered"
-    );
-    let report_id = uuid::Uuid::new_v4();
-    let prior = json!({"wireVersion":6,"collection":registration["collections"][0],"reportId":report_id,"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"collectionFailed"}});
-    ensure!(
-        agent_call(
-            router,
-            Method::POST,
-            "/api/agent/v6/reports",
-            Some(credential),
-            Some(prior)
+            "/api/agent/runtime/v1/reports",
+            Some(agent.credential),
+            Some(body.clone())
         )
         .await?
         .0 == StatusCode::ACCEPTED
     );
-    ensure!(!pg(&format!("SELECT locator FROM mdm_access.credentials WHERE tenant_id='{TENANT}' AND registration='{}'", registration["registrationId"].as_str().unwrap(), TENANT = case_tenant()))?.contains(credential), "raw Agent credential persisted");
+    ensure!(
+        agent_call(
+            &router,
+            Method::POST,
+            "/api/agent/runtime/v1/reports",
+            Some(agent.password),
+            Some(body)
+        )
+        .await?
+        .0 == StatusCode::UNAUTHORIZED
+    );
+    let native_password=browser.call(&router,Method::POST,"/api/v3/enrollments",Some(json!({"deviceId":"claimed-device","password":agent.password,"source":"agent.builtin"}))).await?;
+    ensure!(native_password.0 == StatusCode::BAD_REQUEST);
+    Ok(())
+}
+#[tokio::test]
+#[ignore = "MODULE=agent.registration"]
+async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
+    let fixture = authority::Authority::open().await?;
+    let service = crate::test_support::agent::service(&fixture)?;
+    let router = crate::test_support::agent::router(&fixture).await?;
+    let mut browser = fixture.browser("other")?;
+    let agent = crate::test_support::agent::register(&router, &mut browser).await?;
+    let registration: Uuid = serde_json::from_value(agent.registration["registrationId"].clone())?;
+    let secret = credential("rotation-secret");
+    let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"secret":secret,"platform":"macos","csr":crate::test_support::agent::csr()?});
+    let grant = browser
+        .call(
+            &router,
+            Method::POST,
+            &format!("/api/v3/agent-registrations/{registration}/recovery"),
+            Some(input),
+        )
+        .await?;
+    ensure!(grant.0 == StatusCode::OK, "recovery grant {grant:?}");
+    let sign = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"grantId":grant.1["grantId"],"secret":secret,"csr":crate::test_support::agent::csr()?,"runtime":agent.request["runtime"]});
+    let candidate = agent_call(
+        &router,
+        Method::POST,
+        "/api/agent/enroll/v1/certificates",
+        None,
+        Some(sign),
+    )
+    .await?;
+    ensure!(candidate.0 == StatusCode::OK, "candidate {candidate:?}");
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let chain = candidate.1["certificateChain"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| STANDARD.decode(v.as_str().unwrap()))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let peer = crate::test_support::agent_tls::peer(
+        service.trust(),
+        &chain,
+        &std::path::PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?),
+    )
+    .await?;
+    let input = wire::ActivationRequest {
+        wire_version: 1,
+        issuance_id: serde_json::from_value(candidate.1["issuanceId"].clone())?,
+        operation_id: Uuid::new_v4(),
+    };
+    let a = || RequestAudit::new(case_tenant().into(), "agent_certificate_activate");
+    fixture
+        .audit
+        .inject_next_fault(rss_audit_postgres::PgFault::BeforeCommitPending);
+    ensure!(service.activate(&peer, &input, &a()).await.is_err());
+    ensure!(
+        service
+            .authenticate(&crate::test_support::agent::evidence(agent.credential).unwrap())
+            .await
+            .is_ok()
+    );
+    fixture
+        .audit
+        .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+    ensure!(service.activate(&peer, &input, &a()).await.is_err());
+    let recovered = service.activate(&peer, &input, &a()).await?;
+    ensure!(
+        serde_json::to_value(&recovered.runtime)? == agent.registration,
+        "rotation changed identity or frozen collections"
+    );
+    ensure!(service.authenticate(&peer).await?.registration() == registration);
+    ensure!(
+        service
+            .authenticate(&crate::test_support::agent::evidence(agent.credential).unwrap())
+            .await
+            .err()
+            .unwrap()
+            .code
+            == wire::ErrorCode::CredentialRetired
+    );
     Ok(())
 }
 
 #[tokio::test]
-#[ignore = "MODULE=agent.registration: tenant audit-head fault and credential recovery"]
-async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
+#[ignore = "MODULE=agent.registration"]
+async fn browser_approval_quota_expiry_and_restart_are_durable() -> Result<()> {
+    use rss_mdm_registration_service::agent::Policy;
     let fixture = authority::Authority::open().await?;
-    let owned_router = crate::test_support::agent::router(&fixture).await?;
-    let router = &owned_router;
-    let audit_store = fixture.audit.as_ref();
-    let mut session = fixture.browser("other")?;
-    let browser = &mut session;
-    set_device_grants(
-        browser,
-        router,
-        case::name("device-1"),
-        &["inventory_read", "enrollment"],
-    )
-    .await?;
-    let agent = crate::test_support::agent::register(router, browser).await?;
-    let credential = agent.credential;
-    let registration = agent.registration;
-    let report_id = uuid::Uuid::new_v4();
-    ensure!(agent_call(router, Method::POST, "/api/agent/v6/reports", Some(credential),
-        Some(json!({"wireVersion":6,"collection":registration["collections"][0],"reportId":report_id,"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"collectionFailed"}}))).await?.0 == StatusCode::ACCEPTED);
-    let next_password = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI";
-    let next_credential = &crate::test_support::credential("replacement");
-    browser.operation = Some(uuid::Uuid::new_v4());
-    let (status, next_enrollment) = browser
-        .call(
-            router,
-            Method::POST,
-            "/api/v3/enrollments",
-            Some(json!({"deviceId":crate::test_support::case::name("device-1"),"password":next_password,"source":"agent.builtin"})),
-        )
+    let service = crate::test_support::agent::service_with_policy(
+        &fixture,
+        Some(Policy {
+            user_device_limit: 1,
+            ..Policy::default()
+        }),
+    )?;
+    let user = crate::device::test_support::admin(case_tenant(), "other-a").await?;
+    let a = || RequestAudit::new(case_tenant().into(), "agent_authorization_request");
+    let input: wire::GrantRequest = serde_json::from_value(
+        json!({"wireVersion":1,"operationId":Uuid::new_v4(),"secret":credential("pending"),"platform":"macos","csr":crate::test_support::agent::csr()?}),
+    )?;
+    let pending = service.request(&input, &a()).await?;
+    ensure!(pending.state == wire::GrantState::Pending);
+    let sign: wire::CertificateRequest = serde_json::from_value(
+        json!({"wireVersion":1,"operationId":Uuid::new_v4(),"grantId":pending.grant_id,"secret":input.secret,"csr":input.csr,"runtime":{"capabilities":["inventory.collect.v6"],"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)}}),
+    )?;
+    ensure!(
+        service.issue(&sign, &a()).await.err().unwrap().code == wire::ErrorCode::PermissionDenied
+    );
+    ensure!(
+        service
+            .preview(&user, pending.grant_id)
+            .await?
+            .public_key_fingerprint
+            .len()
+            == 64
+    );
+    let approval = Uuid::new_v4();
+    let approved = service
+        .approve(&user, pending.grant_id, approval, &a())
         .await?;
-    ensure!(status == StatusCode::OK);
-    let next_operation = uuid::Uuid::new_v4();
-    let next_registration = json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":next_operation,"enrollmentId":next_enrollment["enrollmentId"],"password":next_password,"credential":next_credential,"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v6"]});
-    audit_store.inject_next_fault(rss_audit_postgres::PgFault::BeforeCommitPending);
-    let rolled_back = agent_call(
-        router,
-        Method::POST,
-        "/api/agent/v6/registrations",
-        None,
-        Some(next_registration.clone()),
-    )
-    .await?;
+    ensure!(approved.state == wire::GrantState::Available);
+    let mut second = input.clone();
+    second.operation_id = Uuid::new_v4();
     ensure!(
-        rolled_back.0 == StatusCode::SERVICE_UNAVAILABLE
-            && rolled_back.1["code"] == "operation_unknown"
+        service
+            .create(&user, &second, &a())
+            .await
+            .err()
+            .unwrap()
+            .code
+            == wire::ErrorCode::RegistrationLimit
     );
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_agent.operations WHERE tenant_id='{TENANT}' AND operation_id='{next_operation}'", TENANT = case_tenant()))?.trim() == "0", "rolled-back registration persisted");
-    audit_store.inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
-    let unknown = agent_call(
-        router,
-        Method::POST,
-        "/api/agent/v6/registrations",
-        None,
-        Some(next_registration.clone()),
-    )
-    .await?;
+    let revoke = Uuid::new_v4();
+    service
+        .revoke(&user, pending.grant_id, revoke, &a())
+        .await?;
     ensure!(
-        unknown.0 == StatusCode::SERVICE_UNAVAILABLE && unknown.1["code"] == "operation_unknown"
+        service
+            .approve(&user, pending.grant_id, approval, &a())
+            .await?
+            == approved,
+        "approval replay must retain the fixed result"
     );
-    let recovered = agent_call(
-        router,
-        Method::POST,
-        "/api/agent/v6/registrations",
-        None,
-        Some(next_registration),
-    )
-    .await?;
-    ensure!(recovered.0 == StatusCode::OK);
-    let stored_receipt: Value = serde_json::from_str(&pg(&format!(
-        "SELECT result FROM mdm_agent.operations WHERE tenant_id='{TENANT}' AND operation_id='{next_operation}'",
-        TENANT = case_tenant()
-    ))?)?;
+    ensure!(service.issue(&sign, &a()).await.err().unwrap().code == wire::ErrorCode::GrantRevoked);
+    let created = service.create(&user, &second, &a()).await?;
+    let restart = crate::test_support::agent::service_with_policy(
+        &fixture,
+        Some(Policy {
+            user_device_limit: 1,
+            ..Policy::default()
+        }),
+    )?;
+    ensure!(restart.create(&user, &second, &a()).await? == created);
+    let mut invalid = second.clone();
+    invalid.lifetime_seconds = Some(604801);
     ensure!(
-        recovered.1 == stored_receipt,
-        "registration ACK-loss retry did not recover the committed receipt"
+        restart
+            .create(&user, &invalid, &a())
+            .await
+            .err()
+            .unwrap()
+            .code
+            == wire::ErrorCode::MalformedRequest
     );
-    ensure!(agent_call(router, Method::POST, "/api/agent/v6/reports", Some(credential), Some(json!({"wireVersion":6,"collection":registration["collections"][0],"reportId":uuid::Uuid::new_v4(),"sequence":2,"observedAt":2,"body":{"kind":"failed","code":"collectionFailed"}}))).await?.0 == StatusCode::UNAUTHORIZED);
+    pg(&format!(
+        "UPDATE mdm_access.agent_grants SET created_at=clock_timestamp()-interval '25 hours',expires_at=clock_timestamp()-interval '1 hour' WHERE tenant_id='{}' AND id='{}'",
+        case_tenant(),
+        created.grant_id
+    ))?;
+    let mut expired = sign;
+    expired.grant_id = created.grant_id;
     ensure!(
-        agent_call(
-            router,
-            Method::GET,
-            &format!("/api/agent/v6/reports/{report_id}"),
-            Some(credential),
-            None
-        )
-        .await?
-        .0 == StatusCode::UNAUTHORIZED
+        restart.issue(&expired, &a()).await.err().unwrap().code == wire::ErrorCode::GrantExpired
     );
     Ok(())
 }

@@ -173,7 +173,7 @@ pub async fn enabled_source_in(
     registration: uuid::Uuid,
     source: rss_mdm_inventory::ReportSource,
 ) -> Result<bool, sqlx::Error> {
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations r JOIN mdm_access.requests q ON (q.tenant_id,q.id)=(r.tenant_id,r.request_id) JOIN mdm_access.credentials k ON (k.tenant_id,k.registration)=(r.tenant_id,r.id) JOIN mdm_access.report_sources s ON (s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND r.state='active' AND k.state='active' AND q.source=$3 AND s.source=$3 AND s.enabled)").bind(tenant).bind(registration).bind(source.as_str()).fetch_one(c).await
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations r LEFT JOIN mdm_access.requests q ON (q.tenant_id,q.id)=(r.tenant_id,r.request_id) JOIN mdm_access.credentials k ON (k.tenant_id,k.registration)=(r.tenant_id,r.id) JOIN mdm_access.report_sources s ON (s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND r.state='active' AND k.state='active' AND (q.source=$3 OR (r.channel='agent' AND $3='agent.builtin')) AND s.source=$3 AND s.enabled)").bind(tenant).bind(registration).bind(source.as_str()).fetch_one(c).await
 }
 pub async fn stale_registration_in(
     c: &mut sqlx::PgConnection,

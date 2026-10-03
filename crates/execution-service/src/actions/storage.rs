@@ -124,7 +124,7 @@ pub enum ScheduledPolicy {
 pub struct TaskIssue {
     pub run: Uuid,
     pub attempt: Uuid,
-    pub permit: rss_mdm_agent_wire::TaskPermit,
+    pub permit: rss_mdm_agent_wire::runtime::TaskPermit,
     pub expiry: i64,
 }
 impl ScheduledPolicy {
@@ -217,7 +217,7 @@ impl ScheduledPolicy {
         tx: &mut PgTransaction<'_>,
         target: &Target,
         issue: TaskIssue,
-    ) -> Result<rss_mdm_agent_wire::TaskPayload> {
+    ) -> Result<rss_mdm_agent_wire::runtime::TaskPayload> {
         match self {
             Self::Enrollment(v) => v.task(service, tx, target, issue).await,
             Self::Native(_) => Err(Error::Unsupported.into()),
@@ -230,7 +230,7 @@ impl ScheduledPolicy {
                 issue.expiry,
             )?),
             Self::Software(v) => {
-                use rss_mdm_agent_wire as wire;
+                use rss_mdm_agent_wire::runtime as wire;
                 let (platform, architecture) = agent_profile_in(service, tx, target.registration)
                     .await?
                     .ok_or(Error::Forbidden)?;
@@ -258,7 +258,7 @@ impl ScheduledPolicy {
                     .try_into()
                     .map_err(|_| Error::Malformed)?;
                 let spec = wire::SoftwareTaskSpec {
-                    wire_version: wire::WIRE_VERSION,
+                    wire_version: wire::PAYLOAD_VERSION,
                     tenant_id: checked_input(Uuid::parse_str(&tx.tenant_id().to_string()))?,
                     device_id: target.device.clone(),
                     platform: match platform {

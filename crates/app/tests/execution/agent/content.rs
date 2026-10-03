@@ -19,7 +19,7 @@ async fn task_content_range_and_attempt_authorization() -> Result<()> {
     let task = claim(&router).await?;
     let expected = bytes;
     let path = format!(
-        "/api/agent/v6/tasks/{}/content?attempt={}",
+        "/api/agent/runtime/v1/tasks/{}/content?attempt={}",
         task["payload"]["taskId"].as_str().unwrap(),
         task["payload"]["attemptId"].as_str().unwrap()
     );
@@ -40,10 +40,10 @@ async fn task_content_range_and_attempt_authorization() -> Result<()> {
     ] {
         let mut request = Request::builder()
             .uri(&path)
-            .header("host", "mdm.example.test")
-            .header(
-                "authorization",
-                format!("Bearer {CREDENTIAL}", CREDENTIAL = case_credential()),
+            .header("host", "mdm.example.test:9445")
+            .extension(
+                crate::test_support::agent::evidence(case_credential())
+                    .expect("registered TLS peer"),
             )
             .header("range", range);
         if let Some(tag) = if_range {
@@ -79,10 +79,10 @@ async fn task_content_range_and_attempt_authorization() -> Result<()> {
         .oneshot(
             Request::builder()
                 .uri(&path)
-                .header("host", "mdm.example.test")
-                .header(
-                    "authorization",
-                    format!("Bearer {CREDENTIAL}", CREDENTIAL = case_credential()),
+                .header("host", "mdm.example.test:9445")
+                .extension(
+                    crate::test_support::agent::evidence(case_credential())
+                        .expect("registered TLS peer"),
                 )
                 .header("range", "bytes=0-3")
                 .header("range", "bytes=4-7")
@@ -106,10 +106,10 @@ async fn task_content_range_and_attempt_authorization() -> Result<()> {
         .oneshot(
             Request::builder()
                 .uri(wrong)
-                .header("host", "mdm.example.test")
-                .header(
-                    "authorization",
-                    format!("Bearer {CREDENTIAL}", CREDENTIAL = case_credential()),
+                .header("host", "mdm.example.test:9445")
+                .extension(
+                    crate::test_support::agent::evidence(case_credential())
+                        .expect("registered TLS peer"),
                 )
                 .body(Body::empty())?,
         )

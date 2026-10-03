@@ -6,7 +6,7 @@ use crate::{
     catalog::{FrozenSoftware, Reader},
     publication::ExportReader,
 };
-use rss_mdm_agent_wire as w;
+use rss_mdm_agent_wire::runtime as w;
 use rss_mdm_resource as r;
 use rss_transactional_messaging_postgres::PgTransaction;
 use std::{

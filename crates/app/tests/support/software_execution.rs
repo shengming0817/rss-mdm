@@ -15,10 +15,16 @@ pub(crate) fn context(platform: Platform) -> Value {
     json!({"revision":1,"osVersion":os,"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false})
 }
 pub(crate) fn case_device() -> &'static str {
-    crate::test_support::case::name("software-deployment-device")
+    crate::test_support::agent::device(
+        case_credential(),
+        crate::test_support::case::name("software-deployment-device"),
+    )
 }
 pub(crate) fn case_windows_device() -> &'static str {
-    crate::test_support::case::name("windows-software-deployment-device")
+    crate::test_support::agent::device(
+        &crate::test_support::credential("windows-software"),
+        crate::test_support::case::name("windows-software-deployment-device"),
+    )
 }
 pub(crate) fn case_credential() -> &'static str {
     static VALUE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -45,7 +51,7 @@ pub(crate) async fn event_with(
     task: &Value,
     event: Value,
 ) -> Result<(StatusCode, Value)> {
-    agent_call(router,Method::POST,&format!("/api/agent/v6/tasks/{}/events", task["payload"]["taskId"].as_str().unwrap()),Some(credential),
+    agent_call(router,Method::POST,&format!("/api/agent/runtime/v1/tasks/{}/events", task["payload"]["taskId"].as_str().unwrap()),Some(credential),
         Some(json!({"wireVersion":6,"executionContext":task["payload"]["executionContext"],"operationId":Uuid::new_v4(),"attemptId":task["payload"]["attemptId"],"event":event}))).await
 }
 pub(crate) fn result_event(
@@ -55,7 +61,7 @@ pub(crate) fn result_event(
     state: &str,
     reboot: bool,
 ) -> Result<Value> {
-    use rss_mdm_agent_wire as wire;
+    use rss_mdm_agent_wire::runtime as wire;
     let spec: wire::SoftwareTaskSpec = serde_json::from_value(task["payload"].clone())?;
     let mut steps = Vec::new();
     for (index, step) in spec.steps.iter().enumerate() {
@@ -118,7 +124,7 @@ pub(crate) async fn claim_with(
             let response = agent_call(
                 router,
                 Method::POST,
-                "/api/agent/v6/tasks/claim",
+                "/api/agent/runtime/v1/tasks/claim",
                 Some(credential),
                 Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(platform),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
             )
@@ -252,7 +258,7 @@ impl Fixture {
             });
         }
         crate::test_support::identity::set_grants(case_tenant(), &subject, grants).await?;
-        let (device, platform_name, architecture, credential) = match platform {
+        let (_device, platform_name, architecture, credential) = match platform {
             Platform::MacOs => (
                 case_device(),
                 "macos",
@@ -266,24 +272,8 @@ impl Fixture {
                 crate::test_support::credential("windows-software"),
             ),
         };
-        author.operation = Some(Uuid::new_v4());
-        let password = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-        let enrollment = author
-            .call(
-                &router,
-                Method::POST,
-                "/api/v3/enrollments",
-                Some(json!({"deviceId":device,"password":password,"source":"agent.builtin"})),
-            )
-            .await?;
-        ensure!(enrollment.0.is_success(), "enrollment: {enrollment:?}");
-        author.operation = None;
-        let registration=agent_call(&router,Method::POST,"/api/agent/v6/registrations",None,
-            Some(json!({"wireVersion":6,"executionContext":execution_context,"operationId":Uuid::new_v4(),"enrollmentId":enrollment.1["enrollmentId"],"password":password,"credential":credential,"platform":platform_name,"architecture":architecture,"capabilities":capabilities}))).await?;
-        ensure!(
-            registration.0 == StatusCode::CREATED,
-            "registration: {registration:?}"
-        );
+        let (_,registration)=crate::test_support::agent::enroll_profile(&router,&mut author,&credential,json!({"capabilities":capabilities,"platform":platform_name,"architecture":architecture,"executionContext":execution_context})).await?;
+        let device = registration["deviceId"].as_str().unwrap();
         let scope = prepared_scope(&base, &mut author, &router, &[device])
             .await
             .map_err(|e| anyhow::anyhow!("software fixture scope: {e:#}"))?;

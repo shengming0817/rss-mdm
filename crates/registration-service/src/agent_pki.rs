@@ -1,20 +1,10 @@
 //! The registration owner is the only producer of Agent signing authorization.
 //! ref: smallstep/certificates authority/provisioner/jwk.go and api/sign.go@v0.30.2.
-use crate::{
-    Error,
-    database::db,
-    enrollment::{
-        Password, equal,
-        store::{request, uuid},
-    },
-};
+use crate::Error;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use ring::{rand::SystemRandom, signature};
-use rss_mdm_audit_integration::{AuditStore, Fact, RequestAudit, budget::AuditBudget};
-use rss_mdm_authorization_service::context::AuthorizedPrincipal;
 use rss_mdm_certificate::agent::{AgentTrust, IssuedAgentCertificate, SUBJECT, VerifiedAgentCsr};
 use serde::{Deserialize, Serialize};
-use sqlx::Row;
 use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -43,7 +33,6 @@ pub enum IssuanceError {
 pub struct AuthorizedAgentIssuanceIntent {
     attempt: Uuid,
     request: Uuid,
-    tenant: rss_request_context::TenantId,
     csr: VerifiedAgentCsr,
     identity: String,
     deadline: i64,
@@ -68,7 +57,6 @@ pub struct AgentIssuer {
     trust: Arc<AgentTrust>,
     days: u16,
     clock: Arc<dyn Clock>,
-    audit: Arc<AuditStore>,
 }
 pub struct Provider {
     pub ca_url: String,
@@ -83,7 +71,6 @@ impl AgentIssuer {
         pkcs8: &[u8],
         trust: Arc<AgentTrust>,
         clock: Arc<dyn Clock>,
-        audit: Arc<AuditStore>,
     ) -> Result<Self, IssuanceError> {
         let invalid = || IssuanceError::Configuration;
         let mut origin = url::Url::parse(&provider.ca_url).map_err(|_| invalid())?;
@@ -124,79 +111,56 @@ impl AgentIssuer {
             trust,
             days: provider.validity_days,
             clock,
-            audit,
         })
+    }
+    /// Freeze the signing issuer, provisioner and its public key without retaining secrets.
+    pub(crate) fn authority_digest(&self) -> String {
+        use ring::signature::KeyPair;
+        crate::enrollment::digest(&(
+            "agent-ca/v1",
+            self.trust.issuer_digest(),
+            "rss-agent",
+            &self.kid,
+            URL_SAFE_NO_PAD.encode(self.key.public_key().as_ref()),
+        ))
     }
     pub fn trust(&self) -> &Arc<AgentTrust> {
         &self.trust
     }
-    /// Validate current PG authority, then commit its audit before external signing.
-    pub async fn authorize(
+    /// Freeze a validated, already persisted signing intention. Only the lifecycle owner calls this.
+    pub(crate) fn persisted_intent(
         &self,
-        proof: &AuthorizedPrincipal,
-        id: Uuid,
-        password: &Password,
-        csr: &[u8],
-        audit: &RequestAudit,
-    ) -> Result<AuthorizedAgentIssuanceIntent, IssuanceError> {
-        let csr = VerifiedAgentCsr::verify(csr).map_err(|_| IssuanceError::Request)?;
-        proof
-            .bind_audit(audit)
-            .map_err(|e| IssuanceError::Authorization(e.into()))?;
-        let tenant = rss_request_context::TenantId::parse(proof.tenant_id())
-            .map_err(|_| IssuanceError::Request)?;
-        let attempt = Uuid::new_v4();
-        audit.operation(attempt, "agent_certificate_issue");
-        let budget = AuditBudget::new(Duration::from_secs(2));
-        let control = budget.control();
-        let outcome=self.audit.write(tenant,&control,(&self.audit,proof,password,&csr,id,attempt,&self.trust,self.days,audit),
-            |(store,proof,password,csr,id,attempt,trust,days,audit),tx| Box::pin(async move {
-                let (device,deadline,start)=tx.with_connection_context(&mut (*proof,*password,*id),|(proof,password,id),c| Box::pin(async move {
-                    let row=request(c,proof.tenant_id(),*id).await?;
-                    let device:String=row.try_get("device").map_err(db)?;
-                    proof.enrollment(&device)?;
-                    if row.try_get::<String,_>("state").map_err(db)?!="pending" || !row.try_get::<bool,_>("live").map_err(db)? || row.try_get::<String,_>("source").map_err(db)?!="agent.builtin"
-                        || row.try_get::<String,_>("actor").map_err(db)?!=proof.principal_id() || row.try_get::<String,_>("instance").map_err(db)?!=proof.instance_id()
-                        || !equal(&password.digest(proof.tenant_id(),&device)?,&row.try_get::<String,_>("password_digest").map_err(db)?) { return Err(Error::Forbidden); }
-                    uuid(&row,"issuance_operation")?;
-                    let deadline:i64=row.try_get("expiry").map_err(db)?;
-                    let start:i64=sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint").fetch_one(c).await.map_err(db)?;
-                    Ok::<_,Error>((device,deadline,start))
-                })).await?;
-                let end=start.checked_add(i64::from(*days)*86400).ok_or(Error::Configuration)?;
-                if !trust.permits_window(start,end) { return Err(Error::Configuration); }
-                let identity=rss_mdm_certificate::agent::identity(Uuid::parse_str(proof.tenant_id()).map_err(|_|Error::Configuration)?,&device).map_err(|_|Error::Configuration)?;
-                audit.target(&device);
-                let fact=Fact::business(audit,&format!("agent-pki:{attempt}:authorized"),&csr.digest(),200,"success",Some(*id))?
-                    .with_details(serde_json::json!({"phase":"authorized","attempt":attempt,"identity":identity,"spki":csr.spki(),"issuer":trust.issuer_digest(),"notBefore":start,"notAfter":end}))?;
-                store.append(tx,&fact,false).await.map_err(Error::from)?;
-                audit.mark_commit_started();
-                Ok::<_,Error>((identity,deadline,start,end))
-            })).await;
-        let (identity, deadline, start, end) =
-            crate::operations::settle(outcome, audit).map_err(IssuanceError::Authorization)?;
+        spec: crate::agent::issuance::Signing,
+    ) -> Result<AuthorizedAgentIssuanceIntent, Error> {
+        let csr = VerifiedAgentCsr::verify(&spec.csr).map_err(|_| Error::Corrupt)?;
+        let end = spec.end;
+        if !self.trust.permits_window(spec.start, end) {
+            return Err(Error::Configuration);
+        }
         Ok(AuthorizedAgentIssuanceIntent {
-            attempt,
-            request: id,
-            tenant,
+            attempt: spec.attempt,
+            request: spec.grant,
             csr,
-            identity,
-            deadline,
-            start,
+            identity: spec.identity,
+            deadline: spec.deadline,
+            start: spec.start,
             end,
         })
     }
-    /// Consume the authorization once. A signature does not activate a registration.
+    pub(crate) fn end(&self, start: i64) -> Result<i64, Error> {
+        let end = start
+            .checked_add(i64::from(self.days) * 86400)
+            .ok_or(Error::Configuration)?;
+        if !self.trust.permits_window(start, end) {
+            return Err(Error::Configuration);
+        }
+        Ok(end)
+    }
+    /// Consume one persisted authorization. Persistence and audit belong to the lifecycle owner.
     pub async fn issue(
         &self,
         intent: AuthorizedAgentIssuanceIntent,
-        audit: &RequestAudit,
     ) -> Result<Issued, IssuanceError> {
-        if audit.tenant() != intent.tenant.to_string()
-            || audit.snapshot().operation_id != Some(intent.attempt)
-        {
-            return Err(IssuanceError::Authorization(Error::Forbidden));
-        }
         let now = self
             .clock
             .unix_seconds()
@@ -208,52 +172,7 @@ impl AgentIssuer {
         {
             return Err(IssuanceError::Authorization(Error::Unauthorized));
         }
-        let result = self.sign(&intent, now).await;
-        let (status, label, details) = match &result {
-            Ok(c) => (
-                200,
-                "success",
-                serde_json::json!({"phase":"signed","certificate":c.metadata,"csr":c.csr_digest}),
-            ),
-            Err(_) => (
-                503,
-                "unknown",
-                serde_json::json!({"phase":"issuance_unknown","attempt":intent.attempt}),
-            ),
-        };
-        let fact = Fact::business(
-            audit,
-            &format!("agent-pki:{}:result", intent.attempt),
-            &intent.csr.digest(),
-            status,
-            label,
-            Some(intent.request),
-        )
-        .and_then(|f| f.with_details(details))
-        .map_err(|_| IssuanceError::Unknown {
-            attempt: intent.attempt,
-        })?;
-        let budget = AuditBudget::new(Duration::from_secs(2));
-        let control = budget.control();
-        let outcome = self
-            .audit
-            .write(
-                intent.tenant,
-                &control,
-                (&self.audit, &fact, audit),
-                |(store, fact, audit), tx| {
-                    Box::pin(async move {
-                        store.append(tx, fact, false).await.map_err(Error::from)?;
-                        audit.mark_commit_started();
-                        Ok::<_, Error>(())
-                    })
-                },
-            )
-            .await;
-        crate::operations::settle(outcome, audit).map_err(|_| IssuanceError::Unknown {
-            attempt: intent.attempt,
-        })?;
-        result.map(|certificate| Issued {
+        self.sign(&intent, now).await.map(|certificate| Issued {
             attempt: intent.attempt,
             request: intent.request,
             certificate,

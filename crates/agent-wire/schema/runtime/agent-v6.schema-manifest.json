@@ -2,12 +2,8 @@
   "wireVersion": 6,
   "schemas": [
     {
-      "type": "RegistrationRequest",
-      "file": "registration-request-v6.schema.json"
-    },
-    {
-      "type": "RegistrationReceipt",
-      "file": "registration-receipt-v6.schema.json"
+      "type": "BindingProfile",
+      "file": "binding-profile-v6.schema.json"
     },
     {
       "type": "ReportRequest",
@@ -48,10 +44,7 @@
     {
       "type": "TaskEventAck",
       "file": "task-event-ack-v6.schema.json"
-    },
-    {
-      "type": "ManagedRegistrationRequest",
-      "file": "managed-registration-request-v6.schema.json"
     }
-  ]
+  ],
+  "apiVersion": 1
 }

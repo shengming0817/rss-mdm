@@ -14,6 +14,8 @@ pub enum Error {
     CommitUnknown,
     #[error("rollback unconfirmed")]
     RollbackFailed,
+    #[error("Agent credential rejected")]
+    Agent(rss_mdm_agent_wire::enroll::ErrorCode),
     #[error("identity rejected")]
     Unauthorized,
     #[error("permission denied")]
@@ -62,6 +64,7 @@ impl From<rss_mdm_registration_service::Error> for Error {
     fn from(e: rss_mdm_registration_service::Error) -> Self {
         use rss_mdm_registration_service::Error as R;
         match e {
+            R::Agent(c) => Self::Agent(c),
             R::Malformed => Self::Malformed,
             R::Unauthorized => Self::Unauthorized,
             R::Forbidden => Self::Forbidden,

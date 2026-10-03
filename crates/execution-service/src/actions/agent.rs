@@ -5,7 +5,7 @@ use super::{
 use crate::transaction::fingerprint;
 use crate::{Error, device::DevicePrincipal};
 use crate::{ExecutionService, Result, checked_input, storage, stored};
-use rss_mdm_agent_wire as wire;
+use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_audit_integration::Fact;
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde_json::{Value, json};

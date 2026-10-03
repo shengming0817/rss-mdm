@@ -50,7 +50,7 @@ pub async fn asset(
     )?;
     let p = app
         .devices
-        .management_principal(&app.mount.credential(leaf.fingerprint()))
+        .management_principal(&app.mount.credential(leaf.fingerprint())?)
         .await?;
     audit.identify_device(p.registration());
     audit.target(p.device());

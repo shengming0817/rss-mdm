@@ -1,9 +1,9 @@
-//! Native peer proof, frozen Policy authority, Enrollment and Agent binding share one audit commit.
+//! Native peer proof and frozen installation authority persist a grant in one audit commit.
 use super::*;
 use crate::agent_install;
 use crate::device::DevicePrincipal;
 use crate::frozen::Frozen;
-use rss_mdm_agent_wire as wire;
+use rss_mdm_agent_wire::{enroll, runtime as wire};
 use rss_mdm_audit_integration::Fact;
 use sqlx::{PgConnection, Row};
 impl ExecutionService {
@@ -11,16 +11,17 @@ impl ExecutionService {
         &self,
         p: &DevicePrincipal,
         source: rss_mdm_inventory::ReportSource,
-        input: &wire::ManagedRegistrationRequest,
+        input: &enroll::NativeGrantRequest,
+        policy: &rss_mdm_registration_service::agent::Policy,
         audit: &RequestAudit,
-    ) -> std::result::Result<(wire::RegistrationReceipt, bool), Error> {
+    ) -> std::result::Result<(enroll::GrantReceipt, bool), Error> {
         input.validate().map_err(|_| Error::Malformed)?;
         if p.tenant() != self.tenant || source == rss_mdm_inventory::ReportSource::AgentBuiltin {
             return Err(Error::Forbidden);
         }
         audit.identify_device(p.registration());
         audit.target(p.device());
-        audit.operation(input.operation_id, "agent_registration");
+        audit.operation(input.operation_id, "agent_native_grant");
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(6));
         let control = budget.control();
         let result = self
@@ -28,25 +29,25 @@ impl ExecutionService {
             .write(
                 self.tenant,
                 &control,
-                (self, p, source, input, audit),
+                (self, p, source, input, policy, audit),
                 |ctx, tx| {
                     Box::pin(async move {
-                        let (service, p, source, input, audit) = *ctx;
+                        let (service, p, source, input, policy, audit) = *ctx;
                         let (receipt, replay) = tx
                             .with_connection_context(
-                                &mut (service, p, source, input, audit),
+                                &mut (service, p, source, input, policy),
                                 |ctx, c| {
                                     Box::pin(async move {
-                                        let (service, p, source, input, audit) = *ctx;
+                                        let (service, p, source, input, policy) = *ctx;
                                         service
-                                            .register_managed_on(c, p, source, input, audit)
+                                            .register_managed_on(c, p, source, input, policy)
                                             .await
                                     })
                                 },
                             )
                             .await?;
                         let digest = rss_mdm_registration_service::enrollment::digest(&(
-                            "mdm.agent.managed-registration/v6",
+                            "mdm.agent.native-grant/v1",
                             input,
                         ));
                         let fact = Fact::business(
@@ -101,9 +102,26 @@ impl ExecutionService {
         c: &mut PgConnection,
         p: &DevicePrincipal,
         source: rss_mdm_inventory::ReportSource,
-        input: &wire::ManagedRegistrationRequest,
-        audit: &RequestAudit,
-    ) -> std::result::Result<(wire::RegistrationReceipt, bool), Error> {
+        input: &enroll::NativeGrantRequest,
+        policy: &rss_mdm_registration_service::agent::Policy,
+    ) -> std::result::Result<(enroll::GrantReceipt, bool), Error> {
+        let grant = self
+            .authorize_managed_on(c, p, source, input.installation_operation, &input.runtime)
+            .await?;
+        let native = serde_json::json!({"installation":input.installation_operation,"registration":p.registration(),"credential":p.credential(),"generation":p.generation(),"source":source,"runtime":input.runtime});
+        rss_mdm_registration_service::agent::native::create_in(c, grant, input, &native, policy)
+            .await
+            .map_err(Into::into)
+    }
+    async fn authorize_managed_on(
+        &self,
+        c: &mut PgConnection,
+        p: &DevicePrincipal,
+        source: rss_mdm_inventory::ReportSource,
+        installation: Uuid,
+        runtime: &enroll::RuntimeProfile,
+    ) -> std::result::Result<rss_mdm_registration_service::enrollment::managed::Authority, Error>
+    {
         let tenant = self.tenant.to_string();
         crate::authorization::lock_on(c, &tenant, &self.instance).await?;
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2390))")
@@ -119,14 +137,11 @@ impl ExecutionService {
         crate::device::store::revalidate_source(c, p, source).await?;
         // The existing request lock serializes absent receipts and distinct retry IDs for one install.
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2348))")
-            .bind(format!("install:{tenant}:{}", input.installation_operation))
+            .bind(format!("install:{tenant}:{}", installation))
             .execute(&mut *c)
             .await
             .map_err(crate::database::db)?;
-        if let Some(receipt) = self.agent_store.managed_replay(c, p, input, audit).await? {
-            return Ok((receipt, true));
-        }
-        let row=sqlx::query("SELECT o.device,o.registration,o.registration_generation,o.request,o.input_context,o.approval,mdm_commands.installation_status(o.id) AS status FROM mdm_commands.operations o WHERE o.tenant_id=$1::uuid AND o.id=$2").bind(&tenant).bind(input.installation_operation).fetch_optional(&mut *c).await.map_err(crate::database::db)?.ok_or(Error::Forbidden)?;
+        let row=sqlx::query("SELECT o.device,o.registration,o.registration_generation,o.request,o.input_context,o.approval,mdm_commands.installation_status(o.id) AS status FROM mdm_commands.operations o WHERE o.tenant_id=$1::uuid AND o.id=$2").bind(&tenant).bind(installation).fetch_optional(&mut *c).await.map_err(crate::database::db)?.ok_or(Error::Forbidden)?;
         if row
             .try_get::<Uuid, _>("registration")
             .map_err(crate::database::db)?
@@ -145,7 +160,7 @@ impl ExecutionService {
         let request = super::input_storage::open_row(
             &self.protection,
             self.tenant,
-            input.installation_operation,
+            installation,
             &row,
             "request",
         )?;
@@ -158,13 +173,13 @@ impl ExecutionService {
         }
         let (profile, arch) = package.target.parts();
         if !matches!(
-            (profile, input.platform),
+            (profile, runtime.platform),
             (
                 rss_mdm_policy::Platform::Windows,
                 wire::TaskPlatform::Windows
             ) | (rss_mdm_policy::Platform::Macos, wire::TaskPlatform::Macos)
         ) || !matches!(
-            (arch, input.architecture),
+            (arch, runtime.architecture),
             (
                 rss_mdm_policy::Architecture::X86_64,
                 wire::TaskArchitecture::X86_64
@@ -223,17 +238,12 @@ impl ExecutionService {
             c,
             p,
             source,
-            input.installation_operation,
+            installation,
             request.deadline,
             &action.enrollment,
         )
         .await?;
-        Ok((
-            self.agent_store
-                .managed_register(c, grant, input, audit)
-                .await?,
-            false,
-        ))
+        Ok(grant)
     }
 }
 fn audit_error(e: rss_audit_postgres::TransactionError<Error>) -> Error {
@@ -243,5 +253,31 @@ fn audit_error(e: rss_audit_postgres::TransactionError<Error>) -> Error {
             rss_mdm_audit_integration::Error::from(e).into()
         }
         rss_audit_postgres::TransactionError::Rollback { .. } => Error::RollbackFailed,
+    }
+}
+
+impl rss_mdm_registration_service::agent::NativeAdmission for ExecutionService {
+    fn validate<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        source: &'a rss_mdm_registration_service::agent::native::Source,
+    ) -> rss_mdm_registration_service::agent::Pending<'a, ()> {
+        Box::pin(async move {
+            self.authorize_managed_on(
+                c,
+                source.principal(),
+                source.report_source(),
+                source.installation(),
+                source.runtime(),
+            )
+            .await
+            .map(|_| ())
+            .map_err(|e| match e {
+                Error::Forbidden | Error::Unauthorized => {
+                    rss_mdm_registration_service::Error::Forbidden
+                }
+                _ => rss_mdm_registration_service::Error::Storage,
+            })
+        })
     }
 }

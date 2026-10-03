@@ -70,6 +70,34 @@
         "expires_at"
       ],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "agent_grants",
+      "read_write": true,
+      "updates": [
+        "actor",
+        "instance",
+        "state"
+      ],
+      "delete_policy": null,
+      "insert_policy": "current_user<>'mdm_command_runtime'::nameorsource='native'::text"
+    },
+    {
+      "schema": "mdm_access",
+      "table": "agent_issuances",
+      "read_write": true,
+      "updates": [
+        "state",
+        "certificate_chain",
+        "metadata",
+        "fingerprint",
+        "activation_operation",
+        "activation_digest",
+        "activation_result",
+        "credential"
+      ],
+      "delete_policy": null
     }
   ],
   "functions": [],

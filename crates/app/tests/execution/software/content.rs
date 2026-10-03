@@ -35,14 +35,13 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
     let expired = Request::builder()
         .method(Method::GET)
         .uri(format!(
-            "/api/agent/v6/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
+            "/api/agent/runtime/v1/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
             task["payload"]["taskId"].as_str().unwrap(),
             task["payload"]["attemptId"].as_str().unwrap()
         ))
-        .header("host", "mdm.example.test")
-        .header(
-            "authorization",
-            format!("Bearer {CREDENTIAL}", CREDENTIAL = case_credential()),
+        .header("host", "mdm.example.test:9445")
+        .extension(
+            crate::test_support::agent::evidence(case_credential()).expect("registered TLS peer"),
         )
         .body(Body::empty())?;
     ensure!(router.clone().oneshot(expired).await?.status() == StatusCode::FORBIDDEN);
@@ -53,14 +52,13 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
     let content = Request::builder()
         .method(Method::GET)
         .uri(format!(
-            "/api/agent/v6/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
+            "/api/agent/runtime/v1/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
             task["payload"]["taskId"].as_str().unwrap(),
             task["payload"]["attemptId"].as_str().unwrap()
         ))
-        .header("host", "mdm.example.test")
-        .header(
-            "authorization",
-            format!("Bearer {CREDENTIAL}", CREDENTIAL = case_credential()),
+        .header("host", "mdm.example.test:9445")
+        .extension(
+            crate::test_support::agent::evidence(case_credential()).expect("registered TLS peer"),
         )
         .body(Body::empty())?;
     let content = router.clone().oneshot(content).await?;
@@ -73,14 +71,13 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
     let prerequisite = Request::builder()
         .method(Method::GET)
         .uri(format!(
-            "/api/agent/v6/tasks/{}/content?attempt={}&artifact=0%2Fscripts%2Finstall.sh",
+            "/api/agent/runtime/v1/tasks/{}/content?attempt={}&artifact=0%2Fscripts%2Finstall.sh",
             task["payload"]["taskId"].as_str().unwrap(),
             task["payload"]["attemptId"].as_str().unwrap()
         ))
-        .header("host", "mdm.example.test")
-        .header(
-            "authorization",
-            format!("Bearer {CREDENTIAL}", CREDENTIAL = case_credential()),
+        .header("host", "mdm.example.test:9445")
+        .extension(
+            crate::test_support::agent::evidence(case_credential()).expect("registered TLS peer"),
         )
         .body(Body::empty())?;
     let prerequisite = router.clone().oneshot(prerequisite).await?;
@@ -98,14 +95,13 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
     let denied = Request::builder()
         .method(Method::GET)
         .uri(format!(
-            "/api/agent/v6/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
+            "/api/agent/runtime/v1/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
             task["payload"]["taskId"].as_str().unwrap(),
             task["payload"]["attemptId"].as_str().unwrap()
         ))
-        .header("host", "mdm.example.test")
-        .header(
-            "authorization",
-            format!("Bearer {CREDENTIAL}", CREDENTIAL = case_credential()),
+        .header("host", "mdm.example.test:9445")
+        .extension(
+            crate::test_support::agent::evidence(case_credential()).expect("registered TLS peer"),
         )
         .body(Body::empty())?;
     ensure!(router.clone().oneshot(denied).await?.status() == StatusCode::FORBIDDEN);
@@ -143,14 +139,13 @@ async fn uninstall_content_permission() -> Result<()> {
     let content = Request::builder()
         .method(Method::GET)
         .uri(format!(
-            "/api/agent/v6/tasks/{}/content?attempt={}&artifact=0%2Fremove",
+            "/api/agent/runtime/v1/tasks/{}/content?attempt={}&artifact=0%2Fremove",
             removal_task["payload"]["taskId"].as_str().unwrap(),
             removal_task["payload"]["attemptId"].as_str().unwrap()
         ))
-        .header("host", "mdm.example.test")
-        .header(
-            "authorization",
-            format!("Bearer {CREDENTIAL}", CREDENTIAL = case_credential()),
+        .header("host", "mdm.example.test:9445")
+        .extension(
+            crate::test_support::agent::evidence(case_credential()).expect("registered TLS peer"),
         )
         .body(Body::empty())?;
     let content = router.clone().oneshot(content).await?;
@@ -204,12 +199,14 @@ async fn windows_variant_content() -> Result<()> {
     let windows_content = Request::builder()
         .method(Method::GET)
         .uri(format!(
-            "/api/agent/v6/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
+            "/api/agent/runtime/v1/tasks/{}/content?attempt={}&artifact=1%2Fpackage",
             windows_task["payload"]["taskId"].as_str().unwrap(),
             windows_task["payload"]["attemptId"].as_str().unwrap()
         ))
-        .header("host", "mdm.example.test")
-        .header("authorization", format!("Bearer {windows_credential}"))
+        .header("host", "mdm.example.test:9445")
+        .extension(
+            crate::test_support::agent::evidence(&windows_credential).expect("registered TLS peer"),
+        )
         .body(Body::empty())?;
     let windows_content = router.clone().oneshot(windows_content).await?;
     ensure!(windows_content.status() == StatusCode::OK);

@@ -135,7 +135,7 @@ pub fn routers(
         .route("/ManagementServer/MDM.svc", post(management::manage))
         .route("/ManagementServer/Declared.svc", post(management::manage))
         .route(
-            "/api/agent/v6/managed-registrations",
+            "/api/agent/enroll/v1/native-grants",
             post(management::register_agent),
         );
     (
@@ -503,6 +503,7 @@ async fn enrollment(
 }
 
 pub struct HttpState {
+    pub agent_policy: Option<rss_mdm_registration_service::agent::Policy>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub mount: crate::device::ChannelMount,
     pub audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,

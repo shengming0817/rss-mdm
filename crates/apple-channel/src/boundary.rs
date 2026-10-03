@@ -45,7 +45,7 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
         .get::<axum::extract::MatchedPath>()
         .map(|p| p.as_str())
         .unwrap_or("");
-    let agent = route == "/api/agent/v6/managed-registrations";
+    let agent = route == "/api/agent/enroll/v1/native-grants";
     let audit = RequestAudit::new(envelope.tenant.clone(), route_action(route));
     let id = audit.request_id();
     let _permit = match envelope.admission.clone().try_acquire_owned() {
@@ -154,7 +154,7 @@ fn project(error: Error) -> Response {
 }
 fn route_action(route: &str) -> &'static str {
     match route {
-        "/api/agent/v6/managed-registrations" => "agent_registration",
+        "/api/agent/enroll/v1/native-grants" => "agent_native_grant",
         "/checkin" => "apple_checkin",
         "/native/apple/ddm/assets/{operation}/{identifier}" => "apple_asset",
         "/mdm" => "apple_management",
@@ -183,16 +183,38 @@ fn agent_response(response: Response) -> Response {
                 R::Storage
             }
         });
+    if let Some(body) = response
+        .extensions()
+        .get::<rss_mdm_agent_wire::enroll::ErrorBody>()
+        .cloned()
+    {
+        let (parts, _) = response.into_parts();
+        let mut projected = (StatusCode::BAD_REQUEST, Json(body)).into_response();
+        projected.extensions_mut().extend(parts.extensions);
+        return projected;
+    }
     let (status, body) = response
         .extensions()
-        .get::<rss_mdm_agent_wire::ErrorBody>()
+        .get::<rss_mdm_agent_wire::runtime::ErrorBody>()
         .copied()
         .map(|body| (400, body))
         .unwrap_or_else(|| rejection.agent_error());
+    use rss_mdm_agent_wire::enroll::{ErrorBody, ErrorCode as C};
+    let code = match body.code {
+        rss_mdm_agent_wire::runtime::ErrorCode::InvalidIdentity => C::InvalidIdentity,
+        rss_mdm_agent_wire::runtime::ErrorCode::PermissionDenied => C::PermissionDenied,
+        rss_mdm_agent_wire::runtime::ErrorCode::OperationConflict => C::OperationConflict,
+        rss_mdm_agent_wire::runtime::ErrorCode::OperationUnknown => C::ActivationUnknown,
+        rss_mdm_agent_wire::runtime::ErrorCode::ServiceUnavailable => C::ServiceUnavailable,
+        _ => C::MalformedRequest,
+    };
     let (parts, _) = response.into_parts();
     let mut projected = (
         StatusCode::from_u16(status).expect("closed status"),
-        Json(body),
+        Json(ErrorBody {
+            code,
+            issuance_id: None,
+        }),
     )
         .into_response();
     projected.extensions_mut().extend(parts.extensions);

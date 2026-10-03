@@ -417,9 +417,13 @@ pub(crate) async fn agent_call(
     let mut request = Request::builder()
         .method(method)
         .uri(path)
-        .header("host", "mdm.example.test");
-    if let Some(secret) = bearer {
-        request = request.header("authorization", format!("Bearer {secret}"));
+        .header("host", "mdm.example.test:9445");
+    if let Some(label) = bearer {
+        if let Some(peer) = agent::evidence(label) {
+            request = request.extension(peer)
+        } else {
+            request = request.header("authorization", format!("Bearer {label}"))
+        }
     }
     let body = if let Some(value) = body {
         request = request.header("content-type", "application/json");
@@ -445,12 +449,11 @@ pub(crate) async fn agent_call(
             content_type.as_deref() == Some("application/json"),
             "Agent error escaped JSON content type: {status} {content_type:?}"
         );
-        ensure!(
-            value
-                .as_object()
-                .is_some_and(|body| body.len() == 1 && body["code"].is_string()),
-            "Agent error escaped closed ErrorBody: {status} {value}"
-        );
+        if path.starts_with("/api/agent/enroll/v1/") {
+            let _: rss_mdm_agent_wire::enroll::ErrorBody = serde_json::from_value(value.clone())?;
+        } else {
+            let _: rss_mdm_agent_wire::runtime::ErrorBody = serde_json::from_value(value.clone())?;
+        }
     }
     Ok((status, value))
 }
@@ -468,7 +471,7 @@ pub(crate) async fn wait_agent_status(
             let (status, body) = agent_call(
                 router,
                 Method::GET,
-                &format!("/api/agent/v6/reports/{report_id}"),
+                &format!("/api/agent/runtime/v1/reports/{report_id}"),
                 Some(credential),
                 None,
             )
@@ -587,3 +590,5 @@ pub(crate) fn secret(label: &str) -> [u8; 32] {
 }
 
 pub(crate) mod channel_onboarding;
+
+pub(crate) mod agent_tls;

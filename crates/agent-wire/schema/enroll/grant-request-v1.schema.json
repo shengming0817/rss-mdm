@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rss.example/agent/enroll/v1/GrantRequest",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "wireVersion": {
+      "const": 1
+    },
+    "operationId": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    "secret": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    },
+    "platform": {
+      "enum": [
+        "windows",
+        "macos"
+      ]
+    },
+    "lifetimeSeconds": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 604800
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "csr": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 43692
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "wireVersion",
+    "operationId",
+    "secret",
+    "platform"
+  ],
+  "$defs": {}
+}

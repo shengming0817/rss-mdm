@@ -54,6 +54,9 @@ pub async fn create_enrollment(
     proof.enrollment(permission.device())?;
     let device = permission.device();
     let password_digest = password.digest(proof.tenant_id(), device)?;
+    if source == ReportSource::AgentBuiltin {
+        return Err(Error::Malformed);
+    }
     if (source == ReportSource::MdmWindows) != windows_profile.is_some() {
         return Err(Error::Malformed);
     }
@@ -399,29 +402,9 @@ pub async fn mark_bound_in(
     tx: &mut sqlx::PgConnection,
     tenant: &str,
     auth: &Authorization,
-    agent: bool,
 ) -> Result<(), Error> {
-    let query = if agent {
-        "UPDATE mdm_access.requests SET state='bound' WHERE tenant_id=$1::uuid AND id=$2::uuid AND state='pending' AND source='agent.builtin' AND password_version=$3 AND credential_ref=$4::uuid AND expires_at>clock_timestamp()"
-    } else {
-        "UPDATE mdm_access.requests SET state='bound' WHERE tenant_id=$1::uuid AND id=$2::uuid AND state='pending' AND password_version=$3 AND expires_at>clock_timestamp()"
-    };
-    let mut statement = sqlx::query(sqlx::AssertSqlSafe(query))
-        .bind(tenant)
-        .bind(auth.id.to_string())
-        .bind(auth.version);
-    if agent {
-        statement = statement.bind(auth.credential_ref.to_string());
-    }
-    if statement
-        .execute(&mut *tx)
-        .await
-        .map_err(db)?
-        .rows_affected()
-        != 1
-    {
-        return Err(Error::Unauthorized);
-    }
+    if sqlx::query("UPDATE mdm_access.requests SET state='bound' WHERE tenant_id=$1::uuid AND id=$2::uuid AND state='pending' AND password_version=$3 AND expires_at>clock_timestamp()")
+        .bind(tenant).bind(auth.id).bind(auth.version).execute(tx).await.map_err(db)?.rows_affected()!=1{return Err(Error::Unauthorized)}
     Ok(())
 }
 

@@ -1,6 +1,6 @@
 # 企业脚本、采集模板与任务
 
-Resource.Script 和 Resource.Software 分别持有不可变执行定义。管理入口为 `/api/v3/resources/{id}`，Agent 使用 `/api/agent/v6` 的签名任务协议。本页描述服务端接线；生产 Agent 消费归 #2564，受控 PG/HTTP 测试不构成真机证明。
+Resource.Script 和 Resource.Software 分别持有不可变执行定义。管理入口为 `/api/v3/resources/{id}`，Agent 使用 `/api/agent/runtime/v1` 的签名任务协议。本页描述服务端接线；生产 Agent 消费归 #2564，受控 PG/HTTP 测试不构成真机证明。
 
 ## 配置与内容
 
@@ -77,7 +77,7 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）
 
 ## Agent 状态与结果
 
-1. `POST /api/agent/v6/tasks/claim`：wireVersion=6、operationId、当前 profiles 和 executionContext，返回至多一个签名 offer 及有界取消页。领取候选与取消页独立选择，每个 registration 的取消游标持久化并循环遍历。task=null 的轮询不写永久执行回执，重试可看到新状态；实际 offer 在有效且仍获授权期间精确重放。
+1. `POST /api/agent/runtime/v1/tasks/claim`：wireVersion=6、operationId、当前 profiles 和 executionContext，返回至多一个签名 offer 及有界取消页。领取候选与取消页独立选择，每个 registration 的取消游标持久化并循环遍历。task=null 的轮询不写永久执行回执，重试可看到新状态；实际 offer 在有效且仍获授权期间精确重放。
 2. 验签后按 task/attempt 下载脚本 `/tasks/{taskId}/content?attempt={attemptId}`；软件按签名产物 key 下载 `/tasks/{taskId}/content?attempt={attemptId}&artifact={urlEncodedKey}`。支持单段 Range、ETag 和 If-Range；每次都检查当前凭据、企业批准及任务权限。客户端最终核对长度/hash。
 3. 向 `/tasks/{taskId}/events` 提交 received，再提交 start。事件包含 wireVersion=6、operationId、attemptId、event、executionContext。只有独立签名的短期 Start permit 可以授权启动，offer 本身不能启动。
 4. 返回 result（exitCode、quality、output、diagnostics）或 cancelled。diagnostics 的完整字段、闭合分类和预算见 [wire schema](../../crates/agent-wire/schema)。每次重试保留相同 operationId 与内容。已开始而结果未知的任务不自动重新领取；迟到的同 attempt 证据可以解释 Unknown。
@@ -111,7 +111,7 @@ MDM 与 Agent 各自持有 DeviceId、注册世代、凭据、采集和策略。
 
 `action:{kind:"ensure_agent_installed",resource:{kind:"software",id,version,variants},admissionOperation,runLifetimeSeconds}` 仅引用当前批准的固定 Agent 软件。发布需要覆盖未来成员的全设备 SoftwareDeploy 与 Enrollment 授权；它们随策略冻结，后续执行仍核对实际权限。Windows 采用固定 ProductID 的 Add/Exec；macOS 采用固定 PKG Manifest。版本、SHA-256、发布身份、无自定义参数和无依赖均需匹配部署 pin。已有 Agent 不自动升级，Scope 退出阻止尚未派发的新安装；已派发安装可在原期限内完成独立 Agent 注册，但当前策略版本、实际权限、软件批准和来源世代仍须有效。Scope 退出不卸载 Agent。重叠策略和重复报告共享来源注册下的一次安装；结果未知先继续查询，不重新运行安装器。单个操作仍受原始期限、取消及普通命令容量限制。
 
-安装配置默认关闭。部署 `agent_installation`：`content_origin` 为公开 HTTPS 内容服务根地址；`packages` 按 `windows_x86_64`、`windows_aarch64`、`macos_x86_64`、`macos_aarch64` 选择实际发布组合，每项包含 `identity`、`package`、`version`、`sha256`（32 个字节的 JSON 数组）。Windows identity 为 `{platform:"windows",product:"ProductID UUID",publisher:"签名发布者"}`；macOS 为 `{platform:"macos",receipt:"PKG receipt",bundle:"Agent bundle ID",team:"10 字符 Team ID"}`。这些值必须与普通 Software 目录中审核、上传、激活和批准的 release 相同。同平台不同架构必须使用同一产品身份。
+安装配置默认关闭。部署 `agent_installation`：`content_origin` 必须等于独立 Agent TLS origin，固定包由 enroll/v1 引导入口消费；`packages` 按 `windows_x86_64`、`windows_aarch64`、`macos_x86_64`、`macos_aarch64` 选择实际发布组合，每项包含 `identity`、`package`、`version`、`sha256`（32 个字节的 JSON 数组）。Windows identity 为 `{platform:"windows",product:"ProductID UUID",publisher:"签名发布者"}`；macOS 为 `{platform:"macos",receipt:"PKG receipt",bundle:"Agent bundle ID",team:"10 字符 Team ID"}`。这些值必须与普通 Software 目录中审核、上传、激活和批准的 release 相同。同平台不同架构必须使用同一产品身份。
 
 Apple 新注册 profile 在启用该能力时申请已安装应用查询与企业应用安装 AccessRights；既有 profile 不会因服务器配置更新获得权限，需通过正常注册流程更新。采集要求 macOS 12+ 的明确 IsAppleSilicon 结果；Windows 只对明确的 64 位架构证据选择包。固定内容下载只暴露批准的包，不承载秘密，并复用单段 Range/ETag 和撤销检查。应分别读取操作中的原生 delivery、installation、独立 agentRegistration 与 capabilities；Acknowledged 不能证明安装完成。macOS 的 InstalledApplicationList 只证明同 bundle/version 的应用存在，不能核实签名 Team ID 或 PKG receipt，因此采集、策略诊断及原生 installation 均保持 unknown，不判 already_satisfied，也不据此重装。独立 Agent 注册及能力仍单独显示；配置中的 receipt/team 是批准产物的身份约束，不是设备侧签名证明。
 

@@ -1,4 +1,4 @@
-use rss_mdm_agent_wire::*;
+use rss_mdm_agent_wire::runtime::*;
 use serde_json::json;
 use uuid::Uuid;
 fn context() -> SoftwareExecutionContext {

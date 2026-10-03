@@ -85,7 +85,7 @@ async fn known_failure_has_bounded_retries() -> Result<()> {
     }
     let exhausted = agent(
         &router,
-        "/api/agent/v6/tasks/claim",
+        "/api/agent/runtime/v1/tasks/claim",
         Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
@@ -157,7 +157,7 @@ async fn reboot_waits_for_detection() -> Result<()> {
     );
     let reboot_retry = agent(
         &router,
-        "/api/agent/v6/tasks/claim",
+        "/api/agent/runtime/v1/tasks/claim",
         Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
@@ -187,7 +187,7 @@ async fn reboot_waits_for_detection() -> Result<()> {
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.recovery"]
-async fn unknown_effect_survives_registration_replacement() -> Result<()> {
+async fn unknown_effect_survives_credential_recovery() -> Result<()> {
     let fixture = Fixture::approved(Platform::MacOs).await?;
     let stack = worker(&fixture.base, fixture.content.clone()).await?;
     let router = fixture.router;
@@ -220,33 +220,43 @@ async fn unknown_effect_survives_registration_replacement() -> Result<()> {
         .await?
         .0 == StatusCode::OK
     );
-    let next_password = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI";
-    let next_credential = &crate::test_support::credential("replacement");
-    author.operation = Some(Uuid::new_v4());
-    let next_enrollment = author
+    let registration: String = pg(&format!("SELECT id FROM mdm_access.registrations WHERE tenant_id='{}' AND device='{}' AND channel='agent' AND state='active'",case_tenant(),case_device()))?.trim().into();
+    let secret = credential("recovery-software");
+    set_device_grants(
+        &mut author,
+        &router,
+        case_device(),
+        &[
+            "credentials",
+            "inventory_read",
+            "inventory_collect",
+            "configuration_write",
+            "operation_read",
+        ],
+    )
+    .await?;
+    let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"secret":secret,"platform":"macos","csr":crate::test_support::agent::csr()?});
+    let grant = author
         .call(
             &router,
             Method::POST,
-            "/api/v3/enrollments",
-            Some(
-                json!({"deviceId":case_device(),"password":next_password,"source":"agent.builtin"}),
-            ),
+            &format!("/api/v3/agent-registrations/{registration}/recovery"),
+            Some(input.clone()),
         )
         .await?;
-    ensure!(
-        next_enrollment.0.is_success(),
-        "replacement enrollment: {next_enrollment:?}"
-    );
-    author.operation = None;
-    let next_registration=agent_call(&router,Method::POST,"/api/agent/v6/registrations",None,Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":Uuid::new_v4(),"enrollmentId":next_enrollment.1["enrollmentId"],"password":next_password,"credential":next_credential,"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v6","software.pkg.system.v6"]}))).await?;
-    ensure!(
-        next_registration.0 == StatusCode::CREATED,
-        "replacement registration: {next_registration:?}"
-    );
+    ensure!(grant.0 == StatusCode::OK, "{grant:?}");
+    let mut signing = input;
+    signing["runtime"] = json!({"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v6","software.pkg.system.v6"],"executionContext":context(Platform::MacOs)});
+    let service = crate::test_support::agent::service(&authority::Authority::open().await?)?;
+    let next_credential = &credential("replacement");
+    let next_registration =
+        crate::test_support::agent::complete_grant(&service, &grant.1, &signing, next_credential)
+            .await?;
+    ensure!(next_registration["registrationId"] == registration);
     let after_reenroll = agent_call(
         &router,
         Method::POST,
-        "/api/agent/v6/tasks/claim",
+        "/api/agent/runtime/v1/tasks/claim",
         Some(next_credential),
         Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
@@ -288,7 +298,7 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
     let result = agent(
         &router,
         &format!(
-            "/api/agent/v6/tasks/{}/events",
+            "/api/agent/runtime/v1/tasks/{}/events",
             task["payload"]["taskId"].as_str().unwrap()
         ),
         Some(unknown_request.clone()),
@@ -298,7 +308,7 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
     let replay = agent(
         &router,
         &format!(
-            "/api/agent/v6/tasks/{}/events",
+            "/api/agent/runtime/v1/tasks/{}/events",
             task["payload"]["taskId"].as_str().unwrap()
         ),
         Some(unknown_request),
@@ -321,7 +331,7 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
     );
     let no_retry = agent(
         &router,
-        "/api/agent/v6/tasks/claim",
+        "/api/agent/runtime/v1/tasks/claim",
         Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;

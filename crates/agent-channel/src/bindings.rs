@@ -4,39 +4,12 @@ use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 pub struct Bindings;
 impl channels::Agent for Bindings {
-    fn managed_replay<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        p: &'a crate::device::DevicePrincipal,
-        input: &'a rss_mdm_agent_wire::ManagedRegistrationRequest,
-        audit: &'a rss_mdm_audit_integration::RequestAudit,
-    ) -> Pending<'a, Option<rss_mdm_agent_wire::RegistrationReceipt>> {
-        Box::pin(async move {
-            crate::managed::replay(c, p, input, audit)
-                .await
-                .map_err(Into::into)
-        })
-    }
-    fn managed_register<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        authority: rss_mdm_registration_service::enrollment::managed::Authority,
-        input: &'a rss_mdm_agent_wire::ManagedRegistrationRequest,
-        audit: &'a rss_mdm_audit_integration::RequestAudit,
-    ) -> Pending<'a, rss_mdm_agent_wire::RegistrationReceipt> {
-        Box::pin(async move {
-            crate::managed::register(c, authority, input, audit)
-                .await
-                .map_err(Into::into)
-        })
-    }
-
     fn update_context<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
         registration: Uuid,
-        context: &'a rss_mdm_agent_wire::SoftwareExecutionContext,
+        context: &'a rss_mdm_agent_wire::runtime::SoftwareExecutionContext,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
             let row=sqlx::query("SELECT platform,execution_context FROM mdm_agent.bindings WHERE tenant_id=$1::uuid AND registration=$2 FOR UPDATE").bind(&tenant).bind(registration).fetch_optional(&mut *c).await.map_err(|e|channels::Rejection::from(db(e)))?.ok_or(channels::Rejection::Unauthorized)?;
@@ -45,18 +18,19 @@ impl channels::Agent for Bindings {
                 .map_err(|e| channels::Rejection::from(db(e)))?
                 .as_str()
             {
-                "windows" => rss_mdm_agent_wire::TaskPlatform::Windows,
-                "macos" => rss_mdm_agent_wire::TaskPlatform::Macos,
+                "windows" => rss_mdm_agent_wire::runtime::TaskPlatform::Windows,
+                "macos" => rss_mdm_agent_wire::runtime::TaskPlatform::Macos,
                 _ => return Err(channels::Rejection::Protocol),
             };
             context
                 .validate_for(platform)
                 .map_err(|_| channels::Rejection::Malformed)?;
-            let previous: rss_mdm_agent_wire::SoftwareExecutionContext = serde_json::from_value(
-                row.try_get("execution_context")
-                    .map_err(|e| channels::Rejection::from(db(e)))?,
-            )
-            .map_err(|_| channels::Rejection::Protocol)?;
+            let previous: rss_mdm_agent_wire::runtime::SoftwareExecutionContext =
+                serde_json::from_value(
+                    row.try_get("execution_context")
+                        .map_err(|e| channels::Rejection::from(db(e)))?,
+                )
+                .map_err(|_| channels::Rejection::Protocol)?;
             context
                 .validate_update(&previous)
                 .map_err(|_| channels::Rejection::Conflict)?;
@@ -121,24 +95,66 @@ pub(crate) async fn bind_agent_in(
     tenant: &str,
     registration: Uuid,
     capabilities: &str,
-    platform: rss_mdm_agent_wire::TaskPlatform,
-    architecture: rss_mdm_agent_wire::TaskArchitecture,
-    context: &rss_mdm_agent_wire::SoftwareExecutionContext,
+    platform: rss_mdm_agent_wire::runtime::TaskPlatform,
+    architecture: rss_mdm_agent_wire::runtime::TaskArchitecture,
+    context: &rss_mdm_agent_wire::runtime::SoftwareExecutionContext,
 ) -> Result<(), Error> {
     context
         .validate_for(platform)
         .map_err(|_| Error::Malformed)?;
     let context = serde_json::to_value(context).map_err(|_| Error::Malformed)?;
     let platform = match platform {
-        rss_mdm_agent_wire::TaskPlatform::Windows => "windows",
-        rss_mdm_agent_wire::TaskPlatform::Macos => "macos",
+        rss_mdm_agent_wire::runtime::TaskPlatform::Windows => "windows",
+        rss_mdm_agent_wire::runtime::TaskPlatform::Macos => "macos",
     };
     let architecture = match architecture {
-        rss_mdm_agent_wire::TaskArchitecture::X86_64 => "x86_64",
-        rss_mdm_agent_wire::TaskArchitecture::Aarch64 => "aarch64",
+        rss_mdm_agent_wire::runtime::TaskArchitecture::X86_64 => "x86_64",
+        rss_mdm_agent_wire::runtime::TaskArchitecture::Aarch64 => "aarch64",
     };
     sqlx::query("INSERT INTO mdm_agent.bindings(tenant_id,registration,wire_version,capabilities,platform,architecture,execution_context) VALUES($1::uuid,$2::uuid,6,$3,$4,$5,$6)")
         .bind(tenant).bind(registration.to_string()).bind(capabilities).bind(platform).bind(architecture).bind(context)
         .execute(&mut *tx).await.map_err(db)?;
     Ok(())
+}
+
+impl rss_mdm_registration_service::agent::RuntimeBinding for Bindings {
+    fn bind<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        b: rss_mdm_registration_service::agent::Binding,
+        p: &'a rss_mdm_agent_wire::enroll::RuntimeProfile,
+    ) -> rss_mdm_registration_service::agent::Pending<'a, rss_mdm_agent_wire::runtime::BindingProfile>
+    {
+        Box::pin(async move {
+            bind_agent_in(
+                c,
+                &b.tenant.to_string(),
+                b.registration,
+                &serde_json::to_string(&p.capabilities)
+                    .map_err(|_| rss_mdm_registration_service::Error::Malformed)?,
+                p.platform,
+                p.architecture,
+                &p.execution_context,
+            )
+            .await
+            .map_err(|_| rss_mdm_registration_service::Error::Storage)?;
+            let collections = crate::builtin_collections(c, b.tenant, b.registration, b.epoch)
+                .await
+                .map_err(|_| rss_mdm_registration_service::Error::Storage)?;
+            Ok(rss_mdm_agent_wire::runtime::BindingProfile {
+                wire_version: 6,
+                operation_id: b.operation,
+                device_id: b.device,
+                registration_id: b.registration,
+                generation: b
+                    .generation
+                    .try_into()
+                    .map_err(|_| rss_mdm_registration_service::Error::Corrupt)?,
+                source: rss_mdm_agent_wire::runtime::ReportSource::AgentBuiltin,
+                epoch: b.epoch,
+                capabilities: p.capabilities.clone(),
+                collections,
+            })
+        })
+    }
 }

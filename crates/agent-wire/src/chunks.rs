@@ -1,5 +1,5 @@
 //! Bounded output transport on the existing task event channel, with one immutable manifest.
-use crate::{OutputQuality, TaskDiagnostics, TaskResult, WireError};
+use crate::runtime::{OutputQuality, TaskDiagnostics, TaskResult, WireError};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -117,7 +117,7 @@ pub struct ChunkedTaskResult(ResultInput);
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ResultInput {
-    #[serde(deserialize_with = "crate::tasks::required_option")]
+    #[serde(deserialize_with = "crate::runtime::tasks::required_option")]
     exit_code: Option<i32>,
     quality: OutputQuality,
     diagnostics: TaskDiagnostics,

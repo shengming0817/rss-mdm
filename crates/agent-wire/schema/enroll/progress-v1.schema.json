@@ -1,88 +1,40 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/mdm/agent/v6/registration-receipt.schema.json",
+  "$id": "https://rss.example/agent/enroll/v1/Progress",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "wireVersion",
-    "operationId",
-    "deviceId",
-    "registrationId",
-    "generation",
-    "source",
-    "epoch",
-    "capabilities",
-    "collections"
+    "grant",
+    "issuanceId",
+    "issuanceUnknown",
+    "activation"
   ],
   "properties": {
-    "wireVersion": {
-      "const": 6
+    "grant": {
+      "$ref": "#/$defs/grantReceipt"
     },
-    "operationId": {
-      "$ref": "#/$defs/nonNilUuid"
-    },
-    "deviceId": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 256,
-      "pattern": "^(?=.*\\S)[^\\u0000-\\u001F\\u007F-\\u009F]*$"
-    },
-    "registrationId": {
-      "$ref": "#/$defs/nonNilUuid"
-    },
-    "generation": {
-      "type": "integer",
-      "minimum": 1,
-      "maximum": 9223372036854775807
-    },
-    "source": {
-      "const": "agent.builtin"
-    },
-    "epoch": {
-      "$ref": "#/$defs/nonNilUuid"
-    },
-    "capabilities": {
-      "type": "array",
-      "minItems": 1,
-      "maxItems": 20,
-      "uniqueItems": true,
-      "prefixItems": [
+    "issuanceId": {
+      "anyOf": [
         {
-          "const": "inventory.collect.v6"
+          "$ref": "#/$defs/nonNilUuid"
+        },
+        {
+          "type": "null"
         }
-      ],
-      "items": {
-        "enum": [
-          "inventory.collect.v6",
-          "task.execute.v6",
-          "software.msi.system.v6",
-          "software.msi.user.v6",
-          "software.pkg.system.v6",
-          "software.bundle.windows.system.v6",
-          "software.bundle.windows.user.v6",
-          "software.bundle.macos.system.v6",
-          "software.bundle.macos.user.v6",
-          "software.winget.system.v6",
-          "software.winget.user.v6",
-          "software.brew.bottle.user.v6",
-          "software.exe.system.v6",
-          "software.exe.user.v6",
-          "software.dmg.app.system.v6",
-          "software.dmg.app.user.v6",
-          "software.dmg.pkg.system.v6",
-          "software.msix.registration.user.v6",
-          "software.msix.provisioning.system.v6",
-          "mdm.enrollment.v6"
-        ]
-      }
+      ]
     },
-    "collections": {
-      "type": "array",
-      "minItems": 1,
-      "maxItems": 16,
-      "items": {
-        "$ref": "#/$defs/collection"
-      }
+    "issuanceUnknown": {
+      "type": "boolean"
+    },
+    "activation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/activationReceipt"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "$defs": {
@@ -338,138 +290,6 @@
         }
       }
     },
-    "scalar": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "value"
-          ],
-          "properties": {
-            "kind": {
-              "const": "string"
-            },
-            "value": {
-              "type": "string",
-              "maxLength": 65536
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "value"
-          ],
-          "properties": {
-            "kind": {
-              "const": "integer"
-            },
-            "value": {
-              "type": "integer",
-              "minimum": -9223372036854775808,
-              "maximum": 9223372036854775807
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "value"
-          ],
-          "properties": {
-            "kind": {
-              "const": "number"
-            },
-            "value": {
-              "type": "number"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "value"
-          ],
-          "properties": {
-            "kind": {
-              "const": "boolean"
-            },
-            "value": {
-              "type": "boolean"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "value"
-          ],
-          "properties": {
-            "kind": {
-              "const": "time"
-            },
-            "value": {
-              "type": "integer"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "value"
-          ],
-          "properties": {
-            "kind": {
-              "const": "array"
-            },
-            "value": {
-              "type": "array",
-              "maxItems": 100000,
-              "items": {
-                "$ref": "#/$defs/scalar"
-              }
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "value"
-          ],
-          "properties": {
-            "kind": {
-              "const": "object"
-            },
-            "value": {
-              "type": "object",
-              "maxProperties": 64,
-              "propertyNames": {
-                "type": "string",
-                "maxLength": 64,
-                "pattern": "^[a-z][a-z0-9_]*$"
-              },
-              "additionalProperties": {
-                "$ref": "#/$defs/scalar"
-              }
-            }
-          }
-        }
-      ]
-    },
     "collection": {
       "type": "object",
       "additionalProperties": false,
@@ -511,74 +331,151 @@
         }
       }
     },
-    "fieldValue": {
+    "bindingProfile": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "field",
-        "value"
+        "wireVersion",
+        "operationId",
+        "deviceId",
+        "registrationId",
+        "generation",
+        "source",
+        "epoch",
+        "capabilities",
+        "collections"
       ],
       "properties": {
-        "field": {
-          "type": "string",
-          "maxLength": 128,
-          "pattern": "^(device|custom|channel)\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$"
+        "wireVersion": {
+          "const": 6
         },
-        "value": {
-          "oneOf": [
+        "operationId": {
+          "$ref": "#/$defs/nonNilUuid"
+        },
+        "deviceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^(?=.*\\S)[^\\u0000-\\u001F\\u007F-\\u009F]*$"
+        },
+        "registrationId": {
+          "$ref": "#/$defs/nonNilUuid"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "source": {
+          "const": "agent.builtin"
+        },
+        "epoch": {
+          "$ref": "#/$defs/nonNilUuid"
+        },
+        "capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "uniqueItems": true,
+          "prefixItems": [
             {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "kind",
-                "value"
-              ],
-              "properties": {
-                "kind": {
-                  "const": "value"
-                },
-                "value": {
-                  "$ref": "#/$defs/scalar"
-                }
-              }
-            },
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "kind"
-              ],
-              "properties": {
-                "kind": {
-                  "const": "null"
-                }
-              }
-            },
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "kind"
-              ],
-              "properties": {
-                "kind": {
-                  "const": "deleted"
-                }
-              }
-            },
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "kind"
-              ],
-              "properties": {
-                "kind": {
-                  "const": "unsupported"
-                }
-              }
+              "const": "inventory.collect.v6"
             }
+          ],
+          "items": {
+            "enum": [
+              "inventory.collect.v6",
+              "task.execute.v6",
+              "software.msi.system.v6",
+              "software.msi.user.v6",
+              "software.pkg.system.v6",
+              "software.bundle.windows.system.v6",
+              "software.bundle.windows.user.v6",
+              "software.bundle.macos.system.v6",
+              "software.bundle.macos.user.v6",
+              "software.winget.system.v6",
+              "software.winget.user.v6",
+              "software.brew.bottle.user.v6",
+              "software.exe.system.v6",
+              "software.exe.user.v6",
+              "software.dmg.app.system.v6",
+              "software.dmg.app.user.v6",
+              "software.dmg.pkg.system.v6",
+              "software.msix.registration.user.v6",
+              "software.msix.provisioning.system.v6",
+              "mdm.enrollment.v6"
+            ]
+          }
+        },
+        "collections": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/collection"
+          }
+        }
+      }
+    },
+    "grantReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wireVersion",
+        "grantId",
+        "state",
+        "expiresAt",
+        "platform"
+      ],
+      "properties": {
+        "wireVersion": {
+          "const": 1
+        },
+        "grantId": {
+          "$ref": "#/$defs/nonNilUuid"
+        },
+        "state": {
+          "enum": [
+            "pending",
+            "available",
+            "consumed",
+            "revoked",
+            "expired"
           ]
+        },
+        "expiresAt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "platform": {
+          "enum": [
+            "windows",
+            "macos"
+          ]
+        }
+      }
+    },
+    "activationReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wireVersion",
+        "issuanceId",
+        "operationId",
+        "runtime"
+      ],
+      "properties": {
+        "wireVersion": {
+          "const": 1
+        },
+        "issuanceId": {
+          "$ref": "#/$defs/nonNilUuid"
+        },
+        "operationId": {
+          "$ref": "#/$defs/nonNilUuid"
+        },
+        "runtime": {
+          "$ref": "#/$defs/bindingProfile"
         }
       }
     }

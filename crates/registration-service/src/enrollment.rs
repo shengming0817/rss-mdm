@@ -166,6 +166,9 @@ impl EnrollmentService {
         key: Uuid,
         audit: &rss_mdm_audit_integration::RequestAudit,
     ) -> Result<Receipt, Error> {
+        if input.source == ReportSource::AgentBuiltin {
+            return Err(Error::Malformed);
+        }
         if (input.source == ReportSource::MdmWindows) != input.windows_profile.is_some() {
             return Err(Error::Malformed);
         }

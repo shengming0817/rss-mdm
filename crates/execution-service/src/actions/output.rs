@@ -2,7 +2,7 @@
 use super::storage::{Run, ScheduledPolicy};
 use crate::Error;
 use crate::{Result, checked_input, stored};
-use rss_mdm_agent_wire as wire;
+use rss_mdm_agent_wire::runtime as wire;
 use rss_transactional_messaging_postgres::PgTransaction;
 use sqlx::Row;
 fn collection(plan: &ScheduledPolicy, bytes: u32) -> Result<()> {
