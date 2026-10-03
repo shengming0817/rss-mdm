@@ -485,7 +485,10 @@ async fn forward(
     } else if method == "POST" && query.contains("uploads") {
         2
     } else if is_get {
-        armed.load(Ordering::SeqCst)
+        match armed.load(Ordering::SeqCst) {
+            mode @ (5 | 6) => mode,
+            _ => 0,
+        }
     } else {
         0
     };
