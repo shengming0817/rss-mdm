@@ -1406,6 +1406,11 @@ consume_dependencies(
     normal='plist cms',
 )
 
+# Flow's dev-only schema compiler has no external T2 carrier; Cargo checks own it.
+DEPENDENCY_POLICIES['crates/flow-service/Cargo.toml'] = {
+    'dev:jsonschema': {'cargoOnly': True},
+}
+
 DEPENDENCY_POLICIES['crates/app/Cargo.toml'] = {
     'normal:jiff': {'cargoOnly': True},
     'normal:subtle': {'cargoOnly': True},

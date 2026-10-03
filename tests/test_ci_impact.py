@@ -738,6 +738,11 @@ class DependencyOwnership(unittest.TestCase):
             unrelated = Registry({'dev': baseline_modules['dev']}, (), {}, {}, {}, (), {})
             with self.assertRaisesRegex(SelectionError, 'unowned-dependency'):
                 dependency_consumers(graph, unrelated, 'app', dependency, 'normal', (registered,))
+            cargo = Registry({}, (), {}, {'crates/app/Cargo.toml': {'dev:db_driver': {'cargoOnly': True}}}, {}, (), {})
+            empty = Registry({}, (), {}, {}, {}, (), {})
+            self.assertEqual(dependency_consumers(graph, empty, 'app', dependency, 'dev', (cargo,)), (set(), set()))
+            with self.assertRaisesRegex(SelectionError, 'unowned-dependency'):
+                dependency_consumers(graph, empty, 'app', dependency, 'normal', (cargo,))
             t1 = Registry({}, ('crates/app/tests/unit.rs',), {}, {}, {}, (), {})
             self.assertEqual(dependency_consumers(graph, t1, 'app', dependency, 'dev'), (set(), set()))
             with self.assertRaisesRegex(SelectionError, 'unowned-dependency'):

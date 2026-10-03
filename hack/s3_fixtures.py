@@ -90,6 +90,7 @@ class S3Environment:
                     self.signed('PUT',bucket)
                 private(root/'versioning.xml','<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Enabled</Status></VersioningConfiguration>')
                 run(['docker','cp',root/'versioning.xml',self.name+':/versioning.xml'],capture_output=True,timeout=30)
+                run(['docker','exec','--user','0',self.name,'chown','rustfs:rustfs','/versioning.xml'],capture_output=True,timeout=30)
                 self.signed('PUT','content?versioning','/versioning.xml',content_type='application/xml')
                 policy=dict(Version='2012-10-17',Statement=[
                     dict(Effect='Allow',Action=['s3:GetBucketVersioning'],Resource=['arn:aws:s3:::content','arn:aws:s3:::unversioned']),
@@ -99,6 +100,7 @@ class S3Environment:
                 private(root/'user.json',dict(secretKey=secret,status='enabled'))
                 for name in ('policy.json','user.json'):
                     run(['docker','cp',root/name,self.name+':/'+name],capture_output=True,timeout=30)
+                run(['docker','exec','--user','0',self.name,'chown','rustfs:rustfs','/policy.json','/user.json'],capture_output=True,timeout=30)
                 for path,body in [('add-canned-policy?name=content-workload','/policy.json'),
                                   ('add-user?accessKey='+access,'/user.json'),
                                   ('set-user-or-group-policy?policyName=content-workload&userOrGroup='+access+'&isGroup=false','/dev/null')]:

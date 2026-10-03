@@ -516,7 +516,8 @@ def dependency_consumers(graph, registry, key, dep, kind, registrations=()):
             for d in module['dependency_inputs']
         )
     }
-    policy = registry.dependencies.get(manifest, {}).get(kind + ':' + alias)
+    policies = [source.dependencies.get(manifest, {}).get(kind + ':' + alias)
+                for source in (registry, *registrations)]
     if graph.packages[key]['name'] == 'rss-mdm-app':
         implicit = package_consumers(graph, registry, dep['pkg'], kind) if dep['pkg'] in graph.members else set()
     else:
@@ -527,10 +528,11 @@ def dependency_consumers(graph, registry, key, dep, kind, registrations=()):
         for name in claimed
         if optional_active(graph, key, dep, alias, kind, registry.modules[name], name in explicit)
     }
-    owned_tools = policy.get('tools', ()) if isinstance(policy, dict) else ()
+    owned_tools = {tool for policy in policies if isinstance(policy, dict)
+                   for tool in policy.get('tools', ())}
     prefix = str(PurePosixPath(manifest).parent) + '/'
     t1_owned = kind == 'dev' and any(path.startswith(prefix) for path in registry.t1)
-    cargo_only = t1_owned or isinstance(policy, dict) and policy.get('cargoOnly') is True
+    cargo_only = t1_owned or any(isinstance(policy, dict) and policy.get('cargoOnly') is True for policy in policies)
     if not claimed and not (cargo_only or owned_tools):
         raise SelectionError('unowned-dependency', manifest, kind + ':' + alias)
     return consumers, set(owned_tools)
