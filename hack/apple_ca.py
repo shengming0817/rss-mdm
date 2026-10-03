@@ -46,6 +46,9 @@ def running(root, env):
     ca_config['root'] = [str(step_path/'certs/root_ca.crt'), str(root/'ca.crt')]
     configuration.write_text(json.dumps(ca_config)); configuration.chmod(0o600)
     ca_root = step_path/'certs/root_ca.crt'
+    if env.get('MDM_AGENT_PKI_FIXTURE') == '1':
+        from agent_pki_fixtures import prepare
+        prepare(root, configuration, password)
     admin = ['--ca-url', origin, '--root', ca_root, '--admin-subject', 'rss-admin',
              '--admin-provisioner', 'rss-admin', '--admin-password-file', password]
     template = root/'apple-leaf.tpl'
@@ -79,8 +82,14 @@ def running(root, env):
                 secret = root/('apple-'+phase+'-secret')
                 secret.write_text(hook[2]); secret.chmod(0o600)
                 config[phase+'_webhook'] = dict(id=hook[1], secret_file=str(secret))
+            if env.get('MDM_AGENT_PKI_FIXTURE') == '1':
+                from agent_pki_fixtures import install
+                install(root, cli, admin, origin)
             # step-ca installs its SCEP HTTP authority from the startup provisioner set.
             process.terminate(); process.wait(timeout=5)
+            if env.get('MDM_AGENT_PKI_FIXTURE') == '1':
+                from agent_pki_fixtures import restore
+                restore(root)
             process = subprocess.Popen([str(ca), str(configuration), '--password-file', str(password)],
                                        env=child_env, stdout=log, stderr=subprocess.STDOUT)
             deadline = time.monotonic()+20

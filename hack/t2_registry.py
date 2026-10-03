@@ -285,6 +285,13 @@ def app_family(owner, *, namespace=None, identity=True,
             support=(f'crates/app/tests/{test_root}/mod.rs',))
 
 
+add('agent.pki', selectors=('agent_pki_tests::',), fixtures=('identity','apple','scep','windows','agent_pki'),
+    sources=('crates/certificate/src/agent.rs','crates/registration-service/src/agent_pki.rs',
+             'crates/app/src/agent_pki.rs','deployment/agent-leaf.tpl'),
+    tests=('crates/app/tests/agent_pki/mod.rs',),
+    support=('hack/agent_pki_fixtures.py','crates/app/tests/device/support.rs',
+             'crates/app/tests/enrollment/support.rs','crates/app/tests/support/audit.rs'))
+
 add('installation.migration', selectors=('migration::tests::',), profile='empty',
     sources=('crates/app/src/migration.rs',),
     tests=('crates/app/tests/migration/mod.rs',),

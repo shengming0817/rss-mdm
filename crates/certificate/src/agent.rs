@@ -97,6 +97,9 @@ impl VerifiedAgentCsr {
         if !csr.info.subject.0.is_empty() && csr.info.subject != expected {
             return Err(Error::CertificateRequest);
         }
+        if csr.info.attributes.len() > 1 {
+            return Err(Error::CertificateRequest);
+        }
         for attr in csr.info.attributes.iter() {
             if attr.oid != EXTENSION_REQ || attr.values.len() != 1 {
                 return Err(Error::CertificateRequest);
@@ -345,6 +348,10 @@ impl AgentTrust {
             return Err(Error::Unauthorized);
         }
         let extensions = t.extensions.as_ref().ok_or(Error::Unauthorized)?;
+        let mut seen = std::collections::BTreeSet::new();
+        if extensions.iter().any(|ext| !seen.insert(ext.extn_id)) {
+            return Err(Error::Unauthorized);
+        }
         let marker = extensions
             .iter()
             .find(|ext| ext.extn_id == STEP)
