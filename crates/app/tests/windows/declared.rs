@@ -371,17 +371,17 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
 }
 
 #[cfg(feature = "integration")]
-async fn mi_effect(
-    host: &Host,
-    child: &reqwest::Client,
-    url: &str,
-    initial: &syncml::Message,
-    parent_ack: &syncml::Message,
-) -> anyhow::Result<()> {
-    use crate::execution::test_support::{Client, native};
+struct MiOperation {
+    client: crate::execution::test_support::Client,
+    operation: Uuid,
+    document: String,
+    id: Uuid,
+}
+#[cfg(feature = "integration")]
+async fn mi_admit(host: &Host) -> anyhow::Result<MiOperation> {
+    use crate::execution::test_support::Client;
     use axum::http::Method;
     use serde_json::json;
-    use syncml::{Command, CommandName, Item, Results, Status};
     let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
     client.set_authorized(false).await?;
     let id = Uuid::new_v4();
@@ -419,6 +419,22 @@ async fn mi_effect(
             == StatusCode::OK
     );
     client.publish_operation(operation).await?;
+    Ok(MiOperation {
+        client,
+        operation,
+        document,
+        id,
+    })
+}
+#[cfg(feature = "integration")]
+async fn mi_dispatch(
+    child: &reqwest::Client,
+    url: &str,
+    initial: &syncml::Message,
+    parent_ack: &syncml::Message,
+) -> anyhow::Result<syncml::Message> {
+    use crate::execution::test_support::native;
+    use syncml::Command;
     let mut ack = parent_ack.clone();
     ack.header.target = url.into();
     let response = native::post(child, url, &ack).await?;
@@ -454,67 +470,28 @@ async fn mi_effect(
             .any(|c| matches!(c, Command::Replace { .. })),
         "MI was not sent: {response:?}"
     );
-    let packet = |sent: &syncml::Message, number: u32, result: Option<&str>| {
-        let mut commands = vec![Command::Status(Status {
-            id: 1,
-            message_ref: sent.header.message_id,
-            command_ref: 0,
-            command: CommandName::SyncHdr,
-            target_refs: vec![],
-            source_refs: vec![],
-            code: 200,
-            items: vec![],
-            challenge: None,
-            credential: None,
-        })];
-        for c in &sent.commands {
-            let (kind, items) = match c {
-                Command::Replace { items, .. } => (CommandName::Replace, items),
-                Command::Get { items, .. } => (CommandName::Get, items),
-                _ => continue,
-            };
-            commands.push(Command::Status(Status {
-                id: commands.len() as u32 + 1,
-                message_ref: sent.header.message_id,
-                command_ref: c.id(),
-                command: kind,
-                target_refs: vec![],
-                source_refs: vec![],
-                code: 200,
-                items: vec![],
-                challenge: None,
-                credential: None,
-            }));
-            if kind == CommandName::Get
-                && let Some(value) = result
-            {
-                commands.push(Command::Results(Results {
-                    id: commands.len() as u32 + 1,
-                    message_ref: Some(sent.header.message_id),
-                    command_ref: Some(c.id()),
-                    command: Some(CommandName::Get),
-                    meta: None,
-                    items: vec![Item {
-                        source: items[0].target.clone(),
-                        target: None,
-                        meta: None,
-                        data: Some(Secret(value.into())),
-                        more_data: false,
-                    }],
-                }));
-            }
-        }
-        syncml::Message {
-            header: syncml::Header {
-                message_id: number,
-                credential: None,
-                ..initial.header.clone()
-            },
-            commands,
-            final_message: true,
-        }
-    };
-    let observed = native::post(child, url, &packet(&response, 4, None)).await?;
+    Ok(response)
+}
+
+#[cfg(feature = "integration")]
+async fn mi_effect(
+    host: &Host,
+    child: &reqwest::Client,
+    url: &str,
+    initial: &syncml::Message,
+    parent_ack: &syncml::Message,
+) -> anyhow::Result<()> {
+    use crate::execution::test_support::native;
+    use axum::http::Method;
+    use syncml::Command;
+    let MiOperation {
+        mut client,
+        operation,
+        document,
+        id,
+    } = mi_admit(host).await?;
+    let response = mi_dispatch(child, url, initial, parent_ack).await?;
+    let observed = native::post(child, url, &result_packet(initial, &response, None)).await?;
     ensure!(observed.status() == StatusCode::OK);
     let observed = syncml::decode(&observed.bytes().await?, &CodecLimits::default())?;
     ensure!(observed.commands.iter().any(|c|matches!(c,Command::Get{items,..} if items[0].target.as_ref().unwrap().contains("/Results/"))));
@@ -540,7 +517,12 @@ async fn mi_effect(
                 &format!(r#"status="200" state="{state}" className="#),
             )
     };
-    let partial = native::post(child, url, &packet(&observed, 5, Some(&result(20)))).await?;
+    let partial = native::post(
+        child,
+        url,
+        &result_packet(initial, &observed, Some(&result(20))),
+    )
+    .await?;
     ensure!(partial.status() == StatusCode::OK);
     ensure!(
         client
@@ -587,7 +569,12 @@ async fn mi_effect(
             != "applied",
         "summary became effect"
     );
-    let complete = native::post(child, url, &packet(&queried, 7, Some(&result(60)))).await?;
+    let complete = native::post(
+        child,
+        url,
+        &result_packet(initial, &queried, Some(&result(60))),
+    )
+    .await?;
     ensure!(complete.status() == StatusCode::OK);
     let detail = client
         .call(Method::GET, &format!("/{operation}"), None)

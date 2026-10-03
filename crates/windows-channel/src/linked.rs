@@ -223,7 +223,7 @@ pub(crate) async fn issue(
             poll: &w.poll,
             push_pfn: None,
             enrollment_type: intent.enrollment_type,
-            enterprise_device_id: &parent.device().to_owned(),
+            enterprise_device_id: parent.device(),
             issuer: &intent.issuer,
             certificate: &certificate,
             issuer_thumbprint: &thumbprint(&intent.issuer),

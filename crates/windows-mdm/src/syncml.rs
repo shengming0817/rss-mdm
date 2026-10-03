@@ -1208,6 +1208,53 @@ fn write_refs(w: &mut Output<'_>, s: &Status, l: &CodecLimits) -> Result<()> {
     Ok(())
 }
 
+fn write_typed_alert(
+    w: &mut Output<'_>,
+    kind: &str,
+    value: &str,
+    explicit_format: bool,
+    l: &CodecLimits,
+) -> Result<()> {
+    w.item()?;
+    w.start("Item", &[])?;
+    w.start("Meta", &[])?;
+    w.start("Type", &[("xmlns", META)])?;
+    w.content(kind, l.uri_bytes)?;
+    w.end("Type")?;
+    if explicit_format {
+        w.start("Format", &[("xmlns", META)])?;
+        w.content("chr", l.identifier_bytes)?;
+        w.end("Format")?;
+    }
+    w.end("Meta")?;
+    w.scalar("Data", value, l.field_bytes, false)?;
+    w.end("Item")
+}
+fn write_alert(w: &mut Output<'_>, alert: &Alert, l: &CodecLimits) -> Result<()> {
+    let code = match alert {
+        Alert::ClientInitiated => 1201,
+        Alert::MoreMessages => 1222,
+        Alert::SessionAbort => 1223,
+        Alert::EndOfData { .. } => 1225,
+        Alert::LoginStatus { .. } | Alert::DeclaredConfiguration { .. } => 1224,
+        Alert::Generic { .. } | Alert::UnenrollmentRequested => 1226,
+    };
+    write_num(w, "Data", code, l)?;
+    match alert {
+        Alert::EndOfData { items } | Alert::Generic { items } => write_items(w, items, l),
+        Alert::UnenrollmentRequested => write_items(w, &[unenrollment_item()], l),
+        Alert::DeclaredConfiguration {
+            summary,
+            explicit_format,
+        } => write_typed_alert(w, DECLARED_SUMMARY, &summary.0, *explicit_format, l),
+        Alert::LoginStatus {
+            status,
+            explicit_format,
+        } => write_typed_alert(w, LOGIN_STATUS, status.as_str(), *explicit_format, l),
+        Alert::ClientInitiated | Alert::MoreMessages | Alert::SessionAbort => Ok(()),
+    }
+}
+
 fn write_commands(w: &mut Output<'_>, commands: &[Command], l: &CodecLimits) -> Result<()> {
     for c in commands {
         w.command()?;
@@ -1238,70 +1285,7 @@ fn write_commands(w: &mut Output<'_>, commands: &[Command], l: &CodecLimits) -> 
                 write_items(w, items, l)?;
             }
             Command::DevInfo { items, .. } => write_items(w, items, l)?,
-            Command::Alert { alert, .. } => {
-                write_num(
-                    w,
-                    "Data",
-                    match alert {
-                        Alert::ClientInitiated => 1201,
-                        Alert::MoreMessages => 1222,
-                        Alert::SessionAbort => 1223,
-                        Alert::EndOfData { .. } => 1225,
-                        Alert::LoginStatus { .. } | Alert::DeclaredConfiguration { .. } => 1224,
-                        Alert::Generic { .. } | Alert::UnenrollmentRequested => 1226,
-                    },
-                    l,
-                )?;
-                if let Alert::EndOfData { items } = alert {
-                    write_items(w, items, l)?;
-                }
-                if matches!(alert, Alert::UnenrollmentRequested) {
-                    write_items(w, &[unenrollment_item()], l)?;
-                }
-                if let Alert::Generic { items } = alert {
-                    write_items(w, items, l)?;
-                }
-                if let Alert::DeclaredConfiguration {
-                    summary,
-                    explicit_format,
-                } = alert
-                {
-                    w.item()?;
-                    w.start("Item", &[])?;
-                    w.start("Meta", &[])?;
-                    w.start("Type", &[("xmlns", META)])?;
-                    w.content(DECLARED_SUMMARY, l.uri_bytes)?;
-                    w.end("Type")?;
-                    if *explicit_format {
-                        w.start("Format", &[("xmlns", META)])?;
-                        w.content("chr", l.identifier_bytes)?;
-                        w.end("Format")?;
-                    }
-                    w.end("Meta")?;
-                    w.scalar("Data", &summary.0, l.field_bytes, false)?;
-                    w.end("Item")?;
-                }
-                if let Alert::LoginStatus {
-                    status,
-                    explicit_format,
-                } = alert
-                {
-                    w.item()?;
-                    w.start("Item", &[])?;
-                    w.start("Meta", &[])?;
-                    w.start("Type", &[("xmlns", META)])?;
-                    w.content(LOGIN_STATUS, l.uri_bytes)?;
-                    w.end("Type")?;
-                    if *explicit_format {
-                        w.start("Format", &[("xmlns", META)])?;
-                        w.content("chr", l.identifier_bytes)?;
-                        w.end("Format")?;
-                    }
-                    w.end("Meta")?;
-                    w.scalar("Data", status.as_str(), l.field_bytes, false)?;
-                    w.end("Item")?;
-                }
-            }
+            Command::Alert { alert, .. } => write_alert(w, alert, l)?,
             Command::Status(s) => write_status(w, s, l)?,
             Command::Results(r) => {
                 if let Some(v) = r.message_ref {
