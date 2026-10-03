@@ -150,7 +150,8 @@ impl fmt::Debug for Upload {
     }
 }
 
-/// Provider-observed part identity; SHA-256 is per-part, never a full-object hash.
+/// Provider-observed part identity. Optional SHA-256 is a per-part hint, never
+/// a full-object proof. Some S3 providers omit it from ListParts.
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Part {
@@ -158,7 +159,7 @@ pub struct Part {
     pub(crate) number: i32,
     pub(crate) length: u64,
     pub(crate) etag: String,
-    pub(crate) sha256: [u8; 32],
+    pub(crate) sha256: Option<[u8; 32]>,
 }
 impl Part {
     pub fn number(&self) -> i32 {
@@ -167,7 +168,7 @@ impl Part {
     pub fn length(&self) -> u64 {
         self.length
     }
-    pub fn sha256(&self) -> [u8; 32] {
+    pub fn sha256(&self) -> Option<[u8; 32]> {
         self.sha256
     }
     pub fn etag(&self) -> &str {

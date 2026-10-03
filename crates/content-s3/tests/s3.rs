@@ -218,7 +218,10 @@ async fn multipart_resume_exact_manifest_and_abort() -> TestResult {
         UploadState::Active(parts) => parts,
         _ => return Err(Error::Missing.into()),
     };
-    assert_eq!(parts, [receipt]);
+    assert_eq!(parts.len(), 1);
+    assert_eq!(parts[0].number(), receipt.number());
+    assert_eq!(parts[0].length(), receipt.length());
+    assert_eq!(parts[0].etag(), receipt.etag());
     let tail = confirmed(
         b.part(&resumed, 2, content(&last), source(last), budget()?)
             .await?,
@@ -356,11 +359,12 @@ async fn permission_configuration_integrity_and_exact_delete() -> TestResult {
     assert_eq!(a.inspect(&newer, budget()?).await?.length, 11);
     confirmed(a.delete(&newer, budget()?).await?)?;
     // A missing selected object in an existing bucket is Missing.
-    let absent = a.object(a.target("missing")?, "selected-version")?;
-    assert!(matches!(
-        a.inspect(&absent, budget()?).await,
-        Err(Error::Missing)
-    ));
+    let absent = a.object(a.target("missing")?, "11111111-1111-4111-8111-111111111111")?;
+    let actual = a.inspect(&absent, budget()?).await;
+    assert!(
+        matches!(actual, Err(Error::Missing)),
+        "missing version result: {actual:?}"
+    );
     // Establish a valid connection first, then remove its empty bucket to exercise HEAD 404.
     let bucket = format!("missing-{}", hex_namespace(&f.namespace));
     root.create_bucket().bucket(&bucket).send().await?;
@@ -377,7 +381,10 @@ async fn permission_configuration_integrity_and_exact_delete() -> TestResult {
     config.bucket = bucket.clone();
     let missing_bucket = f.connect(config, true).await?;
     root.delete_bucket().bucket(&bucket).send().await?;
-    let selected = missing_bucket.object(missing_bucket.target("missing")?, "selected-version")?;
+    let selected = missing_bucket.object(
+        missing_bucket.target("missing")?,
+        "11111111-1111-4111-8111-111111111111",
+    )?;
     assert!(matches!(
         missing_bucket.inspect(&selected, budget()?).await,
         Err(Error::Configuration)
@@ -639,7 +646,12 @@ async fn lost_initiation_part_and_complete_preserve_original_identity() -> TestR
         _ => return Err(Error::Missing.into()),
     };
     assert_eq!(parts.len(), 1);
-    assert_eq!(parts[0].sha256(), write.content().sha256);
+    assert_eq!(parts[0].length(), write.content().length);
+    assert!(
+        parts[0]
+            .sha256()
+            .is_none_or(|sha| sha == write.content().sha256)
+    );
     proxy.arm(3);
     assert!(matches!(
         b.complete(&upload, &parts, budget()?).await?,

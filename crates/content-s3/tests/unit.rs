@@ -125,6 +125,12 @@ async fn upload_rejects_truncation_excess_and_wrong_hash() -> Result<()> {
         .await
         .map_err(|_| Error::Integrity)?;
     assert_eq!(bytes.into_bytes(), Bytes::from_static(b"abc"));
+    let mut eof = body::upload(input(vec![b"abc"]), content(b"abc"), budget()?);
+    while let Some(chunk) = eof.next().await {
+        chunk.map_err(|_| Error::Integrity)?;
+    }
+    assert!(eof.next().await.is_none());
+    assert!(eof.next().await.is_none());
     assert!(
         body::upload(input(vec![]), content(b""), budget()?)
             .collect()

@@ -125,7 +125,7 @@ impl Store {
                             number,
                             length: content.length,
                             etag: etag.to_owned(),
-                            sha256: actual,
+                            sha256: Some(actual),
                         }))
                     }
                     _ => Ok(Mutation::Unknown(Error::Integrity)),
@@ -175,7 +175,10 @@ impl Store {
                     number,
                     length,
                     etag: part.e_tag().ok_or(Error::Integrity)?.to_owned(),
-                    sha256: provider::checksum(part.checksum_sha256())?,
+                    sha256: part
+                        .checksum_sha256()
+                        .map(|value| provider::checksum(Some(value)))
+                        .transpose()?,
                 });
             }
             if !output.is_truncated().unwrap_or(false) {
@@ -205,7 +208,7 @@ impl Store {
         self.check_budget(&budget, upload.write.content.length)?;
         let _permit = self.permit()?;
         match self.status_inner(upload, &budget).await? {
-            UploadState::Active(actual) if actual == parts => (),
+            UploadState::Active(actual) if matches_manifest(&actual, parts) => (),
             UploadState::Active(_) => return Err(Error::Conflict),
             UploadState::Absent => return Err(Error::Missing),
         }
@@ -215,7 +218,7 @@ impl Store {
                 CompletedPart::builder()
                     .part_number(p.number)
                     .e_tag(&p.etag)
-                    .checksum_sha256(provider::encode(p.sha256))
+                    .set_checksum_sha256(p.sha256.map(provider::encode))
                     .build()
             })
             .collect();
@@ -266,6 +269,19 @@ impl Store {
         }
     }
 }
+fn matches_manifest(actual: &[Part], selected: &[Part]) -> bool {
+    actual.len() == selected.len()
+        && actual.iter().zip(selected).all(|(a, b)| {
+            a.upload == b.upload
+                && a.number == b.number
+                && a.length == b.length
+                && a.etag == b.etag
+                && match (a.sha256, b.sha256) {
+                    (Some(actual), Some(expected)) => actual == expected,
+                    _ => true, // Unknown part hints never replace mandatory full-object verification.
+                }
+        })
+}
 fn validate_manifest(upload: &Upload, parts: &[Part]) -> Result<()> {
     if parts.is_empty() || parts.len() > 10_000 {
         return Err(Error::Input);
@@ -315,20 +331,28 @@ mod tests {
             number: 1,
             length: MIN_PART,
             etag: "one".into(),
-            sha256: [1; 32],
+            sha256: Some([1; 32]),
         };
         let last = Part {
             upload: upload.clone(),
             number: 2,
             length: 1,
             etag: "two".into(),
-            sha256: [2; 32],
+            sha256: Some([2; 32]),
         };
         assert!(validate_manifest(&upload, &[first.clone(), last.clone()]).is_ok());
         assert_eq!(
             validate_manifest(&upload, &[last.clone(), first.clone()]),
             Err(Error::Input)
         );
+        let mut observed = first.clone();
+        observed.sha256 = None;
+        assert!(matches_manifest(&[observed.clone()], &[first.clone()]));
+        observed.etag = "changed".into();
+        assert!(!matches_manifest(&[observed], &[first.clone()]));
+        let mut different_hash = first.clone();
+        different_hash.sha256 = Some([9; 32]);
+        assert!(!matches_manifest(&[different_hash], &[first.clone()]));
         let mut changed = last.clone();
         changed.upload.id = "replacement".into();
         assert_eq!(
