@@ -220,3 +220,21 @@ fn ca_inputs_reject_symlinks_directories_and_oversize() {
     assert!(database.options().is_ok());
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn agent_pki_configuration_is_explicit_and_closed() {
+    let mut value: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
+    assert!(serde_json::from_value::<Config>(value.clone()).is_ok());
+    for invalid in [
+        serde_json::Value::Null,
+        serde_json::json!({}),
+        serde_json::json!({"mode":"local_ca"}),
+        serde_json::json!({"mode":"disabled","kid":"secret"}),
+    ] {
+        value["agent_pki"] = invalid;
+        assert!(serde_json::from_value::<Config>(value.clone()).is_err());
+    }
+    value.as_object_mut().unwrap().remove("agent_pki");
+    assert!(serde_json::from_value::<Config>(value).is_err());
+}

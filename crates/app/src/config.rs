@@ -103,6 +103,7 @@ fn enabled<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    pub agent_pki: crate::agent_pki::Config,
     pub native_protection_key_file: PathBuf,
     pub audit: AuditConfig,
     pub listen: SocketAddr,

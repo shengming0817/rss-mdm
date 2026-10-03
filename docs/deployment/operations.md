@@ -127,3 +127,11 @@ Compose 中 PostgreSQL 启动期每秒检查，稳定运行后每十秒检查。
 迁移单元与 ledger intent 保留中断证据。SQL 或完成确认不确定时，先检查数据库与不可变 SQL，不把 complete=false 当作盲目重跑 DDL 的授权。拒绝基线或摘要不匹配时保留数据；不删除账本、自动清库或改写历史摘要。运行角色无 DDL，启动检查 schema、权限和 RLS；修复漂移不能从生产库覆盖固定 catalog。
 
 当前准确迁移集合由二进制 --describe 与 [迁移源码](../../crates/app/src/migration.rs) 持有。升级须停旧写入口；回退恢复匹配数据库、制品、密钥与旧服务，不能仅降级二进制。数据库角色与首次安装见 [安装指南](installation.md)。Apple 证书、APNs 与 CA 排障见 [Apple 管理](../guides/apple-management.md)。
+
+## Agent CA 与签发恢复
+
+`agent_certificate_health` 在直接签发者状态变化时报告 healthy、renew_soon（30 天）、critical（7 天）、expired 或 clock_unavailable；过期及剩余期限不足均拒绝新签发。按公开 issuer 摘要核对信任锚，不在故障时另建 CA 或静默缩短叶证书期限。Agent 证书元数据包含 purpose/profile、服务端 tenant/device URI、issuer/SPKI/证书/CSR 摘要、serial 和绝对有效期。颁发输出只表示候选证书；只有实际完成的 TLS 握手可产生 peer evidence，且业务 owner 仍须逐次检查当前注册和撤销状态。
+
+每次签发先提交 `agent-pki:<attempt>:authorized` 审计，离开数据库事务后请求 CA，严格验证返回证书后提交 `:result` 审计，完成后才返回候选。网络、CA、返回校验或结果审计不确定统一保留 attempt 并报告 issuance_unknown；step-ca 的 `/sign` 不提供幂等回执，token 单次消耗不能证明未签发。禁止自动换 jti、重新授权或另签证书来掩盖未知结果；由 #2630 的 grant/candidate owner 与 CA 持久签发记录协调恢复。拒绝前没有签发请求时可按明确授权失败修正原因。日志及支持导出仅含分类和摘要，不含口令、CSR 私钥或 JWT；step-ca 原生日志可能含 ott，必须作为受限秘密日志保存，禁止直接纳入通用日志聚合。
+
+备份前停止 MDM 的签发调用及全部 CA 写入实例。作为同一恢复集备份 CA 数据库、root/intermediate 证书及加密私钥、CA 配置与模板、受控 CA 解密秘密、Agent provisioner 私钥/kid、MDM 配置及 Audit/Ledger 数据库；CA 配置中的绝对路径和数据库路径须按原位置恢复。秘密进入受控秘密备份，定期验证可取回。恢复时先恢复原 CA 身份与数据库，再用原 provisioner 私钥和匹配的 MDM 审计数据启动；核对 issuer/SPKI/kid 摘要、已有 serial 和 token 使用记录，并在隔离环境签发新授权、校验证书链及双阶段审计。不得删除 CA token 表、重置 Audit head、重新生成 CA 或用新密钥覆盖原文件来处理结果未知。可再生 T2 `agent.pki` 会停止 CA、备份并恢复原目录与数据库，再执行真实受控签发；生产恢复还须执行上述一致性核对。

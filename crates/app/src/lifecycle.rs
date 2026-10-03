@@ -347,6 +347,9 @@ pub async fn serve(
                     })??;
                     let signals = notifications.signals.clone();
                     let mut launch = startup.commit();
+                    if let Some(agent_pki) = app.agent_pki.clone() {
+                        launch.stage_task_with_token(agent_pki.registration().critical());
+                    }
                     launch.stage_task_with_token(notifications.registration().critical());
                     if let Some(apple) = app.apple {
                         launch.stage_task_with_token(

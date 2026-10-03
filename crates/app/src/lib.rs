@@ -192,3 +192,5 @@ mod certificate_archive;
 #[cfg(test)]
 #[path = "../tests/certificate_archive/mod.rs"]
 mod certificate_archive_tests;
+
+pub mod agent_pki;
