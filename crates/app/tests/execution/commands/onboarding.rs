@@ -451,7 +451,7 @@ async fn execute(peer: &crate::windows::test_support::Peer) -> Result<(s::Messag
         tokio::time::sleep(Duration::from_millis(150)).await;
         (initial, next) = begin(peer, 910 + index).await?;
     }
-    let diagnosis = setup::pg(&format!(
+    let diagnosis = crate::test_support::pg(&format!(
         "SELECT jsonb_build_object('id',o.id,'failure',o.dispatch_failure,'status',d.status,'attempts',(SELECT jsonb_agg(jsonb_build_object('phase',a.phase,'items',(SELECT jsonb_agg(jsonb_build_object('kind',i.kind,'status',i.status,'accepted',i.receipt_accepted)) FROM mdm_commands.attempt_items i WHERE i.tenant_id=a.tenant_id AND i.attempt=a.id))) FROM mdm_commands.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id)) FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id='{}' AND o.device='{}'",
         case_tenant(),
         case_device()
