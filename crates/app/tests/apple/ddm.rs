@@ -337,7 +337,23 @@ async fn legacy_takeover_retains_guards_until_correlated_absence() -> Result<()>
     let (peer, device) = f.ready_local_peer().await?;
     let classic = f.create_operation(|id| profile_task(id, true)).await?;
     let (execute, payload) = peer.next("InstallProfile").await?;
-    let native_profile_bytes = payload["Payload"].as_data().unwrap().to_vec();
+    // Import unsigned native bytes from the actual attached CMS command payload.
+    let signed = f.root.join("legacy-signed.der");
+    let unsigned = f.root.join("legacy-unsigned.plist");
+    std::fs::write(&signed, payload["Payload"].as_data().unwrap())?;
+    openssl([
+        "cms".as_ref(),
+        "-verify".as_ref(),
+        "-binary".as_ref(),
+        "-noverify".as_ref(),
+        "-inform".as_ref(),
+        "DER".as_ref(),
+        "-in".as_ref(),
+        signed.as_os_str(),
+        "-out".as_ref(),
+        unsigned.as_os_str(),
+    ])?;
+    let native_profile_bytes = std::fs::read(unsigned)?;
     let bytes = peer.manage("Acknowledged", Some(execute), None).await?;
     let (observe, query) = lifecycle::command(&bytes, "ProfileList")?;
     ensure!(
