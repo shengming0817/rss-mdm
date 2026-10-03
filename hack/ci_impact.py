@@ -528,7 +528,9 @@ def dependency_consumers(graph, registry, key, dep, kind, registrations=()):
         if optional_active(graph, key, dep, alias, kind, registry.modules[name], name in explicit)
     }
     owned_tools = policy.get('tools', ()) if isinstance(policy, dict) else ()
-    cargo_only = isinstance(policy, dict) and policy.get('cargoOnly') is True
+    prefix = str(PurePosixPath(manifest).parent) + '/'
+    t1_owned = kind == 'dev' and any(path.startswith(prefix) for path in registry.t1)
+    cargo_only = t1_owned or isinstance(policy, dict) and policy.get('cargoOnly') is True
     if not claimed and not (cargo_only or owned_tools):
         raise SelectionError('unowned-dependency', manifest, kind + ':' + alias)
     return consumers, set(owned_tools)
