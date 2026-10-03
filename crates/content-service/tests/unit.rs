@@ -955,6 +955,21 @@ async fn native_failed_body_and_uncommitted_checkpoint_keep_the_acknowledged_fro
     );
     assert_eq!(store.status("user", id, 101).await.unwrap().offset, 1);
     let key = upload::storage_key("user", id);
+    // Tokio may still hold the dropped file for an in-flight blocking write.
+    // Synchronize on its actual lock release before this fixture's next append.
+    let part = options().open(store.upload_path(key, "part")).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match part.try_lock() {
+                Ok(()) => break,
+                Err(std::fs::TryLockError::WouldBlock) => tokio::task::yield_now().await,
+                Err(error) => panic!("fixture lock failed: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("interrupted writer did not release its file lock");
+    drop(part);
     let old = fs::read(store.upload_path(key, "json")).unwrap();
     store
         .append("user", id, 1, 102, &bytes[1..70000])

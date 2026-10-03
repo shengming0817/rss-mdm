@@ -222,7 +222,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
         device_id: if platform == Platform::Windows {
             case_windows_device()
         } else {
-            case_device()
+            crate::test_support::software_execution::case_device()
         },
         platform: spec.platform,
         architecture: spec.architecture,
