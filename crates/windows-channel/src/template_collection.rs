@@ -42,7 +42,8 @@ pub async fn send(
             .await?
             .ok_or_else(corrupt)?;
         let first =
-            crate::device::store::allocate_commands_in(c, p, template.spec().mappings.len() as i64).await?;
+            crate::device::store::allocate_commands_in(c, p, template.spec().mappings.len() as i64)
+                .await?;
         let capabilities=sqlx::query_as::<_,(String,i32)>("SELECT os_version,edition FROM mdm_commands.capabilities WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND session=$4").bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(i64::from(response.header.session_id)).fetch_optional(&mut *c).await.map_err(db)?;
         let Some((version, edition)) = capabilities else {
             return Ok(false);
@@ -203,7 +204,8 @@ pub async fn receive(
                 .into_iter()
                 .next()
                 .ok_or_else(corrupt)?
-                .key().to_owned();
+                .key()
+                .to_owned();
             if result.reference.uri != expected_uri {
                 return Err(Error::Conflict);
             }

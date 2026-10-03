@@ -19,6 +19,7 @@ pub(crate) fn facts(
         };
         let (code, kind, count) = match alert {
             Alert::Generic { items } => (1226, "csp_notification", items.len()),
+            Alert::DeclaredConfiguration { .. } => (1224, "declared_summary", 1),
             Alert::LoginStatus { .. } => (1224, "reported_login_state", 1),
             Alert::SessionAbort => (1223, "session_aborted", 0),
             _ => continue,

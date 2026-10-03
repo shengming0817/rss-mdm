@@ -196,10 +196,13 @@ async fn prepare(
     } else {
         vec![]
     };
+    if authenticated {
+        crate::device::linked::ready_in(c, p).await?;
+    }
     let prepared = PreparedWindows {
         user_available: authenticated && login_user,
-        provider_id: windows.provider_id.clone(),
-        management_urls: windows.management_urls(),
+        provider_id: windows.provider(p.purpose()),
+        management_urls: windows.management_urls(p.purpose()),
         input,
         history: history.expected,
         response,
@@ -299,11 +302,23 @@ impl WindowsSession for Session {
                     self.collection_complete = true;
                     return Ok(false);
                 }
-                if !crate::device::store::active_source_in(c, &p.tenant().to_string(), p.registration(), rss_mdm_inventory::ReportSource::MdmWindows).await? {
+                if !crate::device::store::active_source_in(
+                    c,
+                    &p.tenant().to_string(),
+                    p.registration(),
+                    rss_mdm_inventory::ReportSource::MdmWindows,
+                )
+                .await?
+                {
                     self.collection_complete = true;
                     return Ok(false);
                 }
-                let scope = crate::device::store::revalidate_source(c,p,rss_mdm_inventory::ReportSource::MdmWindows).await?;
+                let scope = crate::device::store::revalidate_source(
+                    c,
+                    p,
+                    rss_mdm_inventory::ReportSource::MdmWindows,
+                )
+                .await?;
                 let filtered = if self.authenticated {
                     let history = history.ok_or(Error::Conflict)?;
                     let input = crate::push_channel::receive(

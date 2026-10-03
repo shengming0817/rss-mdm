@@ -16,7 +16,12 @@ fn enrollment(value: &str) -> Result<EnrollmentType, Error> {
         _ => Err(Error::Conflict),
     }
 }
-fn provision(app: &HttpState, certificate: &[u8], kind: &str) -> Result<Vec<u8>, Error> {
+fn provision(
+    app: &HttpState,
+    certificate: &[u8],
+    kind: &str,
+    purpose: rss_mdm_registration_service::Purpose,
+) -> Result<Vec<u8>, Error> {
     let thumbprint = ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, certificate)
         .as_ref()
         .iter()
@@ -25,7 +30,7 @@ fn provision(app: &HttpState, certificate: &[u8], kind: &str) -> Result<Vec<u8>,
     provisioning::renewal(
         certificate,
         &thumbprint,
-        &app.windows()?.provider_id,
+        &app.windows()?.provider(purpose),
         enrollment(kind)?,
         &CodecLimits::default(),
     )
@@ -37,6 +42,7 @@ pub(crate) async fn issue(
     peer: &rss_mdm_certificate::HandshakePeer,
     cms: &[u8],
     audit: &RequestAudit,
+    purpose: rss_mdm_registration_service::Purpose,
 ) -> Result<Vec<u8>, Error> {
     let now = app
         .clock
@@ -49,8 +55,18 @@ pub(crate) async fn issue(
     )?;
     let principal = app
         .devices
-        .management_principal(&app.mount.credential(proof.fingerprint()))
+        .management_principal(
+            &crate::device::ChannelMount::new(
+                app.identity.tenant(),
+                rss_mdm_inventory::ReportSource::MdmWindows,
+                purpose,
+            )
+            .credential(proof.fingerprint()),
+        )
         .await?;
+    if let Some((parent, _)) = principal.parent() {
+        crate::linked::current_parent(app, parent).await?;
+    }
     audit.identify_device(principal.registration());
     audit.registration(principal.registration());
     audit.target(principal.device());
@@ -106,7 +122,7 @@ pub(crate) async fn issue(
                         .append_request(tx, audit, 200, if replayed { "replay" } else { "success" })
                         .await
                         .map_err(Error::from)?;
-                    let response = provision(app, &certificate, &kind)?;
+                    let response = provision(app, &certificate, &kind, purpose)?;
                     audit.mark_commit_started();
                     Ok(response)
                 })
@@ -124,8 +140,7 @@ async fn issue_on(
 ) -> Result<(Uuid, Vec<u8>, String, bool), Error> {
     let tenant = p.tenant().to_string();
     crate::device::store::lock_channel(c, &tenant, p.device(), p.channel()).await?;
-    crate::device::store::revalidate_source(c, p, rss_mdm_inventory::ReportSource::MdmWindows)
-        .await?;
+    crate::device::store::revalidate_management(c, p).await?;
     let windows = app.windows()?;
     if let Some(old)=sqlx::query("SELECT n.id,n.proof_digest,n.certificate,q.windows_profile AS enrollment_type,n.configuration FROM mdm_windows.renewals n JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(n.tenant_id,n.registration) JOIN mdm_access.requests q ON (q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE n.tenant_id=$1::uuid AND n.registration=$2 AND n.generation=$3 AND n.previous_credential=$4 FOR UPDATE OF n")
         .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(p.credential()).fetch_optional(&mut *c).await.map_err(db)? {
@@ -160,6 +175,7 @@ pub(crate) async fn activate(
     app: &HttpState,
     leaf: &certificate::CheckedLeaf,
     device: &str,
+    purpose: rss_mdm_registration_service::Purpose,
 ) -> Result<(), Error> {
     let tenant = app.identity.tenant();
     // A hint avoids an empty write/ledger transaction for every ordinary certificate.
@@ -179,14 +195,14 @@ pub(crate) async fn activate(
         .write(
             tenant,
             &control,
-            (app, leaf, device, &audit),
-            |(app, leaf, device, audit), tx| {
+            (app, leaf, device, &audit, purpose),
+            |(app, leaf, device, audit, purpose), tx| {
                 Box::pin(async move {
                     let id = tx
                         .with_connection_context(
-                            &mut (*app, *leaf, *device, *audit),
-                            |(app, leaf, device, audit), c| {
-                                Box::pin(activate_on(c, app, leaf, device, audit))
+                            &mut (*app, *leaf, *device, *audit, *purpose),
+                            |(app, leaf, device, audit, purpose), c| {
+                                Box::pin(activate_on(c, app, leaf, device, audit, *purpose))
                             },
                         )
                         .await?;
@@ -226,6 +242,7 @@ async fn activate_on(
     leaf: &certificate::CheckedLeaf,
     device: &str,
     audit: &RequestAudit,
+    purpose: rss_mdm_registration_service::Purpose,
 ) -> Result<Option<Uuid>, Error> {
     let tenant = app.identity.tenant().to_string();
     crate::device::store::lock_channel(c, &tenant, device, rss_mdm_inventory::Channel::Mdm).await?;
@@ -244,7 +261,12 @@ async fn activate_on(
         registration,
         row.try_get("generation").map_err(db)?,
         row.try_get("previous_credential").map_err(db)?,
-        &app.mount.credential(leaf.fingerprint()),
+        &crate::device::ChannelMount::new(
+            app.identity.tenant(),
+            rss_mdm_inventory::ReportSource::MdmWindows,
+            purpose,
+        )
+        .credential(leaf.fingerprint()),
     )
     .await?;
     sqlx::query(

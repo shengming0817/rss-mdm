@@ -199,7 +199,10 @@ impl DeviceService {
         credential: &VerifiedChannelCredential,
         source: ReportSource,
     ) -> Result<(DevicePrincipal, Scope), Error> {
-        if credential.purpose != Purpose::Primary || source != credential.source || self.tenant != credential.tenant.to_string() {
+        if credential.purpose != Purpose::Primary
+            || source != credential.source
+            || self.tenant != credential.tenant.to_string()
+        {
             return Err(Error::Forbidden);
         }
         let tenant = credential.tenant.to_string();
@@ -703,8 +706,14 @@ pub async fn allocate_task_report_in(
     sqlx::query_as("UPDATE mdm_access.report_sources SET next_sequence=next_sequence+1 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND enabled AND next_sequence<9223372036854775807 RETURNING epoch::text,next_sequence-1").bind(tenant).bind(registration).bind(source.as_str()).fetch_one(c).await
 }
 /// Allocate protocol identities independently of Inventory sources; caller revalidates first.
-pub async fn allocate_commands_in(c: &mut sqlx::PgConnection, p: &DevicePrincipal, count: i64) -> Result<u32, Error> {
-    if count < 1 || count > i64::from(u32::MAX) { return Err(Error::Malformed); }
+pub async fn allocate_commands_in(
+    c: &mut sqlx::PgConnection,
+    p: &DevicePrincipal,
+    count: i64,
+) -> Result<u32, Error> {
+    if count < 1 || count > i64::from(u32::MAX) {
+        return Err(Error::Malformed);
+    }
     revalidate_management(c, p).await?;
     let first: i64 = sqlx::query_scalar("UPDATE mdm_access.registrations SET next_command=next_command+$5 WHERE tenant_id=$1::uuid AND id=$2 AND purpose=$3 AND generation=$4 AND state='active' AND next_command<=4294967296-$5 RETURNING next_command-$5")
         .bind(p.tenant().to_string()).bind(p.registration()).bind(p.purpose().as_str()).bind(p.generation()).bind(count).fetch_one(c).await.map_err(db)?;
@@ -727,8 +736,8 @@ pub async fn activate_renewed_mdm_in(
         return Err(Error::Unauthorized);
     }
     lock_channel(c, tenant, device, credential.channel).await?;
-    let current:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations r JOIN mdm_access.credentials k ON(k.tenant_id,k.registration)=(r.tenant_id,r.id) JOIN mdm_access.report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.device=$3 AND r.generation=$4 AND r.state='active' AND k.id=$5 AND k.state='active' AND s.source='mdm.windows' AND s.enabled)")
-        .bind(tenant).bind(registration).bind(device).bind(generation).bind(predecessor).fetch_one(&mut *c).await.map_err(db)?;
+    let current:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations r JOIN mdm_access.credentials k ON(k.tenant_id,k.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.device=$3 AND r.generation=$4 AND r.state='active' AND k.id=$5 AND k.state='active' AND r.purpose=$6 AND (r.parent_id IS NULL OR EXISTS(SELECT 1 FROM mdm_access.registrations p WHERE p.tenant_id=r.tenant_id AND p.id=r.parent_id AND p.generation=r.parent_generation AND p.state='active' AND p.purpose='primary')))")
+        .bind(tenant).bind(registration).bind(device).bind(generation).bind(predecessor).bind(credential.purpose.as_str()).fetch_one(&mut *c).await.map_err(db)?;
     if !current {
         return Err(Error::Unauthorized);
     }
@@ -736,9 +745,15 @@ pub async fn activate_renewed_mdm_in(
 }
 
 /// Current management authority; this does not authorize publishing an observation.
-pub async fn management_in(c: &mut sqlx::PgConnection, credential: &VerifiedChannelCredential) -> Result<DevicePrincipal, Error> {
+pub async fn management_in(
+    c: &mut sqlx::PgConnection,
+    credential: &VerifiedChannelCredential,
+) -> Result<DevicePrincipal, Error> {
     super::management::authenticate(c, credential).await
 }
-pub async fn revalidate_management(c: &mut sqlx::PgConnection, p: &DevicePrincipal) -> Result<(), Error> {
-    super::management::revalidate(c,p).await
+pub async fn revalidate_management(
+    c: &mut sqlx::PgConnection,
+    p: &DevicePrincipal,
+) -> Result<(), Error> {
+    super::management::revalidate(c, p).await
 }

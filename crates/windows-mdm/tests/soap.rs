@@ -23,6 +23,8 @@ fn attribute_is_escaped_once() {
             to: None,
             reply_to: false,
             security: Some(soap::Security {
+                certificate: None,
+                signature: false,
                 username: None,
                 timestamp: Some(soap::Timestamp {
                     id: "_0".into(),

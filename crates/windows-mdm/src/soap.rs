@@ -12,7 +12,7 @@ pub use enrollment::{
     NillableText,
 };
 pub use policy::Policy;
-pub use security::{Security, Timestamp, UsernameToken};
+pub use security::{CertificateToken, Security, Timestamp, UsernameToken};
 /// SOAP 1.2 envelope namespace.
 pub const NS: &str = "http://www.w3.org/2003/05/soap-envelope";
 /// WS-Addressing 2005/08 namespace.
@@ -269,8 +269,7 @@ fn validate_header(h: &Header, op: Operation, l: &CodecLimits) -> Result<()> {
     if op == Operation::GetPolicies
         && h.security
             .as_ref()
-            .and_then(|s| s.username.as_ref())
-            .is_none()
+            .is_none_or(|s| s.username.is_none() && s.certificate.is_none())
     {
         return Err(E::Structure);
     }
@@ -361,8 +360,7 @@ fn validate(m: &Message, l: &CodecLimits) -> Result<()> {
                 && m.header
                     .security
                     .as_ref()
-                    .and_then(|s| s.username.as_ref())
-                    .is_none()
+                    .is_none_or(|s| s.username.is_none() && s.certificate.is_none())
             {
                 return Err(E::Structure);
             }

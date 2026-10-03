@@ -2,6 +2,7 @@
 mod database;
 pub mod enrollment_store;
 pub mod issuance;
+mod linked;
 pub mod management;
 mod operations;
 mod protection;
@@ -85,14 +86,31 @@ impl Windows {
             configuration,
         })
     }
-    pub fn management_urls(&self) -> Vec<String> {
+    pub fn provider(&self, purpose: rss_mdm_registration_service::Purpose) -> String {
+        match purpose {
+            rss_mdm_registration_service::Purpose::Primary => self.provider_id.clone(),
+            rss_mdm_registration_service::Purpose::WindowsDeclared => {
+                format!("{}-declared", self.provider_id)
+            }
+        }
+    }
+    pub fn management_urls(&self, purpose: rss_mdm_registration_service::Purpose) -> Vec<String> {
         std::iter::once(&self.management_origin)
             .chain(&self.additional_management_origins)
-            .map(|origin| format!("{origin}/ManagementServer/MDM.svc"))
+            .map(|origin| {
+                format!(
+                    "{origin}/ManagementServer/{}.svc",
+                    if purpose == rss_mdm_registration_service::Purpose::Primary {
+                        "MDM"
+                    } else {
+                        "Declared"
+                    }
+                )
+            })
             .collect()
     }
-    pub fn management_url(&self) -> String {
-        format!("{}/ManagementServer/MDM.svc", self.management_origin)
+    pub fn management_url(&self, purpose: rss_mdm_registration_service::Purpose) -> String {
+        self.management_urls(purpose)[0].clone()
     }
 }
 #[derive(Clone)]
@@ -106,9 +124,16 @@ pub fn routers(
     let enrollment = Router::new()
         .route("/EnrollmentServer/Discovery.svc", post(discover))
         .route("/EnrollmentServer/Policy.svc", post(policy))
-        .route("/EnrollmentServer/Enrollment.svc", post(issue));
+        .route("/EnrollmentServer/Enrollment.svc", post(issue))
+        .route("/EnrollmentConfiguration", post(linked::discover))
+        .route("/EnrollmentServer/LinkedPolicy.svc", post(linked::policy))
+        .route(
+            "/EnrollmentServer/LinkedEnrollment.svc",
+            post(linked::issue),
+        );
     let management = Router::new()
         .route("/ManagementServer/MDM.svc", post(management::manage))
+        .route("/ManagementServer/Declared.svc", post(management::manage))
         .route(
             "/api/agent/v5/managed-registrations",
             post(management::register_agent),
@@ -124,7 +149,7 @@ pub fn routers(
             management
                 .with_state(app)
                 .layer(Extension(ManagementEndpoint(format!(
-                    "https://{}/ManagementServer/MDM.svc",
+                    "https://{}",
                     management_boundary.host
                 ))))
                 .layer(DefaultBodyLimit::max(512 * 1024)),
@@ -168,6 +193,8 @@ fn response(request: Option<&soap::Message>, body: Body, now: i64) -> Result<Res
     };
     let security = if matches!(body, Body::IssueResponse(_)) {
         Some(soap::Security {
+            certificate: None,
+            signature: false,
             username: None,
             timestamp: Some(soap::Timestamp {
                 id: "_0".into(),
@@ -302,6 +329,7 @@ async fn enrollment(
                 peer.as_ref().ok_or(Error::Unauthorized)?,
                 &cms.0,
                 &audit,
+                rss_mdm_registration_service::Purpose::Primary,
             )
             .await?;
             return response(

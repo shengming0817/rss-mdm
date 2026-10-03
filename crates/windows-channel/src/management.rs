@@ -15,6 +15,7 @@ pub(crate) async fn manage(
     Extension(audit): Extension<RequestAudit>,
     headers: HeaderMap,
     Extension(endpoint): Extension<ManagementEndpoint>,
+    uri: axum::http::Uri,
     bytes: Bytes,
 ) -> Result<Response, Error> {
     if headers.keys().any(|k| {
@@ -45,10 +46,15 @@ pub(crate) async fn manage(
             .ok_or(Error::Unavailable(Failure::Clock))?,
     )?;
     let message = syncml::decode(&bytes, &CodecLimits::default()).map_err(|_| Error::Malformed)?;
-    if message.header.target != endpoint.0
+    let purpose = match uri.path() {
+        "/ManagementServer/MDM.svc" => rss_mdm_registration_service::Purpose::Primary,
+        "/ManagementServer/Declared.svc" => rss_mdm_registration_service::Purpose::WindowsDeclared,
+        _ => return Err(Error::Forbidden),
+    };
+    if message.header.target != format!("{}{}", endpoint.0, uri.path())
         || !app
             .windows()?
-            .management_urls()
+            .management_urls(purpose)
             .contains(&message.header.target)
     {
         return Err(Error::Forbidden);
@@ -62,8 +68,13 @@ pub(crate) async fn manage(
             }
         )
     });
-    crate::renewal::activate(&app, &checked, &message.header.source).await?;
-    let credential = app.mount.credential(checked.fingerprint());
+    crate::renewal::activate(&app, &checked, &message.header.source, purpose).await?;
+    let mount = crate::device::ChannelMount::new(
+        app.identity.tenant(),
+        rss_mdm_inventory::ReportSource::MdmWindows,
+        purpose,
+    );
+    let credential = mount.credential(checked.fingerprint());
     let principal = match app
         .devices
         .management_principal(&credential)
@@ -81,13 +92,16 @@ pub(crate) async fn manage(
         }
         Err(error) => return Err(error),
     };
+    if let Some((parent, _)) = principal.parent() {
+        linked::current_parent(&app, parent).await?;
+    }
     audit.identify_device(principal.registration());
     audit.registration(principal.registration());
     audit.target(principal.device());
     if message.header.source != principal.device()
         || !app
             .windows()?
-            .management_urls()
+            .management_urls(purpose)
             .contains(&message.header.target)
     {
         return Err(Error::Forbidden);
@@ -373,7 +387,8 @@ fn initialization(
                 !matches!(
                     c,
                     Command::Alert {
-                        alert: syncml::Alert::Generic { .. }
+                        alert: syncml::Alert::DeclaredConfiguration { .. }
+                            | syncml::Alert::Generic { .. }
                             | syncml::Alert::SessionAbort
                             | syncml::Alert::MoreMessages
                             | syncml::Alert::EndOfData { .. },

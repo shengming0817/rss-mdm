@@ -53,7 +53,9 @@ pub(super) async fn complete(
         now(),
         &crate::device::ChannelMount::new(
             rss_request_context::TenantId::parse(proof.tenant_id()).unwrap(),
-            rss_mdm_inventory::ReportSource::MdmWindows, rss_mdm_registration_service::Purpose::Primary),
+            rss_mdm_inventory::ReportSource::MdmWindows,
+            rss_mdm_registration_service::Purpose::Primary,
+        ),
         &crate::registration_lifecycle::Bridge,
     )
     .await;
@@ -610,7 +612,10 @@ impl Host {
             .identity(identity)
             .timeout(Duration::from_secs(12))
             .build()?;
-        let url = app.windows()?.channel.management_url();
+        let url = app
+            .windows()?
+            .channel
+            .management_url(rss_mdm_registration_service::Purpose::Primary);
         let mut message = syncml::decode(
             include_bytes!("../../../windows-mdm/tests/fixtures/initialization.xml"),
             &CodecLimits::default(),
