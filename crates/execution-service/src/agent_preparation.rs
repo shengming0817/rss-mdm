@@ -41,7 +41,7 @@ impl Inputs {
                         resource: binding.id.as_str(),
                         version: binding.version.as_str(),
                         digest: version.digest().bytes(),
-                        admission: admission,
+                        admission,
                         variant: key,
                         uninstall: false,
                     },
