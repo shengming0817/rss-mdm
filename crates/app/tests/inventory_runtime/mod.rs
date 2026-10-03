@@ -137,7 +137,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     ensure!(service.management_principal(&credential).await.is_err());
     let mut tx = access.begin(case_a()).await?;
     ensure!(
-        crate::device::store::revalidate(&mut tx, &stale)
+        crate::device::store::revalidate_management(&mut tx, &stale)
             .await
             .is_err()
     );

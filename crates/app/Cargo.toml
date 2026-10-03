@@ -96,6 +96,8 @@ rss-reconcile.workspace = true
 rss-reconcile-postgres.workspace = true
 
 [dev-dependencies]
+libxml.workspace = true
+time.workspace = true
 rss-mdm-execution-service = {workspace=true,features=["integration"]}
 rss-mdm-apple-channel={workspace=true,features=["integration"]}
 rss-mdm-windows-channel={workspace=true,features=["integration"]}

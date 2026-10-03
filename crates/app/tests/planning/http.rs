@@ -139,7 +139,9 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
     );
     let credential = rss_mdm_registration_service::ChannelMount::new(
         rss_request_context::TenantId::parse(case_tenant())?,
-        rss_mdm_inventory::ReportSource::AgentBuiltin, rss_mdm_registration_service::Purpose::Primary)
+        rss_mdm_inventory::ReportSource::AgentBuiltin,
+        rss_mdm_registration_service::Purpose::Primary,
+    )
     .credential(crate::test_support::secret("console-agent"));
     let (_, receipt) =
         crate::device::test_support::bind(&service, &principal, &credential, revoked, 0).await?;

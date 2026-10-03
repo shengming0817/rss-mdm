@@ -27,7 +27,9 @@ impl Fixture {
             .management_principal(
                 &crate::device::ChannelMount::new(
                     self.app.identity.tenant,
-                    rss_mdm_inventory::ReportSource::MdmApple, rss_mdm_registration_service::Purpose::Primary)
+                    rss_mdm_inventory::ReportSource::MdmApple,
+                    rss_mdm_registration_service::Purpose::Primary,
+                )
                 .credential(old_leaf.fingerprint()),
             )
             .await?;

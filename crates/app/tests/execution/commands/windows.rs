@@ -1787,7 +1787,9 @@ async fn full_user_context_is_exact_and_login_availability_is_session_local() ->
         .management_principal(
             &crate::device::ChannelMount::new(
                 host.app.identity.tenant,
-                rss_mdm_inventory::ReportSource::MdmWindows, rss_mdm_registration_service::Purpose::Primary)
+                rss_mdm_inventory::ReportSource::MdmWindows,
+                rss_mdm_registration_service::Purpose::Primary,
+            )
             .credential(credential.fingerprint()),
         )
         .await?;

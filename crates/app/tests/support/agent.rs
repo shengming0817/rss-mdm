@@ -71,7 +71,9 @@ pub(crate) async fn router(fixture: &authority::Authority) -> Result<Router> {
         Arc::new(crate::agent::HttpState {
             mount: crate::device::ChannelMount::new(
                 fixture.identity.tenant,
-                rss_mdm_inventory::ReportSource::AgentBuiltin, rss_mdm_registration_service::Purpose::Primary),
+                rss_mdm_inventory::ReportSource::AgentBuiltin,
+                rss_mdm_registration_service::Purpose::Primary,
+            ),
             audit_store: fixture.audit.clone(),
             access: Arc::new(fixture.access.agent_store()),
             identity: Arc::new(

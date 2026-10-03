@@ -98,7 +98,7 @@ pub struct Header {
     pub to: Option<String>,
     /// Whether an anonymous ReplyTo is present; responses must set this to false.
     pub reply_to: bool,
-    /// Unverified security fields; policy and initial issue requests need UsernameToken.
+    /// Unverified security fields; primary enrollment uses UsernameToken, linked enrollment uses certificate proof.
     /// CMS renewal uses the existing TLS identity; issue responses need Timestamp.
     pub security: Option<Security>,
 }

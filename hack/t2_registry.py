@@ -230,6 +230,7 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
  'content.http': ('crates/management-http/src/content/http.rs', 'crates/content-service/src/upload.rs'),
  'content.mirror': ('crates/management-http/src/content/http.rs', 'crates/content-service/src/upload.rs'),
  'content.gc': ('crates/content-service/src/cleanup.rs', 'crates/content-service/src/event.rs'),
+ 'windows.declared': ('crates/windows-channel/src/linked.rs', 'crates/certificate/src/windows/linked.rs', 'crates/registration-service/src/device/linked.rs', 'crates/registration-service/src/device/management.rs', 'crates/execution-service/src/native.rs', 'crates/windows-mdm/src/native/resolved.rs'),
  'windows.issuance': ('crates/windows-channel/src/issuance.rs', 'crates/certificate/src/windows.rs'),
  'windows.enrollment': ('crates/windows-channel/src/lib.rs',),
  'windows.management': ('crates/windows-channel/src/management.rs',
@@ -417,6 +418,7 @@ add('native.tls', selectors=('native::tls::tests::',), profile='product', fixtur
     tests=('crates/app/tests/native/tls.rs',))
 app_family('windows',
            fixtures=('windows',), namespace='windows::t2')
+MODULES['windows.declared'] = replace(MODULES['windows.declared'], support_inputs=(*MODULES['windows.declared'].support_inputs, 'crates/app/tests/windows/support.rs', 'crates/app/tests/enrollment/support.rs', 'crates/app/tests/execution/support.rs', 'crates/app/tests/execution/support/native.rs'), db_mode='fresh', scope='objects')
 for name in ('windows.issuance','windows.enrollment','windows.management','windows.commands','windows.retention','windows.limits','execution.commands.windows','execution.commands.configuration','execution.commands.onboarding'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs + ('crates/app/tests/windows/support.rs',))
 for name in ('enrollment.recovery','windows.issuance','windows.enrollment','windows.management','windows.commands','windows.retention','windows.limits','execution.commands.admission','execution.commands.dispatch','execution.commands.recovery','execution.commands.windows','execution.commands.configuration','execution.commands.onboarding'):

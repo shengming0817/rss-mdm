@@ -47,7 +47,17 @@ DMClient 维护限定当前 provider。DMAcc 先读取所选 account 的 ServerI
 
 原生 `com.microsoft:mdm.unenrollment.userrequest` 在原事务内退休注册、凭据、执行参与方、采集、push 与活动会话，并保存独立加密回执。并发或丢失响应重试得到相同字节；回执不依赖临时会话保留。退休证书只能恢复这份精确历史请求的回执，不能构造 active principal 或继续接收新工作。服务器退休不能证明终端已清理管理账户，审计中的设备清理状态保持 unverified。
 
-普通 Full 用户注册不依赖组织联合身份。需要外部组织 / parent-linked enrollment 的原生能力继续明确返回 Unsupported；该契约由 #2592 的对应切片与 #2597 承接，不能从普通用户注册推导成功。
+普通 Full 用户注册不依赖组织联合身份。WinDC 子登记走证书式协议：`/EnrollmentConfiguration?api-version=1.0` 只接受 `enrollmentType="User"`，返回 Certificate 策略与独立 LinkedPolicy.svc / LinkedEnrollment.svc。发现字段不建立组织身份；未支持的 Federated/Entra JWT 流程拒绝。
+
+XCEP 仅返回策略，导出的 BST 不授予登记权限。LinkedEnrollment.svc 校验原始 XML 的父证书签名、时间戳、当前父凭据及新 CSR 私钥证明，签发独立子证书。子登记与父登记共享设备身份，使用独立 provider、证书、世代、命令编号和 `/ManagementServer/Declared.svc` 会话；首次真正认证签入后才能接受任务。子登记不建立 Inventory 报告源。父证书正常续期保留子登记；父重新登记、撤销或被替换会连带退役子登记。子证书在自己的登记入口续期，父子证书不能跨管理入口使用。
+
+## DeclaredConfiguration 与 MI
+
+DeclaredConfiguration 使用现有配置与设备操作入口，Document 值为原生 XML；Delete 输入也保留原始文档，供删除效果与资源占用确认。支持的 Windows 证书协议版本来自冻结的官方事实，未知 servicing 分支拒绝。普通 ConfigRefresh 继续使用主登记。
+
+CSP 文档按内容检查每个资源的既有权限、schema 与设备能力。MI 参数的键和值均为字符串，仅允许 Device scope，并独立要求设备范围的 `windows_mi_execute` 权限。系统不维护 MI provider 白名单；资源占用按规范化 namespace/class 整类隔离，同一文档不重复声明同类，Key/Value 角色分别保留。
+
+1224 摘要仅触发匹配文档的完整 Results 查询。操作须核对文档 GUID、scope、版本、操作和全部资源的终态，SyncML ACK、摘要及 404 均不能证明完成。异步观察复用既有 attempt 与恢复流程；删除确认完成后才释放占用。删除 RefreshInterval 后按协议默认 240 分钟确认。
 
 ## 采集与恢复
 
