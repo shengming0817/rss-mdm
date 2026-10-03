@@ -923,7 +923,7 @@ APP_HELPER_CONSUMERS = {
         'execution.commands.recovery','execution.commands.windows','execution.commands.configuration','execution.commands.onboarding',
         'windows.commands','windows.enrollment','windows.issuance','windows.limits','windows.management','windows.retention',
         'apple.collection','apple.profile','apple.policy','apple.onboarding','apple.renewal','apple.identity','apple.push',
-        'apple.fairness','apple.host','apple.scep'),
+        'apple.fairness','apple.host','apple.scep','apple.commands','apple.users'),
     'support/audit.rs': (
         'diagnostics.http',
         'audit.receipts','audit.integrity','audit.recovery','audit.budget',
@@ -1170,4 +1170,6 @@ consume(('crates/apple-mdm/src/*', 'crates/apple-mdm/src/native/*',
          'crates/apple-channel/src/attempt.rs', 'crates/apple-channel/src/native.rs',
          'crates/apple-channel/src/profiles.rs', 'crates/apple-channel/src/flow_store.rs',
          'crates/apple-channel/src/lib.rs', 'crates/execution-service/src/apple*',
-         'crates/execution-service/src/channels.rs'), 'apple.commands apple.users')
+         'crates/execution-service/src/channels.rs',
+         'crates/execution-service/src/service.rs', 'crates/execution-service/src/permissions.rs',
+         'crates/execution-service/src/queries/records.rs'), 'apple.commands apple.users')
