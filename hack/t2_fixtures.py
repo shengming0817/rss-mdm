@@ -19,6 +19,7 @@ from t2_database import Costs, DatabasePool, measure
 from t2_hosts import Host
 from t2_environment import Environment, private, run
 from t2_registry import IDENTITY_SETUP
+from s3_fixtures import S3Environment
 from t2_model import ROOT
 from t2_processes import diagnostic_phase, owned_by
 from verification_result import require
@@ -42,14 +43,14 @@ class RunFixtures:
         self.case_contexts = {}
         self.shared = {}
         self.hosts = {}
-        self.s3 = None
+        self.s3 = S3Environment()
 
     def __enter__(self):
         self.process_ownership = owned_by(self.builds.processes)
         self.process_ownership.__enter__()
         try:
             # The worktree lease makes these known projects exclusively ours.
-            # Recover all registered owners even when this run selects no PG/gateway.
+            # Recover all registered owners, independently of this run's selected fixtures.
             self.cleanup_environments('prepare-recovery')
         except BaseException:
             self.cert_directory.cleanup()
@@ -73,8 +74,7 @@ class RunFixtures:
             except Exception as error:
                 errors.append(error)
         try:
-            if self.s3 is not None:
-                self.s3.reset()
+            self.s3.reset()
         except Exception as error:
             errors.append(error)
         if errors:
@@ -314,9 +314,6 @@ class RunFixtures:
                 stack.enter_context(oracle(root, env))
             if 's3' in module.fixtures:
                 with self.lock:
-                    if self.s3 is None:
-                        from s3_fixtures import S3Environment
-                        self.s3 = S3Environment()
                     env.update(self.s3.environment())
             if 'idp' in module.fixtures:
                 from enterprise_idp import fixture
