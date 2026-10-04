@@ -469,8 +469,15 @@ impl ExecutionService {
             let wire::TaskAuthorization::SelfService { subject, .. } = &invocation.authorization else { return Err(Error::Forbidden.into()); };
             if !owns(subject, proof) { return Err(Error::Forbidden.into()); }
             let plan = db::load_source(&service.policy_reader, tx, run.source).await?;
-            let now = storage::now(tx).await?;
-            if !plan.authorized_run_in(service, tx, &run, now).await? { return Err(Error::Forbidden.into()); }
+            // Reading an accepted request uses the current reader's qualification, not Start authority.
+            let policy = crate::sources::storage::read_in(&service.policy_reader, tx, plan.owner()).await?.ok_or(Error::NotFound)?;
+            let config = policy.definition.self_service.as_ref().ok_or(Error::Forbidden)?;
+            if !policy.enabled || !config.published { return Err(Error::Forbidden.into()); }
+            let basis = access::select(config, proof)?.ok_or(Error::Forbidden)?;
+            if access::qualify_in(service, tx, config, &basis).await?.is_none()
+                || crate::sources::storage::eligible_in(&service.source, tx, &policy, p.device()).await?.is_none() {
+                return Err(Error::Forbidden.into());
+            }
             let result = match (&plan, run.result.as_ref()) {
                 (db::ScheduledPolicy::Script(script), Some(result)) => {
                     let can_read = match proof {

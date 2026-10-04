@@ -136,8 +136,10 @@ Resource.Script 持有参数 schema，Policy 使用 Fixed/Input 选择来源。�
 以下入口位于 `/api/v1/agent/runtime`，始终使用 Agent 系统服务的设备凭据。用户访问模式还使用 `X-RSS-User-Session`；设备模式不需要企业登录。无效或重复用户会话头不会降级为设备访问。系统服务根据真实 IPC 入口设置 source，模型参数不得控制 source，也不得接触设备私钥或企业凭据。confirmed 绑定当前 requestId、Policy revision/version 和确切输入，客户端边界由 #2677 实施。
 
 - `GET /self-service?source=human|ai&after=<policyId>` 返回当前可调用的有界目录。每项含 Policy 坐标、自助描述及 tagged script/software 接口。目录复用 Scope、注册世代、平台、能力、资源批准、频率、窗口、容量及 pending/Unknown 判断；未知事实不授予执行。
-- `POST /self-service/invocations` 针对当前设备接受 operationId、Policy 坐标、source、confirmed、parameters，返回 202 的 requestId/runId。精确重试返回原 Run；变化正文返回冲突。AvailableInstall 在显式请求前不创建 Run/Offer，不能自行 Start；系统安装按确切资源版本、检测意图及 effect target 在用户和 Policy 之间排除重复，Unknown 不允许盲重试。
+- `POST /self-service/invocations` 针对当前设备接受 operationId、Policy 坐标、source、confirmed、parameters，返回 202 的 requestId/runId。精确重试返回原 Run；变化正文返回冲突。AvailableInstall 在显式请求前不创建 Run/Offer，不能自行 Start；安装按确切资源版本、检测意图及稳定 Device/SID/UID 效果目标在用户和 Policy 之间排除重复，Unknown 不允许盲重试。
 - `GET /self-service/invocations/{requestId}` 返回本主体、注册及世代对应的执行状态。原始脚本结果另外要求 InventoryRead，敏感采集还要求 InventorySensitiveRead；缺少读取权限时 result 为 null，状态仍可读。软件只返回闭合检测 outcome，原生证据与诊断继续由管理接口持有。
+
+状态查询核对当前读者、当前注册与 Policy 访问资格及设备 Scope，不要求原企业会话或 OS/helper 仍可执行；这不签发新的执行许可。
 
 Run 保存服务端选择的访问依据，用户模式只保存 Identity 签发的非凭据 SessionReference。领取及 Start 服务端复核原会话、账户和成员有效性、可信来源与快照期限、静态用户组、Policy revision/version、自助配置、有效设备 Scope 和确切 OS/helper。企业身份与 OS 账号分别绑定。签名覆盖通用 TaskAuthorization、精确输入和执行目标；客户端不能伪装成自动 Policy 或 RemoteOperation。
 

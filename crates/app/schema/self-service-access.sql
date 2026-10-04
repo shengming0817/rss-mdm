@@ -25,7 +25,7 @@ DO $$ DECLARE tenant text; BEGIN
   UPDATE mdm_commands.action_attempts a SET execution_material=jsonb_build_object('kind','software','platform',a.permit->'payload'->'platform','intent',a.permit->'payload'->'intent','definitionDigest',a.permit->'payload'->'definitionDigest','steps',a.permit->'payload'->'steps')
    WHERE a.tenant_id=tenant::uuid AND jsonb_typeof(a.permit->'payload'->'steps')='array';
   -- Existing software evidence participates in the same exact-version/effect-target exclusion.
-  UPDATE mdm_commands.action_runs r SET software_effect=jsonb_build_object('generation',r.generation,'resource',v.frozen->'action'->'resource','version',v.frozen->'action'->'version','digest',v.frozen->'action'->'resource_digest','intent',a.offer->'payload'->'intent','target',(a.offer->'payload'->'steps')->-1->'target')
+  UPDATE mdm_commands.action_runs r SET software_effect=jsonb_build_object('generation',r.generation,'resource',v.frozen->'action'->'resource','version',v.frozen->'action'->'version','digest',v.frozen->'action'->'resource_digest','intent',a.offer->'payload'->'intent','target',((a.offer->'payload'->'steps')->-1->'target')-'sessionId')
    FROM mdm_policy.versions v,mdm_commands.action_attempts a
    WHERE r.tenant_id=tenant::uuid AND (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) AND v.action_kind='software' AND (a.tenant_id,a.run)=(r.tenant_id,r.id) AND a.id=(r.state->'delivery'->>'attempt')::uuid AND jsonb_typeof(a.offer->'payload'->'steps')='array';
  END LOOP;

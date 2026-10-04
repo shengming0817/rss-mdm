@@ -580,59 +580,15 @@
       "description": "Policy-owned self-service configuration. Missing input defaults are normalized by CAS.",
       "properties": {
         "access": {
-          "description": "Explicit access basis. Null is permitted only for an unpublished draft.",
-          "oneOf": [
+          "anyOf": [
             {
-              "additionalProperties": false,
-              "description": "Any authenticated registration in the effective device scope.",
-              "properties": {
-                "kind": {
-                  "const": "device",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind"
-              ],
-              "type": "object"
+              "$ref": "#/$defs/SelfServiceAccess"
             },
             {
-              "additionalProperties": false,
-              "description": "Any live enterprise session in the consuming tenant.",
-              "properties": {
-                "kind": {
-                  "const": "authenticated_user",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "At least one current, trusted user selector must match.",
-              "properties": {
-                "kind": {
-                  "const": "users",
-                  "type": "string"
-                },
-                "selectors": {
-                  "description": "Bounded OR selection; an empty selection grants nothing and is invalid.",
-                  "items": {
-                    "$ref": "#/$defs/SelfServiceSelector"
-                  },
-                  "type": "array"
-                }
-              },
-              "required": [
-                "kind",
-                "selectors"
-              ],
-              "type": "object"
+              "type": "null"
             }
-          ]
+          ],
+          "description": "Explicit access basis. Null is permitted only for an unpublished draft."
         },
         "allowAi": {
           "default": null,
@@ -697,6 +653,61 @@
         "keywords"
       ],
       "type": "object"
+    },
+    "SelfServiceAccess": {
+      "description": "Product self-service access; device membership is always checked separately.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Any authenticated registration in the effective device scope.",
+          "properties": {
+            "kind": {
+              "const": "device",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Any live enterprise session in the consuming tenant.",
+          "properties": {
+            "kind": {
+              "const": "authenticated_user",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "At least one current, trusted user selector must match.",
+          "properties": {
+            "kind": {
+              "const": "users",
+              "type": "string"
+            },
+            "selectors": {
+              "description": "Bounded OR selection; an empty selection grants nothing and is invalid.",
+              "items": {
+                "$ref": "#/$defs/SelfServiceSelector"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "selectors"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "SelfServiceDepartmentMatch": {
       "description": "Department membership semantics.",

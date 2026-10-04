@@ -199,11 +199,12 @@ fn route_action(route: &str) -> &'static str {
         "/api/v1/agent/enroll/activate" | "/activate" => "agent_certificate_activate",
         "/api/v1/agent/runtime/reports" | "/reports" => "agent_report",
         "/api/v1/agent/runtime/reports/{id}" | "/reports/{id}" => "agent_report_read",
-        "/api/v1/agent/runtime/self-service/scripts" | "/self-service/scripts" => "command_read",
-        "/api/v1/agent/runtime/self-service/scripts/invocations"
-        | "/self-service/scripts/invocations" => "command_accept",
-        "/api/v1/agent/runtime/self-service/scripts/invocations/{id}"
-        | "/self-service/scripts/invocations/{id}" => "command_read",
+        "/api/v1/agent/runtime/self-service" | "/self-service" => "command_read",
+        "/api/v1/agent/runtime/self-service/invocations" | "/self-service/invocations" => {
+            "command_accept"
+        }
+        "/api/v1/agent/runtime/self-service/invocations/{id}"
+        | "/self-service/invocations/{id}" => "command_read",
         _ => "protected_request",
     }
 }

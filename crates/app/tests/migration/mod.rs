@@ -41,7 +41,8 @@ async fn complete_predecessor_withdraws_old_authority_and_preserves_started_evid
     let pending_state = json!({"delivery":{"kind":"queued"},"execution":"not_started","cancellation":"none","deadline":deadline,"startedAt":null});
     let running_state = json!({"delivery":{"kind":"received","attempt":attempt,"leaseUntil":200},"execution":"running","cancellation":"none","deadline":deadline,"startedAt":100});
     let frozen = json!({"kind":"software","action":{"delivery":{"kind":"direct"},"resource":"predecessor-app","version":"v1","variants":{"macos_aarch64":"default"},"resource_digest":vec![17;32],"admission_operation":Uuid::from_u128(10),"intent":"available_install","schedule":{"kind":"check_in"},"run_lifetime_seconds":3600}});
-    let material = json!({"kind":"software","platform":"macos","intent":"install","definitionDigest":vec![18;32],"steps":[{"target":{"kind":"device"}}]});
+    let execution_target = json!({"kind":"user","identity":"502","sessionId":Uuid::from_u128(13)});
+    let material = json!({"kind":"software","platform":"macos","intent":"install","definitionDigest":vec![18;32],"steps":[{"target":execution_target}]});
 
     // This is a SQL transformation fixture: the installer copies opaque historical
     // signed envelopes and projects their evidence coordinates without verifying
@@ -85,10 +86,55 @@ async fn complete_predecessor_withdraws_old_authority_and_preserves_started_evid
         sqlx::query("INSERT INTO mdm_commands.action_attempts(tenant_id,id,run,registration,claimed_at,offer) VALUES($1,$2,$3,$4,50,$5)")
             .bind(tenant).bind(previous_attempt).bind(running).bind(registration).bind(replaced).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO mdm_commands.action_attempts(tenant_id,id,run,registration,claimed_at,offer,permit) VALUES($1,$2,$3,$4,90,$5,$6)")
-            .bind(tenant).bind(attempt).bind(running).bind(registration).bind(envelope(tenant,"offer",json!({"kind":"device"}))).bind(envelope(tenant,"start",json!({"kind":"device"}))).execute(&mut *tx).await?;
+            .bind(tenant).bind(attempt).bind(running).bind(registration).bind(envelope(tenant,"offer",execution_target.clone())).bind(envelope(tenant,"start",execution_target.clone())).execute(&mut *tx).await?;
         tx.commit().await?;
     }
 
+    let original_ledger: Vec<(String, String, bool)> =
+        sqlx::query_as("SELECT name,digest,complete FROM public.mdm_migrations ORDER BY name")
+            .fetch_all(&mut owner)
+            .await?;
+    for field in ["instance_id", "target", "tenants", "epoch", "audit_mode"] {
+        let mut input = installation.configuration();
+        input[field] = match field {
+            "instance_id" => json!("55555555-5555-4555-8555-555555555555"),
+            "target" => json!(vec![3; 16]),
+            "tenants" => json!(["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]),
+            "epoch" => json!(2),
+            _ => json!("ledger"),
+        };
+        let mismatch: Installation = serde_json::from_value(input)?;
+        ensure!(migrate_on(&mut owner, &mismatch).await.is_err());
+        let actual_ledger: Vec<(String, String, bool)> =
+            sqlx::query_as("SELECT name,digest,complete FROM public.mdm_migrations ORDER BY name")
+                .fetch_all(&mut owner)
+                .await?;
+        ensure!(actual_ledger == original_ledger);
+        ensure!(!sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='mdm_commands' AND table_name='action_runs' AND column_name='software_effect')").fetch_one(&mut owner).await?);
+        for tenant in &installation.tenants {
+            let mut tx = owner.begin().await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+                .bind(tenant)
+                .execute(&mut *tx)
+                .await?;
+            let actual_definition: Value = sqlx::query_scalar(
+                "SELECT definition FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2",
+            )
+            .bind(tenant)
+            .bind(policy)
+            .fetch_one(&mut *tx)
+            .await?;
+            ensure!(actual_definition == old_definition);
+            let states: Vec<Value> = sqlx::query_scalar(
+                "SELECT state FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid ORDER BY id",
+            )
+            .bind(tenant)
+            .fetch_all(&mut *tx)
+            .await?;
+            ensure!(states == vec![pending_state.clone(), running_state.clone()]);
+            tx.rollback().await?;
+        }
+    }
     // An interrupted predecessor is rejected before any new schema or data mutation.
     owner
         .execute("UPDATE public.mdm_migrations SET complete=false WHERE name='audit-v1'")
@@ -139,7 +185,7 @@ async fn complete_predecessor_withdraws_old_authority_and_preserves_started_evid
                 ensure!(
                     effect
                         == Some(
-                            json!({"generation":1,"resource":"predecessor-app","version":"v1","digest":vec![17;32],"intent":"install","target":{"kind":"device"}})
+                            json!({"generation":1,"resource":"predecessor-app","version":"v1","digest":vec![17;32],"intent":"install","target":{"kind":"user","identity":"502"}})
                         )
                 );
             }
@@ -147,8 +193,8 @@ async fn complete_predecessor_withdraws_old_authority_and_preserves_started_evid
         }
         let (offer, permit, actual_material): (Value, Value, Value) = sqlx::query_as("SELECT offer,permit,execution_material FROM mdm_commands.action_attempts WHERE tenant_id=$1 AND id=$2")
             .bind(tenant).bind(attempt).fetch_one(&mut *tx).await?;
-        ensure!(offer == envelope(tenant, "offer", json!({"kind":"device"})));
-        ensure!(permit == envelope(tenant, "start", json!({"kind":"device"})));
+        ensure!(offer == envelope(tenant, "offer", execution_target.clone()));
+        ensure!(permit == envelope(tenant, "start", execution_target.clone()));
         ensure!(actual_material == material);
         let (previous_offer, previous_permit, previous_material): (Value, Option<Value>, Option<Value>) = sqlx::query_as("SELECT offer,permit,execution_material FROM mdm_commands.action_attempts WHERE tenant_id=$1 AND id=$2")
             .bind(tenant).bind(previous_attempt).fetch_one(&mut *tx).await?;

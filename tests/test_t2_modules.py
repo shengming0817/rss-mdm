@@ -9,6 +9,11 @@ from ci_impact import select_inputs, SelectionError
 
 
 class ModuleImpactTests(unittest.TestCase):
+    def test_self_service_consumes_trusted_subject_and_session_authority(self):
+        for path in ('crates/authorization-service/src/evaluate.rs',
+                     'crates/authorization-service/src/session.rs'):
+            self.assertIn('planning.self_service', select_inputs([path]).modules, path)
+
     def test_agent_pki_consumes_authorization_registration_audit_and_tls_inputs(self):
         for path in ('crates/authorization-service/src/context.rs',
                      'crates/registration-service/src/enrollment/store.rs',

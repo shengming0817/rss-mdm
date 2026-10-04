@@ -77,7 +77,12 @@ async fn targeted_invocation_binds_parameters_identity_frequency_and_result() ->
     .await?;
     let (resource, _, _) = f.script_resource(4096, true).await?;
     let (id, policy) = publish_definition(&mut f, definition(resource, true)).await?;
+    let reads = audit_count(|record| record.action() == "command_read")?;
     let directory = call(&f, Method::GET, DIRECTORY, None, true, true).await?;
+    ensure!(
+        audit_count(|record| record.action() == "command_read")? == reads + 1,
+        "directory must retain its task read audit action"
+    );
     ensure!(
         directory.0 == StatusCode::OK && directory.1["items"].as_array().unwrap().len() == 1,
         "directory: {directory:?}"
@@ -86,8 +91,30 @@ async fn targeted_invocation_binds_parameters_identity_frequency_and_result() ->
         directory.1["items"][0]["selfService"]["allowAi"] == true
             && directory.1["items"][0]["selfService"]["riskLevel"] == 2
     );
+    let reads = audit_count(|record| record.action() == "command_read")?;
     ensure!(
         call(&f, Method::GET, DIRECTORY, None, false, true).await?.0 == StatusCode::UNAUTHORIZED
+    );
+    ensure!(
+        audit_count(|record| record.action() == "command_read")? == reads + 1,
+        "unauthenticated directory rejection must retain its task read audit action"
+    );
+    let accepts = audit_count(|record| record.action() == "command_accept")?;
+    ensure!(
+        call(
+            &f,
+            Method::POST,
+            INVOKE,
+            Some(json!({"unknown":true})),
+            true,
+            true
+        )
+        .await?
+        .0 == StatusCode::BAD_REQUEST
+    );
+    ensure!(
+        audit_count(|record| record.action() == "command_accept")? == accepts + 1,
+        "JSON rejection before invocation service must retain its task accept audit action"
     );
     ensure!(call(&f, Method::GET, DIRECTORY, None, true, false).await?.1["items"] == json!([]));
     let input = request(id, &policy, json!({"name":"Acme"}));
@@ -548,7 +575,7 @@ async fn device_access_logged_in_user_requires_exact_os_session_and_helper_witho
                 && task["payload"]["authorization"]["subject"]["kind"] == "device"
         );
         let mut changed = local.clone();
-        changed["revision"] = json!(7);
+        changed["revision"] = json!(local["revision"].as_u64().unwrap() + 1);
         match failure {
             "identity" => changed["interactiveUser"]["identity"] = json!("502"),
             "session" => changed["interactiveUser"]["sessionId"] = json!(Uuid::new_v4()),
@@ -571,6 +598,28 @@ async fn device_access_logged_in_user_requires_exact_os_session_and_helper_witho
         );
         let result = event_with_context(&f.router, &task, &local, json!({"kind":"result","exitCode":0,"quality":"complete","collectedAt":2,"output":{"version":"1.2","healthy":true},"diagnostics":{"stdout":"","stderr":"","durationMs":1,"executedAt":1,"failure":null}})).await?;
         ensure!(result.0 == StatusCode::OK, "result: {result:?}");
+        let missing_helper = json!({"revision":local["revision"].as_u64().unwrap()+1,"osVersion":[14,0,0,0],"userHelper":false,"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false});
+        ensure!(claim_with_context(&f.router, &missing_helper).await?.0 == StatusCode::OK);
+        let state = call(
+            &f,
+            Method::GET,
+            &format!(
+                "{INVOKE}/{}",
+                task["payload"]["authorization"]["requestId"]
+                    .as_str()
+                    .unwrap()
+            ),
+            None,
+            true,
+            false,
+        )
+        .await?;
+        ensure!(
+            state.0 == StatusCode::OK && state.1["state"]["execution"] == "succeeded",
+            "historical state must not require a live execution helper: {state:?}"
+        );
+        local["revision"] = json!(local["revision"].as_u64().unwrap() + 2);
+        ensure!(claim_with_context(&f.router, &local).await?.0 == StatusCode::OK);
     }
     crate::test_support::stop_worker(stack).await?;
     Ok(())
@@ -1120,6 +1169,28 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
         call(&f, Method::GET, DIRECTORY, None, true, true).await?.0 == StatusCode::UNAUTHORIZED
     );
     ensure!(call(&f, Method::GET, DIRECTORY, None, true, false).await?.0 == StatusCode::OK);
+    f.author = Browser::default();
+    ensure!(f.author.login(&f.router, "other").await? == StatusCode::OK);
+    let reread = call(
+        &f,
+        Method::GET,
+        &format!(
+            "{INVOKE}/{}",
+            one["payload"]["authorization"]["requestId"]
+                .as_str()
+                .unwrap()
+        ),
+        None,
+        true,
+        true,
+    )
+    .await?;
+    ensure!(
+        reread.0 == StatusCode::OK
+            && reread.1["state"]["execution"] == "succeeded"
+            && reread.1["result"].is_null(),
+        "same principal may read accepted state through a new enterprise session: {reread:?}"
+    );
     crate::test_support::stop_worker(stack).await?;
     Ok(())
 }
@@ -1238,7 +1309,6 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
             && employee_authorization.1["grants"] == json!([]),
         "ordinary employee must retain zero effective management grants: {employee_authorization:?}"
     );
-    let stack = software::worker(&f.base, f.content.clone()).await?;
     let poll=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(&f.credential),Some(json!({"wireVersion":1,"executionContext":software::context(software::Platform::MacOs),"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
     ensure!(
         poll.0 == StatusCode::OK && poll.1["task"].is_null(),
@@ -1275,7 +1345,35 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
     );
     let one = request(policies[0].0, &policies[0].1, json!({}));
     let two = request(policies[1].0, &policies[1].1, json!({}));
-    let (a, b) = tokio::join!(
+    use sqlx::Connection;
+    let mut blocker =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let mut observer =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let backend: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut blocker)
+        .await?;
+    let mut blocked = blocker.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2465))")
+        .bind(format!("{}:{}", case_tenant(), software::case_device()))
+        .execute(&mut *blocked)
+        .await?;
+    let release = async {
+        let overlap = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let waiters: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_locks w JOIN pg_locks held ON (w.database,w.classid,w.objid,w.objsubid)=(held.database,held.classid,held.objid,held.objsubid) WHERE held.pid=$1 AND held.locktype='advisory' AND held.granted AND w.locktype='advisory' AND NOT w.granted").bind(backend).fetch_one(&mut observer).await?;
+                let audit_chain: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity business JOIN pg_stat_activity audit ON business.pid=ANY(pg_blocking_pids(audit.pid)) WHERE business.datname=current_database() AND audit.datname=current_database() AND business.usename='mdm_command_runtime' AND audit.usename='mdm_command_runtime' AND business.wait_event_type='Lock' AND audit.wait_event_type='Lock' AND business.query LIKE '%pg_advisory_xact_lock(hashtextextended($1,2465))%' AND audit.query LIKE '%rss_audit.reserve%' AND $1=ANY(pg_blocking_pids(business.pid)))").bind(backend).fetch_one(&mut observer).await?;
+                if waiters == 2 || audit_chain { return Ok::<_,anyhow::Error>(()); }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await;
+        blocked.rollback().await?;
+        overlap??;
+        Ok::<_, anyhow::Error>(())
+    };
+    let (a, b, overlap) = tokio::join!(
         software_self_service_call(
             &f.router,
             &f.credential,
@@ -1291,8 +1389,10 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
             Method::POST,
             INVOKE,
             Some(two.clone())
-        )
+        ),
+        release
     );
+    overlap?;
     let (a, b) = (a?, b?);
     ensure!(
         (a.0 == StatusCode::ACCEPTED && b.0 == StatusCode::CONFLICT)
@@ -1304,6 +1404,8 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
     } else {
         (b, two)
     };
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{}' AND policy_version IN ('{}','{}') AND software_effect IS NOT NULL",case_tenant(),policies[0].1["versionId"].as_str().unwrap(),policies[1].1["versionId"].as_str().unwrap()))?.trim() == "1", "competing new requests must commit one exact effect and one Run");
+    let stack = software::worker(&f.base, f.content.clone()).await?;
     let employee = &f.author;
     ensure!(
         software_self_service_call(
@@ -1400,6 +1502,202 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
         .await?
         .1["items"]
             == json!([])
+    );
+    crate::test_support::stop_worker(stack).await?;
+    Ok(())
+}
+
+#[test]
+fn explicit_unpublished_access_null_follows_the_write_contract() {
+    let schema: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../management-http/schema/PolicyWrite.json"
+    ))
+    .unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    let body = serde_json::json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":uuid::Uuid::new_v4(),"action":{"kind":"execution","resource":{"id":"repair","version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"parameters":{},"runLifetimeSeconds":300},"selfService":{"access":null,"published":false,"displayName":"Repair","description":"","prerequisites":"","sideEffects":"","category":"Support","keywords":[]}}}});
+    assert!(validator.is_valid(&body));
+    let mut missing = body;
+    missing["input"]["definition"]["selfService"]
+        .as_object_mut()
+        .unwrap()
+        .remove("access");
+    assert!(!validator.is_valid(&missing));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=planning.self_service"]
+async fn software_unknown_survives_same_account_relogin_and_keeps_other_accounts_separate()
+-> Result<()> {
+    use crate::test_support::software_execution as software;
+    let mut local = software::context(software::Platform::Windows);
+    let session = Uuid::new_v4();
+    let sid = "S-1-5-21-1-2-3-1001";
+    local["interactiveUser"] = json!({"identity":sid,"sessionId":session,"administrator":false});
+    let mut f = software::Fixture::with_profiles(
+        software::Platform::Windows,
+        json!([
+            "inventory.collect.v1",
+            "software.msi.system.v1",
+            "software.msi.user.v1"
+        ]),
+        local.clone(),
+    )
+    .await?;
+    let resource_id = Uuid::new_v4();
+    let bytes = b"controlled user MSI";
+    let digest = rss_mdm_resource::Digest::of(bytes).bytes();
+    let invocation = json!({"runAs":"logged_in_user","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}});
+    let definition = json!({"source":f.source_snapshot,"package":"Private.UserInstall","version":"1","artifacts":{"package":{"reference":"user-msi","length":bytes.len(),"sha256":digest}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"user","install":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{CCCCCCCC-DDDD-EEEE-FFFF-AAAAAAAAAAAA}","version":"1"},"upgradeInvocation":invocation},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+    let path = format!("/api/v1/resources/{resource_id}");
+    crate::test_support::software::write(
+        &mut f.author,
+        &f.router,
+        &path,
+        0,
+        json!({"action":"create","kind":"software"}),
+    )
+    .await?;
+    crate::test_support::software::write(&mut f.author,&f.router,&path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":"windows","architecture":"x86_64","key":"default","declaration":{"kind":"software","definition":definition}}]})).await?;
+    software::upload_windows(&f.author, &f.router, resource_id, bytes).await?;
+    crate::test_support::software::write(
+        &mut f.author,
+        &f.router,
+        &path,
+        2,
+        json!({"action":"activate","version":"v1"}),
+    )
+    .await?;
+    let approval = crate::test_support::software::write(
+        &mut f.author,
+        &f.router,
+        &format!("/api/v1/software/resources/{resource_id}/versions/v1"),
+        0,
+        json!({"action":"approve","evidence":["user-profile"]}),
+    )
+    .await?;
+    let mut definition = software::authored(
+        resource_id,
+        f.scope,
+        "available_install",
+        &approval["admission"]["operation"],
+    );
+    definition["action"]["resource"]["variants"] = json!({"windows_x86_64":"default"});
+    definition["selfService"] = json!({"access":{"kind":"device"},"published":true,"displayName":"User installation","description":"","prerequisites":"","sideEffects":"Install for current OS account","category":"Apps","keywords":[]});
+    let policy = Uuid::new_v4();
+    let published = crate::test_support::software::write(
+        &mut f.author,
+        &f.router,
+        &format!("/api/v1/policies/{policy}"),
+        0,
+        json!({"action":"put","enabled":true,"definition":definition}),
+    )
+    .await?;
+    let poll = |context: Value| {
+        agent_call(
+            &f.router,
+            Method::POST,
+            "/api/v1/agent/runtime/tasks/claim",
+            Some(&f.credential),
+            Some(
+                json!({"wireVersion":1,"executionContext":context,"profiles":["power_shell7"],"operationId":Uuid::new_v4()}),
+            ),
+        )
+    };
+    ensure!(poll(local.clone()).await?.0 == StatusCode::OK);
+    let accepted = software_self_service_call(
+        &f.router,
+        &f.credential,
+        &f.author,
+        Method::POST,
+        INVOKE,
+        Some(request(policy, &published, json!({}))),
+    )
+    .await?;
+    ensure!(accepted.0 == StatusCode::ACCEPTED);
+    let stack = software::worker(&f.base, f.content.clone()).await?;
+    let task = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let response = poll(local.clone()).await?;
+            ensure!(
+                response.0 == StatusCode::OK,
+                "user software claim: {response:?}"
+            );
+            if !response.1["task"].is_null() {
+                return Ok::<_, anyhow::Error>(response.1["task"].clone());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await??;
+    ensure!(
+        task["payload"]["steps"][0]["target"]
+            == json!({"kind":"user","identity":sid,"sessionId":session})
+    );
+    for event in [
+        json!({"kind":"received"}),
+        json!({"kind":"start"}),
+        software::result_event(&task, "install", None, "unknown", false)?,
+    ] {
+        ensure!(
+            software::event_with(&f.router, &f.credential, &task, event)
+                .await?
+                .0
+                == StatusCode::OK
+        );
+    }
+    local["revision"] = json!(2);
+    local["interactiveUser"]["sessionId"] = json!(Uuid::new_v4());
+    ensure!(poll(local.clone()).await?.0 == StatusCode::OK);
+    let hidden = software_self_service_call(
+        &f.router,
+        &f.credential,
+        &f.author,
+        Method::GET,
+        DIRECTORY,
+        None,
+    )
+    .await?;
+    ensure!(
+        hidden.0 == StatusCode::OK && hidden.1["items"] == json!([]),
+        "relogin cannot erase Unknown: {hidden:?}"
+    );
+    ensure!(
+        software_self_service_call(
+            &f.router,
+            &f.credential,
+            &f.author,
+            Method::POST,
+            INVOKE,
+            Some(request(policy, &published, json!({})))
+        )
+        .await?
+        .0 == StatusCode::CONFLICT
+    );
+    let old_state = software_self_service_call(
+        &f.router,
+        &f.credential,
+        &f.author,
+        Method::GET,
+        &format!("{INVOKE}/{}", accepted.1["requestId"].as_str().unwrap()),
+        None,
+    )
+    .await?;
+    ensure!(old_state.0 == StatusCode::OK && old_state.1["state"]["execution"] == "unknown");
+    local["revision"] = json!(3);
+    local["interactiveUser"]["identity"] = json!("S-1-5-21-1-2-3-1002");
+    ensure!(poll(local.clone()).await?.0 == StatusCode::OK);
+    ensure!(
+        software_self_service_call(
+            &f.router,
+            &f.credential,
+            &f.author,
+            Method::POST,
+            INVOKE,
+            Some(request(policy, &published, json!({})))
+        )
+        .await?
+        .0 == StatusCode::ACCEPTED,
+        "another OS account is a different installation effect"
     );
     crate::test_support::stop_worker(stack).await?;
     Ok(())

@@ -176,8 +176,17 @@ fn effect_key(
     steps: &[rss_mdm_agent_wire::runtime::SoftwareTaskStep],
 ) -> Result<serde_json::Value> {
     let root = steps.last().ok_or(Error::Malformed)?;
+    // Installation effects survive logout; Start still binds the complete OS session target.
+    let effect_target = match &root.target {
+        rss_mdm_agent_wire::runtime::SoftwareExecutionTarget::Device => {
+            serde_json::json!({"kind":"device"})
+        }
+        rss_mdm_agent_wire::runtime::SoftwareExecutionTarget::User { identity, .. } => {
+            serde_json::json!({"kind":"user", "identity":identity})
+        }
+    };
     Ok(
-        serde_json::json!({"generation":target.generation,"resource":policy.assignment.frozen.resource,"version":policy.assignment.frozen.version,"digest":policy.assignment.frozen.resource_digest,"intent":if policy.assignment.intent()==rss_mdm_policy::SoftwareIntent::ExplicitUninstall {"uninstall"} else {"install"},"target":root.target}),
+        serde_json::json!({"generation":target.generation,"resource":policy.assignment.frozen.resource,"version":policy.assignment.frozen.version,"digest":policy.assignment.frozen.resource_digest,"intent":if policy.assignment.intent()==rss_mdm_policy::SoftwareIntent::ExplicitUninstall {"uninstall"} else {"install"},"target":effect_target}),
     )
 }
 pub async fn persist_effect_in(

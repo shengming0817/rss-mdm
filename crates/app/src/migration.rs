@@ -346,6 +346,10 @@ SELECT current_user='mdm_owner' AND session_user='mdm_owner'
             "existing ledger differs or is incomplete",
         ));
     }
+    // An upgrade must not mutate an installation addressed by different coordinates.
+    if !installed.is_empty() {
+        verify_installation(conn, installation, instance).await?;
+    }
     for &(name, sql) in current {
         apply_unit(conn, installation, instance, name, sql).await?;
     }

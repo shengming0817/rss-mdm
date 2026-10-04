@@ -131,7 +131,7 @@ impl From<ScriptRisk> for u8 {
 pub struct SelfService {
     /// Explicit access basis. Null is permitted only for an unpublished draft.
     #[serde(deserialize_with = "Option::deserialize")]
-    #[schemars(required)]
+    #[schemars(required, schema_with = "nullable_access_schema")]
     pub access: Option<SelfServiceAccess>,
     /// Whether new self-service calls are accepted.
     pub published: bool,
@@ -336,4 +336,8 @@ impl SelfServiceAccess {
         }
         Ok(())
     }
+}
+
+fn nullable_access_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    generator.subschema_for::<Option<SelfServiceAccess>>()
 }
