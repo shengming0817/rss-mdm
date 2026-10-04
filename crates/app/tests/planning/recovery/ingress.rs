@@ -42,7 +42,6 @@ async fn step(
     let timer = automation::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, budget, &cancel);
-    let started = std::time::Instant::now();
     let result = worker
         .apply(
             claim,
@@ -50,10 +49,7 @@ async fn step(
             &control,
         )
         .await;
-    eprintln!(
-        "ingress page: elapsed_ms={} result={result:?}",
-        started.elapsed().as_millis()
-    );
+    eprintln!("ingress page: result={result:?}");
     result
 }
 
