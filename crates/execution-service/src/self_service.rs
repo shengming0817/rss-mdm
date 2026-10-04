@@ -104,10 +104,7 @@ impl Invocation {
                 if software.id == *policy_version
                     && software.assignment.intent()
                         == rss_mdm_policy::SoftwareIntent::AvailableInstall
-                    && self.parameters.is_empty() =>
-            {
-                ()
-            }
+                    && self.parameters.is_empty() => {}
             _ => return Ok(false),
         }
         if execution_target_in(service, tx, plan, target)

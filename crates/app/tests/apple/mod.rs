@@ -131,7 +131,7 @@ impl Fixture {
             content,
             std::collections::BTreeMap::new(),
             rss_device_command_postgres::CommandClock::Postgres,
-            crate::test_support::identity::session_authority(&config).await?,
+            crate::test_support::identity::session_authority(config).await?,
         )
         .await?;
         let identity = crate::identity::Identity::connect(

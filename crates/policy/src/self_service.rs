@@ -319,16 +319,15 @@ impl SelfServiceAccess {
                         return Err(Error::Malformed);
                     }
                     SelfServiceSelector::IdpGroup { source, id }
-                    | SelfServiceSelector::Department { source, id, .. } => {
+                    | SelfServiceSelector::Department { source, id, .. }
                         if !valid_id(id)
                             || source.provider_id.is_nil()
                             || source.configuration_version < 1
                             || source.issuer.is_empty()
                             || source.issuer.len() > 2048
-                            || source.issuer.chars().any(char::is_control)
-                        {
-                            return Err(Error::Malformed);
-                        }
+                            || source.issuer.chars().any(char::is_control) =>
+                    {
+                        return Err(Error::Malformed);
                     }
                     _ => (),
                 }
