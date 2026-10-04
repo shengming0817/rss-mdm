@@ -371,6 +371,30 @@ UPDATE mdm_access.agent_grants SET state='revoked' WHERE tenant_id=$1::uuid AND 
         tx.commit().await.map_err(db)?;
         Ok(out)
     }
+    /// Read an existing renewal grant without requiring its predecessor credential.
+    /// Missing operations and incorrect secrets share the same rejection; this cannot
+    /// create or extend authorization, and subsequent issuance/activation retain their checks.
+    pub async fn renewal_status(
+        &self,
+        input: &wire::RenewalStatusRequest,
+    ) -> Result<wire::GrantReceipt, Failure> {
+        version(input.wire_version, input.operation_id)?;
+        let tenant = self.tenant.to_string();
+        let mut tx = self.store.begin(&tenant).await?;
+        let row = sqlx::query(
+            "SELECT *, floor(extract(epoch FROM expires_at))::bigint AS expiry, expires_at>clock_timestamp() AS live FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND source='renewal' AND operation_id=$2",
+        )
+        .bind(&tenant)
+        .bind(input.operation_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?
+        .ok_or(Error::Unauthorized)?;
+        check_secret(&tenant, &row, &input.secret)?;
+        let out = receipt(&row)?;
+        tx.commit().await.map_err(db)?;
+        Ok(out)
+    }
     pub async fn recovery(
         &self,
         p: &AuthorizedPrincipal,

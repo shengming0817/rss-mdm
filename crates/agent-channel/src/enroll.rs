@@ -24,6 +24,7 @@ pub fn router(service: Arc<Service>, envelope: crate::boundary::Envelope) -> Rou
             .route("/activate", post(activate))
             .route("/status", post(status))
             .route("/renewal-grants", post(renew))
+            .route("/renewal-grants/status", post(renewal_status))
             .route("/trust", get(trust))
             .route("/trust/acknowledgements", post(acknowledge))
             .with_state(service),
@@ -86,6 +87,14 @@ async fn renew(
     let peer =
         peer.ok_or_else(|| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
     Ok(Json(s.renew(&peer.0, &body(input)?, &a).await?))
+}
+async fn renewal_status(
+    State(s): State<Arc<Service>>,
+    headers: HeaderMap,
+    input: Body<wire::RenewalStatusRequest>,
+) -> Result<Json<wire::GrantReceipt>, HttpFailure> {
+    bootstrap(&headers)?;
+    Ok(Json(s.renewal_status(&body(input)?).await?))
 }
 pub struct HttpFailure(pub Failure);
 impl From<Failure> for HttpFailure {

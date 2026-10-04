@@ -43,6 +43,37 @@ fn bootstrap_is_closed_and_cannot_claim_a_device_or_runtime_credential() {
 }
 
 #[test]
+fn renewal_lookup_requires_only_the_original_operation_and_secret() {
+    let value = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"secret":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"});
+    let schema: Value = serde_json::from_str(include_str!(
+        "../schema/enroll/renewal-status-request-v1.schema.json"
+    ))
+    .unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    assert!(validator.is_valid(&value));
+    let request: wire::RenewalStatusRequest = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(format!("{:?}", request.secret), "[REDACTED]");
+    for (field, invalid) in [
+        ("wireVersion", json!(2)),
+        ("operationId", json!(Uuid::nil())),
+        ("secret", json!("invalid")),
+        ("grantId", json!(Uuid::new_v4())),
+        ("registrationId", json!(Uuid::new_v4())),
+    ] {
+        let mut input = value.clone();
+        input[field] = invalid;
+        assert!(!validator.is_valid(&input));
+        assert!(serde_json::from_value::<wire::RenewalStatusRequest>(input).is_err());
+    }
+    for field in ["wireVersion", "operationId", "secret"] {
+        let mut input = value.clone();
+        input.as_object_mut().unwrap().remove(field);
+        assert!(!validator.is_valid(&input));
+        assert!(serde_json::from_value::<wire::RenewalStatusRequest>(input).is_err());
+    }
+}
+
+#[test]
 fn nullable_response_fields_are_required_and_uuid_values_are_canonical() {
     let schema: Value =
         serde_json::from_str(include_str!("../schema/enroll/error-body-v1.schema.json")).unwrap();

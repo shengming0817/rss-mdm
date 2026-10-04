@@ -9,7 +9,7 @@ use uuid::Uuid;
 pub const API_VERSION: u8 = 1;
 /// Canonical enrollment schema manifest.
 pub const SCHEMA_FINGERPRINT: &str =
-    "398717eb37090a417234758ec0e5ef9c87a86b1fa4fcd85bc3b65022c6746a6d";
+    "6b82bd014d4baab0a1683bb55b72adb90e288483dd4b0d789a7a90e7c198ce77";
 /// Canonical enrollment schema manifest.
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/enroll/manifest.json");
 /// A bounded runtime profile, frozen when a grant is consumed.
@@ -167,6 +167,19 @@ pub struct StatusRequest {
     #[serde(with = "crate::runtime::strict_uuid")]
     pub operation_id: Uuid,
     /// Polling/bootstrap secret.
+    pub secret: Secret,
+}
+/// Find only an already committed renewal grant after its response was lost.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RenewalStatusRequest {
+    /// Enrollment API version.
+    #[serde(deserialize_with = "version")]
+    pub wire_version: u8,
+    /// Original renewal grant operation; querying never creates a grant.
+    #[serde(with = "crate::runtime::strict_uuid")]
+    pub operation_id: Uuid,
+    /// Original protected bootstrap secret, independent of the old mTLS identity.
     pub secret: Secret,
 }
 /// Signing and activation progress for an authorized caller.
