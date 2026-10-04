@@ -107,7 +107,8 @@ class ProviderTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as case:
                 provider = self.provider(case)
                 (provider.root/'step-webhooks.log').write_text('TLS handshake failed; sensitive-hook-value')
-                provider.owner.compose.return_value = 'CA exited; sensitive-hook-value'
+                token = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmaXh0dXJlIn0.c2lnbmF0dXJl'
+                provider.owner.compose.return_value = 'CA exited; sensitive-hook-value ott='+token+' jwt='+token
                 with diagnostics(artifact):
                     private_value('sensitive-hook-value')
                     provider.logs()
@@ -115,6 +116,7 @@ class ProviderTests(unittest.TestCase):
             self.assertIn('TLS handshake failed',content)
             self.assertIn('CA exited',content)
             self.assertNotIn('sensitive-hook-value',content)
+            self.assertNotIn(token,content)
 
 
 def ssl_context(root):

@@ -995,6 +995,7 @@ TOOL_INPUTS = {
     'hack/agent_wire_artifact.py': ('test_agent_wire_artifact',),
     'hack/apple_tools.py': ('test_apple_tools',),
     'hack/apple_ca.py': ('test_apple_ca',),
+    'hack/agent_pki_fixtures.py': ('test_agent_pki_fixtures',),
     'fixtures/apple-tools.lock.json': ('test_apple_tools', 'test_apple_ca', 'test_t2_environment'),
     'hack/auth_t3.py': ('test_auth_t3',),
     'hack/auth_t3_browser.mjs': ('test_auth_t3',),

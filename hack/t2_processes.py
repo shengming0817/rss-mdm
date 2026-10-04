@@ -83,6 +83,10 @@ def record_output(name, value):
     for secret in sorted(state['secrets'], key=len, reverse=True):
         if secret:
             value = value.replace(secret, '[redacted]').replace(json.dumps(secret)[1:-1], '[redacted]')
+    # CA-generated one-time tokens aren't among the supplied fixture secrets.
+    # ref: smallstep/certificates v0.30.2 api/sign.go logOtt.
+    value = re.sub(r'\bott=(?:"[^"\n]*"|\S+)', 'ott=[redacted]', value)
+    value = re.sub(r'\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+', '[redacted]', value)
     try:
         value = safe_evidence(value, state['secrets'])
     except RuntimeError:

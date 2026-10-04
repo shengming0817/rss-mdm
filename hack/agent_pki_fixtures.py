@@ -89,6 +89,10 @@ def restore(root):
     original = root/'step'
     backup = root/'step-backup'
     shutil.copytree(original, backup)
-    shutil.rmtree(original)
-    shutil.copytree(backup, original)
+    # Keep shared filesystem inodes stable while discarding every original byte.
+    # Docker Desktop can retain a stale view after removing/recreating this tree.
+    for path in original.rglob('*'):
+        if path.is_file():
+            path.write_bytes(b'')
+    shutil.copytree(backup, original, dirs_exist_ok=True)
     (root/'agent-backup-restored').write_text('same CA identity, config and database restored\n')
