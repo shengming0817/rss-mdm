@@ -200,10 +200,21 @@ MODULES['agent.pki'] = replace(MODULES['agent.pki'], policies=(
     CasePolicy('agent_pki_tests::production_agent_listener_bootstraps_activates_and_rechecks_revocation', 'reuse', 'tenant'),
 ))
 
-add('installation.migration', selectors=('migration::tests::',), profile='empty',
+add('installation.migration', selectors=('migration::tests::complete_predecessor_withdraws_old_authority_and_preserves_started_evidence',
+                                        'migration::tests::fresh_installation_replay_and_mismatch_rejection'), profile='empty',
     sources=('crates/app/src/migration.rs',),
     tests=('crates/app/tests/migration/mod.rs',),
     python='installation', support=('hack/t2_modules/installation.py',))
+add('installation.upgrade_runtime', selectors=('migration::tests::runtime::',),
+    fixtures=('identity','local_worker','apple','scep','windows','agent_pki'),
+    sources=('crates/app/src/migration.rs','crates/app/schema/self-service-access.sql'),
+    tests=('crates/app/tests/migration/runtime.rs',),
+    support=('crates/app/tests/migration/mod.rs','crates/app/tests/support/agent_execution.rs',
+             'crates/app/tests/support/software_execution.rs','crates/app/tests/support/software.rs',
+             'crates/app/tests/support/agent.rs'))
+MODULES['installation.upgrade_runtime'] = replace(MODULES['installation.upgrade_runtime'], db_mode='fresh', scope='tenant', policies=(
+    CasePolicy('migration::tests::runtime::started_self_service_software_rejects_withdrawn_approval_before_recovery_marks_cancellation', 'reuse', 'tenant'),
+))
 add('certificate-archive.http',fixtures=('identity',),selectors=('certificate_archive_tests::',),
     sources=('crates/certificate-archive-service/src/*','crates/certificate-archive-service/schema/*','crates/management-http/src/certificate_archive/*','crates/app/src/certificate_archive.rs'),
     tests=('crates/app/tests/certificate_archive/mod.rs',),support=('crates/app/tests/support/authority.rs','crates/app/tests/support/planning_http.rs','crates/app/tests/device/support.rs'))
@@ -661,7 +672,7 @@ consume(('crates/execution-service/src/input_preparation.rs',
         'execution.commands.configuration')
 consume(('crates/execution-service/src/freeze_inputs.rs', 'crates/flow-service/src/resource_catalog/mod.rs'),
         'planning.agent_policy planning.remote planning.onboarding')
-TASK_CONSUMERS = 'planning.self_service planning.onboarding planning.policy planning.agent_policy planning.frequency planning.remote planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
+TASK_CONSUMERS = 'installation.upgrade_runtime planning.self_service planning.onboarding planning.policy planning.agent_policy planning.frequency planning.remote planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
 consume(('crates/agent-wire/src/tasks.rs', 'crates/agent-wire/schema/runtime/task-*.json',
          'crates/agent-wire/schema/runtime/signed-task-v1.schema.json', 'crates/execution-service/src/task_signing.rs',
          'crates/execution-service/src/actions/mod.rs'), TASK_CONSUMERS)
@@ -1540,7 +1551,11 @@ consume(('crates/agent-wire/src/self_service.rs','crates/agent-wire/schema/runti
 consume(('crates/policy/src/self_service.rs','crates/execution-service/src/script_eligibility.rs'), TASK_CONSUMERS)
 
 consume(('crates/execution-service/src/self_service/*', 'crates/execution-service/src/actions/evidence.rs'), TASK_CONSUMERS)
-consume(('crates/app/schema/self-service-access.sql',), 'installation.migration catalog.contract planning.self_service execution.software.recovery')
+consume(('crates/app/schema/self-service-access.sql',), 'installation.migration installation.upgrade_runtime catalog.contract planning.self_service execution.software.recovery')
+consume(('crates/execution-service/src/actions/agent.rs','crates/execution-service/src/actions/storage.rs',
+         'crates/execution-service/src/actions/recovery.rs','crates/execution-service/src/actions/software.rs',
+         'crates/execution-service/src/remote_operations/*','crates/execution-service/src/sources/software.rs',
+         'crates/authorization-service/src/*.rs','crates/registration-service/src/device/*'), 'installation.upgrade_runtime')
 consume(('crates/registration-service/src/enrollment.rs','crates/registration-service/src/enrollment/*','crates/registration-service/src/agent/grants.rs','crates/management-http/src/agent_enrollment.rs','crates/authorization-service/src/context.rs'), 'enrollment.quotas')
 
 consume(('crates/windows-channel/src/protocol_device.rs',), 'windows.issuance windows.enrollment windows.management windows.declared')

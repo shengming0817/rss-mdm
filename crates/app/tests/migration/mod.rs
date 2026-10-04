@@ -3,6 +3,8 @@ use anyhow::{Result, ensure};
 use sqlx::Executor;
 use std::str::FromStr;
 
+mod runtime;
+
 #[tokio::test]
 #[ignore = "make t2: complete predecessor upgrade in a disposable database"]
 async fn complete_predecessor_withdraws_old_authority_and_preserves_started_evidence() -> Result<()>
@@ -42,13 +44,20 @@ async fn complete_predecessor_withdraws_old_authority_and_preserves_started_evid
     let running_state = json!({"delivery":{"kind":"received","attempt":attempt,"leaseUntil":200},"execution":"running","cancellation":"none","deadline":deadline,"startedAt":100});
     let frozen = json!({"kind":"software","action":{"delivery":{"kind":"direct"},"resource":"predecessor-app","version":"v1","variants":{"macos_aarch64":"default"},"resource_digest":vec![17;32],"admission_operation":Uuid::from_u128(10),"intent":"available_install","schedule":{"kind":"check_in"},"run_lifetime_seconds":3600}});
     let execution_target = json!({"kind":"user","identity":"502","sessionId":Uuid::from_u128(13)});
-    let material = json!({"kind":"software","platform":"macos","intent":"install","definitionDigest":vec![18;32],"steps":[{"target":execution_target}]});
+    let historical_step = |target: Value| {
+        let invocation = json!({"runAs":"logged_in_user","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}});
+        json!({"action":{"package":"Predecessor.User","version":"1","reboot":"report","downgrade":"deny","signatures":[],"behavior":{"kind":"brew","installer":"package","scope":"user","install":invocation,"upgradeInvocation":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"file","scope":"user","path":"bin/predecessor","version":"1","sha256":vec![19;32]}}},"target":target,"export":{"kind":"direct"},"artifacts":[{"key":"0/package","length":1024,"sha256":vec![20;32]}]})
+    };
+    let steps = json!([historical_step(execution_target.clone())]);
+    let _: Vec<rss_mdm_agent_wire::runtime::SoftwareTaskStep> =
+        serde_json::from_value(steps.clone())?;
+    let material = json!({"kind":"software","platform":"macos","intent":"install","definitionDigest":vec![18;32],"steps":steps});
 
     // This is a SQL transformation fixture: the installer copies opaque historical
     // signed envelopes and projects their evidence coordinates without verifying
-    // or decoding a retired task DTO. Live signed execution is covered by the
-    // planning.self_service and execution.software T2 scenarios.
-    let envelope = |tenant: Uuid, permit: &str, target: Value| json!({"keyId":"predecessor-key","signature":"opaque-original-signature","payload":{"wireVersion":1,"tenantId":tenant,"deviceId":device,"registrationId":registration,"generation":1,"taskId":running,"attemptId":attempt,"permit":permit,"expiresAt":deadline,"platform":"macos","architecture":"aarch64","executionContext":old_context,"definitionDigest":vec![18;32],"steps":[{"target":target}],"intent":"install","startMode":"user_initiated"}});
+    // or decoding a retired task DTO. The runtime namespace upgrades complete
+    // product-owned material and finishes the original live attempt.
+    let envelope = |tenant: Uuid, permit: &str, target: Value| json!({"keyId":"predecessor-key","signature":"opaque-original-signature","payload":{"wireVersion":1,"tenantId":tenant,"deviceId":device,"registrationId":registration,"generation":1,"taskId":running,"attemptId":attempt,"permit":permit,"expiresAt":deadline,"platform":"macos","architecture":"aarch64","executionContext":old_context,"definitionDigest":vec![18;32],"steps":[historical_step(target)],"intent":"install","startMode":"user_initiated"}});
     let invocation = |tenant: Uuid, run: Uuid| json!({"authorization":{"kind":"self_service","requestId":run,"actor":{"instanceId":installation.instance_id,"tenantId":tenant,"principalId":Uuid::from_u128(11)},"source":"human","policyId":policy,"policyRevision":1,"policyVersion":version,"allowAi":true,"riskLevel":2,"confirmed":false},"parameters":{},"grant":{"operation":"script_execute","historical":"not-authority"}});
     for tenant in &installation.tenants {
         let tenant = Uuid::parse_str(tenant)?;
