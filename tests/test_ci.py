@@ -147,6 +147,55 @@ class DependencyPolicy(unittest.TestCase):
                 bad["workspace"]["dependencies"]["rss-mdm-inventory"] = source
                 with self.assertRaises(RuntimeError): ci.rss_pin(bad)
 
+class AgentWireBoundary(unittest.TestCase):
+    def graph(self):
+        registry = 'registry+https://github.com/rust-lang/crates.io-index'
+        return {'packages': [
+            {'id':'wire','name':'rss-mdm-agent-wire','source':None,'targets':[], 'dependencies':[]},
+            {'id':'serde','name':'serde','source':registry},
+            {'id':'product','name':'rss-mdm-inventory','source':None},
+            {'id':'ring','name':'ring','source':registry}],
+            'resolve':{'nodes':[
+                {'id':'wire','deps':[{'pkg':'serde','dep_kinds':[{'kind':None}]},
+                                     {'pkg':'ring','dep_kinds':[{'kind':'dev'}]}]},
+                {'id':'serde','deps':[]}, {'id':'product','deps':[]}, {'id':'ring','deps':[]}]}}
+
+    def test_development_crypto_is_outside_production_closure(self):
+        ci.verify_agent_wire(self.graph())
+
+    def test_product_edges_are_rejected_at_every_depth_and_kind(self):
+        for parent in ('wire', 'serde'):
+            for kind in (None, 'build'):
+                graph = self.graph()
+                node = next(n for n in graph['resolve']['nodes'] if n['id'] == parent)
+                node['deps'].append({'pkg':'product','dep_kinds':[{'kind':kind,'target':'cfg(windows)'}]})
+                with self.assertRaisesRegex(RuntimeError, 'Agent wire'):
+                    ci.verify_agent_wire(graph)
+
+    def test_disabled_optional_and_platform_declarations_are_checked(self):
+        for kind in (None, 'build'):
+            graph = self.graph()
+            graph['packages'][0]['dependencies'] = [
+                {'name':'tokio','kind':kind,'optional':True,'target':'cfg(windows)',
+                 'source':'registry+https://github.com/rust-lang/crates.io-index'}]
+            with self.assertRaisesRegex(RuntimeError, 'optional or target-specific'):
+                ci.verify_agent_wire(graph)
+
+    def test_product_build_script_is_rejected(self):
+        graph = self.graph()
+        graph['packages'][0]['targets'] = [{'kind':['custom-build']}]
+        with self.assertRaisesRegex(RuntimeError, 'build script'):
+            ci.verify_agent_wire(graph)
+
+    def test_transitive_backend_and_os_implementations_are_rejected(self):
+        for name in ('tokio', 'sqlx-core', 'windows', 'jsonschema', 'ring'):
+            graph = self.graph()
+            graph['packages'][3]['name'] = name
+            graph['resolve']['nodes'][1]['deps'] = [{'pkg':'ring','dep_kinds':[{'kind':'build'}]}]
+            with self.assertRaisesRegex(RuntimeError, 'backend, OS execution'):
+                ci.verify_agent_wire(graph)
+
+
 class CodecFixtures(unittest.TestCase):
     def test_protocol_member_and_fixture_provenance_are_exact(self):
         import hashlib

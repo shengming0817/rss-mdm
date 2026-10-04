@@ -1,38 +1,52 @@
 {
+  "$defs": {
+    "Secret": {
+      "description": "Canonical 256-bit base64url secret. Debug output is always redacted.",
+      "maxLength": 43,
+      "minLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{43}$",
+      "type": "string"
+    }
+  },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/agent/enroll/v1/StatusRequest",
-  "type": "object",
   "additionalProperties": false,
+  "description": "Poll only the request identified by the secret and original operation.",
   "properties": {
-    "wireVersion": {
-      "const": 1
+    "grantId": {
+      "description": "Grant identity.",
+      "format": "uuid",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
     },
     "operationId": {
-      "type": "string",
+      "description": "Original creation operation identity.",
       "format": "uuid",
-      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
       "not": {
         "const": "00000000-0000-0000-0000-000000000000"
-      }
-    },
-    "grantId": {
-      "type": "string",
-      "format": "uuid",
+      },
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-      "not": {
-        "const": "00000000-0000-0000-0000-000000000000"
-      }
+      "type": "string"
     },
     "secret": {
-      "type": "string",
+      "$ref": "#/$defs/Secret",
+      "description": "Polling/bootstrap secret.",
       "pattern": "^[A-Za-z0-9_-]{43}$"
+    },
+    "wireVersion": {
+      "const": 1,
+      "description": "Enrollment API version."
     }
   },
   "required": [
     "wireVersion",
-    "operationId",
     "grantId",
+    "operationId",
     "secret"
   ],
-  "$defs": {}
+  "title": "StatusRequest",
+  "type": "object",
+  "$id": "https://rss.example/agent/enroll/v1/StatusRequest"
 }

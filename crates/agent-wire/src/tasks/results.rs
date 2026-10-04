@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
 /// Exact native detector identity. Registration and provisioning cannot share an identity variant.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -15,18 +15,22 @@ pub enum SoftwareObservedIdentity {
     /// Exact MSI product.
     MsiProduct {
         /// Canonical product GUID.
+        #[schemars(extend("minLength" = 1, "maxLength" = 38, "pattern" = "^[^\\x00-\\x1f\\x7f]+$"))]
         product_code: String,
     },
     /// Exact PackageInstaller receipt.
     PkgReceipt {
         /// Receipt identifier.
+        #[schemars(extend("minLength" = 1, "maxLength" = 255, "pattern" = "^[^\\x00-\\x1f\\x7f]+$"))]
         receipt: String,
     },
     /// Exact copied application at its managed destination.
     MacApplication {
         /// Bundle identifier.
+        #[schemars(extend("minLength" = 1, "maxLength" = 255, "pattern" = "^[^\\x00-\\x1f\\x7f]+$"))]
         bundle_id: String,
         /// Approved target basename.
+        #[schemars(extend("minLength" = 1, "maxLength" = 255, "pattern" = "^[^\\x00-\\x1f\\x7f]+$"))]
         target_name: String,
     },
     /// Exact value under its declared hive scope.
@@ -34,8 +38,10 @@ pub enum SoftwareObservedIdentity {
         /// Native hive scope.
         scope: SoftwareTaskScope,
         /// Literal key.
+        #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\x00-\\x1f\\x7f]+$"))]
         key: String,
         /// Literal value name.
+        #[schemars(extend("minLength" = 1, "maxLength" = 255, "pattern" = "^[^\\x00-\\x1f\\x7f]+$"))]
         value: String,
     },
     /// Exact protected file under its scope.
@@ -43,11 +49,13 @@ pub enum SoftwareObservedIdentity {
         /// Native target scope.
         scope: SoftwareTaskScope,
         /// Approved path.
+        #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\x00-\\x1f\\x7f]+$"))]
         path: String,
     },
     /// Output of the exact approved detection script, bound by the step digest.
     ControlledDetector {
         /// Immutable material/member reference.
+        #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\x00-\\x1f\\x7f]+$"))]
         entry: String,
     },
     /// Current-user package registration, never device provisioning.
@@ -62,7 +70,7 @@ pub enum SoftwareObservedIdentity {
     },
 }
 /// Independent native observation; no process return code can construct a Present observation.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "state",
     rename_all = "snake_case",
@@ -127,7 +135,7 @@ impl SoftwareDetectionObservation {
     }
 }
 /// Process evidence is kept separate from effect detection and its exit-code classification.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -140,6 +148,7 @@ pub enum SoftwareProcessObservation {
     /// The approved native process produced this return code.
     Exited {
         /// Actual signed 32-bit process return code.
+        #[schemars(extend("minimum" = -2147483648i64, "maximum" = 2147483647))]
         code: i32,
     },
     /// No complete process return code was captured.
@@ -149,16 +158,19 @@ pub enum SoftwareProcessObservation {
     },
 }
 /// Complete evidence for one signed local step.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SoftwareStepResult {
     /// Zero-based position in the signed dependency plan.
+    #[schemars(extend("minimum" = 0, "maximum" = 31))]
     pub index: u8,
     /// SHA-256 of this exact signed step, including material, identity and target.
+    #[schemars(schema_with = "crate::runtime::nonzero_digest_schema")]
     pub step_digest: [u8; 32],
     /// Exact effect target and login generation from the step.
     pub target: SoftwareExecutionTarget,
     /// Exact ecosystem package coordinate from the step.
+    #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\x00-\\x1f\\x7f]+$"))]
     pub package: String,
     /// Independent native identity from the approved detector.
     pub identity: SoftwareObservedIdentity,
@@ -174,14 +186,16 @@ pub struct SoftwareStepResult {
     pub diagnostics: TaskDiagnostics,
 }
 /// A complete result for the signed task. The product determines its trusted projection.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SoftwareTaskResult {
     /// Requested root operation.
     pub intent: SoftwareTaskIntent,
     /// Exact digest of the signed dependency plan.
+    #[schemars(schema_with = "crate::runtime::nonzero_digest_schema")]
     pub definition_digest: [u8; 32],
     /// One result for every signed step, in execution order; skipped steps remain explicit.
+    #[schemars(extend("minItems" = 1, "maxItems" = 32))]
     pub steps: Vec<SoftwareStepResult>,
 }
 impl SoftwareTaskResult {

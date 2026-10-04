@@ -12,7 +12,9 @@ fn bounded_id(value: &str) -> Result<()> {
     }
 }
 /// All allowed asset sources. Serialized as their canonical stable identifier.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
+)]
 pub enum Source {
     /// Controlled collection script evidence.
     #[serde(rename = "agent.script")]
@@ -34,7 +36,8 @@ pub enum Source {
     MdmWindows,
 }
 /// Bounded protocol field identity; parsing grants no catalog or source authority.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, schemars::JsonSchema)]
+#[schemars(with = "String", extend("maxLength" = 128, "pattern" = r"^(device|custom|channel)\.[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$"))]
 pub struct FieldKey {
     bytes: [u8; 128],
     length: u8,
@@ -93,7 +96,7 @@ impl<'de> Deserialize<'de> for FieldKey {
     }
 }
 /// Closed primitive kinds; values never undergo implicit type conversion.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     /// UTF-8 text.
@@ -112,7 +115,7 @@ pub enum Kind {
     Object,
 }
 /// Closed structural schema for one field; every property is explicit and required.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -123,6 +126,7 @@ pub enum ValueType {
     /// Bounded text; empty text is a legitimate value when allowed.
     String {
         /// Character budget.
+        #[schemars(extend("minimum" = 1, "maximum" = 65536))]
         max_length: u32,
         /// Whether empty text is allowed.
         allow_empty: bool,
@@ -130,6 +134,7 @@ pub enum ValueType {
     /// Closed string vocabulary.
     Enum {
         /// Permitted nonempty values.
+        #[schemars(extend("minItems" = 1, "maxItems" = 128, "uniqueItems" = true, "items" = serde_json::json!({"type":"string","minLength":1,"maxLength":256})))]
         values: BTreeSet<String>,
     },
     /// Signed 64-bit integer.
@@ -145,11 +150,13 @@ pub enum ValueType {
         /// Element schema.
         items: Box<ValueType>,
         /// Maximum number of values.
+        #[schemars(extend("minimum" = 1, "maximum" = 100000))]
         max_items: u32,
     },
     /// Closed properties; undeclared and absent properties are rejected.
     Object {
         /// Property schema by literal name.
+        #[schemars(extend("minProperties" = 1, "maxProperties" = 64, "propertyNames" = serde_json::json!({"type":"string","maxLength":64,"pattern":"^[a-z][a-z0-9_]*$"})))]
         properties: BTreeMap<String, ValueType>,
     },
 }
@@ -255,7 +262,9 @@ fn property(key: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 /// Platform applicable to a field or collector.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Platform {
     /// Windows.
@@ -264,7 +273,9 @@ pub enum Platform {
     Macos,
 }
 /// Field visibility class, enforced by the product authorization boundary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Sensitivity {
     /// Ordinary inventory.
@@ -273,12 +284,14 @@ pub enum Sensitivity {
     Sensitive,
 }
 /// A published field version. No time-based expiry and no execution permission.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FieldDefinition {
     /// Stable field identity.
+    #[schemars(extend("maxLength" = 128, "pattern" = "^(device|custom|channel)\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$"))]
     pub key: FieldKey,
     /// Monotonic published version.
+    #[schemars(extend("minimum" = 1, "maximum" = 9223372036854775807u64))]
     pub version: u64,
     /// Exact bounded type.
     pub value_type: ValueType,
@@ -287,16 +300,20 @@ pub struct FieldDefinition {
     /// Whether management assignment is permitted.
     pub manual: bool,
     /// Allowed sources with priority; lower numbers win, equal numbers require consensus.
+    #[schemars(extend("minProperties" = 1))]
     pub sources: BTreeMap<Source, u16>,
     /// Supported platforms.
+    #[schemars(extend("minItems" = 1, "maxItems" = 2))]
     pub platforms: BTreeSet<Platform>,
     /// Read/filter visibility classification.
     pub sensitivity: Sensitivity,
     /// Exact optional unit; no implicit conversion.
+    #[schemars(extend("minLength" = 1, "maxLength" = 64))]
     pub unit: Option<String>,
     /// Whether this field participates in conditions/search.
     pub searchable: bool,
     /// Optional stable item-key property for a structured inventory list.
+    #[schemars(extend("maxLength" = 64, "pattern" = "^[a-z][a-z0-9_]*$"))]
     pub item_key: Option<String>,
 }
 impl FieldDefinition {
@@ -354,7 +371,9 @@ impl FieldDefinition {
     }
 }
 /// Explicitly typed asset scalar. Times are UTC Unix seconds, never validity windows.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(
     tag = "kind",
     content = "value",
@@ -363,15 +382,21 @@ impl FieldDefinition {
 )]
 pub enum Scalar {
     /// Nonblank bounded text.
-    String(String),
+    String(#[schemars(extend("maxLength" = 65536))] String),
     /// Signed integer.
-    Integer(i64),
+    Integer(
+        #[schemars(extend("minimum" = -9223372036854775808i64, "maximum" = 9223372036854775807u64))]
+         i64,
+    ),
     /// Finite numeric observation.
-    Number(ordered_float::NotNan<f64>),
+    Number(#[schemars(with = "f64")] ordered_float::NotNan<f64>),
     /// Ordered bounded collection.
-    Array(Vec<Scalar>),
+    Array(#[schemars(extend("maxItems" = 100000))] Vec<Scalar>),
     /// Declared structured attributes.
-    Object(BTreeMap<String, Scalar>),
+    Object(
+        #[schemars(extend("maxProperties" = 64, "propertyNames" = serde_json::json!({"type":"string","maxLength":64,"pattern":"^[a-z][a-z0-9_]*$"})))]
+         BTreeMap<String, Scalar>,
+    ),
     /// Boolean value, including false.
     Boolean(bool),
     /// UTC Unix seconds.
@@ -429,7 +454,7 @@ impl Scalar {
     }
 }
 /// Definitive per-field outcome. Failed/missing attempts never delete a last-known fact.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "kind",
     content = "value",
@@ -461,17 +486,21 @@ impl CollectedValue {
         }
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Definition {
+    #[schemars(extend("minLength" = 1, "maxLength" = 128, "pattern" = "^[^\\u0000-\\u001F\\u007F]+$"))]
     dataset: String,
+    #[schemars(extend("minLength" = 1, "maxLength" = 128, "pattern" = "^[^\\u0000-\\u001F\\u007F]+$"))]
     version: String,
+    #[schemars(extend("not" = serde_json::json!({"const":"manual"})))]
     source: Source,
+    #[schemars(extend("minItems" = 1, "maxItems" = 128))]
     fields: Vec<FieldDefinition>,
 }
 /// Frozen source and field definitions for one published collector version.
 /// Constructing this value validates structure; the caller still owns tenant/device authorization.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "Definition", into = "Definition")]
 pub struct CollectionDefinition(Definition);
 impl TryFrom<Definition> for CollectionDefinition {

@@ -1,60 +1,127 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/report-status.schema.json",
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "ack",
-    "observation",
-    "projection"
-  ],
-  "properties": {
-    "ack": {
-      "type": "object",
+  "$defs": {
+    "IntakeStatus": {
+      "description": "Durable intake stage.",
+      "oneOf": [
+        {
+          "const": "durable",
+          "description": "The sealed report and receipt committed to PostgreSQL.",
+          "type": "string"
+        }
+      ]
+    },
+    "ObservationStatus": {
+      "description": "Observation processing status.",
+      "oneOf": [
+        {
+          "const": "pending",
+          "description": "Awaiting the Observation worker.",
+          "type": "string"
+        },
+        {
+          "const": "snapshot",
+          "description": "A complete snapshot established the current baseline.",
+          "type": "string"
+        },
+        {
+          "const": "needSnapshotPartial",
+          "description": "A partial report requires another complete snapshot.",
+          "type": "string"
+        },
+        {
+          "const": "needSnapshotCollectionFailed",
+          "description": "A collection failure requires another complete snapshot.",
+          "type": "string"
+        },
+        {
+          "const": "stale",
+          "description": "The sequence did not exceed the stream high-water mark.",
+          "type": "string"
+        }
+      ]
+    },
+    "ProjectionStatus": {
+      "description": "Projection processing status.",
+      "oneOf": [
+        {
+          "const": "pending",
+          "description": "Awaiting an applicable Observation decision or projection commit.",
+          "type": "string"
+        },
+        {
+          "const": "applied",
+          "description": "Applicable facts committed to the asset projection.",
+          "type": "string"
+        },
+        {
+          "const": "notApplicable",
+          "description": "The Observation decision deliberately carries no projectable facts.",
+          "type": "string"
+        }
+      ]
+    },
+    "ReportAck": {
       "additionalProperties": false,
+      "description": "Immutable durable-intake acknowledgement.",
+      "properties": {
+        "intake": {
+          "$ref": "#/$defs/IntakeStatus",
+          "const": "durable",
+          "description": "Durable intake status."
+        },
+        "receivedAt": {
+          "description": "Authoritative server receipt time as Unix seconds.",
+          "format": "int64",
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reportId": {
+          "description": "Report identity.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "wireVersion": {
+          "const": 1,
+          "description": "Exact wire major."
+        }
+      },
       "required": [
         "wireVersion",
         "reportId",
         "receivedAt",
         "intake"
       ],
-      "properties": {
-        "wireVersion": {
-          "const": 1
-        },
-        "reportId": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-          "not": {
-            "const": "00000000-0000-0000-0000-000000000000"
-          }
-        },
-        "receivedAt": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 9223372036854775807
-        },
-        "intake": {
-          "const": "durable"
-        }
-      }
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Current processing status for one durably accepted report.",
+  "properties": {
+    "ack": {
+      "$ref": "#/$defs/ReportAck",
+      "description": "Immutable intake acknowledgement."
     },
     "observation": {
-      "enum": [
-        "pending",
-        "snapshot",
-        "needSnapshotPartial",
-        "needSnapshotCollectionFailed",
-        "stale"
-      ]
+      "$ref": "#/$defs/ObservationStatus",
+      "description": "Observation decision stage."
     },
     "projection": {
-      "enum": [
-        "pending",
-        "applied",
-        "notApplicable"
-      ]
+      "$ref": "#/$defs/ProjectionStatus",
+      "description": "Projection stage."
     }
-  }
+  },
+  "required": [
+    "ack",
+    "observation",
+    "projection"
+  ],
+  "title": "ReportStatus",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/report-status.schema.json"
 }

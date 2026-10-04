@@ -1,5 +1,6 @@
 //! Software execution eligibility over protocol values; never creates execution authority.
 use rss_mdm_agent_wire::runtime::*;
+/// Check product execution eligibility and select the concrete current target.
 pub fn action_target(
     action: &SoftwareTaskAction,
     platform: TaskPlatform,
@@ -10,13 +11,7 @@ pub fn action_target(
         return Err(WireError::InvalidValue);
     }
     use SoftwareTaskBehavior as B;
-    let invocation = match &action.behavior {
-        B::Msi(n) | B::Pkg(n) | B::Winget(n) | B::Brew(n) => &n.install,
-        B::Exe(n) => &n.install,
-        B::Bundle(n) => &n.install.invocation,
-        B::Dmg(n) => &n.invocation,
-        B::Msix(n) => &n.invocation,
-    };
+    let invocation = action.behavior.invocation();
     if matches!(invocation.run_as, ExecutionIdentity::System) && !context.system_broker {
         return Err(WireError::InvalidValue);
     }
@@ -98,6 +93,7 @@ pub fn action_target(
     }
     Ok(target)
 }
+/// Freeze an approved interactive selector to the current account and login.
 pub fn bind_target(
     action: &mut SoftwareTaskAction,
     platform: TaskPlatform,
@@ -114,16 +110,11 @@ pub fn bind_target(
     }
     Ok(target)
 }
+/// Read the root native operation's declared process identity.
 pub fn execution_identity(action: &SoftwareTaskAction) -> ExecutionIdentity {
-    use SoftwareTaskBehavior as B;
-    match &action.behavior {
-        B::Msi(n) | B::Pkg(n) | B::Winget(n) | B::Brew(n) => n.install.run_as,
-        B::Exe(n) => n.install.run_as,
-        B::Bundle(n) => n.install.invocation.run_as,
-        B::Dmg(n) => n.invocation.run_as,
-        B::Msix(n) => n.invocation.run_as,
-    }
+    action.behavior.invocation().run_as
 }
+/// Check current broker/helper availability for a script process identity.
 pub fn identity_target(
     identity: ExecutionIdentity,
     platform: TaskPlatform,
@@ -145,6 +136,7 @@ pub fn identity_target(
         _ => Err(WireError::InvalidValue),
     }
 }
+/// Require the exact source-scoped read credential to exist in the current context.
 pub fn validate_export_context(
     export: &SoftwareTaskExport,
     context: &SoftwareExecutionContext,
@@ -163,6 +155,7 @@ pub fn validate_export_context(
     }
     Ok(())
 }
+/// Recheck every frozen software step before issuing Offer or Start authority.
 pub fn validate_task_admission(task: &SoftwareTaskSpec) -> Result<(), WireError> {
     for step in &task.steps {
         if action_target(&step.action, task.platform, &task.execution_context)? != step.target {

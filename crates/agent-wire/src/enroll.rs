@@ -9,11 +9,11 @@ use uuid::Uuid;
 pub const API_VERSION: u8 = 1;
 /// Canonical enrollment schema manifest.
 pub const SCHEMA_FINGERPRINT: &str =
-    "0d012e096967f4dd7cd3893492717218adc421cdf7efa463d9f187f713d149e0";
+    "f905d3c882064e715e5c68c73b8630ee8fe3c3e008710a5bc1406ee50999bcf7";
 /// Canonical enrollment schema manifest.
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/enroll/manifest.json");
 /// A bounded runtime profile, frozen when a grant is consumed.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeProfile {
     /// Runtime capability profile; independent of enrollment version.
@@ -35,16 +35,19 @@ impl RuntimeProfile {
     }
 }
 /// A user download grant or an unauthenticated client authorization request.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GrantRequest {
     /// Enrollment API version.
     #[serde(deserialize_with = "version")]
+    #[schemars(schema_with = "crate::runtime::version_schema")]
     pub wire_version: u8,
     /// Caller-selected stable request and retry identity.
     #[serde(with = "crate::runtime::strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub operation_id: Uuid,
     /// Caller-generated secret, delivered in protected bootstrap material.
+    #[schemars(extend("pattern" = "^[A-Za-z0-9_-]{43}$"))]
     pub secret: Secret,
     /// Requested platform, fixed by authorization.
     pub platform: TaskPlatform,
@@ -54,7 +57,7 @@ pub struct GrantRequest {
     pub csr: Option<String>,
 }
 /// Persisted authorization lifecycle.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum GrantState {
     /// Waiting for an authenticated user to approve the exact client request.
@@ -69,149 +72,183 @@ pub enum GrantState {
     Expired,
 }
 /// Public progress; never includes the bootstrap secret.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GrantReceipt {
     /// Enrollment API version.
     #[serde(deserialize_with = "version")]
+    #[schemars(schema_with = "crate::runtime::version_schema")]
     pub wire_version: u8,
     /// Server-held request/grant identity.
     #[serde(with = "crate::runtime::strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub grant_id: Uuid,
     /// Current authorization state.
     pub state: GrantState,
     /// Original authorization deadline, Unix seconds.
+    #[schemars(extend("minimum" = 1))]
     pub expires_at: i64,
     /// Authorized platform.
     pub platform: TaskPlatform,
 }
 /// Consume a grant for exactly one CSR and runtime profile.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CertificateRequest {
     /// Enrollment API version.
     #[serde(deserialize_with = "version")]
+    #[schemars(schema_with = "crate::runtime::version_schema")]
     pub wire_version: u8,
     /// Stable signing operation; do not replace after unknown results.
     #[serde(with = "crate::runtime::strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub operation_id: Uuid,
     /// Authorized grant identity.
     #[serde(with = "crate::runtime::strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub grant_id: Uuid,
     /// Bootstrap secret; never a runtime credential.
+    #[schemars(extend("pattern" = "^[A-Za-z0-9_-]{43}$"))]
     pub secret: Secret,
     /// Base64 DER CSR signed by the locally held key.
+    #[schemars(extend("minLength" = 1, "maxLength" = 43692))]
     pub csr: String,
     /// Exact runtime profile frozen by this operation.
     pub runtime: RuntimeProfile,
 }
 /// A durable certificate candidate; not an active device identity.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Candidate {
     /// Enrollment API version.
     #[serde(deserialize_with = "version")]
+    #[schemars(schema_with = "crate::runtime::version_schema")]
     pub wire_version: u8,
     /// Fixed server signing attempt identity.
     #[serde(with = "crate::runtime::strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub issuance_id: Uuid,
     /// Original client signing operation.
     #[serde(with = "crate::runtime::strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub operation_id: Uuid,
     /// Leaf-first base64 DER chain, already validated by the server.
+    #[schemars(extend("minItems" = 1, "maxItems" = 4, "items" = serde_json::json!({"type":"string","minLength":1,"maxLength":43692})))]
     pub certificate_chain: Vec<String>,
     /// The original grant deadline; a long certificate does not extend it.
+    #[schemars(extend("minimum" = 1))]
     pub activate_before: i64,
 }
 /// Presented over real candidate mTLS to activate that exact certificate.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ActivationRequest {
     /// Enrollment API version.
     #[serde(deserialize_with = "version")]
+    #[schemars(schema_with = "crate::runtime::version_schema")]
     pub wire_version: u8,
     /// Persisted candidate identity.
     #[serde(with = "crate::runtime::strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub issuance_id: Uuid,
     /// Stable activation retry identity.
     #[serde(with = "crate::runtime::strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub operation_id: Uuid,
 }
 /// Durable activation result, including an independently versioned runtime binding.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ActivationReceipt {
     /// Enrollment API version.
     #[serde(deserialize_with = "version")]
+    #[schemars(schema_with = "crate::runtime::version_schema")]
     pub wire_version: u8,
     /// Exact activated issuance.
     #[serde(with = "crate::runtime::strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub issuance_id: Uuid,
     /// Activation operation identity.
     #[serde(with = "crate::runtime::strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub operation_id: Uuid,
     /// Runtime binding and collection definitions selected by the server.
     pub runtime: crate::runtime::BindingProfile,
 }
 /// Poll only the request identified by the secret and original operation.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StatusRequest {
     /// Enrollment API version.
     #[serde(deserialize_with = "version")]
+    #[schemars(schema_with = "crate::runtime::version_schema")]
     pub wire_version: u8,
     /// Grant identity.
     #[serde(with = "crate::runtime::strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub grant_id: Uuid,
     /// Original creation operation identity.
     #[serde(with = "crate::runtime::strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub operation_id: Uuid,
     /// Polling/bootstrap secret.
+    #[schemars(extend("pattern" = "^[A-Za-z0-9_-]{43}$"))]
     pub secret: Secret,
 }
 /// Find only an already committed renewal grant after its response was lost.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RenewalStatusRequest {
     /// Enrollment API version.
     #[serde(deserialize_with = "version")]
+    #[schemars(schema_with = "crate::runtime::version_schema")]
     pub wire_version: u8,
     /// Original renewal grant operation; querying never creates a grant.
     #[serde(with = "crate::runtime::strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub operation_id: Uuid,
     /// Original protected bootstrap secret, independent of the old mTLS identity.
+    #[schemars(extend("pattern" = "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"))]
     pub secret: Secret,
 }
 /// Signing and activation progress for an authorized caller.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Progress {
     /// Authorization progress.
     pub grant: GrantReceipt,
     /// Persisted signing attempt, when consumed.
     #[serde(deserialize_with = "optional_uuid")]
+    #[schemars(required, schema_with = "crate::runtime::nullable_uuid_schema")]
     pub issuance_id: Option<Uuid>,
     /// Signing is unknown; retry/status never causes another CA request.
     pub issuance_unknown: bool,
     /// Already committed activation result, if any.
     #[serde(deserialize_with = "required_nullable")]
+    #[schemars(
+        required,
+        schema_with = "crate::self_service::nullable_schema::<ActivationReceipt>"
+    )]
     pub activation: Option<ActivationReceipt>,
 }
 /// Administrator attaches the original CA result to a persisted unknown attempt.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RecoverIssuance {
     /// Enrollment API version.
     #[serde(deserialize_with = "version")]
+    #[schemars(schema_with = "crate::runtime::version_schema")]
     pub wire_version: u8,
     /// Idempotent administrative operation.
     #[serde(with = "crate::runtime::strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub operation_id: Uuid,
     /// Original base64 DER certificate chain obtained from the CA.
+    #[schemars(extend("minItems" = 1, "maxItems" = 4, "items" = serde_json::json!({"type":"string","minLength":1,"maxLength":43692})))]
     pub certificate_chain: Vec<String>,
 }
 /// Closed lifecycle errors, distinct from runtime payload errors.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     /// Invalid or unsupported enrollment request.
@@ -242,32 +279,38 @@ pub enum ErrorCode {
     ServiceUnavailable,
 }
 /// Enrollment error projection, without internal diagnostic values.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ErrorBody {
     /// Closed error category.
     pub code: ErrorCode,
     /// Original signing attempt when a CA result is unknown.
     #[serde(deserialize_with = "optional_uuid")]
+    #[schemars(required, schema_with = "crate::runtime::nullable_uuid_schema")]
     pub issuance_id: Option<Uuid>,
 }
 
 /// An exact native installation requests bootstrap authority, never an active credential.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NativeGrantRequest {
     /// Independent enrollment API version.
     #[serde(deserialize_with = "version")]
+    #[schemars(schema_with = "crate::runtime::version_schema")]
     pub wire_version: u8,
     /// Stable bootstrap operation.
     #[serde(with = "crate::runtime::strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub operation_id: Uuid,
     /// Frozen, dispatched native installation.
     #[serde(with = "crate::runtime::strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub installation_operation: Uuid,
     /// Agent-generated one-time secret.
+    #[schemars(extend("pattern" = "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"))]
     pub secret: Secret,
     /// Locally held key's base64 DER CSR.
+    #[schemars(extend("minLength" = 1, "maxLength" = 43692))]
     pub csr: String,
     /// Runtime profile, fixed through signing and activation.
     pub runtime: RuntimeProfile,
@@ -303,12 +346,13 @@ fn version<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
 }
 
 /// Secret-free preview of the exact CSR a browser user is approving.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AuthorizationRequest {
     /// Current request state and deadline.
     pub grant: GrantReceipt,
     /// SHA-256 of the verified CSR public key, encoded as lowercase hexadecimal.
+    #[schemars(extend("pattern" = "^[0-9a-f]{64}$"))]
     pub public_key_fingerprint: String,
 }
 
@@ -320,8 +364,12 @@ where
     Option::<T>::deserialize(d)
 }
 fn optional_uuid<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Uuid>, D::Error> {
-    #[derive(Deserialize)]
+    #[derive(Deserialize, schemars::JsonSchema)]
     #[serde(transparent)]
-    struct Strict(#[serde(with = "crate::runtime::strict_uuid")] Uuid);
+    struct Strict(
+        #[serde(with = "crate::runtime::strict_uuid")]
+        #[schemars(schema_with = "crate::runtime::uuid_schema")]
+        Uuid,
+    );
     Ok(Option::<Strict>::deserialize(d)?.map(|v| v.0))
 }

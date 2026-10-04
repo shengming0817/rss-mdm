@@ -677,6 +677,11 @@ consume(('crates/execution-service/src/input_preparation.rs',
 consume(('crates/execution-service/src/freeze_inputs.rs', 'crates/flow-service/src/resource_catalog/mod.rs'),
         'planning.agent_policy planning.remote planning.onboarding')
 TASK_CONSUMERS = 'installation.upgrade_runtime planning.self_service planning.onboarding planning.policy planning.agent_policy planning.frequency planning.remote planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
+consume(('crates/agent-wire/src/collection.rs', 'crates/agent-channel/src/inventory_wire.rs'),
+        TASK_CONSUMERS + ' agent.registration agent.reports')
+for name in ('execution.agent.delivery', 'execution.software.offer'):
+    MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs,
+                           'crates/app/tests/support/task_signature.rs'))
 consume(('crates/agent-wire/src/tasks.rs', 'crates/agent-wire/schema/runtime/task-*.json',
          'crates/agent-wire/schema/runtime/signed-task-v1.schema.json', 'crates/execution-service/src/task_signing.rs',
          'crates/execution-service/src/actions/mod.rs'), TASK_CONSUMERS)

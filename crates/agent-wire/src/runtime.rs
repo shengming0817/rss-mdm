@@ -27,7 +27,7 @@ pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/runtime/agent-v1.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "e0e4d82919229ab85d08890bdb7c2f4fe87993539f57cb4249b748bc6d10e95a";
+    "dd5a9727129ef3c6a2469fcc8a8214c27d1b76362cc3bfb2e3641699f0252a61";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,7 +66,8 @@ pub(crate) mod strict_uuid {
 }
 
 /// Canonical 256-bit base64url secret. Debug output is always redacted.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, schemars::JsonSchema)]
+#[schemars(with = "String", extend("minLength" = 43, "maxLength" = 43, "pattern" = "^[A-Za-z0-9_-]{43}$"))]
 pub struct Secret(Zeroizing<String>);
 impl Secret {
     /// Parse exactly 32 bytes encoded with unpadded URL-safe base64.
@@ -103,7 +104,9 @@ impl<'de> Deserialize<'de> for Secret {
 }
 
 /// Closed V1 capability set.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
+)]
 pub enum Capability {
     /// Full/partial/failed reports for the two basic inventory fields.
     #[serde(rename = "inventory.collect.v1")]
@@ -208,7 +211,7 @@ pub fn supported_capabilities(value: &[Capability]) -> bool {
 }
 
 /// Server-owned report source returned after registration.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum ReportSource {
     /// Built-in RSS Agent inventory collector.
     #[serde(rename = "agent.builtin")]
@@ -216,89 +219,48 @@ pub enum ReportSource {
 }
 
 /// Durable registration result. It never contains the submitted credential.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BindingProfile {
     /// Exact wire major.
+    #[schemars(schema_with = "crate::runtime::version_schema")]
+    #[serde(deserialize_with = "tasks::version")]
     pub wire_version: u8,
     /// Registration operation replay identity.
     #[serde(with = "strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub operation_id: Uuid,
     /// Server-owned product device identity.
+    #[schemars(extend("minLength" = 1, "maxLength" = 256, "pattern" = "^(?=.*\\S)[^\\u0000-\\u001F\\u007F-\\u009F]*$"))]
+    #[serde(deserialize_with = "profile_device")]
     pub device_id: String,
     /// Immutable registration identity.
     #[serde(with = "strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub registration_id: Uuid,
     /// Channel-local registration generation.
+    #[schemars(extend("minimum" = 1, "maximum" = 9223372036854775807u64))]
+    #[serde(deserialize_with = "profile_generation")]
     pub generation: u64,
     /// Authorized report source.
+    #[schemars(extend("const" = "agent.builtin"))]
     pub source: ReportSource,
     /// Observation epoch for this registration.
     #[serde(with = "strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub epoch: Uuid,
     /// Exact accepted capability set.
+    #[schemars(extend("minItems" = 1, "maxItems" = 20, "uniqueItems" = true))]
+    #[serde(deserialize_with = "profile_capabilities")]
     pub capabilities: Vec<Capability>,
     /// Server-selected built-in collector versions for this registration.
+    #[schemars(extend("minItems" = 1, "maxItems" = 16))]
+    #[serde(deserialize_with = "profile_collections")]
     pub collections: Vec<CollectionDefinition>,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RawBindingProfile {
-    wire_version: u8,
-    #[serde(with = "strict_uuid")]
-    operation_id: Uuid,
-    device_id: String,
-    #[serde(with = "strict_uuid")]
-    registration_id: Uuid,
-    generation: u64,
-    source: ReportSource,
-    #[serde(with = "strict_uuid")]
-    epoch: Uuid,
-    capabilities: Vec<Capability>,
-    collections: Vec<CollectionDefinition>,
-}
-impl<'de> Deserialize<'de> for BindingProfile {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let raw = RawBindingProfile::deserialize(deserializer)?;
-        if raw.wire_version != WIRE_VERSION
-            || raw.collections.is_empty()
-            || raw.collections.len() > 16
-            || raw
-                .collections
-                .iter()
-                .any(|d| d.source() != Source::AgentBuiltin)
-            || raw
-                .collections
-                .iter()
-                .map(|d| d.dataset())
-                .collect::<std::collections::BTreeSet<_>>()
-                .len()
-                != raw.collections.len()
-            || raw.generation == 0
-            || raw.generation > i64::MAX as u64
-            || !supported_capabilities(&raw.capabilities)
-            || raw.device_id.trim().is_empty()
-            || raw.device_id.chars().count() > 256
-            || raw.device_id.chars().any(char::is_control)
-        {
-            return Err(D::Error::custom(WireError::InvalidValue));
-        }
-        Ok(Self {
-            wire_version: raw.wire_version,
-            operation_id: raw.operation_id,
-            device_id: raw.device_id,
-            registration_id: raw.registration_id,
-            generation: raw.generation,
-            source: raw.source,
-            epoch: raw.epoch,
-            capabilities: raw.capabilities,
-            collections: raw.collections,
-        })
-    }
 }
 
 /// One field and its explicit outcome.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FieldValue {
     /// Field identity.
@@ -308,7 +270,7 @@ pub struct FieldValue {
 }
 
 /// Closed collection failure categories; raw diagnostics are never transported.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum FailureCode {
     /// Collector lacked operating-system permission.
@@ -320,7 +282,8 @@ pub enum FailureCode {
 }
 
 /// Closed V1 report body.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, schemars::JsonSchema)]
+#[schemars(with = "RawReportBody")]
 pub enum ReportBody {
     /// Complete coverage. Omitted fields are absent from this source.
     Snapshot(Vec<FieldValue>),
@@ -332,12 +295,20 @@ pub enum ReportBody {
         code: FailureCode,
     },
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 enum RawReportBody {
-    Snapshot { values: Vec<FieldValue> },
-    Partial { values: Vec<FieldValue> },
-    Failed { code: FailureCode },
+    Snapshot {
+        #[schemars(extend("maxItems" = 128))]
+        values: Vec<FieldValue>,
+    },
+    Partial {
+        #[schemars(extend("maxItems" = 128))]
+        values: Vec<FieldValue>,
+    },
+    Failed {
+        code: FailureCode,
+    },
 }
 impl From<&ReportBody> for RawReportBody {
     fn from(value: &ReportBody) -> Self {
@@ -373,33 +344,34 @@ impl<'de> Deserialize<'de> for ReportBody {
 }
 
 /// Strict V1 inventory report.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReportRequest {
-    wire_version: u8,
-    #[serde(with = "strict_uuid")]
-    report_id: Uuid,
-    sequence: u64,
-    observed_at: i64,
-    collection: CollectionDefinition,
-    body: ReportBody,
-}
-#[derive(Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(try_from = "ReportInput", into = "ReportInput")]
+pub struct ReportRequest(ReportInput);
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RawReportRequest {
+struct ReportInput {
+    #[schemars(schema_with = "crate::runtime::version_schema")]
     wire_version: u8,
     #[serde(with = "strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     report_id: Uuid,
+    #[schemars(extend("minimum" = 0, "maximum" = 9223372036854775807u64))]
     sequence: u64,
+    #[schemars(extend("minimum" = 0, "maximum" = 9223372036854775807u64))]
     observed_at: i64,
     collection: CollectionDefinition,
     body: ReportBody,
 }
-impl<'de> Deserialize<'de> for ReportRequest {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let raw = RawReportRequest::deserialize(deserializer)?;
+impl From<ReportRequest> for ReportInput {
+    fn from(value: ReportRequest) -> Self {
+        value.0
+    }
+}
+impl TryFrom<ReportInput> for ReportRequest {
+    type Error = WireError;
+    fn try_from(raw: ReportInput) -> Result<Self, WireError> {
         if raw.wire_version != WIRE_VERSION {
-            return Err(D::Error::custom(WireError::InvalidValue));
+            return Err(WireError::InvalidValue);
         }
         Self::new(
             raw.report_id,
@@ -408,7 +380,6 @@ impl<'de> Deserialize<'de> for ReportRequest {
             raw.collection,
             raw.body,
         )
-        .map_err(D::Error::custom)
     }
 }
 impl ReportRequest {
@@ -426,14 +397,14 @@ impl ReportRequest {
         let values = match &mut body {
             ReportBody::Snapshot(values) | ReportBody::Partial(values) => values,
             ReportBody::Failed { .. } => {
-                return Ok(Self {
+                return Ok(Self(ReportInput {
                     wire_version: WIRE_VERSION,
                     report_id,
                     sequence,
                     observed_at,
                     collection,
                     body,
-                });
+                }));
             }
         };
         if values.len() > 128
@@ -449,38 +420,38 @@ impl ReportRequest {
         if values.windows(2).any(|pair| pair[0].field == pair[1].field) {
             return Err(WireError::InvalidValue);
         }
-        Ok(Self {
+        Ok(Self(ReportInput {
             wire_version: WIRE_VERSION,
             report_id,
             sequence,
             observed_at,
             collection,
             body,
-        })
+        }))
     }
     /// Frozen collector identity and field schemas, checked against the server's published version.
     pub fn collection(&self) -> &CollectionDefinition {
-        &self.collection
+        &self.0.collection
     }
     /// Immutable report identity within the authenticated registration.
     pub const fn report_id(&self) -> Uuid {
-        self.report_id
+        self.0.report_id
     }
     /// Producer-local ordering coordinate.
     pub const fn sequence(&self) -> u64 {
-        self.sequence
+        self.0.sequence
     }
     /// Nonnegative Unix collection time.
     pub const fn observed_at(&self) -> i64 {
-        self.observed_at
+        self.0.observed_at
     }
     /// Exact closed body.
     pub const fn body(&self) -> &ReportBody {
-        &self.body
+        &self.0.body
     }
     /// Collected values, or an empty slice for a failed report.
     pub fn values(&self) -> &[FieldValue] {
-        match &self.body {
+        match &self.0.body {
             ReportBody::Snapshot(values) | ReportBody::Partial(values) => values,
             ReportBody::Failed { .. } => &[],
         }
@@ -496,51 +467,35 @@ impl ReportRequest {
 }
 
 /// Durable intake stage.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum IntakeStatus {
     /// The sealed report and receipt committed to PostgreSQL.
     Durable,
 }
 /// Immutable durable-intake acknowledgement.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReportAck {
     /// Exact wire major.
+    #[schemars(schema_with = "crate::runtime::version_schema")]
+    #[serde(deserialize_with = "tasks::version")]
     pub wire_version: u8,
     /// Report identity.
     #[serde(with = "strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub report_id: Uuid,
     /// Authoritative server receipt time as Unix seconds.
+    #[schemars(extend("minimum" = 0, "maximum" = 9223372036854775807u64))]
+    #[serde(deserialize_with = "nonnegative_time")]
     pub received_at: i64,
     /// Durable intake status.
+    #[schemars(extend("const" = "durable"))]
     pub intake: IntakeStatus,
 }
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RawReportAck {
-    wire_version: u8,
-    #[serde(with = "strict_uuid")]
-    report_id: Uuid,
-    received_at: i64,
-    intake: IntakeStatus,
-}
-impl<'de> Deserialize<'de> for ReportAck {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let raw = RawReportAck::deserialize(deserializer)?;
-        if raw.wire_version != WIRE_VERSION || raw.received_at < 0 {
-            return Err(D::Error::custom(WireError::InvalidValue));
-        }
-        Ok(Self {
-            wire_version: raw.wire_version,
-            report_id: raw.report_id,
-            received_at: raw.received_at,
-            intake: raw.intake,
-        })
-    }
-}
+
 /// Observation processing status.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum ObservationStatus {
     /// Awaiting the Observation worker.
@@ -555,7 +510,7 @@ pub enum ObservationStatus {
     Stale,
 }
 /// Projection processing status.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum ProjectionStatus {
     /// Awaiting an applicable Observation decision or projection commit.
@@ -566,7 +521,7 @@ pub enum ProjectionStatus {
     NotApplicable,
 }
 /// Current processing status for one durably accepted report.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReportStatus {
     /// Immutable intake acknowledgement.
@@ -578,7 +533,7 @@ pub struct ReportStatus {
 }
 
 /// Closed Agent HTTP error codes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     /// JSON or field validation failed.
@@ -611,7 +566,7 @@ pub enum ErrorCode {
     ServiceUnavailable,
 }
 /// Stable JSON error body.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ErrorBody {
     /// Closed machine-readable code.
@@ -631,3 +586,68 @@ mod chunks;
 pub use chunks::{
     ChunkedTaskResult, OUTPUT_CHUNK_BYTES, OUTPUT_MAX_BYTES, OutputChunk, OutputManifest,
 };
+
+// Canonical lexical constraints shared by every current wire coordinate.
+pub(crate) fn uuid_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({"type":"string","format":"uuid","pattern":"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$","not":{"const":"00000000-0000-0000-0000-000000000000"}})
+}
+pub(crate) fn nullable_uuid_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({"anyOf":[uuid_schema(generator),{"type":"null"}]})
+}
+pub(crate) fn version_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({"const":WIRE_VERSION})
+}
+
+pub(crate) fn nonzero_digest_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    let mut schema = generator.subschema_for::<[u8; 32]>();
+    schema.insert("not".into(), serde_json::json!({"const": ([0u8; 32])}));
+    schema
+}
+
+fn profile_device<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let value = String::deserialize(d)?;
+    if value.trim().is_empty() || value.chars().count() > 256 || value.chars().any(char::is_control)
+    {
+        return Err(D::Error::custom(WireError::InvalidValue));
+    }
+    Ok(value)
+}
+fn profile_generation<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    let value = u64::deserialize(d)?;
+    if value == 0 || value > i64::MAX as u64 {
+        return Err(D::Error::custom(WireError::InvalidValue));
+    }
+    Ok(value)
+}
+fn profile_capabilities<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Capability>, D::Error> {
+    let value = Vec::deserialize(d)?;
+    if !supported_capabilities(&value) {
+        return Err(D::Error::custom(WireError::InvalidValue));
+    }
+    Ok(value)
+}
+fn profile_collections<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<CollectionDefinition>, D::Error> {
+    let value = Vec::<CollectionDefinition>::deserialize(d)?;
+    if value.is_empty()
+        || value.len() > 16
+        || value.iter().any(|v| v.source() != Source::AgentBuiltin)
+        || value
+            .iter()
+            .map(|v| v.dataset())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            != value.len()
+    {
+        return Err(D::Error::custom(WireError::InvalidValue));
+    }
+    Ok(value)
+}
+fn nonnegative_time<'de, D: Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
+    let value = i64::deserialize(d)?;
+    if value < 0 {
+        return Err(D::Error::custom(WireError::InvalidValue));
+    }
+    Ok(value)
+}

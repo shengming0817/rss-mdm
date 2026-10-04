@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Local OS evidence relative to the Agent's authenticated organization.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MdmEnrollmentState {
     /// Positive evidence that no MDM enrollment exists.
@@ -28,7 +28,7 @@ impl MdmEnrollmentState {
     }
 }
 /// Platform-owned enrollment entry; opening it never proves enrollment completed.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EnrollmentEntry {
     /// Open Windows' standard device-enrollment UI for this HTTPS discovery authority.
@@ -68,15 +68,18 @@ impl EnrollmentEntry {
     }
 }
 /// Signed request to open a standard MDM enrollment entry with normal OS approval.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnrollmentTaskSpec {
     /// Exact wire major.
+    #[schemars(schema_with = "crate::runtime::version_schema")]
     pub wire_version: u8,
     /// Enrolled tenant.
     #[serde(with = "strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub tenant_id: Uuid,
     /// Independent source Agent device.
+    #[schemars(extend("minLength" = 1, "maxLength" = 256, "pattern" = "^[^\\p{Cc}]+$"))]
     pub device_id: String,
     /// Actual local operating system.
     pub platform: TaskPlatform,
@@ -84,21 +87,27 @@ pub struct EnrollmentTaskSpec {
     pub architecture: TaskArchitecture,
     /// Current Agent registration.
     #[serde(with = "strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub registration_id: Uuid,
     /// Current Agent generation.
+    #[schemars(extend("minimum" = 1, "maximum" = 9223372036854775807u64))]
     pub generation: u64,
     /// Durable action run.
     #[serde(with = "strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub task_id: Uuid,
     /// Exact delivery attempt.
     #[serde(with = "strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub attempt_id: Uuid,
     /// Offer or explicit start permission.
     pub permit: crate::runtime::TaskPermit,
     /// Expiry of this signed permission.
+    #[schemars(extend("minimum" = 1, "maximum" = 9223372036854775807u64))]
     pub expires_at: i64,
     /// Target organization, fixed by server configuration and Policy publication.
     #[serde(with = "strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub organization: Uuid,
     /// Standard platform enrollment entry, never an executable or installation script.
     pub entry: EnrollmentEntry,
@@ -131,7 +140,7 @@ impl EnrollmentTaskSpec {
     }
 }
 /// Outcome of asking the OS to open its enrollment UI; never a claim of active MDM authority.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EnrollmentEntryOutcome {
     /// Entry opened; enrollment still awaits independent observation and MDM registration.

@@ -680,6 +680,7 @@ fn self_service_schemas_follow_owned_dtos_and_reject_model_authority() {
     ] {
         let root = generated.as_object_mut().unwrap();
         root.remove("$schema");
+        root.remove("title");
         if let Some(serde_json::Value::Object(definitions)) = root.remove("$defs") {
             for (name, definition) in definitions {
                 assert_eq!(definition, payload["$defs"][&name], "embedded {name}");

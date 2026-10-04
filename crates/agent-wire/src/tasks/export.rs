@@ -2,7 +2,7 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 /// Exact enterprise release ring.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SoftwareExportRing {
     /// Test publication.
@@ -13,59 +13,76 @@ pub enum SoftwareExportRing {
     Production,
 }
 /// One exact definition included in the frozen native source.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftwareExportDependency {
     /// Opaque logical Resource identity.
+    #[schemars(extend("minLength" = 1, "maxLength" = 128, "pattern" = "^[^\\x00-\\x1f\\x7f]+$"))]
     pub resource: String,
     /// Exact Resource version.
+    #[schemars(extend("minLength" = 1, "maxLength" = 128, "pattern" = "^[^\\x00-\\x1f\\x7f]+$"))]
     pub version: String,
     /// Complete frozen Resource definition digest.
+    #[schemars(schema_with = "crate::runtime::nonzero_digest_schema")]
     pub sha256: [u8; 32],
 }
 /// Exact readonly material URL published with the native document.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftwareExportArtifact {
     /// Credential-free immutable material URL.
+    #[schemars(extend("maxLength" = 2048, "pattern" = "^https://[^\\s/?#@]+(?:/[^\\s?#]*)?$"))]
     pub url: String,
     /// Complete byte count.
+    #[schemars(extend("minimum" = 1, "maximum" = 1099511627776u64))]
     pub length: u64,
     /// Complete content digest.
+    #[schemars(schema_with = "crate::runtime::nonzero_digest_schema")]
     pub sha256: [u8; 32],
 }
 /// Complete publication identity; these are immutable receipt coordinates, not another catalog.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SoftwareExportBinding {
     /// Exact logical output source, distinct from imported provenance.
+    #[schemars(extend("minLength" = 1, "maxLength" = 128, "pattern" = "^[^\\x00-\\x1f\\x7f]+$"))]
     pub source: String,
     /// Publication tenant from the signed task.
     #[serde(with = "crate::runtime::strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub tenant_id: Uuid,
     /// Exact release environment.
     pub ring: SoftwareExportRing,
     /// Immutable publication receipt identity.
+    #[schemars(schema_with = "crate::runtime::nonzero_digest_schema")]
     pub publication: [u8; 32],
     /// Complete configured source snapshot identity.
+    #[schemars(schema_with = "crate::runtime::nonzero_digest_schema")]
     pub source_digest: [u8; 32],
     /// Root definition coordinate included in this source.
+    #[schemars(extend("minLength" = 1, "maxLength" = 128, "pattern" = "^[^\\x00-\\x1f\\x7f]+$"))]
     pub resource: String,
     /// Exact root Resource version.
+    #[schemars(extend("minLength" = 1, "maxLength" = 128, "pattern" = "^[^\\x00-\\x1f\\x7f]+$"))]
     pub resource_version: String,
     /// Complete root Resource digest.
+    #[schemars(schema_with = "crate::runtime::nonzero_digest_schema")]
     pub resource_digest: [u8; 32],
     /// Release content digest binds full definition, dependencies, documents and material.
+    #[schemars(schema_with = "crate::runtime::nonzero_digest_schema")]
     pub definition_digest: [u8; 32],
     /// Exact derived native document digest.
+    #[schemars(schema_with = "crate::runtime::nonzero_digest_schema")]
     pub document_sha256: [u8; 32],
     /// Exact transitive definitions included in the native source.
+    #[schemars(extend("maxItems" = 255))]
     pub dependencies: Vec<SoftwareExportDependency>,
     /// Complete immutable public material set.
+    #[schemars(extend("minItems" = 1, "maxItems" = 256))]
     pub artifacts: Vec<SoftwareExportArtifact>,
 }
 /// Native consumers always use the frozen source explicitly, with prerequisites already executed.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -80,8 +97,10 @@ pub enum SoftwareTaskExport {
         /// Complete immutable source identity.
         binding: SoftwareExportBinding,
         /// Frozen REST base URL.
+        #[schemars(extend("maxLength" = 2048, "pattern" = "^https://[^\\s/?#@]+(?:/[^\\s?#]*)?$"))]
         uri: String,
         /// Exact identifier returned by the source's information endpoint.
+        #[schemars(extend("minLength" = 1, "maxLength" = 128, "pattern" = "^[^\\x00-\\x1f\\x7f]+$"))]
         identifier: String,
     },
     /// Immutable bottle-only Tap; the consumer cannot update it or fall back to source builds.
@@ -89,12 +108,16 @@ pub enum SoftwareTaskExport {
         /// Complete immutable source identity.
         binding: SoftwareExportBinding,
         /// Fixed readonly upload-pack URL.
+        #[schemars(extend("maxLength" = 2048, "pattern" = "^https://[^\\s/?#@]+(?:/[^\\s?#]*)?$"))]
         uri: String,
         /// Exact parentless Tap commit.
+        #[schemars(extend("pattern" = "^[0-9a-f]{40}$"))]
         commit: String,
         /// Source-scoped frozen tap namespace.
+        #[schemars(extend("minLength" = 1, "maxLength" = 128, "pattern" = "^[^\\x00-\\x1f\\x7f]+$"))]
         tap: String,
         /// Opaque locally provisioned readonly credential reference.
+        #[schemars(extend("minLength" = 1, "maxLength" = 128, "pattern" = "^[^\\x00-\\x1f\\x7f]+$"))]
         credential_reference: String,
     },
 }

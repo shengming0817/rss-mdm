@@ -206,6 +206,40 @@ def verify_audit_integration(data):
         require(key == identity or not packages[key].startswith(('rss-mdm-', 'rss-identity-')), 'audit integration depends on a product, domain or Identity package')
         pending.extend(d['pkg'] for d in nodes[key]['deps'])
 
+def verify_agent_wire(data):
+    """Check every enabled production edge; metadata retains platform-specific edges."""
+    packages = {p['id']: p for p in data['packages']}
+    nodes = {n['id']: n for n in data['resolve']['nodes']}
+    roots = [p for p in packages.values() if p['name'] == 'rss-mdm-agent-wire']
+    require(len(roots) == 1, 'exactly one Agent wire package required')
+    root = roots[0]
+    direct = {'serde', 'serde_json', 'uuid', 'sha2', 'base64', 'url', 'zeroize', 'schemars', 'ordered-float'}
+    require(not any('custom-build' in target['kind'] for target in root.get('targets', [])),
+            'Agent wire must not execute a product build script')
+    for dependency in root.get('dependencies', []):
+        if dependency['kind'] != 'dev':
+            require(dependency['name'] in direct and dependency['source'] == 'registry+https://github.com/rust-lang/crates.io-index',
+                    'Agent wire has an unsupported production dependency, including optional or target-specific declarations')
+    visited, pending = set(), [root['id']]
+    while pending:
+        ident = pending.pop()
+        if ident in visited:
+            continue
+        visited.add(ident)
+        package = packages[ident]
+        require(ident == root['id'] or package['source'] == 'registry+https://github.com/rust-lang/crates.io-index',
+                'Agent wire production closure depends on a product or private component')
+        require(not package['name'].startswith(('tokio', 'sqlx', 'reqwest', 'hyper', 'axum', 'diesel',
+                                                'actix', 'windows', 'objc2', 'ring', 'jsonschema')),
+                'Agent wire production closure contains a backend, OS execution or runtime validation implementation')
+        for edge in nodes[ident]['deps']:
+            if any(kind.get('kind') != 'dev' for kind in edge.get('dep_kinds', [{'kind': None}])):
+                if ident == root['id']:
+                    require(packages[edge['pkg']]['name'] in direct,
+                            'Agent wire production closure has an unsupported direct dependency')
+                pending.append(edge['pkg'])
+
+
 def verify_metadata(data, root, mode, pin):
     url, rev = pin
     expected = f"git+{url}?rev={rev}#{rev}"
@@ -232,6 +266,7 @@ def verify_metadata(data, root, mode, pin):
     nodes = {n['id']: n for n in data['resolve']['nodes']}
     verify_backend_support(data)
     verify_audit_integration(data)
+    verify_agent_wire(data)
     app_id = next(p['id'] for p in data['packages'] if p['name'] == 'rss-mdm-app')
     visited, todo = set(), [app_id]
     while todo:

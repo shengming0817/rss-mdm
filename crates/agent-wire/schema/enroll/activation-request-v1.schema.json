@@ -1,33 +1,37 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/agent/enroll/v1/ActivationRequest",
-  "type": "object",
   "additionalProperties": false,
+  "description": "Presented over real candidate mTLS to activate that exact certificate.",
   "properties": {
-    "wireVersion": {
-      "const": 1
+    "issuanceId": {
+      "description": "Persisted candidate identity.",
+      "format": "uuid",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
     },
     "operationId": {
-      "type": "string",
+      "description": "Stable activation retry identity.",
       "format": "uuid",
-      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
       "not": {
         "const": "00000000-0000-0000-0000-000000000000"
-      }
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
     },
-    "issuanceId": {
-      "type": "string",
-      "format": "uuid",
-      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-      "not": {
-        "const": "00000000-0000-0000-0000-000000000000"
-      }
+    "wireVersion": {
+      "const": 1,
+      "description": "Enrollment API version."
     }
   },
   "required": [
     "wireVersion",
-    "operationId",
-    "issuanceId"
+    "issuanceId",
+    "operationId"
   ],
-  "$defs": {}
+  "title": "ActivationRequest",
+  "type": "object",
+  "$id": "https://rss.example/agent/enroll/v1/ActivationRequest"
 }

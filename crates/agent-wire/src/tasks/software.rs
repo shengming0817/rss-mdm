@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Install scope is separate from the process identity.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SoftwareTaskScope {
     /// Organization device installation.
@@ -13,7 +13,7 @@ pub enum SoftwareTaskScope {
     User,
 }
 /// Approved upgrade mechanism; no mutable command discovery.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SoftwareTaskUpgrade {
     /// The exact installer performs replacement.
@@ -24,33 +24,39 @@ pub enum SoftwareTaskUpgrade {
     Deny,
 }
 /// Disjoint explicitly accepted return codes. All others are failures.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftwareTaskExitCodes {
     /// Process success, still requiring independent effect detection.
+    #[schemars(extend("uniqueItems" = true, "maxItems" = 32, "minItems" = 1, "items" = serde_json::json!({"type":"integer","minimum":-2147483648,"maximum":2147483647})))]
     pub success: BTreeSet<i32>,
     /// Successful process completion requiring reboot.
+    #[schemars(extend("uniqueItems" = true, "maxItems" = 32, "minItems" = 0, "items" = serde_json::json!({"type":"integer","minimum":-2147483648,"maximum":2147483647})))]
     pub reboot: BTreeSet<i32>,
 }
 /// Literal invocation of the native installer chosen by the enclosing behavior.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SoftwareTaskInvocation {
     /// Process identity, never inferred from installation scope.
     pub run_as: ExecutionIdentity,
     /// Literal arguments; no shell or mutable registry command.
+    #[schemars(extend("maxItems" = 128, "items" = serde_json::json!({"type":"string","minLength":0,"maxLength":4096,"pattern":"^[^\\u0000]*$"})))]
     pub arguments: Vec<String>,
     /// Product-prefixed environment values.
+    #[schemars(extend("maxProperties" = 32, "propertyNames" = serde_json::json!({"pattern":"^RSS_PARAM_[A-Za-z0-9_]*$","maxLength":128}), "additionalProperties" = serde_json::json!({"type":"string","maxLength":4096,"pattern":"^[^\\u0000]*$"})))]
     pub environment: BTreeMap<String, String>,
     /// Wall-time ceiling.
+    #[schemars(extend("minimum" = 1, "maximum" = 86400))]
     pub timeout_seconds: u32,
     /// Combined output ceiling.
+    #[schemars(extend("minimum" = 1, "maximum" = 1048576))]
     pub output_bytes: u32,
     /// Explicit return-code classification.
     pub exit_codes: SoftwareTaskExitCodes,
 }
 /// Script implementations only appear in declared Bundle entries or detectors.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SoftwareTaskInterpreter {
     /// PowerShell 7.
@@ -61,30 +67,33 @@ pub enum SoftwareTaskInterpreter {
     Bash,
 }
 /// Approved bounded script, with a declared immutable entry.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SoftwareTaskScript {
     /// Finite interpreter.
     pub interpreter: SoftwareTaskInterpreter,
     /// Artifact key or Bundle member.
+    #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
     pub entry: String,
     /// Literal bounded invocation.
     pub invocation: SoftwareTaskInvocation,
 }
 /// Native removal executes an explicitly approved artifact, never a discovered path.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftwareTaskRemoval {
     /// Artifact key of the approved removal installer.
+    #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
     pub installer: String,
     /// Removal-specific literal parameters and return codes.
     pub invocation: SoftwareTaskInvocation,
 }
 /// Native installer material shared only where its values have identical meaning.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SoftwareTaskNative {
     /// Installer artifact key.
+    #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
     pub installer: String,
     /// Actual installation scope.
     pub scope: SoftwareTaskScope,
@@ -96,15 +105,20 @@ pub struct SoftwareTaskNative {
     pub upgrade: SoftwareTaskUpgrade,
     /// Absent means removal is unsupported, never guessed.
     #[serde(deserialize_with = "super::required_option")]
+    #[schemars(
+        required,
+        schema_with = "crate::self_service::nullable_schema::<SoftwareTaskRemoval>"
+    )]
     pub uninstall: Option<SoftwareTaskRemoval>,
     /// Independent observation of effect.
     pub detect: SoftwareTaskDetection,
 }
 /// Complete offline EXE layout, including companion payload files.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SoftwareTaskExe {
     /// Approved EXE installer key.
+    #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
     pub installer: String,
     /// Explicit system/user installation scope.
     pub scope: SoftwareTaskScope,
@@ -116,17 +130,23 @@ pub struct SoftwareTaskExe {
     pub upgrade: SoftwareTaskUpgrade,
     /// Explicit removal installer and invocation.
     #[serde(deserialize_with = "super::required_option")]
+    #[schemars(
+        required,
+        schema_with = "crate::self_service::nullable_schema::<SoftwareTaskRemoval>"
+    )]
     pub uninstall: Option<SoftwareTaskRemoval>,
     /// Staging relative path to artifact key; no runtime downloads are authorized.
+    #[schemars(extend("maxProperties" = 64, "additionalProperties" = serde_json::json!({"type":"string","minLength":1,"maxLength":1024,"pattern":"^[^\\p{Cc}]*$"})))]
     pub layout: BTreeMap<String, String>,
     /// Independent identity/version detector.
     pub detect: SoftwareTaskDetection,
 }
 /// RSS ZIP with approved finite script entries.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftwareTaskBundleBehavior {
     /// ZIP artifact key.
+    #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
     pub archive: String,
     /// Exact complete manifest.
     pub manifest: SoftwareTaskBundle,
@@ -134,25 +154,33 @@ pub struct SoftwareTaskBundleBehavior {
     pub install: SoftwareTaskScript,
     /// Frozen removal entry, when supported.
     #[serde(deserialize_with = "super::required_option")]
+    #[schemars(
+        required,
+        schema_with = "crate::self_service::nullable_schema::<SoftwareTaskScript>"
+    )]
     pub uninstall: Option<SoftwareTaskScript>,
     /// Independent effect observation.
     pub detect: SoftwareTaskDetection,
 }
 /// Exact application identity retained independently of image identity.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SoftwareTaskMacApplication {
     /// Exact payload relative path within the selected image volume.
+    #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
     pub path: String,
     /// Bundle identifier.
+    #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
     pub bundle_id: String,
     /// Exact bundle version.
+    #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
     pub version: String,
     /// Exact .app basename in the selected Applications directory.
+    #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
     pub target_name: String,
 }
 /// DMG inner payload; no first-candidate discovery or automatic scripts.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -170,25 +198,34 @@ pub enum SoftwareTaskDmgPayload {
     /// Select one PKG and reuse PackageInstaller semantics.
     ContainedPkg {
         /// Exact image-relative PKG path.
+        #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
         path: String,
         /// Full inner PKG byte length.
+        #[schemars(extend("minimum" = 0, "maximum" = 1099511627776u64))]
         length: u64,
         /// Inner PKG content digest.
         sha256: [u8; 32],
         /// Exact receipt identity.
+        #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
         receipt: String,
         /// Explicit bounded removal PKG artifact, never receipt-forget.
         #[serde(deserialize_with = "super::required_option")]
+        #[schemars(
+            required,
+            schema_with = "crate::self_service::nullable_schema::<SoftwareTaskRemoval>"
+        )]
         uninstall: Option<SoftwareTaskRemoval>,
     },
 }
 /// One selected volume and payload in an immutable disk image.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SoftwareTaskDmg {
     /// Image artifact key.
+    #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
     pub image: String,
     /// Exact selected volume label; ambiguous multi-volume images are unsupported.
+    #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
     pub volume: String,
     /// System or target user's Applications directory.
     pub scope: SoftwareTaskScope,
@@ -200,7 +237,7 @@ pub struct SoftwareTaskDmg {
     pub payload: SoftwareTaskDmgPayload,
 }
 /// MSIX material architecture, distinct from the device processor architecture.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SoftwareTaskMsixArchitecture {
     /// Native x64 application or resource material.
@@ -222,52 +259,60 @@ impl SoftwareTaskMsixArchitecture {
     }
 }
 /// MSIX identity uses Windows' own version and Publisher semantics.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SoftwareTaskMsixIdentity {
     /// Manifest Name.
+    #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
     pub name: String,
     /// Exact manifest Publisher DN; not a generic display publisher.
+    #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
     pub publisher: String,
     /// Exact four-part package version.
     pub version: [u16; 4],
     /// Selected processor architecture.
     pub architecture: SoftwareTaskMsixArchitecture,
     /// Exact resource identity; empty denotes the application package.
+    #[schemars(extend("minLength" = 0, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
     pub resource_id: String,
 }
 /// Frozen .msixbundle member and its complete bytes.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftwareTaskMsixMember {
     /// Exact relative container member path.
+    #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
     pub path: String,
     /// Exact package identity.
     pub identity: SoftwareTaskMsixIdentity,
     /// Member byte length.
+    #[schemars(extend("minimum" = 0, "maximum" = 1099511627776u64))]
     pub length: u64,
     /// Member digest.
     pub sha256: [u8; 32],
 }
 /// One MSIX or a precisely selected application/resource bundle member set.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SoftwareTaskMsixContainer {
     /// Single application package.
     Package {
         /// Artifact key.
+        #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
         installer: String,
     },
     /// One application member and explicit applicable resources.
     Bundle {
         /// Bundle artifact key.
+        #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
         installer: String,
         /// Precisely selected members, including one application.
+        #[schemars(extend("maxItems" = 64))]
         members: Vec<SoftwareTaskMsixMember>,
     },
 }
 /// Approved target selector; actual user identity is frozen into a device task.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SoftwareTaskUser {
     /// Only a unique interactive user; missing/multiple sessions block execution.
@@ -275,11 +320,12 @@ pub enum SoftwareTaskUser {
     /// One exact local Windows SID or macOS uid, rechecked by the Agent.
     Exact {
         /// TaskPlatform-local stable identity.
+        #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
         identity: String,
     },
 }
 /// Registration and provisioning are different effects, including on removal.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SoftwareTaskMsixDeployment {
     /// Install/register and remove for one exact user.
@@ -291,7 +337,7 @@ pub enum SoftwareTaskMsixDeployment {
     DeviceProvisioning,
 }
 /// Complete MSIX execution prerequisites and precise package identities.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SoftwareTaskMsix {
     /// Frozen package/container bytes.
@@ -299,6 +345,7 @@ pub struct SoftwareTaskMsix {
     /// Expected application identity.
     pub identity: SoftwareTaskMsixIdentity,
     /// Exact installed/provisioned dependency identities; matched to catalog dependencies.
+    #[schemars(extend("maxItems" = 64))]
     pub dependencies: Vec<SoftwareTaskMsixIdentity>,
     /// Windows package target effect.
     pub deployment: SoftwareTaskMsixDeployment,
@@ -316,7 +363,7 @@ pub struct SoftwareTaskMsix {
     pub upgrade: SoftwareTaskUpgrade,
 }
 /// Independent finite detector; an exit code is never a detector.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -327,15 +374,19 @@ pub enum SoftwareTaskDetection {
     /// One exact MSI product and version.
     MsiProduct {
         /// Canonical braced product GUID.
+        #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
         product_code: String,
         /// Exact observed version.
+        #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
         version: String,
     },
     /// Exact installer receipt and version; deleting it does not prove removal.
     PkgReceipt {
         /// Receipt identifier.
+        #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
         receipt: String,
         /// Exact receipt version.
+        #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
         version: String,
     },
     /// One literal registry value in the declared scope.
@@ -343,10 +394,13 @@ pub enum SoftwareTaskDetection {
         /// Native hive scope.
         scope: SoftwareTaskScope,
         /// Relative registry key, never an uninstall command.
+        #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
         key: String,
         /// Exact value name.
+        #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
         value: String,
         /// Expected ecosystem version.
+        #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
         version: String,
     },
     /// One approved protected file and its expected version/hash.
@@ -354,8 +408,10 @@ pub enum SoftwareTaskDetection {
         /// Scope of the protected target.
         scope: SoftwareTaskScope,
         /// Exact target path under the controlled install scope.
+        #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
         path: String,
         /// Expected version.
+        #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
         version: String,
         /// Expected complete file digest.
         sha256: [u8; 32],
@@ -367,7 +423,7 @@ pub enum SoftwareTaskDetection {
     },
 }
 /// Single source of native dispatch and format-specific fields.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SoftwareTaskBehavior {
     /// Windows Installer.
@@ -448,18 +504,20 @@ impl SoftwareTaskBehavior {
 }
 
 /// Signature checks are opt-in and bound to complete approved material.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SoftwareTaskSignature {
     /// Runtime artifact key to which the check applies.
+    #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
     pub artifact: String,
     /// Required platform trust mechanism.
     pub mechanism: SoftwareTaskSignatureMechanism,
     /// Exact Publisher/Team ID policy value.
+    #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
     pub publisher: String,
 }
 /// Platform signature requirement; never an automatic enterprise approval.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SoftwareTaskSignatureMechanism {
     /// Windows Authenticode policy.

@@ -2,17 +2,19 @@
 use crate::runtime::{TaskPlatform, WireError};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 /// Complete current native execution environment reported by this registration.
 pub struct SoftwareExecutionContext {
     /// Strictly increasing local context generation; retries retain the same value.
+    #[schemars(extend("minimum" = 1, "maximum" = 9223372036854775807u64))]
     pub revision: u64,
     /// Current native Windows sideload policy.
     pub msix_sideload: bool,
     /// Current native API support for explicitly approved unsigned packages.
     pub msix_unsigned: bool,
     /// Complete numeric OS version, not an inferred product/platform string.
+    #[schemars(schema_with = "crate::runtime::nonzero_digest_schema")]
     pub os_version: [u16; 4],
     /// Whether the native system broker is available in this Agent installation.
     pub system_broker: bool,
@@ -20,11 +22,16 @@ pub struct SoftwareExecutionContext {
     pub user_helper: bool,
     /// Exact live interactive session, when one exists.
     #[serde(deserialize_with = "super::required_option")]
+    #[schemars(
+        required,
+        schema_with = "crate::self_service::nullable_schema::<SoftwareInteractiveUser>"
+    )]
     pub interactive_user: Option<SoftwareInteractiveUser>,
     /// Source-scoped read credential references actually available locally.
+    #[schemars(extend("maxItems" = 16, "uniqueItems" = true))]
     pub source_credentials: Vec<SoftwareReadCredential>,
 }
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 /// One concrete live OS session.
 pub struct SoftwareInteractiveUser {
@@ -32,11 +39,12 @@ pub struct SoftwareInteractiveUser {
     pub identity: String,
     /// Changes on logoff/login; identical account names cannot reuse a previous session.
     #[serde(with = "crate::runtime::strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub session_id: Uuid,
     /// Privilege needed by the exact native profile, not a generic authorization grant.
     pub administrator: bool,
 }
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 /// Availability of a particular source read credential in the local Agent.
 pub struct SoftwareReadCredential {
@@ -107,10 +115,11 @@ pub enum SoftwareExecutionTarget {
     /// One exact live interactive OS account and login generation.
     User {
         /// Exact SID/UID.
+        #[schemars(extend("minLength" = 1, "maxLength" = 184, "pattern" = "^[^\\x00-\\x1f\\x7f]+$"))]
         identity: String,
         /// Exact login generation.
         #[serde(with = "crate::runtime::strict_uuid")]
-        #[schemars(with = "Uuid")]
+        #[schemars(schema_with = "crate::runtime::uuid_schema")]
         session_id: Uuid,
     },
 }

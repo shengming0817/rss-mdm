@@ -1,23 +1,34 @@
 {
+  "$defs": {
+    "Secret": {
+      "description": "Canonical 256-bit base64url secret. Debug output is always redacted.",
+      "maxLength": 43,
+      "minLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{43}$",
+      "type": "string"
+    }
+  },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/agent/enroll/v1/RenewalStatusRequest",
-  "type": "object",
   "additionalProperties": false,
+  "description": "Find only an already committed renewal grant after its response was lost.",
   "properties": {
-    "wireVersion": {
-      "const": 1
-    },
     "operationId": {
-      "type": "string",
+      "description": "Original renewal grant operation; querying never creates a grant.",
       "format": "uuid",
-      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
       "not": {
         "const": "00000000-0000-0000-0000-000000000000"
-      }
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
     },
     "secret": {
-      "type": "string",
+      "$ref": "#/$defs/Secret",
+      "description": "Original protected bootstrap secret, independent of the old mTLS identity.",
       "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+    },
+    "wireVersion": {
+      "const": 1,
+      "description": "Enrollment API version."
     }
   },
   "required": [
@@ -25,5 +36,7 @@
     "operationId",
     "secret"
   ],
-  "$defs": {}
+  "title": "RenewalStatusRequest",
+  "type": "object",
+  "$id": "https://rss.example/agent/enroll/v1/RenewalStatusRequest"
 }

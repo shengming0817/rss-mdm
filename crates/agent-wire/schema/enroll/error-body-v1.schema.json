@@ -1,49 +1,106 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/agent/enroll/v1/ErrorBody",
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "code",
-    "issuanceId"
-  ],
-  "properties": {
-    "code": {
-      "enum": [
-        "malformed_request",
-        "invalid_identity",
-        "permission_denied",
-        "grant_revoked",
-        "grant_expired",
-        "registration_limit",
-        "operation_conflict",
-        "issuance_unknown",
-        "activation_unknown",
-        "credential_revoked",
-        "certificate_expired",
-        "credential_retired",
-        "service_unavailable"
-      ]
-    },
-    "issuanceId": {
-      "anyOf": [
+  "$defs": {
+    "ErrorCode": {
+      "description": "Closed lifecycle errors, distinct from runtime payload errors.",
+      "oneOf": [
         {
-          "$ref": "#/$defs/nonNilUuid"
+          "const": "malformed_request",
+          "description": "Invalid or unsupported enrollment request.",
+          "type": "string"
         },
         {
-          "type": "null"
+          "const": "invalid_identity",
+          "description": "Bootstrap material or transport identity is invalid.",
+          "type": "string"
+        },
+        {
+          "const": "permission_denied",
+          "description": "Current authorization does not permit this operation.",
+          "type": "string"
+        },
+        {
+          "const": "grant_revoked",
+          "description": "Grant was explicitly revoked.",
+          "type": "string"
+        },
+        {
+          "const": "grant_expired",
+          "description": "Grant expired before activation.",
+          "type": "string"
+        },
+        {
+          "const": "registration_limit",
+          "description": "Per-user registration capacity is exhausted.",
+          "type": "string"
+        },
+        {
+          "const": "operation_conflict",
+          "description": "The same operation was reused for different content/key.",
+          "type": "string"
+        },
+        {
+          "const": "issuance_unknown",
+          "description": "Original CA signing result is unknown.",
+          "type": "string"
+        },
+        {
+          "const": "activation_unknown",
+          "description": "Activation transaction settlement is unknown.",
+          "type": "string"
+        },
+        {
+          "const": "credential_revoked",
+          "description": "Runtime registration or credential is revoked.",
+          "type": "string"
+        },
+        {
+          "const": "certificate_expired",
+          "description": "Certificate expired.",
+          "type": "string"
+        },
+        {
+          "const": "credential_retired",
+          "description": "Credential was retired by a later activation.",
+          "type": "string"
+        },
+        {
+          "const": "service_unavailable",
+          "description": "Required persistence, audit or CA is unavailable.",
+          "type": "string"
         }
       ]
     }
   },
-  "$defs": {
-    "nonNilUuid": {
-      "type": "string",
-      "format": "uuid",
-      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-      "not": {
-        "const": "00000000-0000-0000-0000-000000000000"
-      }
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Enrollment error projection, without internal diagnostic values.",
+  "properties": {
+    "code": {
+      "$ref": "#/$defs/ErrorCode",
+      "description": "Closed error category."
+    },
+    "issuanceId": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Original signing attempt when a CA result is unknown."
     }
-  }
+  },
+  "required": [
+    "code",
+    "issuanceId"
+  ],
+  "title": "ErrorBody",
+  "type": "object",
+  "$id": "https://rss.example/agent/enroll/v1/ErrorBody"
 }

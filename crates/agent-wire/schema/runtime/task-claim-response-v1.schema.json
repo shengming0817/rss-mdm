@@ -1,2988 +1,558 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/task-claim-response.schema.json",
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "wireVersion",
-    "task",
-    "cancellations"
-  ],
-  "properties": {
-    "wireVersion": {
-      "const": 1
-    },
-    "task": {
+  "$defs": {
+    "EnrollmentEntry": {
+      "description": "Platform-owned enrollment entry; opening it never proves enrollment completed.",
       "oneOf": [
         {
-          "type": "null"
+          "additionalProperties": false,
+          "description": "Open Windows' standard device-enrollment UI for this HTTPS discovery authority.",
+          "properties": {
+            "kind": {
+              "const": "windows",
+              "type": "string"
+            },
+            "server": {
+              "description": "Organization's discovery server.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "server"
+          ],
+          "type": "object"
         },
         {
-          "type": "object",
           "additionalProperties": false,
-          "required": [
-            "payload",
-            "keyId",
-            "signature"
-          ],
+          "description": "Open the organization's HTTPS profile enrollment page; user/system approval remains required.",
           "properties": {
-            "payload": {
-              "oneOf": [
-                {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": [
-                    "wireVersion",
-                    "tenantId",
-                    "deviceId",
-                    "registrationId",
-                    "generation",
-                    "taskId",
-                    "attemptId",
-                    "permit",
-                    "expiresAt",
-                    "resourceDigest",
-                    "content",
-                    "profile",
-                    "runAs",
-                    "arguments",
-                    "environment",
-                    "timeoutSeconds",
-                    "outputBytes",
-                    "maxRows",
-                    "platform",
-                    "architecture",
-                    "resource",
-                    "authorization",
-                    "parameters",
-                    "deadline",
-                    "executionTarget"
-                  ],
-                  "properties": {
-                    "wireVersion": {
-                      "const": 1
-                    },
-                    "tenantId": {
-                      "type": "string",
-                      "format": "uuid",
-                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                      "not": {
-                        "const": "00000000-0000-0000-0000-000000000000"
-                      }
-                    },
-                    "deviceId": {
-                      "type": "string",
-                      "minLength": 1,
-                      "maxLength": 1024,
-                      "pattern": "^[^\\p{Cc}]+$"
-                    },
-                    "registrationId": {
-                      "type": "string",
-                      "format": "uuid",
-                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                      "not": {
-                        "const": "00000000-0000-0000-0000-000000000000"
-                      }
-                    },
-                    "generation": {
-                      "type": "integer",
-                      "minimum": 1,
-                      "maximum": 9223372036854775807
-                    },
-                    "taskId": {
-                      "type": "string",
-                      "format": "uuid",
-                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                      "not": {
-                        "const": "00000000-0000-0000-0000-000000000000"
-                      }
-                    },
-                    "attemptId": {
-                      "type": "string",
-                      "format": "uuid",
-                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                      "not": {
-                        "const": "00000000-0000-0000-0000-000000000000"
-                      }
-                    },
-                    "permit": {
-                      "enum": [
-                        "offer",
-                        "start"
-                      ]
-                    },
-                    "expiresAt": {
-                      "type": "integer",
-                      "minimum": 0,
-                      "maximum": 9223372036854775807
-                    },
-                    "resourceDigest": {
-                      "type": "array",
-                      "minItems": 32,
-                      "maxItems": 32,
-                      "items": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 255
-                      }
-                    },
-                    "content": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "required": [
-                        "length",
-                        "sha256"
-                      ],
-                      "properties": {
-                        "length": {
-                          "type": "integer",
-                          "minimum": 1,
-                          "maximum": 16777216
-                        },
-                        "sha256": {
-                          "type": "array",
-                          "minItems": 32,
-                          "maxItems": 32,
-                          "items": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 255
-                          }
-                        }
-                      }
-                    },
-                    "profile": {
-                      "enum": [
-                        "power_shell7",
-                        "posix_sh",
-                        "bash",
-                        "osquery"
-                      ]
-                    },
-                    "runAs": {
-                      "enum": [
-                        "system",
-                        "logged_in_user"
-                      ]
-                    },
-                    "arguments": {
-                      "type": "array",
-                      "maxItems": 64,
-                      "items": {
-                        "type": "string",
-                        "minLength": 0,
-                        "maxLength": 65536,
-                        "pattern": "^[^\\u0000]*$"
-                      }
-                    },
-                    "environment": {
-                      "type": "object",
-                      "maxProperties": 32,
-                      "propertyNames": {
-                        "type": "string",
-                        "minLength": 11,
-                        "maxLength": 64,
-                        "pattern": "^RSS_PARAM_[A-Za-z0-9_]+$"
-                      },
-                      "additionalProperties": {
-                        "type": "string",
-                        "minLength": 0,
-                        "maxLength": 65536,
-                        "pattern": "^[^\\u0000]*$"
-                      }
-                    },
-                    "timeoutSeconds": {
-                      "type": "integer",
-                      "minimum": 1,
-                      "maximum": 3600
-                    },
-                    "outputBytes": {
-                      "type": "integer",
-                      "minimum": 1,
-                      "maximum": 16777216
-                    },
-                    "maxRows": {
-                      "type": "integer",
-                      "minimum": 1,
-                      "maximum": 65535
-                    },
-                    "platform": {
-                      "enum": [
-                        "windows",
-                        "macos"
-                      ]
-                    },
-                    "architecture": {
-                      "enum": [
-                        "x86_64",
-                        "aarch64"
-                      ]
-                    },
-                    "sqlParameters": {
-                      "type": [
-                        "object",
-                        "null"
-                      ],
-                      "maxProperties": 32,
-                      "propertyNames": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 64,
-                        "pattern": "^[a-zA-Z0-9_]+$"
-                      },
-                      "additionalProperties": {
-                        "oneOf": [
-                          {
-                            "type": "string",
-                            "maxLength": 4096,
-                            "pattern": "^[^\\u0000]*$"
-                          },
-                          {
-                            "type": "boolean"
-                          },
-                          {
-                            "type": "integer",
-                            "minimum": -9223372036854775808,
-                            "maximum": 9223372036854775807
-                          }
-                        ]
-                      }
-                    },
-                    "resource": {
-                      "$ref": "#/$defs/TaskResource"
-                    },
-                    "authorization": {
-                      "$ref": "#/$defs/TaskAuthorization"
-                    },
-                    "parameters": {
-                      "type": "object",
-                      "maxProperties": 32,
-                      "propertyNames": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 64,
-                        "pattern": "^[A-Za-z0-9_]+$"
-                      },
-                      "additionalProperties": {
-                        "anyOf": [
-                          {
-                            "type": "string",
-                            "pattern": "^[^\\u0000]*$"
-                          },
-                          {
-                            "type": "boolean"
-                          },
-                          {
-                            "type": "integer",
-                            "minimum": -9223372036854775808,
-                            "maximum": 9223372036854775807
-                          }
-                        ]
-                      }
-                    },
-                    "deadline": {
-                      "type": "integer",
-                      "minimum": 0,
-                      "maximum": 9223372036854775807
-                    },
-                    "executionTarget": {
-                      "$ref": "#/$defs/SoftwareExecutionTarget"
-                    }
-                  },
-                  "allOf": [
-                    {
-                      "if": {
-                        "properties": {
-                          "profile": {
-                            "const": "osquery"
-                          }
-                        }
-                      },
-                      "then": {
-                        "required": [
-                          "sqlParameters"
-                        ],
-                        "properties": {
-                          "arguments": {
-                            "maxItems": 0
-                          },
-                          "environment": {
-                            "maxProperties": 0
-                          },
-                          "runAs": {
-                            "const": "system"
-                          },
-                          "sqlParameters": {
-                            "type": "object"
-                          }
-                        }
-                      },
-                      "else": {
-                        "properties": {
-                          "sqlParameters": {
-                            "type": "null"
-                          }
-                        }
-                      }
-                    }
-                  ]
-                },
-                {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": [
-                    "wireVersion",
-                    "tenantId",
-                    "deviceId",
-                    "registrationId",
-                    "generation",
-                    "taskId",
-                    "attemptId",
-                    "permit",
-                    "expiresAt",
-                    "definitionDigest",
-                    "intent",
-                    "platform",
-                    "architecture",
-                    "startMode",
-                    "steps",
-                    "executionContext",
-                    "authorization"
-                  ],
-                  "properties": {
-                    "wireVersion": {
-                      "const": 1
-                    },
-                    "tenantId": {
-                      "type": "string",
-                      "format": "uuid",
-                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                      "not": {
-                        "const": "00000000-0000-0000-0000-000000000000"
-                      }
-                    },
-                    "deviceId": {
-                      "type": "string",
-                      "minLength": 1,
-                      "maxLength": 1024,
-                      "pattern": "^[^\\p{Cc}]+$"
-                    },
-                    "registrationId": {
-                      "type": "string",
-                      "format": "uuid",
-                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                      "not": {
-                        "const": "00000000-0000-0000-0000-000000000000"
-                      }
-                    },
-                    "generation": {
-                      "type": "integer",
-                      "minimum": 1,
-                      "maximum": 9223372036854775807
-                    },
-                    "taskId": {
-                      "type": "string",
-                      "format": "uuid",
-                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                      "not": {
-                        "const": "00000000-0000-0000-0000-000000000000"
-                      }
-                    },
-                    "attemptId": {
-                      "type": "string",
-                      "format": "uuid",
-                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                      "not": {
-                        "const": "00000000-0000-0000-0000-000000000000"
-                      }
-                    },
-                    "permit": {
-                      "enum": [
-                        "offer",
-                        "start"
-                      ]
-                    },
-                    "expiresAt": {
-                      "type": "integer",
-                      "minimum": 0,
-                      "maximum": 9223372036854775807
-                    },
-                    "platform": {
-                      "enum": [
-                        "windows",
-                        "macos"
-                      ]
-                    },
-                    "architecture": {
-                      "enum": [
-                        "x86_64",
-                        "aarch64"
-                      ]
-                    },
-                    "definitionDigest": {
-                      "type": "array",
-                      "minItems": 32,
-                      "maxItems": 32,
-                      "items": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 255
-                      }
-                    },
-                    "intent": {
-                      "enum": [
-                        "install",
-                        "detect",
-                        "uninstall"
-                      ]
-                    },
-                    "startMode": {
-                      "enum": [
-                        "automatic",
-                        "user_initiated"
-                      ]
-                    },
-                    "steps": {
-                      "type": "array",
-                      "minItems": 1,
-                      "maxItems": 32,
-                      "items": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "required": [
-                          "action",
-                          "artifacts",
-                          "export",
-                          "target"
-                        ],
-                        "properties": {
-                          "action": {
-                            "$ref": "#/$defs/SoftwareTaskAction"
-                          },
-                          "artifacts": {
-                            "type": "array",
-                            "minItems": 1,
-                            "maxItems": 64,
-                            "items": {
-                              "type": "object",
-                              "additionalProperties": false,
-                              "required": [
-                                "key",
-                                "length",
-                                "sha256"
-                              ],
-                              "properties": {
-                                "key": {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 132,
-                                  "pattern": "^(?!\\.{1,2}(?:/|$))(?!.*\\/\\.{1,2}(?:/|$))[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
-                                },
-                                "length": {
-                                  "type": "integer",
-                                  "minimum": 1,
-                                  "maximum": 1099511627776
-                                },
-                                "sha256": {
-                                  "type": "array",
-                                  "minItems": 32,
-                                  "maxItems": 32,
-                                  "items": {
-                                    "type": "integer",
-                                    "minimum": 0,
-                                    "maximum": 255
-                                  }
-                                }
-                              }
-                            }
-                          },
-                          "target": {
-                            "$ref": "#/$defs/SoftwareExecutionTarget"
-                          },
-                          "export": {
-                            "$ref": "#/$defs/SoftwareTaskExport"
-                          }
-                        }
-                      }
-                    },
-                    "executionContext": {
-                      "$ref": "#/$defs/SoftwareExecutionContext"
-                    },
-                    "authorization": {
-                      "$ref": "#/$defs/TaskAuthorization"
-                    }
-                  }
-                },
-                {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": [
-                    "wireVersion",
-                    "tenantId",
-                    "deviceId",
-                    "registrationId",
-                    "generation",
-                    "taskId",
-                    "attemptId",
-                    "permit",
-                    "expiresAt",
-                    "platform",
-                    "architecture",
-                    "organization",
-                    "entry"
-                  ],
-                  "properties": {
-                    "wireVersion": {
-                      "const": 1
-                    },
-                    "tenantId": {
-                      "type": "string",
-                      "format": "uuid",
-                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                      "not": {
-                        "const": "00000000-0000-0000-0000-000000000000"
-                      }
-                    },
-                    "deviceId": {
-                      "type": "string",
-                      "minLength": 1,
-                      "maxLength": 256,
-                      "pattern": "^[^\\p{Cc}]+$"
-                    },
-                    "registrationId": {
-                      "type": "string",
-                      "format": "uuid",
-                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                      "not": {
-                        "const": "00000000-0000-0000-0000-000000000000"
-                      }
-                    },
-                    "generation": {
-                      "type": "integer",
-                      "minimum": 1,
-                      "maximum": 9223372036854775807
-                    },
-                    "taskId": {
-                      "type": "string",
-                      "format": "uuid",
-                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                      "not": {
-                        "const": "00000000-0000-0000-0000-000000000000"
-                      }
-                    },
-                    "attemptId": {
-                      "type": "string",
-                      "format": "uuid",
-                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                      "not": {
-                        "const": "00000000-0000-0000-0000-000000000000"
-                      }
-                    },
-                    "permit": {
-                      "enum": [
-                        "offer",
-                        "start"
-                      ]
-                    },
-                    "expiresAt": {
-                      "type": "integer",
-                      "minimum": 1,
-                      "maximum": 9223372036854775807
-                    },
-                    "platform": {
-                      "enum": [
-                        "windows",
-                        "macos"
-                      ]
-                    },
-                    "architecture": {
-                      "enum": [
-                        "x86_64",
-                        "aarch64"
-                      ]
-                    },
-                    "organization": {
-                      "type": "string",
-                      "format": "uuid",
-                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                      "not": {
-                        "const": "00000000-0000-0000-0000-000000000000"
-                      }
-                    },
-                    "entry": {
-                      "oneOf": [
-                        {
-                          "type": "object",
-                          "additionalProperties": false,
-                          "required": [
-                            "kind",
-                            "server"
-                          ],
-                          "properties": {
-                            "kind": {
-                              "const": "windows"
-                            },
-                            "server": {
-                              "type": "string",
-                              "maxLength": 2048,
-                              "pattern": "^https://[^/@?#\\s]+/?$"
-                            }
-                          }
-                        },
-                        {
-                          "type": "object",
-                          "additionalProperties": false,
-                          "required": [
-                            "kind",
-                            "url"
-                          ],
-                          "properties": {
-                            "kind": {
-                              "const": "macos"
-                            },
-                            "url": {
-                              "type": "string",
-                              "maxLength": 2048,
-                              "pattern": "^https://[^/@?#\\s]+(?:/[^#\\s]*)?$"
-                            }
-                          }
-                        }
-                      ]
-                    }
-                  }
-                }
-              ]
+            "kind": {
+              "const": "macos",
+              "type": "string"
             },
-            "keyId": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 128
-            },
-            "signature": {
-              "type": "string",
-              "pattern": "^[A-Za-z0-9_-]{85}[AQgw]$"
-            }
-          }
-        }
-      ]
-    },
-    "cancellations": {
-      "type": "array",
-      "maxItems": 128,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "taskId",
-          "attemptId"
-        ],
-        "properties": {
-          "taskId": {
-            "type": "string",
-            "format": "uuid",
-            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-            "not": {
-              "const": "00000000-0000-0000-0000-000000000000"
+            "url": {
+              "description": "Organization's managed enrollment entry.",
+              "type": "string"
             }
           },
-          "attemptId": {
-            "type": "string",
-            "format": "uuid",
-            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-            "not": {
-              "const": "00000000-0000-0000-0000-000000000000"
-            }
-          }
+          "required": [
+            "kind",
+            "url"
+          ],
+          "type": "object"
         }
-      }
-    }
-  },
-  "$defs": {
-    "SoftwareTaskScope": {
-      "enum": [
-        "system",
-        "user"
       ]
     },
-    "SoftwareTaskUpgrade": {
-      "enum": [
-        "in_place",
-        "uninstall_then_install",
-        "deny"
-      ]
-    },
-    "SoftwareTaskExitCodes": {
-      "type": "object",
+    "EnrollmentTaskSpec": {
       "additionalProperties": false,
-      "required": [
-        "success",
-        "reboot"
-      ],
+      "description": "Signed request to open a standard MDM enrollment entry with normal OS approval.",
       "properties": {
-        "success": {
-          "type": "array",
-          "uniqueItems": true,
-          "maxItems": 32,
-          "minItems": 1,
-          "items": {
-            "type": "integer",
-            "minimum": -2147483648,
-            "maximum": 2147483647
-          }
+        "architecture": {
+          "$ref": "#/$defs/TaskArchitecture",
+          "description": "Actual local processor architecture."
         },
-        "reboot": {
-          "type": "array",
-          "uniqueItems": true,
-          "maxItems": 32,
-          "minItems": 0,
-          "items": {
-            "type": "integer",
-            "minimum": -2147483648,
-            "maximum": 2147483647
-          }
-        }
-      }
-    },
-    "SoftwareTaskInvocation": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "runAs",
-        "arguments",
-        "environment",
-        "timeoutSeconds",
-        "outputBytes",
-        "exitCodes"
-      ],
-      "properties": {
-        "runAs": {
-          "enum": [
-            "system",
-            "logged_in_user"
-          ]
-        },
-        "arguments": {
-          "type": "array",
-          "maxItems": 128,
-          "items": {
-            "type": "string",
-            "minLength": 0,
-            "maxLength": 4096,
-            "pattern": "^[^\\u0000]*$"
-          }
-        },
-        "environment": {
-          "type": "object",
-          "maxProperties": 32,
-          "additionalProperties": {
-            "type": "string",
-            "maxLength": 4096,
-            "pattern": "^[^\\u0000]*$"
+        "attemptId": {
+          "description": "Exact delivery attempt.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
           },
-          "propertyNames": {
-            "pattern": "^RSS_PARAM_[A-Za-z0-9_]*$",
-            "maxLength": 128
-          }
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
         },
-        "timeoutSeconds": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 86400
-        },
-        "outputBytes": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 1048576
-        },
-        "exitCodes": {
-          "$ref": "#/$defs/SoftwareTaskExitCodes"
-        }
-      }
-    },
-    "SoftwareTaskInterpreter": {
-      "enum": [
-        "power_shell7",
-        "posix_sh",
-        "bash"
-      ]
-    },
-    "SoftwareTaskScript": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "interpreter",
-        "entry",
-        "invocation"
-      ],
-      "properties": {
-        "interpreter": {
-          "$ref": "#/$defs/SoftwareTaskInterpreter"
+        "deviceId": {
+          "description": "Independent source Agent device.",
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}]+$",
+          "type": "string"
         },
         "entry": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 1024,
-          "pattern": "^[^\\p{Cc}]*$"
+          "$ref": "#/$defs/EnrollmentEntry",
+          "description": "Standard platform enrollment entry, never an executable or installation script."
         },
-        "invocation": {
-          "$ref": "#/$defs/SoftwareTaskInvocation"
-        }
-      }
-    },
-    "SoftwareTaskRemoval": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "installer",
-        "invocation"
-      ],
-      "properties": {
-        "installer": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 1024,
-          "pattern": "^[^\\p{Cc}]*$"
+        "expiresAt": {
+          "description": "Expiry of this signed permission.",
+          "format": "int64",
+          "maximum": 9223372036854775807,
+          "minimum": 1,
+          "type": "integer"
         },
-        "invocation": {
-          "$ref": "#/$defs/SoftwareTaskInvocation"
-        }
-      }
-    },
-    "SoftwareTaskNative": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "installer",
-        "scope",
-        "install",
-        "upgradeInvocation",
-        "upgrade",
-        "uninstall",
-        "detect"
-      ],
-      "properties": {
-        "installer": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 1024,
-          "pattern": "^[^\\p{Cc}]*$"
+        "generation": {
+          "description": "Current Agent generation.",
+          "format": "uint64",
+          "maximum": 9223372036854775807,
+          "minimum": 1,
+          "type": "integer"
         },
-        "scope": {
-          "$ref": "#/$defs/SoftwareTaskScope"
+        "organization": {
+          "description": "Target organization, fixed by server configuration and Policy publication.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
         },
-        "install": {
-          "$ref": "#/$defs/SoftwareTaskInvocation"
-        },
-        "upgradeInvocation": {
-          "$ref": "#/$defs/SoftwareTaskInvocation"
-        },
-        "upgrade": {
-          "$ref": "#/$defs/SoftwareTaskUpgrade"
-        },
-        "uninstall": {
-          "anyOf": [
-            {
-              "type": "null"
-            },
-            {
-              "$ref": "#/$defs/SoftwareTaskRemoval"
-            }
-          ]
-        },
-        "detect": {
-          "$ref": "#/$defs/SoftwareTaskDetection"
-        }
-      }
-    },
-    "SoftwareTaskExe": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "installer",
-        "scope",
-        "install",
-        "upgradeInvocation",
-        "upgrade",
-        "uninstall",
-        "layout",
-        "detect"
-      ],
-      "properties": {
-        "installer": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 1024,
-          "pattern": "^[^\\p{Cc}]*$"
-        },
-        "scope": {
-          "$ref": "#/$defs/SoftwareTaskScope"
-        },
-        "install": {
-          "$ref": "#/$defs/SoftwareTaskInvocation"
-        },
-        "upgradeInvocation": {
-          "$ref": "#/$defs/SoftwareTaskInvocation"
-        },
-        "upgrade": {
-          "$ref": "#/$defs/SoftwareTaskUpgrade"
-        },
-        "uninstall": {
-          "anyOf": [
-            {
-              "type": "null"
-            },
-            {
-              "$ref": "#/$defs/SoftwareTaskRemoval"
-            }
-          ]
-        },
-        "layout": {
-          "type": "object",
-          "maxProperties": 64,
-          "additionalProperties": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 1024,
-            "pattern": "^[^\\p{Cc}]*$"
-          }
-        },
-        "detect": {
-          "$ref": "#/$defs/SoftwareTaskDetection"
-        }
-      }
-    },
-    "SoftwareTaskBundleBehavior": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "archive",
-        "manifest",
-        "install",
-        "uninstall",
-        "detect"
-      ],
-      "properties": {
-        "archive": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 1024,
-          "pattern": "^[^\\p{Cc}]*$"
-        },
-        "manifest": {
-          "$ref": "#/$defs/SoftwareTaskBundle"
-        },
-        "install": {
-          "$ref": "#/$defs/SoftwareTaskScript"
-        },
-        "uninstall": {
-          "anyOf": [
-            {
-              "type": "null"
-            },
-            {
-              "$ref": "#/$defs/SoftwareTaskScript"
-            }
-          ]
-        },
-        "detect": {
-          "$ref": "#/$defs/SoftwareTaskDetection"
-        }
-      }
-    },
-    "SoftwareTaskMacApplication": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "path",
-        "bundleId",
-        "version",
-        "targetName"
-      ],
-      "properties": {
-        "path": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 1024,
-          "pattern": "^[^\\p{Cc}]*$"
-        },
-        "bundleId": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 1024,
-          "pattern": "^[^\\p{Cc}]*$"
-        },
-        "version": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 1024,
-          "pattern": "^[^\\p{Cc}]*$"
-        },
-        "targetName": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 1024,
-          "pattern": "^[^\\p{Cc}]*$"
-        }
-      }
-    },
-    "SoftwareTaskDmgPayload": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "application",
-            "uninstall"
-          ],
-          "properties": {
-            "kind": {
-              "const": "app_copy"
-            },
-            "application": {
-              "$ref": "#/$defs/SoftwareTaskMacApplication"
-            },
-            "uninstall": {
-              "type": "boolean"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "path",
-            "length",
-            "sha256",
-            "receipt",
-            "uninstall"
-          ],
-          "properties": {
-            "kind": {
-              "const": "contained_pkg"
-            },
-            "path": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\p{Cc}]*$"
-            },
-            "length": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 1099511627776
-            },
-            "sha256": {
-              "type": "array",
-              "minItems": 32,
-              "maxItems": 32,
-              "items": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 255
-              }
-            },
-            "receipt": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\p{Cc}]*$"
-            },
-            "uninstall": {
-              "anyOf": [
-                {
-                  "type": "null"
-                },
-                {
-                  "$ref": "#/$defs/SoftwareTaskRemoval"
-                }
-              ]
-            }
-          }
-        }
-      ]
-    },
-    "SoftwareTaskDmg": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "image",
-        "volume",
-        "scope",
-        "invocation",
-        "upgrade",
-        "payload"
-      ],
-      "properties": {
-        "image": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 1024,
-          "pattern": "^[^\\p{Cc}]*$"
-        },
-        "volume": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 1024,
-          "pattern": "^[^\\p{Cc}]*$"
-        },
-        "scope": {
-          "$ref": "#/$defs/SoftwareTaskScope"
-        },
-        "invocation": {
-          "$ref": "#/$defs/SoftwareTaskInvocation"
-        },
-        "upgrade": {
-          "$ref": "#/$defs/SoftwareTaskUpgrade"
-        },
-        "payload": {
-          "$ref": "#/$defs/SoftwareTaskDmgPayload"
-        }
-      }
-    },
-    "SoftwareTaskMsixIdentity": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "name",
-        "publisher",
-        "version",
-        "architecture",
-        "resourceId"
-      ],
-      "properties": {
-        "name": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 1024,
-          "pattern": "^[^\\p{Cc}]*$"
-        },
-        "publisher": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 1024,
-          "pattern": "^[^\\p{Cc}]*$"
-        },
-        "version": {
-          "type": "array",
-          "minItems": 4,
-          "maxItems": 4,
-          "items": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 65535
-          }
-        },
-        "architecture": {
-          "$ref": "#/$defs/SoftwareTaskMsixArchitecture"
-        },
-        "resourceId": {
-          "type": "string",
-          "minLength": 0,
-          "maxLength": 1024,
-          "pattern": "^[^\\p{Cc}]*$"
-        }
-      }
-    },
-    "SoftwareTaskMsixMember": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "path",
-        "identity",
-        "length",
-        "sha256"
-      ],
-      "properties": {
-        "path": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 1024,
-          "pattern": "^[^\\p{Cc}]*$"
-        },
-        "identity": {
-          "$ref": "#/$defs/SoftwareTaskMsixIdentity"
-        },
-        "length": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 1099511627776
-        },
-        "sha256": {
-          "type": "array",
-          "minItems": 32,
-          "maxItems": 32,
-          "items": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 255
-          }
-        }
-      }
-    },
-    "SoftwareTaskMsixContainer": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "installer"
-          ],
-          "properties": {
-            "kind": {
-              "const": "package"
-            },
-            "installer": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\p{Cc}]*$"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "installer",
-            "members"
-          ],
-          "properties": {
-            "kind": {
-              "const": "bundle"
-            },
-            "installer": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\p{Cc}]*$"
-            },
-            "members": {
-              "type": "array",
-              "maxItems": 64,
-              "items": {
-                "$ref": "#/$defs/SoftwareTaskMsixMember"
-              }
-            }
-          }
-        }
-      ]
-    },
-    "SoftwareTaskUser": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind"
-          ],
-          "properties": {
-            "kind": {
-              "const": "active_interactive"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "identity"
-          ],
-          "properties": {
-            "kind": {
-              "const": "exact"
-            },
-            "identity": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\p{Cc}]*$"
-            }
-          }
-        }
-      ]
-    },
-    "SoftwareTaskMsixDeployment": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "target"
-          ],
-          "properties": {
-            "kind": {
-              "const": "target_user_registration"
-            },
-            "target": {
-              "$ref": "#/$defs/SoftwareTaskUser"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind"
-          ],
-          "properties": {
-            "kind": {
-              "const": "device_provisioning"
-            }
-          }
-        }
-      ]
-    },
-    "SoftwareTaskMsix": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "container",
-        "identity",
-        "dependencies",
-        "deployment",
-        "minimumOs",
-        "requireSideload",
-        "allowUnsigned",
-        "uninstall",
-        "invocation",
-        "upgrade"
-      ],
-      "properties": {
-        "container": {
-          "$ref": "#/$defs/SoftwareTaskMsixContainer"
-        },
-        "identity": {
-          "$ref": "#/$defs/SoftwareTaskMsixIdentity"
-        },
-        "dependencies": {
-          "type": "array",
-          "maxItems": 64,
-          "items": {
-            "$ref": "#/$defs/SoftwareTaskMsixIdentity"
-          }
-        },
-        "deployment": {
-          "$ref": "#/$defs/SoftwareTaskMsixDeployment"
-        },
-        "minimumOs": {
-          "type": "array",
-          "minItems": 4,
-          "maxItems": 4,
-          "items": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 65535
-          }
-        },
-        "requireSideload": {
-          "type": "boolean"
-        },
-        "allowUnsigned": {
-          "type": "boolean"
-        },
-        "uninstall": {
-          "type": "boolean"
-        },
-        "invocation": {
-          "$ref": "#/$defs/SoftwareTaskInvocation"
-        },
-        "upgrade": {
-          "$ref": "#/$defs/SoftwareTaskUpgrade"
-        }
-      }
-    },
-    "SoftwareTaskDetection": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "productCode",
-            "version"
-          ],
-          "properties": {
-            "kind": {
-              "const": "msi_product"
-            },
-            "productCode": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\p{Cc}]*$"
-            },
-            "version": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\p{Cc}]*$"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "receipt",
-            "version"
-          ],
-          "properties": {
-            "kind": {
-              "const": "pkg_receipt"
-            },
-            "receipt": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\p{Cc}]*$"
-            },
-            "version": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\p{Cc}]*$"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "scope",
-            "key",
-            "value",
-            "version"
-          ],
-          "properties": {
-            "kind": {
-              "const": "registry"
-            },
-            "scope": {
-              "$ref": "#/$defs/SoftwareTaskScope"
-            },
-            "key": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\p{Cc}]*$"
-            },
-            "value": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\p{Cc}]*$"
-            },
-            "version": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\p{Cc}]*$"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "scope",
-            "path",
-            "version",
-            "sha256"
-          ],
-          "properties": {
-            "kind": {
-              "const": "file"
-            },
-            "scope": {
-              "$ref": "#/$defs/SoftwareTaskScope"
-            },
-            "path": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\p{Cc}]*$"
-            },
-            "version": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\p{Cc}]*$"
-            },
-            "sha256": {
-              "type": "array",
-              "minItems": 32,
-              "maxItems": 32,
-              "items": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 255
-              }
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "command"
-          ],
-          "properties": {
-            "kind": {
-              "const": "script"
-            },
-            "command": {
-              "$ref": "#/$defs/SoftwareTaskScript"
-            }
-          }
-        }
-      ]
-    },
-    "SoftwareTaskBehavior": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "installer",
-            "scope",
-            "install",
-            "upgradeInvocation",
-            "upgrade",
-            "uninstall",
-            "detect"
-          ],
-          "properties": {
-            "kind": {
-              "const": "msi"
-            },
-            "installer": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\p{Cc}]*$"
-            },
-            "scope": {
-              "$ref": "#/$defs/SoftwareTaskScope"
-            },
-            "install": {
-              "$ref": "#/$defs/SoftwareTaskInvocation"
-            },
-            "upgradeInvocation": {
-              "$ref": "#/$defs/SoftwareTaskInvocation"
-            },
-            "upgrade": {
-              "$ref": "#/$defs/SoftwareTaskUpgrade"
-            },
-            "uninstall": {
-              "anyOf": [
-                {
-                  "type": "null"
-                },
-                {
-                  "$ref": "#/$defs/SoftwareTaskRemoval"
-                }
-              ]
-            },
-            "detect": {
-              "$ref": "#/$defs/SoftwareTaskDetection"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "installer",
-            "scope",
-            "install",
-            "upgradeInvocation",
-            "upgrade",
-            "uninstall",
-            "detect"
-          ],
-          "properties": {
-            "kind": {
-              "const": "pkg"
-            },
-            "installer": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\p{Cc}]*$"
-            },
-            "scope": {
-              "$ref": "#/$defs/SoftwareTaskScope"
-            },
-            "install": {
-              "$ref": "#/$defs/SoftwareTaskInvocation"
-            },
-            "upgradeInvocation": {
-              "$ref": "#/$defs/SoftwareTaskInvocation"
-            },
-            "upgrade": {
-              "$ref": "#/$defs/SoftwareTaskUpgrade"
-            },
-            "uninstall": {
-              "anyOf": [
-                {
-                  "type": "null"
-                },
-                {
-                  "$ref": "#/$defs/SoftwareTaskRemoval"
-                }
-              ]
-            },
-            "detect": {
-              "$ref": "#/$defs/SoftwareTaskDetection"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "archive",
-            "manifest",
-            "install",
-            "uninstall",
-            "detect"
-          ],
-          "properties": {
-            "kind": {
-              "const": "bundle"
-            },
-            "archive": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\p{Cc}]*$"
-            },
-            "manifest": {
-              "$ref": "#/$defs/SoftwareTaskBundle"
-            },
-            "install": {
-              "$ref": "#/$defs/SoftwareTaskScript"
-            },
-            "uninstall": {
-              "anyOf": [
-                {
-                  "type": "null"
-                },
-                {
-                  "$ref": "#/$defs/SoftwareTaskScript"
-                }
-              ]
-            },
-            "detect": {
-              "$ref": "#/$defs/SoftwareTaskDetection"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "installer",
-            "scope",
-            "install",
-            "upgradeInvocation",
-            "upgrade",
-            "uninstall",
-            "detect"
-          ],
-          "properties": {
-            "kind": {
-              "const": "winget"
-            },
-            "installer": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\p{Cc}]*$"
-            },
-            "scope": {
-              "$ref": "#/$defs/SoftwareTaskScope"
-            },
-            "install": {
-              "$ref": "#/$defs/SoftwareTaskInvocation"
-            },
-            "upgradeInvocation": {
-              "$ref": "#/$defs/SoftwareTaskInvocation"
-            },
-            "upgrade": {
-              "$ref": "#/$defs/SoftwareTaskUpgrade"
-            },
-            "uninstall": {
-              "anyOf": [
-                {
-                  "type": "null"
-                },
-                {
-                  "$ref": "#/$defs/SoftwareTaskRemoval"
-                }
-              ]
-            },
-            "detect": {
-              "$ref": "#/$defs/SoftwareTaskDetection"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "installer",
-            "scope",
-            "install",
-            "upgradeInvocation",
-            "upgrade",
-            "uninstall",
-            "detect"
-          ],
-          "properties": {
-            "kind": {
-              "const": "brew"
-            },
-            "installer": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\p{Cc}]*$"
-            },
-            "scope": {
-              "$ref": "#/$defs/SoftwareTaskScope"
-            },
-            "install": {
-              "$ref": "#/$defs/SoftwareTaskInvocation"
-            },
-            "upgradeInvocation": {
-              "$ref": "#/$defs/SoftwareTaskInvocation"
-            },
-            "upgrade": {
-              "$ref": "#/$defs/SoftwareTaskUpgrade"
-            },
-            "uninstall": {
-              "anyOf": [
-                {
-                  "type": "null"
-                },
-                {
-                  "$ref": "#/$defs/SoftwareTaskRemoval"
-                }
-              ]
-            },
-            "detect": {
-              "$ref": "#/$defs/SoftwareTaskDetection"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "installer",
-            "scope",
-            "install",
-            "upgradeInvocation",
-            "upgrade",
-            "uninstall",
-            "layout",
-            "detect"
-          ],
-          "properties": {
-            "kind": {
-              "const": "exe"
-            },
-            "installer": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\p{Cc}]*$"
-            },
-            "scope": {
-              "$ref": "#/$defs/SoftwareTaskScope"
-            },
-            "install": {
-              "$ref": "#/$defs/SoftwareTaskInvocation"
-            },
-            "upgradeInvocation": {
-              "$ref": "#/$defs/SoftwareTaskInvocation"
-            },
-            "upgrade": {
-              "$ref": "#/$defs/SoftwareTaskUpgrade"
-            },
-            "uninstall": {
-              "anyOf": [
-                {
-                  "type": "null"
-                },
-                {
-                  "$ref": "#/$defs/SoftwareTaskRemoval"
-                }
-              ]
-            },
-            "layout": {
-              "type": "object",
-              "maxProperties": 64,
-              "additionalProperties": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 1024,
-                "pattern": "^[^\\p{Cc}]*$"
-              }
-            },
-            "detect": {
-              "$ref": "#/$defs/SoftwareTaskDetection"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "image",
-            "volume",
-            "scope",
-            "invocation",
-            "upgrade",
-            "payload"
-          ],
-          "properties": {
-            "kind": {
-              "const": "dmg"
-            },
-            "image": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\p{Cc}]*$"
-            },
-            "volume": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\p{Cc}]*$"
-            },
-            "scope": {
-              "$ref": "#/$defs/SoftwareTaskScope"
-            },
-            "invocation": {
-              "$ref": "#/$defs/SoftwareTaskInvocation"
-            },
-            "upgrade": {
-              "$ref": "#/$defs/SoftwareTaskUpgrade"
-            },
-            "payload": {
-              "$ref": "#/$defs/SoftwareTaskDmgPayload"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "container",
-            "identity",
-            "dependencies",
-            "deployment",
-            "minimumOs",
-            "requireSideload",
-            "allowUnsigned",
-            "uninstall",
-            "invocation",
-            "upgrade"
-          ],
-          "properties": {
-            "kind": {
-              "const": "msix"
-            },
-            "container": {
-              "$ref": "#/$defs/SoftwareTaskMsixContainer"
-            },
-            "identity": {
-              "$ref": "#/$defs/SoftwareTaskMsixIdentity"
-            },
-            "dependencies": {
-              "type": "array",
-              "maxItems": 64,
-              "items": {
-                "$ref": "#/$defs/SoftwareTaskMsixIdentity"
-              }
-            },
-            "deployment": {
-              "$ref": "#/$defs/SoftwareTaskMsixDeployment"
-            },
-            "minimumOs": {
-              "type": "array",
-              "minItems": 4,
-              "maxItems": 4,
-              "items": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 65535
-              }
-            },
-            "requireSideload": {
-              "type": "boolean"
-            },
-            "allowUnsigned": {
-              "type": "boolean"
-            },
-            "uninstall": {
-              "type": "boolean"
-            },
-            "invocation": {
-              "$ref": "#/$defs/SoftwareTaskInvocation"
-            },
-            "upgrade": {
-              "$ref": "#/$defs/SoftwareTaskUpgrade"
-            }
-          }
-        }
-      ]
-    },
-    "SoftwareTaskSignature": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "artifact",
-        "mechanism",
-        "publisher"
-      ],
-      "properties": {
-        "artifact": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 1024,
-          "pattern": "^[^\\p{Cc}]*$"
-        },
-        "mechanism": {
-          "$ref": "#/$defs/SoftwareTaskSignatureMechanism"
-        },
-        "publisher": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 1024,
-          "pattern": "^[^\\p{Cc}]*$"
-        }
-      }
-    },
-    "SoftwareTaskSignatureMechanism": {
-      "enum": [
-        "authenticode",
-        "apple_developer_id",
-        "msix"
-      ]
-    },
-    "SoftwareTaskIntent": {
-      "enum": [
-        "install",
-        "detect",
-        "uninstall"
-      ]
-    },
-    "SoftwareTaskReboot": {
-      "enum": [
-        "forbid",
-        "report"
-      ]
-    },
-    "SoftwareTaskDowngrade": {
-      "enum": [
-        "deny",
-        "allow"
-      ]
-    },
-    "SoftwareTaskBundleEntry": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "length",
-        "sha256"
-      ],
-      "properties": {
-        "length": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 1099511627776
-        },
-        "sha256": {
-          "type": "array",
-          "minItems": 32,
-          "maxItems": 32,
-          "items": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 255
-          }
-        }
-      }
-    },
-    "SoftwareTaskBundle": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "schema",
-        "platform",
-        "architecture",
-        "entries"
-      ],
-      "properties": {
-        "schema": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 4294967295
+        "permit": {
+          "$ref": "#/$defs/TaskPermit",
+          "description": "Offer or explicit start permission."
         },
         "platform": {
-          "enum": [
-            "windows",
-            "macos"
-          ]
+          "$ref": "#/$defs/TaskPlatform",
+          "description": "Actual local operating system."
         },
-        "architecture": {
-          "enum": [
-            "x86_64",
-            "aarch64"
-          ]
+        "registrationId": {
+          "description": "Current Agent registration.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
         },
-        "entries": {
-          "type": "object",
-          "maxProperties": 4096,
-          "additionalProperties": {
-            "$ref": "#/$defs/SoftwareTaskBundleEntry"
-          }
+        "taskId": {
+          "description": "Durable action run.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "tenantId": {
+          "description": "Enrolled tenant.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "wireVersion": {
+          "const": 1,
+          "description": "Exact wire major."
         }
-      }
-    },
-    "SoftwareTaskAction": {
-      "type": "object",
-      "additionalProperties": false,
+      },
       "required": [
-        "package",
-        "version",
-        "behavior",
-        "signatures",
-        "reboot",
-        "downgrade"
+        "wireVersion",
+        "tenantId",
+        "deviceId",
+        "platform",
+        "architecture",
+        "registrationId",
+        "generation",
+        "taskId",
+        "attemptId",
+        "permit",
+        "expiresAt",
+        "organization",
+        "entry"
       ],
-      "properties": {
-        "package": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 1024,
-          "pattern": "^[^\\p{Cc}]*$"
+      "type": "object"
+    },
+    "ExecutionIdentity": {
+      "description": "Required operating-system execution identity.",
+      "oneOf": [
+        {
+          "const": "system",
+          "description": "Service identity.",
+          "type": "string"
         },
-        "version": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 1024,
-          "pattern": "^[^\\p{Cc}]*$"
-        },
-        "behavior": {
-          "$ref": "#/$defs/SoftwareTaskBehavior"
-        },
-        "signatures": {
-          "type": "array",
-          "maxItems": 64,
-          "items": {
-            "$ref": "#/$defs/SoftwareTaskSignature"
-          }
-        },
-        "reboot": {
-          "$ref": "#/$defs/SoftwareTaskReboot"
-        },
-        "downgrade": {
-          "$ref": "#/$defs/SoftwareTaskDowngrade"
+        {
+          "const": "logged_in_user",
+          "description": "Current logged-in user, without fallback.",
+          "type": "string"
         }
-      }
+      ]
+    },
+    "ExecutorProfile": {
+      "description": "Fixed executor identity. There is no arbitrary command string.",
+      "oneOf": [
+        {
+          "const": "power_shell7",
+          "description": "PowerShell 7 on Windows.",
+          "type": "string"
+        },
+        {
+          "const": "posix_sh",
+          "description": "POSIX sh on macOS.",
+          "type": "string"
+        },
+        {
+          "const": "bash",
+          "description": "Bash on macOS.",
+          "type": "string"
+        },
+        {
+          "const": "osquery",
+          "description": "Bound query from a published read-only SQL template.",
+          "type": "string"
+        }
+      ]
+    },
+    "SelfServiceCaller": {
+      "description": "Origin attested by the authenticated system service, never taken from model arguments.",
+      "oneOf": [
+        {
+          "const": "human",
+          "description": "Interactive employee action.",
+          "type": "string"
+        },
+        {
+          "const": "ai",
+          "description": "AI tool action forwarded by the system service.",
+          "type": "string"
+        }
+      ]
+    },
+    "SelfServiceSubject": {
+      "description": "Subject selected by the server's explicit Policy access basis.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Device credential plus effective device scope; no enterprise session.",
+          "properties": {
+            "kind": {
+              "const": "device",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A live enterprise session matched by product authorization.",
+          "properties": {
+            "kind": {
+              "const": "user",
+              "type": "string"
+            },
+            "user": {
+              "$ref": "#/$defs/SelfServiceUser",
+              "description": "Authenticated enterprise coordinates, without a credential."
+            }
+          },
+          "required": [
+            "kind",
+            "user"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SelfServiceUser": {
+      "additionalProperties": false,
+      "description": "Authenticated product user; contains no session credential.",
+      "properties": {
+        "instanceId": {
+          "description": "Identity instance.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "principalId": {
+          "description": "Authenticated principal.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "tenantId": {
+          "description": "Product tenant.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenantId",
+        "instanceId",
+        "principalId"
+      ],
+      "type": "object"
+    },
+    "SignedTask": {
+      "additionalProperties": false,
+      "description": "Ed25519 signature envelope. A trusted key must be selected by key ID out of band.",
+      "properties": {
+        "keyId": {
+          "description": "Key identifier from the configured trust set.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/TaskPayload",
+          "description": "Exact task inputs and authority coordinates."
+        },
+        "signature": {
+          "description": "Unpadded base64url 64-byte Ed25519 signature.",
+          "pattern": "^[A-Za-z0-9_-]{85}[AQgw]$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "payload",
+        "keyId",
+        "signature"
+      ],
+      "type": "object"
     },
     "SoftwareExecutionContext": {
-      "type": "object",
       "additionalProperties": false,
-      "required": [
-        "revision",
-        "osVersion",
-        "systemBroker",
-        "interactiveUser",
-        "sourceCredentials",
-        "msixSideload",
-        "msixUnsigned",
-        "userHelper"
-      ],
+      "description": "Complete current native execution environment reported by this registration.",
       "properties": {
-        "revision": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 9223372036854775807
+        "interactiveUser": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SoftwareInteractiveUser"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Exact live interactive session, when one exists."
+        },
+        "msixSideload": {
+          "description": "Current native Windows sideload policy.",
+          "type": "boolean"
+        },
+        "msixUnsigned": {
+          "description": "Current native API support for explicitly approved unsigned packages.",
+          "type": "boolean"
         },
         "osVersion": {
-          "type": "array",
-          "minItems": 4,
-          "maxItems": 4,
+          "description": "Complete numeric OS version, not an inferred product/platform string.",
           "items": {
-            "type": "integer",
+            "format": "uint8",
+            "maximum": 255,
             "minimum": 0,
-            "maximum": 65535
+            "type": "integer"
           },
+          "maxItems": 32,
+          "minItems": 32,
           "not": {
             "const": [
               0,
               0,
               0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
               0
             ]
-          }
+          },
+          "type": "array"
         },
-        "systemBroker": {
-          "type": "boolean"
-        },
-        "interactiveUser": {
-          "oneOf": [
-            {
-              "type": "null"
-            },
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "identity",
-                "sessionId",
-                "administrator"
-              ],
-              "properties": {
-                "identity": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 184,
-                  "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-                },
-                "sessionId": {
-                  "type": "string",
-                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                  "not": {
-                    "const": "00000000-0000-0000-0000-000000000000"
-                  }
-                },
-                "administrator": {
-                  "type": "boolean"
-                }
-              }
-            }
-          ]
+        "revision": {
+          "description": "Strictly increasing local context generation; retries retain the same value.",
+          "format": "uint64",
+          "maximum": 9223372036854775807,
+          "minimum": 1,
+          "type": "integer"
         },
         "sourceCredentials": {
-          "type": "array",
-          "maxItems": 16,
-          "uniqueItems": true,
+          "description": "Source-scoped read credential references actually available locally.",
           "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "source",
-              "reference"
-            ],
-            "properties": {
-              "source": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 128,
-                "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-              },
-              "reference": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 128,
-                "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-              }
-            }
-          }
+            "$ref": "#/$defs/SoftwareReadCredential"
+          },
+          "maxItems": 16,
+          "type": "array",
+          "uniqueItems": true
         },
-        "msixSideload": {
-          "type": "boolean"
-        },
-        "msixUnsigned": {
+        "systemBroker": {
+          "description": "Whether the native system broker is available in this Agent installation.",
           "type": "boolean"
         },
         "userHelper": {
+          "description": "Whether a helper is bound to this exact live interactive session.",
           "type": "boolean"
         }
-      }
+      },
+      "required": [
+        "revision",
+        "msixSideload",
+        "msixUnsigned",
+        "osVersion",
+        "systemBroker",
+        "userHelper",
+        "interactiveUser",
+        "sourceCredentials"
+      ],
+      "type": "object"
     },
     "SoftwareExecutionTarget": {
+      "description": "Concrete effect target bound before an Offer is signed.",
       "oneOf": [
         {
-          "type": "object",
           "additionalProperties": false,
+          "description": "Device installation or provisioning; user registration is a different target.",
+          "properties": {
+            "kind": {
+              "const": "device",
+              "type": "string"
+            }
+          },
           "required": [
             "kind"
           ],
-          "properties": {
-            "kind": {
-              "const": "device"
-            }
-          }
+          "type": "object"
         },
         {
-          "type": "object",
           "additionalProperties": false,
+          "description": "One exact live interactive OS account and login generation.",
+          "properties": {
+            "identity": {
+              "description": "Exact SID/UID.",
+              "maxLength": 184,
+              "minLength": 1,
+              "pattern": "^[^\\x00-\\x1f\\x7f]+$",
+              "type": "string"
+            },
+            "kind": {
+              "const": "user",
+              "type": "string"
+            },
+            "sessionId": {
+              "description": "Exact login generation.",
+              "format": "uuid",
+              "not": {
+                "const": "00000000-0000-0000-0000-000000000000"
+              },
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
           "required": [
             "kind",
             "identity",
             "sessionId"
           ],
-          "properties": {
-            "kind": {
-              "const": "user"
-            },
-            "identity": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 184,
-              "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-            },
-            "sessionId": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-              "not": {
-                "const": "00000000-0000-0000-0000-000000000000"
-              }
-            }
-          }
+          "type": "object"
         }
       ]
-    },
-    "TaskDiagnostics": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "stdout",
-        "stderr",
-        "durationMs",
-        "executedAt",
-        "failure"
-      ],
-      "properties": {
-        "stdout": {
-          "type": "string",
-          "maxLength": 16384,
-          "pattern": "^[^\\u0000]*$"
-        },
-        "stderr": {
-          "type": "string",
-          "maxLength": 16384,
-          "pattern": "^[^\\u0000]*$"
-        },
-        "durationMs": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 604800000
-        },
-        "executedAt": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 9223372036854775807
-        },
-        "failure": {
-          "anyOf": [
-            {
-              "type": "null"
-            },
-            {
-              "enum": [
-                "launch_failed",
-                "timed_out",
-                "cancelled",
-                "non_zero_exit",
-                "output_limit",
-                "capture_failed"
-              ]
-            }
-          ]
-        }
-      }
-    },
-    "SoftwareObservedIdentity": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "productCode"
-          ],
-          "properties": {
-            "kind": {
-              "const": "msi_product"
-            },
-            "productCode": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 38,
-              "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "receipt"
-          ],
-          "properties": {
-            "kind": {
-              "const": "pkg_receipt"
-            },
-            "receipt": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 255,
-              "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "bundleId",
-            "targetName"
-          ],
-          "properties": {
-            "kind": {
-              "const": "mac_application"
-            },
-            "bundleId": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 255,
-              "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-            },
-            "targetName": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 255,
-              "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "scope",
-            "key",
-            "value"
-          ],
-          "properties": {
-            "kind": {
-              "const": "registry"
-            },
-            "scope": {
-              "$ref": "#/$defs/SoftwareTaskScope"
-            },
-            "key": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-            },
-            "value": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 255,
-              "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "scope",
-            "path"
-          ],
-          "properties": {
-            "kind": {
-              "const": "file"
-            },
-            "scope": {
-              "$ref": "#/$defs/SoftwareTaskScope"
-            },
-            "path": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "entry"
-          ],
-          "properties": {
-            "kind": {
-              "const": "controlled_detector"
-            },
-            "entry": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "identity"
-          ],
-          "properties": {
-            "kind": {
-              "const": "msix_registration"
-            },
-            "identity": {
-              "$ref": "#/$defs/SoftwareTaskMsixIdentity"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "identity"
-          ],
-          "properties": {
-            "kind": {
-              "const": "msix_provisioning"
-            },
-            "identity": {
-              "$ref": "#/$defs/SoftwareTaskMsixIdentity"
-            }
-          }
-        }
-      ]
-    },
-    "SoftwareDetectionObservation": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "state",
-            "version",
-            "evidenceSha256",
-            "observedAt"
-          ],
-          "properties": {
-            "state": {
-              "const": "present"
-            },
-            "version": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-            },
-            "evidenceSha256": {
-              "type": "array",
-              "minItems": 32,
-              "maxItems": 32,
-              "items": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 255
-              },
-              "not": {
-                "const": [
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0
-                ]
-              }
-            },
-            "observedAt": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 9223372036854775807
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "state",
-            "evidenceSha256",
-            "observedAt"
-          ],
-          "properties": {
-            "state": {
-              "const": "absent"
-            },
-            "evidenceSha256": {
-              "type": "array",
-              "minItems": 32,
-              "maxItems": 32,
-              "items": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 255
-              },
-              "not": {
-                "const": [
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0,
-                  0
-                ]
-              }
-            },
-            "observedAt": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 9223372036854775807
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "state",
-            "diagnostic"
-          ],
-          "properties": {
-            "state": {
-              "const": "unknown"
-            },
-            "diagnostic": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 4096,
-              "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-            }
-          }
-        }
-      ]
-    },
-    "SoftwareProcessObservation": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind"
-          ],
-          "properties": {
-            "kind": {
-              "const": "not_run"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "code"
-          ],
-          "properties": {
-            "kind": {
-              "const": "exited"
-            },
-            "code": {
-              "type": "integer",
-              "minimum": -2147483648,
-              "maximum": 2147483647
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "failure"
-          ],
-          "properties": {
-            "kind": {
-              "const": "failed"
-            },
-            "failure": {
-              "enum": [
-                "launch_failed",
-                "timed_out",
-                "cancelled",
-                "non_zero_exit",
-                "output_limit",
-                "capture_failed"
-              ]
-            }
-          }
-        }
-      ]
-    },
-    "SoftwareStepResult": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "index",
-        "stepDigest",
-        "target",
-        "package",
-        "identity",
-        "before",
-        "after",
-        "process",
-        "rebootRequired",
-        "diagnostics"
-      ],
-      "properties": {
-        "index": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 31
-        },
-        "stepDigest": {
-          "type": "array",
-          "minItems": 32,
-          "maxItems": 32,
-          "items": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 255
-          },
-          "not": {
-            "const": [
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0
-            ]
-          }
-        },
-        "target": {
-          "$ref": "#/$defs/SoftwareExecutionTarget"
-        },
-        "package": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 1024,
-          "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-        },
-        "identity": {
-          "$ref": "#/$defs/SoftwareObservedIdentity"
-        },
-        "before": {
-          "$ref": "#/$defs/SoftwareDetectionObservation"
-        },
-        "after": {
-          "$ref": "#/$defs/SoftwareDetectionObservation"
-        },
-        "process": {
-          "$ref": "#/$defs/SoftwareProcessObservation"
-        },
-        "rebootRequired": {
-          "type": "boolean"
-        },
-        "diagnostics": {
-          "$ref": "#/$defs/TaskDiagnostics"
-        }
-      }
-    },
-    "SoftwareTaskResult": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "intent",
-        "definitionDigest",
-        "steps"
-      ],
-      "properties": {
-        "intent": {
-          "$ref": "#/$defs/SoftwareTaskIntent"
-        },
-        "definitionDigest": {
-          "type": "array",
-          "minItems": 32,
-          "maxItems": 32,
-          "items": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 255
-          },
-          "not": {
-            "const": [
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0
-            ]
-          }
-        },
-        "steps": {
-          "type": "array",
-          "minItems": 1,
-          "maxItems": 32,
-          "items": {
-            "$ref": "#/$defs/SoftwareStepResult"
-          }
-        }
-      }
-    },
-    "SoftwareTaskMsixArchitecture": {
-      "enum": [
-        "x86_64",
-        "aarch64",
-        "neutral"
-      ]
-    },
-    "SoftwareExportRing": {
-      "enum": [
-        "test",
-        "pilot",
-        "production"
-      ]
-    },
-    "SoftwareExportDependency": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "resource",
-        "version",
-        "sha256"
-      ],
-      "properties": {
-        "resource": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-        },
-        "version": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-        },
-        "sha256": {
-          "type": "array",
-          "minItems": 32,
-          "maxItems": 32,
-          "items": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 255
-          },
-          "not": {
-            "const": [
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0
-            ]
-          }
-        }
-      }
     },
     "SoftwareExportArtifact": {
-      "type": "object",
       "additionalProperties": false,
+      "description": "Exact readonly material URL published with the native document.",
+      "properties": {
+        "length": {
+          "description": "Complete byte count.",
+          "format": "uint64",
+          "maximum": 1099511627776,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "sha256": {
+          "description": "Complete content digest.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "not": {
+            "const": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "type": "array"
+        },
+        "url": {
+          "description": "Credential-free immutable material URL.",
+          "maxLength": 2048,
+          "pattern": "^https://[^\\s/?#@]+(?:/[^\\s?#]*)?$",
+          "type": "string"
+        }
+      },
       "required": [
         "url",
         "length",
         "sha256"
       ],
+      "type": "object"
+    },
+    "SoftwareExportBinding": {
+      "additionalProperties": false,
+      "description": "Complete publication identity; these are immutable receipt coordinates, not another catalog.",
       "properties": {
-        "url": {
-          "type": "string",
-          "maxLength": 2048,
-          "pattern": "^https://[^\\s/?#@]+(?:/[^\\s?#]*)?$"
-        },
-        "length": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 1099511627776
-        },
-        "sha256": {
-          "type": "array",
-          "minItems": 32,
-          "maxItems": 32,
+        "artifacts": {
+          "description": "Complete immutable public material set.",
           "items": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 255
+            "$ref": "#/$defs/SoftwareExportArtifact"
           },
+          "maxItems": 256,
+          "minItems": 1,
+          "type": "array"
+        },
+        "definitionDigest": {
+          "description": "Release content digest binds full definition, dependencies, documents and material.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
           "not": {
             "const": [
               0,
@@ -3018,13 +588,244 @@
               0,
               0
             ]
-          }
+          },
+          "type": "array"
+        },
+        "dependencies": {
+          "description": "Exact transitive definitions included in the native source.",
+          "items": {
+            "$ref": "#/$defs/SoftwareExportDependency"
+          },
+          "maxItems": 255,
+          "type": "array"
+        },
+        "documentSha256": {
+          "description": "Exact derived native document digest.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "not": {
+            "const": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "type": "array"
+        },
+        "publication": {
+          "description": "Immutable publication receipt identity.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "not": {
+            "const": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "type": "array"
+        },
+        "resource": {
+          "description": "Root definition coordinate included in this source.",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$",
+          "type": "string"
+        },
+        "resourceDigest": {
+          "description": "Complete root Resource digest.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "not": {
+            "const": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "type": "array"
+        },
+        "resourceVersion": {
+          "description": "Exact root Resource version.",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$",
+          "type": "string"
+        },
+        "ring": {
+          "$ref": "#/$defs/SoftwareExportRing",
+          "description": "Exact release environment."
+        },
+        "source": {
+          "description": "Exact logical output source, distinct from imported provenance.",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$",
+          "type": "string"
+        },
+        "sourceDigest": {
+          "description": "Complete configured source snapshot identity.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "not": {
+            "const": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "type": "array"
+        },
+        "tenantId": {
+          "description": "Publication tenant from the signed task.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
         }
-      }
-    },
-    "SoftwareExportBinding": {
-      "type": "object",
-      "additionalProperties": false,
+      },
       "required": [
         "source",
         "tenantId",
@@ -3039,329 +840,1211 @@
         "dependencies",
         "artifacts"
       ],
-      "properties": {
-        "source": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-        },
-        "tenantId": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-          "not": {
-            "const": "00000000-0000-0000-0000-000000000000"
-          }
-        },
-        "ring": {
-          "$ref": "#/$defs/SoftwareExportRing"
-        },
-        "publication": {
-          "type": "array",
-          "minItems": 32,
-          "maxItems": 32,
-          "items": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 255
-          },
-          "not": {
-            "const": [
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0
-            ]
-          }
-        },
-        "sourceDigest": {
-          "type": "array",
-          "minItems": 32,
-          "maxItems": 32,
-          "items": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 255
-          },
-          "not": {
-            "const": [
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0
-            ]
-          }
-        },
-        "resource": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-        },
-        "resourceVersion": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-        },
-        "resourceDigest": {
-          "type": "array",
-          "minItems": 32,
-          "maxItems": 32,
-          "items": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 255
-          },
-          "not": {
-            "const": [
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0
-            ]
-          }
-        },
-        "definitionDigest": {
-          "type": "array",
-          "minItems": 32,
-          "maxItems": 32,
-          "items": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 255
-          },
-          "not": {
-            "const": [
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0
-            ]
-          }
-        },
-        "documentSha256": {
-          "type": "array",
-          "minItems": 32,
-          "maxItems": 32,
-          "items": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 255
-          },
-          "not": {
-            "const": [
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0
-            ]
-          }
-        },
-        "dependencies": {
-          "type": "array",
-          "maxItems": 255,
-          "items": {
-            "$ref": "#/$defs/SoftwareExportDependency"
-          }
-        },
-        "artifacts": {
-          "type": "array",
-          "minItems": 1,
-          "maxItems": 256,
-          "items": {
-            "$ref": "#/$defs/SoftwareExportArtifact"
-          }
-        }
-      }
+      "type": "object"
     },
-    "SoftwareTaskExport": {
+    "SoftwareExportDependency": {
+      "additionalProperties": false,
+      "description": "One exact definition included in the frozen native source.",
+      "properties": {
+        "resource": {
+          "description": "Opaque logical Resource identity.",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "Complete frozen Resource definition digest.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "not": {
+            "const": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "type": "array"
+        },
+        "version": {
+          "description": "Exact Resource version.",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource",
+        "version",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "SoftwareExportRing": {
+      "description": "Exact enterprise release ring.",
       "oneOf": [
         {
-          "type": "object",
+          "const": "test",
+          "description": "Test publication.",
+          "type": "string"
+        },
+        {
+          "const": "pilot",
+          "description": "Pilot publication.",
+          "type": "string"
+        },
+        {
+          "const": "production",
+          "description": "Production publication.",
+          "type": "string"
+        }
+      ]
+    },
+    "SoftwareInteractiveUser": {
+      "additionalProperties": false,
+      "description": "One concrete live OS session.",
+      "properties": {
+        "administrator": {
+          "description": "Privilege needed by the exact native profile, not a generic authorization grant.",
+          "type": "boolean"
+        },
+        "identity": {
+          "description": "Windows SID or macOS numeric UID.",
+          "type": "string"
+        },
+        "sessionId": {
+          "description": "Changes on logoff/login; identical account names cannot reuse a previous session.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "identity",
+        "sessionId",
+        "administrator"
+      ],
+      "type": "object"
+    },
+    "SoftwareReadCredential": {
+      "additionalProperties": false,
+      "description": "Availability of a particular source read credential in the local Agent.",
+      "properties": {
+        "reference": {
+          "description": "Host-provisioned opaque credential reference; never token bytes or a URL.",
+          "type": "string"
+        },
+        "source": {
+          "description": "Exact source identity in the consuming tenant.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "reference"
+      ],
+      "type": "object"
+    },
+    "SoftwareStartMode": {
+      "description": "Whether a signed task can start automatically or awaits trusted local user action.",
+      "oneOf": [
+        {
+          "const": "automatic",
+          "description": "Policy-required task may start when offered and locally admitted.",
+          "type": "string"
+        },
+        {
+          "const": "user_initiated",
+          "description": "Agent must wait for a local user choice before requesting Start.",
+          "type": "string"
+        }
+      ]
+    },
+    "SoftwareTaskAction": {
+      "additionalProperties": false,
+      "description": "Complete executable action. No independently selectable format or executor.",
+      "properties": {
+        "behavior": {
+          "$ref": "#/$defs/SoftwareTaskBehavior",
+          "description": "Format-specific closed executable plan."
+        },
+        "downgrade": {
+          "$ref": "#/$defs/SoftwareTaskDowngrade",
+          "description": "Exact downgrade permission."
+        },
+        "package": {
+          "description": "Exact ecosystem package identity.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}]*$",
+          "type": "string"
+        },
+        "reboot": {
+          "$ref": "#/$defs/SoftwareTaskReboot",
+          "description": "Approved reboot reporting."
+        },
+        "signatures": {
+          "description": "Explicit signature requirements; empty allows unsigned content subject to OS prerequisites.",
+          "items": {
+            "$ref": "#/$defs/SoftwareTaskSignature"
+          },
+          "maxItems": 64,
+          "type": "array"
+        },
+        "version": {
+          "description": "Exact package version.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}]*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "package",
+        "version",
+        "behavior",
+        "signatures",
+        "reboot",
+        "downgrade"
+      ],
+      "type": "object"
+    },
+    "SoftwareTaskArtifact": {
+      "additionalProperties": false,
+      "description": "One exact artifact needed by an executable software step.",
+      "properties": {
+        "key": {
+          "description": "Opaque task-local key in the content endpoint.",
+          "maxLength": 132,
+          "minLength": 1,
+          "pattern": "^(?!\\.{1,2}(?:/|$))(?!.*\\/\\.{1,2}(?:/|$))[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$",
+          "type": "string"
+        },
+        "length": {
+          "description": "Exact byte count.",
+          "format": "uint64",
+          "maximum": 1099511627776,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "sha256": {
+          "description": "Exact SHA-256 digest.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "type": "array"
+        }
+      },
+      "required": [
+        "key",
+        "length",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "SoftwareTaskBehavior": {
+      "description": "Single source of native dispatch and format-specific fields.",
+      "oneOf": [
+        {
           "additionalProperties": false,
+          "description": "Windows Installer.",
+          "properties": {
+            "detect": {
+              "$ref": "#/$defs/SoftwareTaskDetection",
+              "description": "Independent observation of effect."
+            },
+            "install": {
+              "$ref": "#/$defs/SoftwareTaskInvocation",
+              "description": "Unattended installation invocation."
+            },
+            "installer": {
+              "description": "Installer artifact key.",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}]*$",
+              "type": "string"
+            },
+            "kind": {
+              "const": "msi",
+              "type": "string"
+            },
+            "scope": {
+              "$ref": "#/$defs/SoftwareTaskScope",
+              "description": "Actual installation scope."
+            },
+            "uninstall": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SoftwareTaskRemoval"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Absent means removal is unsupported, never guessed."
+            },
+            "upgrade": {
+              "$ref": "#/$defs/SoftwareTaskUpgrade",
+              "description": "Explicit upgrade policy."
+            },
+            "upgradeInvocation": {
+              "$ref": "#/$defs/SoftwareTaskInvocation",
+              "description": "Separately approved upgrade invocation and return-code policy."
+            }
+          },
+          "required": [
+            "kind",
+            "installer",
+            "scope",
+            "install",
+            "upgradeInvocation",
+            "upgrade",
+            "uninstall",
+            "detect"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "macOS PackageInstaller.",
+          "properties": {
+            "detect": {
+              "$ref": "#/$defs/SoftwareTaskDetection",
+              "description": "Independent observation of effect."
+            },
+            "install": {
+              "$ref": "#/$defs/SoftwareTaskInvocation",
+              "description": "Unattended installation invocation."
+            },
+            "installer": {
+              "description": "Installer artifact key.",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}]*$",
+              "type": "string"
+            },
+            "kind": {
+              "const": "pkg",
+              "type": "string"
+            },
+            "scope": {
+              "$ref": "#/$defs/SoftwareTaskScope",
+              "description": "Actual installation scope."
+            },
+            "uninstall": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SoftwareTaskRemoval"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Absent means removal is unsupported, never guessed."
+            },
+            "upgrade": {
+              "$ref": "#/$defs/SoftwareTaskUpgrade",
+              "description": "Explicit upgrade policy."
+            },
+            "upgradeInvocation": {
+              "$ref": "#/$defs/SoftwareTaskInvocation",
+              "description": "Separately approved upgrade invocation and return-code policy."
+            }
+          },
+          "required": [
+            "kind",
+            "installer",
+            "scope",
+            "install",
+            "upgradeInvocation",
+            "upgrade",
+            "uninstall",
+            "detect"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "RSS approved script bundle.",
+          "properties": {
+            "archive": {
+              "description": "ZIP artifact key.",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}]*$",
+              "type": "string"
+            },
+            "detect": {
+              "$ref": "#/$defs/SoftwareTaskDetection",
+              "description": "Independent effect observation."
+            },
+            "install": {
+              "$ref": "#/$defs/SoftwareTaskScript",
+              "description": "Frozen install entry."
+            },
+            "kind": {
+              "const": "bundle",
+              "type": "string"
+            },
+            "manifest": {
+              "$ref": "#/$defs/SoftwareTaskBundle",
+              "description": "Exact complete manifest."
+            },
+            "uninstall": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SoftwareTaskScript"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Frozen removal entry, when supported."
+            }
+          },
+          "required": [
+            "kind",
+            "archive",
+            "manifest",
+            "install",
+            "uninstall",
+            "detect"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Exact WinGet consumer behavior.",
+          "properties": {
+            "detect": {
+              "$ref": "#/$defs/SoftwareTaskDetection",
+              "description": "Independent observation of effect."
+            },
+            "install": {
+              "$ref": "#/$defs/SoftwareTaskInvocation",
+              "description": "Unattended installation invocation."
+            },
+            "installer": {
+              "description": "Installer artifact key.",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}]*$",
+              "type": "string"
+            },
+            "kind": {
+              "const": "winget",
+              "type": "string"
+            },
+            "scope": {
+              "$ref": "#/$defs/SoftwareTaskScope",
+              "description": "Actual installation scope."
+            },
+            "uninstall": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SoftwareTaskRemoval"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Absent means removal is unsupported, never guessed."
+            },
+            "upgrade": {
+              "$ref": "#/$defs/SoftwareTaskUpgrade",
+              "description": "Explicit upgrade policy."
+            },
+            "upgradeInvocation": {
+              "$ref": "#/$defs/SoftwareTaskInvocation",
+              "description": "Separately approved upgrade invocation and return-code policy."
+            }
+          },
+          "required": [
+            "kind",
+            "installer",
+            "scope",
+            "install",
+            "upgradeInvocation",
+            "upgrade",
+            "uninstall",
+            "detect"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Exact Homebrew consumer behavior, always under a user.",
+          "properties": {
+            "detect": {
+              "$ref": "#/$defs/SoftwareTaskDetection",
+              "description": "Independent observation of effect."
+            },
+            "install": {
+              "$ref": "#/$defs/SoftwareTaskInvocation",
+              "description": "Unattended installation invocation."
+            },
+            "installer": {
+              "description": "Installer artifact key.",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}]*$",
+              "type": "string"
+            },
+            "kind": {
+              "const": "brew",
+              "type": "string"
+            },
+            "scope": {
+              "$ref": "#/$defs/SoftwareTaskScope",
+              "description": "Actual installation scope."
+            },
+            "uninstall": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SoftwareTaskRemoval"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Absent means removal is unsupported, never guessed."
+            },
+            "upgrade": {
+              "$ref": "#/$defs/SoftwareTaskUpgrade",
+              "description": "Explicit upgrade policy."
+            },
+            "upgradeInvocation": {
+              "$ref": "#/$defs/SoftwareTaskInvocation",
+              "description": "Separately approved upgrade invocation and return-code policy."
+            }
+          },
+          "required": [
+            "kind",
+            "installer",
+            "scope",
+            "install",
+            "upgradeInvocation",
+            "upgrade",
+            "uninstall",
+            "detect"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Private full offline executable.",
+          "properties": {
+            "detect": {
+              "$ref": "#/$defs/SoftwareTaskDetection",
+              "description": "Independent identity/version detector."
+            },
+            "install": {
+              "$ref": "#/$defs/SoftwareTaskInvocation",
+              "description": "Unattended installation; no default /S or /silent."
+            },
+            "installer": {
+              "description": "Approved EXE installer key.",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}]*$",
+              "type": "string"
+            },
+            "kind": {
+              "const": "exe",
+              "type": "string"
+            },
+            "layout": {
+              "additionalProperties": {
+                "maxLength": 1024,
+                "minLength": 1,
+                "pattern": "^[^\\p{Cc}]*$",
+                "type": "string"
+              },
+              "description": "Staging relative path to artifact key; no runtime downloads are authorized.",
+              "maxProperties": 64,
+              "type": "object"
+            },
+            "scope": {
+              "$ref": "#/$defs/SoftwareTaskScope",
+              "description": "Explicit system/user installation scope."
+            },
+            "uninstall": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SoftwareTaskRemoval"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Explicit removal installer and invocation."
+            },
+            "upgrade": {
+              "$ref": "#/$defs/SoftwareTaskUpgrade",
+              "description": "Approved replacement sequence."
+            },
+            "upgradeInvocation": {
+              "$ref": "#/$defs/SoftwareTaskInvocation",
+              "description": "Separately approved upgrade invocation and return-code policy."
+            }
+          },
+          "required": [
+            "kind",
+            "installer",
+            "scope",
+            "install",
+            "upgradeInvocation",
+            "upgrade",
+            "uninstall",
+            "layout",
+            "detect"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Precisely selected disk image payload.",
+          "properties": {
+            "image": {
+              "description": "Image artifact key.",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}]*$",
+              "type": "string"
+            },
+            "invocation": {
+              "$ref": "#/$defs/SoftwareTaskInvocation",
+              "description": "Approved operation identity and budgets."
+            },
+            "kind": {
+              "const": "dmg",
+              "type": "string"
+            },
+            "payload": {
+              "$ref": "#/$defs/SoftwareTaskDmgPayload",
+              "description": "Exact selected payload."
+            },
+            "scope": {
+              "$ref": "#/$defs/SoftwareTaskScope",
+              "description": "System or target user's Applications directory."
+            },
+            "upgrade": {
+              "$ref": "#/$defs/SoftwareTaskUpgrade",
+              "description": "Explicit replacement policy."
+            },
+            "volume": {
+              "description": "Exact selected volume label; ambiguous multi-volume images are unsupported.",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}]*$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "image",
+            "volume",
+            "scope",
+            "invocation",
+            "upgrade",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Native Windows package deployment.",
+          "properties": {
+            "allowUnsigned": {
+              "description": "Hash-only content still needs explicit native unsigned API support if unsigned.",
+              "type": "boolean"
+            },
+            "container": {
+              "$ref": "#/$defs/SoftwareTaskMsixContainer",
+              "description": "Frozen package/container bytes."
+            },
+            "dependencies": {
+              "description": "Exact installed/provisioned dependency identities; matched to catalog dependencies.",
+              "items": {
+                "$ref": "#/$defs/SoftwareTaskMsixIdentity"
+              },
+              "maxItems": 64,
+              "type": "array"
+            },
+            "deployment": {
+              "$ref": "#/$defs/SoftwareTaskMsixDeployment",
+              "description": "Windows package target effect."
+            },
+            "identity": {
+              "$ref": "#/$defs/SoftwareTaskMsixIdentity",
+              "description": "Expected application identity."
+            },
+            "invocation": {
+              "$ref": "#/$defs/SoftwareTaskInvocation",
+              "description": "Frozen runtime identity and budgets; deployment does not accept arbitrary switches."
+            },
+            "kind": {
+              "const": "msix",
+              "type": "string"
+            },
+            "minimumOs": {
+              "description": "Minimum Windows OS version.",
+              "items": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "maxItems": 4,
+              "minItems": 4,
+              "type": "array"
+            },
+            "requireSideload": {
+              "description": "Sideloading must already be permitted; tasks do not enable it.",
+              "type": "boolean"
+            },
+            "uninstall": {
+              "description": "Whether exact removal/deprovisioning is supported.",
+              "type": "boolean"
+            },
+            "upgrade": {
+              "$ref": "#/$defs/SoftwareTaskUpgrade",
+              "description": "Approved update sequence."
+            }
+          },
+          "required": [
+            "kind",
+            "container",
+            "identity",
+            "dependencies",
+            "deployment",
+            "minimumOs",
+            "requireSideload",
+            "allowUnsigned",
+            "uninstall",
+            "invocation",
+            "upgrade"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SoftwareTaskBundle": {
+      "additionalProperties": false,
+      "description": "Complete platform-bound bundle manifest.",
+      "properties": {
+        "architecture": {
+          "$ref": "#/$defs/TaskArchitecture",
+          "description": "Target architecture."
+        },
+        "entries": {
+          "additionalProperties": {
+            "$ref": "#/$defs/SoftwareTaskBundleEntry"
+          },
+          "description": "Complete declared member set.",
+          "maxProperties": 4096,
+          "type": "object"
+        },
+        "platform": {
+          "$ref": "#/$defs/TaskPlatform",
+          "description": "Target operating system."
+        },
+        "schema": {
+          "description": "Bundle schema major.",
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema",
+        "platform",
+        "architecture",
+        "entries"
+      ],
+      "type": "object"
+    },
+    "SoftwareTaskBundleEntry": {
+      "additionalProperties": false,
+      "description": "A declared member of a bounded bundle.",
+      "properties": {
+        "length": {
+          "description": "Uncompressed member size.",
+          "format": "uint64",
+          "maximum": 1099511627776,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sha256": {
+          "description": "Member content digest.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "type": "array"
+        }
+      },
+      "required": [
+        "length",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "SoftwareTaskDetection": {
+      "description": "Independent finite detector; an exit code is never a detector.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "One exact MSI product and version.",
+          "properties": {
+            "kind": {
+              "const": "msi_product",
+              "type": "string"
+            },
+            "productCode": {
+              "description": "Canonical braced product GUID.",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}]*$",
+              "type": "string"
+            },
+            "version": {
+              "description": "Exact observed version.",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}]*$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "productCode",
+            "version"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Exact installer receipt and version; deleting it does not prove removal.",
+          "properties": {
+            "kind": {
+              "const": "pkg_receipt",
+              "type": "string"
+            },
+            "receipt": {
+              "description": "Receipt identifier.",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}]*$",
+              "type": "string"
+            },
+            "version": {
+              "description": "Exact receipt version.",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}]*$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "receipt",
+            "version"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One literal registry value in the declared scope.",
+          "properties": {
+            "key": {
+              "description": "Relative registry key, never an uninstall command.",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}]*$",
+              "type": "string"
+            },
+            "kind": {
+              "const": "registry",
+              "type": "string"
+            },
+            "scope": {
+              "$ref": "#/$defs/SoftwareTaskScope",
+              "description": "Native hive scope."
+            },
+            "value": {
+              "description": "Exact value name.",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}]*$",
+              "type": "string"
+            },
+            "version": {
+              "description": "Expected ecosystem version.",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}]*$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "scope",
+            "key",
+            "value",
+            "version"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One approved protected file and its expected version/hash.",
+          "properties": {
+            "kind": {
+              "const": "file",
+              "type": "string"
+            },
+            "path": {
+              "description": "Exact target path under the controlled install scope.",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}]*$",
+              "type": "string"
+            },
+            "scope": {
+              "$ref": "#/$defs/SoftwareTaskScope",
+              "description": "Scope of the protected target."
+            },
+            "sha256": {
+              "description": "Expected complete file digest.",
+              "items": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "maxItems": 32,
+              "minItems": 32,
+              "type": "array"
+            },
+            "version": {
+              "description": "Expected version.",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}]*$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "scope",
+            "path",
+            "version",
+            "sha256"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Explicit approved bounded detection script.",
+          "properties": {
+            "command": {
+              "$ref": "#/$defs/SoftwareTaskScript",
+              "description": "Frozen script and artifact reference."
+            },
+            "kind": {
+              "const": "script",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "command"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SoftwareTaskDmgPayload": {
+      "description": "DMG inner payload; no first-candidate discovery or automatic scripts.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Copy/replace one declared application; removal requires the declared exact target.",
+          "properties": {
+            "application": {
+              "$ref": "#/$defs/SoftwareTaskMacApplication",
+              "description": "Full declared app material."
+            },
+            "kind": {
+              "const": "app_copy",
+              "type": "string"
+            },
+            "uninstall": {
+              "description": "Whether an authorized task may remove the declared exact target.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "application",
+            "uninstall"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Select one PKG and reuse PackageInstaller semantics.",
+          "properties": {
+            "kind": {
+              "const": "contained_pkg",
+              "type": "string"
+            },
+            "length": {
+              "description": "Full inner PKG byte length.",
+              "format": "uint64",
+              "maximum": 1099511627776,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "path": {
+              "description": "Exact image-relative PKG path.",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}]*$",
+              "type": "string"
+            },
+            "receipt": {
+              "description": "Exact receipt identity.",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}]*$",
+              "type": "string"
+            },
+            "sha256": {
+              "description": "Inner PKG content digest.",
+              "items": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "maxItems": 32,
+              "minItems": 32,
+              "type": "array"
+            },
+            "uninstall": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SoftwareTaskRemoval"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Explicit bounded removal PKG artifact, never receipt-forget."
+            }
+          },
+          "required": [
+            "kind",
+            "path",
+            "length",
+            "sha256",
+            "receipt",
+            "uninstall"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SoftwareTaskDowngrade": {
+      "description": "Exact downgrade permission.",
+      "oneOf": [
+        {
+          "const": "deny",
+          "description": "Block downgrade.",
+          "type": "string"
+        },
+        {
+          "const": "allow",
+          "description": "Permit the exact approved downgrade.",
+          "type": "string"
+        }
+      ]
+    },
+    "SoftwareTaskExitCodes": {
+      "additionalProperties": false,
+      "description": "Disjoint explicitly accepted return codes. All others are failures.",
+      "properties": {
+        "reboot": {
+          "description": "Successful process completion requiring reboot.",
+          "items": {
+            "maximum": 2147483647,
+            "minimum": -2147483648,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 0,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "success": {
+          "description": "Process success, still requiring independent effect detection.",
+          "items": {
+            "maximum": 2147483647,
+            "minimum": -2147483648,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "success",
+        "reboot"
+      ],
+      "type": "object"
+    },
+    "SoftwareTaskExport": {
+      "description": "Native consumers always use the frozen source explicitly, with prerequisites already executed.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Approved installer material is consumed directly by its concrete native behavior.",
+          "properties": {
+            "kind": {
+              "const": "direct",
+              "type": "string"
+            }
+          },
           "required": [
             "kind"
           ],
-          "properties": {
-            "kind": {
-              "const": "direct"
-            }
-          }
+          "type": "object"
         },
         {
-          "type": "object",
           "additionalProperties": false,
+          "description": "Public readonly WinGet REST source for exactly this publication and its dependencies.",
+          "properties": {
+            "binding": {
+              "$ref": "#/$defs/SoftwareExportBinding",
+              "description": "Complete immutable source identity."
+            },
+            "identifier": {
+              "description": "Exact identifier returned by the source's information endpoint.",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[^\\x00-\\x1f\\x7f]+$",
+              "type": "string"
+            },
+            "kind": {
+              "const": "winget",
+              "type": "string"
+            },
+            "uri": {
+              "description": "Frozen REST base URL.",
+              "maxLength": 2048,
+              "pattern": "^https://[^\\s/?#@]+(?:/[^\\s?#]*)?$",
+              "type": "string"
+            }
+          },
           "required": [
             "kind",
             "binding",
             "uri",
             "identifier"
           ],
-          "properties": {
-            "kind": {
-              "const": "winget"
-            },
-            "binding": {
-              "$ref": "#/$defs/SoftwareExportBinding"
-            },
-            "uri": {
-              "type": "string",
-              "maxLength": 2048,
-              "pattern": "^https://[^\\s/?#@]+(?:/[^\\s?#]*)?$"
-            },
-            "identifier": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 128,
-              "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-            }
-          }
+          "type": "object"
         },
         {
-          "type": "object",
           "additionalProperties": false,
+          "description": "Immutable bottle-only Tap; the consumer cannot update it or fall back to source builds.",
+          "properties": {
+            "binding": {
+              "$ref": "#/$defs/SoftwareExportBinding",
+              "description": "Complete immutable source identity."
+            },
+            "commit": {
+              "description": "Exact parentless Tap commit.",
+              "pattern": "^[0-9a-f]{40}$",
+              "type": "string"
+            },
+            "credentialReference": {
+              "description": "Opaque locally provisioned readonly credential reference.",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[^\\x00-\\x1f\\x7f]+$",
+              "type": "string"
+            },
+            "kind": {
+              "const": "brew",
+              "type": "string"
+            },
+            "tap": {
+              "description": "Source-scoped frozen tap namespace.",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[^\\x00-\\x1f\\x7f]+$",
+              "type": "string"
+            },
+            "uri": {
+              "description": "Fixed readonly upload-pack URL.",
+              "maxLength": 2048,
+              "pattern": "^https://[^\\s/?#@]+(?:/[^\\s?#]*)?$",
+              "type": "string"
+            }
+          },
           "required": [
             "kind",
             "binding",
@@ -3370,35 +2053,735 @@
             "tap",
             "credentialReference"
           ],
+          "type": "object"
+        }
+      ]
+    },
+    "SoftwareTaskIntent": {
+      "description": "Software operation selected by the server; detection remains independent evidence.",
+      "oneOf": [
+        {
+          "const": "install",
+          "description": "Install the frozen version.",
+          "type": "string"
+        },
+        {
+          "const": "detect",
+          "description": "Detect the current local state without installation.",
+          "type": "string"
+        },
+        {
+          "const": "uninstall",
+          "description": "Remove the owned installation using the approved removal definition.",
+          "type": "string"
+        }
+      ]
+    },
+    "SoftwareTaskInterpreter": {
+      "description": "Script implementations only appear in declared Bundle entries or detectors.",
+      "oneOf": [
+        {
+          "const": "power_shell7",
+          "description": "PowerShell 7.",
+          "type": "string"
+        },
+        {
+          "const": "posix_sh",
+          "description": "POSIX shell.",
+          "type": "string"
+        },
+        {
+          "const": "bash",
+          "description": "Bash.",
+          "type": "string"
+        }
+      ]
+    },
+    "SoftwareTaskInvocation": {
+      "additionalProperties": false,
+      "description": "Literal invocation of the native installer chosen by the enclosing behavior.",
+      "properties": {
+        "arguments": {
+          "description": "Literal arguments; no shell or mutable registry command.",
+          "items": {
+            "maxLength": 4096,
+            "minLength": 0,
+            "pattern": "^[^\\u0000]*$",
+            "type": "string"
+          },
+          "maxItems": 128,
+          "type": "array"
+        },
+        "environment": {
+          "additionalProperties": {
+            "maxLength": 4096,
+            "pattern": "^[^\\u0000]*$",
+            "type": "string"
+          },
+          "description": "Product-prefixed environment values.",
+          "maxProperties": 32,
+          "propertyNames": {
+            "maxLength": 128,
+            "pattern": "^RSS_PARAM_[A-Za-z0-9_]*$"
+          },
+          "type": "object"
+        },
+        "exitCodes": {
+          "$ref": "#/$defs/SoftwareTaskExitCodes",
+          "description": "Explicit return-code classification."
+        },
+        "outputBytes": {
+          "description": "Combined output ceiling.",
+          "format": "uint32",
+          "maximum": 1048576,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "runAs": {
+          "$ref": "#/$defs/ExecutionIdentity",
+          "description": "Process identity, never inferred from installation scope."
+        },
+        "timeoutSeconds": {
+          "description": "Wall-time ceiling.",
+          "format": "uint32",
+          "maximum": 86400,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "runAs",
+        "arguments",
+        "environment",
+        "timeoutSeconds",
+        "outputBytes",
+        "exitCodes"
+      ],
+      "type": "object"
+    },
+    "SoftwareTaskMacApplication": {
+      "additionalProperties": false,
+      "description": "Exact application identity retained independently of image identity.",
+      "properties": {
+        "bundleId": {
+          "description": "Bundle identifier.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}]*$",
+          "type": "string"
+        },
+        "path": {
+          "description": "Exact payload relative path within the selected image volume.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}]*$",
+          "type": "string"
+        },
+        "targetName": {
+          "description": "Exact .app basename in the selected Applications directory.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}]*$",
+          "type": "string"
+        },
+        "version": {
+          "description": "Exact bundle version.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}]*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "bundleId",
+        "version",
+        "targetName"
+      ],
+      "type": "object"
+    },
+    "SoftwareTaskMsixArchitecture": {
+      "description": "MSIX material architecture, distinct from the device processor architecture.",
+      "oneOf": [
+        {
+          "const": "x86_64",
+          "description": "Native x64 application or resource material.",
+          "type": "string"
+        },
+        {
+          "const": "aarch64",
+          "description": "Native ARM64 application or resource material.",
+          "type": "string"
+        },
+        {
+          "const": "neutral",
+          "description": "Architecture-independent MSIX material, including language/resource packages.",
+          "type": "string"
+        }
+      ]
+    },
+    "SoftwareTaskMsixContainer": {
+      "description": "One MSIX or a precisely selected application/resource bundle member set.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Single application package.",
+          "properties": {
+            "installer": {
+              "description": "Artifact key.",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}]*$",
+              "type": "string"
+            },
+            "kind": {
+              "const": "package",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "installer"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One application member and explicit applicable resources.",
+          "properties": {
+            "installer": {
+              "description": "Bundle artifact key.",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}]*$",
+              "type": "string"
+            },
+            "kind": {
+              "const": "bundle",
+              "type": "string"
+            },
+            "members": {
+              "description": "Precisely selected members, including one application.",
+              "items": {
+                "$ref": "#/$defs/SoftwareTaskMsixMember"
+              },
+              "maxItems": 64,
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "installer",
+            "members"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SoftwareTaskMsixDeployment": {
+      "description": "Registration and provisioning are different effects, including on removal.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Install/register and remove for one exact user.",
           "properties": {
             "kind": {
-              "const": "brew"
+              "const": "target_user_registration",
+              "type": "string"
             },
-            "binding": {
-              "$ref": "#/$defs/SoftwareExportBinding"
-            },
-            "uri": {
-              "type": "string",
-              "maxLength": 2048,
-              "pattern": "^https://[^\\s/?#@]+(?:/[^\\s?#]*)?$"
-            },
-            "commit": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{40}$"
-            },
-            "tap": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 128,
-              "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-            },
-            "credentialReference": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 128,
-              "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+            "target": {
+              "$ref": "#/$defs/SoftwareTaskUser",
+              "description": "Approved user selection."
             }
-          }
+          },
+          "required": [
+            "kind",
+            "target"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Provision/deprovision the device's future-user package set.",
+          "properties": {
+            "kind": {
+              "const": "device_provisioning",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SoftwareTaskMsixIdentity": {
+      "additionalProperties": false,
+      "description": "MSIX identity uses Windows' own version and Publisher semantics.",
+      "properties": {
+        "architecture": {
+          "$ref": "#/$defs/SoftwareTaskMsixArchitecture",
+          "description": "Selected processor architecture."
+        },
+        "name": {
+          "description": "Manifest Name.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}]*$",
+          "type": "string"
+        },
+        "publisher": {
+          "description": "Exact manifest Publisher DN; not a generic display publisher.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}]*$",
+          "type": "string"
+        },
+        "resourceId": {
+          "description": "Exact resource identity; empty denotes the application package.",
+          "maxLength": 1024,
+          "minLength": 0,
+          "pattern": "^[^\\p{Cc}]*$",
+          "type": "string"
+        },
+        "version": {
+          "description": "Exact four-part package version.",
+          "items": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "publisher",
+        "version",
+        "architecture",
+        "resourceId"
+      ],
+      "type": "object"
+    },
+    "SoftwareTaskMsixMember": {
+      "additionalProperties": false,
+      "description": "Frozen .msixbundle member and its complete bytes.",
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/SoftwareTaskMsixIdentity",
+          "description": "Exact package identity."
+        },
+        "length": {
+          "description": "Member byte length.",
+          "format": "uint64",
+          "maximum": 1099511627776,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "description": "Exact relative container member path.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}]*$",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "Member digest.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "type": "array"
+        }
+      },
+      "required": [
+        "path",
+        "identity",
+        "length",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "SoftwareTaskReboot": {
+      "description": "Permitted reboot handling.",
+      "oneOf": [
+        {
+          "const": "forbid",
+          "description": "Reboot requirement fails the task.",
+          "type": "string"
+        },
+        {
+          "const": "report",
+          "description": "Report required reboot for separate authorization.",
+          "type": "string"
+        }
+      ]
+    },
+    "SoftwareTaskRemoval": {
+      "additionalProperties": false,
+      "description": "Native removal executes an explicitly approved artifact, never a discovered path.",
+      "properties": {
+        "installer": {
+          "description": "Artifact key of the approved removal installer.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}]*$",
+          "type": "string"
+        },
+        "invocation": {
+          "$ref": "#/$defs/SoftwareTaskInvocation",
+          "description": "Removal-specific literal parameters and return codes."
+        }
+      },
+      "required": [
+        "installer",
+        "invocation"
+      ],
+      "type": "object"
+    },
+    "SoftwareTaskScope": {
+      "description": "Install scope is separate from the process identity.",
+      "oneOf": [
+        {
+          "const": "system",
+          "description": "Organization device installation.",
+          "type": "string"
+        },
+        {
+          "const": "user",
+          "description": "One authenticated interactive user.",
+          "type": "string"
+        }
+      ]
+    },
+    "SoftwareTaskScript": {
+      "additionalProperties": false,
+      "description": "Approved bounded script, with a declared immutable entry.",
+      "properties": {
+        "entry": {
+          "description": "Artifact key or Bundle member.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}]*$",
+          "type": "string"
+        },
+        "interpreter": {
+          "$ref": "#/$defs/SoftwareTaskInterpreter",
+          "description": "Finite interpreter."
+        },
+        "invocation": {
+          "$ref": "#/$defs/SoftwareTaskInvocation",
+          "description": "Literal bounded invocation."
+        }
+      },
+      "required": [
+        "interpreter",
+        "entry",
+        "invocation"
+      ],
+      "type": "object"
+    },
+    "SoftwareTaskSignature": {
+      "additionalProperties": false,
+      "description": "Signature checks are opt-in and bound to complete approved material.",
+      "properties": {
+        "artifact": {
+          "description": "Runtime artifact key to which the check applies.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}]*$",
+          "type": "string"
+        },
+        "mechanism": {
+          "$ref": "#/$defs/SoftwareTaskSignatureMechanism",
+          "description": "Required platform trust mechanism."
+        },
+        "publisher": {
+          "description": "Exact Publisher/Team ID policy value.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}]*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifact",
+        "mechanism",
+        "publisher"
+      ],
+      "type": "object"
+    },
+    "SoftwareTaskSignatureMechanism": {
+      "description": "Platform signature requirement; never an automatic enterprise approval.",
+      "oneOf": [
+        {
+          "const": "authenticode",
+          "description": "Windows Authenticode policy.",
+          "type": "string"
+        },
+        {
+          "const": "apple_developer_id",
+          "description": "Apple Developer ID / system assessment.",
+          "type": "string"
+        },
+        {
+          "const": "msix",
+          "description": "Windows package signature and certificate policy.",
+          "type": "string"
+        }
+      ]
+    },
+    "SoftwareTaskSpec": {
+      "additionalProperties": false,
+      "description": "Signed software task with ordered executable steps and no Policy or Catalog model.",
+      "properties": {
+        "architecture": {
+          "$ref": "#/$defs/TaskArchitecture",
+          "description": "Target architecture."
+        },
+        "attemptId": {
+          "description": "Exact attempt.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "authorization": {
+          "$ref": "#/$defs/TaskAuthorization",
+          "description": "Same server-owned origin decision as script tasks, covered by the signature."
+        },
+        "definitionDigest": {
+          "description": "SHA-256 of canonical serialized steps.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "type": "array"
+        },
+        "deviceId": {
+          "description": "Server-selected device.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}]+$",
+          "type": "string"
+        },
+        "executionContext": {
+          "$ref": "#/$defs/SoftwareExecutionContext",
+          "description": "Current execution environment, frozen across Offer and Start."
+        },
+        "expiresAt": {
+          "description": "Unix expiry.",
+          "format": "int64",
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "generation": {
+          "description": "Registration generation.",
+          "format": "uint64",
+          "maximum": 9223372036854775807,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "intent": {
+          "$ref": "#/$defs/SoftwareTaskIntent",
+          "description": "Requested local operation."
+        },
+        "permit": {
+          "$ref": "#/$defs/TaskPermit",
+          "description": "Offer or Start authority."
+        },
+        "platform": {
+          "$ref": "#/$defs/TaskPlatform",
+          "description": "Target platform."
+        },
+        "registrationId": {
+          "description": "Current registration.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "startMode": {
+          "$ref": "#/$defs/SoftwareStartMode",
+          "description": "Local start behavior; no Policy or rollout details are exposed."
+        },
+        "steps": {
+          "description": "Ordered prerequisites followed by the requested action.",
+          "items": {
+            "$ref": "#/$defs/SoftwareTaskStep"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "type": "array"
+        },
+        "taskId": {
+          "description": "Immutable run.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "tenantId": {
+          "description": "Server-selected tenant.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "wireVersion": {
+          "const": 1,
+          "description": "Exact wire major."
+        }
+      },
+      "required": [
+        "wireVersion",
+        "tenantId",
+        "deviceId",
+        "platform",
+        "architecture",
+        "registrationId",
+        "generation",
+        "taskId",
+        "attemptId",
+        "permit",
+        "expiresAt",
+        "executionContext",
+        "authorization",
+        "steps",
+        "definitionDigest",
+        "intent",
+        "startMode"
+      ],
+      "type": "object"
+    },
+    "SoftwareTaskStep": {
+      "additionalProperties": false,
+      "description": "One locally executable step; the server has already ordered fixed prerequisites.",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/SoftwareTaskAction",
+          "description": "Device action and independent detector without Catalog source or dependency graph."
+        },
+        "artifacts": {
+          "description": "Task-local artifacts for this step.",
+          "items": {
+            "$ref": "#/$defs/SoftwareTaskArtifact"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "type": "array"
+        },
+        "export": {
+          "$ref": "#/$defs/SoftwareTaskExport",
+          "description": "Frozen readonly native source or direct native artifact consumption."
+        },
+        "target": {
+          "$ref": "#/$defs/SoftwareExecutionTarget",
+          "description": "Exact effect target and live login generation."
+        }
+      },
+      "required": [
+        "action",
+        "artifacts",
+        "export",
+        "target"
+      ],
+      "type": "object"
+    },
+    "SoftwareTaskUpgrade": {
+      "description": "Approved upgrade mechanism; no mutable command discovery.",
+      "oneOf": [
+        {
+          "const": "in_place",
+          "description": "The exact installer performs replacement.",
+          "type": "string"
+        },
+        {
+          "const": "uninstall_then_install",
+          "description": "The frozen removal and install plans run in order.",
+          "type": "string"
+        },
+        {
+          "const": "deny",
+          "description": "Only a previously absent installation is permitted.",
+          "type": "string"
+        }
+      ]
+    },
+    "SoftwareTaskUser": {
+      "description": "Approved target selector; actual user identity is frozen into a device task.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Only a unique interactive user; missing/multiple sessions block execution.",
+          "properties": {
+            "kind": {
+              "const": "active_interactive",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One exact local Windows SID or macOS uid, rechecked by the Agent.",
+          "properties": {
+            "identity": {
+              "description": "TaskPlatform-local stable identity.",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\p{Cc}]*$",
+              "type": "string"
+            },
+            "kind": {
+              "const": "exact",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "identity"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TaskArchitecture": {
+      "description": "Exact processor architecture of the selected artifact.",
+      "oneOf": [
+        {
+          "const": "x86_64",
+          "description": "x86-64.",
+          "type": "string"
+        },
+        {
+          "const": "aarch64",
+          "description": "ARM64.",
+          "type": "string"
         }
       ]
     },
@@ -3519,8 +2902,111 @@
           ],
           "type": "object"
         }
+      ]
+    },
+    "TaskCancellation": {
+      "additionalProperties": false,
+      "description": "Cancellation applies only to this exact task attempt; it asserts no rollback.",
+      "properties": {
+        "attemptId": {
+          "description": "Attempt to stop.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "taskId": {
+          "description": "Task identity.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "taskId",
+        "attemptId"
       ],
-      "title": "TaskAuthorization"
+      "type": "object"
+    },
+    "TaskContent": {
+      "additionalProperties": false,
+      "description": "Signed, exact content coordinates. The task route supplies download authority.",
+      "properties": {
+        "length": {
+          "description": "Expected byte count.",
+          "format": "uint64",
+          "maximum": 16777216,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "sha256": {
+          "description": "SHA-256 of exact content bytes.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "type": "array"
+        }
+      },
+      "required": [
+        "length",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "TaskPayload": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TaskSpec"
+        },
+        {
+          "$ref": "#/$defs/SoftwareTaskSpec"
+        },
+        {
+          "$ref": "#/$defs/EnrollmentTaskSpec",
+          "description": "Standard MDM enrollment entry."
+        }
+      ],
+      "description": "Validated immutable script or software task payload."
+    },
+    "TaskPermit": {
+      "description": "Signed message purpose prevents reusing a received offer as execution permission.",
+      "oneOf": [
+        {
+          "const": "offer",
+          "description": "Content download and acknowledgement only.",
+          "type": "string"
+        },
+        {
+          "const": "start",
+          "description": "Start exactly this attempt before the signed expiry.",
+          "type": "string"
+        }
+      ]
+    },
+    "TaskPlatform": {
+      "description": "Exact operating system of the selected immutable artifact.",
+      "oneOf": [
+        {
+          "const": "windows",
+          "description": "Windows.",
+          "type": "string"
+        },
+        {
+          "const": "macos",
+          "description": "macOS.",
+          "type": "string"
+        }
+      ]
     },
     "TaskResource": {
       "additionalProperties": false,
@@ -3544,88 +3030,337 @@
         "version",
         "variant"
       ],
-      "title": "TaskResource",
       "type": "object"
     },
-    "SelfServiceCaller": {
-      "description": "Origin attested by the authenticated system service, never taken from model arguments.",
-      "oneOf": [
-        {
-          "const": "human",
-          "description": "Interactive employee action.",
-          "type": "string"
-        },
-        {
-          "const": "ai",
-          "description": "AI tool action forwarded by the system service.",
-          "type": "string"
-        }
-      ]
-    },
-    "SelfServiceSubject": {
-      "description": "Subject selected by the server's explicit Policy access basis.",
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "description": "Device credential plus effective device scope; no enterprise session.",
-          "properties": {
-            "kind": {
-              "const": "device",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "description": "A live enterprise session matched by product authorization.",
-          "properties": {
-            "kind": {
-              "const": "user",
-              "type": "string"
-            },
-            "user": {
-              "$ref": "#/$defs/SelfServiceUser",
-              "description": "Authenticated enterprise coordinates, without a credential."
-            }
-          },
-          "required": [
-            "kind",
-            "user"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "SelfServiceUser": {
+    "TaskSpec": {
       "additionalProperties": false,
-      "description": "Authenticated product user; contains no session credential.",
+      "allOf": [
+        {
+          "else": {
+            "properties": {
+              "sqlParameters": {
+                "type": "null"
+              }
+            }
+          },
+          "if": {
+            "properties": {
+              "profile": {
+                "const": "osquery"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "arguments": {
+                "maxItems": 0
+              },
+              "environment": {
+                "maxProperties": 0
+              },
+              "runAs": {
+                "const": "system"
+              },
+              "sqlParameters": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "sqlParameters"
+            ]
+          }
+        }
+      ],
+      "description": "Frozen executor inputs carried inside the signature; output semantics stay server-owned.",
       "properties": {
-        "instanceId": {
-          "description": "Identity instance.",
+        "architecture": {
+          "$ref": "#/$defs/TaskArchitecture",
+          "description": "Selected artifact architecture."
+        },
+        "arguments": {
+          "description": "Literal arguments, with no shell interpolation.",
+          "items": {
+            "maxLength": 65536,
+            "minLength": 0,
+            "pattern": "^[^\\u0000]*$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "type": "array"
+        },
+        "attemptId": {
+          "description": "Exact execution attempt.",
           "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
           "type": "string"
         },
-        "principalId": {
-          "description": "Authenticated principal.",
+        "authorization": {
+          "$ref": "#/$defs/TaskAuthorization",
+          "description": "Trusted server authorization decision."
+        },
+        "content": {
+          "$ref": "#/$defs/TaskContent",
+          "description": "Exact downloadable artifact."
+        },
+        "deadline": {
+          "description": "Absolute Run deadline, independent of the permit expiry.",
+          "format": "int64",
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "deviceId": {
+          "description": "Server-selected device identity.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}]+$",
+          "type": "string"
+        },
+        "environment": {
+          "additionalProperties": {
+            "maxLength": 65536,
+            "minLength": 0,
+            "pattern": "^[^\\u0000]*$",
+            "type": "string"
+          },
+          "description": "Only explicit product parameter variables.",
+          "maxProperties": 32,
+          "propertyNames": {
+            "maxLength": 64,
+            "minLength": 11,
+            "pattern": "^RSS_PARAM_[A-Za-z0-9_]+$",
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "executionTarget": {
+          "$ref": "#/$defs/SoftwareExecutionTarget",
+          "description": "Exact effect target covered by the same signature as the script inputs."
+        },
+        "expiresAt": {
+          "description": "Nonnegative Unix expiry, checked against a trusted clock by the consumer.",
+          "format": "int64",
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "generation": {
+          "description": "Registration generation.",
+          "format": "uint64",
+          "maximum": 9223372036854775807,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "maxRows": {
+          "description": "Maximum output rows.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "outputBytes": {
+          "description": "Output byte budget.",
+          "format": "uint32",
+          "maximum": 16777216,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "parameters": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "pattern": "^[^\\u0000]*$",
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "maximum": 9223372036854775807,
+                "minimum": -9223372036854775808,
+                "type": "integer"
+              }
+            ]
+          },
+          "description": "Complete resolved values, covered by the task signature.",
+          "maxProperties": 32,
+          "propertyNames": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_]+$",
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "permit": {
+          "$ref": "#/$defs/TaskPermit",
+          "description": "Signature purpose."
+        },
+        "platform": {
+          "$ref": "#/$defs/TaskPlatform",
+          "description": "Selected artifact operating system."
+        },
+        "profile": {
+          "$ref": "#/$defs/ExecutorProfile",
+          "description": "Fixed interpreter profile."
+        },
+        "registrationId": {
+          "description": "Current registration at approval/claim.",
           "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "resource": {
+          "$ref": "#/$defs/TaskResource",
+          "description": "Exact selected Resource coordinates."
+        },
+        "resourceDigest": {
+          "description": "Exact Resource version digest, including its full execution interface.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "type": "array"
+        },
+        "runAs": {
+          "$ref": "#/$defs/ExecutionIdentity",
+          "description": "Required execution identity."
+        },
+        "sqlParameters": {
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "maxLength": 4096,
+                "pattern": "^[^\\u0000]*$",
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "maximum": 9223372036854775807,
+                "minimum": -9223372036854775808,
+                "type": "integer"
+              }
+            ]
+          },
+          "description": "Literal parameters for the signed SQL template artifact; no free-form query text.",
+          "maxProperties": 32,
+          "propertyNames": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-zA-Z0-9_]+$",
+            "type": "string"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "taskId": {
+          "description": "Immutable run identity.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
           "type": "string"
         },
         "tenantId": {
-          "description": "Product tenant.",
+          "description": "Server-selected tenant.",
           "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
           "type": "string"
+        },
+        "timeoutSeconds": {
+          "description": "Wall-time limit.",
+          "format": "uint32",
+          "maximum": 3600,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "wireVersion": {
+          "const": 1,
+          "description": "Exact wire major."
         }
       },
       "required": [
+        "wireVersion",
         "tenantId",
-        "instanceId",
-        "principalId"
+        "deviceId",
+        "platform",
+        "architecture",
+        "registrationId",
+        "generation",
+        "taskId",
+        "attemptId",
+        "permit",
+        "expiresAt",
+        "resourceDigest",
+        "resource",
+        "authorization",
+        "parameters",
+        "deadline",
+        "content",
+        "profile",
+        "runAs",
+        "executionTarget",
+        "arguments",
+        "environment",
+        "timeoutSeconds",
+        "outputBytes",
+        "maxRows"
       ],
       "type": "object"
     }
-  }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Poll response; the offer still requires signature verification and a separate start permit.",
+  "properties": {
+    "cancellations": {
+      "description": "Authenticated cancellation requests.",
+      "items": {
+        "$ref": "#/$defs/TaskCancellation"
+      },
+      "maxItems": 128,
+      "type": "array"
+    },
+    "task": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SignedTask"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "At most one offered task."
+    },
+    "wireVersion": {
+      "const": 1,
+      "description": "Sole supported major."
+    }
+  },
+  "required": [
+    "wireVersion",
+    "task",
+    "cancellations"
+  ],
+  "title": "TaskClaimResponse",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/task-claim-response.schema.json"
 }
