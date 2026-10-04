@@ -1023,9 +1023,17 @@ impl SoftwareTaskSpec {
             return Err(WireError::InvalidValue);
         }
         self.authorization.validate(self.tenant_id)?;
-        let self_service = matches!(self.authorization, super::TaskAuthorization::SelfService { .. });
+        let self_service = matches!(
+            self.authorization,
+            super::TaskAuthorization::SelfService { .. }
+        );
         if (self.start_mode == SoftwareStartMode::UserInitiated) != self_service
-            || (self_service && self.intent != SoftwareTaskIntent::Install)
+            || (self_service
+                && (self.intent != SoftwareTaskIntent::Install
+                    || !matches!(
+                        self.authorization,
+                        super::TaskAuthorization::SelfService { risk_level: 2, .. }
+                    )))
         {
             return Err(WireError::InvalidValue);
         }

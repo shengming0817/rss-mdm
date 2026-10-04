@@ -3,7 +3,7 @@ use serde_json::json;
 use uuid::Uuid;
 #[test]
 fn task_events_are_closed_bounded_and_cannot_claim_identity() {
-    let value = json!({"wireVersion":1,"executionContext":{"revision":1,"osVersion":[14,0,0,0],"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false},"operationId":Uuid::new_v4(),"attemptId":Uuid::new_v4(),"event":{"kind":"received"}});
+    let value = json!({"wireVersion":1,"executionContext":{"revision":1,"osVersion":[14,0,0,0],"userHelper":true,"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false},"operationId":Uuid::new_v4(),"attemptId":Uuid::new_v4(),"event":{"kind":"received"}});
     let request: TaskEventRequest = serde_json::from_value(value.clone()).unwrap();
     assert!(matches!(request.event(), TaskEvent::Received));
     for mutate in [
@@ -50,12 +50,12 @@ fn signatures_bind_attempt_artifact_and_permission_and_fail_closed() {
         permit: TaskPermit::Offer,
         expires_at: 100,
         resource_digest: [1; 32],
-        resource: ScriptResource {
+        resource: TaskResource {
             id: "r".into(),
             version: "v1".into(),
             variant: "default".into(),
         },
-        authorization: ScriptAuthorization::Policy {
+        authorization: TaskAuthorization::Policy {
             policy_id: id,
             policy_version: id,
         },
@@ -68,6 +68,7 @@ fn signatures_bind_attempt_artifact_and_permission_and_fail_closed() {
         profile: ExecutorProfile::PosixSh,
         sql_parameters: None,
         run_as: ExecutionIdentity::System,
+        execution_target: SoftwareExecutionTarget::Device,
         arguments: vec!["$(touch /bad)".into()],
         environment: Default::default(),
         timeout_seconds: 60,
@@ -163,7 +164,7 @@ fn signatures_bind_attempt_artifact_and_permission_and_fail_closed() {
             s.deadline += 1;
         },
         |s: &mut TaskSpec| {
-            s.authorization = ScriptAuthorization::Policy {
+            s.authorization = TaskAuthorization::Policy {
                 policy_id: Uuid::new_v4(),
                 policy_version: Uuid::new_v4(),
             };
@@ -217,9 +218,14 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
             .try_into()
             .unwrap();
     let spec = SoftwareTaskSpec {
+        authorization: TaskAuthorization::Policy {
+            policy_id: Uuid::new_v4(),
+            policy_version: Uuid::new_v4(),
+        },
         execution_context: rss_mdm_agent_wire::runtime::SoftwareExecutionContext {
             revision: 1,
             os_version: [14, 0, 0, 0],
+            user_helper: true,
             system_broker: true,
             interactive_user: None,
             source_credentials: vec![],
@@ -242,6 +248,28 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
         intent: SoftwareTaskIntent::Install,
         start_mode: SoftwareStartMode::Automatic,
     };
+    let mut self_service = spec.clone();
+    self_service.start_mode = SoftwareStartMode::UserInitiated;
+    assert!(self_service.validate().is_err());
+    self_service.authorization = TaskAuthorization::SelfService {
+        request_id: id,
+        subject: SelfServiceSubject::Device,
+        source: SelfServiceCaller::Human,
+        policy_id: id,
+        policy_revision: 1,
+        policy_version: id,
+        allow_ai: true,
+        risk_level: 2,
+        confirmed: false,
+    };
+    assert!(self_service.validate().is_ok());
+    self_service.start_mode = SoftwareStartMode::Automatic;
+    assert!(self_service.validate().is_err());
+    self_service.start_mode = SoftwareStartMode::UserInitiated;
+    if let TaskAuthorization::SelfService { risk_level, .. } = &mut self_service.authorization {
+        *risk_level = 1;
+    }
+    assert!(self_service.validate().is_err());
     let payload: TaskPayload = spec.clone().try_into().unwrap();
     let schema: serde_json::Value = serde_json::from_str(include_str!(
         "../schema/runtime/task-payload-v1.schema.json"
@@ -452,6 +480,7 @@ fn task_results_require_bounded_coherent_diagnostics() {
         rss_mdm_agent_wire::runtime::SoftwareExecutionContext {
             revision: 1,
             os_version: [14, 0, 0, 0],
+            user_helper: true,
             system_broker: true,
             interactive_user: None,
             source_credentials: vec![],
@@ -615,6 +644,7 @@ fn task_results_require_bounded_coherent_diagnostics() {
             rss_mdm_agent_wire::runtime::SoftwareExecutionContext {
                 revision: 1,
                 os_version: [14, 0, 0, 0],
+                user_helper: true,
                 system_broker: true,
                 interactive_user: None,
                 source_credentials: vec![],
@@ -629,7 +659,7 @@ fn task_results_require_bounded_coherent_diagnostics() {
 #[test]
 fn claims_require_current_unique_executor_profiles() {
     use rss_mdm_agent_wire::runtime::TaskClaimRequest;
-    let base = json!({"wireVersion":1,"executionContext":{"revision":1,"osVersion":[14,0,0,0],"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false},"operationId":Uuid::new_v4(),"profiles":["osquery"]});
+    let base = json!({"wireVersion":1,"executionContext":{"revision":1,"osVersion":[14,0,0,0],"userHelper":true,"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false},"operationId":Uuid::new_v4(),"profiles":["osquery"]});
     assert!(serde_json::from_value::<TaskClaimRequest>(base.clone()).is_ok());
     for profiles in [json!([]), json!(["posix_sh", "osquery"])] {
         let mut value = base.clone();
@@ -679,11 +709,11 @@ fn self_service_schemas_follow_owned_dtos_and_reject_model_authority() {
         published.as_object_mut().unwrap().remove("$id");
         assert_eq!(generated, published);
     }
-    same::<ScriptAuthorization>(include_str!(
-        "../schema/runtime/script-authorization-v1.schema.json"
+    same::<TaskAuthorization>(include_str!(
+        "../schema/runtime/task-authorization-v1.schema.json"
     ));
-    same::<ScriptResource>(include_str!(
-        "../schema/runtime/script-resource-v1.schema.json"
+    same::<TaskResource>(include_str!(
+        "../schema/runtime/task-resource-v1.schema.json"
     ));
     same::<SelfServiceInvoke>(include_str!(
         "../schema/runtime/self-service-invoke-v1.schema.json"
@@ -711,12 +741,12 @@ fn self_service_schemas_follow_owned_dtos_and_reject_model_authority() {
     .unwrap();
     for (name, mut generated) in [
         (
-            "ScriptAuthorization",
-            serde_json::to_value(schemars::schema_for!(ScriptAuthorization)).unwrap(),
+            "TaskAuthorization",
+            serde_json::to_value(schemars::schema_for!(TaskAuthorization)).unwrap(),
         ),
         (
-            "ScriptResource",
-            serde_json::to_value(schemars::schema_for!(ScriptResource)).unwrap(),
+            "TaskResource",
+            serde_json::to_value(schemars::schema_for!(TaskResource)).unwrap(),
         ),
     ] {
         let root = generated.as_object_mut().unwrap();
@@ -753,54 +783,55 @@ fn self_service_schemas_follow_owned_dtos_and_reject_model_authority() {
             .is_valid(&invalid)
         );
     }
-    let authorization =
-        |source, allow_ai, risk_level, confirmed| ScriptAuthorization::SelfService {
-            request_id: id,
-            actor: ScriptActor {
+    let authorization = |source, allow_ai, risk_level, confirmed| TaskAuthorization::SelfService {
+        request_id: id,
+        subject: SelfServiceSubject::User {
+            user: SelfServiceUser {
                 tenant_id: id,
                 instance_id: id,
                 principal_id: id,
             },
-            source,
-            policy_id: id,
-            policy_revision: 1,
-            policy_version: id,
-            allow_ai,
-            risk_level,
-            confirmed,
-        };
+        },
+        source,
+        policy_id: id,
+        policy_revision: 1,
+        policy_version: id,
+        allow_ai,
+        risk_level,
+        confirmed,
+    };
     assert!(
-        authorization(ScriptCaller::Ai, true, 1, false)
+        authorization(SelfServiceCaller::Ai, true, 1, false)
             .validate(id)
             .is_ok()
     );
     assert!(
-        authorization(ScriptCaller::Ai, true, 2, false)
+        authorization(SelfServiceCaller::Ai, true, 2, false)
             .validate(id)
             .is_err()
     );
     assert!(
-        authorization(ScriptCaller::Ai, true, 2, true)
+        authorization(SelfServiceCaller::Ai, true, 2, true)
             .validate(id)
             .is_ok()
     );
     assert!(
-        authorization(ScriptCaller::Ai, false, 1, true)
+        authorization(SelfServiceCaller::Ai, false, 1, true)
             .validate(id)
             .is_err()
     );
     assert!(
-        authorization(ScriptCaller::Human, false, 2, false)
+        authorization(SelfServiceCaller::Human, false, 2, false)
             .validate(id)
             .is_ok()
     );
     assert!(
-        authorization(ScriptCaller::Human, true, 3, true)
+        authorization(SelfServiceCaller::Human, true, 3, true)
             .validate(id)
             .is_err()
     );
     assert!(
-        authorization(ScriptCaller::Human, true, 1, true)
+        authorization(SelfServiceCaller::Human, true, 1, true)
             .validate(Uuid::new_v4())
             .is_err()
     );

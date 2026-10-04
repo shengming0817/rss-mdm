@@ -302,7 +302,9 @@ impl Definition {
             }
             config.validate()?;
             if matches!(self.action, Action::Software { .. })
-                && config.risk_level.is_some_and(|risk| risk != crate::ScriptRisk::CONFIRM)
+                && config
+                    .risk_level
+                    .is_some_and(|risk| risk != crate::ScriptRisk::CONFIRM)
             {
                 return Err(Error::Malformed);
             }

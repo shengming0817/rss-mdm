@@ -381,7 +381,7 @@
               "type": "null"
             }
           ],
-          "description": "Optional script self-service publication and presentation."
+          "description": "Optional task self-service publication and presentation."
         }
       },
       "required": [
@@ -636,6 +636,61 @@
       "additionalProperties": false,
       "description": "Policy-owned self-service configuration. Missing input defaults are normalized by CAS.",
       "properties": {
+        "access": {
+          "description": "Explicit access basis. Null is permitted only for an unpublished draft.",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "description": "Any authenticated registration in the effective device scope.",
+              "properties": {
+                "kind": {
+                  "const": "device",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Any live enterprise session in the consuming tenant.",
+              "properties": {
+                "kind": {
+                  "const": "authenticated_user",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "At least one current, trusted user selector must match.",
+              "properties": {
+                "kind": {
+                  "const": "users",
+                  "type": "string"
+                },
+                "selectors": {
+                  "description": "Bounded OR selection; an empty selection grants nothing and is invalid.",
+                  "items": {
+                    "$ref": "#/$defs/SelfServiceSelector"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "kind",
+                "selectors"
+              ],
+              "type": "object"
+            }
+          ]
+        },
         "allowAi": {
           "default": null,
           "description": "Defaults only at first configuration; normalized stored values are always present.",
@@ -689,6 +744,7 @@
         }
       },
       "required": [
+        "access",
         "published",
         "displayName",
         "description",
@@ -696,6 +752,157 @@
         "sideEffects",
         "category",
         "keywords"
+      ],
+      "type": "object"
+    },
+    "SelfServiceDepartmentMatch": {
+      "description": "Department membership semantics.",
+      "oneOf": [
+        {
+          "const": "exact",
+          "description": "The declared department itself.",
+          "type": "string"
+        },
+        {
+          "const": "subtree",
+          "description": "The department itself or a descendant.",
+          "type": "string"
+        }
+      ]
+    },
+    "SelfServiceSelector": {
+      "description": "Opaque user identity coordinates; Identity owns their live interpretation.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Exact enterprise account.",
+          "properties": {
+            "instanceId": {
+              "description": "Product instance.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "kind": {
+              "const": "user",
+              "type": "string"
+            },
+            "principalId": {
+              "description": "Enterprise principal.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "tenantId": {
+              "description": "Product tenant.",
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "instanceId",
+            "tenantId",
+            "principalId"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Exact current trusted IdP group.",
+          "properties": {
+            "id": {
+              "description": "Exact group value.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "idp_group",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/SelfServiceSource",
+              "description": "Full immutable source coordinates."
+            }
+          },
+          "required": [
+            "kind",
+            "source",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Current trusted organization membership.",
+          "properties": {
+            "id": {
+              "description": "Exact department value.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "department",
+              "type": "string"
+            },
+            "matching": {
+              "$ref": "#/$defs/SelfServiceDepartmentMatch",
+              "description": "Exact membership or descendant membership."
+            },
+            "source": {
+              "$ref": "#/$defs/SelfServiceSource",
+              "description": "Full immutable source coordinates."
+            }
+          },
+          "required": [
+            "kind",
+            "source",
+            "id",
+            "matching"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Explicit product user group, distinct from device groups.",
+          "properties": {
+            "id": {
+              "description": "Product group identity.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "kind": {
+              "const": "user_group",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SelfServiceSource": {
+      "additionalProperties": false,
+      "description": "Source data only; authorization validates and matches the issuer and current configuration.",
+      "properties": {
+        "configurationVersion": {
+          "description": "Exact configuration revision.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "issuer": {
+          "description": "Exact issuer.",
+          "type": "string"
+        },
+        "providerId": {
+          "description": "Identity provider.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "providerId",
+        "issuer",
+        "configurationVersion"
       ],
       "type": "object"
     },

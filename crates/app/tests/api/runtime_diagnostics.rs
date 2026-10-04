@@ -93,6 +93,7 @@ impl Fixture {
             None,
             Default::default(),
             rss_device_command_postgres::CommandClock::Postgres,
+            crate::test_support::identity::session_authority(&config).await?,
         )
         .await?;
         let source = Arc::new(crate::runtime_diagnostics::RuntimeDiagnostics {

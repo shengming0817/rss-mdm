@@ -46,12 +46,12 @@
       "file": "task-event-ack-v1.schema.json"
     },
     {
-      "type": "ScriptAuthorization",
-      "file": "script-authorization-v1.schema.json"
+      "type": "TaskAuthorization",
+      "file": "task-authorization-v1.schema.json"
     },
     {
-      "type": "ScriptResource",
-      "file": "script-resource-v1.schema.json"
+      "type": "TaskResource",
+      "file": "task-resource-v1.schema.json"
     },
     {
       "type": "SelfServiceInvoke",

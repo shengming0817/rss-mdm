@@ -324,6 +324,7 @@ pub(crate) async fn worker(base: &Value) -> Result<Option<rss_runtime::ShutdownS
         crate::execution_assembly::open_content(&config, config.native_protector()?).await?,
         std::collections::BTreeMap::new(),
         rss_device_command_postgres::CommandClock::Postgres,
+        crate::test_support::identity::session_authority(&config).await?,
     )
     .await?
     .service;

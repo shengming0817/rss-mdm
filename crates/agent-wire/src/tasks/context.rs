@@ -131,9 +131,15 @@ impl SoftwareExecutionTarget {
     pub fn validate_for(&self, platform: TaskPlatform) -> Result<(), WireError> {
         match self {
             Self::Device => Ok(()),
-            Self::User { identity, session_id }
-                if !session_id.is_nil() && identity.len() <= 184
-                    && valid_os_identity(identity, platform) => Ok(()),
+            Self::User {
+                identity,
+                session_id,
+            } if !session_id.is_nil()
+                && identity.len() <= 184
+                && valid_os_identity(identity, platform) =>
+            {
+                Ok(())
+            }
             _ => Err(WireError::InvalidValue),
         }
     }
@@ -142,10 +148,13 @@ fn valid_os_identity(identity: &str, platform: TaskPlatform) -> bool {
     match platform {
         TaskPlatform::Windows => identity.strip_prefix("S-1-").is_some_and(|tail| {
             tail.split('-').count() >= 2
-                && tail.split('-').all(|n| !n.is_empty() && n.parse::<u32>().is_ok())
+                && tail
+                    .split('-')
+                    .all(|n| !n.is_empty() && n.parse::<u32>().is_ok())
         }),
-        TaskPlatform::Macos => identity.parse::<u32>().is_ok()
-            && identity.bytes().all(|b| b.is_ascii_digit()),
+        TaskPlatform::Macos => {
+            identity.parse::<u32>().is_ok() && identity.bytes().all(|b| b.is_ascii_digit())
+        }
     }
 }
 

@@ -10,6 +10,7 @@ fn task() -> SoftwareTaskSpec {
     let context = SoftwareExecutionContext {
         revision: 1,
         os_version: [10, 0, 22621, 0],
+        user_helper: true,
         system_broker: true,
         interactive_user: Some(SoftwareInteractiveUser {
             identity: "S-1-5-21-1-2-3-1001".into(),
@@ -47,6 +48,10 @@ fn task() -> SoftwareTaskSpec {
         expires_at: 200,
         platform: TaskPlatform::Windows,
         architecture: TaskArchitecture::X86_64,
+        authorization: TaskAuthorization::Policy {
+            policy_id: uuid::Uuid::new_v4(),
+            policy_version: uuid::Uuid::new_v4(),
+        },
         execution_context: context,
         definition_digest: [0; 32],
         steps: vec![step],

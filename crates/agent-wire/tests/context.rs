@@ -5,6 +5,7 @@ fn context() -> SoftwareExecutionContext {
     SoftwareExecutionContext {
         revision: 1,
         os_version: [10, 0, 22621, 0],
+        user_helper: true,
         system_broker: true,
         interactive_user: Some(SoftwareInteractiveUser {
             identity: "S-1-5-21-1-2-3-1001".into(),
@@ -39,6 +40,24 @@ fn user_registration_binds_sid_and_login_while_provisioning_remains_device_scope
         action
             .execution_target(TaskPlatform::Windows, &different)
             .is_err()
+    );
+    let mut unbound = live.clone();
+    unbound.user_helper = false;
+    assert!(
+        action
+            .execution_target(TaskPlatform::Windows, &unbound)
+            .is_err()
+    );
+    assert!(
+        ExecutionIdentity::LoggedInUser
+            .execution_target(TaskPlatform::Windows, &unbound)
+            .is_err()
+    );
+    assert_eq!(
+        ExecutionIdentity::System
+            .execution_target(TaskPlatform::Windows, &unbound)
+            .unwrap(),
+        SoftwareExecutionTarget::Device
     );
     let mut absent = live.clone();
     absent.interactive_user = None;
@@ -108,4 +127,29 @@ fn brew_requires_a_non_root_interactive_account() {
             uid == "501"
         );
     }
+}
+
+#[test]
+fn signed_user_targets_require_platform_identity_and_login_generation() {
+    for (platform, identity, valid) in [
+        (TaskPlatform::Windows, "S-1-5-21-1001", true),
+        (TaskPlatform::Macos, "501", true),
+        (TaskPlatform::Windows, "alice", false),
+        (TaskPlatform::Macos, "alice", false),
+        (TaskPlatform::Macos, "S-1-5-21-1001", false),
+    ] {
+        let target = SoftwareExecutionTarget::User {
+            identity: identity.into(),
+            session_id: Uuid::new_v4(),
+        };
+        assert_eq!(target.validate_for(platform).is_ok(), valid);
+    }
+    assert!(
+        SoftwareExecutionTarget::User {
+            identity: "501".into(),
+            session_id: Uuid::nil()
+        }
+        .validate_for(TaskPlatform::Macos)
+        .is_err()
+    );
 }

@@ -29,7 +29,8 @@
         "resource",
         "authorization",
         "parameters",
-        "deadline"
+        "deadline",
+        "executionTarget"
       ],
       "properties": {
         "wireVersion": {
@@ -222,10 +223,10 @@
           }
         },
         "resource": {
-          "$ref": "#/$defs/ScriptResource"
+          "$ref": "#/$defs/TaskResource"
         },
         "authorization": {
-          "$ref": "#/$defs/ScriptAuthorization"
+          "$ref": "#/$defs/TaskAuthorization"
         },
         "parameters": {
           "type": "object",
@@ -257,6 +258,9 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 9223372036854775807
+        },
+        "executionTarget": {
+          "$ref": "#/$defs/SoftwareExecutionTarget"
         }
       },
       "allOf": [
@@ -316,7 +320,8 @@
         "architecture",
         "startMode",
         "steps",
-        "executionContext"
+        "executionContext",
+        "authorization"
       ],
       "properties": {
         "wireVersion": {
@@ -476,6 +481,9 @@
         },
         "executionContext": {
           "$ref": "#/$defs/SoftwareExecutionContext"
+        },
+        "authorization": {
+          "$ref": "#/$defs/TaskAuthorization"
         }
       }
     },
@@ -2045,7 +2053,8 @@
         "interactiveUser",
         "sourceCredentials",
         "msixSideload",
-        "msixUnsigned"
+        "msixUnsigned",
+        "userHelper"
       ],
       "properties": {
         "revision": {
@@ -2139,6 +2148,9 @@
           "type": "boolean"
         },
         "msixUnsigned": {
+          "type": "boolean"
+        },
+        "userHelper": {
           "type": "boolean"
         }
       }
@@ -3319,49 +3331,7 @@
         }
       ]
     },
-    "ScriptActor": {
-      "additionalProperties": false,
-      "description": "Authenticated product user; contains no session credential.",
-      "properties": {
-        "instanceId": {
-          "description": "Identity instance.",
-          "format": "uuid",
-          "type": "string"
-        },
-        "principalId": {
-          "description": "Authenticated principal.",
-          "format": "uuid",
-          "type": "string"
-        },
-        "tenantId": {
-          "description": "Product tenant.",
-          "format": "uuid",
-          "type": "string"
-        }
-      },
-      "required": [
-        "tenantId",
-        "instanceId",
-        "principalId"
-      ],
-      "type": "object"
-    },
-    "ScriptCaller": {
-      "description": "Origin attested by the authenticated system service, never taken from model arguments.",
-      "oneOf": [
-        {
-          "const": "human",
-          "description": "Interactive employee action.",
-          "type": "string"
-        },
-        {
-          "const": "ai",
-          "description": "AI tool action forwarded by the system service.",
-          "type": "string"
-        }
-      ]
-    },
-    "ScriptAuthorization": {
+    "TaskAuthorization": {
       "description": "Server decision covered by the same signature as all script execution inputs.",
       "oneOf": [
         {
@@ -3414,10 +3384,6 @@
           "additionalProperties": false,
           "description": "Targeted Policy self-service invocation.",
           "properties": {
-            "actor": {
-              "$ref": "#/$defs/ScriptActor",
-              "description": "Real employee identity."
-            },
             "allowAi": {
               "description": "Effective AI switch.",
               "type": "boolean"
@@ -3460,14 +3426,18 @@
               "type": "integer"
             },
             "source": {
-              "$ref": "#/$defs/ScriptCaller",
+              "$ref": "#/$defs/SelfServiceCaller",
               "description": "Trusted service's caller classification."
+            },
+            "subject": {
+              "$ref": "#/$defs/SelfServiceSubject",
+              "description": "Real employee identity."
             }
           },
           "required": [
             "kind",
             "requestId",
-            "actor",
+            "subject",
             "source",
             "policyId",
             "policyRevision",
@@ -3479,9 +3449,9 @@
           "type": "object"
         }
       ],
-      "title": "ScriptAuthorization"
+      "title": "TaskAuthorization"
     },
-    "ScriptResource": {
+    "TaskResource": {
       "additionalProperties": false,
       "description": "Exact Resource identity accompanying its signed digest.",
       "properties": {
@@ -3503,7 +3473,87 @@
         "version",
         "variant"
       ],
-      "title": "ScriptResource",
+      "title": "TaskResource",
+      "type": "object"
+    },
+    "SelfServiceCaller": {
+      "description": "Origin attested by the authenticated system service, never taken from model arguments.",
+      "oneOf": [
+        {
+          "const": "human",
+          "description": "Interactive employee action.",
+          "type": "string"
+        },
+        {
+          "const": "ai",
+          "description": "AI tool action forwarded by the system service.",
+          "type": "string"
+        }
+      ]
+    },
+    "SelfServiceSubject": {
+      "description": "Subject selected by the server's explicit Policy access basis.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Device credential plus effective device scope; no enterprise session.",
+          "properties": {
+            "kind": {
+              "const": "device",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A live enterprise session matched by product authorization.",
+          "properties": {
+            "kind": {
+              "const": "user",
+              "type": "string"
+            },
+            "user": {
+              "$ref": "#/$defs/SelfServiceUser",
+              "description": "Authenticated enterprise coordinates, without a credential."
+            }
+          },
+          "required": [
+            "kind",
+            "user"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SelfServiceUser": {
+      "additionalProperties": false,
+      "description": "Authenticated product user; contains no session credential.",
+      "properties": {
+        "instanceId": {
+          "description": "Identity instance.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "principalId": {
+          "description": "Authenticated principal.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "tenantId": {
+          "description": "Product tenant.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenantId",
+        "instanceId",
+        "principalId"
+      ],
       "type": "object"
     }
   }

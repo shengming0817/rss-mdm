@@ -12,7 +12,7 @@ pub(crate) fn context(platform: Platform) -> Value {
         Platform::Windows => [10, 0, 22621, 0],
         Platform::MacOs => [14, 0, 0, 0],
     };
-    json!({"revision":1,"osVersion":os,"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false})
+    json!({"revision":1,"osVersion":os,"userHelper":true,"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false})
 }
 pub(crate) fn case_device() -> &'static str {
     crate::test_support::agent::device(
@@ -462,6 +462,7 @@ pub(crate) async fn worker(
         content,
         std::collections::BTreeMap::new(),
         rss_device_command_postgres::CommandClock::Postgres,
+        crate::test_support::identity::session_authority(&config).await?,
     )
     .await?
     .service;

@@ -101,7 +101,7 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）
 
 同一软件 Policy 用 `resource:{kind:"software",id,version,variants}` 将每个支持的平台/架构映射到精确变体。`action.kind:"software"` 的 `intent` 为 `required_install`、`available_install` 或 `explicit_uninstall`；后者要求软件定义声明卸载。`admissionOperation` 必须是当前企业软件版本批准的 operation；撤销后重新批准，需要管理员以新 operation 更新 Policy，生成新的执行版本，旧版本不会自动复活。管理员在 `rollout.stages` 中按顺序指定 Scope 与 UTC Unix `opensAt`，可选 `minimumVerifiedPercent` 仅约束前一阶段；未设置时到时间自动开放。`disable` 暂停新任务，`enable` 恢复；仅编辑范围和时间不产生新的软件执行版本。动态 Scope 决定后续准入，既有 Run 与核实证据保持原身份。
 
-Agent 只收到单次可执行任务，不消费 Policy、Scope、灰度、Catalog 身份或企业批准 operation。后端在发布分配时验证固定依赖可在目标平台解析，并在签发时按依赖优先顺序生成 `steps`；每一步是闭合的本机动作、检测规则、任务产物与必要的包管理器 export identity。任务不携带依赖图或来源准入模型。`definitionDigest` 绑定完整步骤序列；内容键为 `{步骤下标}/{该步骤产物键}`，下载时作为 URL 编码的 `artifact` 查询参数。`startMode:user_initiated` 表示可选任务须经可信本地用户操作后才能请求 Start，`automatic` 表示可自动开始。Offer 仅用于准备和下载，过期后不能继续取内容；Start permit 才能执行。软件分配使用执行版本下稳定的期望身份；核实成功后不因签入重复安装，明确失败总共至多三次尝试并逐次退避，未启动的自选 Offer 到期后可以重新领取。Agent 软件计划决定本机安装动作并做独立检测；服务端分别保存 installer exit、检测状态、版本与证据摘要。核实成功、明确失败、等待重启、未知效果分开记录；未知或等待重启不盲目重试，设备重新注册也不解除未知阻断。来源 Published、下载成功、exit 0 和任务回执均不能替代核实成功。
+Agent 只收到单次可执行任务与服务端授权坐标，不消费 Policy 定义、Scope、灰度或企业批准模型。后端在发布分配时验证固定依赖可在目标平台解析，并在签发时按依赖优先顺序生成 `steps`；每一步是闭合的本机动作、检测规则、任务产物与必要的包管理器 export identity。任务不携带依赖图或来源准入模型。`definitionDigest` 绑定完整步骤序列；内容键为 `{步骤下标}/{该步骤产物键}`，下载时作为 URL 编码的 `artifact` 查询参数。`startMode:user_initiated` 表示可选任务须经可信本地用户操作后才能请求 Start；显式自助请求的交互可提供该确认，不要求重复点击。`automatic` 表示后台任务可自动开始。Offer 仅用于准备和下载，过期后不能继续取内容；Start permit 才能执行。软件分配使用执行版本下稳定的期望身份；核实成功后不因签入重复安装，明确失败总共至多三次尝试并逐次退避，未启动的自选 Offer 到期后可以重新领取。Agent 软件计划决定本机安装动作并做独立检测；服务端分别保存 installer exit、检测状态、版本与证据摘要。核实成功、明确失败、等待重启、未知效果分开记录；未知或等待重启不盲目重试，设备重新注册也不解除未知阻断。来源 Published、下载成功、exit 0 和任务回执均不能替代核实成功。
 
 `GET /api/v1/policies/{id}/software/rollout` 返回每阶段当前总目标、已回报、等待用户、未知、等待重启、明确失败、核实成功和无可用软件能力设备数，以及暂停、时间与可选门槛。自选任务被领取且尚未启动、Offer 仍有效时，逐 Run 的 `userAction` 与灰度统计显示 `waiting_user`。阶段历史按稳定 Scope 身份归属，重排阶段不会复用其他 Scope 的结果。Policy 预览和设备页另外返回服务端计算的闭合 `taskAdmission` 原因，不把单纯 Scope 命中称为可执行。读取要求 PolicyRead 与全设备 OperationRead；这些是当前动态目标的统计，历史任务证据不被重算。真实设备身份、可信用户交互和软件执行适配由 #2564 消费本协议，平台 T3 由 #2480/#2481 验收。
 
@@ -123,31 +123,24 @@ Apple 新注册 profile 在启用该能力时申请已安装应用查询与企�
 
 任意 PATCH 大小和字节偏移继续有效。普通内容按 128 MiB 完整块和一个尾快照保存，完成后冻结清单，不进行整包复制或 multipart 合成。请求体完整结束、对象校验和 PostgreSQL 提交后才确认偏移。原生配置与诊断的逻辑摘要保持明文身份，但所有持久对象都为受保护密文。只有 ZIP/MSIX 校验使用有额度限制的临时 seek 文件；普通下载按逻辑 Range 读取清单。
 
-## 脚本自助服务与调用参数
+## 自助任务与调用参数
 
-`Policy.definition.selfService` 管理 published、displayName、description、prerequisites、sideEffects、category、keywords、allowAi 和 riskLevel。首次省略 allowAi/riskLevel 时归一化为 true/2；编辑时省略保留原值。riskLevel 仅允许 1、2：一级允许 AI 直接调用，二级由 Agent 系统服务取得当前员工对具体参数的确认。关闭 allowAi 只影响 AI 目录和调用；撤回 published 阻止新的自助调用。普通自动执行独立适用已有 Policy 规则。
+`Policy.definition.selfService` 同时用于脚本与 AvailableInstall 软件。`access` 必须显式填写：`device` 允许有效设备 Scope 内的当前注册调用；`authenticated_user` 要求本租户有效企业会话；`users` 要求非空、有界、无重复的 selectors 至少匹配一个当前可信用户、IdP 组、部门（exact/subtree）或静态用户组。用户组与设备 Scope 分别判断，不建立 userScope。未发布草稿可显式填写 `access:null`；发布时不允许 null，省略字段不再接受。
 
-Resource.Script 定义参数类型和范围，Policy 对每个参数选择来源：
+管理员继续使用既有 Policy/Resource/Software 管理权限；普通员工无需 ScriptExecute 或 SoftwareDeploy。系统服务的执行权限不由员工管理员身份决定。Resource 的 System/LoggedInUser 保持原意；后者必须绑定确切 SID/UID、OS 登录世代和该会话的 helper，缺失或换人时阻止新 Start。
 
-```json
-"parameters": {
-  "path": {"kind":"fixed", "value":"/Applications"},
-  "name": {"kind":"input"}
-}
-```
+自助描述与 AI 开关由 selfService 持有。首次省略 allowAi/riskLevel 归一化为 true/2，编辑省略保留原值。脚本 riskLevel 仅允许 1、2；软件 riskLevel 只接受 2（省略时归一化为 2），AI 安装必须确认。关闭 allowAi 或撤回 published 只阻止自助调用，普通自动 Policy 和 RemoteOperation 独立判断。
 
-来源键必须与 Resource properties 完全一致。调用只提交全部 Input 键，不能覆盖 Fixed；后端合并后用同一 Resource schema 完整校验并冻结到 Run。存在 Input 时 trigger 必须是 manual，不能通过全 Scope rerun 补齐调用参数。全部 Fixed 可用于已有自动触发器。人和 AI 使用相同类型、范围和绑定规则，没有额外 AI 参数 schema。参数来源/固定值变化产生执行版本；自助目录配置、AI 开关、风险等级只推进配置 revision，频率历史继续生效。旧 literal Policy 参数形状不再接受。
+Resource.Script 持有参数 schema，Policy 使用 Fixed/Input 选择来源。调用必须提交全部且仅提交 Input 键，不能覆盖 Fixed；后端合并后完整校验并冻结到 Run。存在 Input 时 trigger 必须为 manual。参数来源或固定值变化产生执行版本；访问和描述变化只推进配置 revision。软件调用 parameters 必须为空。
 
-下列入口位于 `/api/v1/agent/runtime`，每个请求同时携带当前 Agent 系统服务的设备凭据，以及 `X-RSS-User-Session` 中的产品员工会话。该会话只在入口认证，不写入 Run、签名或审计。source 由持有设备凭据的系统服务按真实 IPC 入口设置，不能从模型工具参数透传；confirmed 表示系统服务取得该用户对当前 requestId、Policy revision/version 和确切参数的确认。#2657 持有该客户端边界，模型不得接触设备私钥或会话凭据。
+以下入口位于 `/api/v1/agent/runtime`，始终使用 Agent 系统服务的设备凭据。用户访问模式还使用 `X-RSS-User-Session`；设备模式不需要企业登录。无效或重复用户会话头不会降级为设备访问。系统服务根据真实 IPC 入口设置 source，模型参数不得控制 source，也不得接触设备私钥或企业凭据。confirmed 绑定当前 requestId、Policy revision/version 和确切输入，客户端边界由 #2677 实施。
 
-- `GET /self-service/scripts?source=human|ai&after=<policyId>` 返回有界目录及 nextCursor：Policy ID/revision/version、自助描述、Resource 坐标、parameterSources、Resource parameterSchema。员工需要当前设备 ScriptExecute，且设备必须属于已解析 Scope、匹配平台/架构、具有脚本能力及最近声明的 executor profile。未知事实不返回可执行项目；AI 目录额外使用 allowAi。
-- `POST /self-service/scripts/invocations` 接受 operationId、policyId、policyRevision、policyVersion、source、confirmed、parameters。只针对设备凭据对应的一个当前设备，返回 202 的 requestId/runId 与 Policy 坐标。相同请求精确重放；同一 operationId 的变化正文返回冲突。复用正常 Run/Attempt、频率、pending/Unknown 和容量门控，Unknown 不因重新注册绕过。
-- `GET /self-service/scripts/invocations/{requestId}` 返回该用户及注册对应请求的 Run/attempt/state/quality/结果。采集原始结果复用 InventoryRead 和 InventorySensitiveRead 授权。管理员仍从既有 Policy Run 接口读摘要/详情，自助授权身份与 attempt 同时可追溯。
+- `GET /self-service?source=human|ai&after=<policyId>` 返回当前可调用的有界目录。每项含 Policy 坐标、自助描述及 tagged script/software 接口。目录复用 Scope、注册世代、平台、能力、资源批准、频率、窗口、容量及 pending/Unknown 判断；未知事实不授予执行。
+- `POST /self-service/invocations` 针对当前设备接受 operationId、Policy 坐标、source、confirmed、parameters，返回 202 的 requestId/runId。精确重试返回原 Run；变化正文返回冲突。AvailableInstall 在显式请求前不创建 Run/Offer，不能自行 Start；系统安装按确切资源版本、检测意图及 effect target 在用户和 Policy 之间排除重复，Unknown 不允许盲重试。
+- `GET /self-service/invocations/{requestId}` 返回本主体、注册及世代对应的执行状态。原始脚本结果另外要求 InventoryRead，敏感采集还要求 InventorySensitiveRead；缺少读取权限时 result 为 null，状态仍可读。软件只返回闭合检测 outcome，原生证据与诊断继续由管理接口持有。
 
-后续 Offer/Start/content 使用原设备认证，不重复要求用户在线。持久 UserGrant 重查实际授权规则修订，Start 同时重查 Policy revision/version、自助配置、Scope、当前注册和执行器能力。唯一 TaskSpec 必须含 authorization、resource、完整 parameters 和 deadline；签名覆盖这些字段及现有材料、身份、预算、任务与 attempt。Start 完整比较本次 Offer 的执行内容，只改变 permit/expiry。撤权后的迟到结果保留原生时间和质量，但不更新可信 Inventory；副作用无法确认时保留 Unknown。
+Run 保存服务端选择的访问依据，用户模式只保存 Identity 签发的非凭据 SessionReference。领取及 Start 服务端复核原会话、账户和成员有效性、可信来源与快照期限、静态用户组、Policy revision/version、自助配置、有效设备 Scope 和确切 OS/helper。企业身份与 OS 账号分别绑定。签名覆盖通用 TaskAuthorization、精确输入和执行目标；客户端不能伪装成自动 Policy 或 RemoteOperation。
 
-软件检测仍归 Agent 本地的受批准软件定义/原生 detector，不新增软件检测 Policy、Run 或后端 API。Jamf 的脚本参数标签在 Script 定义、参数值在 Policy 配置；扩展属性脚本在终端运行并随 Inventory 回传，参考 [Scripts](https://learn.jamf.com/r/en-US/jamf-pro-documentation-current/Scripts) 与 [Extension Attributes](https://developer.jamf.com/jamf-pro/docs/extension-attributes)。RSS 的 Fixed/Input 在此职责划分上补齐同一 Resource 范围校验。
+访问撤回阻止未启动任务。已启动执行按原 attempt 和不可变材料记录完成证据，企业退出登录不产生新的执行许可。执行状态与可信 Inventory 投影分别判断。升级只接受完整、摘要一致的已登记前驱安装：缺 access 的旧配置改为未发布且显式 null；旧未启动 Offer 全部终止，旧自助授权永久撤回；已启动软件材料一次性规范化为结果校验依据。原 signed Offer/permit 保留原字节作为审计，不重签、不恢复旧运行 DTO 或兼容路由。
 
-目录只显示当前可调用项目：已消费频率、pending/Unknown、check-in 冷却、容量与窗口均复用调用准入判断。状态的 result 使用 agent-wire 的 ScriptRunResult 固定包装，明确原生 collectedAt、receivedAt、exitCode、quality、schemaValid、budgetValid、outputReference、diagnostics 与 trusted；仅 Resource 定义的 output 保留动态 JSON。无结果时 result 为显式 null。
-
-联调契约由拥有 DTO 的 crate 生成：管理写入/读取见 `crates/management-http/schema/{PolicyWrite,Policy}.json`，调用请求与目录/受理/结果响应统一见 `crates/agent-wire/schema/runtime/self-service-*.json`，签名字段以唯一 `task-payload-v1.schema.json` 为准。对应 Rust examples 为生成入口；Agent artifact 的生成/校验入口保持 `hack/agent_wire_artifact.py --write`。#2657/#2658 应固定本次 PR 的最终 Git SHA，并核对其 pm:ship 中的 schema SHA-256 与 runtime SCHEMA_FINGERPRINT；不使用浮动 develop 或旧 TaskSpec 兜底。本次交付只提供后端与契约，实际 Agent/员工 UI 分别由 #2657/#2658 实施。
+契约由源码 owner 生成：管理 schema 见 `crates/management-http/schema/{PolicyWrite,Policy}.json`；调用 DTO 见 `crates/agent-wire/schema/runtime/self-service-*.json`；通用授权、资源坐标与签名任务以 task schema 为准。Rust examples 是 DTO 生成入口，`hack/agent_wire_artifact.py --write` 生成嵌入和 fingerprint。#2677/#2678 固定最终提交与契约指纹完成实际 Agent/员工 UI 集成；本 PR 的后端接缝结果不替代真机或浏览器闭环。软件本地检测及三 provider 产品验证继续归 #2657。

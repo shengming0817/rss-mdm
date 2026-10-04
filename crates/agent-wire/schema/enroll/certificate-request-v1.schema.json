@@ -114,7 +114,8 @@
         "interactiveUser",
         "sourceCredentials",
         "msixSideload",
-        "msixUnsigned"
+        "msixUnsigned",
+        "userHelper"
       ],
       "properties": {
         "revision": {
@@ -208,6 +209,9 @@
           "type": "boolean"
         },
         "msixUnsigned": {
+          "type": "boolean"
+        },
+        "userHelper": {
           "type": "boolean"
         }
       }
