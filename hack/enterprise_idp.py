@@ -63,13 +63,18 @@ def fixture(root, environment):
         environment.compose('--profile','idp','up','-d','idp')
         name=environment.compose('ps','-q','idp')
         context=ssl.create_default_context(cafile=str(root/'ca.crt'))
-        issuer=origin+'/realms/mdm';end=time.monotonic()+120
+        issuer=origin+'/realms/mdm';end=time.monotonic()+120;last_error='not attempted'
         while True:
             try:
                 with urllib.request.urlopen(issuer+'/.well-known/openid-configuration',context=context,timeout=2) as response:
                     if response.status==200:break
-            except OSError:pass
-            if time.monotonic()>end:raise RuntimeError('enterprise fixture readiness deadline')
+            except OSError as error:last_error=type(error).__name__+': '+str(error)
+            if time.monotonic()>end:
+                logs=environment.compose('logs','--no-color','--tail','60','idp')
+                for secret in ('fixture-operator-password','fixture-secret','Fixture-provider-password-2026!','fixture-totp-secret-2339'):
+                    logs=logs.replace(secret,'<redacted>')
+                print(logs,file=sys.stderr,flush=True)
+                raise RuntimeError('enterprise fixture readiness deadline: '+last_error)
             time.sleep(.25)
         configure_department(origin,context)
         yield dict(MDM_TEST_SSO_ISSUER=issuer,MDM_TEST_SSO_CA=str(root/'ca.crt'),MDM_TEST_SSO_CONTAINER=name)
