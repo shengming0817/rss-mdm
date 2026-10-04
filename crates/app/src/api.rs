@@ -321,6 +321,7 @@ pub(crate) fn from_state(
     monotonic: Arc<dyn rss_observation::Clock>,
 ) -> crate::native::Routers {
     let apple_state = Arc::new(rss_mdm_apple_channel::HttpState {
+        account_authority: rss_mdm_apple_channel::account_enrollment::authority(),
         authentication: rss_mdm_apple_channel::account_enrollment::Authentication {
             authority: state.identity.authority.clone(),
             http: state.identity.browser().http.clone(),

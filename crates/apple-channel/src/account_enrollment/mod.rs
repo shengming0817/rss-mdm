@@ -1,6 +1,8 @@
 //! Account-driven Device Enrollment. Identity owns people; registration owns devices.
 //! ref: Apple implementing-the-simple-authentication-account-driven-enrollment-flow;
 //! apple/device-management mdm/checkin/gettoken.yaml@09f249a06e7e3289930bf6d05f38fb562f748ebf.
+mod authority;
+pub use authority::authority;
 mod bridge;
 mod management;
 mod protocol;
@@ -166,8 +168,13 @@ pub struct UserAccess {
 }
 impl UserAccess {
     pub(crate) async fn current_in(&self, c: &mut sqlx::PgConnection) -> Result<(), Error> {
-        self.admission.check_live()?;
-        let row = store::binding(c, &self.admission.data.tenant, self.admission.data.id).await?;
+        self.admission.revalidate_account_in(c).await?;
+        let row = store::binding(
+            c,
+            &self.admission.coordinates().tenant,
+            self.admission.coordinates().id,
+        )
+        .await?;
         if row.try_get::<Uuid, _>("id").map_err(crate::database::db)? != self.flow
             || row
                 .try_get::<String, _>("token_hash")
@@ -176,7 +183,7 @@ impl UserAccess {
             || row
                 .try_get::<i64, _>("authorization_version")
                 .map_err(crate::database::db)?
-                != self.admission.data.version
+                != self.admission.coordinates().version
         {
             return Err(Error::Unauthorized);
         }
@@ -211,10 +218,11 @@ pub(crate) async fn authorize_user(
         &app.access.registration(),
         &app.identity,
         enrollment,
+        app.account_authority.clone(),
         None,
     )
     .await?;
-    if admission.data.version
+    if admission.coordinates().version
         != row
             .try_get::<i64, _>("authorization_version")
             .map_err(crate::database::db)?
@@ -250,7 +258,7 @@ pub(crate) async fn reauthentication(
                         &mut (*tenant, *enrollment, *flow),
                         |(tenant, enrollment, flow), c| {
                             Box::pin(async move {
-                                let previous = store::binding(c, tenant, *enrollment).await?;
+                                let previous = store::recovery(c, tenant, *enrollment).await?;
                                 store::new_flow(
                                     c,
                                     tenant,
@@ -260,7 +268,7 @@ pub(crate) async fn reauthentication(
                                             .try_get("organization")
                                             .map_err(crate::database::db)?,
                                         revision: previous
-                                            .try_get("organization_revision")
+                                            .try_get("current_organization_revision")
                                             .map_err(crate::database::db)?,
                                         target: *enrollment,
                                         request_digest: previous

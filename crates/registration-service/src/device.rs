@@ -401,7 +401,7 @@ impl DeviceService {
         facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     ) -> Result<RegistrationReceipt, Error> {
         admission.current(tx).await?;
-        let data = &admission.data;
+        let data = &admission.coordinates();
         store::bind_authorized_in(
             tx,
             &data.tenant,

@@ -285,9 +285,10 @@ pub fn registration(
     let (task, _) = rss_runtime::ManagedTask::prepare("apple-apns", Duration::from_secs(8));
     task.into_registration(move |token| async move {
         let mut certificate_levels = [None; 3];
+        let mut account_certificate_levels = std::collections::BTreeMap::new();
         let mut health = Health::default();
         loop {
-            if let Some(now) = apple.push.clock.unix_seconds() { apple.report_certificate_health(now, &mut certificate_levels); }
+            if let Some(now) = apple.push.clock.unix_seconds() { apple.report_certificate_health(now, &mut certificate_levels, &mut account_certificate_levels); }
             let result = tokio::select! { biased; ()=token.cancelled()=>return Ok(()), result=cycle(&apple, &execution, &access, &audit_store, &tenant)=>result };
             let health_result = result.as_ref().map(|(_, wake, _)| *wake).map_err(|_| Error::Unavailable(Failure::AppleStorage));
             let (ready, delay) = health.observe(&health_result);

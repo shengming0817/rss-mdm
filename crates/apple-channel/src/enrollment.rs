@@ -25,7 +25,12 @@ use uuid::Uuid;
 async fn admitted(c: &mut sqlx::PgConnection, proof: &Admission) -> Result<PgRow, Error> {
     let row = proof.current(c).await?;
     if proof.is_account() {
-        crate::account_enrollment::require_binding_in(c, &proof.data.tenant, proof.data.id).await?;
+        crate::account_enrollment::require_binding_in(
+            c,
+            &proof.coordinates().tenant,
+            proof.coordinates().id,
+        )
+        .await?;
     }
     Ok(row)
 }
@@ -46,6 +51,7 @@ async fn authorized(
             &app.access.registration(),
             &app.identity,
             id,
+            app.account_authority.clone(),
             secret,
         )
         .await?
@@ -71,12 +77,12 @@ async fn authorized(
             .await?;
         Admission::password(tenant, auth, identity)?
     };
-    if proof.data.source != rss_mdm_inventory::ReportSource::MdmApple {
+    if proof.coordinates().source != rss_mdm_inventory::ReportSource::MdmApple {
         return Err(Error::Unauthorized);
     }
     proof.bind_audit(audit)?;
-    audit.target(&proof.data.device);
-    Ok((proof.data.clone(), proof))
+    audit.target(&proof.coordinates().device);
+    Ok((proof.coordinates().clone(), proof))
 }
 pub async fn download(
     State(app): State<Arc<HttpState>>,
@@ -103,8 +109,8 @@ pub async fn download(
     let deadline:String=enrollment.try_get("deadline").map_err(db)?;
     // Password rotation can prepare a new attempt; any previous issuance is permanently fenced.
     sqlx::query("UPDATE mdm_apple.scep_attempts SET state='superseded' WHERE tenant_id=$1::uuid AND enrollment=$2::uuid AND authorization_version<>$3 AND state<>'superseded'")
-        .bind(proof.data.tenant.as_str()).bind(id.to_string()).bind(auth.version).execute(&mut *c).await.map_err(db)?;
-    let (attempt, replayed, scep_url, scep_provisioner) = prepared(c, apple, auth, proof.data.tenant.as_str(), &deadline).await?;
+        .bind(proof.coordinates().tenant.as_str()).bind(id.to_string()).bind(auth.version).execute(&mut *c).await.map_err(db)?;
+    let (attempt, replayed, scep_url, scep_provisioner) = prepared(c, apple, auth, proof.coordinates().tenant.as_str(), &deadline).await?;
     let bytes = apple.signer.sign(
         &profile::enrollment(&profile::EnrollmentProfile {
             mode: profile::EnrollmentMode::Profile,
@@ -233,7 +239,7 @@ pub async fn challenge(
                     let apple = *apple; let auth = *auth; let proof = *proof; let csr = *csr; let transaction = *transaction; let provisioner=*provisioner;
     admitted(c,proof).await?;
     let consumed=sqlx::query("UPDATE mdm_apple.scep_attempts SET state='consumed',transaction_id=$4,csr_digest=$5,spki=$6 WHERE tenant_id=$1::uuid AND id=$2::uuid AND enrollment=$3::uuid AND state='prepared' AND configuration=$7 AND authorization_version=$8 AND scep_provisioner=$9 AND expires_at>clock_timestamp()")
-        .bind(proof.data.tenant.as_str()).bind(csr.attempt().to_string()).bind(csr.enrollment().to_string()).bind(transaction).bind(csr.digest().as_slice()).bind(csr.spki().as_slice()).bind(apple.configuration.as_slice()).bind(auth.version).bind(provisioner).execute(&mut *c).await.map_err(db)?;
+        .bind(proof.coordinates().tenant.as_str()).bind(csr.attempt().to_string()).bind(csr.enrollment().to_string()).bind(transaction).bind(csr.digest().as_slice()).bind(csr.spki().as_slice()).bind(apple.configuration.as_slice()).bind(auth.version).bind(provisioner).execute(&mut *c).await.map_err(db)?;
     if consumed.rows_affected() != 1 {
         return Err(Error::Unauthorized);
     }

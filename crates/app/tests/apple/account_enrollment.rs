@@ -256,6 +256,23 @@ async fn account_enrollment_and_reauthentication_keep_one_registration() -> Resu
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
+    let expired = request(&f, Method::POST, &path, payload.clone(), &[]).await?;
+    let expired_id = Uuid::parse_str(flow_path(&expired.1)?.rsplit('/').next().unwrap())?;
+    sqlx::query("UPDATE mdm_apple.account_flows SET expires_at=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(expired_id).execute(&mut pg).await?;
+    ensure!(
+        request(&f, Method::POST, &path, payload.clone(), &[])
+            .await?
+            .0
+            == StatusCode::UNAUTHORIZED
+    );
+    let retained: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM mdm_apple.account_flows WHERE tenant_id=$1::uuid AND id=$2)",
+    )
+    .bind(case_tenant())
+    .bind(expired_id)
+    .fetch_one(&mut pg)
+    .await?;
+    ensure!(!retained, "expired unauthenticated flow was not reclaimed");
     let requests: i64 =
         sqlx::query_scalar("SELECT count(*) FROM mdm_access.requests WHERE tenant_id=$1::uuid")
             .bind(case_tenant())
@@ -333,6 +350,42 @@ async fn account_enrollment_and_reauthentication_keep_one_registration() -> Resu
     )
     .await?;
     ensure!(old_profile.0 == StatusCode::UNAUTHORIZED);
+    let sessions = rss_mdm_authorization_service::session::SessionAuthority::new(
+        f.app.identity.authority.clone(),
+        f.app.identity.tenant,
+    );
+    let admission = rss_mdm_registration_service::enrollment::native::account(
+        &f.app.access.registration(),
+        &sessions,
+        enrollment,
+        rss_mdm_apple_channel::account_enrollment::authority(),
+        None,
+    )
+    .await?;
+    sqlx::query(
+        "UPDATE mdm_access.requests SET expected_generation=1 WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(case_tenant())
+    .bind(enrollment)
+    .execute(&mut pg)
+    .await?;
+    let store = f.app.access.registration();
+    let mut tx = store.begin(case_tenant()).await?;
+    ensure!(
+        matches!(
+            admission.current(&mut tx).await,
+            Err(rss_mdm_registration_service::Error::Unauthorized)
+        ),
+        "admission accepted changed persisted generation"
+    );
+    tx.rollback().await?;
+    sqlx::query(
+        "UPDATE mdm_access.requests SET expected_generation=0 WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(case_tenant())
+    .bind(enrollment)
+    .execute(&mut pg)
+    .await?;
     let device = scep_client::Device::new(enrollment, attempt, challenge)?;
     let csr = device.request(
         &f.root.join("apple-issuer.pem"),
@@ -348,6 +401,41 @@ async fn account_enrollment_and_reauthentication_keep_one_registration() -> Resu
         .await?;
     let peer = f.authenticate_peer(&device, &der).await?;
     peer.token().await?;
+    ensure!(
+        native_user(
+            &peer,
+            "/checkin",
+            protocol::dictionary([("MessageType", "UserAuthenticate".into())]),
+            Some(&bearer)
+        )
+        .await?
+        .0 == StatusCode::OK
+    );
+    ensure!(
+        native_user(&peer, "/checkin", user_update(&peer), Some(&bearer))
+            .await?
+            .0
+            == StatusCode::OK
+    );
+    let revision:i64=sqlx::query_scalar("SELECT token_revision FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND user_key=$2 AND state='active'").bind(case_tenant()).bind(Uuid::from_u128(27).to_string()).fetch_one(&mut pg).await?;
+    ensure!(
+        native_user(&peer, "/checkin", user_update(&peer), None)
+            .await?
+            .0
+            == StatusCode::UNAUTHORIZED
+    );
+    let unchanged:i64=sqlx::query_scalar("SELECT token_revision FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND user_key=$2 AND state='active'").bind(case_tenant()).bind(Uuid::from_u128(27).to_string()).fetch_one(&mut pg).await?;
+    ensure!(
+        revision == unchanged,
+        "rejected user request changed token state"
+    );
+    let asset_url = user_asset(&mut f, &peer, &bearer, enrollment).await?;
+    ensure!(
+        native_user(&peer, "/checkin", user_ddm(), Some(&bearer))
+            .await?
+            .0
+            == StatusCode::OK
+    );
     let before:Uuid=sqlx::query_scalar("SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND request_id=$2 AND state='active'").bind(case_tenant()).bind(enrollment).fetch_one(&mut pg).await?;
     let accepted = user_token(&peer, Some(&bearer)).await?;
     ensure!(accepted.0 == StatusCode::OK);
@@ -362,6 +450,37 @@ async fn account_enrollment_and_reauthentication_keep_one_registration() -> Resu
         )
         .await?;
     ensure!(logout.0 == StatusCode::NO_CONTENT, "logout: {logout:?}");
+    ensure!(
+        native_user(&peer, "/checkin", user_update(&peer), Some(&bearer))
+            .await?
+            .0
+            == StatusCode::UNAUTHORIZED
+    );
+    ensure!(
+        native_user(
+            &peer,
+            "/mdm",
+            protocol::dictionary([("Status", "Idle".into())]),
+            Some(&bearer)
+        )
+        .await?
+        .0 == StatusCode::UNAUTHORIZED
+    );
+    ensure!(
+        native_user(&peer, "/checkin", user_ddm(), Some(&bearer))
+            .await?
+            .0
+            == StatusCode::UNAUTHORIZED
+    );
+    ensure!(
+        peer.client
+            .get(&asset_url)
+            .bearer_auth(&bearer)
+            .send()
+            .await?
+            .status()
+            == StatusCode::UNAUTHORIZED
+    );
     let rejected = user_token(&peer, Some(&bearer)).await?;
     ensure!(rejected.0 == StatusCode::UNAUTHORIZED);
     let renewal_cookie = start(&f, &flow_path(&rejected.1)?, name).await?;
@@ -387,7 +506,7 @@ async fn account_enrollment_and_reauthentication_keep_one_registration() -> Resu
         renewed.0,
         String::from_utf8_lossy(&renewed.2)
     );
-    let new_token = token(&renewed.1)?;
+    let mut new_token = token(&renewed.1)?;
     ensure!(new_token != bearer);
     let after:Uuid=sqlx::query_scalar("SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND request_id=$2 AND state='active'").bind(case_tenant()).bind(enrollment).fetch_one(&mut pg).await?;
     ensure!(after == before);
@@ -401,6 +520,31 @@ async fn account_enrollment_and_reauthentication_keep_one_registration() -> Resu
     ensure!(accepted.0 == StatusCode::OK);
     verify_jwt(&f, &accepted.2, org)?;
     ensure!(user_token(&peer, Some(&bearer)).await?.0 == StatusCode::UNAUTHORIZED);
+    ensure!(
+        native_user(&peer, "/checkin", user_ddm(), Some(&new_token))
+            .await?
+            .0
+            == StatusCode::OK
+    );
+    ensure!(
+        peer.client
+            .get(&asset_url)
+            .bearer_auth(&new_token)
+            .send()
+            .await?
+            .status()
+            == StatusCode::OK
+    );
+    browser.operation = Some(Uuid::new_v4());
+    let revised=browser.call(&f.router,Method::PUT,&format!("/api/v1/apple/account-enrollment/organizations/{org}/accounts/{name}"),Some(json!({"expectedRevision":1,"principalId":crate::test_support::case::admin(),"instanceId":crate::test_support::INSTANCE,"enabled":true}))).await?;
+    ensure!(revised.0 == StatusCode::OK);
+    new_token = recover(&f, &peer, &browser, &new_token, name).await?;
+    browser.operation = Some(Uuid::new_v4());
+    let rotated=browser.call(&f.router,Method::PUT,&format!("/api/v1/apple/account-enrollment/organizations/{org}"),Some(json!({"expectedRevision":1,"domain":"managed.example.test","serverUuid":org,"signingKey":"organization","enabled":true}))).await?;
+    ensure!(rotated.0 == StatusCode::OK);
+    new_token = recover(&f, &peer, &browser, &new_token, name).await?;
+    let same:Uuid=sqlx::query_scalar("SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND request_id=$2 AND state='active'").bind(case_tenant()).bind(enrollment).fetch_one(&mut pg).await?;
+    ensure!(same == before);
     let stored:Vec<u8>=sqlx::query_scalar("SELECT material FROM mdm_apple.account_flows WHERE tenant_id=$1::uuid AND enrollment=$2 AND NOT revoked").bind(case_tenant()).bind(enrollment).fetch_one(&mut pg).await?;
     ensure!(
         !stored
@@ -409,10 +553,243 @@ async fn account_enrollment_and_reauthentication_keep_one_registration() -> Resu
         "bearer stored plaintext"
     );
     browser.operation = Some(Uuid::new_v4());
-    let disabled=browser.call(&f.router,Method::PUT,&format!("/api/v1/apple/account-enrollment/organizations/{org}/accounts/{name}"),Some(json!({"expectedRevision":1,"principalId":crate::test_support::case::admin(),"instanceId":crate::test_support::INSTANCE,"enabled":false}))).await?;
+    let disabled=browser.call(&f.router,Method::PUT,&format!("/api/v1/apple/account-enrollment/organizations/{org}/accounts/{name}"),Some(json!({"expectedRevision":2,"principalId":crate::test_support::case::admin(),"instanceId":crate::test_support::INSTANCE,"enabled":false}))).await?;
     ensure!(disabled.0 == StatusCode::OK);
     ensure!(user_token(&peer, Some(&new_token)).await?.0 == StatusCode::UNAUTHORIZED);
+    browser.operation = Some(Uuid::new_v4());
+    let disabled_organization=browser.call(&f.router,Method::PUT,&format!("/api/v1/apple/account-enrollment/organizations/{org}"),Some(json!({"expectedRevision":2,"domain":"managed.example.test","serverUuid":org,"signingKey":"unavailable-key","enabled":false}))).await?;
+    ensure!(
+        disabled_organization.0 == StatusCode::OK,
+        "missing signing key prevented disable: {disabled_organization:?}"
+    );
     pg.close().await?;
     drop(device);
     f.close().await
+}
+
+async fn native_user(
+    peer: &lifecycle::Peer,
+    path: &str,
+    mut fields: plist::Dictionary,
+    bearer: Option<&str>,
+) -> Result<(StatusCode, HeaderMap, Vec<u8>)> {
+    fields.insert(
+        "UDID".into(),
+        crate::test_support::case::name("rss-t2-apple").into(),
+    );
+    fields.insert("UserID".into(), Uuid::from_u128(27).to_string().into());
+    let mut r = peer
+        .client
+        .put(format!("{}{path}", peer.origin))
+        .header("content-type", "application/xml")
+        .body(protocol::xml(fields)?);
+    if let Some(token) = bearer {
+        r = r.bearer_auth(token)
+    }
+    let r = r.send().await?;
+    let status = r.status();
+    let headers = r.headers().clone();
+    Ok((status, headers, r.bytes().await?.to_vec()))
+}
+fn user_update(peer: &lifecycle::Peer) -> plist::Dictionary {
+    protocol::dictionary([
+        ("MessageType", "TokenUpdate".into()),
+        ("Topic", peer.topic.clone().into()),
+        ("Token", plist::Value::Data(vec![43; 32])),
+        ("PushMagic", "account-user-push".into()),
+    ])
+}
+fn user_ddm() -> plist::Dictionary {
+    protocol::dictionary([
+        ("MessageType", "DeclarativeManagement".into()),
+        ("Endpoint", "tokens".into()),
+    ])
+}
+async fn user_asset(
+    f: &mut Fixture,
+    peer: &lifecycle::Peer,
+    bearer: &str,
+    enrollment: Uuid,
+) -> Result<String> {
+    let mut grants = crate::test_support::identity::device_grants(
+        None,
+        &[
+            "configuration_write",
+            "operation_read",
+            "inventory_collect",
+            "inventory_read",
+        ],
+    )?;
+    for operation in [
+        crate::authorization::Permission::ResourceRead,
+        crate::authorization::Permission::ResourceWrite,
+        crate::authorization::Permission::AuthorizationRead,
+        crate::authorization::Permission::AuthorizationWrite,
+    ] {
+        grants.push(crate::authorization::Grant {
+            operation,
+            scope: crate::authorization::Scope::Tenant,
+        });
+    }
+    crate::test_support::identity::set_grants(
+        case_tenant(),
+        crate::test_support::case::admin(),
+        grants,
+    )
+    .await?;
+    let resource = Uuid::new_v4();
+    let content = json!({"fixture":"account-user-asset"});
+    crate::test_support::planning_http::native_configuration_resource(
+        &mut f.browser,
+        &f.router,
+        resource,
+        "macos",
+        "aarch64",
+        content.clone(),
+    )
+    .await?;
+    let resource_view = f
+        .browser
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("/api/v1/resources/{resource}"),
+            None,
+        )
+        .await?;
+    ensure!(resource_view.0 == StatusCode::OK);
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let device:String=sqlx::query_scalar("SELECT device FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND request_id=$2 AND state='active'").bind(case_tenant()).bind(enrollment).fetch_one(&mut pg).await?;
+    pg.close().await?;
+    let asset = json!({"identifier":"account-asset","resource":resource,"version":"v1","variant":"default","versionDigest":resource_view.1["versions"][0]["digest"],"contentType":"application/json","profileSchemas":[]});
+    let task = ddm::task(
+        vec![ddm::declaration(
+            "account-asset",
+            "com.apple.asset.data",
+            json!({}),
+        )],
+        vec![asset],
+    );
+    let operation = Uuid::new_v4();
+    let created=f.browser.call(&f.router,Method::POST,&format!("/api/v1/devices/{device}/operations"),Some(json!({"operationId":operation,"inputVersion":"1","target":{"kind":"user","userId":Uuid::from_u128(27)},"task":task,"deadline":f.app.clock.unix_seconds()?+300}))).await?;
+    ensure!(
+        created.0 == StatusCode::ACCEPTED,
+        "user asset operation: {created:?}"
+    );
+    let (id, _) = peer.next("DeviceInformation").await?;
+    let next = peer
+        .manage(
+            "Acknowledged",
+            Some(id),
+            Some((
+                "QueryResponses",
+                plist::Value::Dictionary(protocol::dictionary([
+                    ("OSVersion", "15.0".into()),
+                    ("IsSupervised", true.into()),
+                    ("IsAppleSilicon", true.into()),
+                ])),
+            )),
+        )
+        .await?;
+    let (id, _) = lifecycle::command(&next, "SecurityInfo")?;
+    let next = peer
+        .manage(
+            "Acknowledged",
+            Some(id),
+            Some((
+                "SecurityInfo",
+                plist::Value::Dictionary(protocol::dictionary([(
+                    "ManagementStatus",
+                    plist::Value::Dictionary(protocol::dictionary([
+                        ("EnrolledViaDEP", false.into()),
+                        ("IsUserEnrollment", false.into()),
+                        ("UserApprovedEnrollment", true.into()),
+                    ])),
+                )])),
+            )),
+        )
+        .await?;
+    ensure!(next.is_empty(), "user operation escaped device scope");
+    let mut command = None;
+    for _ in 0..100 {
+        let reply = native_user(
+            peer,
+            "/mdm",
+            protocol::dictionary([("Status", "Idle".into())]),
+            Some(bearer),
+        )
+        .await?;
+        ensure!(reply.0 == StatusCode::OK, "user Idle: {}", reply.0);
+        if !reply.2.is_empty() {
+            command = Some(lifecycle::command(&reply.2, "DeclarativeManagement")?.0);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let command =
+        command.ok_or_else(|| anyhow::anyhow!("user declaration publication deadline"))?;
+    ensure!(
+        native_user(
+            peer,
+            "/mdm",
+            protocol::dictionary([
+                ("Status", "Acknowledged".into()),
+                ("CommandUUID", command.to_string().into())
+            ]),
+            Some(bearer)
+        )
+        .await?
+        .0 == StatusCode::OK
+    );
+    let d = protocol::dictionary([
+        ("MessageType", "DeclarativeManagement".into()),
+        ("Endpoint", "declaration/asset/account-asset".into()),
+    ]);
+    let reply = native_user(peer, "/checkin", d, Some(bearer)).await?;
+    ensure!(
+        reply.0 == StatusCode::OK,
+        "user asset declaration: {}",
+        reply.0
+    );
+    let asset: serde_json::Value = serde_json::from_slice(&reply.2)?;
+    let url = asset["Payload"]["Reference"]["DataURL"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let accepted = peer.client.get(&url).bearer_auth(bearer).send().await?;
+    ensure!(
+        accepted.status() == StatusCode::OK
+            && accepted.bytes().await?.as_ref() == serde_json::to_vec(&content)?
+    );
+    ensure!(
+        peer.client.get(&url).send().await?.status() == StatusCode::UNAUTHORIZED,
+        "asset accepted missing account bearer"
+    );
+    Ok(url)
+}
+
+async fn recover(
+    f: &Fixture,
+    peer: &lifecycle::Peer,
+    browser: &Browser,
+    old: &str,
+    name: &str,
+) -> Result<String> {
+    let challenged = user_token(peer, Some(old)).await?;
+    ensure!(challenged.0 == StatusCode::UNAUTHORIZED);
+    let cookie = start(f, &flow_path(&challenged.1)?, name).await?;
+    let renewed = finish(
+        f,
+        browser,
+        &cookie,
+        "https://mdm.example.test",
+        browser.csrf.as_ref().unwrap(),
+    )
+    .await?;
+    ensure!(renewed.0 == StatusCode::PERMANENT_REDIRECT);
+    let token = token(&renewed.1)?;
+    ensure!(token != old && user_token(peer, Some(&token)).await?.0 == StatusCode::OK);
+    Ok(token)
 }

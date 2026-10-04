@@ -418,7 +418,13 @@ add('apple.account_enrollment', selectors=('apple::tests::account_enrollment::',
     fixtures=('apple','identity','oracle','scep'),
     sources=('crates/apple-channel/src/account_enrollment/*', 'crates/apple-channel/schema/account-enrollment.sql',
              'crates/registration-service/src/enrollment/native.rs', 'crates/registration-service/schema/apple-account.sql',
-             'crates/certificate/src/apple/account.rs', 'crates/app/src/enrollment_progress.rs'),
+             'crates/certificate/src/apple/account.rs', 'crates/app/src/enrollment_progress.rs',
+             'crates/apple-channel/src/checkin.rs','crates/apple-channel/src/enrollment.rs',
+             'crates/apple-channel/src/exchange.rs','crates/apple-channel/src/ddm.rs','crates/apple-channel/src/ddm/assets.rs',
+             'crates/apple-mdm/src/profile.rs','crates/apple-mdm/src/protocol.rs',
+             'crates/authorization-service/src/session.rs','crates/app/src/assembly/apple/*',
+             'crates/app/src/identity.rs','crates/app/src/api.rs'),
+    support=('crates/app/tests/apple/mod.rs','crates/app/tests/apple/support/scep.rs', 'crates/app/tests/apple/lifecycle.rs'),
     tests=('crates/app/tests/apple/account_enrollment.rs',))
 add('catalog.contract', build=None, python='catalog',
     sources=('crates/*-service/src/*/catalog.sql', 'crates/*-service/src/*/catalog.json',
@@ -722,7 +728,7 @@ consume(('crates/app/src/publication_config.rs',),
         'publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery')
 consume(('crates/software-service/src/catalog/*',),
         'software.http planning.software execution.software.offer execution.software.content execution.software.recovery')
-AUTH_CONSUMERS = 'planning.self_service agent.pki certificate-archive.http diagnostics.http authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission api.identity_context enrollment.http enrollment.recovery assets.http planning.http planning.policy planning.agent_policy planning.frequency planning.remote planning.software compliance.http software.http content.http content.mirror content.gc execution.commands.admission windows.issuance windows.management apple.scep apple.profile apple.policy apple.onboarding apple.renewal'
+AUTH_CONSUMERS = 'apple.account_enrollment planning.self_service agent.pki certificate-archive.http diagnostics.http authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission api.identity_context enrollment.http enrollment.recovery assets.http planning.http planning.policy planning.agent_policy planning.frequency planning.remote planning.software compliance.http software.http content.http content.mirror content.gc execution.commands.admission windows.issuance windows.management apple.scep apple.profile apple.policy apple.onboarding apple.renewal'
 consume(('crates/authorization-service/src/*.rs','crates/management-http/src/authorization/http.rs','crates/management-http/src/lib.rs'), AUTH_CONSUMERS)
 consume(('crates/flow-service/src/planning/automation.rs','crates/inventory-service/src/inventory_runtime.rs','crates/inventory-service/src/inventory_runtime/*','crates/flow-service/src/automation/runtime.rs','crates/flow-service/src/automation/completion.rs','crates/flow-service/src/planning/mod.rs','crates/app/src/identity_audit.rs','crates/app/src/identity.rs','crates/apple-channel/src/lib.rs','crates/inventory-service/src/collection/*'), 'diagnostics.http')
 consume(('crates/app/src/identity.rs',), 'identity.local identity.sso identity.audit api.identity_context')

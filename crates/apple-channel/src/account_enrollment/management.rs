@@ -86,15 +86,16 @@ pub(super) async fn organization(
     {
         return Err(Error::Malformed);
     }
-    if !app
-        .apple()?
-        .account_keys
-        .get(&input.signing_key)
-        .is_some_and(|s| {
-            app.clock
-                .unix_seconds()
-                .is_some_and(|now| s.expires() > now as u64)
-        })
+    if input.enabled
+        && !app
+            .apple()?
+            .account_keys
+            .get(&input.signing_key)
+            .is_some_and(|s| {
+                app.clock
+                    .unix_seconds()
+                    .is_some_and(|now| s.expires() > now as u64)
+            })
     {
         return Err(Error::Conflict);
     }

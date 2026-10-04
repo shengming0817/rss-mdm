@@ -16,7 +16,22 @@ use rss_mdm_authorization_service::{
 };
 use rss_mdm_inventory::ReportSource;
 use sqlx::{PgConnection, Row, postgres::PgRow};
+use std::sync::Arc;
 use uuid::Uuid;
+type Pending<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Error>> + Send + 'a>>;
+/// Product-owned organization authority, required for every account issuance and admission.
+/// Composition supplies the implementation; protocol callers cannot omit this gate.
+pub trait AccountAuthority: Send + Sync {
+    fn authorize_issue<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        proof: &'a AuthorizedPrincipal,
+        id: Uuid,
+        operation: Uuid,
+    ) -> Pending<'a>;
+    fn current<'a>(&'a self, c: &'a mut PgConnection, coordinates: &'a Coordinates) -> Pending<'a>;
+}
 
 #[derive(Clone)]
 pub struct Coordinates {
@@ -38,13 +53,45 @@ enum Basis {
     Account {
         reference: SessionReference,
         proof: RevalidatedSession,
+        authority: Arc<dyn AccountAuthority>,
     },
 }
 pub struct Admission {
-    pub data: Coordinates,
+    data: Coordinates,
     basis: Basis,
 }
 impl Admission {
+    pub fn coordinates(&self) -> &Coordinates {
+        &self.data
+    }
+    /// Revalidate an existing account continuation in its consuming transaction.
+    pub async fn revalidate_account_in(&self, c: &mut PgConnection) -> Result<(), Error> {
+        self.check_live()?;
+        let Basis::Account {
+            reference,
+            proof,
+            authority,
+        } = &self.basis
+        else {
+            return Err(Error::Unauthorized);
+        };
+        let d = &self.data;
+        if proof.account().tenant.to_string() != d.tenant
+            || proof.account().principal.as_uuid().to_string() != d.actor
+            || proof.instance().to_string() != d.instance
+        {
+            return Err(Error::Unauthorized);
+        }
+        crate::device::store::lock_channel(c, &d.tenant, &d.device, d.source.channel()).await?;
+        authority.current(c, d).await?;
+        let same:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=$2 AND authority_kind='apple_account' AND account_version=$3 AND account_reference=$4 AND expected_generation=$5 AND issuance_operation=$6 AND state<>'cancelled')")
+            .bind(&d.tenant).bind(d.id).bind(d.version).bind(serde_json::to_value(reference).map_err(|_|Error::Corrupt)?).bind(d.expected_generation).bind(d.operation).fetch_one(c).await.map_err(db)?;
+        if !same {
+            return Err(Error::Unauthorized);
+        }
+        Ok(())
+    }
+
     pub fn password(
         tenant: String,
         auth: Authorization,
@@ -92,12 +139,17 @@ impl Admission {
     }
     pub async fn current(&self, c: &mut PgConnection) -> Result<PgRow, Error> {
         self.check_live()?;
+        if self.is_account() {
+            self.revalidate_account_in(c).await?;
+        }
         let d = &self.data;
         let row = request(c, &d.tenant, d.id).await?;
         if row.try_get::<String, _>("state").map_err(db)? != "pending"
             || !row.try_get::<bool, _>("live").map_err(db)?
             || row.try_get::<String, _>("actor").map_err(db)? != d.actor
             || row.try_get::<String, _>("instance").map_err(db)? != d.instance
+            || row.try_get::<i64, _>("expected_generation").map_err(db)? != d.expected_generation
+            || uuid(&row, "issuance_operation")? != d.operation
             || row.try_get::<String, _>("device").map_err(db)? != d.device
             || row.try_get::<String, _>("source").map_err(db)? != d.source.as_str()
         {
@@ -139,6 +191,7 @@ pub async fn account(
     store: &crate::Store,
     sessions: &SessionAuthority,
     id: Uuid,
+    authority: Arc<dyn AccountAuthority>,
     challenge: Option<&str>,
 ) -> Result<Admission, Error> {
     let tenant = sessions.tenant().to_string();
@@ -177,15 +230,44 @@ pub async fn account(
     {
         return Err(Error::Unauthorized);
     }
-    Ok(Admission {
+    let admission = Admission {
         data,
-        basis: Basis::Account { reference, proof },
-    })
+        basis: Basis::Account {
+            reference,
+            proof,
+            authority,
+        },
+    };
+    let mut tx = store.begin(&admission.data.tenant).await?;
+    admission.revalidate_account_in(&mut tx).await?;
+    tx.rollback().await.map_err(db)?;
+    Ok(admission)
 }
 pub fn challenge_digest(tenant: &str, id: Uuid, challenge: &str) -> String {
     digest(&("apple.account.scep/v1", tenant, id, challenge))
 }
-/// Called only after the Apple bridge authenticated and checked its organization/account binding.
+/// Acquire lifecycle serialization before the Apple owner takes flow/configuration locks.
+pub async fn lock_account_issuance(
+    c: &mut PgConnection,
+    proof: &AuthorizedPrincipal,
+    id: Uuid,
+) -> Result<(), Error> {
+    proof.check_live()?;
+    let device = format!(
+        "self:{}:{}:{}",
+        proof.instance_id(),
+        proof.principal_id(),
+        id
+    );
+    crate::device::store::lock_channel(
+        c,
+        proof.tenant_id(),
+        &device,
+        rss_mdm_inventory::Channel::Mdm,
+    )
+    .await
+}
+/// The product organization authority and Identity jointly authorize account issuance.
 #[allow(
     clippy::too_many_arguments,
     reason = "one existing lifecycle transaction with exact operation receipt"
@@ -193,12 +275,14 @@ pub fn challenge_digest(tenant: &str, id: Uuid, challenge: &str) -> String {
 pub async fn issue_in(
     c: &mut PgConnection,
     proof: &AuthorizedPrincipal,
+    authority: &dyn AccountAuthority,
     id: Uuid,
     operation: Uuid,
     challenge: &str,
     audit: &RequestAudit,
 ) -> Result<(Receipt, bool), Error> {
-    proof.check_live()?;
+    lock_account_issuance(c, proof, id).await?;
+    authority.authorize_issue(c, proof, id, operation).await?;
     let reference = proof
         .session()
         .reference()

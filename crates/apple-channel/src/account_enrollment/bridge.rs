@@ -73,25 +73,56 @@ pub(super) async fn start(
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
     let control = budget.control();
-    let outcome=app.audit_store.write(app.identity.tenant(),&control,(&app,&tenant,id,&name,&secret,&previous,&audit),|(app,tenant,id,name,secret,previous,audit),tx|Box::pin(async move{
-        let replayed=tx.with_connection_context(&mut (*tenant,*id,*name,*secret,*previous),|(tenant,id,name,secret,previous),c|Box::pin(async move{
-            let row=store::flow(c,tenant,*id).await?;
-            if row.try_get::<String,_>("domain").map_err(db)?!=name.rsplit_once('@').ok_or(Error::Malformed)?.1 || row.try_get::<Option<String>,_>("expected_account").map_err(db)?.is_some_and(|v|v!=name.as_str()) {return Err(Error::Unauthorized)}
-            let binding=store::bound_account(c,tenant,row.try_get("organization").map_err(db)?,name).await?;
-            if let Some(existing)=row.try_get::<Option<String>,_>("account").map_err(db)? {
-                if existing!=name.as_str() || row.try_get::<i64,_>("binding_revision").map_err(db)?!=binding.try_get::<i64,_>("revision").map_err(db)? {return Err(Error::Unauthorized)}
-                let (old_id,old_secret)=previous.as_ref().ok_or(Error::Unauthorized)?;
-                if old_id!=id {return Err(Error::Unauthorized)}
-                check_cookie(&row,tenant,*id,old_secret)?;return Ok::<_,Error>(true)
-            }
-            sqlx::query("UPDATE mdm_apple.account_flows SET account=$3,binding_revision=$4,cookie_hash=$5 WHERE tenant_id=$1::uuid AND id=$2")
-                .bind(*tenant).bind(*id).bind(*name).bind(binding.try_get::<i64,_>("revision").map_err(db)?).bind(cookie_hash(tenant,*id,secret)).execute(c).await.map_err(db)?;
-            Ok(false)
-        })).await?;
-        let digest=rss_mdm_registration_service::enrollment::digest(&(*id,*name));
-        let fact=rss_mdm_audit_integration::Fact::business(audit,&format!("apple-account-browser:{id}"),digest.as_bytes(),200,"success",Some(*id)).map_err(Error::from)?;
-        app.audit_store.append(tx,&fact,replayed).await.map_err(Error::from)?;if replayed{audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed)}audit.mark_commit_started();Ok(replayed)
-    })).await;
+    let outcome = app
+        .audit_store
+        .write(
+            app.identity.tenant(),
+            &control,
+            (&app, &tenant, id, &name, &secret, &previous, &audit),
+            |(app, tenant, id, name, secret, previous, audit), tx| {
+                Box::pin(async move {
+                    let replayed = tx
+                        .with_connection_context(
+                            &mut (*tenant, *id, *name, *secret, *previous),
+                            |(tenant, id, name, secret, previous), c| {
+                                Box::pin(select_account_on(
+                                    c,
+                                    Selection {
+                                        tenant,
+                                        id: *id,
+                                        name,
+                                        secret,
+                                        previous,
+                                    },
+                                ))
+                            },
+                        )
+                        .await?;
+                    let digest = rss_mdm_registration_service::enrollment::digest(&(*id, *name));
+                    let fact = rss_mdm_audit_integration::Fact::business(
+                        audit,
+                        &format!("apple-account-browser:{id}"),
+                        digest.as_bytes(),
+                        200,
+                        "success",
+                        Some(*id),
+                    )
+                    .map_err(Error::from)?;
+                    app.audit_store
+                        .append(tx, &fact, replayed)
+                        .await
+                        .map_err(Error::from)?;
+                    if replayed {
+                        audit.management_result(
+                            rss_mdm_audit_integration::ManagementResult::Replayed,
+                        )
+                    }
+                    audit.mark_commit_started();
+                    Ok(replayed)
+                })
+            },
+        )
+        .await;
     let replayed = crate::operations::settle(outcome, &audit)?;
     let mut response = page(&app, &name)?;
     if !replayed {
@@ -181,32 +212,61 @@ pub(super) async fn finish(
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
     let control = budget.control();
-    let outcome=app.audit_store.write(app.identity.tenant(),&control,(&app,&proof,&tenant,id,&secret,&audit),|(app,proof,tenant,id,secret,audit),tx|Box::pin(async move{
-        let (token,replayed,enrollment)=tx.with_connection_context(&mut (*app,*proof,*tenant,*id,*secret,*audit),|(app,proof,tenant,id,secret,audit),c|Box::pin(async move{
-            let row=store::flow(c,tenant,*id).await?;check_cookie(&row,tenant,*id,secret)?;
-            let name:String=row.try_get("account").map_err(db)?;let org:Uuid=row.try_get("organization").map_err(db)?;
-            let binding=store::bound_account(c,tenant,org,&name).await?;
-            if binding.try_get::<Uuid,_>("principal").map_err(db)?.to_string()!=proof.principal_id() || binding.try_get::<Uuid,_>("instance").map_err(db)?.to_string()!=proof.instance_id()
-                || binding.try_get::<i64,_>("revision").map_err(db)?!=row.try_get::<i64,_>("binding_revision").map_err(db)? {return Err(Error::Unauthorized)}
-            let enrollment:Uuid=row.try_get("target_enrollment").map_err(db)?;
-            let old=row.try_get::<Option<Vec<u8>>,_>("material").map_err(db)?;
-            let material=if let Some(sealed)=old {
-                let current:i64=sqlx::query_scalar("SELECT account_version FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=$2").bind(*tenant).bind(enrollment).fetch_one(&mut *c).await.map_err(db)?;
-                if current!=row.try_get::<i64,_>("authorization_version").map_err(db)? {return Err(Error::Unauthorized)}
-                let plain=app.protection.open_bytes(&sealed,&aad(tenant,*id,"apple.account.material")?).map_err(|_|Error::Unavailable(Failure::AppleStorage))?;
-                serde_json::from_slice::<Material>(plain.expose()).map_err(|_|Error::Unavailable(Failure::AppleStorage))?
-            } else {Material{token:rss_mdm_registration_service::enrollment::random().into(),challenge:rss_mdm_registration_service::enrollment::random().into()}};
-            let (_receipt,replayed)=rss_mdm_registration_service::enrollment::native::issue_in(c,proof,enrollment,*id,&material.challenge,audit).await?;
-            let version:i64=sqlx::query_scalar("SELECT account_version FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=$2").bind(*tenant).bind(enrollment).fetch_one(&mut *c).await.map_err(db)?;
-            let sealed=app.protection.seal_bytes(&zeroize::Zeroizing::new(serde_json::to_vec(&material).map_err(|_|Error::Malformed)?),&aad(tenant,*id,"apple.account.material")?).map_err(|_|Error::Unavailable(Failure::AppleStorage))?;
-            sqlx::query("UPDATE mdm_apple.account_flows SET revoked=true,material=NULL,profile=NULL,token_hash=NULL WHERE tenant_id=$1::uuid AND enrollment=$2 AND id<>$3 AND NOT revoked").bind(*tenant).bind(enrollment).bind(*id).execute(&mut *c).await.map_err(db)?;
-            sqlx::query("UPDATE mdm_apple.account_flows SET enrollment=$3,authorization_version=$4,token_hash=$5,material=$6 WHERE tenant_id=$1::uuid AND id=$2").bind(*tenant).bind(*id).bind(enrollment).bind(version).bind(token_hash(tenant,&material.token)).bind(sealed).execute(c).await.map_err(db)?;
-            proof.check_live()?;Ok::<_,Error>((material.token.to_string(),replayed,enrollment))
-        })).await?;
-        let digest=rss_mdm_registration_service::enrollment::digest(&(*id,enrollment,proof.principal_id()));
-        let fact=rss_mdm_audit_integration::Fact::business(audit,&format!("apple-account-authorize:{id}"),digest.as_bytes(),308,"success",Some(enrollment)).map_err(Error::from)?;
-        app.audit_store.append(tx,&fact,replayed).await.map_err(Error::from)?;if replayed{audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed)}audit.mark_commit_started();Ok(token)
-    })).await;
+    let outcome = app
+        .audit_store
+        .write(
+            app.identity.tenant(),
+            &control,
+            (&app, &proof, &tenant, id, &secret, &audit),
+            |(app, proof, tenant, id, secret, audit), tx| {
+                Box::pin(async move {
+                    let (token, replayed, enrollment) = tx
+                        .with_connection_context(
+                            &mut (*app, *proof, *tenant, *id, *secret, *audit),
+                            |(app, proof, tenant, id, secret, audit), c| {
+                                Box::pin(authorize_on(
+                                    c,
+                                    Authorization {
+                                        app,
+                                        proof,
+                                        tenant,
+                                        id: *id,
+                                        secret,
+                                        audit,
+                                    },
+                                ))
+                            },
+                        )
+                        .await?;
+                    let digest = rss_mdm_registration_service::enrollment::digest(&(
+                        *id,
+                        enrollment,
+                        proof.principal_id(),
+                    ));
+                    let fact = rss_mdm_audit_integration::Fact::business(
+                        audit,
+                        &format!("apple-account-authorize:{id}"),
+                        digest.as_bytes(),
+                        308,
+                        "success",
+                        Some(enrollment),
+                    )
+                    .map_err(Error::from)?;
+                    app.audit_store
+                        .append(tx, &fact, replayed)
+                        .await
+                        .map_err(Error::from)?;
+                    if replayed {
+                        audit.management_result(
+                            rss_mdm_audit_integration::ManagementResult::Replayed,
+                        )
+                    }
+                    audit.mark_commit_started();
+                    Ok(token)
+                })
+            },
+        )
+        .await;
     let token = crate::operations::settle(outcome, &audit)?;
     Ok((
         StatusCode::PERMANENT_REDIRECT,
@@ -218,4 +278,161 @@ pub(super) async fn finish(
         )],
     )
         .into_response())
+}
+
+struct Selection<'a> {
+    tenant: &'a String,
+    id: Uuid,
+    name: &'a String,
+    secret: &'a String,
+    previous: &'a Option<(Uuid, String)>,
+}
+async fn select_account_on(
+    c: &mut sqlx::PgConnection,
+    input: Selection<'_>,
+) -> Result<bool, Error> {
+    let Selection {
+        tenant,
+        id,
+        name,
+        secret,
+        previous,
+    } = input;
+    let row = store::flow(c, tenant, id).await?;
+    if row.try_get::<String, _>("domain").map_err(db)?
+        != name.rsplit_once('@').ok_or(Error::Malformed)?.1
+        || row
+            .try_get::<Option<String>, _>("expected_account")
+            .map_err(db)?
+            .is_some_and(|v| v != name.as_str())
+    {
+        return Err(Error::Unauthorized);
+    }
+    let binding =
+        store::bound_account(c, tenant, row.try_get("organization").map_err(db)?, name).await?;
+    if let Some(existing) = row.try_get::<Option<String>, _>("account").map_err(db)? {
+        if existing != name.as_str()
+            || row.try_get::<i64, _>("binding_revision").map_err(db)?
+                != binding.try_get::<i64, _>("revision").map_err(db)?
+        {
+            return Err(Error::Unauthorized);
+        }
+        let (old_id, old_secret) = previous.as_ref().ok_or(Error::Unauthorized)?;
+        if *old_id != id {
+            return Err(Error::Unauthorized);
+        }
+        check_cookie(&row, tenant, id, old_secret)?;
+        return Ok::<_, Error>(true);
+    }
+    sqlx::query("UPDATE mdm_apple.account_flows SET account=$3,binding_revision=$4,cookie_hash=$5 WHERE tenant_id=$1::uuid AND id=$2")
+                .bind(tenant).bind(id).bind(name).bind(binding.try_get::<i64,_>("revision").map_err(db)?).bind(cookie_hash(tenant,id,secret)).execute(c).await.map_err(db)?;
+    Ok(false)
+}
+
+struct Authorization<'a> {
+    app: &'a HttpState,
+    proof: &'a AuthorizedPrincipal,
+    tenant: &'a String,
+    id: Uuid,
+    secret: &'a String,
+    audit: &'a RequestAudit,
+}
+async fn authorize_on(
+    c: &mut sqlx::PgConnection,
+    input: Authorization<'_>,
+) -> Result<(String, bool, Uuid), Error> {
+    let Authorization {
+        app,
+        proof,
+        tenant,
+        id,
+        secret,
+        audit,
+    } = input;
+    let target: Uuid = sqlx::query_scalar(
+        "SELECT target_enrollment FROM mdm_apple.account_flows WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(tenant)
+    .bind(id)
+    .fetch_optional(&mut *c)
+    .await
+    .map_err(db)?
+    .ok_or(Error::Unauthorized)?;
+    rss_mdm_registration_service::enrollment::native::lock_account_issuance(c, proof, target)
+        .await?;
+    let row = store::flow(c, tenant, id).await?;
+    check_cookie(&row, tenant, id, secret)?;
+    let name: String = row.try_get("account").map_err(db)?;
+    let org: Uuid = row.try_get("organization").map_err(db)?;
+    let binding = store::bound_account(c, tenant, org, &name).await?;
+    if binding
+        .try_get::<Uuid, _>("principal")
+        .map_err(db)?
+        .to_string()
+        != proof.principal_id()
+        || binding
+            .try_get::<Uuid, _>("instance")
+            .map_err(db)?
+            .to_string()
+            != proof.instance_id()
+        || binding.try_get::<i64, _>("revision").map_err(db)?
+            != row.try_get::<i64, _>("binding_revision").map_err(db)?
+    {
+        return Err(Error::Unauthorized);
+    }
+    let enrollment: Uuid = row.try_get("target_enrollment").map_err(db)?;
+    let old = row.try_get::<Option<Vec<u8>>, _>("material").map_err(db)?;
+    let material = if let Some(sealed) = old {
+        let current: i64 = sqlx::query_scalar(
+            "SELECT account_version FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=$2",
+        )
+        .bind(tenant)
+        .bind(enrollment)
+        .fetch_one(&mut *c)
+        .await
+        .map_err(db)?;
+        if current != row.try_get::<i64, _>("authorization_version").map_err(db)? {
+            return Err(Error::Unauthorized);
+        }
+        let plain = app
+            .protection
+            .open_bytes(&sealed, &aad(tenant, id, "apple.account.material")?)
+            .map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
+        serde_json::from_slice::<Material>(plain.expose())
+            .map_err(|_| Error::Unavailable(Failure::AppleStorage))?
+    } else {
+        Material {
+            token: rss_mdm_registration_service::enrollment::random().into(),
+            challenge: rss_mdm_registration_service::enrollment::random().into(),
+        }
+    };
+    let (_receipt, replayed) = rss_mdm_registration_service::enrollment::native::issue_in(
+        c,
+        proof,
+        app.account_authority.as_ref(),
+        enrollment,
+        id,
+        &material.challenge,
+        audit,
+    )
+    .await?;
+    let version: i64 = sqlx::query_scalar(
+        "SELECT account_version FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(tenant)
+    .bind(enrollment)
+    .fetch_one(&mut *c)
+    .await
+    .map_err(db)?;
+    let sealed = app
+        .protection
+        .seal_bytes(
+            &zeroize::Zeroizing::new(serde_json::to_vec(&material).map_err(|_| Error::Malformed)?),
+            &aad(tenant, id, "apple.account.material")?,
+        )
+        .map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
+    sqlx::query("UPDATE mdm_apple.account_flows SET revoked=true,material=NULL,profile=NULL,token_hash=NULL WHERE tenant_id=$1::uuid AND enrollment=$2 AND id<>$3 AND NOT revoked").bind(tenant).bind(enrollment).bind(id).execute(&mut *c).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.account_flows SET enrollment=$3,authorization_version=$4,token_hash=$5,material=$6 WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).bind(enrollment).bind(version).bind(token_hash(tenant,&material.token)).bind(sealed).execute(c).await.map_err(db)?;
+    proof.check_live()?;
+    Ok::<_, Error>((material.token.to_string(), replayed, enrollment))
 }

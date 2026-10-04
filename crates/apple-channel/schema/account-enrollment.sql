@@ -37,6 +37,7 @@ CREATE POLICY tenant ON mdm_apple.account_organizations USING(tenant_id = nullif
 CREATE POLICY tenant ON mdm_apple.account_bindings USING(tenant_id = nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id = nullif(current_setting('rss.tenant_id',true),'')::uuid);
 CREATE POLICY tenant ON mdm_apple.account_flows USING(tenant_id = nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id = nullif(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON mdm_apple.account_organizations,mdm_apple.account_bindings,mdm_apple.account_flows TO mdm_access;
+GRANT DELETE ON mdm_apple.account_flows TO mdm_access;
 GRANT UPDATE(domain,server_uuid,signing_key,enabled,revision,operation) ON mdm_apple.account_organizations TO mdm_access;
 GRANT UPDATE(principal,instance,enabled,revision,operation) ON mdm_apple.account_bindings TO mdm_access;
 GRANT UPDATE(account,binding_revision,cookie_hash,enrollment,authorization_version,token_hash,material,profile,revoked) ON mdm_apple.account_flows TO mdm_access;

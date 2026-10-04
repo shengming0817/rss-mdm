@@ -281,7 +281,19 @@ impl Apple {
         &self,
         now: i64,
         previous: &mut [Option<CertificateLevel>; 3],
+        account_previous: &mut std::collections::BTreeMap<String, CertificateLevel>,
     ) {
+        for (id, key) in &self.account_keys {
+            let certificate = CertificateHealth::new("managed_account", key.expires(), now);
+            if account_previous.insert(id.clone(), certificate.level) != Some(certificate.level)
+                && certificate.level != CertificateLevel::Healthy
+            {
+                eprintln!(
+                    "{}",
+                    serde_json::json!({"event":"apple_certificate_health","keyId":id,"certificate":certificate})
+                );
+            }
+        }
         for (item, last) in self.certificate_health(now).into_iter().zip(previous) {
             if *last != Some(item.level) && item.level != CertificateLevel::Healthy {
                 eprintln!(
@@ -296,6 +308,8 @@ impl Apple {
 
 pub struct HttpState {
     pub authentication: account_enrollment::Authentication,
+    pub account_authority:
+        Arc<dyn rss_mdm_registration_service::enrollment::native::AccountAuthority>,
     pub agent_policy: Option<rss_mdm_registration_service::agent::Policy>,
     pub mount: crate::device::ChannelMount,
     pub audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,

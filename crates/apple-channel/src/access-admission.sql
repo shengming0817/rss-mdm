@@ -16,7 +16,8 @@ SELECT has_schema_privilege(current_user,'mdm_apple','USAGE')
   NOT relrowsecurity OR NOT relforcerowsecurity OR relpersistence<>'p' OR relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)
   OR NOT has_table_privilege(current_user,oid,'SELECT')
   OR has_table_privilege(current_user,oid,'INSERT')<>(relname NOT IN('profiles','declarations','status_reports'))
-  OR has_table_privilege(current_user,oid,'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+  OR has_table_privilege(current_user,oid,'UPDATE,TRUNCATE,REFERENCES,TRIGGER')
+  OR has_table_privilege(current_user,oid,'DELETE')<>(relname='account_flows')
   OR (SELECT count(*) FROM pg_policy WHERE polrelid=t.oid)<>1
   OR NOT EXISTS(SELECT 1 FROM pg_policy WHERE polrelid=t.oid AND polname='tenant' AND polcmd='*' AND polpermissive AND polroles=ARRAY[0::oid]
     AND lower(replace(regexp_replace(pg_get_expr(polqual,polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'
