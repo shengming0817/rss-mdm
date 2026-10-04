@@ -169,7 +169,9 @@ async fn body(request: Request, next: Next, requests: Arc<tokio::sync::Semaphore
         .get::<axum::extract::MatchedPath>()
         .map(|p| p.as_str())
         .unwrap_or("");
-    let limit = if route.ends_with("/tasks/{id}/events") {
+    let limit = if route.contains("/self-service/") {
+        131072
+    } else if route.ends_with("/tasks/{id}/events") {
         rss_mdm_agent_wire::runtime::MAX_TASK_REQUEST_BYTES
     } else if request.uri().path().contains("/enroll/") {
         65536
@@ -197,6 +199,11 @@ fn route_action(route: &str) -> &'static str {
         "/api/v1/agent/enroll/activate" | "/activate" => "agent_certificate_activate",
         "/api/v1/agent/runtime/reports" | "/reports" => "agent_report",
         "/api/v1/agent/runtime/reports/{id}" | "/reports/{id}" => "agent_report_read",
+        "/api/v1/agent/runtime/self-service/scripts" | "/self-service/scripts" => "command_read",
+        "/api/v1/agent/runtime/self-service/scripts/invocations"
+        | "/self-service/scripts/invocations" => "command_accept",
+        "/api/v1/agent/runtime/self-service/scripts/invocations/{id}"
+        | "/self-service/scripts/invocations/{id}" => "command_read",
         _ => "protected_request",
     }
 }

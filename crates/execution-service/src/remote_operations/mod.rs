@@ -5,7 +5,9 @@
 //! permitted; completion permits only changes within the approved scope.
 use crate::ExecutionService;
 use crate::frozen::Frozen;
-use crate::input_preparation::{PublicationAuthority, PublicationInput, ResourcePreparation};
+use crate::input_preparation::{
+    PublicationAuthority, PublicationInput, ResourcePreparation, ScriptParameters,
+};
 use crate::{
     Error,
     authorization::{Permission, context::AuthorizedPrincipal},
@@ -174,7 +176,7 @@ impl ExecutionService {
         let request = match &input.action {
             Action::Execute { parameters } => ResourcePreparation::Script {
                 binding: &input.resource,
-                parameters,
+                parameters: ScriptParameters::Values(parameters),
             },
             Action::ApplyConfiguration => ResourcePreparation::Configuration {
                 binding: &input.resource,
@@ -197,7 +199,7 @@ impl ExecutionService {
             let schedule = input.schedule(at);
             let lifetime = (input.deadline-at) as u32;
             let request = match &input.action {
-                Action::Execute { parameters } => PublicationInput::Script { binding: &input.resource, parameters, schedule: &schedule, frequency: Frequency::OncePerVersion, lifetime },
+                Action::Execute { parameters } => PublicationInput::Script { binding: &input.resource, parameters: ScriptParameters::Values(parameters), schedule: &schedule, frequency: Frequency::OncePerVersion, lifetime },
                 Action::CollectNative => PublicationInput::NativeCollection { binding: &input.resource, schedule: &schedule, frequency: Frequency::OncePerVersion, lifetime },
                 Action::ApplyConfiguration => PublicationInput::Configuration { binding: &input.resource, exit: Exit::Retain },
             };

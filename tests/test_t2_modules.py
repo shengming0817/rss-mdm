@@ -53,7 +53,7 @@ class ModuleImpactTests(unittest.TestCase):
                 'planning.group_scope', 'planning.scope', 'planning.policy', 'planning.agent_policy',
                 'planning.frequency', 'planning.recovery', 'diagnostics.http'},
             'crates/management-http/src/planning/mod.rs': {
-                'planning.http', 'planning.policy', 'planning.agent_policy', 'planning.frequency',
+                'planning.self_service', 'planning.http', 'planning.policy', 'planning.agent_policy', 'planning.frequency',
                 'planning.remote', 'planning.software'},
             'crates/management-http/src/software_native.rs': {
                 'publication.winget', 'publication.brew', 'publication.withdrawal'},
@@ -168,7 +168,7 @@ class ModuleImpactTests(unittest.TestCase):
                          'host.lifecycle', 'api.identity_context'} <= app)
         self.assertTrue(app.isdisjoint({'apple.cms', 'apple.apns', 'sources.winget'}))
         self.assertEqual(self.selected('crates/agent-channel/src/tasks.rs'), {
-            'execution.agent.delivery', 'execution.agent.poll', 'execution.agent.content',
+            'planning.self_service', 'execution.agent.delivery', 'execution.agent.poll', 'execution.agent.content',
             'execution.agent.recovery', 'execution.software.offer',
             'execution.software.content', 'execution.software.recovery'})
         self.assertEqual(self.selected('crates/windows-channel/src/lib.rs'), {
@@ -224,7 +224,7 @@ class ModuleImpactTests(unittest.TestCase):
 
     def test_app_helpers_select_all_actual_consumers(self):
         self.assertEqual(self.selected('crates/app/tests/support/software.rs'), {
-            'software.http','content.http','content.mirror','content.gc','content.storage',
+            'planning.self_service','software.http','content.http','content.mirror','content.gc','content.storage',
             'planning.software','planning.policy','planning.http','apple.policy','execution.software.offer','execution.software.content','execution.software.recovery'})
         self.assertEqual(self.selected('crates/app/tests/support/process.rs'),
                          {'inventory.runtime','execution.commands.recovery'})
@@ -272,7 +272,7 @@ class ModuleImpactTests(unittest.TestCase):
 
     def test_shared_registration_fixture_selects_only_direct_consumers(self):
         self.assertEqual(self.selected('crates/app/tests/support/agent.rs'),
-                         {'agent.registration','agent.reports','planning.remote','execution.agent.poll','execution.agent.recovery','planning.onboarding','execution.commands.onboarding','execution.agent.delivery','execution.software.recovery','planning.agent_policy','execution.software.offer','execution.agent.history','assets.http','execution.agent.content','apple.onboarding','planning.software','planning.http','execution.software.content','planning.frequency','execution.commands.windows','software.http'})
+                         {'planning.self_service','agent.registration','agent.reports','planning.remote','execution.agent.poll','execution.agent.recovery','planning.onboarding','execution.commands.onboarding','execution.agent.delivery','execution.software.recovery','planning.agent_policy','execution.software.offer','execution.agent.history','assets.http','execution.agent.content','apple.onboarding','planning.software','planning.http','execution.software.content','planning.frequency','execution.commands.windows','software.http'})
 
     def test_content_range_selects_real_download_consumers(self):
         self.assertEqual(self.selected('crates/content-service/src/range.rs'),

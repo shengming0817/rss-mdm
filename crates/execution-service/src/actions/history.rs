@@ -70,7 +70,7 @@ impl Queries {
             current.require_all_devices(proof,Permission::OperationRead)?;
             let tenant=tx.tenant_id().to_string();let at=page.after_at;let after=page.after_id.map(|id|id.to_string());let now=storage::now(tx).await?;
             let mut rows=tx.with_connection(move |c|Box::pin(async move {
-                let mut query=sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT jsonb_build_object('taskId',r.id,'device',r.device,'registrationId',r.registration,'generation',r.generation,'occurrence',r.occurrence,'availableAt',r.available_at,'deadline',r.deadline,'state',r.state,'effect',coalesce(r.result->>'effect','unverified'),'userAction',CASE WHEN v.frozen->>'kind'='software' AND v.frozen->'action'->>'intent'='available_install' AND r.state->>'execution'='not_started' AND r.state->>'cancellation'='none' AND r.state->'delivery'->>'kind' IN ('claimed','received') AND (r.state->'delivery'->>'leaseUntil')::bigint>$5 THEN 'waiting_user' ELSE NULL END,'result',");
+                let mut query=sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT jsonb_build_object('taskId',r.id,'authorization',r.invocation->'authorization','attemptId',r.state->'delivery'->>'attempt','device',r.device,'registrationId',r.registration,'generation',r.generation,'occurrence',r.occurrence,'availableAt',r.available_at,'deadline',r.deadline,'state',r.state,'effect',coalesce(r.result->>'effect','unverified'),'userAction',CASE WHEN v.frozen->>'kind'='software' AND v.frozen->'action'->>'intent'='available_install' AND r.state->>'execution'='not_started' AND r.state->>'cancellation'='none' AND r.state->'delivery'->>'kind' IN ('claimed','received') AND (r.state->'delivery'->>'leaseUntil')::bigint>$5 THEN 'waiting_user' ELSE NULL END,'result',");
                 query.push(RESULT_SUMMARY_SQL).push(") FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2::uuid AND ($3::bigint IS NULL OR (r.available_at,r.id)<($3,$4::uuid)) ORDER BY r.available_at DESC,r.id DESC LIMIT 21");
                 query.build_query_scalar::<Value>()
                     .bind(tenant).bind(id.to_string()).bind(at).bind(after).bind(now).fetch_all(c).await
@@ -128,7 +128,7 @@ impl Queries {
             store.append_request_in(tx,audit,200,"success").await?;
             let effect=run.result.as_ref().and_then(|r|r["effect"].as_str()).unwrap_or("unverified").to_owned();
             let user_action=if matches!(plan,db::ScheduledPolicy::Software(ref software) if matches!(software.assignment.intent(),rss_mdm_policy::SoftwareIntent::AvailableInstall)) && run.state.awaits_user(storage::now(tx).await?) {Some("waiting_user")}else{None};
-            let mut value=json!({"taskId":id,"device":run.target.device,"registrationId":run.target.registration,"generation":run.target.generation,"availableAt":run.available_at,"deadline":run.deadline,"state":run.state,"effect":effect,"userAction":user_action,"result":run.result});
+            let mut value=json!({"taskId":id,"authorization":run.invocation.as_ref().map(|i|&i.authorization),"attemptId":run.state.attempt(),"device":run.target.device,"registrationId":run.target.registration,"generation":run.target.generation,"availableAt":run.available_at,"deadline":run.deadline,"state":run.state,"effect":effect,"userAction":user_action,"result":run.result});
             value[field]=json!(parent);crate::queries::records::decode(value)
         })).await.map_err(Into::into)
     }

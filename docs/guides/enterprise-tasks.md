@@ -80,9 +80,9 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）
 1. `POST /api/v1/agent/runtime/tasks/claim`：wireVersion=1、operationId、当前 profiles 和 executionContext，返回至多一个签名 offer 及有界取消页。领取候选与取消页独立选择，每个 registration 的取消游标持久化并循环遍历。task=null 的轮询不写永久执行回执，重试可看到新状态；实际 offer 在有效且仍获授权期间精确重放。
 2. 验签后按 task/attempt 下载脚本 `/tasks/{taskId}/content?attempt={attemptId}`；软件按签名产物 key 下载 `/tasks/{taskId}/content?attempt={attemptId}&artifact={urlEncodedKey}`。支持单段 Range、ETag 和 If-Range；每次都检查当前凭据、企业批准及任务权限。客户端最终核对长度/hash。
 3. 向 `/tasks/{taskId}/events` 提交 received，再提交 start。事件包含 wireVersion=1、operationId、attemptId、event、executionContext。只有独立签名的短期 Start permit 可以授权启动，offer 本身不能启动。
-4. 返回 result（exitCode、quality、output、diagnostics）或 cancelled。diagnostics 的完整字段、闭合分类和预算见 [wire schema](../../crates/agent-wire/schema)。每次重试保留相同 operationId 与内容。已开始而结果未知的任务不自动重新领取；迟到的同 attempt 证据可以解释 Unknown。
+4. 返回 result（exitCode、quality、output、diagnostics、collectedAt）或 cancelled。diagnostics 的完整字段、闭合分类和预算见 [wire schema](../../crates/agent-wire/schema)。每次重试保留相同 operationId 与内容。已开始而结果未知的任务不自动重新领取；迟到的同 attempt 证据可以解释 Unknown。
 
-交付、执行和取消分别保存；脚本运行退出成功只记录执行证据，脚本 effect 始终 unverified，不产生设备状态命令的 Applied 或虚构 StateDigest。脚本持久结果包含 exitCode、quality、schemaValid、output、diagnostics 和 trusted；单 run 详情检查设备 OperationRead；采集结果另查 InventoryRead，含敏感字段再查 InventorySensitiveRead，随后才返回原始 output 与 stdout/stderr。列表摘要删除 output 以及 diagnostics.stdout/stderr，只保留受限状态和时间/失败分类。结构化 output 同时遵守 wire 与资源版本预算。
+交付、执行和取消分别保存；脚本运行退出成功只记录执行证据，脚本 effect 始终 unverified，不产生设备状态命令的 Applied 或虚构 StateDigest。脚本持久结果包含 exitCode、quality、schemaValid、output、diagnostics、trusted、Agent 原生 collectedAt 与服务端 receivedAt；单 run 详情检查设备 OperationRead；采集结果另查 InventoryRead，含敏感字段再查 InventorySensitiveRead，随后才返回原始 output 与 stdout/stderr。列表摘要删除 output 以及 diagnostics.stdout/stderr，只保留受限状态和时间/失败分类。结构化 output 同时遵守 wire 与资源版本预算。
 
 采集模板使用 collection purpose 和字段键→JSON Pointer 映射，不另建版本体系。映射引用统一版本化目录中的内置或自定义字段，按字段类型、平台、来源与敏感级别冻结；不再限制为三个固定字段。脚本与 SQL 分别使用 agent.script 与 agent.osquery。预算合法、exitCode=0、输出完整且执行仍可信时，字段独立校验后经 CollectionRun→Observation→Inventory 发布；缺失或无效字段可形成部分结果，合法字段仍可更新。失败、截断、超预算和不可信结果不清空历史可信事实；来源冲突与完整快照/tombstone 删除按统一选值规则处理，不引入 TTL。
 
@@ -122,3 +122,32 @@ Apple 新注册 profile 在启用该能力时申请已安装应用查询与企�
 内容仓必须显式选择 `content.storage.kind=volume|s3`。服务端卷目录须存在、可写且为绝对路径；多实例共享同一目录。S3 配置参考 [S3 内容配置](../../fixtures/mdm-content-s3.example.json)，要求 HTTPS、启用版本控制的 bucket，以及指定 namespace 下对象读写和确切版本删除权限。实际对象前缀包含租户 UUID；下载始终经产品授权入口，不向客户端暴露 S3 凭据或地址。外部第三方下载 URL 不属于软件上传入口。
 
 任意 PATCH 大小和字节偏移继续有效。普通内容按 128 MiB 完整块和一个尾快照保存，完成后冻结清单，不进行整包复制或 multipart 合成。请求体完整结束、对象校验和 PostgreSQL 提交后才确认偏移。原生配置与诊断的逻辑摘要保持明文身份，但所有持久对象都为受保护密文。只有 ZIP/MSIX 校验使用有额度限制的临时 seek 文件；普通下载按逻辑 Range 读取清单。
+
+## 脚本自助服务与调用参数
+
+`Policy.definition.selfService` 管理 published、displayName、description、prerequisites、sideEffects、category、keywords、allowAi 和 riskLevel。首次省略 allowAi/riskLevel 时归一化为 true/2；编辑时省略保留原值。riskLevel 仅允许 1、2：一级允许 AI 直接调用，二级由 Agent 系统服务取得当前员工对具体参数的确认。关闭 allowAi 只影响 AI 目录和调用；撤回 published 阻止新的自助调用。普通自动执行独立适用已有 Policy 规则。
+
+Resource.Script 定义参数类型和范围，Policy 对每个参数选择来源：
+
+```json
+"parameters": {
+  "path": {"kind":"fixed", "value":"/Applications"},
+  "name": {"kind":"input"}
+}
+```
+
+来源键必须与 Resource properties 完全一致。调用只提交全部 Input 键，不能覆盖 Fixed；后端合并后用同一 Resource schema 完整校验并冻结到 Run。存在 Input 时 trigger 必须是 manual，不能通过全 Scope rerun 补齐调用参数。全部 Fixed 可用于已有自动触发器。人和 AI 使用相同类型、范围和绑定规则，没有额外 AI 参数 schema。参数来源/固定值变化产生执行版本；自助目录配置、AI 开关、风险等级只推进配置 revision，频率历史继续生效。旧 literal Policy 参数形状不再接受。
+
+下列入口位于 `/api/v1/agent/runtime`，每个请求同时携带当前 Agent 系统服务的设备凭据，以及 `X-RSS-User-Session` 中的产品员工会话。该会话只在入口认证，不写入 Run、签名或审计。source 由持有设备凭据的系统服务按真实 IPC 入口设置，不能从模型工具参数透传；confirmed 表示系统服务取得该用户对当前 requestId、Policy revision/version 和确切参数的确认。#2657 持有该客户端边界，模型不得接触设备私钥或会话凭据。
+
+- `GET /self-service/scripts?source=human|ai&after=<policyId>` 返回有界目录及 nextCursor：Policy ID/revision/version、自助描述、Resource 坐标、parameterSources、Resource parameterSchema。员工需要当前设备 ScriptExecute，且设备必须属于已解析 Scope、匹配平台/架构、具有脚本能力及最近声明的 executor profile。未知事实不返回可执行项目；AI 目录额外使用 allowAi。
+- `POST /self-service/scripts/invocations` 接受 operationId、policyId、policyRevision、policyVersion、source、confirmed、parameters。只针对设备凭据对应的一个当前设备，返回 202 的 requestId/runId 与 Policy 坐标。相同请求精确重放；同一 operationId 的变化正文返回冲突。复用正常 Run/Attempt、频率、pending/Unknown 和容量门控，Unknown 不因重新注册绕过。
+- `GET /self-service/scripts/invocations/{requestId}` 返回该用户及注册对应请求的 Run/attempt/state/quality/结果。采集原始结果复用 InventoryRead 和 InventorySensitiveRead 授权。管理员仍从既有 Policy Run 接口读摘要/详情，自助授权身份与 attempt 同时可追溯。
+
+后续 Offer/Start/content 使用原设备认证，不重复要求用户在线。持久 UserGrant 重查实际授权规则修订，Start 同时重查 Policy revision/version、自助配置、Scope、当前注册和执行器能力。唯一 TaskSpec 必须含 authorization、resource、完整 parameters 和 deadline；签名覆盖这些字段及现有材料、身份、预算、任务与 attempt。Start 完整比较本次 Offer 的执行内容，只改变 permit/expiry。撤权后的迟到结果保留原生时间和质量，但不更新可信 Inventory；副作用无法确认时保留 Unknown。
+
+软件检测仍归 Agent 本地的受批准软件定义/原生 detector，不新增软件检测 Policy、Run 或后端 API。Jamf 的脚本参数标签在 Script 定义、参数值在 Policy 配置；扩展属性脚本在终端运行并随 Inventory 回传，参考 [Scripts](https://learn.jamf.com/r/en-US/jamf-pro-documentation-current/Scripts) 与 [Extension Attributes](https://developer.jamf.com/jamf-pro/docs/extension-attributes)。RSS 的 Fixed/Input 在此职责划分上补齐同一 Resource 范围校验。
+
+目录只显示当前可调用项目：已消费频率、pending/Unknown、check-in 冷却、容量与窗口均复用调用准入判断。状态的 result 使用 agent-wire 的 ScriptRunResult 固定包装，明确原生 collectedAt、receivedAt、exitCode、quality、schemaValid、budgetValid、outputReference、diagnostics 与 trusted；仅 Resource 定义的 output 保留动态 JSON。无结果时 result 为显式 null。
+
+联调契约由拥有 DTO 的 crate 生成：管理写入/读取见 `crates/management-http/schema/{PolicyWrite,Policy}.json`，调用请求与目录/受理/结果响应统一见 `crates/agent-wire/schema/runtime/self-service-*.json`，签名字段以唯一 `task-payload-v1.schema.json` 为准。对应 Rust examples 为生成入口；Agent artifact 的生成/校验入口保持 `hack/agent_wire_artifact.py --write`。#2657/#2658 应固定本次 PR 的最终 Git SHA，并核对其 pm:ship 中的 schema SHA-256 与 runtime SCHEMA_FINGERPRINT；不使用浮动 develop 或旧 TaskSpec 兜底。本次交付只提供后端与契约，实际 Agent/员工 UI 分别由 #2657/#2658 实施。

@@ -82,6 +82,8 @@ GRANT UPDATE(cancellation_after) ON TABLE mdm_commands.action_polls TO mdm_comma
 
 GRANT UPDATE(policy_after) ON TABLE mdm_commands.action_polls TO mdm_command_runtime;
 
+GRANT UPDATE(profiles) ON TABLE mdm_commands.action_polls TO mdm_command_runtime;
+
 GRANT SELECT,INSERT ON TABLE mdm_commands.action_receipts TO mdm_command_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_commands.action_runs TO mdm_command_runtime;
@@ -91,6 +93,8 @@ GRANT UPDATE(state) ON TABLE mdm_commands.action_runs TO mdm_command_runtime;
 GRANT UPDATE(gateway_accepted) ON TABLE mdm_commands.action_runs TO mdm_command_runtime;
 
 GRANT UPDATE(result) ON TABLE mdm_commands.action_runs TO mdm_command_runtime;
+
+GRANT UPDATE(invocation) ON TABLE mdm_commands.action_runs TO mdm_command_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_commands.attempts TO mdm_command_runtime;
 

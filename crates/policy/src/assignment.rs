@@ -3,12 +3,11 @@ use crate::Error;
 use crate::schedule::{Schedule, Trigger};
 use crate::{Architecture, Platform};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
 /// Exact selection for a script or native configuration.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExactResourceBinding {
     /// Opaque resource identity.
@@ -23,7 +22,9 @@ pub struct ExactResourceBinding {
     pub variant: String,
 }
 /// Supported software target coordinates.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Deserialize, Serialize)]
+#[derive(
+    schemars::JsonSchema, Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Deserialize, Serialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SoftwareTarget {
     /// Windows x86-64.
@@ -56,7 +57,7 @@ impl SoftwareTarget {
     }
 }
 /// Exact software variants belonging to a single immutable resource version.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SoftwareResourceBinding {
     /// Closed software resource discriminator.
@@ -69,13 +70,13 @@ pub struct SoftwareResourceBinding {
     pub variants: BTreeMap<SoftwareTarget, String>,
 }
 /// Closed resource kind for software bindings.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SoftwareResourceKind {
     /// Enterprise software.
     Software,
 }
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 /// Execution-history rule evaluated when a device checks in.
 pub enum Frequency {
@@ -87,7 +88,7 @@ pub enum Frequency {
     /// Each distinct due trigger, subject to outstanding execution safety.
     EveryTrigger,
 }
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 /// Supported configuration behavior when the last assignment exits.
 pub enum Exit {
@@ -98,7 +99,7 @@ pub enum Exit {
     Remove,
 }
 /// Explicit delivery authority for the native behaviors in a software dependency closure.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SoftwareDelivery {
     /// Concrete installers consume approved task content directly.
@@ -112,7 +113,7 @@ pub enum SoftwareDelivery {
     },
 }
 /// Explicit software publication environment selected by the deployment author.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SoftwareDeliveryRing {
     /// Test publication.
@@ -122,7 +123,7 @@ pub enum SoftwareDeliveryRing {
     /// Production publication.
     Production,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -135,8 +136,8 @@ pub enum Action {
     Execution {
         /// Exact immutable script resource.
         resource: ExactResourceBinding,
-        /// Literal parameters validated against the selected script.
-        parameters: Value,
+        /// Complete parameter sources validated against the selected Resource.
+        parameters: crate::ParameterSources,
         #[serde(default = "default_schedule")]
         /// Calendar and event conditions; defaults to check-in without an end.
         schedule: Schedule,
@@ -209,7 +210,7 @@ pub enum Action {
     },
 }
 /// Desired software assignment behavior.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SoftwareIntent {
     /// Enforce the approved software version.
@@ -220,14 +221,14 @@ pub enum SoftwareIntent {
     ExplicitUninstall,
 }
 /// Time-driven rollout; success rate is an optional additional gate.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SoftwareRollout {
     /// Ordered stage scopes and opening times.
     pub stages: Vec<SoftwareRolloutStage>,
 }
 /// One administrator-selected stage.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SoftwareRolloutStage {
     /// Scope that becomes eligible at the opening time.
@@ -262,7 +263,7 @@ fn default_schedule() -> Schedule {
         window: None,
     }
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 /// Complete authored Policy definition, without execution progress.
 pub struct Definition {
@@ -270,6 +271,9 @@ pub struct Definition {
     pub scope: Uuid,
     /// Closed action or configuration semantics.
     pub action: Action,
+    /// Optional script self-service publication and presentation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_service: Option<crate::SelfService>,
 }
 impl Definition {
     /// Validate closed shape, bounded identities, calendar conditions and run lifetime.
@@ -285,13 +289,19 @@ impl Definition {
             return Err(Error::Malformed);
         }
         self.action.validate()?;
+        if let Some(config) = &self.self_service {
+            if !matches!(self.action, Action::Execution { .. }) {
+                return Err(Error::Malformed);
+            }
+            config.validate()?;
+        }
         Ok(())
     }
 }
 
 /// Borrowed resource coordinates for reference and authorization checks.
 /// This identity deliberately has no serialization: execution semantics use the full selection.
-#[derive(Clone, Copy, Debug)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug)]
 pub struct ResourceIdentity<'a> {
     id: &'a str,
     version: &'a str,
@@ -394,6 +404,17 @@ impl Action {
                 resource.validate()?
             }
             Self::RequestMdmEnrollment { .. } => (),
+        }
+        if let Action::Execution {
+            parameters,
+            schedule,
+            ..
+        } = self
+        {
+            parameters.validate()?;
+            if parameters.has_input() && !matches!(schedule.trigger, Trigger::Manual) {
+                return Err(Error::Malformed);
+            }
         }
         match self {
             Action::Execution {

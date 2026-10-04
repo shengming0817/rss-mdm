@@ -147,3 +147,98 @@ fn native_delivery_source_and_ring_are_execution_semantics() {
     value["action"].as_object_mut().unwrap().remove("delivery");
     assert!(serde_json::from_value::<rss_mdm_policy::Definition>(value).is_err());
 }
+
+#[test]
+fn parameter_sources_and_self_service_have_independent_versions() {
+    let id = Uuid::new_v4();
+    let mut value = json!({"scope":id,"action":{"kind":"execution","resource":{"id":"r","version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"parameters":{"path":{"kind":"fixed","value":"/Applications"},"name":{"kind":"input"}},"schedule":{"trigger":{"kind":"manual"},"misfire":{"kind":"coalesce_one"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null},"runLifetimeSeconds":300},"selfService":{"published":true,"displayName":"Repair","description":"Repair application","prerequisites":"","sideEffects":"Restart","category":"Support","keywords":[]}});
+    let apply = |old: Option<&Policy>, v: serde_json::Value| {
+        Policy::apply(
+            id,
+            old,
+            old.map_or(0, |p| p.revision as u64),
+            &Change::Put {
+                definition: Box::new(serde_json::from_value(v).unwrap()),
+                enabled: true,
+            },
+            Uuid::new_v4(),
+        )
+        .unwrap()
+    };
+    let first = apply(None, value.clone());
+    let config = first.policy.definition.self_service.as_ref().unwrap();
+    assert_eq!(config.allow_ai, Some(true));
+    assert_eq!(config.risk_level, Some(ScriptRisk::CONFIRM));
+    value["selfService"]["allowAi"] = json!(false);
+    value["selfService"]["riskLevel"] = json!(1);
+    let second = apply(Some(&first.policy), value.clone());
+    assert!(!second.semantic_changed);
+    assert_eq!(second.policy.version, first.policy.version);
+    value["selfService"]
+        .as_object_mut()
+        .unwrap()
+        .remove("allowAi");
+    value["selfService"]
+        .as_object_mut()
+        .unwrap()
+        .remove("riskLevel");
+    let third = apply(Some(&second.policy), value.clone());
+    assert_eq!(
+        third
+            .policy
+            .definition
+            .self_service
+            .as_ref()
+            .unwrap()
+            .allow_ai,
+        Some(false)
+    );
+    assert_eq!(
+        third
+            .policy
+            .definition
+            .self_service
+            .as_ref()
+            .unwrap()
+            .risk_level,
+        Some(ScriptRisk::DIRECT)
+    );
+    value["action"]["parameters"]["path"]["value"] = json!("/Library");
+    assert!(apply(Some(&third.policy), value.clone()).semantic_changed);
+    value["action"]["schedule"]["trigger"] = json!({"kind":"check_in","minimumSeconds":60});
+    assert!(
+        serde_json::from_value::<Definition>(value)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+}
+#[test]
+fn input_is_exact_and_cannot_override_fixed_values() {
+    let sources: ParameterSources = serde_json::from_value(
+        json!({"path":{"kind":"fixed","value":"/Applications"},"name":{"kind":"input"}}),
+    )
+    .unwrap();
+    assert_eq!(
+        sources.resolve(&json!({"name":"App"})).unwrap(),
+        json!({"name":"App","path":"/Applications"})
+    );
+    for invalid in [
+        json!({}),
+        json!({"path":"/tmp"}),
+        json!({"name":"App","path":"/tmp"}),
+        json!({"name":"App","extra":1}),
+    ] {
+        assert!(sources.resolve(&invalid).is_err());
+    }
+    for invalid in [
+        json!({"name":"old literal"}),
+        json!({"name":{"kind":"input","default":"x"}}),
+        json!({"name":{"kind":"fixed","value":[],"schema":{}}}),
+    ] {
+        assert!(serde_json::from_value::<ParameterSources>(invalid).is_err());
+    }
+    for invalid in [0, 3, 255] {
+        assert!(serde_json::from_value::<ScriptRisk>(json!(invalid)).is_err());
+    }
+}

@@ -1,0 +1,42 @@
+{
+  "$defs": {
+    "ScriptCaller": {
+      "description": "Origin attested by the authenticated system service, never taken from model arguments.",
+      "oneOf": [
+        {
+          "const": "human",
+          "description": "Interactive employee action.",
+          "type": "string"
+        },
+        {
+          "const": "ai",
+          "description": "AI tool action forwarded by the system service.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Bounded directory pagination; source is attested by the authenticated service.",
+  "properties": {
+    "after": {
+      "description": "Last examined Policy identity.",
+      "format": "uuid",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source": {
+      "$ref": "#/$defs/ScriptCaller",
+      "description": "Caller origin."
+    }
+  },
+  "required": [
+    "source"
+  ],
+  "title": "SelfServiceDirectory",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/self-service-directory.schema.json"
+}

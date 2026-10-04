@@ -34,7 +34,11 @@
             "outputBytes",
             "maxRows",
             "platform",
-            "architecture"
+            "architecture",
+            "resource",
+            "authorization",
+            "parameters",
+            "deadline"
           ],
           "properties": {
             "wireVersion": {
@@ -225,6 +229,43 @@
                   }
                 ]
               }
+            },
+            "resource": {
+              "$ref": "#/$defs/ScriptResource"
+            },
+            "authorization": {
+              "$ref": "#/$defs/ScriptAuthorization"
+            },
+            "parameters": {
+              "type": "object",
+              "maxProperties": 32,
+              "propertyNames": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[A-Za-z0-9_]+$"
+              },
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[^\\u0000]*$"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": -9223372036854775808,
+                    "maximum": 9223372036854775807
+                  }
+                ]
+              }
+            },
+            "deadline": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
             }
           },
           "allOf": [
@@ -3297,6 +3338,193 @@
           }
         }
       ]
+    },
+    "ScriptActor": {
+      "additionalProperties": false,
+      "description": "Authenticated product user; contains no session credential.",
+      "properties": {
+        "instanceId": {
+          "description": "Identity instance.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "principalId": {
+          "description": "Authenticated principal.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "tenantId": {
+          "description": "Product tenant.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenantId",
+        "instanceId",
+        "principalId"
+      ],
+      "type": "object"
+    },
+    "ScriptCaller": {
+      "description": "Origin attested by the authenticated system service, never taken from model arguments.",
+      "oneOf": [
+        {
+          "const": "human",
+          "description": "Interactive employee action.",
+          "type": "string"
+        },
+        {
+          "const": "ai",
+          "description": "AI tool action forwarded by the system service.",
+          "type": "string"
+        }
+      ]
+    },
+    "ScriptAuthorization": {
+      "description": "Server decision covered by the same signature as all script execution inputs.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Ordinary scheduled Policy execution.",
+          "properties": {
+            "kind": {
+              "const": "policy",
+              "type": "string"
+            },
+            "policyId": {
+              "description": "Policy identity.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "policyVersion": {
+              "description": "Immutable execution version.",
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "policyId",
+            "policyVersion"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Existing Remote Operation execution.",
+          "properties": {
+            "kind": {
+              "const": "remote_operation",
+              "type": "string"
+            },
+            "operationId": {
+              "description": "Operation identity.",
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "operationId"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Targeted Policy self-service invocation.",
+          "properties": {
+            "actor": {
+              "$ref": "#/$defs/ScriptActor",
+              "description": "Real employee identity."
+            },
+            "allowAi": {
+              "description": "Effective AI switch.",
+              "type": "boolean"
+            },
+            "confirmed": {
+              "description": "Confirmation attested for this exact request by the service.",
+              "type": "boolean"
+            },
+            "kind": {
+              "const": "self_service",
+              "type": "string"
+            },
+            "policyId": {
+              "description": "Policy identity.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "policyRevision": {
+              "description": "Configuration revision approved at invocation.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "policyVersion": {
+              "description": "Immutable execution version.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "requestId": {
+              "description": "Idempotency identity of the call.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "riskLevel": {
+              "description": "Closed risk level, one or two.",
+              "enum": [
+                1,
+                2
+              ],
+              "type": "integer"
+            },
+            "source": {
+              "$ref": "#/$defs/ScriptCaller",
+              "description": "Trusted service's caller classification."
+            }
+          },
+          "required": [
+            "kind",
+            "requestId",
+            "actor",
+            "source",
+            "policyId",
+            "policyRevision",
+            "policyVersion",
+            "allowAi",
+            "riskLevel",
+            "confirmed"
+          ],
+          "type": "object"
+        }
+      ],
+      "title": "ScriptAuthorization"
+    },
+    "ScriptResource": {
+      "additionalProperties": false,
+      "description": "Exact Resource identity accompanying its signed digest.",
+      "properties": {
+        "id": {
+          "description": "Logical Resource identity.",
+          "type": "string"
+        },
+        "variant": {
+          "description": "Exact selected variant.",
+          "type": "string"
+        },
+        "version": {
+          "description": "Immutable Resource version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "variant"
+      ],
+      "title": "ScriptResource",
+      "type": "object"
     }
   }
 }

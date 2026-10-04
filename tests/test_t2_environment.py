@@ -138,7 +138,7 @@ class EnvironmentTests(unittest.TestCase):
             directories=[env.root/'gateway-cert'/mode for mode in ('host','container')]
             for directory in directories:
                 env.issue_leaf(directory,['localhost','mdm.example.test'])
-                subprocess.run(['openssl','verify','-CAfile',str(env.root/'ca.crt'),str(directory/'server.crt')],check=True,capture_output=True)
+                subprocess.run(['openssl','verify','-x509_strict','-CAfile',str(env.root/'ca.crt'),str(directory/'server.crt')],check=True,capture_output=True)
             for name in ('server.key','server.crt'):
                 self.assertNotEqual(hashlib.sha256((directories[0]/name).read_bytes()).digest(),hashlib.sha256((directories[1]/name).read_bytes()).digest())
 

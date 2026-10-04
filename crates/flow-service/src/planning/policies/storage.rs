@@ -21,9 +21,7 @@ pub async fn read_in(
     checked(reader.read_in(tx, id).await?)
 }
 pub fn view(policy: &Policy) -> Result<Value> {
-    Ok(
-        json!({"id":policy.id,"revision":policy.revision,"version":policy.number,"versionId":policy.version,"enabled":policy.enabled,"definition":policy.definition}),
-    )
+    checked_input(serde_json::to_value(rss_mdm_policy::View::from(policy)))
 }
 pub async fn write_in(
     store: &rss_mdm_policy_postgres::PolicyStore,

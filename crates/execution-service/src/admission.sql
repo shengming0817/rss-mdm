@@ -9,7 +9,7 @@ WITH tables AS (
  ('mdm_commands.policy_recovery','target_after'),('mdm_commands.policy_recovery','recovery_after'),('mdm_commands.action_polls','policy_after'),
  ('mdm_planning.configuration_claims','version'),('mdm_planning.configuration_claims','operation'),
  ('mdm_planning.configuration_devices','input_revision'),('mdm_planning.configuration_devices','observed_revision'),('mdm_planning.configuration_objects','operation'),('mdm_planning.configuration_objects','digest'),('mdm_planning.configuration_objects','diagnosis'),
- ('mdm_commands.action_polls','cancellation_after'),('mdm_commands.action_runs','state'),('mdm_commands.action_runs','result'),('mdm_commands.action_runs','gateway_accepted'),('mdm_commands.action_attempts','permit'),
+ ('mdm_commands.action_polls','cancellation_after'),('mdm_commands.action_polls','profiles'),('mdm_commands.action_runs','invocation'),('mdm_commands.action_runs','state'),('mdm_commands.action_runs','result'),('mdm_commands.action_runs','gateway_accepted'),('mdm_commands.action_attempts','permit'),
  ('mdm_commands.attempt_frames','status'),('mdm_commands.attempt_frames','accepted'),('mdm_commands.attempt_frames','received_at'),
  ('mdm_commands.attempt_items','receipt_accepted'),('mdm_commands.attempt_items','result_accepted'),('mdm_commands.attempt_items','result_received_at'),('mdm_commands.attempt_items','status'),
  ('mdm_commands.attempt_items','value'),

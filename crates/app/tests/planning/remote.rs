@@ -5,6 +5,7 @@ use crate::test_support::*;
 async fn scope_snapshot_result_views_and_authorization() -> Result<()> {
     let mut fixture = Fixture::new().await?;
     fixture.register().await?;
+    claim_request(&fixture.router, Uuid::new_v4()).await?;
     let (resource, _bytes, _definition) = fixture.resource().await?;
     let base = &fixture.base;
     let router = &fixture.router;
@@ -173,6 +174,7 @@ async fn scope_snapshot_result_views_and_authorization() -> Result<()> {
 async fn bulk_pages_restart_and_cancellation_are_durable() -> Result<()> {
     let mut fixture = Fixture::new().await?;
     fixture.register().await?;
+    claim_request(&fixture.router, Uuid::new_v4()).await?;
     let (resource, _bytes, _definition) = fixture.resource().await?;
     let base = &fixture.base;
     let router = &fixture.router;

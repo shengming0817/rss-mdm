@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Exact Resource identity accompanying its signed digest.",
+  "properties": {
+    "id": {
+      "description": "Logical Resource identity.",
+      "type": "string"
+    },
+    "variant": {
+      "description": "Exact selected variant.",
+      "type": "string"
+    },
+    "version": {
+      "description": "Immutable Resource version.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "version",
+    "variant"
+  ],
+  "title": "ScriptResource",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/script-resource.schema.json"
+}

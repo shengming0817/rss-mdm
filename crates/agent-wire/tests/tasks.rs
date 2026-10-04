@@ -50,6 +50,17 @@ fn signatures_bind_attempt_artifact_and_permission_and_fail_closed() {
         permit: TaskPermit::Offer,
         expires_at: 100,
         resource_digest: [1; 32],
+        resource: ScriptResource {
+            id: "r".into(),
+            version: "v1".into(),
+            variant: "default".into(),
+        },
+        authorization: ScriptAuthorization::Policy {
+            policy_id: id,
+            policy_version: id,
+        },
+        parameters: Default::default(),
+        deadline: 200,
         content: TaskContent {
             length: 3,
             sha256: [2; 32],
@@ -142,6 +153,21 @@ fn signatures_bind_attempt_artifact_and_permission_and_fail_closed() {
         assert!(signed.verify(&bad).is_err());
     }
     for mutate in [
+        |s: &mut TaskSpec| {
+            s.resource.variant = "other".into();
+        },
+        |s: &mut TaskSpec| {
+            s.parameters.insert("name".into(), json!("changed"));
+        },
+        |s: &mut TaskSpec| {
+            s.deadline += 1;
+        },
+        |s: &mut TaskSpec| {
+            s.authorization = ScriptAuthorization::Policy {
+                policy_id: Uuid::new_v4(),
+                policy_version: Uuid::new_v4(),
+            };
+        },
         |s: &mut TaskSpec| {
             s.attempt_id = Uuid::new_v4();
         },
@@ -412,6 +438,7 @@ fn task_results_require_bounded_coherent_diagnostics() {
         OutputQuality::Complete,
         json!({"version":"1.2"}),
         diagnostics,
+        2,
     )
     .unwrap();
     assert_eq!(result.exit_code(), Some(0));
@@ -512,7 +539,13 @@ fn task_results_require_bounded_coherent_diagnostics() {
     let diagnostics =
         |failure| TaskDiagnostics::new(String::new(), String::new(), 0, 1, failure).unwrap();
     assert_eq!(
-        TaskResult::new(None, OutputQuality::Failed, json!(null), diagnostics(None),),
+        TaskResult::new(
+            None,
+            OutputQuality::Failed,
+            json!(null),
+            diagnostics(None),
+            2,
+        ),
         Err(WireError::InvalidValue)
     );
     assert_eq!(
@@ -521,6 +554,7 @@ fn task_results_require_bounded_coherent_diagnostics() {
             OutputQuality::Complete,
             json!(null),
             diagnostics(Some(TaskFailure::CaptureFailed)),
+            2,
         ),
         Err(WireError::InvalidValue)
     );
@@ -530,6 +564,7 @@ fn task_results_require_bounded_coherent_diagnostics() {
             OutputQuality::Truncated,
             json!(null),
             diagnostics(Some(TaskFailure::TimedOut)),
+            2,
         ),
         Err(WireError::InvalidValue)
     );
@@ -539,6 +574,7 @@ fn task_results_require_bounded_coherent_diagnostics() {
             OutputQuality::Truncated,
             json!(null),
             diagnostics(Some(TaskFailure::OutputLimit)),
+            2,
         )
         .is_ok()
     );
@@ -548,6 +584,7 @@ fn task_results_require_bounded_coherent_diagnostics() {
             OutputQuality::Failed,
             json!(null),
             diagnostics(Some(TaskFailure::NonZeroExit)),
+            2,
         ),
         Err(WireError::InvalidValue)
     );
@@ -557,6 +594,7 @@ fn task_results_require_bounded_coherent_diagnostics() {
             OutputQuality::Failed,
             json!(null),
             diagnostics(Some(TaskFailure::LaunchFailed)),
+            2,
         ),
         Err(WireError::InvalidValue)
     );
@@ -566,6 +604,7 @@ fn task_results_require_bounded_coherent_diagnostics() {
         OutputQuality::Partial,
         json!("x".repeat(1_048_574)),
         TaskDiagnostics::new("\u{1}".repeat(16_384), "\u{1}".repeat(16_384), 0, 1, None).unwrap(),
+        2,
     )
     .unwrap();
     assert_eq!(
@@ -630,4 +669,186 @@ fn software_support_is_a_closed_format_scope_context_profile() {
         serde_json::from_value::<Capability>(serde_json::json!("software.msix.generic.v1"))
             .is_err()
     );
+}
+#[test]
+fn self_service_schemas_follow_owned_dtos_and_reject_model_authority() {
+    use rss_mdm_agent_wire::runtime::*;
+    fn same<T: schemars::JsonSchema>(published: &str) {
+        let generated = serde_json::to_value(schemars::schema_for!(T)).unwrap();
+        let mut published: serde_json::Value = serde_json::from_str(published).unwrap();
+        published.as_object_mut().unwrap().remove("$id");
+        assert_eq!(generated, published);
+    }
+    same::<ScriptAuthorization>(include_str!(
+        "../schema/runtime/script-authorization-v1.schema.json"
+    ));
+    same::<ScriptResource>(include_str!(
+        "../schema/runtime/script-resource-v1.schema.json"
+    ));
+    same::<SelfServiceInvoke>(include_str!(
+        "../schema/runtime/self-service-invoke-v1.schema.json"
+    ));
+    same::<SelfServiceDirectory>(include_str!(
+        "../schema/runtime/self-service-directory-v1.schema.json"
+    ));
+    same::<SelfServiceDirectoryResponse>(include_str!(
+        "../schema/runtime/self-service-directory-response-v1.schema.json"
+    ));
+    same::<SelfServiceAccepted>(include_str!(
+        "../schema/runtime/self-service-accepted-v1.schema.json"
+    ));
+    same::<SelfServiceStatus>(include_str!(
+        "../schema/runtime/self-service-status-v1.schema.json"
+    ));
+    for risk in [0, 3, 255] {
+        let metadata = json!({"published":true,"displayName":"Repair","description":"","prerequisites":"","sideEffects":"","category":"Support","keywords":[],"allowAi":true,"riskLevel":risk});
+        assert!(serde_json::from_value::<SelfServiceMetadata>(metadata).is_err());
+    }
+    // Generated types must also be the definitions signed inside TaskSpec.
+    let payload: serde_json::Value = serde_json::from_str(include_str!(
+        "../schema/runtime/task-payload-v1.schema.json"
+    ))
+    .unwrap();
+    for (name, mut generated) in [
+        (
+            "ScriptAuthorization",
+            serde_json::to_value(schemars::schema_for!(ScriptAuthorization)).unwrap(),
+        ),
+        (
+            "ScriptResource",
+            serde_json::to_value(schemars::schema_for!(ScriptResource)).unwrap(),
+        ),
+    ] {
+        let root = generated.as_object_mut().unwrap();
+        root.remove("$schema");
+        if let Some(serde_json::Value::Object(definitions)) = root.remove("$defs") {
+            for (name, definition) in definitions {
+                assert_eq!(definition, payload["$defs"][&name], "embedded {name}");
+            }
+        }
+        assert_eq!(generated, payload["$defs"][name], "embedded {name}");
+    }
+    let id = Uuid::new_v4();
+    let input = json!({"operationId":id,"policyId":id,"policyRevision":1,"policyVersion":id,"source":"ai","confirmed":true,"parameters":{}});
+    for field in [
+        "actor",
+        "deviceId",
+        "registrationId",
+        "authorization",
+        "grant",
+        "parameterSchema",
+        "riskLevel",
+    ] {
+        let mut invalid = input.clone();
+        invalid[field] = json!(id);
+        assert!(serde_json::from_value::<SelfServiceInvoke>(invalid.clone()).is_err());
+        assert!(
+            !jsonschema::validator_for(
+                &serde_json::from_str::<serde_json::Value>(include_str!(
+                    "../schema/runtime/self-service-invoke-v1.schema.json"
+                ))
+                .unwrap()
+            )
+            .unwrap()
+            .is_valid(&invalid)
+        );
+    }
+    let authorization =
+        |source, allow_ai, risk_level, confirmed| ScriptAuthorization::SelfService {
+            request_id: id,
+            actor: ScriptActor {
+                tenant_id: id,
+                instance_id: id,
+                principal_id: id,
+            },
+            source,
+            policy_id: id,
+            policy_revision: 1,
+            policy_version: id,
+            allow_ai,
+            risk_level,
+            confirmed,
+        };
+    assert!(
+        authorization(ScriptCaller::Ai, true, 1, false)
+            .validate(id)
+            .is_ok()
+    );
+    assert!(
+        authorization(ScriptCaller::Ai, true, 2, false)
+            .validate(id)
+            .is_err()
+    );
+    assert!(
+        authorization(ScriptCaller::Ai, true, 2, true)
+            .validate(id)
+            .is_ok()
+    );
+    assert!(
+        authorization(ScriptCaller::Ai, false, 1, true)
+            .validate(id)
+            .is_err()
+    );
+    assert!(
+        authorization(ScriptCaller::Human, false, 2, false)
+            .validate(id)
+            .is_ok()
+    );
+    assert!(
+        authorization(ScriptCaller::Human, true, 3, true)
+            .validate(id)
+            .is_err()
+    );
+    assert!(
+        authorization(ScriptCaller::Human, true, 1, true)
+            .validate(Uuid::new_v4())
+            .is_err()
+    );
+}
+
+#[test]
+fn self_service_result_declares_the_persisted_evidence_envelope() {
+    use rss_mdm_agent_wire::runtime::ScriptRunResult;
+    let schema = serde_json::to_value(schemars::schema_for!(ScriptRunResult)).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    let value = json!({"collectedAt":2,"receivedAt":3,"exitCode":0,"quality":"complete","schemaValid":true,"budgetValid":true,"output":{"resourceDefined":[1,"dynamic",null]},"outputReference":null,"diagnostics":{"stdout":"ok","stderr":"","durationMs":1,"executedAt":1,"failure":null},"trusted":true});
+    let parsed: ScriptRunResult = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(serde_json::to_value(parsed).unwrap(), value);
+    assert!(validator.is_valid(&value));
+    for field in [
+        "collectedAt",
+        "receivedAt",
+        "exitCode",
+        "quality",
+        "schemaValid",
+        "budgetValid",
+        "output",
+        "outputReference",
+        "diagnostics",
+        "trusted",
+    ] {
+        let mut invalid = value.clone();
+        invalid.as_object_mut().unwrap().remove(field);
+        assert!(
+            serde_json::from_value::<ScriptRunResult>(invalid.clone()).is_err(),
+            "missing {field}"
+        );
+        assert!(!validator.is_valid(&invalid), "schema missing {field}");
+    }
+    for (field, bad) in [
+        ("quality", json!("unknown")),
+        ("receivedAt", json!("3")),
+        ("trusted", json!(1)),
+        ("authority", json!("model")),
+    ] {
+        let mut invalid = value.clone();
+        invalid[field] = bad;
+        assert!(serde_json::from_value::<ScriptRunResult>(invalid.clone()).is_err());
+        assert!(!validator.is_valid(&invalid));
+    }
+    let mut referenced = value;
+    referenced["output"] = serde_json::Value::Null;
+    referenced["outputReference"] = json!({"bytes":4097,"sha256":"a".repeat(64)});
+    assert!(validator.is_valid(&referenced));
+    assert!(serde_json::from_value::<ScriptRunResult>(referenced).is_ok());
 }

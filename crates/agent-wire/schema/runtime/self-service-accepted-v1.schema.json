@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Durable acceptance receipt; retries return the same Run identity.",
+  "properties": {
+    "policyId": {
+      "description": "Logical Policy identity.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "policyRevision": {
+      "description": "Current configuration CAS revision.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "policyVersion": {
+      "description": "Immutable execution version.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "requestId": {
+      "description": "Durable idempotency identity of the invocation.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "runId": {
+      "description": "Durable Run identity.",
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "requestId",
+    "runId",
+    "policyId",
+    "policyRevision",
+    "policyVersion"
+  ],
+  "title": "SelfServiceAccepted",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/self-service-accepted.schema.json"
+}
