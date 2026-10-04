@@ -144,7 +144,7 @@ class Environment:
         quiet=dict(capture_output=True)
         run(['openssl','req','-new','-newkey','rsa:2048','-nodes','-subj','/CN='+names[0],
              '-keyout',directory/'server.key','-out',directory/'server.csr'],**quiet)
-        private(directory/'extensions','basicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName='+','.join('DNS:'+name for name in names)+',IP:127.0.0.1\n')
+        private(directory/'extensions','basicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nauthorityKeyIdentifier=keyid,issuer\nsubjectAltName='+','.join('DNS:'+name for name in names)+',IP:127.0.0.1\n')
         run(['openssl','x509','-req','-in',directory/'server.csr','-CA',self.root/'ca.crt','-CAkey',self.root/'ca.key',
              '-CAcreateserial','-days','30','-extfile',directory/'extensions','-out',directory/'server.crt'],**quiet)
         (directory/'server.key').chmod(0o600)
