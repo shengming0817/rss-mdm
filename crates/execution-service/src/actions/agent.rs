@@ -209,7 +209,7 @@ impl ExecutionService {
                 wire::TaskEvent::SoftwareResult(result) => {
                     let db::ScheduledPolicy::Software(software)=&plan else { return Err(Error::Malformed.into()); };
                     let super::evidence::Material::Software { platform: _, intent, definition_digest, steps } = super::evidence::load_in(tx,id,input.attempt_id()).await? else { return Err(Error::Malformed.into()); };
-                    let assessment=rss_mdm_software_service::preparation::evidence::assess_execution(&result,intent,definition_digest,&steps).map_err(|_|Error::Malformed)?;
+                    let assessment=rss_mdm_software_service::preparation::evidence::assess_execution(result,intent,definition_digest,&steps).map_err(|_|Error::Malformed)?;
                     let intended=match software.assignment.intent() {
                         rss_mdm_policy::SoftwareIntent::RequiredInstall | rss_mdm_policy::SoftwareIntent::AvailableInstall => wire::SoftwareTaskIntent::Install,
                         rss_mdm_policy::SoftwareIntent::ExplicitUninstall => wire::SoftwareTaskIntent::Uninstall,

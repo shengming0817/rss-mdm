@@ -11,7 +11,14 @@ pub fn collection() -> CollectionDefinition {
     reason = "shared fixture functions are consumed by separate integration targets"
 )]
 pub fn enrollment_collection() -> CollectionDefinition {
-    serde_json::from_value(serde_json::json!({"dataset":"channel.mdm.enrollment","version":"1","source":"agent.builtin","fields":[field("channel.mdm.enrollment")]})).unwrap()
+    let mut definition = field("channel.mdm.enrollment");
+    definition["valueType"] = serde_json::json!({"kind":"enum","values":[
+        MdmEnrollmentState::Unenrolled.as_str(),
+        MdmEnrollmentState::ThisOrganization.as_str(),
+        MdmEnrollmentState::OtherOrganization.as_str(),
+        MdmEnrollmentState::Unknown.as_str(),
+    ]});
+    serde_json::from_value(serde_json::json!({"dataset":"channel.mdm.enrollment","version":"1","source":"agent.builtin","fields":[definition]})).unwrap()
 }
 fn field(key: &str) -> serde_json::Value {
     serde_json::json!({"key":key,"version":1,"valueType":{"kind":"string","maxLength":256,"allowEmpty":false},"nullable":false,"manual":false,"sources":{"agent.builtin":0},"platforms":["windows","macos"],"sensitivity":"standard","unit":null,"searchable":true,"itemKey":null})
