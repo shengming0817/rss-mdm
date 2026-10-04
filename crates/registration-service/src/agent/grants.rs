@@ -95,12 +95,12 @@ operation_id=$3
                         });
                     }
                     if let Some(p) = p {
-                        quota(
+                        crate::quotas::admit_on(
                             c,
                             &tenant,
-                            p.principal_id(),
                             p.instance_id(),
-                            service.policy.user_device_limit,
+                            p.principal_id(),
+                            crate::quotas::Channel::Agent,
                         )
                         .await?;
                         p.check_live()?;
@@ -236,12 +236,12 @@ VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,clock_timestamp()+make_inter
                     {
                         return Err(Error::Forbidden);
                     }
-                    quota(
+                    crate::quotas::admit_on(
                         c,
                         &tenant,
-                        p.principal_id(),
                         p.instance_id(),
-                        service.policy.user_device_limit,
+                        p.principal_id(),
+                        crate::quotas::Channel::Agent,
                     )
                     .await?;
                     p.check_live()?;
@@ -518,44 +518,6 @@ fn owned(p: &AuthorizedPrincipal, row: &PgRow) -> Result<(), Error> {
     } else {
         p.credentials(&row.try_get::<String, _>("device").map_err(db)?)
             .map_err(Into::into)
-    }
-}
-async fn quota(
-    c: &mut PgConnection,
-    tenant: &str,
-    actor: &str,
-    instance: &str,
-    limit: u32,
-) -> Result<(), Error> {
-    sqlx::query(
-        r#"
-SELECT pg_advisory_xact_lock(hashtextextended($1,2630))
-"#,
-    )
-    .bind(format!("{tenant}:quota:{instance}:{actor}"))
-    .execute(&mut *c)
-    .await
-    .map_err(db)?;
-    let count: i64 = sqlx::query_scalar(
-        r#"
-SELECT count(*) FROM mdm_access.agent_grants g WHERE g.tenant_id=$1::uuid AND g.actor=$2 AND
-g.instance=$3 AND g.source IN('download','browser') AND ((g.state IN('available','consumed') AND
-g.expires_at>clock_timestamp() AND NOT EXISTS(SELECT 1 FROM mdm_access.registrations r WHERE
-r.tenant_id=g.tenant_id AND r.agent_grant_id=g.id)) OR EXISTS(SELECT 1 FROM
-mdm_access.registrations r WHERE r.tenant_id=g.tenant_id AND r.agent_grant_id=g.id AND
-r.state='active'))
-"#,
-    )
-    .bind(tenant)
-    .bind(actor)
-    .bind(instance)
-    .fetch_one(c)
-    .await
-    .map_err(db)?;
-    if count >= i64::from(limit) {
-        Err(Error::Capacity)
-    } else {
-        Ok(())
     }
 }
 async fn progress(

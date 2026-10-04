@@ -100,6 +100,7 @@ impl From<rss_mdm_registration_service::Error> for Error {
             R::CommitUnknown => Self::CommitUnknown,
             R::RollbackFailed => Self::RollbackFailed,
             R::NotFound => Self::NotFound,
+            R::RegistrationLimit => Self::RegistrationLimit,
             R::Capacity => Self::Unavailable(crate::Failure::Capacity),
             R::Runtime => Self::Unavailable(crate::Failure::Runtime),
             R::Configuration => Self::Configuration(crate::ConfigIssue::IdentityConfiguration),

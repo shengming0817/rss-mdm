@@ -98,7 +98,8 @@ pub(crate) async fn manage(
     audit.identify_device(principal.registration());
     audit.registration(principal.registration());
     audit.target(principal.device());
-    if message.header.source != principal.device()
+    let protocol_device = crate::protocol_device::read(&app.access, &principal).await?;
+    if message.header.source != protocol_device
         || !app
             .windows()?
             .management_urls(purpose)
@@ -110,7 +111,7 @@ pub(crate) async fn manage(
         if let Command::DevInfo { items, .. } = command {
             for item in items {
                 if item.source.as_deref() == Some("./DevInfo/DevId")
-                    && item.data.as_ref().map(|v| v.0.as_str()) != Some(principal.device())
+                    && item.data.as_ref().map(|v| v.0.as_str()) != Some(protocol_device.as_str())
                 {
                     return Err(Error::Forbidden);
                 }
@@ -426,7 +427,7 @@ fn initialization(
 }
 fn management_response(
     windows: &Windows,
-    principal: &DevicePrincipal,
+    _principal: &DevicePrincipal,
     message: &syncml::Message,
     secrets: &protection::Secrets,
     authenticated: bool,
@@ -491,7 +492,7 @@ fn management_response(
         header: syncml::Header {
             session_id: message.header.session_id,
             message_id: message.header.message_id,
-            target: principal.device().into(),
+            target: message.header.source.clone(),
             source: message.header.target.clone(),
             credential: Some(Credential {
                 meta: Meta {

@@ -245,6 +245,15 @@ async fn activate_on(
     purpose: rss_mdm_registration_service::Purpose,
 ) -> Result<Option<Uuid>, Error> {
     let tenant = app.identity.tenant().to_string();
+    let original: Option<(Uuid,String)> = sqlx::query_as("SELECT r.id,r.device FROM mdm_windows.renewals n JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(n.tenant_id,n.registration) WHERE n.tenant_id=$1::uuid AND n.fingerprint=$2 AND n.activated_at IS NULL")
+        .bind(&tenant).bind(leaf.fingerprint().as_slice()).fetch_optional(&mut *c).await.map_err(db)?;
+    let Some((registration, internal_device)) = original else {
+        return Ok(None);
+    };
+    if crate::protocol_device::on(c, &tenant, registration, &internal_device).await? != device {
+        return Err(Error::Forbidden);
+    };
+    let device = internal_device.as_str();
     crate::device::store::lock_channel(c, &tenant, device, rss_mdm_inventory::Channel::Mdm).await?;
     let row=sqlx::query("SELECT id,registration,generation,previous_credential,configuration FROM mdm_windows.renewals WHERE tenant_id=$1::uuid AND fingerprint=$2 AND activated_at IS NULL FOR UPDATE")
         .bind(&tenant).bind(leaf.fingerprint().as_slice()).fetch_optional(&mut *c).await.map_err(db)?;

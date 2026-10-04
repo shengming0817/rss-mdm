@@ -329,7 +329,7 @@ impl From<rss_mdm_registration_service::Error> for OwnerDiagnostic {
             E::Corrupt => Self::Corrupt,
             E::Storage => Self::Storage,
             E::Audit(e) => Self::Audit(e.class()),
-            E::Capacity => Self::Capacity,
+            E::Capacity | E::RegistrationLimit => Self::Capacity,
             E::Runtime => Self::Runtime,
             E::Retirement => Self::Retirement,
             E::NotFound => Self::Missing,

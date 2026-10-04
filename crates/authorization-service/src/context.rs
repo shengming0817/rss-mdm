@@ -83,6 +83,16 @@ impl AuthorizedPrincipal {
         Ok(EnrollmentPermission {
             proof: self,
             device: device.into(),
+            self_service: false,
+        })
+    }
+    /// Live identity for a self-service request. Registration validates its server-owned target.
+    pub fn self_enrollment(&self, device: &str) -> Result<EnrollmentPermission<'_>, Error> {
+        self.check_live()?;
+        Ok(EnrollmentPermission {
+            proof: self,
+            device: device.into(),
+            self_service: true,
         })
     }
     pub fn credentials(&self, device: &str) -> Result<(), Error> {
@@ -97,10 +107,22 @@ impl AuthorizedPrincipal {
     }
 }
 pub struct EnrollmentPermission<'a> {
+    self_service: bool,
     pub proof: &'a AuthorizedPrincipal,
     pub device: String,
 }
 impl EnrollmentPermission<'_> {
+    pub fn self_service(&self) -> bool {
+        self.self_service
+    }
+    pub fn check(&self) -> Result<(), Error> {
+        if self.self_service {
+            self.proof.check_live()
+        } else {
+            self.proof
+                .require(Permission::Enrollment, Some(&self.device))
+        }
+    }
     pub fn proof(&self) -> &AuthorizedPrincipal {
         self.proof
     }

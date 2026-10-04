@@ -184,6 +184,13 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
     let router = crate::test_support::agent::router(&fixture).await?;
     let mut browser = fixture.browser("other")?;
     let agent = crate::test_support::agent::register(&router, &mut browser).await?;
+    let quota_user = crate::device::test_support::admin(case_tenant(), "other-a").await?;
+    let quotas = rss_mdm_registration_service::quotas::Quotas::new(
+        fixture.access.registration(),
+        fixture.audit.clone(),
+    );
+    let initial_usage = quotas.usage(&quota_user, None).await?;
+    ensure!(initial_usage.channels[0].active == 1 && initial_usage.channels[0].reserved == 0);
     let registration: Uuid = serde_json::from_value(agent.registration["registrationId"].clone())?;
     let secret = credential("rotation-secret");
     let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"secret":secret,"platform":"macos","csr":crate::test_support::agent::csr()?});
@@ -196,6 +203,7 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
         )
         .await?;
     ensure!(grant.0 == StatusCode::OK, "recovery grant {grant:?}");
+    ensure!(quotas.usage(&quota_user, None).await?.channels[0].used == 1);
     let sign = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"grantId":grant.1["grantId"],"secret":secret,"csr":crate::test_support::agent::csr()?,"runtime":agent.request["runtime"]});
     let candidate = agent_call(
         &router,
@@ -245,6 +253,7 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
         "rotation changed identity or frozen collections"
     );
     ensure!(service.authenticate(&peer).await?.registration() == registration);
+    ensure!(quotas.usage(&quota_user, None).await?.channels[0].used == 1);
     ensure!(
         service
             .authenticate(&crate::test_support::agent::evidence(agent.credential).unwrap())
@@ -260,16 +269,13 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
 #[tokio::test]
 #[ignore = "MODULE=agent.registration"]
 async fn browser_approval_quota_expiry_and_restart_are_durable() -> Result<()> {
-    use rss_mdm_registration_service::agent::Policy;
     let fixture = authority::Authority::open().await?;
-    let service = crate::test_support::agent::service_with_policy(
-        &fixture,
-        Some(Policy {
-            user_device_limit: 1,
-            ..Policy::default()
-        }),
-    )?;
+    let service = crate::test_support::agent::service(&fixture)?;
     let user = crate::device::test_support::admin(case_tenant(), "other-a").await?;
+    let mut quota_tx = fixture.access.begin(case_tenant()).await?;
+    sqlx::query("INSERT INTO mdm_access.registration_quota_settings(tenant_id,subject,revision,agent) VALUES($1::uuid,$2,1,1)")
+        .bind(case_tenant()).bind(format!("user:{}:{}",user.instance_id(),user.principal_id())).execute(&mut *quota_tx).await?;
+    quota_tx.commit().await?;
     let a = || RequestAudit::new(case_tenant().into(), "agent_authorization_request");
     let input: wire::GrantRequest = serde_json::from_value(
         json!({"wireVersion":1,"operationId":Uuid::new_v4(),"secret":credential("pending"),"platform":"macos","csr":crate::test_support::agent::csr()?}),
@@ -297,6 +303,7 @@ async fn browser_approval_quota_expiry_and_restart_are_durable() -> Result<()> {
     ensure!(approved.state == wire::GrantState::Available);
     let mut second = input.clone();
     second.operation_id = Uuid::new_v4();
+    second.platform = rss_mdm_agent_wire::runtime::TaskPlatform::Windows;
     ensure!(
         service
             .create(&user, &second, &a())
@@ -319,13 +326,7 @@ async fn browser_approval_quota_expiry_and_restart_are_durable() -> Result<()> {
     );
     ensure!(service.issue(&sign, &a()).await.err().unwrap().code == wire::ErrorCode::GrantRevoked);
     let created = service.create(&user, &second, &a()).await?;
-    let restart = crate::test_support::agent::service_with_policy(
-        &fixture,
-        Some(Policy {
-            user_device_limit: 1,
-            ..Policy::default()
-        }),
-    )?;
+    let restart = crate::test_support::agent::service(&fixture)?;
     ensure!(restart.create(&user, &second, &a()).await? == created);
     let mut invalid = second.clone();
     invalid.lifetime_seconds = Some(604801);

@@ -18,6 +18,7 @@ use uuid::Uuid;
 use x509_cert::der::{Decode, Encode};
 
 pub struct Intent {
+    pub protocol_device: Option<String>,
     pub enrollment_type: EnrollmentType,
     pub csr: Vec<u8>,
     pub tbs: Vec<u8>,
@@ -30,6 +31,7 @@ pub struct Intent {
 }
 pub(crate) fn intent(row: sqlx::postgres::PgRow) -> Result<Intent, Error> {
     Ok(Intent {
+        protocol_device: row.try_get("protocol_device").map_err(db)?,
         enrollment_type: match row
             .try_get::<String, _>("enrollment_type")
             .map_err(db)?
@@ -58,7 +60,21 @@ pub async fn issuance_intent(
     input: (&[u8], EnrollmentType),
     now: i64,
 ) -> Result<Intent, Error> {
+    issuance_for_device(database, windows, auth, proof, input, None, now).await
+}
+pub(crate) async fn issuance_for_device(
+    database: &crate::Store,
+    windows: &Windows,
+    auth: &Authorization,
+    proof: &AuthorizedPrincipal,
+    input: (&[u8], EnrollmentType),
+    protocol_device: Option<&str>,
+    now: i64,
+) -> Result<Intent, Error> {
     let (csr, enrollment_type) = input;
+    if let Some(device) = protocol_device {
+        rss_observation::Id::new(device).map_err(|_| Error::Malformed)?;
+    }
     if auth.windows_profile.map(|v| v.as_str()) != Some(enrollment_type.as_str()) {
         return Err(Error::Forbidden);
     }
@@ -72,7 +88,9 @@ pub async fn issuance_intent(
             .map_err(db)?
     {
         let old = intent(old)?;
-        if old.enrollment_type != enrollment_type
+        if protocol_device
+            .is_some_and(|d| old.protocol_device.as_deref().unwrap_or(&auth.device) != d)
+            || old.enrollment_type != enrollment_type
             || old.csr != csr
             || old.issuer != windows.ca.der()
             || old.configuration != windows.configuration
@@ -81,11 +99,15 @@ pub async fn issuance_intent(
         }
         return Ok(old);
     }
+    if auth.self_service && protocol_device.is_none() {
+        return Err(Error::Malformed);
+    }
     if auth.state != "pending" {
         return Err(Error::Conflict);
     }
     let registration = Uuid::new_v4();
     let intent = Intent {
+        protocol_device: protocol_device.map(str::to_owned),
         enrollment_type,
         csr: csr.to_vec(),
         tbs: windows
@@ -109,6 +131,7 @@ pub async fn issuance_intent(
         proof.tenant_id(),
         crate::enrollment_store::NewIntent {
             request: auth.id.to_string(),
+            protocol_device: intent.protocol_device.as_deref(),
             csr: &intent.csr,
             tbs: &intent.tbs,
             issuer: &intent.issuer,
@@ -325,7 +348,7 @@ async fn complete_on(
     // Evaluate again after channel/registration lock waits, immediately before committing.
     crate::enrollment::store::mark_bound_in(tx, proof.tenant_id(), auth).await?;
     audit.registration(receipt.registration);
-    proof.enrollment(&auth.device)?;
+    auth.authorize(proof)?;
     crate::operations::save(
         tx,
         operation,
@@ -341,9 +364,10 @@ fn current(
     auth: &Authorization,
     proof: &AuthorizedPrincipal,
 ) -> Result<(), Error> {
-    proof.enrollment(&auth.device)?;
+    auth.authorize(proof)?;
     if auth.source != rss_mdm_inventory::ReportSource::MdmWindows
         || row.try_get::<String, _>("state").map_err(db)? == "cancelled"
+        || row.try_get::<bool, _>("self_service").map_err(db)? != auth.self_service
         || row.try_get::<i64, _>("password_version").map_err(db)? != auth.version
         || uuid(row, "credential_ref")? != auth.credential_ref
         || !row.try_get::<bool, _>("live").map_err(db)?

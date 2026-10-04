@@ -32,6 +32,8 @@ pub fn routes(app: Option<Arc<Service>>) -> Router {
     Router::new()
         .route("/agent-requests/{id}", get(preview))
         .route("/agent-grants", post(create))
+        .route("/self-enrollments/agent", post(create_self))
+        .route("/self-enrollments/agent/{id}/cancel", post(cancel_self))
         .route("/agent-grants/{id}", get(status))
         .route("/agent-grants/{id}/approve", post(approve))
         .route("/agent-grants/{id}/revoke", post(revoke))
@@ -155,4 +157,53 @@ impl IntoResponse for HttpFailure {
         }
         response
     }
+}
+
+async fn create_self(
+    State(app): State<App>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(a): Extension<RequestAudit>,
+    input: Body<wire::GrantRequest>,
+) -> Result<Json<wire::GrantReceipt>, crate::Error> {
+    let service = service(&app).map_err(|e| {
+        crate::Error::from(
+            e.0.source
+                .unwrap_or(rss_mdm_registration_service::Error::Configuration),
+        )
+    })?;
+    let input = input.map_err(|_| crate::Error::Malformed)?.0;
+    service
+        .create(&auth.proof, &input, &a)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            crate::Error::from(
+                e.source
+                    .unwrap_or(rss_mdm_registration_service::Error::Storage),
+            )
+        })
+}
+
+async fn cancel_self(
+    State(app): State<App>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(a): Extension<RequestAudit>,
+    Path(id): Path<Uuid>,
+    input: Body<Operation>,
+) -> Result<Json<wire::GrantReceipt>, crate::Error> {
+    let service = app
+        .as_ref()
+        .as_deref()
+        .ok_or_else(|| crate::Error::from(rss_mdm_registration_service::Error::Configuration))?;
+    let input = input.map_err(|_| crate::Error::Malformed)?.0;
+    service
+        .revoke(&auth.proof, id, input.operation_id, &a)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            crate::Error::from(
+                e.source
+                    .unwrap_or(rss_mdm_registration_service::Error::Storage),
+            )
+        })
 }

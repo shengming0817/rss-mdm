@@ -130,10 +130,10 @@ pub struct HttpState {
     pub windows: bool,
 }
 impl HttpState {
-    fn apple(&self) -> Result<(), Error> {
+    pub(super) fn apple(&self) -> Result<(), Error> {
         self.apple.then_some(()).ok_or(Error::Unsupported)
     }
-    fn windows(&self) -> Result<(), Error> {
+    pub(super) fn windows(&self) -> Result<(), Error> {
         self.windows.then_some(()).ok_or(Error::Unsupported)
     }
 }
@@ -145,6 +145,7 @@ struct EmptyRequest {}
 pub fn routes() -> axum::Router<Arc<HttpState>> {
     use axum::routing::{get, post};
     axum::Router::new()
+        .merge(super::quotas::routes())
         .route("/enrollments", post(create_enrollment))
         .route("/enrollments/{id}", get(enrollment_status))
         .route("/devices/{device}/registrations", get(registrations))

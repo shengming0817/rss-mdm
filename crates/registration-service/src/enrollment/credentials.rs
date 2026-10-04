@@ -41,6 +41,24 @@ impl Credentials {
         );
         Ok(id)
     }
+    /// Replays never reference the newly supplied credential. Confirmed failures also
+    /// leave no committed reference; ambiguous settlement must retain it until expiry.
+    pub(crate) fn settle<T>(
+        &self,
+        reference: Uuid,
+        result: Result<T, Error>,
+        replayed: bool,
+    ) -> Result<T, Error> {
+        let unused = match &result {
+            Ok(_) => replayed,
+            Err(Error::CommitUnknown | Error::RollbackFailed) => false,
+            Err(_) => true,
+        };
+        if unused && let Ok(mut entries) = self.entries.lock() {
+            entries.remove(&reference);
+        }
+        result
+    }
     pub fn get(&self, reference: Uuid) -> Result<SessionSecret, Error> {
         let now = self.clock.now();
         let mut entries = self.entries.lock().map_err(|_| Error::Runtime)?;

@@ -85,7 +85,7 @@ impl From<rss_mdm_registration_service::Error> for Error {
             R::Corrupt | R::Storage | R::Retirement | R::Configuration => {
                 Self::Unavailable(Failure::Database)
             }
-            R::Capacity => Self::Unavailable(Failure::Capacity),
+            R::Capacity | R::RegistrationLimit => Self::Unavailable(Failure::Capacity),
             R::Runtime => Self::Unavailable(Failure::Runtime),
         }
     }

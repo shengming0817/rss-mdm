@@ -184,11 +184,12 @@ async fn issue_message(
         .and_then(|v| Uuid::parse_str(v).ok())
         .filter(|v| !v.is_nil())
         .ok_or(Error::Malformed)?;
+    let protocol_device = crate::protocol_device::read(&app.access, &parent).await?;
     if input
         .additional_context
         .0
         .iter()
-        .any(|(k, v)| k == "DeviceID" && v != parent.device())
+        .any(|(k, v)| k == "DeviceID" && v != &protocol_device)
     {
         return Err(Error::Forbidden);
     }
@@ -243,7 +244,7 @@ async fn issue_message(
             poll: &w.poll,
             push_pfn: None,
             enrollment_type: intent.enrollment_type,
-            enterprise_device_id: parent.device(),
+            enterprise_device_id: &protocol_device,
             issuer: &intent.issuer,
             certificate: &certificate,
             issuer_thumbprint: &thumbprint(&intent.issuer),
@@ -302,6 +303,8 @@ async fn intent(
     .fetch_one(&mut *c)
     .await
     .map_err(db)?;
+    let protocol_device =
+        crate::protocol_device::on(&mut c, &tenant, parent.registration(), parent.device()).await?;
     if input
         .additional_context
         .0
@@ -317,6 +320,7 @@ async fn intent(
     };
     let registration = Uuid::new_v4();
     let intent = issuance::Intent {
+        protocol_device: Some(protocol_device),
         enrollment_type,
         csr: csr.to_vec(),
         tbs: w
@@ -337,6 +341,7 @@ async fn intent(
         &mut c,
         &tenant,
         enrollment_store::NewIntent {
+            protocol_device: intent.protocol_device.as_deref(),
             request: id.to_string(),
             csr: &intent.csr,
             tbs: &intent.tbs,
