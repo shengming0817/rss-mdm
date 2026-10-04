@@ -69,7 +69,8 @@ impl ExecutionService {
                 if let Some(task)=response.get("task").filter(|v|!v.is_null()) {
                     let id=stored(Uuid::parse_str(task["payload"]["taskId"].as_str().ok_or(Error::Conflict)?))?;
                     let run=db::load_run(tx,id).await?;belongs(&run,p)?;run.source.audit(audit);audit.target(&run.id.to_string());
-                    if run.state.cancellation!=Cancellation::None || run.state.execution!=Execution::NotStarted{return Err(Error::Conflict.into());}
+                    let replay_attempt=task["payload"]["attemptId"].as_str().and_then(|v|Uuid::parse_str(v).ok());
+                    if run.state.cancellation!=Cancellation::None || run.state.execution!=Execution::NotStarted || run.state.attempt()!=replay_attempt || replay_attempt.is_none(){return Err(Error::Conflict.into());}
                     let signed:wire::SignedTask=stored(serde_json::from_value(task.clone()))?;
                     let plan=db::load_source(&service.policy_reader,tx,run.source).await?;
                     if signed.payload.expires_at()<=now || run.state.attempt()!=Some(signed.payload.attempt_id()) || !plan.authorized_run_in(service,tx,&run,now).await?{return Err(Error::Conflict.into());}
@@ -111,6 +112,9 @@ impl ExecutionService {
                         let signed=signer.sign(plan.task(service,tx,&run.target,db::TaskIssue { run:run.id,attempt,permit:wire::TaskPermit::Offer,expiry:(now+60).min(run.deadline) }).await?)?;
                         let tenant=tx.tenant_id().to_string();let run_id=run.id.to_string();let reg=p.registration().to_string();let value=checked_input(serde_json::to_value(&signed))?;
                         tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_commands.action_attempts(tenant_id,id,run,registration,claimed_at,offer) VALUES($1::uuid,$2::uuid,$3::uuid,$4::uuid,$5,$6)").bind(tenant).bind(attempt.to_string()).bind(run_id).bind(reg).bind(now).bind(value).execute(c).await?;Ok(())})).await?;
+                        if let (db::ScheduledPolicy::Software(policy),wire::TaskPayload::Software(spec))=(&plan,&signed.payload) {
+                            super::software::bind_effect_in(tx,policy,&run.target,run.id,&spec.steps).await?;
+                        }
                         super::evidence::persist_in(tx, run.id, attempt, &signed.payload).await?;
                         run.source.audit(audit);audit.target(&run.id.to_string());offer=Some(signed);
                     }
@@ -140,8 +144,8 @@ impl ExecutionService {
             let (service,p,id,input,audit)=*ctx;storage::lock(tx,p.device()).await?;principal(service,tx,p).await?;crate::channels::agent_context_in(tx,service.agent_store.clone(),p.registration(),input.execution_context()).await?;
             let mut run=db::load_run(tx,id).await?;belongs(&run,p)?;run.source.audit(audit);audit.target(&id.to_string());let plan=db::load_source(&service.policy_reader,tx,run.source).await?;let now=storage::now(tx).await?;
             let requires_start_authority = matches!(input.event(), wire::TaskEvent::Start | wire::TaskEvent::Received) || run.state.started_at.is_none();
-            let allowed = if requires_start_authority { plan.authorized_run_in(service,tx,&run,now).await? } else { plan.authorized_in(service,tx,&run.target,now).await? };
-            let effect_allowed = allowed || (run.invocation.is_some() && run.state.started_at.is_some() && run.state.cancellation == Cancellation::None);
+            let allowed = if requires_start_authority { plan.authorized_run_in(service,tx,&run,now).await? } else { plan.completion_authorized_in(service,tx,&run.target,now).await? };
+            let effect_allowed = allowed && run.state.cancellation == Cancellation::None;
             if matches!(input.event(),wire::TaskEvent::Start|wire::TaskEvent::Received) && !allowed{return Err(Error::Forbidden.into());}
             if run.state.attempt()!=Some(input.attempt_id()){return Err(Error::Conflict.into());}
             let actor=format!("agent:{}",p.registration());let hash=fingerprint(&(id,input))?;
@@ -234,7 +238,8 @@ impl ExecutionService {
                     let evidence=checked_input(serde_json::to_value(result))?;
                     software_audit=Some(json!({"taskId":id,"attemptId":input.attempt_id(),"previousEffect":previous_effect,
                         "effect":effect,"definitionDigest":result.definition_digest,"steps":result.steps}));
-                    run.result=Some(json!({"intent":result.intent,"definitionDigest":result.definition_digest,"evidence":evidence,"effect":effect}));
+                    let observed_at:i64=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp())*1000000)::bigint").fetch_one(c).await})).await?;
+                    run.result=Some(json!({"intent":result.intent,"definitionDigest":result.definition_digest,"evidence":evidence,"effect":effect,"effectObservedAt":observed_at}));
                 },
             }
             db::save_run(tx,&run).await?;let response=checked_input(serde_json::to_value(wire::TaskEventAck::new(permit,!allowed || run.state.cancellation!=Cancellation::None)))?;
@@ -277,9 +282,10 @@ impl ExecutionService {
         crate::transaction::inspect(&self.runtime,self.tenant,(self,p,id,attempt,key,audit),|ctx,tx|Box::pin(async move{
             let (service,p,id,attempt,key,audit)=*ctx;storage::lock(tx,p.device()).await?;principal(service,tx,p).await?;
             let run=db::load_run(tx,id).await?;belongs(&run,p)?;run.source.audit(audit);audit.target(&id.to_string());let plan=db::load_source(&service.policy_reader,tx,run.source).await?;let now=storage::now(tx).await?;
+            let allowed=if run.state.started_at.is_some() {plan.completion_authorized_in(service,tx,&run.target,now).await?} else {plan.authorized_run_in(service,tx,&run,now).await?};
             if run.state.attempt()!=Some(attempt) || run.deadline<=now || run.state.cancellation!=Cancellation::None
                 || !matches!(run.state.execution, Execution::NotStarted | Execution::Running)
-                || !(plan.authorized_run_in(service,tx,&run,now).await? || (run.invocation.is_some() && run.state.started_at.is_some())) {return Err(Error::Forbidden.into());}
+                || !allowed {return Err(Error::Forbidden.into());}
             let tenant=tx.tenant_id().to_string();let expiry=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,i64>("SELECT (offer->'payload'->>'expiresAt')::bigint FROM mdm_commands.action_attempts WHERE tenant_id=$1::uuid AND id=$2::uuid AND run=$3::uuid").bind(tenant).bind(attempt.to_string()).bind(id.to_string()).fetch_one(c).await})).await?;
             if now>=expiry { return Err(Error::Forbidden.into()); }
             match plan {

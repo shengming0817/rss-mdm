@@ -19,12 +19,16 @@ DO $$ DECLARE tenant text; BEGIN
   UPDATE mdm_commands.action_runs SET invocation_archive=invocation,
    invocation=jsonb_build_object('authorization',((invocation->'authorization')-'actor') || jsonb_build_object('subject',jsonb_build_object('kind','user','user',invocation->'authorization'->'actor')),'parameters',invocation->'parameters','basis',jsonb_build_object('kind','withdrawn'),'execution_target',jsonb_build_object('kind','device'))
    WHERE tenant_id=tenant::uuid AND invocation IS NOT NULL;
-  -- Every pre-transition unstarted offer uses the retired signed interface. None may Start.
+  -- Old employee authority is terminal. Background occurrences retain their original Run.
   UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{cancellation}','"confirmed"')
-   WHERE tenant_id=tenant::uuid AND state->>'execution'='not_started';
+   WHERE tenant_id=tenant::uuid AND state->>'execution'='not_started' AND invocation IS NOT NULL;
+  -- Retire only the delivery lease, leaving immutable historical signatures for audit.
+  UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{delivery}','{"kind":"queued"}')
+   WHERE tenant_id=tenant::uuid AND state->>'execution'='not_started' AND invocation IS NULL
+    AND state->>'cancellation'='none' AND state->'delivery'->>'kind' IN ('claimed','received');
   UPDATE mdm_commands.action_attempts a SET execution_material=jsonb_build_object('kind','software','platform',a.permit->'payload'->'platform','intent',a.permit->'payload'->'intent','definitionDigest',a.permit->'payload'->'definitionDigest','steps',a.permit->'payload'->'steps')
    WHERE a.tenant_id=tenant::uuid AND jsonb_typeof(a.permit->'payload'->'steps')='array';
-  -- Existing software evidence participates in the same exact-version/effect-target exclusion.
+  -- Existing software evidence binds the stable resource/effect target exclusion.
   UPDATE mdm_commands.action_runs r SET software_effect=jsonb_build_object('generation',r.generation,'resource',v.frozen->'action'->'resource','version',v.frozen->'action'->'version','digest',v.frozen->'action'->'resource_digest','intent',a.offer->'payload'->'intent','target',((a.offer->'payload'->'steps')->-1->'target')-'sessionId')
    FROM mdm_policy.versions v,mdm_commands.action_attempts a
    WHERE r.tenant_id=tenant::uuid AND (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) AND v.action_kind='software' AND (a.tenant_id,a.run)=(r.tenant_id,r.id) AND a.id=(r.state->'delivery'->>'attempt')::uuid AND jsonb_typeof(a.offer->'payload'->'steps')='array';

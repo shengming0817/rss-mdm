@@ -107,11 +107,40 @@ pub async fn slot_in(
     let stage_scope = policy.assignment.stages()[stage].scope;
     let prefix = format!("software:stage:{stage_scope}:%");
     let key = effect.clone();
-    let (pending, last, verified, failures, attempts): (bool, Option<i64>, bool, i64, i64) = tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_as("SELECT coalesce(bool_or(state->>'execution' IN ('unknown','waiting_reboot') OR ((state->>'execution'='running' OR (state->>'execution'='not_started' AND deadline>$5)) AND state->>'cancellation'<>'confirmed')),false),max(created_at) FILTER(WHERE software_effect=$2 AND policy_version=$4 AND occurrence LIKE $6),coalesce(bool_or(result->>'effect'='verified') FILTER(WHERE software_effect=$2),false),count(*) FILTER(WHERE software_effect=$2 AND policy_version=$4 AND result->>'effect'='failed'),count(*) FILTER(WHERE software_effect=$2 AND policy_version=$4 AND occurrence LIKE $6) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND software_effect-'generation'=$2::jsonb-'generation' AND device=$3")
+    let (pending, last, satisfied, failures, attempts): (bool, Option<i64>, bool, i64, i64) = tx.with_connection(move |c| Box::pin(async move {
+        // Unresolved effects conflict across intent, version, digest and registration generations.
+        // A predecessor queued run has no effect target yet, so it conservatively conflicts
+        // with every target of its resource until its first current Offer binds one.
+        // Only the latest precisely ordered completion can satisfy the requested effect;
+        // a later removal, replacement or known failure invalidates earlier success.
+        sqlx::query_as(r#"
+            WITH effects AS (
+                SELECT r.* FROM mdm_commands.action_runs r
+                JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version)
+                WHERE r.tenant_id=$1::uuid AND r.device=$3
+                  AND ((r.software_effect->'resource'=$2::jsonb->'resource'
+                        AND r.software_effect->'target'=$2::jsonb->'target')
+                       OR (r.software_effect IS NULL AND v.action_kind='software'
+                           AND v.resource=$2::jsonb->>'resource'))
+            )
+            SELECT coalesce(bool_or(state->>'execution' IN ('unknown','waiting_reboot')
+                       OR ((state->>'execution'='running'
+                            OR (state->>'execution'='not_started' AND deadline>$5))
+                           AND state->>'cancellation'<>'confirmed')),false),
+                   max(created_at) FILTER(WHERE software_effect=$2 AND policy_version=$4 AND occurrence LIKE $6),
+                   coalesce((SELECT software_effect=$2 AND result->>'effect'='verified'
+                             FROM effects
+                             WHERE software_effect->'generation'=$2::jsonb->'generation'
+                               AND result->>'effect' IN ('verified','failed')
+                               AND jsonb_typeof(result->'effectObservedAt')='number'
+                             ORDER BY (result->>'effectObservedAt')::bigint DESC LIMIT 1),false),
+                   count(*) FILTER(WHERE software_effect=$2 AND policy_version=$4 AND result->>'effect'='failed'),
+                   count(*) FILTER(WHERE software_effect=$2 AND policy_version=$4 AND occurrence LIKE $6)
+            FROM effects
+        "#)
             .bind(tenant).bind(key).bind(device).bind(version).bind(now).bind(prefix).fetch_one(c).await
     })).await?;
-    if pending || verified || failures >= 3 {
+    if pending || satisfied || failures >= 3 {
         return Ok(None);
     }
     let schedule = &policy.assignment.frozen.schedule;
@@ -188,6 +217,17 @@ fn effect_key(
     Ok(
         serde_json::json!({"generation":target.generation,"resource":policy.assignment.frozen.resource,"version":policy.assignment.frozen.version,"digest":policy.assignment.frozen.resource_digest,"intent":if policy.assignment.intent()==rss_mdm_policy::SoftwareIntent::ExplicitUninstall {"uninstall"} else {"install"},"target":effect_target}),
     )
+}
+/// Bind an unsent predecessor run when the current protocol issues its first Offer.
+/// The original Run and occurrence remain unchanged; the target comes from prepared task steps.
+pub async fn bind_effect_in(
+    tx: &mut PgTransaction<'_>,
+    policy: &crate::sources::software::SoftwareExecutionPolicy,
+    target: &Target,
+    run: Uuid,
+    steps: &[rss_mdm_agent_wire::runtime::SoftwareTaskStep],
+) -> Result<()> {
+    persist_effect_in(tx, run, &effect_key(policy, target, steps)?).await
 }
 pub async fn persist_effect_in(
     tx: &mut PgTransaction<'_>,

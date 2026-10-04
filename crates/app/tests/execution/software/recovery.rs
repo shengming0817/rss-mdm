@@ -3,6 +3,270 @@ use crate::test_support::software_execution::case_device;
 use crate::test_support::software_execution::*;
 use crate::test_support::*;
 use sqlx::Connection;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.software.recovery"]
+async fn successful_removal_invalidates_prior_installation_across_policies() -> Result<()> {
+    let mut f = Fixture::approved(Platform::MacOs).await?;
+    let stack = worker(&f.base, f.content.clone()).await?;
+    let install = Uuid::new_v4();
+    let duplicate = Uuid::new_v4();
+    let removal = Uuid::new_v4();
+    let install_path = format!("/api/v1/policies/{install}");
+    let duplicate_path = format!("/api/v1/policies/{duplicate}");
+    let removal_path = format!("/api/v1/policies/{removal}");
+    write(&mut f.author, &f.router, &install_path, 0, json!({"action":"put","enabled":true,"definition":authored(f.resource,f.scope,"required_install",&f.first_operation)})).await?;
+    let installed = claim(&f.router).await?;
+    complete_effect(&f.router, &installed, "install", "present").await?;
+    write(
+        &mut f.author,
+        &f.router,
+        &install_path,
+        1,
+        json!({"action":"disable"}),
+    )
+    .await?;
+    write(&mut f.author, &f.router, &duplicate_path, 0, json!({"action":"put","enabled":true,"definition":authored(f.resource,f.scope,"required_install",&f.first_operation)})).await?;
+    assert_no_software_run(&f.router, duplicate).await?;
+    write(
+        &mut f.author,
+        &f.router,
+        &duplicate_path,
+        1,
+        json!({"action":"disable"}),
+    )
+    .await?;
+    write(&mut f.author, &f.router, &removal_path, 0, json!({"action":"put","enabled":true,"definition":authored(f.resource,f.scope,"explicit_uninstall",&f.first_operation)})).await?;
+    let removed = claim(&f.router).await?;
+    ensure!(removed["payload"]["authorization"]["policyId"] == removal.to_string());
+    complete_effect(&f.router, &removed, "uninstall", "absent").await?;
+    write(
+        &mut f.author,
+        &f.router,
+        &removal_path,
+        1,
+        json!({"action":"disable"}),
+    )
+    .await?;
+    write(
+        &mut f.author,
+        &f.router,
+        &duplicate_path,
+        2,
+        json!({"action":"enable"}),
+    )
+    .await?;
+    let reinstalled = claim(&f.router).await?;
+    ensure!(
+        reinstalled["payload"]["authorization"]["policyId"] == duplicate.to_string(),
+        "successful removal must permit the same version to be installed again: {reinstalled}"
+    );
+    complete_effect(&f.router, &reinstalled, "install", "present").await?;
+    write(
+        &mut f.author,
+        &f.router,
+        &duplicate_path,
+        3,
+        json!({"action":"disable"}),
+    )
+    .await?;
+    let after_reinstall = Uuid::new_v4();
+    write(&mut f.author, &f.router, &format!("/api/v1/policies/{after_reinstall}"), 0, json!({"action":"put","enabled":true,"definition":authored(f.resource,f.scope,"required_install",&f.first_operation)})).await?;
+    assert_no_software_run(&f.router, after_reinstall).await?;
+    crate::test_support::stop_worker(stack).await?;
+    Ok(())
+}
+
+async fn complete_effect(
+    router: &Router,
+    task: &Value,
+    intent: &str,
+    observation: &str,
+) -> Result<()> {
+    ensure!(event(router, task, json!({"kind":"received"})).await?.0 == StatusCode::OK);
+    ensure!(event(router, task, json!({"kind":"start"})).await?.0 == StatusCode::OK);
+    ensure!(
+        event(
+            router,
+            task,
+            result_event(task, intent, Some(0), observation, false)?
+        )
+        .await?
+        .0 == StatusCode::OK
+    );
+    Ok(())
+}
+
+async fn assert_no_software_run(router: &Router, policy: Uuid) -> Result<()> {
+    let response = agent(router, "/api/v1/agent/runtime/tasks/claim", Some(json!({"wireVersion":1,"executionContext":context(Platform::MacOs),"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
+    ensure!(
+        response.0 == StatusCode::OK && response.1["task"].is_null(),
+        "conflicting/satisfied effect was offered: {response:?}"
+    );
+    // Queue admission occurs in the request transaction, before asynchronous relay.
+    // Checking the rows prevents a not-yet-relayed forbidden Run from looking like no work.
+    let mut conn =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let queued: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2")
+        .bind(case_tenant()).bind(policy).fetch_one(&mut conn).await?;
+    ensure!(
+        queued == 0,
+        "policy {policy} admitted {queued} forbidden runs"
+    );
+    conn.close().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.software.recovery"]
+async fn unresolved_installation_blocks_removal_and_other_versions() -> Result<()> {
+    let mut f = Fixture::approved(Platform::MacOs).await?;
+    let stack = worker(&f.base, f.content.clone()).await?;
+    let original = Uuid::new_v4();
+    write(&mut f.author, &f.router, &format!("/api/v1/policies/{original}"), 0, json!({"action":"put","enabled":true,"definition":authored(f.resource,f.scope,"required_install",&f.first_operation)})).await?;
+    let running = claim(&f.router).await?;
+    ensure!(
+        event(&f.router, &running, json!({"kind":"received"}))
+            .await?
+            .0
+            == StatusCode::OK
+    );
+    ensure!(event(&f.router, &running, json!({"kind":"start"})).await?.0 == StatusCode::OK);
+    let removal = Uuid::new_v4();
+    write(&mut f.author, &f.router, &format!("/api/v1/policies/{removal}"), 0, json!({"action":"put","enabled":true,"definition":authored(f.resource,f.scope,"explicit_uninstall",&f.first_operation)})).await?;
+    assert_no_software_run(&f.router, removal).await?;
+    let next_approval = publish_next_software_version(&mut f).await?;
+    let replacement = Uuid::new_v4();
+    let mut next = authored(f.resource, f.scope, "required_install", &next_approval);
+    next["action"]["resource"]["version"] = json!("v2");
+    write(
+        &mut f.author,
+        &f.router,
+        &format!("/api/v1/policies/{replacement}"),
+        0,
+        json!({"action":"put","enabled":true,"definition":next}),
+    )
+    .await?;
+    assert_no_software_run(&f.router, replacement).await?;
+    ensure!(
+        event(
+            &f.router,
+            &running,
+            result_event(&running, "install", None, "unknown", false)?
+        )
+        .await?
+        .0 == StatusCode::OK
+    );
+    assert_no_software_run(&f.router, removal).await?;
+    assert_no_software_run(&f.router, replacement).await?;
+    crate::test_support::stop_worker(stack).await?;
+    Ok(())
+}
+
+async fn publish_next_software_version(f: &mut Fixture) -> Result<Value> {
+    let path = format!("/api/v1/resources/{}", f.resource);
+    let current = f.author.call(&f.router, Method::GET, &path, None).await?;
+    ensure!(current.0 == StatusCode::OK);
+    let mut variants = current.1["versions"][0]["variants"].clone();
+    variants[0]["declaration"]["definition"]["version"] = json!("2");
+    variants[0]["declaration"]["definition"]["behavior"]["detect"]["version"] = json!("2");
+    let revision = current.1["revision"].as_u64().unwrap();
+    write(
+        &mut f.author,
+        &f.router,
+        &path,
+        revision,
+        json!({"action":"version","version":"v2","kind":"software","variants":variants}),
+    )
+    .await?;
+    for (artifact, bytes) in [(None, &f.bytes), (Some("remover"), &f.removal)] {
+        let mut uri = format!(
+            "{path}/content?version=v2&variant=default&platform=macos&architecture=aarch64&operation={}",
+            Uuid::new_v4()
+        );
+        if let Some(artifact) = artifact {
+            uri.push_str(&format!("&artifact={artifact}"));
+        }
+        let upload = Request::builder()
+            .method(Method::POST)
+            .uri(uri)
+            .header("host", "mdm.example.test")
+            .header("origin", "https://mdm.example.test")
+            .header("x-identity-request", "1")
+            .header("x-csrf-token", f.author.csrf.as_ref().unwrap())
+            .header(
+                "cookie",
+                f.author
+                    .cookies
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            )
+            .header("content-type", "application/octet-stream")
+            .body(Body::from(bytes.clone()))?;
+        let _guard = crate::test_support::software::content_setup_guard().await?;
+        ensure!(f.router.clone().oneshot(upload).await?.status() == StatusCode::CREATED);
+    }
+    write(
+        &mut f.author,
+        &f.router,
+        &path,
+        revision + 1,
+        json!({"action":"activate","version":"v2"}),
+    )
+    .await?;
+    let approved = write(
+        &mut f.author,
+        &f.router,
+        &format!("/api/v1/software/resources/{}/versions/v2", f.resource),
+        0,
+        json!({"action":"approve","evidence":["new-version"]}),
+    )
+    .await?;
+    Ok(approved["admission"]["operation"].clone())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.software.recovery"]
+async fn unsent_predecessor_software_blocks_conflicts_until_current_offer_binds_effect()
+-> Result<()> {
+    let mut f = Fixture::approved(Platform::MacOs).await?;
+    let queued_policy = Uuid::new_v4();
+    write(&mut f.author, &f.router, &format!("/api/v1/policies/{queued_policy}"), 0, json!({"action":"put","enabled":true,"definition":authored(f.resource,f.scope,"required_install",&f.first_operation)})).await?;
+    // Without relay, the authenticated check-in creates a real unsent queued Run.
+    let accepted = agent(&f.router, "/api/v1/agent/runtime/tasks/claim", Some(json!({"wireVersion":1,"executionContext":context(Platform::MacOs),"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
+    ensure!(accepted.0 == StatusCode::OK && accepted.1["task"].is_null());
+    let mut conn =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let (run, occurrence, attempts): (Uuid, String, i64) = sqlx::query_as("SELECT r.id,r.occurrence,(SELECT count(*) FROM mdm_commands.action_attempts a WHERE (a.tenant_id,a.run)=(r.tenant_id,r.id)) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.state->'delivery'->>'kind'='queued'")
+        .bind(case_tenant()).bind(queued_policy).fetch_one(&mut conn).await?;
+    ensure!(attempts == 0);
+    // The explicitly accepted predecessor transition leaves unoffered software
+    // runs without an effect key because their concrete target was never signed.
+    sqlx::query("UPDATE mdm_commands.action_runs SET software_effect=NULL WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(run).execute(&mut conn).await?;
+    let conflicting = Uuid::new_v4();
+    write(&mut f.author, &f.router, &format!("/api/v1/policies/{conflicting}"), 0, json!({"action":"put","enabled":true,"definition":authored(f.resource,f.scope,"explicit_uninstall",&f.first_operation)})).await?;
+    assert_no_software_run(&f.router, conflicting).await?;
+    let stack = worker(&f.base, f.content.clone()).await?;
+    let offered = claim(&f.router).await?;
+    ensure!(offered["payload"]["taskId"] == run.to_string());
+    let (current_occurrence, effect): (String, Value) = sqlx::query_as("SELECT occurrence,software_effect FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(run).fetch_one(&mut conn).await?;
+    ensure!(
+        current_occurrence == occurrence
+            && effect["resource"] == f.resource.to_string()
+            && effect["target"] == json!({"kind":"device"}),
+        "first current Offer must bind the original queued Run's effect: {effect}"
+    );
+    complete_effect(&f.router, &offered, "install", "present").await?;
+    conn.close().await?;
+    crate::test_support::stop_worker(stack).await?;
+    Ok(())
+}
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn known_failure_has_bounded_retries() -> Result<()> {
@@ -220,6 +484,9 @@ async fn unknown_effect_survives_credential_recovery() -> Result<()> {
         .await?
         .0 == StatusCode::OK
     );
+    let opposing = Uuid::new_v4();
+    write(&mut author, &router, &format!("/api/v1/policies/{opposing}"), 0, json!({"action":"put","enabled":true,"definition":authored("explicit_uninstall",&first_operation)})).await?;
+    assert_no_software_run(&router, opposing).await?;
     let registration: String = pg(&format!("SELECT id FROM mdm_access.registrations WHERE tenant_id='{}' AND device='{}' AND channel='agent' AND state='active'",case_tenant(),case_device()))?.trim().into();
     let secret = credential("recovery-software");
     set_device_grants(
@@ -265,6 +532,7 @@ async fn unknown_effect_survives_credential_recovery() -> Result<()> {
         after_reenroll.0 == StatusCode::OK && after_reenroll.1["task"].is_null(),
         "unknown side effect retried after registration replacement: {after_reenroll:?}"
     );
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id='{}' AND v.policy='{opposing}'",case_tenant()))?.trim() == "0", "opposing intent bypassed Unknown after credential generation changed");
     crate::test_support::stop_worker(stack).await?;
     Ok(())
 }
