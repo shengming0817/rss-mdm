@@ -111,7 +111,7 @@ Linux host 网络使回环浏览器监听与同机 HTTPS 网关配合；Windows 
     "certificate_file": "/private/agent-tls.crt",
     "private_key_file": "/private/agent-tls.pk8"
   },
-  "policy": {"user_device_limit": 10, "grant_seconds": 86400, "platforms": ["windows", "macos"]},
+  "policy": {"grant_seconds": 86400, "platforms": ["windows", "macos"]},
   "ca_url": "https://ca.example.com:9000",
   "tls_root_file": "/run/pki/root_ca.crt",
   "issuer_certificate_file": "/run/pki/intermediate_ca.crt",

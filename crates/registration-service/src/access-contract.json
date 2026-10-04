@@ -98,6 +98,29 @@
         "credential"
       ],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "registration_quota_settings",
+      "read_write": true,
+      "updates": [
+        "revision",
+        "agent",
+        "windows_mdm",
+        "macos_mdm"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "registration_users",
+      "read_write": true,
+      "updates": [
+        "revision",
+        "instance",
+        "principal"
+      ],
+      "delete_policy": null
     }
   ],
   "functions": [],

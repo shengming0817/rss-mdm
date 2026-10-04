@@ -23,6 +23,8 @@ pub enum Error {
     CertificateRequest,
     #[error("operation identity or enrollment/registration state conflict")]
     Conflict,
+    #[error("self-service registration quota reached")]
+    RegistrationLimit,
     #[error("Windows declared enrollment is not ready")]
     WindowsDeclaredEnrollmentNotReady,
     #[error("commit outcome unknown; retry the same operation")]

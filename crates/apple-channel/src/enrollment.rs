@@ -23,12 +23,13 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 fn current(row: &PgRow, auth: &Authorization, proof: &AuthorizedPrincipal) -> Result<(), Error> {
-    proof.enrollment(&auth.device)?;
+    auth.authorize(proof)?;
     if auth.source != rss_mdm_inventory::ReportSource::MdmApple
         || auth.actor != proof.principal_id()
         || auth.instance != proof.instance_id()
         || row.try_get::<String, _>("state").map_err(db)? != "pending"
         || !row.try_get::<bool, _>("live").map_err(db)?
+        || row.try_get::<bool, _>("self_service").map_err(db)? != auth.self_service
         || row.try_get::<i64, _>("password_version").map_err(db)? != auth.version
         || uuid(row, "credential_ref")? != auth.credential_ref
     {
@@ -62,7 +63,7 @@ async fn authorized(
     {
         return Err(Error::Unauthorized);
     }
-    proof.enrollment(&auth.device)?;
+    auth.authorize(&proof)?;
     proof.bind_audit(audit)?;
     audit.target(&auth.device);
     Ok((auth, proof))

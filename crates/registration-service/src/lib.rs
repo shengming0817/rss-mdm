@@ -7,6 +7,7 @@ pub mod enrollment;
 mod error;
 mod lifecycle;
 mod operations;
+pub mod quotas;
 pub use database::Store;
 pub use device::{
     ChannelMount, DevicePrincipal, DeviceService, Purpose, VerifiedChannelCredential,
@@ -22,3 +23,6 @@ pub const RELATIONS_SQL: &str = include_str!("../schema/relations.sql");
 
 /// This capability's closed privileges in the shared access connection.
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
+
+/// Current quota schema; installation remains fresh-only.
+pub const QUOTAS_SQL: &str = include_str!("../schema/quotas.sql");

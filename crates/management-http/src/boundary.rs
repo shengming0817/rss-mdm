@@ -207,7 +207,16 @@ fn route_action(route: &str) -> &'static str {
         "/api/v1/authorization/rules/{id}" | "/api/v1/authorization/user-groups/{id}" => {
             "authorization_write"
         }
-        "/api/v1/enrollments" => "enrollment_create",
+        "/api/v1/enrollments" | "/api/v1/self-enrollments" => "enrollment_create",
+        "/api/v1/self-enrollments/agent" => "agent_grant_create",
+        "/api/v1/self-enrollments/agent/{id}/cancel" => "agent_grant_revoke",
+        "/api/v1/registration-quotas/me"
+        | "/api/v1/registration-quotas/users/{instance}/{principal}/usage" => {
+            "registration_quota_read"
+        }
+        "/api/v1/registration-quotas/defaults"
+        | "/api/v1/registration-quotas/users/{instance}/{principal}" => "registration_quota_change",
+        "/api/v1/devices/{device}/registration-user" => "registration_user_change",
         "/api/v1/enrollments/{id}" => "enrollment_read",
         "/api/v1/devices/{device}/registrations" => "registration_read",
         "/api/v1/enrollments/{id}/resume" => "enrollment_resume",
