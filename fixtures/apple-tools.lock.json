@@ -2,12 +2,8 @@
   "step-ca": {
     "version": "0.30.2",
     "repository": "smallstep/certificates",
-    "artifacts": {
-      "darwin-arm64": "67bfba1bc440fca65ec820d4349b749f14ca72e37f22d9e80767159ebed1cca7",
-      "darwin-amd64": "430fa9078bf5adafc92ee68244a5dc4cbbbb2bc190af9785ad962be39c552887",
-      "linux-amd64": "126615795bafe3f2d3f890e2d628fa6e2857315fb48d0671d34b23047cc37d73",
-      "linux-arm64": "43f79d1b0b8cab9895dbadd46b0a014006f682a6b1341e1fadf0be31d4b9f4b4"
-    }
+    "image": "smallstep/step-ca:0.30.2@sha256:a2b17872915c193259b75a5474c398326f41bd199f0842093e52cf4182bc8270",
+    "port": 19443
   },
   "step": {
     "version": "0.30.2",

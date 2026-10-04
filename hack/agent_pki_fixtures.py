@@ -69,7 +69,9 @@ def install(root, cli, admin, origin):
         '--from-pem', root/'agent-provisioner.pem', '--alg', 'RS256', '--use', 'sig',
         '--kid', 'agent-t2-key', '--no-password', '--insecure')
     (root/'agent.private.json').unlink()
-    template = Path(__file__).resolve().parents[1]/'deployment/agent-leaf.tpl'
+    template = root/'agent-leaf.tpl'
+    shutil.copyfile(Path(__file__).resolve().parents[1]/'deployment/agent-leaf.tpl', template)
+    template.chmod(0o600)
     cli('ca', 'provisioner', 'add', 'rss-agent', '--type', 'JWK', '--public-key', root/'agent.pub.json',
         '--x509-template', template, '--disable-renewal', '--ssh=false',
         '--x509-default-dur', '8760h', '--x509-max-dur', '87600h', *admin)

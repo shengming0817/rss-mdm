@@ -8,8 +8,14 @@ from t2_processes import subprocess
 import time
 import urllib.request
 import urllib.error
-from apple_ca import port
+import socket
 from apple_tools import nano_binary
+
+
+def port():
+    with socket.socket() as listener:
+        listener.bind(('127.0.0.1', 0))
+        return listener.getsockname()[1]
 
 
 @contextmanager

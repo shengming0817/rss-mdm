@@ -1,5 +1,5 @@
 """Fixture subprocesses share the current T2 run's process-group ownership."""
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 import json
 import os
@@ -14,6 +14,13 @@ def check_cancelled():
     """Check the existing run owner during fixture waits without spawning a child."""
     if _owner is not None:
         _owner.check()
+
+
+@contextmanager
+def cleanup():
+    """Allow bounded daemon cleanup through the existing owner after cancellation."""
+    with (_owner.cleanup() if _owner is not None else nullcontext()):
+        yield
 
 
 @contextmanager
