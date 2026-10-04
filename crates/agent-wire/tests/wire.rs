@@ -45,6 +45,47 @@ fn published_schemas_match_wire_rejections() {
 }
 
 #[test]
+fn every_collection_schema_rejects_unknown_source_keys() {
+    use rss_mdm_agent_wire::runtime::{FieldDefinition, Source};
+    for published in [
+        include_str!("../schema/runtime/report-request-v1.schema.json"),
+        include_str!("../schema/runtime/binding-profile-v1.schema.json"),
+        include_str!("../schema/enroll/activation-receipt-v1.schema.json"),
+        include_str!("../schema/enroll/progress-v1.schema.json"),
+    ] {
+        let schema: Value = serde_json::from_str(published).unwrap();
+        let validator = jsonschema::validator_for(&json!({
+            "$ref":"#/$defs/FieldDefinition", "$defs":schema["$defs"]
+        }))
+        .unwrap();
+        for source in [
+            Source::AgentScript,
+            Source::AgentOsquery,
+            Source::MdmApple,
+            Source::AgentBuiltin,
+            Source::Manual,
+            Source::MdmWindows,
+        ] {
+            let key = serde_json::to_value(source).unwrap();
+            let mut field = serde_json::to_value(&collection().fields()[0]).unwrap();
+            field["manual"] = json!(source == Source::Manual);
+            field["sources"] = json!({key.as_str().unwrap():65535});
+            assert!(validator.is_valid(&field), "rejected source {key}");
+            serde_json::from_value::<FieldDefinition>(field.clone())
+                .unwrap()
+                .validate()
+                .unwrap();
+            field["sources"]["arbitrary"] = json!(0);
+            assert!(!validator.is_valid(&field), "accepted unknown source");
+            assert!(serde_json::from_value::<FieldDefinition>(field.clone()).is_err());
+            field["sources"] = json!({key.as_str().unwrap():65536});
+            assert!(!validator.is_valid(&field), "accepted overflowing priority");
+            assert!(serde_json::from_value::<FieldDefinition>(field).is_err());
+        }
+    }
+}
+
+#[test]
 fn manifest_covers_and_fingerprints_every_public_shape() {
     let manifest: Value = serde_json::from_str(SCHEMA_MANIFEST).unwrap();
     assert_eq!(manifest["wireVersion"], 1);

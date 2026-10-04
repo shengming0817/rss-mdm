@@ -300,7 +300,7 @@ pub struct FieldDefinition {
     /// Whether management assignment is permitted.
     pub manual: bool,
     /// Allowed sources with priority; lower numbers win, equal numbers require consensus.
-    #[schemars(extend("minProperties" = 1))]
+    #[schemars(schema_with = "source_priorities_schema", extend("minProperties" = 1))]
     pub sources: BTreeMap<Source, u16>,
     /// Supported platforms.
     #[schemars(extend("minItems" = 1, "maxItems" = 2))]
@@ -323,6 +323,14 @@ pub struct FieldDefinition {
     )]
     #[schemars(extend("maxLength" = 64, "pattern" = "^[a-z][a-z0-9_]*$"))]
     pub item_key: Option<String>,
+}
+fn source_priorities_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    let mut schema = <BTreeMap<Source, u16> as schemars::JsonSchema>::json_schema(generator);
+    schema.insert(
+        "propertyNames".into(),
+        generator.subschema_for::<Source>().to_value(),
+    );
+    schema
 }
 impl FieldDefinition {
     /// Validate definitions before publication or reconstruction.

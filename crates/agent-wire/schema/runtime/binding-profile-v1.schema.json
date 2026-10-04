@@ -198,6 +198,9 @@
           },
           "description": "Allowed sources with priority; lower numbers win, equal numbers require consensus.",
           "minProperties": 1,
+          "propertyNames": {
+            "$ref": "#/$defs/Source"
+          },
           "type": "object"
         },
         "unit": {
