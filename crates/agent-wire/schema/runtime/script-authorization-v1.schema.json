@@ -1,0 +1,166 @@
+{
+  "$defs": {
+    "ScriptActor": {
+      "additionalProperties": false,
+      "description": "Authenticated product user; contains no session credential.",
+      "properties": {
+        "instanceId": {
+          "description": "Identity instance.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "principalId": {
+          "description": "Authenticated principal.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "tenantId": {
+          "description": "Product tenant.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenantId",
+        "instanceId",
+        "principalId"
+      ],
+      "type": "object"
+    },
+    "ScriptCaller": {
+      "description": "Origin attested by the authenticated system service, never taken from model arguments.",
+      "oneOf": [
+        {
+          "const": "human",
+          "description": "Interactive employee action.",
+          "type": "string"
+        },
+        {
+          "const": "ai",
+          "description": "AI tool action forwarded by the system service.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Server decision covered by the same signature as all script execution inputs.",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "description": "Ordinary scheduled Policy execution.",
+      "properties": {
+        "kind": {
+          "const": "policy",
+          "type": "string"
+        },
+        "policyId": {
+          "description": "Policy identity.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "policyVersion": {
+          "description": "Immutable execution version.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "policyId",
+        "policyVersion"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "Existing Remote Operation execution.",
+      "properties": {
+        "kind": {
+          "const": "remote_operation",
+          "type": "string"
+        },
+        "operationId": {
+          "description": "Operation identity.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "operationId"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "Targeted Policy self-service invocation.",
+      "properties": {
+        "actor": {
+          "$ref": "#/$defs/ScriptActor",
+          "description": "Real employee identity."
+        },
+        "allowAi": {
+          "description": "Effective AI switch.",
+          "type": "boolean"
+        },
+        "confirmed": {
+          "description": "Confirmation attested for this exact request by the service.",
+          "type": "boolean"
+        },
+        "kind": {
+          "const": "self_service",
+          "type": "string"
+        },
+        "policyId": {
+          "description": "Policy identity.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "policyRevision": {
+          "description": "Configuration revision approved at invocation.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "policyVersion": {
+          "description": "Immutable execution version.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "requestId": {
+          "description": "Idempotency identity of the call.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "riskLevel": {
+          "description": "Closed risk level, one or two.",
+          "enum": [
+            1,
+            2
+          ],
+          "type": "integer"
+        },
+        "source": {
+          "$ref": "#/$defs/ScriptCaller",
+          "description": "Trusted service's caller classification."
+        }
+      },
+      "required": [
+        "kind",
+        "requestId",
+        "actor",
+        "source",
+        "policyId",
+        "policyRevision",
+        "policyVersion",
+        "allowAi",
+        "riskLevel",
+        "confirmed"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "ScriptAuthorization",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/script-authorization.schema.json"
+}

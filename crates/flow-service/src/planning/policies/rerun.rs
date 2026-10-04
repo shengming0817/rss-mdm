@@ -21,6 +21,7 @@ impl Policies {
             storage::lock(tx,id).await?;
             let policy=storage::read_in(s.policy_store.reader(),tx,id).await?.ok_or(Error::NotFound)?;
             authorize_policy_snapshot(&snapshot,proof,&policy.definition).map_err(Error::from)?;
+            if matches!(&policy.definition.action,Action::Execution{parameters,..} if parameters.has_input()) {return Err(Error::Malformed.into());}
             let hash=fingerprint(&(id,op,proof.user()))?;
             if let Some(value)=checked(s.policy_store.replay_in(tx,op.operation_id,&hash).await?)? {return Ok(value);}
             let now=crate::action_admission::now(tx).await?;

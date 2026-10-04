@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -50,7 +50,7 @@ pub enum Trigger {
         minimum_seconds: u32,
     },
 }
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -68,7 +68,7 @@ pub enum Misfire {
     /// Admit only the most recent occurrence after an offline gap.
     CoalesceOne,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 /// An IANA-local window; an overnight window belongs to its start day.
 pub struct Window {
@@ -81,7 +81,7 @@ pub struct Window {
     /// End minute; less than the start denotes the following day.
     pub end_minute: u16,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 /// Optional-ended calendar conditions, with no durable scheduler state.
 pub struct Schedule {
@@ -99,7 +99,7 @@ pub struct Schedule {
     /// Optional allowed local-time window.
     pub window: Option<Window>,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq)]
 /// One stable trigger coordinate and its delivery/start window.
 pub struct Occurrence {
     // Base time is the immutable deduplication coordinate, never the delayed window time.

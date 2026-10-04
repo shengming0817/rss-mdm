@@ -11,7 +11,7 @@ use rss_transactional_messaging_postgres::PgTransaction;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-async fn principal(
+pub(crate) async fn principal(
     service: &ExecutionService,
     tx: &mut PgTransaction<'_>,
     principal: &DevicePrincipal,
@@ -44,7 +44,7 @@ async fn principal(
     }
     Ok(())
 }
-fn belongs(run: &db::Run, p: &DevicePrincipal) -> Result<()> {
+pub(crate) fn belongs(run: &db::Run, p: &DevicePrincipal) -> Result<()> {
     if run.target.device != p.device()
         || run.target.registration != p.registration()
         || run.target.generation != p.generation()
@@ -61,7 +61,7 @@ impl ExecutionService {
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
         crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,p,input,audit),|ctx,tx|Box::pin(async move{
-            let (service,p,input,audit)=*ctx;storage::lock(tx,p.device()).await?;principal(service,tx,p).await?;crate::channels::agent_context_in(tx,service.agent_store.clone(),p.registration(),input.execution_context()).await?;
+            let (service,p,input,audit)=*ctx;storage::lock(tx,p.device()).await?;principal(service,tx,p).await?;crate::script_eligibility::announce_in(tx,p.registration(),input.profiles()).await?;crate::channels::agent_context_in(tx,service.agent_store.clone(),p.registration(),input.execution_context()).await?;
             let actor=format!("agent:{}",p.registration());let hash=fingerprint(input)?;let now=storage::now(tx).await?;
             let event_key = format!("agent:{}:offer:{}",p.registration(),input.operation_id());
             // Old successful polls are replayable only while their exact offer remains authorized.
@@ -69,21 +69,21 @@ impl ExecutionService {
                 if let Some(task)=response.get("task").filter(|v|!v.is_null()) {
                     let signed:wire::SignedTask=stored(serde_json::from_value(task.clone()))?;
                     let run=db::load_run(tx,signed.payload.task_id()).await?;belongs(&run,p)?;run.source.audit(audit);audit.target(&run.id.to_string());let plan=db::load_source(&service.policy_reader,tx,run.source).await?;
-                    if run.state.cancellation!=Cancellation::None || run.state.execution!=Execution::NotStarted || signed.payload.expires_at()<=now || run.state.attempt()!=Some(signed.payload.attempt_id()) || !plan.authorized_in(service,tx,&run.target,now).await?{return Err(Error::Conflict.into());}
+                    if run.state.cancellation!=Cancellation::None || run.state.execution!=Execution::NotStarted || signed.payload.expires_at()<=now || run.state.attempt()!=Some(signed.payload.attempt_id()) || !plan.authorized_run_in(service,tx,&run,now).await?{return Err(Error::Conflict.into());}
                 }
                 audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
                 let fact=Fact::business(audit,&event_key,&hash,200,"success",None)?;
                 service.audit_store.append_in(tx,&fact,true).await?;return Ok(response);
             }
             let binding=crate::channels::agent_binding_in(tx,service.agent_store.clone(),p.registration()).await?.ok_or(Error::Forbidden)?;
-            let (script_capable,software_capable,enrollment_capable)=(binding.script(),binding.software(),binding.enrollment());
+            let (software_capable,enrollment_capable)=(binding.software(),binding.enrollment());
             let versions=crate::sources::admission::agent_versions_in(tx,p.registration()).await?;
             for id in versions {
                 let policy=db::load_policy_version(&service.policy_reader,tx,id).await?;
                 let target=crate::Target {device:p.device().into(),registration:p.registration(),generation:p.generation()};
                 match &policy {
                     db::ScheduledPolicy::Enrollment(_) if enrollment_capable => super::production::accept_for_device(service,tx,&policy,&target,input.operation_id(),now).await?,
-                    db::ScheduledPolicy::Script(script) if script_capable && input.profiles().contains(&script.frozen.executor_profile()) => super::production::accept_for_device(service,tx,&policy,&target,input.operation_id(),now).await?,
+                    db::ScheduledPolicy::Script(script) if crate::script_eligibility::matches(&binding,script.frozen.input.platform,script.frozen.input.architecture,script.frozen.executor_profile(),input.profiles()) => super::production::accept_for_device(service,tx,&policy,&target,input.operation_id(),now).await?,
                     db::ScheduledPolicy::Software(software) if software_capable => super::software::accept_for_device(service,tx,software,&target,now).await?,
                     _ => (),
                 }
@@ -94,9 +94,9 @@ impl ExecutionService {
                 let mut run=db::load_run(tx,stored(Uuid::parse_str(&id))?).await?;belongs(&run,p)?;let plan=db::load_source(&service.policy_reader,tx,run.source).await?;
                 let previous=run.state.clone();
                 run.state.expire(now,plan.timeout_seconds());
-                let capable=match &plan { db::ScheduledPolicy::Native(_) => false, db::ScheduledPolicy::Script(script) => script_capable && input.profiles().contains(&script.frozen.executor_profile()), db::ScheduledPolicy::Software(software) => software.assignment.supported_in(&service.admission(),tx,&binding).await?, db::ScheduledPolicy::Enrollment(_) => enrollment_capable };
-                let allowed=capable && plan.authorized_in(service,tx,&run.target,now).await?;
-                if plan.withdrawn_in(service,tx,&run.target,now).await?{run.state.cancel();}
+                let capable=match &plan { db::ScheduledPolicy::Native(_) => false, db::ScheduledPolicy::Script(script) => crate::script_eligibility::matches(&binding,script.frozen.input.platform,script.frozen.input.architecture,script.frozen.executor_profile(),input.profiles()), db::ScheduledPolicy::Software(software) => software.assignment.supported_in(&service.admission(),tx,&binding).await?, db::ScheduledPolicy::Enrollment(_) => enrollment_capable };
+                let allowed=capable && plan.authorized_run_in(service,tx,&run,now).await?;
+                if (!allowed && run.invocation.is_some()) || plan.withdrawn_in(service,tx,&run.target,now).await?{run.state.cancel();}
                 super::recovery::audit_recovery(service,tx,&run,&previous).await?;
                 if run.state.cancellation==Cancellation::None && run.available_at<=now && allowed {
                     let attempt=Uuid::new_v4();
@@ -135,7 +135,7 @@ impl ExecutionService {
         crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,p,id,input,audit),|ctx,tx|Box::pin(async move{
             let (service,p,id,input,audit)=*ctx;storage::lock(tx,p.device()).await?;principal(service,tx,p).await?;crate::channels::agent_context_in(tx,service.agent_store.clone(),p.registration(),input.execution_context()).await?;
             let mut run=db::load_run(tx,id).await?;belongs(&run,p)?;run.source.audit(audit);audit.target(&id.to_string());let plan=db::load_source(&service.policy_reader,tx,run.source).await?;let now=storage::now(tx).await?;
-            let allowed=plan.authorized_in(service,tx,&run.target,now).await?;
+            let allowed=plan.authorized_run_in(service,tx,&run,now).await?;
             if matches!(input.event(),wire::TaskEvent::Start|wire::TaskEvent::Received) && !allowed{return Err(Error::Forbidden.into());}
             if run.state.attempt()!=Some(input.attempt_id()){return Err(Error::Conflict.into());}
             let actor=format!("agent:{}",p.registration());let hash=fingerprint(&(id,input))?;
@@ -161,6 +161,13 @@ impl ExecutionService {
                 wire::TaskEvent::Received=>run.state.received(input.attempt_id(),now)?,
                 wire::TaskEvent::Start=>{
                     if run.state.execution!=Execution::NotStarted{return Err(Error::Conflict.into());}
+                    if matches!(&plan,db::ScheduledPolicy::Script(_)) {
+                        let tenant=tx.tenant_id().to_string();let attempt=input.attempt_id();let run_id=id;
+                        let offer:Value=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT offer FROM mdm_commands.action_attempts WHERE tenant_id=$1::uuid AND id=$2 AND run=$3").bind(tenant).bind(attempt).bind(run_id).fetch_one(c).await})).await?;
+                        let offered:wire::SignedTask=stored(serde_json::from_value(offer))?;
+                        let current=plan.task(service,tx,&run.target,db::TaskIssue{run:id,attempt:input.attempt_id(),permit:wire::TaskPermit::Offer,expiry:offered.payload.expires_at()}).await?;
+                        if current!=offered.payload {return Err(Error::Forbidden.into());}
+                    }
                     if matches!(&plan,db::ScheduledPolicy::Software(_)) {
                         let tenant=tx.tenant_id().to_string();let attempt=input.attempt_id().to_string();let run_id=id.to_string();
                         let offer:Value=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT offer FROM mdm_commands.action_attempts WHERE tenant_id=$1::uuid AND id=$2::uuid AND run=$3::uuid").bind(tenant).bind(attempt).bind(run_id).fetch_one(c).await})).await?;
@@ -272,7 +279,7 @@ impl ExecutionService {
             let run=db::load_run(tx,id).await?;belongs(&run,p)?;run.source.audit(audit);audit.target(&id.to_string());let plan=db::load_source(&service.policy_reader,tx,run.source).await?;let now=storage::now(tx).await?;
             if run.state.attempt()!=Some(attempt) || run.deadline<=now || run.state.cancellation!=Cancellation::None
                 || !matches!(run.state.execution, Execution::NotStarted | Execution::Running)
-                || !plan.authorized_in(service,tx,&run.target,now).await? {return Err(Error::Forbidden.into());}
+                || !plan.authorized_run_in(service,tx,&run,now).await? {return Err(Error::Forbidden.into());}
             let tenant=tx.tenant_id().to_string();let expiry=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,i64>("SELECT (offer->'payload'->>'expiresAt')::bigint FROM mdm_commands.action_attempts WHERE tenant_id=$1::uuid AND id=$2::uuid AND run=$3::uuid").bind(tenant).bind(attempt.to_string()).bind(id.to_string()).fetch_one(c).await})).await?;
             if now>=expiry { return Err(Error::Forbidden.into()); }
             match plan {

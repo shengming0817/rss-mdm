@@ -5,7 +5,10 @@
         "frequency": "once_per_version",
         "kind": "execution",
         "parameters": {
-          "message": "hello"
+          "message": {
+            "kind": "fixed",
+            "value": "hello"
+          }
         },
         "resource": {
           "architecture": "x86_64",
@@ -31,7 +34,7 @@
       },
       "scope": "11111111-1111-4111-8111-111111111111"
     },
-    "digest": "e3430ec4aa3fea9b903d4ce02b2e5a0edc6382569b2c76af84dff77fff07d385"
+    "digest": "b8df6137376ca735fd82a56125fc32d635063b612105672a7ae8e81b24f23c15"
   },
   {
     "definition": {

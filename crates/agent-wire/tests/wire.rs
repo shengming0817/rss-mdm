@@ -66,6 +66,13 @@ fn manifest_covers_and_fingerprints_every_public_shape() {
             "SignedTask",
             "TaskClaimResponse",
             "TaskEventAck",
+            "ScriptAuthorization",
+            "ScriptResource",
+            "SelfServiceInvoke",
+            "SelfServiceDirectory",
+            "SelfServiceDirectoryResponse",
+            "SelfServiceAccepted",
+            "SelfServiceStatus",
         ]
     );
     let schemas = [
@@ -80,6 +87,14 @@ fn manifest_covers_and_fingerprints_every_public_shape() {
         include_bytes!("../schema/runtime/signed-task-v1.schema.json").as_slice(),
         include_bytes!("../schema/runtime/task-claim-response-v1.schema.json").as_slice(),
         include_bytes!("../schema/runtime/task-event-ack-v1.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/script-authorization-v1.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/script-resource-v1.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/self-service-invoke-v1.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/self-service-directory-v1.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/self-service-directory-response-v1.schema.json")
+            .as_slice(),
+        include_bytes!("../schema/runtime/self-service-accepted-v1.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/self-service-status-v1.schema.json").as_slice(),
     ];
     let mut digest = Sha256::new();
     for schema in schemas {

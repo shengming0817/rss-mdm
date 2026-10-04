@@ -79,7 +79,7 @@ pub fn command(facts: CommandDetail, device: &str) -> Value {
             .collect::<String>()
             .replace('+', "%20");
         value["observation"]["diagnostic"]["artifact"]["downloadUrl"] = json!(format!(
-            "/api/v3/devices/{encoded}/operations/{}/diagnostic-artifact",
+            "/api/v1/devices/{encoded}/operations/{}/diagnostic-artifact",
             value["operationId"].as_str().expect("operation id")
         ));
     }

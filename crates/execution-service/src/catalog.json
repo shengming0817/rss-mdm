@@ -100,6 +100,15 @@
       ""
     ],
     [
+      "action_polls",
+      "profiles",
+      "jsonb",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
       "action_receipts",
       "tenant_id",
       "uuid",
@@ -300,6 +309,15 @@
     [
       "action_runs",
       "result",
+      "jsonb",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "action_runs",
+      "invocation",
       "jsonb",
       false,
       null,
@@ -1223,6 +1241,13 @@
     ],
     [
       "action_polls",
+      "action_polls_profiles_check",
+      "c",
+      "CHECK (((profiles IS NULL) OR ((jsonb_typeof(profiles) = 'array'::text) AND (jsonb_array_length(profiles) <= 4))))",
+      true
+    ],
+    [
+      "action_polls",
       "action_polls_tenant_id_registration_fkey",
       "f",
       "FOREIGN KEY (tenant_id, registration) REFERENCES mdm_access.registrations(tenant_id, id)",
@@ -1296,6 +1321,13 @@
       "action_runs_generation_check",
       "c",
       "CHECK ((generation > 0))",
+      true
+    ],
+    [
+      "action_runs",
+      "action_runs_invocation_check",
+      "c",
+      "CHECK (((invocation IS NULL) OR ((jsonb_typeof(invocation) = 'object'::text) AND (octet_length((invocation)::text) <= 131072))))",
       true
     ],
     [

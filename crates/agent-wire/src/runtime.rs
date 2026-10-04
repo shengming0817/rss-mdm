@@ -9,6 +9,7 @@ mod onboarding;
 pub use onboarding::*;
 #[path = "tasks.rs"]
 mod tasks;
+pub use crate::self_service::*;
 pub use tasks::*;
 
 use base64::Engine;
@@ -26,7 +27,7 @@ pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/runtime/agent-v1.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "efc310dad72251da97b6926601f495eb605cbc16a34a1f71066a84920078f5c9";
+    "3dd22024a26099bcaf9f3755544c1b9c0a0eeb739150f4244036244b63ed9ee6";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -14,6 +14,7 @@ pub async fn accept(
     output: &Value,
     trusted: bool,
     now: i64,
+    collected_at: i64,
 ) -> Result<()> {
     let ScriptPurpose::Collection { mappings } = &frozen.definition.spec().purpose else {
         return Ok(());
@@ -70,7 +71,11 @@ pub async fn accept(
         };
         values.insert(key, outcome);
     }
-    let progress = stored(CollectionProgress::native(definition.clone(), values, now))?;
+    let progress = stored(CollectionProgress::native(
+        definition.clone(),
+        values,
+        collected_at,
+    ))?;
     let tenant = tx.tenant_id();
     let report = crate::collection::enterprise::Report {
         registration: run.target.registration,
@@ -204,23 +209,43 @@ pub async fn finish(
     let success = process_complete && budget_valid && (schema_valid || frozen.collection.is_some());
     let trusted = success
         && allowed
+        && result.collected_at() <= now
         && run
             .state
             .trusts_result(now, frozen.definition.spec().timeout_seconds);
-    run.state
-        .result(run.state.attempt().ok_or(crate::Error::Conflict)?, success)?;
-    accept(tx, frozen, run, output, trusted, now).await?;
+    if !allowed {
+        run.state
+            .uncertain_result(run.state.attempt().ok_or(crate::Error::Conflict)?)?;
+    } else {
+        run.state
+            .result(run.state.attempt().ok_or(crate::Error::Conflict)?, success)?;
+    }
+    accept(tx, frozen, run, output, trusted, now, result.collected_at()).await?;
     let (output, reference) = if !budget_valid || bytes.len() > 1024 * 1024 {
         (
             Value::Null,
-            serde_json::json!({"bytes":bytes.len(),"sha256":format!("{:x}",Sha256::digest(&bytes))}),
+            Some(rss_mdm_agent_wire::runtime::ScriptOutputReference {
+                bytes: bytes.len() as u64,
+                sha256: format!("{:x}", Sha256::digest(&bytes)),
+            }),
         )
     } else {
-        (output.clone(), Value::Null)
+        (output.clone(), None)
     };
-    run.result = Some(
-        serde_json::json!({"exitCode":result.exit_code(),"quality":result.quality(),"schemaValid":schema_valid,"budgetValid":budget_valid,"output":output,"outputReference":reference,"diagnostics":result.diagnostics(),"trusted":trusted}),
-    );
+    run.result = Some(stored(serde_json::to_value(
+        rss_mdm_agent_wire::runtime::ScriptRunResult {
+            collected_at: result.collected_at(),
+            received_at: now,
+            exit_code: result.exit_code(),
+            quality: result.quality(),
+            schema_valid,
+            budget_valid,
+            output,
+            output_reference: reference,
+            diagnostics: result.diagnostics().clone(),
+            trusted,
+        },
+    ))?);
     Ok(())
 }
 

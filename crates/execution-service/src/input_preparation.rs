@@ -7,12 +7,11 @@ mod software;
 use crate::authorization::{Permission, context::AuthorizedPrincipal};
 use crate::{Error, Inputs, action_contract::*, freeze_inputs::*, frozen::Frozen, transaction::*};
 use native::{configuration, native_collection};
-pub use request::{PublicationAuthority, PublicationInput, ResourcePreparation};
+pub use request::{PublicationAuthority, PublicationInput, ResourcePreparation, ScriptParameters};
 use rss_mdm_content_service::{StorageClass, Verified};
 use rss_mdm_policy::{Action, Architecture, ExactResourceBinding, Exit, Platform, SoftwareIntent};
-use rss_mdm_resource::{self as resource, self as r, PreparedScript};
+use rss_mdm_resource::{self as resource, self as r, SelectedScript};
 use rss_transactional_messaging_postgres::PgTransaction;
-use serde_json::{Value, json};
 
 impl Inputs {
     /// Validate the closed resource family and verify its content outside a write transaction.
@@ -124,10 +123,10 @@ impl Inputs {
 fn select<'a>(
     version: &'a r::Version,
     binding: &ExactResourceBinding,
-    parameters: &'a Value,
-) -> Result<PreparedScript<'a>> {
+    parameters: ScriptParameters<'_>,
+) -> Result<SelectedScript<'a>> {
     let exact = binding;
-    checked_input(version.prepare_script(
+    let selected = checked_input(version.select_script(
         match exact.platform {
             Platform::Windows => r::Platform::Windows,
             Platform::Macos => r::Platform::MacOS,
@@ -137,17 +136,18 @@ fn select<'a>(
             Architecture::Aarch64 => r::Architecture::Aarch64,
         },
         &checked_input(r::Id::new(&exact.variant))?,
-        parameters,
-    ))
+    ))?;
+    parameters.checked(selected.definition())?;
+    Ok(selected)
 }
 
 /// Rebind a live content proof to the exact selection read in the caller's transaction.
 fn script<'a>(
     version: &'a r::Version,
     binding: &ExactResourceBinding,
-    parameters: &'a Value,
+    parameters: ScriptParameters<'_>,
     verified: &Verified,
-) -> Result<PreparedScript<'a>> {
+) -> Result<SelectedScript<'a>> {
     let prepared = select(version, binding, parameters)?;
     if !verified.matches(prepared.artifact()) {
         return Err(Error::Conflict.into());

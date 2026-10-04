@@ -275,6 +275,7 @@ async fn chunked_results_require_complete_output_and_preserve_attempt_identity()
         wire::OutputQuality::Complete,
         json!({"version":"1.2","healthy":true,"padding":"x".repeat(400000)}),
         wire::TaskDiagnostics::new("".into(), "".into(), 1, 1, None)?,
+        2,
     )?;
     let (reference, chunks) = wire::ChunkedTaskResult::split(result)?;
     ensure!(chunks.len() == 2);
@@ -354,6 +355,7 @@ async fn collection_structure_budget_precedes_partial_field_acceptance() -> Resu
             quality,
             output,
             wire::TaskDiagnostics::new("".into(), "".into(), 1, 1, failure)?,
+            2,
         )?;
         let event = if mode == "chunked" {
             let (reference, chunks) = wire::ChunkedTaskResult::split(result)?;
