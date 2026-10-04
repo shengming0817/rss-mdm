@@ -695,14 +695,19 @@ async fn ingress_batches_reuse_published_group_coverage() {
         .into_iter()
         .find(|c| c.target().entity() == "changes")
         .unwrap();
-    for (consumed, watermark, phase) in [
-        (0, 1000, "devices"),
+    let mut steps = vec![(0, 1000, "devices")];
+    // A thousand devices now commit in 32-device pages before Scope dispatch.
+    steps.extend(std::iter::repeat_n((0, 1000, "devices"), 31));
+    steps.extend([
+        (0, 1000, "scopes"),
         (0, 1000, "compliance"),
         (1000, 1000, "groups"),
         (1000, 1001, "devices"),
+        (1000, 1001, "scopes"),
         (1000, 1001, "compliance"),
         (1001, 1001, "groups"),
-    ] {
+    ]);
+    for (consumed, watermark, phase) in steps {
         let diff = worker.observe(&claim, &control).await.unwrap();
         worker.apply(&claim, diff, &control).await.unwrap();
         assert_eq!(
