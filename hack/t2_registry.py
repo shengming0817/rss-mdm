@@ -1515,5 +1515,5 @@ add('content.s3', build=Build('rss-mdm-content-s3'), selectors=('s3_tests::',), 
     support=('hack/s3_fixtures.py','fixtures/s3-provider.lock.json'))
 
 MODULES['planning.self_service'] = replace(MODULES['planning.self_service'], fixtures=('identity','tls','local_worker'), scope='tenant', support_inputs=(*MODULES['planning.self_service'].support_inputs,'crates/app/tests/support/agent.rs','crates/app/tests/support/agent_execution.rs','crates/app/tests/support/software.rs'))
-consume(('crates/agent-wire/src/self_service.rs','crates/agent-wire/schema/runtime/script-*.json','crates/agent-wire/schema/runtime/self-service-*.json','crates/execution-service/schema/self-service/*','crates/management-http/schema/*','crates/agent-wire/examples/*','crates/execution-service/examples/*','crates/management-http/examples/*'), TASK_CONSUMERS)
+consume(('crates/agent-wire/src/self_service.rs','crates/agent-wire/schema/runtime/script-*.json','crates/agent-wire/schema/runtime/self-service-*.json','crates/management-http/schema/*','crates/agent-wire/examples/*','crates/management-http/examples/*'), TASK_CONSUMERS)
 consume(('crates/policy/src/self_service.rs','crates/execution-service/src/script_eligibility.rs'), TASK_CONSUMERS)

@@ -7,7 +7,6 @@ publish.workspace = true
 autotests = false
 
 [dependencies]
-schemars.workspace=true
 bytes.workspace = true
 zeroize.workspace = true
 rss-mdm-native-protection.workspace = true

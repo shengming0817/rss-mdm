@@ -1,6 +1,6 @@
 //! Targeted self-service calls use the existing Policy version, Run reducer and frequency.
 use crate::{
-    Error, ExecutionService, Target,
+    Error, ExecutionService, Result, Target,
     actions::{production, storage as db},
     authorization::{Permission, UserGrant, context::AuthorizedPrincipal},
     storage,
@@ -104,10 +104,10 @@ impl ExecutionService {
                 let script=crate::sources::admission::read_in(&service.policy_reader,tx,policy.version).await?;
                 let Some(config)=policy.definition.self_service.as_ref() else {continue};
                 if !policy.enabled || !config.published || (input.source==wire::ScriptCaller::Ai && config.allow_ai!=Some(true)) || !script.authorized_in(&service.source,tx,p.device(),now).await? || !crate::script_eligibility::require_in(tx,service.agent_store.clone(),&target,&script.frozen).await? {continue}
-                items.push(DirectoryItem{policy_id:id,policy_revision:policy.revision as u64,policy_version:policy.version,self_service:config.clone(),resource:script.frozen.resource.clone(),parameter_sources:script.frozen.parameters.clone(),parameter_schema:script.frozen.definition.spec().parameters.clone()});
+                items.push(wire::SelfServiceDirectoryItem{policy_id:id,policy_revision:policy.revision as u64,policy_version:policy.version,self_service:metadata(config)?,resource:script.frozen.resource.clone(),parameter_sources:parameter_sources(&script.frozen.parameters),parameter_schema:script.frozen.definition.spec().parameters.clone()});
             }
             proof.check_live()?;service.audit_store.append_request_in(tx,audit,200,"success").await?;
-            json(&DirectoryResponse{items,next_cursor:next,as_of:now})
+            json(&wire::SelfServiceDirectoryResponse{items,next_cursor:next,as_of:now})
         })).await
     }
     pub async fn invoke_self_service(
@@ -161,7 +161,8 @@ impl ExecutionService {
             if !crate::script_eligibility::require_in(tx,service.agent_store.clone(),&target,&script.frozen).await? {return Err(Error::Forbidden.into())}
             let parameters=script.frozen.parameters.resolve(&json!(input.parameters))?;
             script.frozen.definition.validate_parameters(&parameters).map_err(|_|Error::Malformed)?;
-            if production::policy_pending_in(tx,policy.id,policy.version,&target,now,false).await?.0 {return Err(Error::Conflict.into())}
+            let (pending,last)=production::policy_pending_in(tx,policy.id,policy.version,&target,now,false).await?;
+            if pending || !production::check_in_interval_elapsed(&script.frozen.input.schedule.trigger,last,now) {return Err(Error::Conflict.into())}
             let occurrence=production::policy_occurrence(script.frequency,&target,&script.entry_source(),entry,&format!("self-service:{}",input.operation_id));
             if !production::occurrence_available_in(tx,policy.version,&target,&occurrence,now).await? {return Err(Error::Conflict.into())}
             let schedule=&script.frozen.input.schedule;
@@ -176,7 +177,7 @@ impl ExecutionService {
             production::queue_run_in(service,tx,production::RunInput{source:db::Source::Policy{version:policy.version},target:&target,id,occurrence,available,deadline,now}).await?;
             let tenant=tx.tenant_id().to_string();let document=json(&invocation)?;
             tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_commands.action_runs SET invocation=$3 WHERE tenant_id=$1::uuid AND id=$2 AND invocation IS NULL").bind(tenant).bind(id).bind(document).execute(c).await?;Ok(())})).await?;
-            let response=json(&Accepted{request_id:input.operation_id,run_id:id,policy_id:policy.id,policy_revision:policy.revision as u64,policy_version:policy.version})?;
+            let response=json(&wire::SelfServiceAccepted{request_id:input.operation_id,run_id:id,policy_id:policy.id,policy_revision:policy.revision as u64,policy_version:policy.version})?;
             db::receipt(tx,&actor,input.operation_id,hash.clone(),&response,None).await?;
             proof.check_live()?;
             let fact=Fact::business(audit,&event_key,&hash,202,"success",None)?;service.audit_store.append_in(tx,&fact,false).await?;
@@ -210,63 +211,81 @@ impl ExecutionService {
                 if collection.fields().iter().any(|f|f.sensitivity==rss_mdm_inventory::Sensitivity::Sensitive) {auth.require(proof,Permission::InventorySensitiveRead,None)?;}
             }
             proof.check_live()?;service.audit_store.append_request_in(tx,audit,200,"success").await?;
-            json(&Status{request_id:request,run_id:id,attempt_id:run.state.attempt(),state:run.state,available_at:run.available_at,deadline:run.deadline,result:run.result})
+            json(&wire::SelfServiceStatus{request_id:request,run_id:id,attempt_id:run.state.attempt(),state:public_state(&run.state),available_at:run.available_at,deadline:run.deadline,result:run.result})
         })).await
     }
 }
 
-/// Directory response consumed by the Agent service and employee UI.
-#[derive(Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DirectoryResponse {
-    pub items: Vec<DirectoryItem>,
-    pub next_cursor: Option<Uuid>,
-    pub as_of: i64,
+fn metadata(config: &rss_mdm_policy::SelfService) -> Result<wire::SelfServiceMetadata> {
+    Ok(wire::SelfServiceMetadata {
+        published: config.published,
+        display_name: config.display_name.clone(),
+        description: config.description.clone(),
+        prerequisites: config.prerequisites.clone(),
+        side_effects: config.side_effects.clone(),
+        category: config.category.clone(),
+        keywords: config.keywords.clone(),
+        allow_ai: config.allow_ai.ok_or(Error::Malformed)?,
+        risk_level: config.risk_level.ok_or(Error::Malformed)?.value(),
+    })
 }
-#[derive(Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DirectoryItem {
-    pub policy_id: Uuid,
-    pub policy_revision: u64,
-    pub policy_version: Uuid,
-    pub self_service: rss_mdm_policy::SelfService,
-    pub resource: wire::ScriptResource,
-    pub parameter_sources: rss_mdm_policy::ParameterSources,
-    pub parameter_schema: Value,
+fn parameter_sources(
+    sources: &rss_mdm_policy::ParameterSources,
+) -> std::collections::BTreeMap<String, wire::ScriptParameterSource> {
+    sources
+        .0
+        .iter()
+        .map(|(name, source)| {
+            (
+                name.clone(),
+                match source {
+                    rss_mdm_policy::ParameterSource::Fixed { value } => {
+                        wire::ScriptParameterSource::Fixed {
+                            value: value.clone(),
+                        }
+                    }
+                    rss_mdm_policy::ParameterSource::Input {} => {
+                        wire::ScriptParameterSource::Input {}
+                    }
+                },
+            )
+        })
+        .collect()
 }
-#[derive(Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Accepted {
-    pub request_id: Uuid,
-    pub run_id: Uuid,
-    pub policy_id: Uuid,
-    pub policy_revision: u64,
-    pub policy_version: Uuid,
-}
-#[derive(Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Status {
-    pub request_id: Uuid,
-    pub run_id: Uuid,
-    pub attempt_id: Option<Uuid>,
-    pub state: crate::actions::state::RunState,
-    pub available_at: i64,
-    pub deadline: i64,
-    pub result: Option<Value>,
-}
-#[cfg(test)]
-mod schema_tests {
-    fn same<T: schemars::JsonSchema>(published: &str) {
-        let generated = serde_json::to_value(schemars::schema_for!(T)).unwrap();
-        let published: serde_json::Value = serde_json::from_str(published).unwrap();
-        assert_eq!(generated, published);
-    }
-    #[test]
-    fn self_service_read_contracts_follow_owned_dtos() {
-        same::<super::DirectoryResponse>(include_str!(
-            "../schema/self-service/DirectoryResponse.json"
-        ));
-        same::<super::Accepted>(include_str!("../schema/self-service/Accepted.json"));
-        same::<super::Status>(include_str!("../schema/self-service/Status.json"));
+fn public_state(state: &crate::actions::state::RunState) -> wire::ScriptRunState {
+    use crate::actions::state::{Cancellation, Delivery, Execution};
+    wire::ScriptRunState {
+        delivery: match state.delivery {
+            Delivery::Queued => wire::ScriptDelivery::Queued,
+            Delivery::Claimed {
+                attempt,
+                lease_until,
+            } => wire::ScriptDelivery::Claimed {
+                attempt,
+                lease_until,
+            },
+            Delivery::Received {
+                attempt,
+                lease_until,
+            } => wire::ScriptDelivery::Received {
+                attempt,
+                lease_until,
+            },
+        },
+        execution: match state.execution {
+            Execution::NotStarted => wire::ScriptExecution::NotStarted,
+            Execution::Running => wire::ScriptExecution::Running,
+            Execution::Succeeded => wire::ScriptExecution::Succeeded,
+            Execution::Failed => wire::ScriptExecution::Failed,
+            Execution::WaitingReboot => wire::ScriptExecution::WaitingReboot,
+            Execution::Unknown => wire::ScriptExecution::Unknown,
+        },
+        cancellation: match state.cancellation {
+            Cancellation::None => wire::ScriptCancellation::None,
+            Cancellation::Requested => wire::ScriptCancellation::Requested,
+            Cancellation::Confirmed => wire::ScriptCancellation::Confirmed,
+        },
+        deadline: state.deadline,
+        started_at: state.started_at,
     }
 }

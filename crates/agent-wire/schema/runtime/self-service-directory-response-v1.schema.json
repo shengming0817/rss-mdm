@@ -1,49 +1,11 @@
 {
   "$defs": {
-    "DirectoryItem": {
-      "additionalProperties": false,
-      "properties": {
-        "parameterSchema": true,
-        "parameterSources": {
-          "$ref": "#/$defs/ParameterSources"
-        },
-        "policyId": {
-          "format": "uuid",
-          "type": "string"
-        },
-        "policyRevision": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "policyVersion": {
-          "format": "uuid",
-          "type": "string"
-        },
-        "resource": {
-          "$ref": "#/$defs/ScriptResource"
-        },
-        "selfService": {
-          "$ref": "#/$defs/SelfService"
-        }
-      },
-      "required": [
-        "policyId",
-        "policyRevision",
-        "policyVersion",
-        "selfService",
-        "resource",
-        "parameterSources",
-        "parameterSchema"
-      ],
-      "type": "object"
-    },
-    "ParameterSource": {
-      "description": "Where one Resource-declared argument obtains its value.",
+    "ScriptParameterSource": {
+      "description": "Public source of one Resource-declared parameter.",
       "oneOf": [
         {
           "additionalProperties": false,
-          "description": "Administrator-selected literal; callers cannot override it.",
+          "description": "Administrator literal.",
           "properties": {
             "kind": {
               "const": "fixed",
@@ -64,7 +26,7 @@
                   "type": "integer"
                 }
               ],
-              "description": "Value checked against the Resource's parameter schema."
+              "description": "Administrator-selected scalar checked against the Resource schema."
             }
           },
           "required": [
@@ -75,7 +37,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Required call-time argument, governed by the same Resource schema.",
+          "description": "Required call-time input.",
           "properties": {
             "kind": {
               "const": "input",
@@ -88,13 +50,6 @@
           "type": "object"
         }
       ]
-    },
-    "ParameterSources": {
-      "additionalProperties": {
-        "$ref": "#/$defs/ParameterSource"
-      },
-      "description": "Complete parameter-source map; Resource owns all value constraints.",
-      "type": "object"
     },
     "ScriptResource": {
       "additionalProperties": false,
@@ -120,27 +75,66 @@
       ],
       "type": "object"
     },
-    "ScriptRisk": {
-      "enum": [
-        1,
-        2
-      ],
-      "type": "integer"
-    },
-    "SelfService": {
+    "SelfServiceDirectoryItem": {
       "additionalProperties": false,
-      "description": "Policy-owned self-service configuration. Missing input defaults are normalized by CAS.",
+      "description": "One currently authorized script and its Resource-owned parameter schema.",
+      "properties": {
+        "parameterSchema": {
+          "description": "Resource-owned JSON Schema for full resolved parameters."
+        },
+        "parameterSources": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ScriptParameterSource"
+          },
+          "description": "Complete source map; Fixed values cannot be overridden.",
+          "type": "object"
+        },
+        "policyId": {
+          "description": "Logical Policy identity.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "policyRevision": {
+          "description": "Current configuration CAS revision.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "policyVersion": {
+          "description": "Immutable execution version.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource": {
+          "$ref": "#/$defs/ScriptResource",
+          "description": "Exact selected Resource coordinates."
+        },
+        "selfService": {
+          "$ref": "#/$defs/SelfServiceMetadata",
+          "description": "Normalized presentation and invocation settings."
+        }
+      },
+      "required": [
+        "policyId",
+        "policyRevision",
+        "policyVersion",
+        "selfService",
+        "resource",
+        "parameterSources",
+        "parameterSchema"
+      ],
+      "type": "object"
+    },
+    "SelfServiceMetadata": {
+      "additionalProperties": false,
+      "description": "Published presentation and invocation settings; values are normalized by Policy CAS.",
       "properties": {
         "allowAi": {
-          "default": null,
-          "description": "Defaults only at first configuration; normalized stored values are always present.",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "description": "Effective administrator AI switch.",
+          "type": "boolean"
         },
         "category": {
-          "description": "Presentation category, independent of Scope.",
+          "description": "Presentation category.",
           "type": "string"
         },
         "description": {
@@ -148,11 +142,11 @@
           "type": "string"
         },
         "displayName": {
-          "description": "Display name in the authorized directory.",
+          "description": "Directory display name.",
           "type": "string"
         },
         "keywords": {
-          "description": "Bounded search terms.",
+          "description": "Search terms.",
           "items": {
             "type": "string"
           },
@@ -163,23 +157,19 @@
           "type": "string"
         },
         "published": {
-          "description": "Whether new self-service calls are accepted.",
+          "description": "Whether this script is published for self service.",
           "type": "boolean"
         },
         "riskLevel": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ScriptRisk"
-            },
-            {
-              "type": "null"
-            }
+          "description": "Effective risk level, one or two.",
+          "enum": [
+            1,
+            2
           ],
-          "default": null,
-          "description": "Defaults to confirmation at first configuration; only levels one and two are legal."
+          "type": "integer"
         },
         "sideEffects": {
-          "description": "Expected side effects shown before invocation.",
+          "description": "Expected effects shown before invocation.",
           "type": "string"
         }
       },
@@ -190,7 +180,9 @@
         "prerequisites",
         "sideEffects",
         "category",
-        "keywords"
+        "keywords",
+        "allowAi",
+        "riskLevel"
       ],
       "type": "object"
     }
@@ -200,16 +192,19 @@
   "description": "Directory response consumed by the Agent service and employee UI.",
   "properties": {
     "asOf": {
+      "description": "Server observation time in Unix seconds.",
       "format": "int64",
       "type": "integer"
     },
     "items": {
+      "description": "Authorized directory entries.",
       "items": {
-        "$ref": "#/$defs/DirectoryItem"
+        "$ref": "#/$defs/SelfServiceDirectoryItem"
       },
       "type": "array"
     },
     "nextCursor": {
+      "description": "Last examined Policy when another page may exist.",
       "format": "uuid",
       "type": [
         "string",
@@ -221,6 +216,7 @@
     "items",
     "asOf"
   ],
-  "title": "DirectoryResponse",
-  "type": "object"
+  "title": "SelfServiceDirectoryResponse",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/self-service-directory-response.schema.json"
 }

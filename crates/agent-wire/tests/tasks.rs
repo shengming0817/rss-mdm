@@ -691,6 +691,39 @@ fn self_service_schemas_follow_owned_dtos_and_reject_model_authority() {
     same::<SelfServiceDirectory>(include_str!(
         "../schema/runtime/self-service-directory-v1.schema.json"
     ));
+    same::<SelfServiceDirectoryResponse>(include_str!(
+        "../schema/runtime/self-service-directory-response-v1.schema.json"
+    ));
+    same::<SelfServiceAccepted>(include_str!(
+        "../schema/runtime/self-service-accepted-v1.schema.json"
+    ));
+    same::<SelfServiceStatus>(include_str!(
+        "../schema/runtime/self-service-status-v1.schema.json"
+    ));
+    // Generated types must also be the definitions signed inside TaskSpec.
+    let payload: serde_json::Value = serde_json::from_str(include_str!(
+        "../schema/runtime/task-payload-v1.schema.json"
+    ))
+    .unwrap();
+    for (name, mut generated) in [
+        (
+            "ScriptAuthorization",
+            serde_json::to_value(schemars::schema_for!(ScriptAuthorization)).unwrap(),
+        ),
+        (
+            "ScriptResource",
+            serde_json::to_value(schemars::schema_for!(ScriptResource)).unwrap(),
+        ),
+    ] {
+        let root = generated.as_object_mut().unwrap();
+        root.remove("$schema");
+        if let Some(serde_json::Value::Object(definitions)) = root.remove("$defs") {
+            for (name, definition) in definitions {
+                assert_eq!(definition, payload["$defs"][&name], "embedded {name}");
+            }
+        }
+        assert_eq!(generated, payload["$defs"][name], "embedded {name}");
+    }
     let id = Uuid::new_v4();
     let input = json!({"operationId":id,"policyId":id,"policyRevision":1,"policyVersion":id,"source":"ai","confirmed":true,"parameters":{}});
     for field in [

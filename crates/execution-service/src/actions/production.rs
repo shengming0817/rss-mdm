@@ -143,8 +143,8 @@ pub async fn accept_for_device(
     } else {
         match &schedule.trigger {
             Trigger::Manual => return Ok(()),
-            Trigger::CheckIn { minimum_seconds } => {
-                if last.is_some_and(|t| now.saturating_sub(t) < i64::from(*minimum_seconds)) {
+            Trigger::CheckIn { .. } => {
+                if !check_in_interval_elapsed(&schedule.trigger, last, now) {
                     return Ok(());
                 }
                 (now, format!("checkin:{request}"))
@@ -292,6 +292,15 @@ pub async fn policy_pending_in(
             .bind(tenant).bind(owner.to_string()).bind(device).bind(now).bind(registration).bind(version).bind(enrollment).fetch_one(c).await
     })).await?;
     Ok(value)
+}
+/// Check-in timing is shared by automatic and targeted admission.
+pub fn check_in_interval_elapsed(trigger: &Trigger, last: Option<i64>, now: i64) -> bool {
+    match trigger {
+        Trigger::CheckIn { minimum_seconds } => {
+            last.is_none_or(|at| now.saturating_sub(at) >= i64::from(*minimum_seconds))
+        }
+        _ => true,
+    }
 }
 /// The same frequency coordinate is consumed by check-in and targeted calls.
 pub fn policy_occurrence(

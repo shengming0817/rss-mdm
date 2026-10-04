@@ -1,0 +1,218 @@
+{
+  "$defs": {
+    "ScriptCancellation": {
+      "description": "Public cancellation observation.",
+      "oneOf": [
+        {
+          "const": "none",
+          "description": "No cancellation requested.",
+          "type": "string"
+        },
+        {
+          "const": "requested",
+          "description": "Cancellation requested but not acknowledged.",
+          "type": "string"
+        },
+        {
+          "const": "confirmed",
+          "description": "Cancellation acknowledged or stopped before execution.",
+          "type": "string"
+        }
+      ]
+    },
+    "ScriptDelivery": {
+      "description": "Public delivery observation, independent of the server reducer implementation.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Awaiting a device claim.",
+          "properties": {
+            "kind": {
+              "const": "queued",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Claimed by one leased attempt.",
+          "properties": {
+            "attempt": {
+              "description": "Attempt identity.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "kind": {
+              "const": "claimed",
+              "type": "string"
+            },
+            "leaseUntil": {
+              "description": "Lease expiry in Unix seconds.",
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "attempt",
+            "leaseUntil"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Receipt acknowledged by one leased attempt.",
+          "properties": {
+            "attempt": {
+              "description": "Attempt identity.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "kind": {
+              "const": "received",
+              "type": "string"
+            },
+            "leaseUntil": {
+              "description": "Lease expiry in Unix seconds.",
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "attempt",
+            "leaseUntil"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ScriptExecution": {
+      "description": "Public execution observation. Unknown never authorizes a blind retry.",
+      "oneOf": [
+        {
+          "const": "not_started",
+          "description": "No Start has been admitted.",
+          "type": "string"
+        },
+        {
+          "const": "running",
+          "description": "Execution was admitted and is running.",
+          "type": "string"
+        },
+        {
+          "const": "succeeded",
+          "description": "A successful result was recorded.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "A failed result was recorded.",
+          "type": "string"
+        },
+        {
+          "const": "waiting_reboot",
+          "description": "Execution awaits a reboot observation.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "The effect is uncertain.",
+          "type": "string"
+        }
+      ]
+    },
+    "ScriptRunState": {
+      "additionalProperties": false,
+      "description": "Current durable Run observation, without server-side reducer methods.",
+      "properties": {
+        "cancellation": {
+          "$ref": "#/$defs/ScriptCancellation",
+          "description": "Current cancellation observation."
+        },
+        "deadline": {
+          "description": "Final Run deadline in Unix seconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "delivery": {
+          "$ref": "#/$defs/ScriptDelivery",
+          "description": "Current delivery observation."
+        },
+        "execution": {
+          "$ref": "#/$defs/ScriptExecution",
+          "description": "Current execution observation."
+        },
+        "startedAt": {
+          "description": "Server time at which execution was admitted.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "delivery",
+        "execution",
+        "cancellation",
+        "deadline"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Status of an invocation by this device and authenticated employee.",
+  "properties": {
+    "attemptId": {
+      "description": "Current attempt identity, if claimed.",
+      "format": "uuid",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "availableAt": {
+      "description": "Earliest server admission time in Unix seconds.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "deadline": {
+      "description": "Final Run deadline in Unix seconds.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "requestId": {
+      "description": "Durable idempotency identity of the invocation.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "result": {
+      "description": "Authorized result with native collection time and server receipt time."
+    },
+    "runId": {
+      "description": "Durable Run identity.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "state": {
+      "$ref": "#/$defs/ScriptRunState",
+      "description": "Current durable Run observation."
+    }
+  },
+  "required": [
+    "requestId",
+    "runId",
+    "state",
+    "availableAt",
+    "deadline"
+  ],
+  "title": "SelfServiceStatus",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/self-service-status.schema.json"
+}

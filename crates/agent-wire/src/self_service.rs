@@ -148,3 +148,177 @@ pub struct SelfServiceDirectory {
 fn risk_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::json_schema!({"type":"integer","enum":[1,2]})
 }
+
+/// Published presentation and invocation settings; values are normalized by Policy CAS.
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SelfServiceMetadata {
+    /// Whether this script is published for self service.
+    pub published: bool,
+    /// Directory display name.
+    pub display_name: String,
+    /// Intended purpose.
+    pub description: String,
+    /// Preconditions shown before invocation.
+    pub prerequisites: String,
+    /// Expected effects shown before invocation.
+    pub side_effects: String,
+    /// Presentation category.
+    pub category: String,
+    /// Search terms.
+    pub keywords: Vec<String>,
+    /// Effective administrator AI switch.
+    pub allow_ai: bool,
+    #[schemars(schema_with = "risk_schema")]
+    /// Effective risk level, one or two.
+    pub risk_level: u8,
+}
+/// Public source of one Resource-declared parameter.
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ScriptParameterSource {
+    /// Administrator literal.
+    Fixed {
+        #[schemars(schema_with = "scalar_schema")]
+        /// Administrator-selected scalar checked against the Resource schema.
+        value: serde_json::Value,
+    },
+    /// Required call-time input.
+    Input {},
+}
+/// Directory response consumed by the Agent service and employee UI.
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SelfServiceDirectoryResponse {
+    /// Authorized directory entries.
+    pub items: Vec<SelfServiceDirectoryItem>,
+    /// Last examined Policy when another page may exist.
+    pub next_cursor: Option<Uuid>,
+    /// Server observation time in Unix seconds.
+    pub as_of: i64,
+}
+/// One currently authorized script and its Resource-owned parameter schema.
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SelfServiceDirectoryItem {
+    /// Logical Policy identity.
+    pub policy_id: Uuid,
+    /// Current configuration CAS revision.
+    pub policy_revision: u64,
+    /// Immutable execution version.
+    pub policy_version: Uuid,
+    /// Normalized presentation and invocation settings.
+    pub self_service: SelfServiceMetadata,
+    /// Exact selected Resource coordinates.
+    pub resource: ScriptResource,
+    /// Complete source map; Fixed values cannot be overridden.
+    pub parameter_sources: BTreeMap<String, ScriptParameterSource>,
+    /// Resource-owned JSON Schema for full resolved parameters.
+    pub parameter_schema: serde_json::Value,
+}
+/// Durable acceptance receipt; retries return the same Run identity.
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SelfServiceAccepted {
+    /// Durable idempotency identity of the invocation.
+    pub request_id: Uuid,
+    /// Durable Run identity.
+    pub run_id: Uuid,
+    /// Logical Policy identity.
+    pub policy_id: Uuid,
+    /// Current configuration CAS revision.
+    pub policy_revision: u64,
+    /// Immutable execution version.
+    pub policy_version: Uuid,
+}
+/// Public delivery observation, independent of the server reducer implementation.
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ScriptDelivery {
+    /// Awaiting a device claim.
+    Queued,
+    /// Claimed by one leased attempt.
+    Claimed {
+        /// Attempt identity.
+        attempt: Uuid,
+        /// Lease expiry in Unix seconds.
+        lease_until: i64,
+    },
+    /// Receipt acknowledged by one leased attempt.
+    Received {
+        /// Attempt identity.
+        attempt: Uuid,
+        /// Lease expiry in Unix seconds.
+        lease_until: i64,
+    },
+}
+/// Public execution observation. Unknown never authorizes a blind retry.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ScriptExecution {
+    /// No Start has been admitted.
+    NotStarted,
+    /// Execution was admitted and is running.
+    Running,
+    /// A successful result was recorded.
+    Succeeded,
+    /// A failed result was recorded.
+    Failed,
+    /// Execution awaits a reboot observation.
+    WaitingReboot,
+    /// The effect is uncertain.
+    Unknown,
+}
+/// Public cancellation observation.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ScriptCancellation {
+    /// No cancellation requested.
+    None,
+    /// Cancellation requested but not acknowledged.
+    Requested,
+    /// Cancellation acknowledged or stopped before execution.
+    Confirmed,
+}
+/// Current durable Run observation, without server-side reducer methods.
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ScriptRunState {
+    /// Current delivery observation.
+    pub delivery: ScriptDelivery,
+    /// Current execution observation.
+    pub execution: ScriptExecution,
+    /// Current cancellation observation.
+    pub cancellation: ScriptCancellation,
+    /// Final Run deadline in Unix seconds.
+    pub deadline: i64,
+    /// Server time at which execution was admitted.
+    pub started_at: Option<i64>,
+}
+/// Status of an invocation by this device and authenticated employee.
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SelfServiceStatus {
+    /// Durable idempotency identity of the invocation.
+    pub request_id: Uuid,
+    /// Durable Run identity.
+    pub run_id: Uuid,
+    /// Current attempt identity, if claimed.
+    pub attempt_id: Option<Uuid>,
+    /// Current durable Run observation.
+    pub state: ScriptRunState,
+    /// Earliest server admission time in Unix seconds.
+    pub available_at: i64,
+    /// Final Run deadline in Unix seconds.
+    pub deadline: i64,
+    /// Authorized result with native collection time and server receipt time.
+    pub result: Option<serde_json::Value>,
+}
+fn scalar_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({"anyOf":[{"type":"string","pattern":"^[^\\u0000]*$"},{"type":"boolean"},{"type":"integer","minimum":-9223372036854775808i64,"maximum":9223372036854775807i64}]})
+}
