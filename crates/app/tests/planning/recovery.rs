@@ -1,3 +1,5 @@
+mod ingress;
+
 use crate::planning::test_support::*;
 use crate::planning::*;
 
@@ -6,6 +8,14 @@ use crate::planning::*;
 async fn management_admission_rejects_schema_and_privilege_drift() {
     let service = planning(tenant()).await;
     for (change, restore) in [
+        (
+            "ALTER TABLE mdm_planning.asset_dispatch ALTER COLUMN cursor TYPE uuid USING cursor::uuid",
+            "ALTER TABLE mdm_planning.asset_dispatch ALTER COLUMN cursor TYPE text COLLATE \"C\" USING cursor::text",
+        ),
+        (
+            "ALTER TABLE mdm_planning.asset_dispatch DROP CONSTRAINT asset_dispatch_phase_check; ALTER TABLE mdm_planning.asset_dispatch ADD CONSTRAINT asset_dispatch_phase_check CHECK(phase IN ('groups','devices','compliance'))",
+            "ALTER TABLE mdm_planning.asset_dispatch DROP CONSTRAINT asset_dispatch_phase_check; ALTER TABLE mdm_planning.asset_dispatch ADD CONSTRAINT asset_dispatch_phase_check CHECK(phase IN ('groups','devices','scopes','compliance'))",
+        ),
         (
             "GRANT DELETE ON mdm_commands.action_runs TO mdm_flow_runtime",
             "REVOKE DELETE ON mdm_commands.action_runs FROM mdm_flow_runtime",

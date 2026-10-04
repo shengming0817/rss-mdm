@@ -470,6 +470,7 @@ MODULES['planning.group_scope'] = replace(MODULES['planning.group_scope'], db_mo
 MODULES['planning.onboarding'] = replace(MODULES['planning.onboarding'], db_mode='reuse', scope='tenant')
 MODULES['planning.policy'] = replace(MODULES['planning.policy'], db_mode='reuse', scope='tenant')
 MODULES['planning.recovery'] = replace(MODULES['planning.recovery'], db_mode='reuse', scope='tenant', policies=(
+    CasePolicy('planning::t2::recovery::ingress::device_pages_commit_unknown_restart_and_later_window', 'reuse', 'pair'),
     CasePolicy('planning::t2::recovery::corrupt_background_query_is_not_client_input', 'fresh', 'objects'),
     CasePolicy('planning::t2::recovery::management_admission_rejects_schema_and_privilege_drift', 'instance', 'objects'),
     CasePolicy('planning::t2::recovery::rss_exhaustion_records_failed_task_and_atomic_audit', 'fresh', 'objects'),
@@ -713,6 +714,8 @@ consume(('crates/management-http/src/planning/mod.rs',),
 consume(('hack/enrollment-password.py',), 'enrollment.http enrollment.recovery')
 consume(('crates/management-http/src/software_native.rs',),
         'publication.winget publication.brew publication.withdrawal')
+consume(('crates/flow-service/src/planning/automation/dispatch.rs',),
+        'planning.assets planning.policy planning.scope planning.group_scope planning.recovery compliance.group_input')
 consume(('crates/flow-service/src/planning/automation/groups.rs',), 'planning.group_scope assets.group_input compliance.group_input')
 consume(('crates/flow-service/src/planning/automation/scopes.rs',), 'planning.scope planning.group_scope planning.frequency planning.remote planning.software')
 consume(('crates/execution-service/src/actions/poll.rs',), 'execution.agent.poll execution.agent.delivery')
