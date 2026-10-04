@@ -321,3 +321,29 @@ async fn rejected_csrs(
     }
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "MODULE=windows.enrollment: ordinary user self enrollment over real Windows TLS"]
+async fn self_enrollment_preserves_server_identity_and_terminal_protocol_id() -> anyhow::Result<()>
+{
+    let mut host = Host::open().await?;
+    host.listen().await?;
+    let peer = host.self_peer().await?;
+    let proof = crate::device::test_support::admin(case_tenant(), "other-a").await?;
+    let quotas = rss_mdm_registration_service::quotas::Quotas::new(
+        host.store.registration(),
+        host.app.audit_store.clone(),
+    );
+    let usage = quotas.usage(&proof, None).await?;
+    let usage = usage
+        .channels
+        .iter()
+        .find(|c| c.channel == rss_mdm_registration_service::quotas::Channel::WindowsMdm)
+        .unwrap();
+    ensure!(usage.active == 1 && usage.reserved == 0 && usage.used == 1);
+    let mut tx = host.store.begin(case_tenant()).await?;
+    let device:String=sqlx::query_scalar("SELECT g.device FROM mdm_access.requests q JOIN mdm_access.grants g ON(q.tenant_id,q.grant_id)=(g.tenant_id,g.id) WHERE q.tenant_id=$1::uuid AND q.id=$2 AND q.self_service").bind(case_tenant()).bind(peer.receipt.enrollment_id).fetch_one(&mut *tx).await?;
+    ensure!(device.starts_with("self:") && device != crate::test_support::case::name("tls-device"));
+    tx.rollback().await?;
+    host.close().await
+}

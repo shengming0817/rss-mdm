@@ -380,15 +380,44 @@ impl Fixture {
         .await
     }
     async fn enrollment(&mut self) -> Result<(Uuid, Uuid, String)> {
+        self.enrollment_source(false).await
+    }
+    async fn self_enrollment(&mut self) -> Result<(Uuid, Uuid, String)> {
+        self.enrollment_source(true).await
+    }
+    async fn enrollment_source(&mut self, self_service: bool) -> Result<(Uuid, Uuid, String)> {
         let password = crate::enrollment::random();
-        self.browser.operation = Some(Uuid::new_v4());
-        let reply = self
-            .browser
+        let mut browser = if self_service {
+            let proof = crate::device::test_support::admin(case_tenant(), "other-a").await?;
+            crate::test_support::identity::set_grants(case_tenant(), proof.principal_id(), vec![])
+                .await?;
+            let secret = crate::test_support::identity::credential(&self.app.identity, "other")?;
+            Browser {
+                cookies: std::collections::BTreeMap::from([(
+                    "__Host-identity-session".into(),
+                    secret.expose().into(),
+                )]),
+                csrf: Some(secret.csrf()),
+                ..Default::default()
+            }
+        } else {
+            self.browser.clone()
+        };
+        browser.operation = Some(Uuid::new_v4());
+        let mut input = json!({"source":"mdm.apple","password":password});
+        if !self_service {
+            input["deviceId"] = json!(case_device());
+        }
+        let reply = browser
             .call(
                 &self.router,
                 Method::POST,
-                "/api/v1/enrollments",
-                Some(json!({"deviceId":case_device(),"source":"mdm.apple","password":password})),
+                if self_service {
+                    "/api/v1/self-enrollments"
+                } else {
+                    "/api/v1/enrollments"
+                },
+                Some(input),
             )
             .await?;
         ensure!(reply.0 == StatusCode::OK, "Apple enrollment {reply:?}");
