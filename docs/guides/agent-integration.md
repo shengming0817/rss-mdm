@@ -2,6 +2,8 @@
 
 服务端接入使用 [agent-wire](../../crates/agent-wire/README.md) 的闭合协议，版本、schema 和能力形态由协议包唯一持有。Agent 实现位于独立仓库；本指南不证明终端采集或执行已验收。
 
+协议 crate 按私有 Git 的完整 rev 独立消费，最低 Rust 为 `1.96.0`，生产依赖闭包仅包含公共基础库。最终 rev 和当前 schema 指纹见 #2686 的 PR 交接记录；独立 Agent #2685 固定该版本后实现自己的密钥、可信时钟、签名校验和 OS 执行边界。协议包提供 `TaskPayload::signing_bytes`，不提供客户端验证器、执行决策或服务端业务模型。采集 DTO 在服务端 ingress 显式转成 Inventory 值；执行条件及软件证据判定仍由产品 owner 持有。
+
 ## API 版本与注册授权
 
 注册生命周期为 `/api/v1/agent/enroll`，运行请求为 `/api/v1/agent/runtime`，二者独立演进。本次运行 JSON 的 `wireVersion: 1`、capability `*.v1` 和三类任务签名域共同重建为新 V1。新 V1 继承当前 V6 的业务和安全语义，拒绝历史 V1 shape、V2–V6、旧 capability 与签名；未来由各族 owner 明确演进。[agent-wire](../../crates/agent-wire/README.md) 分别发布 `enroll`、`runtime` schema 清单与指纹。
