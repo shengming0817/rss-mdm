@@ -8,7 +8,7 @@ publish = false
 [dependencies]
 schemars.workspace=true
 sha2.workspace = true
-rss-mdm-inventory.workspace = true
+ordered-float = { version = "=2.10.1", features = ["serde"] }
 base64.workspace = true
 ring.workspace = true
 serde.workspace = true

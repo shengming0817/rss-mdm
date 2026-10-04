@@ -1,3 +1,4 @@
+mod support;
 use rss_mdm_agent_wire::runtime::ReportRequest;
 use serde_json::json;
 use uuid::Uuid;
@@ -55,16 +56,7 @@ fn enrollment_schema_and_signing_agree_on_text_and_expiry_boundaries() {
 }
 
 fn enrollment_collection() -> rss_mdm_agent_wire::runtime::CollectionDefinition {
-    rss_mdm_agent_wire::runtime::CollectionDefinition::new(
-        "channel.mdm.enrollment",
-        1,
-        rss_mdm_inventory::Source::AgentBuiltin,
-        rss_mdm_inventory::builtin::fields()
-            .into_iter()
-            .filter(|f| f.key == rss_mdm_inventory::builtin::MDM_ENROLLMENT)
-            .collect(),
-    )
-    .unwrap()
+    support::enrollment_collection()
 }
 
 #[test]

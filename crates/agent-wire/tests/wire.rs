@@ -1,3 +1,4 @@
+mod support;
 use rss_mdm_agent_wire::runtime::{
     BindingProfile, Capability, CollectedValue, ErrorBody, ErrorCode, FailureCode, IntakeStatus,
     ObservationStatus, ProjectionStatus, ReportAck, ReportBody, ReportRequest, ReportSource,
@@ -208,7 +209,10 @@ fn report_profile_is_closed_bounded_and_canonical() {
     let b: ReportRequest = serde_json::from_value(b).unwrap();
     assert_eq!(a.canonical().unwrap(), b.canonical().unwrap());
     assert!(matches!(a.body(), ReportBody::Snapshot(_)));
-    assert_eq!(a.values()[0].field, rss_mdm_inventory::builtin::MODEL);
+    assert_eq!(
+        a.values()[0].field,
+        rss_mdm_agent_wire::runtime::FieldKey::parse("device.model").unwrap()
+    );
     assert_eq!(a.values()[0].value, CollectedValue::Unsupported);
 
     let duplicate = json!({
@@ -247,20 +251,5 @@ fn failed_reports_and_error_codes_are_closed() {
 }
 
 fn collection() -> rss_mdm_agent_wire::runtime::CollectionDefinition {
-    rss_mdm_agent_wire::runtime::CollectionDefinition::new(
-        "inventory",
-        1,
-        rss_mdm_inventory::Source::AgentBuiltin,
-        rss_mdm_inventory::builtin::fields()
-            .into_iter()
-            .filter(|f| {
-                [
-                    rss_mdm_inventory::builtin::MODEL,
-                    rss_mdm_inventory::builtin::OS_VERSION,
-                ]
-                .contains(&f.key)
-            })
-            .collect(),
-    )
-    .unwrap()
+    support::collection()
 }

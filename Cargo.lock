@@ -3322,8 +3322,8 @@ version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
  "jsonschema",
+ "ordered-float",
  "ring",
- "rss-mdm-inventory",
  "schemars 1.2.2",
  "serde",
  "serde_json",

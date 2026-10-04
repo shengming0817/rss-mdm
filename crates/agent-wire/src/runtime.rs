@@ -266,7 +266,7 @@ impl<'de> Deserialize<'de> for BindingProfile {
             || raw
                 .collections
                 .iter()
-                .any(|d| d.source() != rss_mdm_inventory::Source::AgentBuiltin)
+                .any(|d| d.source() != Source::AgentBuiltin)
             || raw
                 .collections
                 .iter()
@@ -440,7 +440,7 @@ impl ReportRequest {
             || values.iter().any(|value| {
                 !collection
                     .field(value.field)
-                    .is_ok_and(|f| value.value.encode(f).is_ok())
+                    .is_ok_and(|f| value.value.validate(f).is_ok())
             })
         {
             return Err(WireError::InvalidValue);
@@ -619,7 +619,12 @@ pub struct ErrorBody {
 }
 
 /// Shared field and frozen collector contracts owned by Inventory.
-pub use rss_mdm_inventory::{CollectedValue, CollectionDefinition, FieldKey, Scalar};
+#[path = "collection.rs"]
+mod collection;
+pub use collection::{
+    CollectedValue, CollectionDefinition, FieldDefinition, FieldKey, Kind, Platform, Scalar,
+    Sensitivity, Source, ValueType,
+};
 
 #[path = "chunks.rs"]
 mod chunks;

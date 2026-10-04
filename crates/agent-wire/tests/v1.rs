@@ -1,3 +1,4 @@
+mod support;
 use rss_mdm_agent_wire::{enroll, runtime};
 use serde_json::json;
 use uuid::Uuid;
@@ -7,20 +8,7 @@ fn rebuilt_v1_rejects_retired_majors_and_historical_v1_shapes() {
     assert_eq!(enroll::API_VERSION, 1);
     assert_eq!(runtime::API_VERSION, 1);
     assert_eq!(runtime::WIRE_VERSION, 1);
-    let collection = runtime::CollectionDefinition::new(
-        "inventory",
-        1,
-        rss_mdm_inventory::Source::AgentBuiltin,
-        rss_mdm_inventory::builtin::fields()
-            .into_iter()
-            .filter(|field| {
-                field
-                    .sources
-                    .contains_key(&rss_mdm_inventory::Source::AgentBuiltin)
-            })
-            .collect(),
-    )
-    .unwrap();
+    let collection = support::collection();
     let report = serde_json::to_value(
         runtime::ReportRequest::new(
             Uuid::new_v4(),
