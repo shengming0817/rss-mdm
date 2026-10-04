@@ -165,9 +165,33 @@ impl Snapshot {
             Err(AuthorizationError::Forbidden)
         }
     }
+    /// Match trusted identity facts without granting a management permission.
+    pub fn matches_subjects(
+        &self,
+        facts: SubjectFacts<'_>,
+        subjects: &[Subject],
+    ) -> Result<bool, AuthorizationError> {
+        facts.check_live()?;
+        let mut matched = false;
+        for subject in subjects {
+            if self.matches_facts(&facts, subject)?.is_some() {
+                matched = true;
+                break;
+            }
+        }
+        facts.check_live()?;
+        Ok(matched)
+    }
     fn matches(
         &self,
         proof: &AuthorizedPrincipal,
+        subject: &Subject,
+    ) -> Result<Option<Option<Observation>>, AuthorizationError> {
+        self.matches_facts(&SubjectFacts::Authenticated(proof.session()), subject)
+    }
+    fn matches_facts(
+        &self,
+        proof: &SubjectFacts<'_>,
         subject: &Subject,
     ) -> Result<Option<Option<Observation>>, AuthorizationError> {
         match subject {
@@ -184,7 +208,6 @@ impl Snapshot {
                 .then_some(None)),
             Subject::IdpGroup { source, id } => {
                 let VerifiedGroups::Available(groups) = proof
-                    .session()
                     .groups()
                     .map_err(|_| AuthorizationError::Unauthorized)?
                 else {
@@ -219,7 +242,6 @@ impl Snapshot {
                 matching,
             } => {
                 let VerifiedDepartmentSnapshot::Available(department) = proof
-                    .session()
                     .department_snapshot()
                     .map_err(|_| AuthorizationError::Unauthorized)?
                 else {
@@ -290,6 +312,44 @@ impl Snapshot {
             proof.check_live()
         } else {
             Err(crate::Error::Forbidden)
+        }
+    }
+}
+
+/// A borrowed component proof. Neither form is a caller-supplied identity assertion.
+pub enum SubjectFacts<'a> {
+    Authenticated(&'a rss_identity_postgres::AuthenticatedSession),
+    Revalidated(&'a rss_identity_postgres::RevalidatedSession),
+}
+impl SubjectFacts<'_> {
+    fn check_live(&self) -> Result<(), AuthorizationError> {
+        let result = match self {
+            Self::Authenticated(proof) => proof.assurance().map(|_| ()),
+            Self::Revalidated(proof) => proof.check_live(),
+        };
+        result.map_err(|_| AuthorizationError::Unauthorized)
+    }
+    pub fn user(&self) -> User {
+        let (instance, account) = match self {
+            Self::Authenticated(proof) => (proof.instance(), proof.account()),
+            Self::Revalidated(proof) => (proof.instance(), proof.account()),
+        };
+        User {
+            instance_id: instance.to_string(),
+            tenant_id: account.tenant.to_string(),
+            principal_id: account.principal.as_uuid().to_string(),
+        }
+    }
+    fn groups(&self) -> Result<VerifiedGroups<'_>, GroupAccessError> {
+        match self {
+            Self::Authenticated(proof) => proof.groups(),
+            Self::Revalidated(proof) => proof.groups(),
+        }
+    }
+    fn department_snapshot(&self) -> Result<VerifiedDepartmentSnapshot<'_>, DepartmentAccessError> {
+        match self {
+            Self::Authenticated(proof) => proof.department_snapshot(),
+            Self::Revalidated(proof) => proof.department_snapshot(),
         }
     }
 }

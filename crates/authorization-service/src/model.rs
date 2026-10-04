@@ -232,15 +232,10 @@ pub enum Subject {
         id: Uuid,
     },
 }
-#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Rule {
-    pub subject: Subject,
-    pub grants: Vec<Grant>,
-}
-impl Rule {
+impl Subject {
+    /// Validate selector coordinates independently from management grants.
     pub fn validate(&self, tenant: &str, instance: &str) -> Result<(), AuthorizationError> {
-        match &self.subject {
+        match self {
             Subject::User { user } => user.validate(tenant, instance)?,
             Subject::IdpGroup { source, id } | Subject::Department { source, id, .. } => {
                 source.validate()?;
@@ -249,6 +244,18 @@ impl Rule {
             Subject::UserGroup { id } if id.is_nil() => return Err(AuthorizationError::Malformed),
             Subject::UserGroup { .. } => {}
         }
+        Ok(())
+    }
+}
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Rule {
+    pub subject: Subject,
+    pub grants: Vec<Grant>,
+}
+impl Rule {
+    pub fn validate(&self, tenant: &str, instance: &str) -> Result<(), AuthorizationError> {
+        self.subject.validate(tenant, instance)?;
         if self.grants.is_empty() || self.grants.len() > 256 {
             return Err(AuthorizationError::Malformed);
         }

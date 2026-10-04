@@ -129,6 +129,10 @@ impl From<ScriptRisk> for u8 {
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SelfService {
+    /// Explicit access basis. Null is permitted only for an unpublished draft.
+    #[serde(deserialize_with = "Option::deserialize")]
+    #[schemars(required)]
+    pub access: Option<SelfServiceAccess>,
     /// Whether new self-service calls are accepted.
     pub published: bool,
     /// Display name in the authorized directory.
@@ -166,6 +170,12 @@ impl SelfService {
     }
     /// Validate metadata bounds. Publication does not confer execution authority.
     pub fn validate(&self) -> Result<(), Error> {
+        if self.published && self.access.is_none() {
+            return Err(Error::Malformed);
+        }
+        if let Some(access) = &self.access {
+            access.validate()?;
+        }
         if self.display_name.trim().is_empty()
             || self.category.trim().is_empty()
             || self.keywords.len() > 32
@@ -204,4 +214,126 @@ impl schemars::JsonSchema for ScriptRisk {
 }
 fn scalar_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::json_schema!({"anyOf":[{"type":"string","pattern":"^[^\\u0000]*$"},{"type":"boolean"},{"type":"integer","minimum":-9223372036854775808i64,"maximum":9223372036854775807i64}]})
+}
+
+/// Product self-service access; device membership is always checked separately.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SelfServiceAccess {
+    /// Any authenticated registration in the effective device scope.
+    Device,
+    /// Any live enterprise session in the consuming tenant.
+    AuthenticatedUser,
+    /// At least one current, trusted user selector must match.
+    Users {
+        /// Bounded OR selection; an empty selection grants nothing and is invalid.
+        selectors: Vec<SelfServiceSelector>,
+    },
+}
+/// Opaque user identity coordinates; Identity owns their live interpretation.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum SelfServiceSelector {
+    /// Exact enterprise account.
+    User {
+        /// Product instance.
+        instance_id: uuid::Uuid,
+        /// Product tenant.
+        tenant_id: uuid::Uuid,
+        /// Enterprise principal.
+        principal_id: uuid::Uuid,
+    },
+    /// Exact current trusted IdP group.
+    IdpGroup {
+        /// Full immutable source coordinates.
+        source: SelfServiceSource,
+        /// Exact group value.
+        id: String,
+    },
+    /// Current trusted organization membership.
+    Department {
+        /// Full immutable source coordinates.
+        source: SelfServiceSource,
+        /// Exact department value.
+        id: String,
+        /// Exact membership or descendant membership.
+        matching: SelfServiceDepartmentMatch,
+    },
+    /// Explicit product user group, distinct from device groups.
+    UserGroup {
+        /// Product group identity.
+        id: uuid::Uuid,
+    },
+}
+/// Source data only; authorization validates and matches the issuer and current configuration.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SelfServiceSource {
+    /// Identity provider.
+    pub provider_id: uuid::Uuid,
+    /// Exact issuer.
+    pub issuer: String,
+    /// Exact configuration revision.
+    pub configuration_version: i64,
+}
+/// Department membership semantics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SelfServiceDepartmentMatch {
+    /// The declared department itself.
+    Exact,
+    /// The department itself or a descendant.
+    Subtree,
+}
+impl SelfServiceAccess {
+    /// Bound policy data without authenticating a subject or resolving a group.
+    pub fn validate(&self) -> Result<(), Error> {
+        if let Self::Users { selectors } = self {
+            if selectors.is_empty() || selectors.len() > 256 {
+                return Err(Error::Malformed);
+            }
+            for (index, selector) in selectors.iter().enumerate() {
+                if selectors[..index].contains(selector) {
+                    return Err(Error::Malformed);
+                }
+                let valid_id = |id: &str| {
+                    !id.is_empty()
+                        && id.len() <= 256
+                        && id.trim() == id
+                        && !id.chars().any(char::is_control)
+                };
+                match selector {
+                    SelfServiceSelector::User {
+                        instance_id,
+                        tenant_id,
+                        principal_id,
+                    } if instance_id.is_nil() || tenant_id.is_nil() || principal_id.is_nil() => {
+                        return Err(Error::Malformed);
+                    }
+                    SelfServiceSelector::UserGroup { id } if id.is_nil() => {
+                        return Err(Error::Malformed);
+                    }
+                    SelfServiceSelector::IdpGroup { source, id }
+                    | SelfServiceSelector::Department { source, id, .. } => {
+                        if !valid_id(id)
+                            || source.provider_id.is_nil()
+                            || source.configuration_version < 1
+                            || source.issuer.is_empty()
+                            || source.issuer.len() > 2048
+                            || source.issuer.chars().any(char::is_control)
+                        {
+                            return Err(Error::Malformed);
+                        }
+                    }
+                    _ => (),
+                }
+            }
+        }
+        Ok(())
+    }
 }

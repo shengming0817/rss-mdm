@@ -271,7 +271,7 @@ pub struct Definition {
     pub scope: Uuid,
     /// Closed action or configuration semantics.
     pub action: Action,
-    /// Optional script self-service publication and presentation.
+    /// Optional task self-service publication and presentation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub self_service: Option<crate::SelfService>,
 }
@@ -290,7 +290,14 @@ impl Definition {
         }
         self.action.validate()?;
         if let Some(config) = &self.self_service {
-            if !matches!(self.action, Action::Execution { .. }) {
+            if !matches!(
+                self.action,
+                Action::Execution { .. }
+                    | Action::Software {
+                        intent: SoftwareIntent::AvailableInstall,
+                        ..
+                    }
+            ) {
                 return Err(Error::Malformed);
             }
             config.validate()?;
