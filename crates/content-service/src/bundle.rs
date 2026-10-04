@@ -7,7 +7,6 @@ use std::collections::BTreeSet;
 struct PinnedSoftware {
     digest: [u8; 32],
     _files: Vec<Verified>,
-    _permit: OwnedSemaphorePermit,
 }
 impl VerifiedContent for PinnedSoftware {
     fn resource_digest(&self) -> [u8; 32] {
@@ -17,110 +16,91 @@ impl VerifiedContent for PinnedSoftware {
 impl ContentPort for Store {
     fn verify<'a>(&'a self, version: &'a Version) -> catalog::ContentFuture<'a> {
         Box::pin(async move {
-            let permit = self
-                .transfers
-                .clone()
-                .try_acquire_owned()
-                .map_err(|_| catalog::Error::Content)?;
-            let directory = self.directory.clone();
-            let protection = self.protection.clone();
-            let tenant = self.tenant;
-            let config = self.config.clone();
-            let version = version.clone();
-            let timer = self.timer.clone();
-            let deadline = self.deadline().map_err(|_| catalog::Error::Content)?;
-            tokio::task::spawn_blocking(move || {
-                let store = Store {
-                    protection,
-                    tenant,
-                    directory,
-                    config,
-                    transfers: Arc::new(Semaphore::new(1)),
-                    timer,
+            let mut materials = Vec::new();
+            for variant in version.variants() {
+                let Declaration::Software { definition } = variant.declaration() else {
+                    return Err(catalog::Error::Input);
                 };
-                let mut files: Vec<Verified> = Vec::new();
-                let mut seen = std::collections::BTreeMap::new();
-                for variant in version.variants() {
-                    let Declaration::Software { definition } = variant.declaration() else {
-                        return Err(catalog::Error::Input);
-                    };
-                    for artifact in definition.materials() {
-                        let artifact = artifact.artifact().map_err(|_| catalog::Error::Input)?;
-                        let coordinate = (artifact.length(), artifact.digest().bytes());
-                        let index = if let Some(index) = seen.get(&coordinate) {
-                            *index
-                        } else {
-                            if files.len() >= 128 {
-                                return Err(catalog::Error::Content);
-                            }
-                            let file = store
-                                .verify_sync(&artifact, deadline)
-                                .map_err(|_| catalog::Error::Content)?;
-                            let index = files.len();
-                            files.push(file);
-                            seen.insert(coordinate, index);
-                            index
-                        };
-                        if &artifact == definition.primary()
-                            && definition.spec().behavior.bundle().is_some()
-                        {
-                            validate(
-                                &mut files[index].file,
-                                definition,
-                                &store.config,
-                                store.timer.as_ref(),
-                                deadline,
-                            )
-                            .map_err(|_| catalog::Error::Content)?;
-                        }
-                    }
-                    if let rss_mdm_resource::SoftwareBehavior::Msix(msix) =
-                        &definition.spec().behavior
-                    {
-                        let coordinate = (
-                            definition.primary().length(),
-                            definition.primary().digest().bytes(),
-                        );
-                        let index = *seen.get(&coordinate).ok_or(catalog::Error::Content)?;
-                        let _temporary =
-                            if let rss_mdm_resource::MsixContainer::Bundle { members, .. } =
-                                &msix.container
-                            {
-                                Some(
-                                    store
-                                        .native_temporary_space(
-                                            members
-                                                .iter()
-                                                .map(|member| member.length)
-                                                .max()
-                                                .ok_or(catalog::Error::Content)?,
-                                        )
-                                        .map_err(|_| catalog::Error::Content)?,
-                                )
-                            } else {
-                                None
-                            };
-                        super::native::msix(
-                            &mut files[index].file,
-                            msix,
-                            &store.config,
-                            store.timer.as_ref(),
-                            deadline,
-                        )
-                        .map_err(|_| catalog::Error::Content)?;
+                for material in definition.materials() {
+                    let a = material.artifact().map_err(|_| catalog::Error::Input)?;
+                    if !materials.contains(&(a.clone(), StorageClass::Artifact)) {
+                        materials.push((a, StorageClass::Artifact));
                     }
                 }
-                Ok(Box::new(PinnedSoftware {
-                    digest: version.digest().bytes(),
-                    _files: files,
-                    _permit: permit,
-                }) as Box<dyn VerifiedContent>)
-            })
-            .await
-            .map_err(|_| catalog::Error::Content)?
+            }
+            let files = self
+                .verify_materials(&materials)
+                .await
+                .map_err(|_| catalog::Error::Content)?;
+            for variant in version.variants() {
+                let Declaration::Software { definition } = variant.declaration() else {
+                    return Err(catalog::Error::Input);
+                };
+                if definition.spec().behavior.bundle().is_some()
+                    || matches!(
+                        definition.spec().behavior,
+                        rss_mdm_resource::SoftwareBehavior::Msix(_)
+                    )
+                {
+                    let file = files
+                        .iter()
+                        .find(|v| v.artifact() == definition.primary())
+                        .ok_or(catalog::Error::Content)?;
+                    let extra = match &definition.spec().behavior {
+                        rss_mdm_resource::SoftwareBehavior::Msix(msix) => match &msix.container {
+                            rss_mdm_resource::MsixContainer::Bundle { members, .. } => members
+                                .iter()
+                                .map(|m| m.length)
+                                .max()
+                                .ok_or(catalog::Error::Content)?,
+                            _ => 0,
+                        },
+                        _ => 0,
+                    };
+                    let mut tmp = file
+                        .materialize(extra)
+                        .await
+                        .map_err(|_| catalog::Error::Content)?;
+                    let definition = definition.clone();
+                    let config = self.config.clone();
+                    let timer = self.timer.clone();
+                    let deadline = file.deadline;
+                    tokio::task::spawn_blocking(move || {
+                        if definition.spec().behavior.bundle().is_some() {
+                            validate(
+                                tmp.file.as_file_mut(),
+                                &definition,
+                                &config,
+                                timer.as_ref(),
+                                deadline,
+                            )?;
+                        }
+                        if let rss_mdm_resource::SoftwareBehavior::Msix(msix) =
+                            &definition.spec().behavior
+                        {
+                            super::native::msix(
+                                tmp.file.as_file_mut(),
+                                msix,
+                                &config,
+                                timer.as_ref(),
+                                deadline,
+                            )?;
+                        }
+                        Ok::<_, Error>(())
+                    })
+                    .await
+                    .map_err(|_| catalog::Error::Content)?
+                    .map_err(|_| catalog::Error::Content)?;
+                }
+            }
+            Ok(Box::new(PinnedSoftware {
+                digest: version.digest().bytes(),
+                _files: files,
+            }) as Box<dyn VerifiedContent>)
         })
     }
 }
+
 fn invalid() -> Error {
     Error::Malformed
 }

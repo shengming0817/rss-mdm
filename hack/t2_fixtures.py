@@ -280,7 +280,9 @@ class RunFixtures:
                            MDM_COLLECTION_URL=f'postgres://mdm_access:access-fixture@localhost:{port}/{database}',
                            MDM_OWNER_URL=f'postgres://mdm_owner:owner-fixture@localhost:{port}/{database}',
                            MDM_ADMIN_URL=f'postgres://postgres:local-fixture@localhost:{port}/{database}',
-                           MDM_TEST_PG_CONTAINER=owner.container())
+                           MDM_TEST_PG_CONTAINER=owner.container(),
+                           MDM_CONTENT_DIRECTORY=str(self.root / database / 'content'),
+                           MDM_NATIVE_PROTECTION_KEY_FILE=str(self.native_key))
                 config = private(root / 'database.json', dict(port=port, ca=str(root / 'ca.crt'),
                                  container=owner.container(), database=database))
                 env.update(BACKEND_PG_CONFIG=str(config), GROUP_PG_CONFIG=str(config))

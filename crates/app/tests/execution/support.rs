@@ -170,7 +170,7 @@ async fn relay_crash_child() -> anyhow::Result<()> {
         &config,
         config.native_protector()?,
         crate::test_support::identity::audit_store(&config).await?,
-        crate::execution_assembly::open_content(&config, config.native_protector()?)?,
+        crate::execution_assembly::open_content(&config, config.native_protector()?).await?,
         std::collections::BTreeMap::new(),
         rss_device_command_postgres::CommandClock::Postgres,
     ))

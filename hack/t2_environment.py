@@ -90,30 +90,31 @@ class Environment:
             raise
 
     def certificate(self):
-        if (self.root/'ca.crt').exists():
-            run(['openssl','x509','-checkend','300','-noout','-in',self.root/'server.crt'], capture_output=True)
-            return
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        quiet = dict(capture_output=True)
-        run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','30','-subj','/CN=MDM local CA',
-             '-addext','basicConstraints=critical,CA:TRUE','-addext','keyUsage=critical,keyCertSign,cRLSign',
-             '-keyout',self.root/'ca.key','-out',self.root/'ca.crt'], **quiet)
-        run(['openssl','req','-new','-newkey','rsa:2048','-nodes','-subj','/CN=localhost',
-             '-keyout',self.root/'server.key','-out',self.root/'server.csr'], **quiet)
-        private(self.root/'extensions', 'basicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,DNS:postgres,DNS:mdm.example.test,IP:127.0.0.1\n')
-        run(['openssl','x509','-req','-in',self.root/'server.csr','-CA',self.root/'ca.crt','-CAkey',self.root/'ca.key',
-             '-CAcreateserial','-days','30','-extfile',self.root/'extensions','-out',self.root/'server.crt'], **quiet)
-        for name in ('ca.key','server.key'): (self.root/name).chmod(0o600)
+        if not (self.root/'ca.crt').exists():
+            self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','30','-subj','/CN=MDM local CA',
+                 '-addext','basicConstraints=critical,CA:TRUE','-addext','keyUsage=critical,keyCertSign,cRLSign',
+                 '-addext','subjectKeyIdentifier=hash',
+                 '-keyout',self.root/'ca.key','-out',self.root/'ca.crt'], capture_output=True)
+            (self.root/'ca.key').chmod(0o600)
+        self.issue_leaf(self.root,['localhost','postgres','mdm.example.test'])
 
     def issue_leaf(self, directory, names):
         directory.mkdir(parents=True,exist_ok=True,mode=0o700)
         if (directory/'server.crt').exists():
-            run(['openssl','x509','-checkend','300','-noout','-in',directory/'server.crt'],capture_output=True)
-            return
+            valid = subprocess.run(
+                ['openssl','verify','-x509_strict','-purpose','sslserver','-verify_hostname',names[0],
+                 '-CAfile',str(self.root/'ca.crt'),str(directory/'server.crt')],
+                pass_fds=lease_fds(),capture_output=True,text=True,check=False)
+            fresh = subprocess.run(
+                ['openssl','x509','-checkend','300','-noout','-in',str(directory/'server.crt')],
+                pass_fds=lease_fds(),capture_output=True,text=True,check=False)
+            if valid.returncode == 0 and fresh.returncode == 0:
+                return
         quiet=dict(capture_output=True)
         run(['openssl','req','-new','-newkey','rsa:2048','-nodes','-subj','/CN='+names[0],
              '-keyout',directory/'server.key','-out',directory/'server.csr'],**quiet)
-        private(directory/'extensions','basicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\nextendedKeyUsage=serverAuth\nsubjectAltName='+','.join('DNS:'+name for name in names)+',IP:127.0.0.1\n')
+        private(directory/'extensions','basicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always,issuer\nsubjectAltName='+','.join('DNS:'+name for name in names)+',IP:127.0.0.1\n')
         run(['openssl','x509','-req','-in',directory/'server.csr','-CA',self.root/'ca.crt','-CAkey',self.root/'ca.key',
              '-CAcreateserial','-days','30','-extfile',directory/'extensions','-out',directory/'server.crt'],**quiet)
         (directory/'server.key').chmod(0o600)

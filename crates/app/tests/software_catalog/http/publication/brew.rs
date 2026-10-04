@@ -53,7 +53,7 @@ async fn immutable_native_tap_is_consumed_by_git_and_homebrew_and_withdrawn() ->
     let router = rss_mdm_management_http::software_native::routes().with_state(Arc::new(
         rss_mdm_management_http::software_native::StateData {
             directory,
-            content: Some(p::stored_content()),
+            content: Some(p::stored_content().await),
             requests: Arc::new(tokio::sync::Semaphore::new(8)),
         },
     ));

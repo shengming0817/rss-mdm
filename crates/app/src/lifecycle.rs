@@ -197,7 +197,13 @@ pub async fn serve(
                             &compiled.config,
                             protection.clone(),
                         )
+                        .await
                         .map_err(|e| ProcessError::at("startup.content", e))?;
+                        if let Some(content) = &content {
+                            startup.stage_resource(DynManagedResource::new_box(
+                                crate::execution_assembly::ContentResource(content.clone()),
+                            ));
+                        }
                         let planning = compiled
                             .config
                             .flow

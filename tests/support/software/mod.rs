@@ -140,7 +140,7 @@ impl Server {
         config: RingSources,
     ) -> PublicationService {
         PublicationService::connect(
-            host(runtime, audit_store().await),
+            host(runtime, audit_store().await).await,
             tenant(),
             self.logical.clone(),
             config,
@@ -494,7 +494,7 @@ pub async fn seed(
         variants,
     )
     .unwrap();
-    let content = stored_content();
+    let content = stored_content().await;
     for v in version.variants() {
         let resource::Declaration::Software { definition } = v.declaration() else {
             unreachable!()
@@ -734,14 +734,14 @@ pub fn software_definition(
     serde_json::from_value(serde_json::json!({"source":{"id":source,"revision":"1","sha256":vec![1;32]},"package":package,"version":version,"artifacts":{"package":{"reference":key,"length":3,"sha256":resource::Digest::of(b"abc").bytes()}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":if windows {"winget"} else {"brew"},"installer":"package","scope":if (if windows {"system"}else{"logged_in_user"}) == "logged_in_user" {"user"} else {"system"},"install":{"runAs":if windows {"system"}else{"logged_in_user"},"arguments":[],"environment":{},"timeoutSeconds":600,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":if windows {serde_json::json!({"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":version})}else{serde_json::json!({"kind":"pkg_receipt","receipt":"com.acme.app","version":version})},"upgradeInvocation":{"runAs":if windows {"system"}else{"logged_in_user"},"arguments":[],"environment":{},"timeoutSeconds":600,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}})).unwrap()
 }
 
-pub fn host(
+pub async fn host(
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
 ) -> rss_mdm_software_service::Host {
     rss_mdm_software_service::Host {
         runtime,
         audit: Arc::new(TestAudit(audit)),
-        content: stored_content(),
+        content: stored_content().await,
         credentials: Arc::new(TestCredentials),
     }
 }
@@ -804,34 +804,46 @@ impl rss_request_context::Clock for ContentClock {
         std::time::Instant::now()
     }
 }
-pub fn stored_content() -> Arc<rss_mdm_content_service::Store> {
-    static CONTENT: std::sync::OnceLock<(tempfile::TempDir, Arc<rss_mdm_content_service::Store>)> =
-        std::sync::OnceLock::new();
-    CONTENT
-        .get_or_init(|| {
-            let dir = tempfile::tempdir().unwrap();
-            let store = rss_mdm_content_service::Store::open(
-                Arc::new(rss_mdm_native_protection::Protector::new(&[82; 32]).unwrap()),
-                &rss_mdm_content_service::Config {
-                    directory: dir.path().to_owned(),
-                    imports: Default::default(),
-                    max_artifact_bytes: 16 * 1024 * 1024,
-                    max_temporary_bytes: 64 * 1024 * 1024,
-                    max_uploads: 64,
-                    transfer_seconds: 30,
-                    retention_seconds: 3600,
-                    max_bundle_bytes: 16 * 1024 * 1024,
-                    max_bundle_entries: 256,
-                    max_expansion_ratio: 100,
-                },
-                &tenant().to_string(),
-                Arc::new(ContentClock),
-            )
-            .unwrap();
-            (dir, store)
-        })
-        .1
-        .clone()
+pub async fn stored_content() -> Arc<rss_mdm_content_service::Store> {
+    let directory = PathBuf::from(std::env::var("MDM_CONTENT_DIRECTORY").unwrap());
+    std::fs::create_dir_all(&directory).unwrap();
+    let key = std::fs::read(std::env::var("MDM_NATIVE_PROTECTION_KEY_FILE").unwrap()).unwrap();
+    let c = pg::config();
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(4)
+        .connect_with(
+            sqlx::postgres::PgConnectOptions::new()
+                .host("localhost")
+                .port(c["port"].as_u64().unwrap() as u16)
+                .database(c["database"].as_str().unwrap())
+                .username("mdm_flow_runtime")
+                .password("runtime-fixture")
+                .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
+                .ssl_root_cert(c["ca"].as_str().unwrap()),
+        )
+        .await
+        .unwrap();
+    rss_mdm_content_service::Store::open(
+        Arc::new(rss_mdm_native_protection::Protector::new(&key).unwrap()),
+        &rss_mdm_content_service::Config {
+            storage: rss_mdm_content_service::Storage::Volume { directory },
+            imports: Default::default(),
+            max_artifact_bytes: 16 * 1024 * 1024,
+            max_temporary_bytes: 64 * 1024 * 1024,
+            max_uploads: 64,
+            transfer_seconds: 30,
+            retention_seconds: 3600,
+            max_bundle_bytes: 16 * 1024 * 1024,
+            max_bundle_entries: 256,
+            max_expansion_ratio: 100,
+        },
+        &tenant().to_string(),
+        Arc::new(ContentClock),
+        pool,
+        None,
+    )
+    .await
+    .unwrap()
 }
 
 async fn admit_private_source(source: &str) -> resource::SoftwareSource {
@@ -898,7 +910,12 @@ async fn admit_version(version: &resource::Version) {
     let runtime = pg::runtime_at(None, "mdm_flow_runtime").await;
     let audit = pg::audit_store_for("mdm_flow_runtime").await;
     let catalog = c::Catalog::new(runtime.clone(), tenant(), Arc::new(TestAudit(audit)));
-    let content = stored_content().as_ref().verify(version).await.unwrap();
+    let content = stored_content()
+        .await
+        .as_ref()
+        .verify(version)
+        .await
+        .unwrap();
     let op = c::Operation {
         operation_id: uuid::Uuid::new_v4(),
         expected_revision: 0,

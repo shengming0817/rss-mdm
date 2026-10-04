@@ -103,6 +103,25 @@ impl Store {
             .await
     }
 }
+// Command's manifest capability remains read-only. This lock serializes association
+// with the Flow-owned GC barrier without requiring SELECT FOR SHARE's UPDATE grant.
+pub(super) async fn association_lock(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    digest: [u8; 32],
+    length: u64,
+) -> Result<(), sqlx::Error> {
+    let key = format!(
+        "content.diagnostic:{}:{}:{length}",
+        tenant,
+        crate::hex(digest)
+    );
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2664))")
+        .bind(key)
+        .execute(c)
+        .await?;
+    Ok(())
+}
 /// Append on the original execution transaction. This function never commits it.
 pub async fn record_in(
     c: &mut sqlx::PgConnection,
@@ -110,16 +129,24 @@ pub async fn record_in(
     identity: &Identity,
     artifact: &Artifact,
 ) -> Result<(Metadata, bool), Error> {
+    association_lock(c, tenant, artifact.digest().bytes(), artifact.length())
+        .await
+        .map_err(|e| crate::journal::pg_error(concat!(file!(), ":", line!()), e))?;
+    let ready:Option<String>=sqlx::query_scalar("SELECT state FROM mdm_content.manifests WHERE tenant_id=$1::uuid AND class='native_diagnostic' AND sha256=$2 AND length=$3")
+      .bind(tenant.to_string()).bind(artifact.digest().bytes().as_slice()).bind(artifact.length() as i64).fetch_optional(&mut *c).await.map_err(|e|crate::journal::pg_error(concat!(file!(), ":", line!()),e))?;
+    if ready.as_deref() != Some("ready") {
+        return Err(Error::Conflict);
+    }
     let binding = serde_json::to_value(identity).map_err(|_| Error::Malformed)?;
     let fresh = sqlx::query("INSERT INTO mdm_content.diagnostic_artifacts(tenant_id,operation,registration,generation,identity,reference,length,sha256,expires_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(tenant_id,operation) DO NOTHING")
         .bind(tenant.to_string()).bind(identity.operation).bind(identity.registration).bind(identity.generation)
         .bind(&binding).bind(artifact.reference().as_str()).bind(artifact.length() as i64).bind(artifact.digest().bytes().as_slice()).bind(identity.expires_at)
-        .execute(&mut *c).await.map_err(|_| crate::storage())?.rows_affected() == 1;
+        .execute(&mut *c).await.map_err(|e|crate::journal::pg_error(concat!(file!(), ":", line!()),e))?.rows_affected() == 1;
     let row = sqlx::query("SELECT identity,reference,length,sha256,expires_at FROM mdm_content.diagnostic_artifacts WHERE tenant_id=$1::uuid AND operation=$2")
-        .bind(tenant.to_string()).bind(identity.operation).fetch_one(c).await.map_err(|_| crate::storage())?;
+        .bind(tenant.to_string()).bind(identity.operation).fetch_one(c).await.map_err(|e|crate::journal::pg_error(concat!(file!(), ":", line!()),e))?;
     if row
         .try_get::<serde_json::Value, _>("identity")
-        .map_err(|_| crate::storage())?
+        .map_err(|e| crate::journal::pg_error(concat!(file!(), ":", line!()), e))?
         != binding
     {
         return Err(Error::Conflict);
@@ -138,23 +165,27 @@ pub async fn read_in(
     generation: i64,
 ) -> Result<Option<Metadata>, Error> {
     let row = sqlx::query("SELECT reference,length,sha256,expires_at FROM mdm_content.diagnostic_artifacts WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3 AND generation=$4 AND expires_at>extract(epoch FROM clock_timestamp())")
-        .bind(tenant.to_string()).bind(operation).bind(registration).bind(generation).fetch_optional(c).await.map_err(|_| crate::storage())?;
+        .bind(tenant.to_string()).bind(operation).bind(registration).bind(generation).fetch_optional(c).await.map_err(|e|crate::journal::pg_error(concat!(file!(), ":", line!()),e))?;
     row.map(metadata).transpose()
 }
 fn metadata(row: sqlx::postgres::PgRow) -> Result<Metadata, Error> {
     Ok(Metadata {
-        reference: row.try_get("reference").map_err(|_| crate::storage())?,
+        reference: row
+            .try_get("reference")
+            .map_err(|e| crate::journal::pg_error(concat!(file!(), ":", line!()), e))?,
         length: u64::try_from(
             row.try_get::<i64, _>("length")
-                .map_err(|_| crate::storage())?,
+                .map_err(|e| crate::journal::pg_error(concat!(file!(), ":", line!()), e))?,
         )
         .map_err(|_| Error::Metadata)?,
         sha256: crate::hex(
             row.try_get::<Vec<u8>, _>("sha256")
-                .map_err(|_| crate::storage())?
+                .map_err(|e| crate::journal::pg_error(concat!(file!(), ":", line!()), e))?
                 .try_into()
                 .map_err(|_| Error::Metadata)?,
         ),
-        expires_at: row.try_get("expires_at").map_err(|_| crate::storage())?,
+        expires_at: row
+            .try_get("expires_at")
+            .map_err(|e| crate::journal::pg_error(concat!(file!(), ":", line!()), e))?,
     })
 }

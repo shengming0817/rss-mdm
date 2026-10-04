@@ -1,18 +1,19 @@
-//! One tenant-scoped immutable store. No signing keys, task authority, or implicit grants.
-//! ref: axum axum-v0.8.9/examples/stream-to-file/src/main.rs
+//! Tenant-scoped immutable content; PostgreSQL owns progress and exact material identities.
+//! ref: sqlx sqlx-core/src/transaction.rs; aws-sdk-rust sdk/s3/src/operation/complete_multipart_upload/builders.rs (manifest freezing avoids assembly)
 mod range;
 pub use range::range;
+mod backend;
 mod bundle;
 mod cleanup;
+mod journal;
 mod native;
 pub use cleanup::Garbage;
 pub mod diagnostic;
 mod protected;
-#[cfg(test)]
-#[path = "../tests/unit.rs"]
-mod tests;
+mod reader;
 mod upload;
-
+pub use backend::{S3Storage, Storage};
+pub use reader::Verified;
 use rss_mdm_resource::Artifact;
 use rss_request_context::{Clock, Deadline};
 use serde::{Deserialize, Serialize};
@@ -24,11 +25,12 @@ use std::{
     sync::Arc,
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-
+pub use upload::{Binding, Purpose, ResourceBinding, Upload};
+/// Trusted host configuration. A storage backend is required; old directory-only input is rejected.
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    pub directory: PathBuf,
+    pub storage: Storage,
     pub imports: std::collections::BTreeMap<
         String,
         Vec<rss_mdm_software_service::publication::ArtifactOrigin>,
@@ -62,13 +64,15 @@ impl StorageClass {
         self != Self::Artifact
     }
 }
+#[derive(Clone)]
 pub struct Store {
     protection: Arc<rss_mdm_native_protection::Protector>,
     tenant: rss_request_context::TenantId,
-    directory: PathBuf,
     pub config: Config,
     transfers: Arc<Semaphore>,
     timer: Arc<dyn Clock>,
+    backend: backend::Backend,
+    pool: sqlx::PgPool,
 }
 fn storage() -> Error {
     Error::Storage
@@ -95,108 +99,24 @@ fn options() -> OpenOptions {
     }
     options
 }
-fn lock_error(error: std::fs::TryLockError) -> Error {
-    match error {
-        std::fs::TryLockError::WouldBlock => Error::Conflict,
-        std::fs::TryLockError::Error(_) => storage(),
-    }
-}
-fn lock(path: &Path) -> Result<File, Error> {
-    let file = options()
-        .create(true)
-        .truncate(false)
-        .open(path)
-        .map_err(|_| storage())?;
-    regular(path)?;
-    file.try_lock().map_err(lock_error)?;
-    Ok(file)
-}
 fn sync_dir(path: &Path) -> Result<(), Error> {
     File::open(path)
         .and_then(|f| f.sync_all())
         .map_err(|_| storage())
 }
-/// A shared file lock stays alive until the response body is dropped.
-pub struct Verified {
-    file: File,
-    native: Option<(
-        Arc<rss_mdm_native_protection::Protector>,
-        rss_request_context::TenantId,
-        StorageClass,
-    )>,
-    timer: Arc<dyn Clock>,
-    pub artifact: Artifact,
-    _guard: File,
-    _permit: Option<OwnedSemaphorePermit>,
-    deadline: Deadline,
-}
-impl Verified {
-    pub fn matches(&self, artifact: &Artifact) -> bool {
-        &self.artifact == artifact
-    }
-    pub fn etag(&self) -> String {
-        format!("\"{}\"", hex(self.artifact.digest().bytes()))
-    }
-    pub async fn stream(
-        mut self,
-        start: u64,
-        end: u64,
-    ) -> Result<futures::stream::BoxStream<'static, Result<bytes::Bytes, std::io::Error>>, Error>
-    {
-        use futures::StreamExt;
-        use tokio::io::AsyncReadExt;
-        if start >= end || end > self.artifact.length() {
-            return Err(Error::Malformed);
-        }
-        if self.native.is_some() {
-            return self.native_stream(start, end).await;
-        }
-        self.file
-            .seek(SeekFrom::Start(start))
-            .map_err(|_| storage())?;
-        let file = tokio::fs::File::from_std(self.file);
-        let guard = self._guard;
-        let permit = self._permit;
-        let cutoff = self.deadline;
-        let reader = tokio_util::io::ReaderStream::with_capacity(file.take(end - start), 65_536);
-        let stream = futures::stream::unfold(
-            (reader, false, guard, permit),
-            move |(mut reader, done, guard, permit)| async move {
-                if done {
-                    return None;
-                }
-                match tokio::time::timeout_at(cutoff.instant().into(), reader.next()).await {
-                    Ok(Some(chunk)) => Some((chunk, (reader, false, guard, permit))),
-                    Ok(None) => None,
-                    Err(_) => Some((
-                        Err(std::io::Error::new(
-                            std::io::ErrorKind::TimedOut,
-                            "content transfer deadline",
-                        )),
-                        (reader, true, guard, permit),
-                    )),
-                }
-            },
-        );
-        Ok(Box::pin(stream))
-    }
-}
 impl Store {
-    pub fn open(
+    /// Host owns the pool lifetime. No filesystem progress or implicit provider fallback.
+    pub async fn open(
         protection: Arc<rss_mdm_native_protection::Protector>,
         config: &Config,
         tenant: &str,
         timer: Arc<dyn Clock>,
+        pool: sqlx::PgPool,
+        secrets: Option<Arc<dyn rss_mdm_content_s3::Secrets>>,
     ) -> Result<Arc<Self>, Error> {
-        let bad = || Error::Configuration;
-        let tenant = rss_request_context::TenantId::parse(tenant).map_err(|_| bad())?;
-        if !config.directory.is_absolute()
-            || !config.directory.is_dir()
-            || fs::symlink_metadata(&config.directory)
-                .map_err(|_| bad())?
-                .file_type()
-                .is_symlink()
-            || config.max_artifact_bytes == 0
+        let tenant =
+            rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Configuration)?;
+        if config.max_artifact_bytes == 0
             || config.max_artifact_bytes > 1_099_511_627_776
             || config.max_temporary_bytes < config.max_artifact_bytes
             || config.max_temporary_bytes > 17_592_186_044_416
@@ -207,52 +127,41 @@ impl Store {
             || config.max_bundle_bytes > 1_099_511_627_776
             || !(1..=4096).contains(&config.max_bundle_entries)
             || !(1..=1000).contains(&config.max_expansion_ratio)
+            || config.imports.len() > 16
         {
-            return Err(bad());
-        }
-        if config.imports.len() > 16 {
-            return Err(bad());
+            return Err(Error::Configuration);
         }
         for (source, origins) in &config.imports {
-            rss_mdm_resource::Id::new(source).map_err(|_| bad())?;
+            rss_mdm_resource::Id::new(source).map_err(|_| Error::Configuration)?;
             rss_mdm_software_service::publication::ArtifactReader::new(
                 origins.clone(),
                 config.max_artifact_bytes,
                 std::time::Duration::from_secs(config.transfer_seconds.min(3600)),
             )
-            .map_err(|_| bad())?;
+            .map_err(|_| Error::Configuration)?;
         }
-        let directory = config.directory.join(tenant.to_string());
-        fs::create_dir_all(&directory).map_err(|_| bad())?;
-        if fs::symlink_metadata(&directory)
-            .map_err(|_| bad())?
-            .file_type()
-            .is_symlink()
-        {
-            return Err(bad());
-        }
-        let store = Self {
+        let backend = backend::Backend::open(
+            &config.storage,
+            tenant,
+            timer.clone(),
+            config.transfer_seconds,
+            secrets,
+        )
+        .await?;
+        let store = Arc::new(Self {
             protection,
             tenant,
-            directory,
             config: config.clone(),
             transfers: Arc::new(Semaphore::new(config.max_uploads)),
             timer,
-        };
-        {
-            let _recovery = lock(&store.directory.join(".upload.lock"))?;
-            // Validate metadata and settle completed tails without expiring resumable sessions.
-            store.clean_partials_locked(i64::MIN)?;
-        }
-        Ok(Arc::new(store))
+            backend,
+            pool,
+        });
+        store.journal_admit().await?;
+        Ok(store)
     }
-    fn blob_lock(&self, digest: [u8; 32]) -> PathBuf {
-        // Fixed stripes keep lock inodes stable and bounded across artifact churn.
-        // Collisions conservatively reject exclusive work; readers still share the stripe.
-        self.directory.join(format!(".blob-lock-{:02x}", digest[0]))
-    }
-    fn path(&self, a: &Artifact) -> PathBuf {
-        self.directory.join(hex(a.digest().bytes()))
+    pub async fn close(&self) {
+        self.pool.close().await;
     }
     fn deadline(&self) -> Result<Deadline, Error> {
         Deadline::from_timeout(
@@ -261,119 +170,7 @@ impl Store {
         )
         .map_err(|_| storage())
     }
-    /// Pin a bounded material set under one transfer permit until the caller settles its transaction.
-    pub async fn verify_materials(
-        self: &Arc<Self>,
-        artifacts: &[Artifact],
-    ) -> Result<Vec<Verified>, Error> {
-        if artifacts.is_empty() || artifacts.len() > 128 {
-            return Err(Error::Malformed);
-        }
-        let permit = self
-            .transfers
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| Error::Conflict)?;
-        let store = self.clone();
-        let artifacts = artifacts.to_vec();
-        let deadline = self.deadline()?;
-        tokio::task::spawn_blocking(move || {
-            let mut files = artifacts
-                .iter()
-                .map(|a| store.verify_sync(a, deadline))
-                .collect::<Result<Vec<_>, _>>()?;
-            files[0]._permit = Some(permit);
-            Ok(files)
-        })
-        .await
-        .map_err(|_| storage())?
-    }
-    pub async fn verify(self: &Arc<Self>, artifact: &Artifact) -> Result<Verified, Error> {
-        let store = self.clone();
-        let artifact = artifact.clone();
-        let permit = self
-            .transfers
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| Error::Conflict)?;
-        let deadline = self.deadline()?;
-        tokio::task::spawn_blocking(move || {
-            let mut verified = store.verify_sync(&artifact, deadline)?;
-            verified._permit = Some(permit);
-            Ok(verified)
-        })
-        .await
-        .map_err(|_| storage())?
-    }
-    fn verify_sync(&self, artifact: &Artifact, deadline: Deadline) -> Result<Verified, Error> {
-        if artifact.length() > self.config.max_artifact_bytes {
-            return Err(Error::Malformed);
-        }
-        let guard = options()
-            .create(true)
-            .truncate(false)
-            .open(self.blob_lock(artifact.digest().bytes()))
-            .map_err(|_| storage())?;
-        guard.try_lock_shared().map_err(lock_error)?;
-        let path = self.path(artifact);
-        regular(&path)?;
-        let mut opts = OpenOptions::new();
-        opts.read(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.custom_flags(libc::O_NOFOLLOW);
-        }
-        let mut file = opts.open(&path).map_err(|_| storage())?;
-        verify_file(&mut file, artifact, self.timer.as_ref(), deadline)?;
-        Ok(Verified {
-            file,
-            native: None,
-            timer: self.timer.clone(),
-            artifact: artifact.clone(),
-            _guard: guard,
-            _permit: None,
-            deadline,
-        })
-    }
 }
-fn verify_file(
-    file: &mut File,
-    artifact: &Artifact,
-    timer: &dyn Clock,
-    deadline: Deadline,
-) -> Result<(), Error> {
-    if !file.metadata().map_err(|_| storage())?.is_file()
-        || file.metadata().map_err(|_| storage())?.len() != artifact.length()
-    {
-        return Err(invariant());
-    }
-    file.seek(SeekFrom::Start(0)).map_err(|_| storage())?;
-    let mut hash = Sha256::new();
-    let mut buffer = [0u8; 65_536];
-    let mut count = 0u64;
-    loop {
-        if timer.now() >= deadline.instant() {
-            return Err(Error::Deadline);
-        }
-        let n = file.read(&mut buffer).map_err(|_| storage())?;
-        if n == 0 {
-            break;
-        }
-        count = count.checked_add(n as u64).ok_or_else(invariant)?;
-        if count > artifact.length() {
-            return Err(invariant());
-        }
-        hash.update(&buffer[..n]);
-    }
-    if count != artifact.length() || hash.finalize().as_slice() != artifact.digest().bytes() {
-        return Err(invariant());
-    }
-    file.seek(SeekFrom::Start(0)).map_err(|_| storage())?;
-    Ok(())
-}
-pub use upload::{Binding, Purpose, ResourceBinding, Upload};
-
 #[derive(Clone, Copy, Debug, thiserror::Error, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Error {
@@ -392,6 +189,8 @@ pub enum Error {
     Metadata,
     #[error("content deadline exceeded")]
     Deadline,
+    #[error("content write or commit outcome unknown")]
+    CommitUnknown,
     #[error("content cleanup failed")]
     Cleanup,
 }
@@ -413,3 +212,7 @@ mod transaction;
 
 /// Content operations consumed through software-owned ports.
 pub mod software;
+
+#[cfg(test)]
+#[path = "../tests/unit.rs"]
+mod tests;

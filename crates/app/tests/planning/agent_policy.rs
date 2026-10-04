@@ -497,9 +497,9 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
             == StatusCode::CREATED
     );
     let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
-    let path = std::path::Path::new(fixture.base["content"]["directory"].as_str().unwrap())
+    let path = std::path::Path::new(fixture.base["content"]["storage"]["directory"].as_str().unwrap())
         .join(case_tenant())
-        .join(hex);
+        .join(crate::test_support::pg(&format!("SELECT document->'value'->'pieces'->0->'coordinate'->>'id' FROM mdm_content.manifests WHERE tenant_id='{}' AND class='artifact' AND encode(sha256,'hex')='{}'",case_tenant(),hex))?.trim());
     std::fs::write(&path, "x".repeat(bytes.len()))?;
     let rejected = reject_script_at_all_entrances(
         &mut fixture,

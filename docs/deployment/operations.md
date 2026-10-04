@@ -8,7 +8,7 @@
 
 恢复前停止全部写入实例，按同一备份时间点恢复数据库、内容卷和原 `native_protection_key_file`，确认服务账户可读且所有实例使用同一份 32 原始字节密钥后再启动。密钥备份应存入受控秘密存储并验证可取回；不要打印密钥或提交到代码/日志。当前不支持原地轮转或自行替换密钥；丢失原密钥后重新生成文件不能解密已有 native 数据，也不能解除 key identity 校验。原生输入认证或身份完整性损坏归为永久恢复失败，记录 `mdm_command_recovery_integrity_failure` / `native_input_integrity`，不持续退避；保留证据并从一致备份恢复，不能删除 guards 后重发变更。
 
-每个 tenant 制品目录必须允许服务创建并锁定 `.upload.lock`；启动持有跨实例独占锁时核对 `.upload-<canonical hyphenated UUID>.json` 元数据并清理已完成会话的 `.part` 残留，损坏元数据、目录锁冲突或清理失败均阻止启动。未完成会话保留以便按原 offset 续传；过期会话及孤立的 `.part`/`.next` 在新上传或显式内容清理时按保留窗口回收。回退使用配套数据库、制品、密钥备份和服务，不能仅降级二进制。
+内容上传和清理由 PostgreSQL 控制状态协调；恢复须使用配套数据库、完整物理内容和密钥，不能仅降级二进制。卷目录中的 `.<id>.lock` 是跨实例物理发布锁，删除后保留的标记阻止迟到写者重新发布，必须随完整租户目录一起备份，不得手工删除。暂存文件由对应持久对象意图回收。
 
 ## 就绪、停机与恢复
 
@@ -128,7 +128,14 @@ Compose 中 PostgreSQL 启动期每秒检查，稳定运行后每十秒检查。
 
 当前准确迁移集合由二进制 --describe 与 [迁移源码](../../crates/app/src/migration.rs) 持有。升级须停旧写入口；回退恢复匹配数据库、制品、密钥与旧服务，不能仅降级二进制。数据库角色与首次安装见 [安装指南](installation.md)。Apple 证书、APNs 与 CA 排障见 [Apple 管理](../guides/apple-management.md)。
 
-内容存储的 Resource/Diagnostic purpose、上传 Saved JSON 与 checkpoint 使用当前唯一格式。旧的平铺 Binding、Saved.storage_class 和对应 checkpoint MAC 不接受，也不自动转换或跳过。新安装须使用与当前 schema 匹配的新内容目录；不得把旧目录混入新安装。保留旧部署状态时恢复匹配的数据库、内容目录、密钥及二进制，不以重新初始化账本替代升级迁移。配置文件的固定加密域仍为 `content.native-configuration`，诊断有独立保护域。
+内容仓的 PostgreSQL journal 持有上传进度、对象版本、清单、额度和读 pin；服务端卷与 S3 都不能通过扫描目录或 bucket 重建业务状态。旧目录配置、上传 Saved JSON 和 checkpoint 不接受，也不自动迁移。全新安装须使用匹配 schema 和空内容 namespace；恢复旧部署时恢复匹配数据库、内容、密钥与二进制。
+
+备份须保存数据库、`native_protection_key_file` 及清单引用的全部物理对象：卷模式保存完整租户目录，S3 模式保存确切对象版本及版本控制状态。停写后制作一致备份并联合恢复；只恢复当前 S3 key 的内容不足以恢复清单。后端身份和保护密钥标识在租户首次启用时固定，更改 endpoint/bucket/namespace/卷目录不能作为数据迁移方式。
+
+S3 使用只读挂载的 access/secret/session token 文件；宿主在启动时安全读取并保存在内存，SDK 查询凭据时不执行磁盘 I/O。轮换后重启同一配置实例，静态 session token 的有效期由部署 owner 管理。私有 CA 文件有界读取且不接受符号链接；不提供关闭 TLS 校验的选项。Compose 现有 `runtime:/run/mdm:ro` 可容纳这些秘密，S3 模式不使用 content 卷；卷模式继续挂载持久 content 卷。
+
+清理先在短事务内核对业务引用与读 pin，提交“删除中”屏障后，再逐个删除确切物理版本；已删除部分持久登记，下轮继续。结果未知保留原对象意图和额度，不把未知当作不存在。不能用外部 lifecycle 规则、删除 bucket 版本或直接删除卷文件代替产品清理。原生配置保护域仍为 `content.native-configuration`，诊断使用独立保护域。
+
 
 ## Agent CA 与签发恢复
 

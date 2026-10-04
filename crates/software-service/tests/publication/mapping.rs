@@ -31,7 +31,7 @@ async fn complete_variant_mapping_and_resource_reference_protection() {
     same.pilot = same.test.clone();
     assert!(
         PublicationService::connect(
-            host(runtime.clone(), audit_store.clone()),
+            host(runtime.clone(), audit_store.clone()).await,
             tenant(),
             server.logical.clone(),
             same,
@@ -41,15 +41,16 @@ async fn complete_variant_mapping_and_resource_reference_protection() {
         .await
         .is_err()
     );
-    let connect = || {
+    let connect = || async {
         PublicationService::connect(
-            host(runtime.clone(), audit_store.clone()),
+            host(runtime.clone(), audit_store.clone()).await,
             tenant(),
             server.logical.clone(),
             server.winget(),
             actors(),
             cutoff(),
         )
+        .await
     };
     sql("GRANT SELECT ON mdm_access.credentials TO mdm_software_driver");
     let extra = connect().await;
@@ -68,7 +69,7 @@ async fn complete_variant_mapping_and_resource_reference_protection() {
     assert!(connect().await.is_ok());
     assert!(
         PublicationService::connect(
-            host(runtime.clone(), audit_store.clone()),
+            host(runtime.clone(), audit_store.clone()).await,
             tenant(),
             format!("{}-alias", server.logical),
             server.winget(),
@@ -82,7 +83,7 @@ async fn complete_variant_mapping_and_resource_reference_protection() {
     std::mem::swap(&mut swapped.test, &mut swapped.pilot);
     assert!(
         PublicationService::connect(
-            host(runtime.clone(), audit_store.clone()),
+            host(runtime.clone(), audit_store.clone()).await,
             tenant(),
             server.logical.clone(),
             swapped,

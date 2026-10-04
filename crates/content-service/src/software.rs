@@ -25,7 +25,7 @@ impl SoftwareContent {
 }
 impl catalog::ContentPort for SoftwareContent {
     fn verify<'a>(&'a self, version: &'a rss_mdm_resource::Version) -> catalog::ContentFuture<'a> {
-        self.store.as_ref().verify(version)
+        catalog::ContentPort::verify(self.store.as_ref(), version)
     }
 }
 /// Uploaded originals awaiting batch verification.
@@ -113,7 +113,7 @@ impl ManagementContentPort for SoftwareContent {
     async fn pin_imports(&self, staged: Vec<StagedImport>) -> Result<ImportEvidence, Error> {
         let artifacts = staged
             .iter()
-            .map(|s| s.artifact.clone())
+            .map(|s| (s.artifact.clone(), crate::StorageClass::Artifact))
             .collect::<Vec<_>>();
         let pins = self
             .store
@@ -135,6 +135,7 @@ fn error(error: crate::Error) -> software::Error {
         crate::Error::Invariant => Error::Unavailable(Failure::ContentInvariant),
         crate::Error::Metadata => Error::Unavailable(Failure::ContentMetadata),
         crate::Error::Deadline => Error::Unavailable(Failure::ContentDeadline),
+        crate::Error::CommitUnknown => Error::CommitUnknown,
         crate::Error::Cleanup => Error::Unavailable(Failure::ContentCleanup),
     }
 }

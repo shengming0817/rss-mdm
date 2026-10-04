@@ -5,7 +5,8 @@ use uuid::Uuid;
 // The file belongs to the shared content environment and coordinates separate test processes.
 pub(crate) async fn content_setup_guard() -> Result<std::fs::File> {
     let config: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-    let directory = std::path::PathBuf::from(config["content"]["directory"].as_str().unwrap());
+    let directory =
+        std::path::PathBuf::from(config["content"]["storage"]["directory"].as_str().unwrap());
     tokio::task::spawn_blocking(move || {
         let file = std::fs::OpenOptions::new()
             .create(true)
@@ -62,12 +63,29 @@ impl Fixture {
         peer: Option<publication_support::Server>,
         max_uploads: Option<u64>,
     ) -> Result<Self> {
+        Self::with_storage_and_options(peer, max_uploads, None).await
+    }
+    pub(crate) async fn with_storage(storage: Value) -> Result<Self> {
+        Self::with_storage_and_options(None, None, Some(storage)).await
+    }
+    async fn with_storage_and_options(
+        peer: Option<publication_support::Server>,
+        max_uploads: Option<u64>,
+        storage: Option<Value>,
+    ) -> Result<Self> {
         let mut base: Value =
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+        let directory =
+            std::path::PathBuf::from(base["content"]["storage"]["directory"].as_str().unwrap());
+        if let Some(storage) = storage {
+            base["content"]["storage"] = storage;
+            base["content"]["max_artifact_bytes"] = json!(160 * 1024 * 1024);
+            base["content"]["max_temporary_bytes"] = json!(512 * 1024 * 1024);
+        }
         if let Some(max_uploads) = max_uploads {
             base["content"]["max_uploads"] = json!(max_uploads);
         }
-        let directory = std::path::PathBuf::from(base["content"]["directory"].as_str().unwrap());
+
         if let Some(peer) = &peer {
             base["content"]["imports"][&peer.logical] = json!([{"base":format!("{}artifacts/",peer.base),"addresses":[peer.address],"private_ca":peer.ca}]);
             if !peer.state.lock().unwrap().source_documents.is_empty() {

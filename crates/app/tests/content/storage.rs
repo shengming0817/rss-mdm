@@ -1,0 +1,407 @@
+//! Real PostgreSQL plus the shared TLS S3 provider; product admission and HTTP are exercised.
+use crate::test_support::software::Fixture;
+use crate::test_support::*;
+use rss_mdm_content_service::{Binding, Purpose, ResourceBinding, StorageClass};
+fn binding(bytes: &[u8], class: StorageClass) -> Binding {
+    Binding {
+        purpose: Purpose::Resource(ResourceBinding {
+            storage_class: class,
+            resource: "storage-fixture".into(),
+            version: "1".into(),
+            variant: "default".into(),
+            platform: rss_mdm_resource::Platform::Windows,
+            architecture: rss_mdm_resource::Architecture::X86_64,
+            resource_digest: [1; 32],
+            source: None,
+            origin: None,
+        }),
+        reference: "fixture".into(),
+        length: bytes.len() as u64,
+        sha256: rss_mdm_resource::Digest::of(bytes).bytes(),
+        actor: "storage-fixture".into(),
+    }
+}
+fn s3_storage() -> Result<(tempfile::TempDir, Value)> {
+    let provider: Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("MDM_S3_FIXTURE")?)?)?;
+    let private = tempfile::tempdir()?;
+    for (name, key) in [("access", "accessKey"), ("secret", "secretKey")] {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(private.path().join(name))?
+            .write_all(provider[key].as_str().unwrap().as_bytes())?;
+    }
+    let example: Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/mdm-content-s3.example.json"
+    ))?;
+    let _: rss_mdm_content_service::Config = serde_json::from_value(example.clone())?;
+    let mut storage = example["storage"].clone();
+    let actual = json!({"kind":"s3","endpoint":provider["endpoint"],"region":provider["region"],"bucket":provider["bucket"],"namespace":provider["namespace"],"credentials_reference":"content-test","access_key_file":private.path().join("access"),"secret_key_file":private.path().join("secret"),"private_ca_file":provider["ca"],"max_concurrent":4,"connect_seconds":5});
+    for (key, value) in actual.as_object().unwrap() {
+        storage[key] = value.clone();
+    }
+    Ok((private, storage))
+}
+#[tokio::test]
+#[ignore = "MODULE=content.storage: real S3 product HTTP range, authorization and settlement"]
+async fn s3_product_http_contract() -> Result<()> {
+    let (_secrets, storage) = s3_storage()?;
+    // HTTP authorization and recovery use a bounded payload within the host request budget.
+    // Large provider pieces and cross-piece ranges are exercised separately below.
+    super::http::upload_contract(Fixture::with_storage(storage).await?, 1024 * 1024 + 1).await
+}
+#[tokio::test]
+#[ignore = "MODULE=content.storage: durable PG control, real S3 fixed chunks and native snapshots"]
+async fn s3_chunk_frontier_and_native_restart() -> Result<()> {
+    let (_secrets, storage) = s3_storage()?;
+    let fixture = Fixture::with_storage(storage.clone()).await?;
+    let store = fixture.content.as_ref().unwrap();
+    let now = crate::windows::test_support::now();
+    let bytes = vec![0x67; 128 * 1024 * 1024 + 3];
+    let b = binding(&bytes, StorageClass::Artifact);
+    let id = Uuid::new_v4();
+    let actor = &b.actor;
+    let artifact = b.artifact()?;
+    store.begin(id, b.clone(), now).await?;
+    ensure!(store.append(actor, id, 0, now, &bytes[..3]).await?.offset == 3);
+    ensure!(
+        store
+            .append(actor, id, 3, now, &bytes[3..65539])
+            .await?
+            .offset
+            == 65539
+    );
+    let config: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    let mut config = config;
+    config["content"]["storage"] = storage;
+    config["content"]["max_artifact_bytes"] = json!(160 * 1024 * 1024);
+    config["content"]["max_temporary_bytes"] = json!(512 * 1024 * 1024);
+    let config: crate::config::Config = serde_json::from_value(config)?;
+    let second = crate::execution_assembly::open_content(&config, config.native_protector()?)
+        .await?
+        .unwrap();
+    ensure!(second.status(actor, id, now).await?.offset == 65539);
+    second
+        .append(actor, id, 65539, now, &bytes[65539..])
+        .await?;
+    second.finish(actor, id, now).await?;
+    let digest = b
+        .sha256
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    ensure!(pg(&format!("SELECT jsonb_array_length(document->'value'->'pieces') FROM mdm_content.manifests WHERE tenant_id='{}' AND class='artifact' AND encode(sha256,'hex')='{}'",case_tenant(),digest))?.trim()=="2");
+    let mut stream = store
+        .verify(&artifact)
+        .await?
+        .stream(128 * 1024 * 1024 - 2, artifact.length())
+        .await?;
+    use futures::StreamExt;
+    let mut tail = Vec::new();
+    while let Some(part) = stream.next().await {
+        tail.extend_from_slice(&part?);
+    }
+    ensure!(tail == vec![0x67; 5]);
+    let native = vec![0x42; 65539];
+    let b = binding(&native, StorageClass::NativeConfiguration);
+    let id = Uuid::new_v4();
+    let a = b.artifact()?;
+    store.begin(id, b.clone(), now).await?;
+    store.append(&b.actor, id, 0, now, &native[..65537]).await?;
+    ensure!(second.status(&b.actor, id, now).await?.offset == 65537);
+    second
+        .append(&b.actor, id, 65537, now, &native[65537..])
+        .await?;
+    second.finish(&b.actor, id, now).await?;
+    ensure!(
+        &*store
+            .verify_class(&a, StorageClass::NativeConfiguration)
+            .await?
+            .read_plaintext(native.len())?
+            == &native
+    );
+    ensure!(
+        store
+            .verify_class(&a, StorageClass::NativeDiagnostic)
+            .await
+            .is_err()
+    );
+    second.close().await;
+    Ok(())
+}
+#[tokio::test]
+#[ignore = "MODULE=content.storage: real PG multi-instance epoch and failed-body frontier"]
+async fn volume_fences_a_stale_writer_and_keeps_failed_body_frontier() -> Result<()> {
+    let fixture = Fixture::open(false).await?;
+    let store = fixture.content.as_ref().unwrap();
+    let bytes = b"epoch-frontier-bytes";
+    let b = binding(bytes, StorageClass::Artifact);
+    let id = Uuid::new_v4();
+    let now = crate::windows::test_support::now();
+    store.begin(id, b.clone(), now).await?;
+    let (mut producer, body) = tokio::io::duplex(128);
+    use tokio::io::AsyncWriteExt;
+    producer.write_all(&bytes[..3]).await?;
+    let stale = store.clone();
+    let actor = b.actor.clone();
+    let writer = tokio::spawn(async move { stale.append(&actor, id, 0, now, body).await });
+    // Wait on the durable claim rather than relying on a scheduler delay.
+    tokio::time::timeout(Duration::from_secs(5),async{loop{
+  if pg(&format!("SELECT count(*) FROM mdm_content.uploads WHERE tenant_id='{}' AND document->'value'->'upload'->>'id'='{}' AND epoch IS NOT NULL",case_tenant(),id))?.trim()=="1"{break Ok::<_,anyhow::Error>(())}tokio::task::yield_now().await;
+ }}).await??;
+    pg(&format!(
+        "UPDATE mdm_content.uploads SET held_until=0 WHERE tenant_id='{}' AND document->'value'->'upload'->>'id'='{}'",
+        case_tenant(),
+        id
+    ))?;
+    let cfg: crate::config::Config =
+        serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    let second = crate::execution_assembly::open_content(&cfg, cfg.native_protector()?)
+        .await?
+        .unwrap();
+    second
+        .append(&b.actor, id, 0, now, bytes.as_slice())
+        .await?;
+    drop(producer);
+    ensure!(writer.await?.is_err());
+    ensure!(store.status(&b.actor, id, now).await?.offset == bytes.len() as u64);
+    store.finish(&b.actor, id, now).await?;
+    ensure!(
+        &*store
+            .verify(&b.artifact()?)
+            .await?
+            .read_plaintext(bytes.len())?
+            == bytes
+    );
+    let bad = Uuid::new_v4();
+    store.begin(bad, b.clone(), now).await?;
+    let body = futures::stream::iter([
+        Ok(axum::body::Bytes::from_static(b"epo")),
+        Err(std::io::Error::other("interrupted fixture body")),
+    ]);
+    let reader = tokio_util::io::StreamReader::new(body);
+    ensure!(store.append(&b.actor, bad, 0, now, reader).await.is_err());
+    ensure!(store.status(&b.actor, bad, now).await?.offset == 0);
+    second.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "MODULE=content.storage: physical S3 snapshot survives failed PG frontier commit"]
+async fn s3_failed_frontier_commit_preserves_acknowledged_native_prefix() -> Result<()> {
+    let (_secrets, storage) = s3_storage()?;
+    let fixture = Fixture::with_storage(storage.clone()).await?;
+    let store = fixture.content.as_ref().unwrap();
+    let mut config: Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    config["content"]["storage"] = storage;
+    config["content"]["max_artifact_bytes"] = json!(160 * 1024 * 1024);
+    config["content"]["max_temporary_bytes"] = json!(512 * 1024 * 1024);
+    let config: crate::config::Config = serde_json::from_value(config)?;
+    let second = crate::execution_assembly::open_content(&config, config.native_protector()?)
+        .await?
+        .unwrap();
+    let bytes = b"confirmed-prefix-and-retry";
+    let b = binding(bytes, StorageClass::NativeConfiguration);
+    let id = Uuid::new_v4();
+    let now = crate::windows::test_support::now();
+    store.begin(id, b.clone(), now).await?;
+    store.append(&b.actor, id, 0, now, &bytes[..3]).await?;
+    // A deferred constraint trigger rejects COMMIT, after the provider object and
+    // ready coordinate have committed. Claim/release do not change the document.
+    pg(&format!(
+        r#"
+CREATE FUNCTION public.content_frontier_fault() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN IF NEW.tenant_id='{}'::uuid THEN RAISE EXCEPTION 'fixture frontier commit failure'; END IF; RETURN NEW; END $$;
+CREATE CONSTRAINT TRIGGER content_frontier_fault AFTER UPDATE ON mdm_content.uploads
+DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (OLD.document IS DISTINCT FROM NEW.document)
+EXECUTE FUNCTION public.content_frontier_fault();"#,
+        case_tenant()
+    ))?;
+    ensure!(matches!(
+        store.append(&b.actor, id, 3, now, &bytes[3..]).await,
+        Err(rss_mdm_content_service::Error::CommitUnknown)
+    ));
+    ensure!(second.status(&b.actor, id, now).await?.offset == 3);
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_content.objects o JOIN mdm_content.uploads u ON u.id=o.owner AND u.tenant_id=o.tenant_id WHERE u.tenant_id='{}' AND u.document->'value'->'upload'->>'id'='{}' AND o.state='ready' AND o.coordinate IS NOT NULL",case_tenant(),id))?.trim()=="2");
+    pg(
+        "DROP TRIGGER content_frontier_fault ON mdm_content.uploads; DROP FUNCTION public.content_frontier_fault()",
+    )?;
+    second.append(&b.actor, id, 3, now, &bytes[3..]).await?;
+    second.finish(&b.actor, id, now).await?;
+    ensure!(
+        &*store
+            .verify_class(&b.artifact()?, StorageClass::NativeConfiguration)
+            .await?
+            .read_plaintext(bytes.len())?
+            == bytes
+    );
+    second.close().await;
+    Ok(())
+}
+
+// A dedicated workload identity keeps this permission fault isolated from parallel S3 cases.
+async fn s3_admin(provider: &Value, path: &str, body: Value) -> Result<()> {
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+    let mut child = tokio::process::Command::new("curl")
+        .args([
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--max-time",
+            "10",
+            "--cacert",
+        ])
+        .arg(provider["ca"].as_str().unwrap())
+        .args(["--aws-sigv4", "aws:amz:us-east-1:s3", "--user"])
+        .arg(format!(
+            "{}:{}",
+            provider["rootAccessKey"].as_str().unwrap(),
+            provider["rootSecretKey"].as_str().unwrap()
+        ))
+        .args([
+            "--request",
+            "PUT",
+            "--header",
+            "Content-Type: application/json",
+            "--data-binary",
+            "@-",
+        ])
+        .arg(format!(
+            "{}/rustfs/admin/v3/{path}",
+            provider["endpoint"].as_str().unwrap()
+        ))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&serde_json::to_vec(&body)?)
+        .await?;
+    ensure!(
+        child.wait().await?.success(),
+        "isolated S3 permission fixture setup failed"
+    );
+    Ok(())
+}
+async fn s3_workload_policy(provider: &Value, access: &str, write: bool) -> Result<()> {
+    let mut actions = vec![
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:DeleteObjectVersion",
+    ];
+    if write {
+        actions.push("s3:PutObject");
+    }
+    let policy = json!({"Version":"2012-10-17","Statement":[
+        {"Effect":"Allow","Action":["s3:GetBucketVersioning"],"Resource":["arn:aws:s3:::content"]},
+        {"Effect":"Allow","Action":actions,"Resource":[format!("arn:aws:s3:::content/content/{}/*",case_tenant())]}
+    ]});
+    s3_admin(
+        provider,
+        &format!("add-canned-policy?name={access}"),
+        policy,
+    )
+    .await
+}
+#[tokio::test]
+#[ignore = "MODULE=content.storage: actual S3 PUT rejection releases only known non-writes"]
+async fn s3_rejected_writes_release_quota_after_permission_recovery_and_expiry() -> Result<()> {
+    let provider: Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("MDM_S3_FIXTURE")?)?)?;
+    let (secrets, storage) = s3_storage()?;
+    let access = format!("quota-{}", case_tenant());
+    let secret = Uuid::new_v4().to_string();
+    s3_workload_policy(&provider, &access, false).await?;
+    s3_admin(
+        &provider,
+        &format!("add-user?accessKey={access}"),
+        json!({"secretKey":secret,"status":"enabled"}),
+    )
+    .await?;
+    s3_admin(
+        &provider,
+        &format!("set-user-or-group-policy?policyName={access}&userOrGroup={access}&isGroup=false"),
+        json!({}),
+    )
+    .await?;
+    // Replace private file contents before host construction; no runtime secret mutation.
+    std::fs::write(secrets.path().join("access"), access.as_bytes())?;
+    std::fs::write(secrets.path().join("secret"), secret.as_bytes())?;
+    let fixture = Fixture::with_storage(storage.clone()).await?;
+    let mut cfg: Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    cfg["content"]["storage"] = storage;
+    cfg["content"]["max_artifact_bytes"] = json!(4096);
+    cfg["content"]["max_temporary_bytes"] = json!(8192);
+    cfg["content"]["max_bundle_bytes"] = json!(4096);
+    let cfg: crate::config::Config = serde_json::from_value(cfg)?;
+    let store = crate::execution_assembly::open_content(&cfg, cfg.native_protector()?)
+        .await?
+        .unwrap();
+    let bytes = vec![0x67; 4096];
+    let b = binding(&bytes, StorageClass::Artifact);
+    let now = crate::windows::test_support::now();
+    let id = Uuid::new_v4();
+    store.begin(id, b.clone(), now).await?;
+    for _ in 0..4 {
+        ensure!(
+            matches!(
+                store.append(&b.actor, id, 0, now, bytes.as_slice()).await,
+                Err(rss_mdm_content_service::Error::Configuration)
+            ),
+            "provider must clearly reject PUT rather than exhaust quota"
+        );
+        ensure!(store.status(&b.actor, id, now).await?.offset == 0);
+    }
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_content.objects WHERE tenant_id='{}' AND state<>'deleted'",
+            case_tenant()
+        ))?
+        .trim()
+            == "0"
+    );
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_content.objects WHERE tenant_id='{}' AND state='deleted' AND coordinate IS NULL",case_tenant()))?.trim()=="4");
+    s3_workload_policy(&provider, &access, true).await?;
+    // Expire the original reservation and prove ordinary GC can remove it without
+    // inventing physical absence from a recovery HEAD response.
+    pg(&format!(
+        "UPDATE mdm_content.uploads SET expires=0,held_until=0 WHERE tenant_id='{}'",
+        case_tenant()
+    ))?;
+    ensure!(store.garbage(now).await?.is_empty());
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_content.uploads WHERE tenant_id='{}'",
+            case_tenant()
+        ))?
+        .trim()
+            == "0"
+    );
+    let recovered = Uuid::new_v4();
+    store.begin(recovered, b.clone(), now).await?;
+    store
+        .append(&b.actor, recovered, 0, now, bytes.as_slice())
+        .await?;
+    store.finish(&b.actor, recovered, now).await?;
+    ensure!(
+        &*store
+            .verify(&b.artifact()?)
+            .await?
+            .read_plaintext(bytes.len())?
+            == &bytes
+    );
+    store.close().await;
+    drop(fixture);
+    Ok(())
+}

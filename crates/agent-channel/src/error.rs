@@ -200,6 +200,7 @@ impl From<rss_mdm_content_service::Error> for Error {
             Content::Invariant => Self::Unavailable(Failure::ContentInvariant),
             Content::Metadata => Self::Unavailable(Failure::ContentMetadata),
             Content::Deadline => Self::Unavailable(Failure::ContentDeadline),
+            Content::CommitUnknown => Self::Unavailable(Failure::ContentStorage),
             Content::Cleanup => Self::Unavailable(Failure::ContentCleanup),
         }
     }

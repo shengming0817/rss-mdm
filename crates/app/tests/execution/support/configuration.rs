@@ -77,7 +77,9 @@ pub(crate) async fn resource_input(
         .as_ref()
         .unwrap()
         .config
-        .directory
+        .storage
+        .volume_directory()
+        .unwrap()
         .join(case_tenant());
     for entry in std::fs::read_dir(content_root)? {
         let entry = entry?;

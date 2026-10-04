@@ -14,6 +14,38 @@ class EnvironmentTests(unittest.TestCase):
             self.assertEqual(len(set(names)), 4)
             self.assertEqual(project_name(paths[0] / '..' / 'same-name'), names[0])
 
+    def test_regenerated_cached_leaf_passes_strict_python_tls(self):
+        # ref: cpython Lib/ssl.py@v3.14.0 create_default_context.
+        import socket
+        import ssl
+        from concurrent.futures import ThreadPoolExecutor
+        from t2_environment import run, private
+        with tempfile.TemporaryDirectory() as tmp:
+            env=Environment(Path(tmp));env.certificate()
+            ca=(env.root/'ca.crt').read_bytes()
+            legacy=private(env.root/'legacy.extensions',
+                'basicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost\n')
+            run(['openssl','x509','-req','-in',env.root/'server.csr','-CA',env.root/'ca.crt',
+                 '-CAkey',env.root/'ca.key','-CAcreateserial','-days','30','-extfile',legacy,
+                 '-out',env.root/'server.crt'],capture_output=True)
+            env.certificate()
+            self.assertEqual((env.root/'ca.crt').read_bytes(),ca)
+            server=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            server.load_cert_chain(env.root/'server.crt',env.root/'server.key')
+            client=ssl.create_default_context(cafile=str(env.root/'ca.crt'))
+            client.verify_flags |= ssl.VERIFY_X509_STRICT
+            with socket.socket() as listener, ThreadPoolExecutor(max_workers=1) as executor:
+                listener.settimeout(5);listener.bind(('127.0.0.1',0));listener.listen(1)
+                def accept():
+                    raw,_=listener.accept();raw.settimeout(5)
+                    with server.wrap_socket(raw,server_side=True) as peer:
+                        self.assertEqual(peer.recv(4),b'ping');peer.sendall(b'pong')
+                accepted=executor.submit(accept)
+                with socket.create_connection(listener.getsockname(),timeout=5) as raw:
+                    with client.wrap_socket(raw,server_hostname='localhost') as peer:
+                        peer.sendall(b'ping');self.assertEqual(peer.recv(4),b'pong')
+                accepted.result(timeout=5)
+
     def test_environment_does_not_follow_target_slot(self):
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as tmp:

@@ -10,25 +10,84 @@ use rss_transactional_messaging_postgres::{
     PgConfig, PgError, PgOutboxStore, PgPassword, PgPrivateCa, PgRuntime,
 };
 use std::{sync::Arc, time::Duration};
-pub(crate) fn open_content(
+struct ContentSecrets {
+    reference: String,
+    access: zeroize::Zeroizing<String>,
+    secret: zeroize::Zeroizing<String>,
+    token: Option<zeroize::Zeroizing<String>>,
+}
+impl rss_mdm_content_s3::Secrets for ContentSecrets {
+    fn resolve(
+        &self,
+        reference: &str,
+    ) -> rss_mdm_content_s3::Result<rss_mdm_content_s3::Credentials> {
+        if reference != self.reference {
+            return Err(rss_mdm_content_s3::Error::Configuration);
+        }
+        rss_mdm_content_s3::Credentials::new(
+            self.access.to_string(),
+            self.secret.to_string(),
+            self.token.as_ref().map(|v| v.to_string()),
+            None,
+        )
+    }
+}
+pub(crate) struct ContentResource(pub Arc<rss_mdm_content_service::Store>);
+impl rss_runtime::ManagedResource for ContentResource {
+    fn name(&self) -> &str {
+        "content-store"
+    }
+    async fn shutdown(&self) -> Result<(), rss_runtime::ShutdownError> {
+        self.0.close().await;
+        Ok(())
+    }
+    fn shutdown_timeout(&self) -> Duration {
+        Duration::from_secs(5)
+    }
+}
+pub(crate) async fn open_content(
     config: &crate::config::Config,
     protection: Arc<rss_mdm_native_protection::Protector>,
 ) -> std::result::Result<Option<Arc<rss_mdm_content_service::Store>>, Error> {
-    let tenant = TenantId::parse(&config.identity.tenant_id)
-        .map_err(|_| Error::Configuration(crate::ConfigIssue::Execution))?;
-    config
-        .content
-        .as_ref()
-        .map(|c| {
-            rss_mdm_content_service::Store::open(
-                protection.clone(),
-                c,
-                &tenant.to_string(),
-                Arc::new(crate::lifecycle::RuntimeTimer),
-            )
-        })
-        .transpose()
-        .map_err(Into::into)
+    let Some(c) = config.content.as_ref() else {
+        return Ok(None);
+    };
+    let bad = || Error::Configuration(crate::ConfigIssue::Execution);
+    let secrets: Option<Arc<dyn rss_mdm_content_s3::Secrets>> = match &c.storage {
+        rss_mdm_content_service::Storage::Volume { .. } => None,
+        rss_mdm_content_service::Storage::S3(s3) => Some(Arc::new(ContentSecrets {
+            reference: s3.credentials_reference.clone(),
+            access: crate::config::secret(&s3.access_key_file)?,
+            secret: crate::config::secret(&s3.secret_key_file)?,
+            token: s3
+                .session_token_file
+                .as_ref()
+                .map(|p| crate::config::secret(p))
+                .transpose()?,
+        })),
+    };
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(4)
+        .acquire_timeout(Duration::from_secs(6))
+        .connect_with(config.flow.storage.database.options()?)
+        .await
+        .map_err(|_| bad())?;
+    match rss_mdm_content_service::Store::open(
+        protection,
+        c,
+        &config.identity.tenant_id,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+        pool.clone(),
+        secrets,
+    )
+    .await
+    {
+        Ok(store) => Ok(Some(store)),
+        Err(e) => {
+            pool.close().await;
+            Err(e.into())
+        }
+    }
 }
 pub(crate) async fn open(
     config: &crate::config::Config,
