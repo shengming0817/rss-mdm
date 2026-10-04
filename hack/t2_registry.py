@@ -1554,3 +1554,14 @@ consume(('crates/management-http/src/enrollment/mod.rs',), 'enrollment.http enro
 
 T1_INPUTS += ('crates/registration-service/tests/credentials.rs',)
 consume(('crates/windows-channel/src/enrollment_store.rs',), 'windows.issuance windows.enrollment windows.declared')
+
+# PKI trust is consumed by native authentication, distribution and issuance owners.
+PKI_CONSUMERS = tuple(name for name in MODULES if name.startswith(('windows.', 'apple.')) or name in AGENT_FIXTURE_CONSUMERS or name == 'agent.pki')
+consume(('crates/agent-wire/src/pki.rs','crates/device-trust/src/*','crates/pki-service/src/*','crates/pki-service/schema/*'), ' '.join(PKI_CONSUMERS))
+consume(('crates/windows-channel/src/trust_installation.rs',), ' '.join(name for name in MODULES if name.startswith('windows.')))
+consume(('crates/apple-channel/src/trust_installation.rs','crates/apple-channel/src/access-admission.sql'), ' '.join(name for name in MODULES if name.startswith('apple.')))
+consume(('fixtures/mdm-config.example.json',), ' '.join((*PKI_CONSUMERS, 'host.lifecycle', 'installation.migration')))
+consume(('deployment/providers.lock.json','fixtures/pki-tools.lock.json'), ' '.join((*PKI_CONSUMERS, 'host.lifecycle','gateway.admission')))
+for name in PKI_CONSUMERS:
+    module = MODULES[name]
+    MODULES[name] = replace(module, support_inputs=tuple(dict.fromkeys((*module.support_inputs,'hack/pki_fixtures.py','hack/pki_ca.py'))))
