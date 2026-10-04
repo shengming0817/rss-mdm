@@ -1,48 +1,30 @@
-//! ref: RustCrypto formats x509-cert/v0.2.5 src/request.rs; ring 0.17.14 src/rsa/keypair.rs.
+//! Windows CSR and device trust validation. No certificate signing key is held here.
+//! ref: RustCrypto formats x509-cert/v0.2.5 src/request.rs; rustls client_verifier.rs.
 mod linked;
 mod renewal;
 use crate::Error;
 pub use linked::LinkedProof;
 pub use renewal::RenewalProof;
-use ring::{
-    rand::SystemRandom,
-    signature::{self, KeyPair},
-};
+use ring::signature;
 use sha2::{Digest, Sha256};
-use std::{sync::Arc, time::Duration};
-use tokio_rustls::rustls::{
-    self,
-    pki_types::{CertificateDer, UnixTime},
-    server::danger::ClientCertVerifier,
-};
+use std::sync::Arc;
+use tokio_rustls::rustls::{pki_types::CertificateDer, server::danger::ClientCertVerifier};
 use uuid::Uuid;
 use x509_cert::{
-    Certificate, TbsCertificate, Version,
+    Certificate, TbsCertificate,
     der::{
-        self, Decode, DecodePem, Encode,
-        asn1::{Any, BitString, GeneralizedTime, ObjectIdentifier, UtcTime},
+        Decode, Encode, EncodePem,
+        asn1::{Any, ObjectIdentifier},
     },
-    ext::{
-        AsExtension,
-        pkix::{BasicConstraints, ExtendedKeyUsage, KeyUsage, KeyUsages},
-    },
-    name::Name,
+    ext::pkix::{BasicConstraints, ExtendedKeyUsage, KeyUsage},
     request::CertReq,
-    serial_number::SerialNumber,
     spki::AlgorithmIdentifierOwned,
-    time::{Time, Validity},
 };
 const RSA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1");
 const SHA256_RSA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.11");
 const CLIENT_AUTH: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.3.2");
 fn invalid(_: impl std::fmt::Debug) -> Error {
     Error::Malformed
-}
-fn signature_algorithm() -> AlgorithmIdentifierOwned {
-    AlgorithmIdentifierOwned {
-        oid: SHA256_RSA,
-        parameters: Some(Any::null()),
-    }
 }
 fn rsa_algorithm(algorithm: &AlgorithmIdentifierOwned, oid: ObjectIdentifier) -> bool {
     algorithm.oid == oid
@@ -51,18 +33,22 @@ fn rsa_algorithm(algorithm: &AlgorithmIdentifierOwned, oid: ObjectIdentifier) ->
             .as_ref()
             .is_none_or(|p| p == &Any::null())
 }
-pub struct IssuanceIntent(Vec<u8>);
-impl IssuanceIntent {
-    pub fn as_der(&self) -> &[u8] {
-        &self.0
-    }
-}
 pub struct Csr {
     info: x509_cert::request::CertReqInfo,
+    der: Vec<u8>,
 }
 impl Csr {
     pub fn verify(bytes: &[u8]) -> Result<Self, Error> {
         Self::verify_der(bytes).map_err(|_| Error::CertificateRequest)
+    }
+    pub fn pem(&self) -> Result<String, Error> {
+        CertReq::from_der(&self.der)
+            .map_err(invalid)?
+            .to_pem(x509_cert::der::pem::LineEnding::LF)
+            .map_err(invalid)
+    }
+    pub fn digest(&self) -> [u8; 32] {
+        Sha256::digest(&self.der).into()
     }
     fn verify_der(bytes: &[u8]) -> Result<Self, Error> {
         if bytes.len() > 32768 {
@@ -88,7 +74,10 @@ impl Csr {
             csr.signature.as_bytes().ok_or(Error::Malformed)?,
         )
         .map_err(invalid)?;
-        Ok(Self { info: csr.info })
+        Ok(Self {
+            info: csr.info,
+            der: bytes.to_vec(),
+        })
     }
 }
 /// Constructed only after cryptographic chain and explicit leaf-purpose validation.
@@ -100,198 +89,102 @@ impl CheckedLeaf {
         self.fingerprint
     }
 }
-pub struct WindowsEnrollmentAuthority {
-    key: signature::RsaKeyPair,
-    certificate: Certificate,
-    der: Vec<u8>,
-    verifier: Arc<dyn ClientCertVerifier>,
-    enrollment_verifier: Arc<dyn ClientCertVerifier>,
+pub struct WindowsDeviceTrust {
+    pub trust: rss_mdm_device_trust::DeviceTrust,
 }
-impl WindowsEnrollmentAuthority {
-    pub fn der(&self) -> &[u8] {
-        &self.der
+impl WindowsDeviceTrust {
+    pub fn der(&self) -> Result<Vec<u8>, Error> {
+        Ok(rss_mdm_device_trust::decode(
+            &self.trust.active()?.certificate,
+            32768,
+        )?)
     }
     pub fn verifier(&self) -> Arc<dyn ClientCertVerifier> {
-        self.verifier.clone()
+        self.trust.verifier(false)
     }
 
     /// Enrollment permits unauthenticated initial enrollment, but verifies any offered TLS identity.
     pub fn enrollment_verifier(&self) -> Arc<dyn ClientCertVerifier> {
-        self.enrollment_verifier.clone()
+        self.trust.verifier(true)
     }
-    pub fn from_bytes(pem: &[u8], pkcs8: &[u8], now: i64) -> Result<Self, Error> {
-        if pem.len() > 32768 || pkcs8.len() > 32768 {
-            return Err(Error::Malformed);
-        }
-        let certificate = Certificate::from_pem(pem).map_err(invalid)?;
-        let der = certificate.to_der().map_err(invalid)?;
-        let key = signature::RsaKeyPair::from_pkcs8(pkcs8).map_err(invalid)?;
-        let tbs = &certificate.tbs_certificate;
-        let bc = tbs
-            .get::<BasicConstraints>()
-            .map_err(invalid)?
-            .ok_or(Error::Malformed)?
-            .1;
-        let ku = tbs
-            .get::<KeyUsage>()
-            .map_err(invalid)?
-            .ok_or(Error::Malformed)?
-            .1;
-        if !bc.ca
-            || !ku.key_cert_sign()
-            || !valid_at(tbs, now)
-            || tbs.subject != tbs.issuer
-            || !rsa_algorithm(&tbs.subject_public_key_info.algorithm, RSA)
-            || tbs.subject_public_key_info.subject_public_key.as_bytes()
-                != Some(key.public_key().as_ref())
-        {
-            return Err(Error::Malformed);
-        }
-        let mut probe = vec![0; key.public().modulus_len()];
-        key.sign(
-            &signature::RSA_PKCS1_SHA256,
-            &SystemRandom::new(),
-            b"mdm.ca.key-match.v1",
-            &mut probe,
-        )
-        .map_err(invalid)?;
-        signature::UnparsedPublicKey::new(&signature::RSA_PKCS1_2048_8192_SHA256, key.public_key())
-            .verify(b"mdm.ca.key-match.v1", &probe)
-            .map_err(invalid)?;
-        let mut roots = rustls::RootCertStore::empty();
-        roots
-            .add(CertificateDer::from(der.clone()))
-            .map_err(invalid)?;
-        let roots = Arc::new(roots);
-        let enrollment_verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
-            roots.clone(),
-            Arc::new(rustls::crypto::ring::default_provider()),
-        )
-        .allow_unauthenticated()
-        .build()
-        .map_err(invalid)?;
-        let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
-            roots,
-            Arc::new(rustls::crypto::ring::default_provider()),
-        )
-        .build()
-        .map_err(invalid)?;
-        Ok(Self {
-            key,
-            certificate,
-            der,
-            verifier,
-            enrollment_verifier,
-        })
+    pub fn from_trust(trust: rss_mdm_device_trust::DeviceTrust) -> Result<Self, Error> {
+        let active = trust.active()?;
+        let der = rss_mdm_device_trust::decode(&active.certificate, 32768)?;
+        let certificate = Certificate::from_der(&der).map_err(invalid)?;
+        let _ = certificate;
+        Ok(Self { trust })
     }
-    pub fn intent(&self, csr: &Csr, registration: Uuid, now: i64) -> Result<IssuanceIntent, Error> {
-        if !valid_at(&self.certificate.tbs_certificate, now) {
+    pub fn profile(
+        &self,
+        csr: &Csr,
+        registration: Uuid,
+        now: i64,
+    ) -> Result<IssuanceProfile, Error> {
+        let der = self.der()?;
+        let certificate = Certificate::from_der(&der).map_err(invalid)?;
+        if !valid_at(&certificate.tbs_certificate, now) {
             return Err(Error::Expired);
         }
-        let subject: Name = format!("CN={registration}").parse().map_err(invalid)?;
-        let extensions = vec![
-            BasicConstraints {
-                ca: false,
-                path_len_constraint: None,
-            }
-            .to_extension(&subject, &[])
-            .map_err(invalid)?,
-            KeyUsage(KeyUsages::DigitalSignature.into())
-                .to_extension(&subject, &[])
-                .map_err(invalid)?,
-            ExtendedKeyUsage(vec![CLIENT_AUTH])
-                .to_extension(&subject, &[])
-                .map_err(invalid)?,
-        ];
-        let expiry = (now as u64 + 90 * 86400).min(
-            self.certificate
+        let end = now.checked_add(90 * 86400).ok_or(Error::Malformed)?;
+        if end as u64
+            > certificate
                 .tbs_certificate
                 .validity
                 .not_after
                 .to_unix_duration()
-                .as_secs(),
-        );
-        let serial = Uuid::new_v4();
-        let mut serial = *serial.as_bytes();
-        serial[0] &= 0x7f;
-        TbsCertificate {
-            version: Version::V3,
-            serial_number: SerialNumber::new(&serial).map_err(invalid)?,
-            signature: signature_algorithm(),
-            issuer: self.certificate.tbs_certificate.subject.clone(),
-            validity: Validity {
-                not_before: timestamp(now as u64)?,
-                not_after: timestamp(expiry)?,
-            },
-            subject,
-            subject_public_key_info: csr.info.public_key.clone(),
-            issuer_unique_id: None,
-            subject_unique_id: None,
-            extensions: Some(extensions),
+                .as_secs()
+        {
+            return Err(Error::Expired);
         }
-        .to_der()
-        .map(IssuanceIntent)
-        .map_err(invalid)
+        Ok(IssuanceProfile {
+            version: 1,
+            registration,
+            start: now,
+            end,
+            spki: Sha256::digest(csr.info.public_key.to_der().map_err(invalid)?).into(),
+            issuer: Sha256::digest(&der).into(),
+        })
     }
-    pub fn restore_intent(
+    /// Validate frozen key, subject, purpose, issuer and validity, independent of CA serial/signature bytes.
+    pub fn validate_issued(
         &self,
-        bytes: &[u8],
+        profile: &IssuanceProfile,
         csr: &Csr,
-        registration: Uuid,
-    ) -> Result<IssuanceIntent, Error> {
-        let tbs = TbsCertificate::from_der(bytes).map_err(invalid)?;
-        let start =
-            i64::try_from(tbs.validity.not_before.to_unix_duration().as_secs()).map_err(invalid)?;
-        let expected = self.intent(csr, registration, start)?;
-        let mut template = TbsCertificate::from_der(expected.as_der()).map_err(invalid)?;
-        template.serial_number = tbs.serial_number.clone();
-        if template != tbs || tbs.to_der().map_err(invalid)? != bytes {
-            return Err(Error::Conflict);
-        }
-        Ok(IssuanceIntent(bytes.to_vec()))
-    }
-    pub fn sign(&self, intent: &IssuanceIntent) -> Result<Vec<u8>, Error> {
-        let intent = intent.as_der();
-        let tbs = TbsCertificate::from_der(intent).map_err(invalid)?;
-        if tbs.to_der().map_err(invalid)? != intent
-            || tbs.issuer != self.certificate.tbs_certificate.subject
-            || tbs.signature != signature_algorithm()
+        chain: &[CertificateDer<'_>],
+        now: i64,
+    ) -> Result<CheckedLeaf, Error> {
+        let checked = self.verify(chain, now)?;
+        let leaf = Certificate::from_der(&chain[0]).map_err(invalid)?;
+        let tbs = &leaf.tbs_certificate;
+        let subject: x509_cert::name::Name = format!("CN={}", profile.registration)
+            .parse()
+            .map_err(invalid)?;
+        if profile.version != 1
+            || profile.issuer
+                != Sha256::digest(rss_mdm_device_trust::decode(
+                    &self.trust.verify(chain, now)?.certificate,
+                    32768,
+                )?)
+                .as_slice()
+            || tbs.subject != subject
+            || tbs.subject_public_key_info != csr.info.public_key
+            || profile.spki
+                != <[u8; 32]>::from(Sha256::digest(
+                    csr.info.public_key.to_der().map_err(invalid)?,
+                ))
+            || tbs.validity.not_before.to_unix_duration().as_secs() != profile.start as u64
+            || tbs.validity.not_after.to_unix_duration().as_secs() != profile.end as u64
+            || tbs
+                .get::<x509_cert::ext::pkix::SubjectAltName>()
+                .map_err(invalid)?
+                .is_some()
         {
             return Err(Error::Conflict);
         }
-        let mut signature = vec![0; self.key.public().modulus_len()];
-        self.key
-            .sign(
-                &signature::RSA_PKCS1_SHA256,
-                &SystemRandom::new(),
-                intent,
-                &mut signature,
-            )
-            .map_err(|_| Error::Signing)?;
-        Certificate {
-            tbs_certificate: tbs,
-            signature_algorithm: signature_algorithm(),
-            signature: BitString::from_bytes(&signature).map_err(invalid)?,
-        }
-        .to_der()
-        .map_err(invalid)
+        Ok(checked)
     }
     pub fn verify(&self, chain: &[CertificateDer<'_>], now: i64) -> Result<CheckedLeaf, Error> {
-        if chain.is_empty()
-            || chain.len() > 4
-            || chain.iter().any(|c| c.len() > 32768)
-            || now <= 0
-            || !valid_at(&self.certificate.tbs_certificate, now)
-        {
-            return Err(Error::Unauthorized);
-        }
-        self.verifier
-            .verify_client_cert(
-                &chain[0],
-                &chain[1..],
-                UnixTime::since_unix_epoch(Duration::from_secs(now as u64)),
-            )
-            .map_err(|_| Error::Unauthorized)?;
+        self.trust.verify(chain, now)?;
         let certificate = Certificate::from_der(&chain[0]).map_err(|_| Error::Unauthorized)?;
         leaf_usage(&certificate.tbs_certificate, now).map_err(|_| Error::Unauthorized)?;
         Ok(CheckedLeaf {
@@ -330,11 +223,33 @@ fn valid_at(tbs: &TbsCertificate, now: i64) -> bool {
         && tbs.validity.not_before.to_unix_duration().as_secs() <= now as u64
         && (now as u64) < tbs.validity.not_after.to_unix_duration().as_secs()
 }
-fn timestamp(seconds: u64) -> Result<Time, Error> {
-    let date = der::DateTime::from_unix_duration(Duration::from_secs(seconds)).map_err(invalid)?;
-    if date.year() <= 2049 {
-        Ok(UtcTime::from_date_time(date).map_err(invalid)?.into())
-    } else {
-        Ok(GeneralizedTime::from_date_time(date).into())
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IssuanceProfile {
+    pub version: u8,
+    pub registration: Uuid,
+    pub start: i64,
+    pub end: i64,
+    pub spki: [u8; 32],
+    pub issuer: [u8; 32],
+}
+impl IssuanceProfile {
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        serde_json::to_vec(self).map_err(invalid)
+    }
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() > 4096 {
+            return Err(Error::Malformed);
+        }
+        let profile: Self = serde_json::from_slice(bytes).map_err(invalid)?;
+        if profile.version != 1
+            || profile.start <= 0
+            || profile.end <= profile.start
+            || profile.end - profile.start > 90 * 86400
+        {
+            return Err(Error::Malformed);
+        }
+        Ok(profile)
     }
 }

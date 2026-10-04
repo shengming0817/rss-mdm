@@ -31,7 +31,7 @@ pub(crate) fn now() -> i64 {
 }
 pub(super) fn windows() -> anyhow::Result<Windows> {
     let config = serde_json::from_slice(&std::fs::read(root()?.join("windows.json"))?)?;
-    Ok(Windows::load(config, now(), None)?)
+    Ok(Windows::load(config, now(), fixture_providers()?, None)?)
 }
 pub(super) async fn complete(
     store: &rss_mdm_audit_integration::AuditStore,
@@ -301,7 +301,11 @@ impl Host {
         .await
         .map_err(|e| anyhow::anyhow!("command startup: {e:?}"))?;
         let agent_audit = command_audit.clone();
-        let agent_pki = config.agent_pki.load(agent_audit.clone(), clock.clone())?;
+        let agent_pki = config.agent_pki.load(
+            agent_audit.clone(),
+            clock.clone(),
+            crate::device_pki::providers(&config.device_pki)?,
+        )?;
         let agent_enrollment = agent_pki
             .as_ref()
             .map(|pki| {
@@ -313,7 +317,32 @@ impl Host {
                 )
             })
             .transpose()?;
+        let windows = Arc::new(Windows::load(
+            config
+                .native_protocols
+                .windows
+                .expect("Windows test configuration"),
+            now(),
+            crate::device_pki::providers(&config.device_pki)?,
+            config
+                .agent_installation
+                .identity(rss_mdm_policy::Platform::Windows)
+                .cloned(),
+        )?);
+        let mut trusts = vec![windows.channel.ca.trust.clone()];
+        if let Some(a) = &agent_pki {
+            trusts.push(a.issuer.trust().trust.clone());
+        }
+        let pki = Arc::new(rss_mdm_pki_service::registry::Registry::new(
+            store.archive_pool(),
+            command_audit.clone(),
+            trusts,
+            crate::device_pki::providers(&config.device_pki)?,
+        ));
+        pki.admit(rss_request_context::TenantId::parse(case_tenant())?, now())
+            .await?;
         let app = Arc::new(Assembly {
+            pki,
             agent_enrollment,
             agent_pki,
             certificate_archive: crate::certificate_archive::assemble(
@@ -346,17 +375,7 @@ impl Host {
             devices,
             access: store.clone(),
             requests: Arc::new(tokio::sync::Semaphore::new(4)),
-            windows: Some(Arc::new(Windows::load(
-                config
-                    .native_protocols
-                    .windows
-                    .expect("Windows test configuration"),
-                now(),
-                config
-                    .agent_installation
-                    .identity(rss_mdm_policy::Platform::Windows)
-                    .cloned(),
-            )?)),
+            windows: Some(windows),
         });
         let ingress_clock = IngressClock::new();
         let crate::native::Routers {
@@ -618,15 +637,7 @@ impl Host {
             now(),
         )
         .await?;
-        let cert = app
-            .windows()?
-            .channel
-            .ca
-            .sign(&app.windows()?.channel.ca.restore_intent(
-                &intent.tbs,
-                &certificate::Csr::verify(&intent.csr)?,
-                intent.registration,
-            )?)?;
+        let cert = sign_certificate(&app.windows()?.channel.ca, &intent).await?;
         let cert_pem = x509_cert::Certificate::from_der(&cert)?.to_pem(LineEnding::LF)?;
         let identity = reqwest::Identity::from_pem(
             &[
@@ -822,11 +833,7 @@ pub(crate) async fn absolute_form_post(
         },
     };
     let ca = &host.app.windows()?.channel.ca;
-    let cert = ca.sign(&ca.restore_intent(
-        &peer.intent.tbs,
-        &certificate::Csr::verify(&peer.intent.csr)?,
-        peer.intent.registration,
-    )?)?;
+    let cert = sign_certificate(&ca, &peer.intent).await?;
     let mut roots = rustls::RootCertStore::empty();
     roots.add(CertificateDer::from_pem_slice(&std::fs::read(
         host.root.join("ca.crt"),
@@ -870,4 +877,73 @@ pub(crate) async fn absolute_form_post(
         .nth(1)
         .ok_or_else(|| anyhow::anyhow!("missing HTTP status"))?
         .parse()?)
+}
+
+pub(crate) fn fixture_providers() -> anyhow::Result<Arc<rss_mdm_pki_service::providers::Providers>>
+{
+    Ok(crate::device_pki::providers(&serde_json::from_slice::<
+        Vec<crate::device_pki::Provider>,
+    >(&std::fs::read(
+        root()?.join("device-pki.json"),
+    )?)?)?)
+}
+/// Positive issuance always crosses the real pinned CA transport and persistent attempt store.
+pub(crate) async fn sign_certificate(
+    ca: &certificate::WindowsDeviceTrust,
+    intent: &issuance::Intent,
+) -> anyhow::Result<Vec<u8>> {
+    let access = Database::connect(options("mdm_access")?).await?;
+    let audit = access
+        .audit_store(&crate::config::AuditConfig::Plain)
+        .await?;
+    let providers = fixture_providers()?;
+    let registry = rss_mdm_pki_service::registry::Registry::new(
+        access.archive_pool(),
+        audit.clone(),
+        vec![ca.trust.clone()],
+        providers.clone(),
+    );
+    registry
+        .admit(rss_request_context::TenantId::parse(case_tenant())?, now())
+        .await?;
+    let profile = certificate::IssuanceProfile::decode(&intent.profile)?;
+    let csr = certificate::Csr::verify(&intent.csr)?;
+    let issuer = profile
+        .issuer
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let chain = rss_mdm_pki_service::signing::SigningStore::new(audit)
+        .issue(
+            Uuid::parse_str(case_tenant())?,
+            "windows",
+            &issuer,
+            providers.get(rss_mdm_agent_wire::pki::Purpose::Windows, &issuer)?,
+            rss_mdm_pki_service::Sign {
+                attempt: intent.credential,
+                csr_pem: &csr.pem()?,
+                csr_digest: &csr.digest(),
+                subject: &intent.registration.to_string(),
+                sans: &[],
+                start: profile.start,
+                end: profile.end,
+                deadline: profile.start + 60,
+            },
+            now(),
+            |chain| {
+                ca.validate_issued(
+                    &profile,
+                    &csr,
+                    &chain
+                        .iter()
+                        .map(|b| b.as_slice().into())
+                        .collect::<Vec<_>>(),
+                    now(),
+                )
+                .is_ok()
+            },
+        )
+        .await?;
+    access.close().await;
+    Ok(chain[0].clone())
 }

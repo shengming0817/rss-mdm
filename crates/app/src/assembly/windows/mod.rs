@@ -11,8 +11,7 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 pub struct WindowsConfig {
     pub enrollment: TlsEndpoint,
     pub management: TlsEndpoint,
-    pub ca_certificate_file: PathBuf,
-    pub ca_private_key_file: PathBuf,
+    pub trust_file: PathBuf,
     pub protocol_key_file: PathBuf,
     pub provider_id: String,
     pub poll: rss_mdm_windows_mdm::provisioning::Poll,
@@ -93,16 +92,24 @@ impl Windows {
     pub(crate) fn load(
         config: WindowsConfig,
         now: i64,
+        providers: Arc<rss_mdm_pki_service::providers::Providers>,
         agent: Option<rss_mdm_execution_service::agent_install::Identity>,
     ) -> Result<Self, Error> {
-        let ca = certificate::WindowsEnrollmentAuthority::from_bytes(
-            &crate::config::read(&config.ca_certificate_file, 32768, false)
-                .map_err(|_| Error::Configuration(ConfigIssue::EnrollmentCa))?,
-            &crate::config::read(&config.ca_private_key_file, 32768, true)
-                .map_err(|_| Error::Configuration(ConfigIssue::EnrollmentCa))?,
+        let trust = crate::device_pki::load(
+            &config.trust_file,
+            rss_mdm_agent_wire::pki::Purpose::Windows,
             now,
-        )
-        .map_err(|_| Error::Configuration(ConfigIssue::EnrollmentCa))?;
+        )?;
+        if trust
+            .public()
+            .map_err(|_| Error::Configuration(ConfigIssue::EnrollmentCa))?
+            .origin
+            != config.management.origin
+        {
+            return Err(Error::Configuration(ConfigIssue::EnrollmentCa));
+        }
+        let ca = certificate::WindowsDeviceTrust::from_trust(trust)
+            .map_err(|_| Error::Configuration(ConfigIssue::EnrollmentCa))?;
         let enrollment_tls =
             tls::configuration(&config.enrollment, Some(ca.enrollment_verifier()))?;
         let management_tls = tls::configuration(&config.management, Some(ca.verifier()))?;
@@ -111,6 +118,7 @@ impl Windows {
             config.management.origin.clone(),
             config.provider_id.clone(),
             ca,
+            providers,
             &crate::config::read(&config.protocol_key_file, 32, true)
                 .map_err(|_| Error::Configuration(ConfigIssue::ProtocolKey))?,
             config.poll.clone(),

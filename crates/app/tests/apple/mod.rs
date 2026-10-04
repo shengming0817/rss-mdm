@@ -151,7 +151,11 @@ impl Fixture {
         let agent_audit = access
             .audit_store(&crate::config::AuditConfig::Plain)
             .await?;
-        let agent_pki = config.agent_pki.load(agent_audit.clone(), clock.clone())?;
+        let agent_pki = config.agent_pki.load(
+            agent_audit.clone(),
+            clock.clone(),
+            crate::device_pki::providers(&config.device_pki)?,
+        )?;
         let agent_enrollment = agent_pki
             .as_ref()
             .map(|pki| {
@@ -163,7 +167,33 @@ impl Fixture {
                 )
             })
             .transpose()?;
+        let apple = Arc::new(Apple::load(
+            execution.protection.clone(),
+            config.native_protocols.apple.unwrap(),
+            crate::clock::SystemClock.unix_seconds()?,
+            crate::device_pki::providers(&config.device_pki)?,
+            config
+                .agent_installation
+                .identity(rss_mdm_policy::Platform::Macos)
+                .cloned(),
+        )?);
+        let mut trusts = vec![apple.channel.device_trust().clone()];
+        if let Some(a) = &agent_pki {
+            trusts.push(a.issuer.trust().trust.clone());
+        }
+        let pki = Arc::new(rss_mdm_pki_service::registry::Registry::new(
+            access.archive_pool(),
+            agent_audit.clone(),
+            trusts,
+            crate::device_pki::providers(&config.device_pki)?,
+        ));
+        pki.admit(
+            rss_request_context::TenantId::parse(case_tenant())?,
+            crate::clock::SystemClock.unix_seconds()?,
+        )
+        .await?;
         let app = Arc::new(Assembly {
+            pki,
             agent_enrollment,
             agent_pki,
             certificate_archive: crate::certificate_archive::assemble(
@@ -199,15 +229,7 @@ impl Fixture {
             inventory: runtime.clone(),
             devices,
             windows: None,
-            apple: Some(Arc::new(Apple::load(
-                execution.protection.clone(),
-                config.native_protocols.apple.unwrap(),
-                crate::clock::SystemClock.unix_seconds()?,
-                config
-                    .agent_installation
-                    .identity(rss_mdm_policy::Platform::Macos)
-                    .cloned(),
-            )?)),
+            apple: Some(apple),
             access: access.clone(),
             requests: Arc::new(tokio::sync::Semaphore::new(4)),
         });
@@ -448,7 +470,7 @@ fn startup_diagnostics(root: &std::path::Path) -> Result<()> {
     let original: serde_json::Value =
         serde_json::from_slice(&std::fs::read(root.join("apple.json"))?)?;
     for (pointer, category) in [
-        ("/issuer_certificate_file", "AppleScep"),
+        ("/trust_file", "AgentPki"),
         ("/profile_certificate_file", "AppleProfileSigner"),
         ("/apns_certificate_file", "AppleApns"),
         ("/challenge_webhook/secret_file", "AppleChallengeWebhook"),
@@ -461,6 +483,7 @@ fn startup_diagnostics(root: &std::path::Path) -> Result<()> {
             crate::test_support::identity::config(case_tenant())?.native_protector()?,
             config,
             crate::clock::SystemClock.unix_seconds()?,
+            fixture_providers(root)?,
             None,
         ) {
             Err(crate::Error::Configuration(issue)) => ensure!(
@@ -474,6 +497,7 @@ fn startup_diagnostics(root: &std::path::Path) -> Result<()> {
         crate::test_support::identity::config(case_tenant())?.native_protector()?,
         serde_json::from_value(original)?,
         crate::clock::SystemClock.unix_seconds()?,
+        fixture_providers(root)?,
         None,
     )?;
     ensure!(
@@ -543,7 +567,7 @@ impl Fixture {
         let der = device
             .enroll(
                 &self.client()?,
-                &self.app.apple()?.config.scep_url,
+                &self.app.apple()?.channel.scep_fixture()?.0,
                 &request,
             )
             .await?;
@@ -557,7 +581,7 @@ impl Fixture {
         let timestamp = time::OffsetDateTime::from_unix_timestamp(self.app.clock.unix_seconds()?)?
             .format(&time::format_description::well_known::Rfc3339)?;
         let body = serde_json::to_vec(
-            &json!({"timestamp":timestamp,"provisionerName":apple.config.scep_provisioner,
+            &json!({"timestamp":timestamp,"provisionerName":apple.channel.scep_fixture()?.1,
             "x509CertificateRequest":{"raw":STANDARD.encode(&device.csr)},"scepChallenge":password,"scepTransactionID":Uuid::new_v4().to_string()}),
         )?;
         let signature = apple
@@ -769,7 +793,10 @@ async fn publish_webhooks(root: &std::path::Path, address: std::net::SocketAddr)
                 "--admin-password-file",
             ])
             .arg(root.join("step-password"))
-            .env("STEPPATH", root.join("step"))
+            .env(
+                "STEPPATH",
+                std::path::PathBuf::from(std::env::var("MDM_APPLE_PKI_FIXTURES")?).join("step"),
+            )
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
@@ -801,4 +828,12 @@ async fn publish_webhooks(root: &std::path::Path, address: std::net::SocketAddr)
         );
     }
     Ok(())
+}
+
+fn fixture_providers(
+    root: &std::path::Path,
+) -> Result<Arc<rss_mdm_pki_service::providers::Providers>> {
+    let providers: Vec<crate::device_pki::Provider> =
+        serde_json::from_slice(&std::fs::read(root.join("device-pki.json"))?)?;
+    Ok(crate::device_pki::providers(&providers)?)
 }

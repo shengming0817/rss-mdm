@@ -98,7 +98,7 @@ impl Fixture {
         )?;
         ensure!(
             reused
-                .enroll(&self.client()?, &apple.config.scep_url, &request)
+                .enroll(&self.client()?, &apple.channel.scep_fixture()?.0, &request)
                 .await
                 .is_err(),
             "active SPKI reused by a new issuance attempt"
@@ -110,7 +110,7 @@ impl Fixture {
             self.app.clock.unix_seconds()?,
         )?;
         let der = device
-            .enroll(&self.client()?, &apple.config.scep_url, &request)
+            .enroll(&self.client()?, &apple.channel.scep_fixture()?.0, &request)
             .await?;
         let client = reqwest::Client::builder()
             .no_proxy()

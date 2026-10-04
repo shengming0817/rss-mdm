@@ -7,6 +7,8 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+rss-mdm-device-trust.workspace = true
+rss-mdm-pki-service.workspace = true
 rss-mdm-agent-wire.workspace = true
 rss-mdm-certificate.workspace = true
 ring.workspace = true

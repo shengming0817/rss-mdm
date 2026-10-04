@@ -43,7 +43,6 @@ def generate(root, tls_certificate, tls_key):
     config = dict(
         management=dict(listen='127.0.0.1:8445', origin='https://localhost:8445',
                         certificate_file=str(tls_certificate), private_key_file=str(root/'apple-tls.pk8')),
-        scep_url='https://localhost:9000/scep/rss', scep_provisioner='rss',
         issuer_certificate_file=str(root/'apple-issuer.pem'),
         profile_certificate_file=str(root/'apple-profile.pem'), profile_private_key_file=str(root/'apple-profile.pk8'),
         apns_certificate_file=str(root/'apple-apns.pem'), apns_private_key_file=str(root/'apple-apns.key'),

@@ -1,6 +1,6 @@
 //! Agent issuer deployment inputs; private CA signing keys never enter this process.
 use crate::{ConfigIssue, Error};
-use rss_mdm_registration_service::agent_pki::{AgentIssuer, Provider};
+use rss_mdm_registration_service::agent_pki::AgentIssuer;
 use serde::Deserialize;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 #[derive(Deserialize)]
@@ -11,11 +11,7 @@ pub enum Config {
         endpoint: Box<crate::native::TlsEndpoint>,
         #[serde(default)]
         policy: rss_mdm_registration_service::agent::Policy,
-        ca_url: String,
-        tls_root_file: PathBuf,
-        issuer_certificate_file: PathBuf,
-        provisioner_key_file: PathBuf,
-        kid: String,
+        trust_file: PathBuf,
         #[serde(default)]
         lifetime: Lifetime,
     },
@@ -55,15 +51,12 @@ impl Config {
         &self,
         _audit: Arc<rss_mdm_audit_integration::AuditStore>,
         clock: Arc<dyn crate::clock::Clock>,
+        providers: Arc<rss_mdm_pki_service::providers::Providers>,
     ) -> Result<Option<Arc<AgentPki>>, Error> {
         let Self::StepCa {
             endpoint,
             policy,
-            ca_url,
-            tls_root_file,
-            issuer_certificate_file,
-            provisioner_key_file,
-            kid,
+            trust_file,
             lifetime,
         } = self
         else {
@@ -80,26 +73,22 @@ impl Config {
         }
         policy.validate().map_err(|_| invalid())?;
         let days = lifetime.days()?;
+        let device_trust = crate::device_pki::load(
+            trust_file,
+            rss_mdm_agent_wire::pki::Purpose::Agent,
+            clock.unix_seconds()?,
+        )?;
+        if device_trust.public().map_err(|_| invalid())?.origin != endpoint.origin {
+            return Err(invalid());
+        }
         let trust = Arc::new(
-            rss_mdm_certificate::agent::AgentTrust::from_pem(
-                &crate::config::read(issuer_certificate_file, 32768, false)
-                    .map_err(|_| invalid())?,
-                "rss-agent",
-                kid,
-                days,
-                clock.unix_seconds()?,
-            )
-            .map_err(|_| invalid())?,
+            rss_mdm_certificate::agent::AgentTrust::from_trust(device_trust, days)
+                .map_err(|_| invalid())?,
         );
         let issuer = AgentIssuer::new(
-            Provider {
-                ca_url: ca_url.clone(),
-                kid: kid.clone(),
-                validity_days: days,
-                development: matches!(lifetime, Lifetime::Development { .. }),
-            },
-            &crate::config::read(tls_root_file, 131072, false).map_err(|_| invalid())?,
-            &crate::config::read(provisioner_key_file, 32768, true).map_err(|_| invalid())?,
+            providers,
+            days,
+            matches!(lifetime, Lifetime::Development { .. }),
             trust,
             Arc::new(PkiClock(clock.clone())),
         )
@@ -120,7 +109,7 @@ impl Config {
         })))
     }
 }
-struct PkiClock(Arc<dyn crate::clock::Clock>);
+pub(crate) struct PkiClock(pub(crate) Arc<dyn crate::clock::Clock>);
 impl rss_mdm_registration_service::agent_pki::Clock for PkiClock {
     fn unix_seconds(&self) -> Result<i64, rss_mdm_registration_service::Error> {
         self.0

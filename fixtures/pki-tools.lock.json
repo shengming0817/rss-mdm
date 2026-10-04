@@ -1,0 +1,17 @@
+{
+  "step": {
+    "version": "0.30.2",
+    "repository": "smallstep/cli",
+    "artifacts": {
+      "darwin-arm64": "3ec0836af9e2948f5eaf341fc6a5441f4d826a26fa0560f9220d21072af45830",
+      "darwin-amd64": "d3fbc24b5807c09f6e60b697d64f12ac30baedb007b8a53cf1670955f9ab585b",
+      "linux-amd64": "abf5ffe9a39c01c7b4e777d50a96f30f33f5bd8eeafa2dfeef22b8a4abeee14a",
+      "linux-arm64": "7d66fa62949d64142b053db1c86ee29037088919cd329ac7966b15b09e914230"
+    }
+  },
+  "step-ca": {
+    "version": "0.30.2",
+    "repository": "smallstep/certificates",
+    "port": 19443
+  }
+}

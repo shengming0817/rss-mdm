@@ -301,6 +301,7 @@ pub async fn serve(
                                 identity,
                             },
                         )
+                        .await
                         .map_err(assembly_error)?;
                         app.browser = app.browser.layer(axum::middleware::from_fn_with_state(
                             gateway,
@@ -353,6 +354,9 @@ pub async fn serve(
                     })??;
                     let signals = notifications.signals.clone();
                     let mut launch = startup.commit();
+                    launch.stage_task_with_token(
+                        crate::device_pki::registration(app.pki.clone()).critical(),
+                    );
                     if let Some(agent_pki) = app.agent_pki.clone() {
                         launch.stage_task_with_token(agent_pki.registration().critical());
                     }

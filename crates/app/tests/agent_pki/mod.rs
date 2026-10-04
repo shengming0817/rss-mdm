@@ -14,13 +14,24 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use uuid::Uuid;
 use x509_cert::der::Decode;
 fn root() -> PathBuf {
-    PathBuf::from(std::env::var("MDM_APPLE_FIXTURES").unwrap())
+    PathBuf::from(std::env::var("MDM_AGENT_PKI_FIXTURES").unwrap())
 }
 fn now() -> i64 {
     SystemClock.unix_seconds().unwrap()
 }
 fn deployment() -> serde_json::Value {
-    serde_json::from_slice(&std::fs::read(root().join("agent-pki.json")).unwrap()).unwrap()
+    serde_json::from_slice(
+        &std::fs::read(
+            root()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("agent-pki.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap()
 }
 struct NoNative;
 impl NativeAdmission for NoNative {
@@ -33,10 +44,45 @@ impl NativeAdmission for NoNative {
     }
 }
 async fn service(value: serde_json::Value) -> anyhow::Result<Arc<Service>> {
+    service_with_provider(value, None).await
+}
+async fn service_with_provider(
+    value: serde_json::Value,
+    kid: Option<&str>,
+) -> anyhow::Result<Arc<Service>> {
     let db = Database::connect(options("mdm_access")?).await?;
     let audit = db.audit_store(&crate::config::AuditConfig::Plain).await?;
+    let providers = if let Some(kid) = kid {
+        let mut config: Vec<crate::device_pki::Provider> = serde_json::from_slice(&std::fs::read(
+            root()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("device-pki.json"),
+        )?)?;
+        for p in &mut config {
+            if p.purpose == rss_mdm_agent_wire::pki::Purpose::Agent {
+                p.kid = kid.into();
+            }
+        }
+        crate::device_pki::providers(&config)?
+    } else {
+        fixture_providers()?
+    };
     let config: crate::agent_pki::Config = serde_json::from_value(value)?;
-    let pki = config.load(audit.clone(), Arc::new(SystemClock))?.unwrap();
+    let pki = config
+        .load(audit.clone(), Arc::new(SystemClock), providers.clone())?
+        .unwrap();
+    let registry = rss_mdm_pki_service::registry::Registry::new(
+        db.archive_pool(),
+        audit.clone(),
+        vec![pki.issuer.trust().trust.clone()],
+        fixture_providers()?,
+    );
+    registry
+        .admit(rss_request_context::TenantId::parse(case_a())?, now())
+        .await?;
     Ok(Arc::new(Service::new(Assembly {
         tenant: rss_request_context::TenantId::parse(case_a())?,
         store: db.registration(),
@@ -175,8 +221,7 @@ async fn explicit_development_limit_and_unknown_result_remain_auditable() -> any
     value["lifetime"]["days"] = 3651.into();
     assert!(service(value).await.is_err());
     let mut value = deployment();
-    value["kid"] = "absent-agent-key".into();
-    let unknown = service(value).await?;
+    let unknown = service_with_provider(value, Some("absent-agent-key")).await?;
     let g = grant()?;
     let r = unknown.create(&p, &g, &audit()).await?;
     let input = signing(&g, r.grant_id)?;
@@ -606,4 +651,16 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
     assert!(owner.shutdown().join().await?.is_clean());
     host.close().await?;
     Ok(())
+}
+
+fn fixture_providers() -> anyhow::Result<Arc<rss_mdm_pki_service::providers::Providers>> {
+    let config = serde_json::from_slice(&std::fs::read(
+        root()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("device-pki.json"),
+    )?)?;
+    Ok(crate::device_pki::providers(&config)?)
 }

@@ -4,7 +4,7 @@ use axum::{
     extract::State,
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
 };
 use rss_mdm_agent_wire::enroll as wire;
 use rss_mdm_audit_integration::RequestAudit;
@@ -24,6 +24,8 @@ pub fn router(service: Arc<Service>, envelope: crate::boundary::Envelope) -> Rou
             .route("/activate", post(activate))
             .route("/status", post(status))
             .route("/renewal-grants", post(renew))
+            .route("/trust", get(trust))
+            .route("/trust/acknowledgements", post(acknowledge))
             .with_state(service),
         envelope,
     )
@@ -123,4 +125,28 @@ pub(crate) fn failure_response(code: wire::ErrorCode, id: Option<uuid::Uuid>) ->
         }),
     )
         .into_response()
+}
+
+async fn trust(
+    State(s): State<Arc<Service>>,
+    peer: Option<Extension<HandshakePeer>>,
+    headers: HeaderMap,
+) -> Result<Json<rss_mdm_agent_wire::pki::Trust>, HttpFailure> {
+    bootstrap(&headers)?;
+    let peer =
+        peer.ok_or_else(|| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
+    Ok(Json(s.device_trust(&peer.0).await?))
+}
+async fn acknowledge(
+    State(s): State<Arc<Service>>,
+    Extension(a): Extension<RequestAudit>,
+    peer: Option<Extension<HandshakePeer>>,
+    headers: HeaderMap,
+    input: Body<rss_mdm_agent_wire::pki::Acknowledgement>,
+) -> Result<StatusCode, HttpFailure> {
+    bootstrap(&headers)?;
+    let peer =
+        peer.ok_or_else(|| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
+    s.acknowledge_trust(&peer.0, &body(input)?, &a).await?;
+    Ok(StatusCode::NO_CONTENT)
 }

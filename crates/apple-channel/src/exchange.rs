@@ -57,6 +57,20 @@ impl ports::AppleExchange for Exchange {
                 return Ok(ports::AppleReception::Idle);
             };
             if self.user.is_empty() {
+                if let Some(facts) = crate::trust_installation::receive(
+                    c,
+                    &self.apple,
+                    p,
+                    id,
+                    self.status,
+                    &self.dictionary,
+                    &self.bytes,
+                )
+                .await
+                .map_err(ports::Rejection::from)?
+                {
+                    return Ok(ports::AppleReception::Collection(facts));
+                }
                 if let Some(facts) = crate::agent_collection::receive(
                     c,
                     &self.apple.protection,

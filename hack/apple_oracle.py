@@ -9,7 +9,7 @@ import time
 import urllib.request
 import urllib.error
 import socket
-from apple_tools import nano_binary
+from fixture_tools import nano_binary
 
 
 def port():

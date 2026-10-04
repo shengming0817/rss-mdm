@@ -15,12 +15,11 @@ use rss_request_context::TenantId;
 use sqlx::Row;
 use tokio_rustls::rustls::pki_types::CertificateDer;
 use uuid::Uuid;
-use x509_cert::der::{Decode, Encode};
 
 pub struct Intent {
     pub enrollment_type: EnrollmentType,
     pub csr: Vec<u8>,
-    pub tbs: Vec<u8>,
+    pub profile: Vec<u8>,
     pub issuer: Vec<u8>,
     pub configuration: String,
     pub registration: Uuid,
@@ -40,7 +39,7 @@ pub(crate) fn intent(row: sqlx::postgres::PgRow) -> Result<Intent, Error> {
             _ => return Err(Error::Conflict),
         },
         csr: row.try_get("csr").map_err(db)?,
-        tbs: row.try_get("tbs").map_err(db)?,
+        profile: row.try_get("profile").map_err(db)?,
         issuer: row.try_get("issuer").map_err(db)?,
         configuration: row.try_get("configuration").map_err(db)?,
         registration: uuid(&row, "registration")?,
@@ -74,7 +73,6 @@ pub async fn issuance_intent(
         let old = intent(old)?;
         if old.enrollment_type != enrollment_type
             || old.csr != csr
-            || old.issuer != windows.ca.der()
             || old.configuration != windows.configuration
         {
             return Err(Error::Conflict);
@@ -88,12 +86,8 @@ pub async fn issuance_intent(
     let intent = Intent {
         enrollment_type,
         csr: csr.to_vec(),
-        tbs: windows
-            .ca
-            .intent(&verified, registration, now)?
-            .as_der()
-            .to_vec(),
-        issuer: windows.ca.der().to_vec(),
+        profile: windows.ca.profile(&verified, registration, now)?.encode()?,
+        issuer: windows.ca.der()?,
         configuration: windows.configuration.clone(),
         registration,
         credential: Uuid::new_v4(),
@@ -110,7 +104,7 @@ pub async fn issuance_intent(
         crate::enrollment_store::NewIntent {
             request: auth.id.to_string(),
             csr: &intent.csr,
-            tbs: &intent.tbs,
+            profile: &intent.profile,
             issuer: &intent.issuer,
             configuration: &intent.configuration,
             registration: intent.registration.to_string(),
@@ -151,19 +145,13 @@ pub async fn complete_issuance(
     mount: &crate::device::ChannelMount,
     retirement: &dyn rss_mdm_registration_service::Retirement,
 ) -> Result<(), Error> {
-    // The persisted intention is the only authority for the bytes being bound.
-    let issued = x509_cert::Certificate::from_der(certificate).map_err(|_| Error::Conflict)?;
-    if issued
-        .tbs_certificate
-        .to_der()
-        .map_err(|_| Error::Conflict)?
-        != intent.tbs
-    {
-        return Err(Error::Conflict);
-    }
-    let checked = windows
-        .ca
-        .verify(&[CertificateDer::from(certificate)], now)?;
+    let profile = certificate::IssuanceProfile::decode(&intent.profile)?;
+    let checked = windows.ca.validate_issued(
+        &profile,
+        &Csr::verify(&intent.csr)?,
+        &[CertificateDer::from(certificate)],
+        now,
+    )?;
     let credential = mount.credential(checked.fingerprint())?;
     let digest = crate::enrollment::digest(&(
         "enrollment_issue",
@@ -322,6 +310,16 @@ async fn complete_on(
     )
     .await
     .map_err(db)?;
+    rss_mdm_pki_service::certificates::record_in(
+        tx,
+        proof.tenant_id(),
+        "windows",
+        intent.registration,
+        &rss_mdm_device_trust::digest(&intent.issuer),
+        certificate,
+    )
+    .await
+    .map_err(|_| Error::Unavailable(Failure::Database))?;
     // Evaluate again after channel/registration lock waits, immediately before committing.
     crate::enrollment::store::mark_bound_in(tx, proof.tenant_id(), auth).await?;
     audit.registration(receipt.registration);
@@ -362,10 +360,7 @@ pub fn provision(
     tenant: &str,
 ) -> Result<Vec<u8>, Error> {
     let secrets = w.protection.open(tenant, auth.id, &intent.sealed)?;
-    let subject = x509_cert::TbsCertificate::from_der(&intent.tbs)
-        .map_err(|_| Error::Conflict)?
-        .subject
-        .to_string();
+    let subject = format!("CN={}", intent.registration);
     // SHA-1 is only the Windows certificate-store address; management authority uses SHA-256.
     let thumbprint = |bytes: &[u8]| -> String {
         ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, bytes)
@@ -380,9 +375,8 @@ pub fn provision(
             push_pfn: w.push.as_ref().map(|p| p.pfn.as_str()),
             enrollment_type: intent.enrollment_type,
             enterprise_device_id: &intent.registration.to_string(),
-            issuer: &intent.issuer,
+            authorities: &w.trust_certificates()?,
             certificate,
-            issuer_thumbprint: &thumbprint(&intent.issuer),
             certificate_thumbprint: &thumbprint(certificate),
             certificate_subject: &subject,
             management_url: &w.management_url(rss_mdm_registration_service::Purpose::Primary),
@@ -398,3 +392,73 @@ pub fn provision(
 }
 
 use rss_mdm_audit_integration::RequestAudit;
+
+/// Dispatch once after the authorization owner has committed the immutable profile.
+pub async fn sign(
+    app: &HttpState,
+    tenant: &str,
+    intent: &Intent,
+    now: i64,
+) -> Result<Vec<u8>, Error> {
+    let w = app.windows()?;
+    let profile = certificate::IssuanceProfile::decode(&intent.profile)?;
+    if profile.registration != intent.registration
+        || profile.issuer != sha2::Sha256::digest(&intent.issuer).as_slice()
+        || intent.configuration != w.configuration
+    {
+        return Err(Error::Conflict);
+    }
+    sign_profile(app, tenant, intent.credential, &intent.csr, &profile, now).await
+}
+pub(crate) async fn sign_profile(
+    app: &HttpState,
+    tenant: &str,
+    attempt: Uuid,
+    bytes: &[u8],
+    profile: &certificate::IssuanceProfile,
+    now: i64,
+) -> Result<Vec<u8>, Error> {
+    let w = app.windows()?;
+    let csr = Csr::verify(bytes)?;
+    let pem = csr.pem()?;
+    let subject = profile.registration.to_string();
+    let digest = csr.digest();
+    let issuer = profile
+        .issuer
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let provider = w
+        .providers
+        .get(rss_mdm_agent_wire::pki::Purpose::Windows, &issuer)
+        .map_err(|_| Error::Conflict)?;
+    let chain = rss_mdm_pki_service::signing::SigningStore::new(app.audit_store.clone())
+        .issue(
+            Uuid::parse_str(tenant).map_err(|_| Error::Malformed)?,
+            "windows",
+            &issuer,
+            provider,
+            rss_mdm_pki_service::Sign {
+                attempt,
+                csr_pem: &pem,
+                csr_digest: &digest,
+                subject: &subject,
+                sans: &[],
+                start: profile.start,
+                end: profile.end,
+                deadline: profile.start + 60,
+            },
+            now,
+            |chain| {
+                let chain: Vec<_> = chain
+                    .iter()
+                    .map(|bytes| CertificateDer::from(bytes.as_slice()))
+                    .collect();
+                w.ca.validate_issued(&profile, &csr, &chain, now).is_ok()
+            },
+        )
+        .await
+        .map_err(|_| Error::CommitUnknown)?;
+    chain.into_iter().next().ok_or(Error::Conflict)
+}
+use sha2::Digest;

@@ -29,7 +29,7 @@ impl RenewalProof {
         self.expires
     }
 }
-impl WindowsEnrollmentAuthority {
+impl WindowsDeviceTrust {
     /// Verify the current TLS leaf, CMS signer, signed content and new key proof of possession.
     /// The registration owner must still fence current credentials and retirement transactionally.
     pub fn renewal(

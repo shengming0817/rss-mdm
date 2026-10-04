@@ -104,6 +104,7 @@ fn enabled<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub agent_pki: crate::agent_pki::Config,
+    pub device_pki: Vec<crate::device_pki::Provider>,
     pub native_protection_key_file: PathBuf,
     pub audit: AuditConfig,
     pub listen: SocketAddr,

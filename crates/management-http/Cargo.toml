@@ -6,6 +6,7 @@ rust-version.workspace=true
 publish.workspace=true
 autotests=false
 [dependencies]
+rss-mdm-pki-service.workspace = true
 rss-mdm-policy.workspace=true
 schemars.workspace=true
 rss-mdm-certificate-archive-service.workspace = true

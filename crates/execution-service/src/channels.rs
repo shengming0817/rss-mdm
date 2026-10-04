@@ -211,7 +211,7 @@ pub trait ApplePush: Send + Sync {
         status: Option<u16>,
         outcome: PushOutcome,
     ) -> Pending<'a, Option<u64>>;
-    fn renewal_due<'a>(
+    fn maintenance_due<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,

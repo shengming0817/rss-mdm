@@ -22,6 +22,12 @@ fn payload(kind: &str, id: &str, uuid: Uuid) -> Dictionary {
         ("PayloadScope", "System".into()),
     ])
 }
+/// Public CA payload. Roots use DER; intermediate payload content uses PEM without private key.
+pub struct CertificatePayload {
+    pub root: bool,
+    pub fingerprint: String,
+    pub content: Vec<u8>,
+}
 pub struct EnrollmentProfile<'a> {
     pub access_rights: u16,
     pub scep_url: &'a str,
@@ -135,3 +141,60 @@ pub fn presence(d: &Dictionary, identifier: &str, uuid: Uuid) -> Result<bool, Er
 #[cfg(test)]
 #[path = "../tests/profile.rs"]
 mod tests;
+
+/// Dedicated managed CA profile. Replacing it also removes certificates from retired generations.
+pub fn trust(
+    authorities: &[CertificatePayload],
+    registration: Uuid,
+    profile_uuid: Uuid,
+) -> Result<(Vec<u8>, Vec<crate::native::profiles::ProfileObject>), Error> {
+    use crate::native::profiles::ProfileObject;
+    if authorities.is_empty()
+        || authorities.len() > 32
+        || registration.is_nil()
+        || profile_uuid.is_nil()
+    {
+        return Err(Error::Malformed);
+    }
+    let identifier = format!("com.rss-mdm.pki.{registration}");
+    let mut profile = payload("Configuration", &identifier, profile_uuid);
+    profile.insert("PayloadDisplayName".into(), "RSS Device Trust".into());
+    let mut contents = Vec::new();
+    let mut objects = vec![ProfileObject {
+        payload_type: "Configuration".into(),
+        identifier: identifier.clone(),
+        uuid: profile_uuid,
+        multiple: true,
+    }];
+    let mut seen = std::collections::BTreeSet::new();
+    for certificate in authorities {
+        if certificate.content.is_empty()
+            || certificate.content.len() > 65536
+            || certificate.fingerprint.len() != 64
+            || !seen.insert(&certificate.fingerprint)
+        {
+            return Err(Error::Malformed);
+        }
+        let kind = if certificate.root {
+            "com.apple.security.root"
+        } else {
+            "com.apple.security.pem"
+        };
+        let id = format!("{identifier}.ca.{}", certificate.fingerprint);
+        let uuid = child_uuid(profile_uuid, &certificate.fingerprint);
+        let mut content = payload(kind, &id, uuid);
+        content.insert(
+            "PayloadContent".into(),
+            Value::Data(certificate.content.clone()),
+        );
+        contents.push(content.into());
+        objects.push(ProfileObject {
+            payload_type: kind.into(),
+            identifier: id,
+            uuid,
+            multiple: true,
+        });
+    }
+    profile.insert("PayloadContent".into(), Value::Array(contents));
+    Ok((xml(profile)?, objects))
+}

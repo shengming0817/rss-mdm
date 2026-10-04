@@ -25,7 +25,7 @@ from build_run import lease_fds, require_lease
 
 ROOT = Path(__file__).resolve().parents[1]
 PROVIDERS = json.loads((ROOT / 'deployment/providers.lock.json').read_text())
-APPLE_CA = json.loads((ROOT / 'fixtures/apple-tools.lock.json').read_text())['step-ca']
+PKI_CA = {**json.loads((ROOT / 'fixtures/pki-tools.lock.json').read_text())['step-ca'], 'image': PROVIDERS['step-ca']}
 
 def project_name(worktree):
     return 'mdm-' + hashlib.sha256(os.fsencode(Path(worktree).resolve())).hexdigest()[:16]
@@ -74,9 +74,9 @@ class Environment:
                 'MDM_ENV_ROOT': str(self.root), 'MDM_WORKTREE_ID': self.identity,
                 'MDM_POSTGRES_IMAGE': PROVIDERS['postgres'], 'MDM_RUNTIME_IMAGE': PROVIDERS['runtime'],
                 'MDM_KEYCLOAK_IMAGE':PROVIDERS['keycloak'],'MDM_NGINX_IMAGE':PROVIDERS['nginx'],
-                'MDM_STEP_CA_IMAGE':APPLE_CA['image'], 'MDM_STEP_CA_INTERNAL_PORT':str(APPLE_CA['port']),
-                'MDM_APPLE_CA_ROOT':str(self.root/'apple'), 'MDM_APPLE_CA_USER':f'{os.getuid()}:{os.getgid()}',
-                'MDM_APPLE_HOST_ADDRESS':'host-gateway',
+                'MDM_STEP_CA_IMAGE':PKI_CA['image'], 'MDM_STEP_CA_INTERNAL_PORT':str(PKI_CA['port']),
+                'MDM_PKI_ROOT':str(self.root/'apple'), 'MDM_PKI_USER':f'{os.getuid()}:{os.getgid()}',
+                'MDM_PKI_HOST_ADDRESS':'host-gateway',
                 **settings, **getattr(self,'extra',{})}
 
     def local_gateway(self):

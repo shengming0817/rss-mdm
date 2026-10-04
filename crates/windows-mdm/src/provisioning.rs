@@ -21,6 +21,23 @@ impl EnrollmentType {
         }
     }
 }
+/// Native public authority stores; intermediate issuers are never installed as roots.
+#[derive(Clone, Copy)]
+pub enum AuthorityStore {
+    /// Offline trust anchor in Root/System.
+    Root,
+    /// Online issuer in CA/System.
+    Intermediate,
+}
+/// Caller-verified public certificate, with its Windows SHA1 store locator.
+pub struct AuthorityCertificate {
+    /// Target system certificate store.
+    pub store: AuthorityStore,
+    /// Exact DER public certificate.
+    pub certificate: Vec<u8>,
+    /// Forty-character hexadecimal native store locator.
+    pub thumbprint: String,
+}
 /// Caller-verified enrollment material for the fixed provisioning template.
 /// Certificate authenticity, key binding, endpoint authorization and credential generation
 /// belong to the product. Encoding checks bounds and syntax, not these trust assertions.
@@ -33,12 +50,10 @@ pub struct Provisioning<'a> {
     pub enrollment_type: EnrollmentType,
     /// Product-assigned enterprise device identity, emitted as EntDMID.
     pub enterprise_device_id: &'a str,
-    /// Caller-verified issuer certificate bytes, base64-encoded into Root/System.
-    pub issuer: &'a [u8],
+    /// Complete approved overlap of public roots and intermediate issuers.
+    pub authorities: &'a [AuthorityCertificate],
     /// Caller-verified issued certificate bytes for the selected personal store.
     pub certificate: &'a [u8],
-    /// Exactly 40 hexadecimal characters naming the issuer store entry.
-    pub issuer_thumbprint: &'a str,
     /// Exactly 40 hexadecimal characters naming the issued certificate store entry.
     pub certificate_thumbprint: &'a str,
     /// Nonblank legal XML subject within [`CodecLimits::uri_bytes`], required by both profiles.
@@ -74,7 +89,15 @@ fn parm(w: &mut Output<'_>, name: &str, value: &str) -> Result<()> {
 /// Contains certificates and plaintext credential values; callers must protect the bytes.
 pub fn encode(p: &Provisioning<'_>, l: &CodecLimits) -> Result<Vec<u8>> {
     p.poll.validate()?;
-    for cert in [p.issuer, p.certificate] {
+    if p.authorities.is_empty() || p.authorities.len() > 32 {
+        return Err(crate::CodecError::InvalidValue);
+    }
+    for cert in p
+        .authorities
+        .iter()
+        .map(|c| c.certificate.as_slice())
+        .chain(std::iter::once(p.certificate))
+    {
         bound(cert.len(), l.binary_bytes)?;
     }
     for value in [
@@ -88,7 +111,12 @@ pub fn encode(p: &Provisioning<'_>, l: &CodecLimits) -> Result<Vec<u8>> {
     ] {
         text(value, l.uri_bytes, false)?;
     }
-    for fingerprint in [p.issuer_thumbprint, p.certificate_thumbprint] {
+    for fingerprint in p
+        .authorities
+        .iter()
+        .map(|c| c.thumbprint.as_str())
+        .chain(std::iter::once(p.certificate_thumbprint))
+    {
         if fingerprint.len() != 40 || !fingerprint.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(crate::CodecError::InvalidValue);
         }
@@ -99,9 +127,21 @@ pub fn encode(p: &Provisioning<'_>, l: &CodecLimits) -> Result<Vec<u8>> {
     let mut w = Output::new(l.binary_bytes, l);
     w.start("wap-provisioningdoc", &[("version", "1.1")])?;
     characteristic(&mut w, "CertificateStore")?;
-    for (store, location, fingerprint, certificate) in [
-        ("Root", "System", p.issuer_thumbprint, p.issuer),
-        (
+    for (store, location, fingerprint, certificate) in p
+        .authorities
+        .iter()
+        .map(|c| {
+            (
+                match c.store {
+                    AuthorityStore::Root => "Root",
+                    AuthorityStore::Intermediate => "CA",
+                },
+                "System",
+                c.thumbprint.as_str(),
+                c.certificate.as_slice(),
+            )
+        })
+        .chain(std::iter::once((
             "My",
             match p.enrollment_type {
                 EnrollmentType::Full => "User",
@@ -109,8 +149,8 @@ pub fn encode(p: &Provisioning<'_>, l: &CodecLimits) -> Result<Vec<u8>> {
             },
             p.certificate_thumbprint,
             p.certificate,
-        ),
-    ] {
+        )))
+    {
         characteristic(&mut w, store)?;
         characteristic(&mut w, location)?;
         characteristic(&mut w, fingerprint)?;

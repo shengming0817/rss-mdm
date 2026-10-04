@@ -3378,6 +3378,7 @@ dependencies = [
  "rss-mdm-compliance-postgres",
  "rss-mdm-content-s3",
  "rss-mdm-content-service",
+ "rss-mdm-device-trust",
  "rss-mdm-execution-service",
  "rss-mdm-flow-service",
  "rss-mdm-group-postgres",
@@ -3386,6 +3387,7 @@ dependencies = [
  "rss-mdm-inventory-service",
  "rss-mdm-management-http",
  "rss-mdm-native-protection",
+ "rss-mdm-pki-service",
  "rss-mdm-policy",
  "rss-mdm-policy-postgres",
  "rss-mdm-registration-service",
@@ -3448,10 +3450,12 @@ dependencies = [
  "rss-mdm-audit-integration",
  "rss-mdm-authorization-service",
  "rss-mdm-certificate",
+ "rss-mdm-device-trust",
  "rss-mdm-execution-service",
  "rss-mdm-inventory",
  "rss-mdm-inventory-service",
  "rss-mdm-native-protection",
+ "rss-mdm-pki-service",
  "rss-mdm-registration-service",
  "rss-mdm-resource",
  "rss-mdm-software-service",
@@ -3570,7 +3574,10 @@ dependencies = [
  "libxml",
  "quick-xml 0.42.0",
  "ring",
+ "rss-mdm-agent-wire",
+ "rss-mdm-device-trust",
  "serde",
+ "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.20",
@@ -3688,6 +3695,22 @@ dependencies = [
  "uuid",
  "zeroize",
  "zip",
+]
+
+[[package]]
+name = "rss-mdm-device-trust"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "num-bigint",
+ "ring",
+ "rss-mdm-agent-wire",
+ "sha2 0.10.9",
+ "thiserror 2.0.20",
+ "tokio-rustls",
+ "url",
+ "uuid",
+ "x509-cert",
 ]
 
 [[package]]
@@ -3929,6 +3952,7 @@ dependencies = [
  "rss-mdm-flow-service",
  "rss-mdm-inventory",
  "rss-mdm-inventory-service",
+ "rss-mdm-pki-service",
  "rss-mdm-policy",
  "rss-mdm-registration-service",
  "rss-mdm-resource",
@@ -3973,6 +3997,33 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "yaml-rust2",
+]
+
+[[package]]
+name = "rss-mdm-pki-service"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "reqwest",
+ "ring",
+ "rss-audit-postgres",
+ "rss-mdm-agent-wire",
+ "rss-mdm-audit-integration",
+ "rss-mdm-authorization-service",
+ "rss-mdm-certificate",
+ "rss-mdm-device-trust",
+ "rss-request-context",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.20",
+ "time",
+ "tokio",
+ "url",
+ "uuid",
+ "x509-cert",
+ "zeroize",
 ]
 
 [[package]]
@@ -4021,7 +4072,9 @@ dependencies = [
  "rss-mdm-audit-integration",
  "rss-mdm-authorization-service",
  "rss-mdm-certificate",
+ "rss-mdm-device-trust",
  "rss-mdm-inventory",
+ "rss-mdm-pki-service",
  "rss-observation",
  "rss-request-context",
  "rss-transactional-messaging",
@@ -4194,10 +4247,12 @@ dependencies = [
  "rss-mdm-audit-integration",
  "rss-mdm-authorization-service",
  "rss-mdm-certificate",
+ "rss-mdm-device-trust",
  "rss-mdm-execution-service",
  "rss-mdm-inventory",
  "rss-mdm-inventory-service",
  "rss-mdm-native-protection",
+ "rss-mdm-pki-service",
  "rss-mdm-registration-service",
  "rss-mdm-resource",
  "rss-mdm-software-service",

@@ -4,13 +4,13 @@ pub async fn intent(
     tenant: &str,
     request: String,
 ) -> Result<Option<sqlx::postgres::PgRow>, sqlx::Error> {
-    sqlx::query("SELECT q.windows_profile AS enrollment_type,i.csr,i.tbs,i.issuer,i.configuration,i.registration::text,i.credential::text,i.epoch::text,i.secrets FROM mdm_access.enrollment_intents i JOIN mdm_access.requests q ON (q.tenant_id,q.id)=(i.tenant_id,i.request_id) WHERE i.tenant_id=$1::uuid AND i.request_id=$2::uuid")
+    sqlx::query("SELECT q.windows_profile AS enrollment_type,i.csr,i.profile,i.issuer,i.configuration,i.registration::text,i.credential::text,i.epoch::text,i.secrets FROM mdm_access.enrollment_intents i JOIN mdm_access.requests q ON (q.tenant_id,q.id)=(i.tenant_id,i.request_id) WHERE i.tenant_id=$1::uuid AND i.request_id=$2::uuid")
             .bind(tenant).bind(request).fetch_optional(c).await
 }
 pub struct NewIntent<'a> {
     pub request: String,
     pub csr: &'a [u8],
-    pub tbs: &'a [u8],
+    pub profile: &'a [u8],
     pub issuer: &'a [u8],
     pub configuration: &'a str,
     pub registration: String,
@@ -26,7 +26,7 @@ pub async fn insert_intent(
     let NewIntent {
         request,
         csr,
-        tbs,
+        profile,
         issuer,
         configuration,
         registration,
@@ -34,8 +34,8 @@ pub async fn insert_intent(
         epoch,
         secrets,
     } = intent;
-    sqlx::query("INSERT INTO mdm_access.enrollment_intents(tenant_id,request_id,csr,tbs,issuer,configuration,registration,credential,epoch,secrets) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,$7::uuid,$8::uuid,$9::uuid,$10)")
-            .bind(tenant).bind(request).bind(csr).bind(tbs).bind(issuer).bind(configuration).bind(registration).bind(credential).bind(epoch).bind(secrets)
+    sqlx::query("INSERT INTO mdm_access.enrollment_intents(tenant_id,request_id,csr,profile,issuer,configuration,registration,credential,epoch,secrets) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,$7::uuid,$8::uuid,$9::uuid,$10)")
+            .bind(tenant).bind(request).bind(csr).bind(profile).bind(issuer).bind(configuration).bind(registration).bind(credential).bind(epoch).bind(secrets)
             .execute(c).await
 }
 pub async fn certificate(

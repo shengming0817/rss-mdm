@@ -1,0 +1,108 @@
+{
+  "tables": [
+    {
+      "schema": "mdm_pki",
+      "table": "issuers",
+      "read_write": true,
+      "updates": [
+        "state"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_pki",
+      "table": "signing",
+      "read_write": true,
+      "updates": [
+        "state",
+        "chain"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_pki",
+      "table": "certificates",
+      "read_write": true,
+      "updates": [
+        "registration"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_pki",
+      "table": "rotations",
+      "read_write": true,
+      "updates": [
+        "state"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_pki",
+      "table": "acknowledgements",
+      "read_write": true,
+      "updates": [
+        "revision",
+        "digest",
+        "confirmed_at"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_pki",
+      "table": "revocations",
+      "read_write": true,
+      "updates": [
+        "state",
+        "failures",
+        "next_attempt",
+        "crl_number"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_pki",
+      "table": "crls",
+      "read_write": true,
+      "updates": [
+        "number",
+        "this_update",
+        "next_update",
+        "der"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_pki",
+      "table": "trust",
+      "read_write": true,
+      "updates": [
+        "revision",
+        "body"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_pki",
+      "table": "operations",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_pki",
+      "table": "installations",
+      "read_write": true,
+      "updates": [
+        "revision",
+        "digest",
+        "body",
+        "confirmed_at"
+      ],
+      "delete_policy": null
+    }
+  ],
+  "functions": [],
+  "external_relations": [],
+  "verified_schemas": []
+}

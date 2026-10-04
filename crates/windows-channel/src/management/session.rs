@@ -314,9 +314,39 @@ impl WindowsSession for Session {
                 if self.stored.is_none() {
                     supersede_sessions(c, &mut self.facts, p).await?;
                 }
+                let pki_input = if self.authenticated {
+                    crate::trust_installation::receive(
+                        c,
+                        key,
+                        &self.windows,
+                        p,
+                        input,
+                        history.ok_or(Error::Conflict)?,
+                        &self.audit,
+                        &mut self.facts,
+                    )
+                    .await?
+                } else {
+                    input.clone()
+                };
+                let input = &pki_input;
+                let pki_pending = if dispatch && self.authenticated {
+                    crate::trust_installation::send(
+                        c,
+                        key,
+                        &self.windows,
+                        p,
+                        response,
+                        &self.limits,
+                        &mut self.facts,
+                    )
+                    .await?
+                } else {
+                    false
+                };
                 if p.purpose() == rss_mdm_registration_service::Purpose::WindowsDeclared {
                     self.collection_complete = true;
-                    return Ok(false);
+                    return Ok(pki_pending);
                 }
                 if !crate::device::store::active_source_in(
                     c,
@@ -382,7 +412,7 @@ impl WindowsSession for Session {
                 .await?;
                 self.run_id = run_id;
                 self.collection_complete = complete;
-                let mut pending = false;
+                let mut pending = pki_pending;
                 if dispatch && self.authenticated {
                     pending |=
                         crate::push_channel::send(c, key, &self.windows, p, response, &self.limits)

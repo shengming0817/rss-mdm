@@ -184,7 +184,7 @@ def app_family(owner, *, namespace=None, identity=True,
             support=(f'crates/app/tests/{test_root}/mod.rs',))
 
 
-add('agent.pki', selectors=('agent_pki_tests::',), fixtures=('identity','apple','scep','windows','agent_pki'),
+add('agent.pki', selectors=('agent_pki_tests::',), fixtures=('identity','agent_pki'),
     sources=('crates/certificate/src/agent.rs','crates/registration-service/src/agent_pki.rs',
              'crates/app/src/agent_pki.rs','deployment/agent-leaf.tpl',
              'crates/registration-service/src/operations.rs'),
@@ -196,7 +196,7 @@ MODULES['agent.pki'] = replace(MODULES['agent.pki'], policies=(
     CasePolicy('agent_pki_tests::restored_ca_signs_only_live_authorized_agent_csrs_and_tls_preserves_purpose',
                'reuse', 'pair'),
     CasePolicy('agent_pki_tests::agent_ingress_holds_one_global_permit_per_request', 'reuse', 'tenant'),
-    CasePolicy('agent_pki_tests::production_agent_listener_bootstraps_activates_and_rechecks_revocation', 'reuse', 'tenant'),
+    CasePolicy('agent_pki_tests::production_agent_listener_bootstraps_activates_and_rechecks_revocation', 'reuse', 'tenant',('identity','windows','agent_pki')),
 ))
 
 add('installation.migration', selectors=('migration::tests::',), profile='empty',
@@ -864,7 +864,7 @@ for name, module in tuple(MODULES.items()):
     if 'apple' in fixtures:
         support += ('hack/apple_fixtures.py',)
     if fixtures & {'scep','oracle'}:
-        support += ('hack/apple_tools.py','fixtures/apple-tools.lock.json')
+        support += ('hack/fixture_tools.py','fixtures/apple-tools.lock.json')
     if 'scep' in fixtures:
         support += ('hack/apple_ca.py','deployment/compose.yaml')
     if 'idp' in fixtures:
@@ -993,7 +993,7 @@ TOOL_INPUTS = {
     'hack/build_run.py': ('test_build_run', 'test_build_environment'),
     'hack/ci.py': ('test_ci', 'test_ci_selection'),
     'hack/agent_wire_artifact.py': ('test_agent_wire_artifact',),
-    'hack/apple_tools.py': ('test_apple_tools',),
+    'hack/fixture_tools.py': ('test_apple_tools',),
     'hack/apple_ca.py': ('test_apple_ca',),
     'hack/agent_pki_fixtures.py': ('test_agent_pki_fixtures',),
     'fixtures/apple-tools.lock.json': ('test_apple_tools', 'test_apple_ca', 'test_t2_environment'),

@@ -5,25 +5,18 @@ use crate::{Error, HandshakePeer};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use ring::signature;
 use sha2::{Digest, Sha256};
-use std::{sync::Arc, time::Duration};
-use tokio_rustls::rustls::{
-    self,
-    pki_types::{CertificateDer, UnixTime},
-    server::danger::ClientCertVerifier,
-};
+use std::sync::Arc;
+use tokio_rustls::rustls::{pki_types::CertificateDer, server::danger::ClientCertVerifier};
 use uuid::Uuid;
 use x509_cert::{
     Certificate,
     der::{
-        Decode, DecodePem, Encode,
-        asn1::{Any, ObjectIdentifier, OctetString},
+        Decode, Encode,
+        asn1::{Any, ObjectIdentifier},
     },
     ext::{
         Extension,
-        pkix::{
-            BasicConstraints, ExtendedKeyUsage, KeyUsage, KeyUsages, SubjectAltName,
-            name::GeneralName,
-        },
+        pkix::{BasicConstraints, ExtendedKeyUsage, KeyUsage, KeyUsages},
     },
     request::CertReq,
     spki::AlgorithmIdentifierOwned,
@@ -31,7 +24,6 @@ use x509_cert::{
 const RSA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1");
 const SHA256_RSA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.11");
 const CLIENT_AUTH: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.3.2");
-const STEP: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.37476.9000.64.1");
 const COMMON_NAME: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.4.3");
 const EXTENSION_REQ: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.14");
 pub const SUBJECT: &str = "rss-mdm-agent";
@@ -208,18 +200,8 @@ impl VerifiedAgentPeer {
         &self.metadata
     }
 }
-struct Provisioner {
-    kind: u8,
-    name: OctetString,
-    credential: OctetString,
-}
 pub struct AgentTrust {
-    issuer: Certificate,
-    issuer_digest: [u8; 32],
-    verifier: Arc<dyn ClientCertVerifier>,
-    enrollment_verifier: Arc<dyn ClientCertVerifier>,
-    provisioner: String,
-    kid: String,
+    pub trust: rss_mdm_device_trust::DeviceTrust,
     max_seconds: i64,
 }
 fn valid(c: &Certificate, now: i64) -> bool {
@@ -238,112 +220,93 @@ fn valid(c: &Certificate, now: i64) -> bool {
                 .as_secs()
 }
 impl AgentTrust {
-    pub fn from_pem(
-        bytes: &[u8],
-        provisioner: &str,
-        kid: &str,
+    pub fn from_trust(
+        trust: rss_mdm_device_trust::DeviceTrust,
         max_days: u16,
-        now: i64,
     ) -> Result<Self, Error> {
-        if bytes.len() > 32768
-            || provisioner != "rss-agent"
-            || kid.is_empty()
-            || kid.len() > 128
+        let active = trust.active()?;
+        if active.provisioner != "rss-agent"
+            || active.kid.is_empty()
+            || active.kid.len() > 128
             || !(1..=3650).contains(&max_days)
         {
             return Err(Error::Malformed);
         }
-        let issuer = Certificate::from_pem(bytes).map_err(malformed)?;
-        let tbs = &issuer.tbs_certificate;
-        if !valid(&issuer, now)
-            || tbs
-                .get::<BasicConstraints>()
-                .map_err(malformed)?
-                .is_none_or(|(_, bc)| !bc.ca)
-            || tbs
-                .get::<KeyUsage>()
-                .map_err(malformed)?
-                .is_none_or(|(_, ku)| !ku.key_cert_sign())
-        {
-            return Err(Error::Malformed);
-        }
-        let der = issuer.to_der().map_err(malformed)?;
-        let mut roots = rustls::RootCertStore::empty();
-        roots
-            .add(CertificateDer::from(der.clone()))
-            .map_err(malformed)?;
-        let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
-            Arc::new(roots.clone()),
-            Arc::new(rustls::crypto::ring::default_provider()),
-        )
-        .build()
-        .map_err(malformed)?;
-        let enrollment_verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
-            Arc::new(roots),
-            Arc::new(rustls::crypto::ring::default_provider()),
-        )
-        .allow_unauthenticated()
-        .build()
-        .map_err(malformed)?;
+        let der = rss_mdm_device_trust::decode(&active.certificate, 32768)?;
+        let issuer = Certificate::from_der(&der).map_err(malformed)?;
+        let _ = issuer;
         Ok(Self {
-            issuer,
-            issuer_digest: Sha256::digest(der).into(),
-            verifier,
-            enrollment_verifier,
-            provisioner: provisioner.into(),
-            kid: kid.into(),
+            trust,
             max_seconds: i64::from(max_days) * 86400,
         })
     }
     /// Offer real client authentication while permitting anonymous bootstrap requests.
     pub fn enrollment_verifier(&self) -> Arc<dyn ClientCertVerifier> {
-        self.enrollment_verifier.clone()
+        self.trust.verifier(true)
     }
     pub fn verifier(&self) -> Arc<dyn ClientCertVerifier> {
-        self.verifier.clone()
+        self.trust.verifier(false)
     }
     pub fn issuer_digest(&self) -> [u8; 32] {
-        self.issuer_digest
+        self.trust
+            .active()
+            .and_then(|g| rss_mdm_device_trust::decode(&g.certificate, 32768))
+            .map(|der| Sha256::digest(der).into())
+            .unwrap_or([0; 32])
+    }
+    fn active_certificate(&self) -> Result<Certificate, Error> {
+        Certificate::from_der(&rss_mdm_device_trust::decode(
+            &self.trust.active()?.certificate,
+            32768,
+        )?)
+        .map_err(malformed)
     }
     pub fn expires(&self) -> i64 {
-        self.issuer
-            .tbs_certificate
-            .validity
-            .not_after
-            .to_unix_duration()
-            .as_secs() as i64
+        self.active_certificate()
+            .map(|c| {
+                c.tbs_certificate
+                    .validity
+                    .not_after
+                    .to_unix_duration()
+                    .as_secs() as i64
+            })
+            .unwrap_or(0)
     }
     pub fn permits_window(&self, start: i64, end: i64) -> bool {
-        start > 0
-            && valid(&self.issuer, start)
-            && end > start
-            && end <= self.expires()
-            && end - start <= self.max_seconds
+        self.active_certificate().is_ok_and(|c| {
+            start > 0
+                && valid(&c, start)
+                && end > start
+                && end <= self.expires()
+                && end - start <= self.max_seconds
+        })
     }
     fn check(&self, chain: &[CertificateDer<'_>], now: i64) -> Result<Metadata, Error> {
-        if chain.is_empty()
-            || chain.len() > 4
-            || chain.iter().any(|c| c.len() > 32768)
-            || !valid(&self.issuer, now)
-        {
-            return Err(Error::Unauthorized);
-        }
-        // The configured anchor is the direct signer; auxiliary chain members
-        // cannot delegate this Agent purpose to a same-name subordinate CA.
-        self.verifier
-            .verify_client_cert(
-                &chain[0],
-                &[],
-                UnixTime::since_unix_epoch(Duration::from_secs(now as u64)),
-            )
-            .map_err(|_| Error::Unauthorized)?;
-        let c = Certificate::from_der(&chain[0]).map_err(malformed)?;
+        let generation = self.trust.verify(chain, now)?;
+        self.metadata(&chain[0], generation)
+    }
+    fn metadata(
+        &self,
+        der: &[u8],
+        generation: rss_mdm_agent_wire::pki::Issuer,
+    ) -> Result<Metadata, Error> {
+        let issuer_bytes = rss_mdm_device_trust::decode(&generation.certificate, 32768)?;
+        let issuer = Certificate::from_der(&issuer_bytes).map_err(malformed)?;
+        let c = Certificate::from_der(der).map_err(malformed)?;
         let t = &c.tbs_certificate;
         let start = t.validity.not_before.to_unix_duration().as_secs() as i64;
         let end = t.validity.not_after.to_unix_duration().as_secs() as i64;
-        if !valid(&c, now)
-            || !self.permits_window(start, end)
-            || t.issuer != self.issuer.tbs_certificate.subject
+        if start <= 0
+            || end <= start
+            || end - start > self.max_seconds
+            || end
+                > issuer
+                    .tbs_certificate
+                    .validity
+                    .not_after
+                    .to_unix_duration()
+                    .as_secs() as i64
+            || t.issuer != issuer.tbs_certificate.subject
             || !agent_subject(&t.subject)
             || !rsa(&t.subject_public_key_info.algorithm, RSA)
             || t.get::<BasicConstraints>()
@@ -358,62 +321,33 @@ impl AgentTrust {
         {
             return Err(Error::Unauthorized);
         }
-        let (_, san) = t
-            .get::<SubjectAltName>()
-            .map_err(malformed)?
-            .ok_or(Error::Unauthorized)?;
-        let identity = match san.0.as_slice() {
-            [GeneralName::UniformResourceIdentifier(uri)] => uri.to_string(),
-            _ => return Err(Error::Unauthorized),
-        };
-        let remainder = identity
-            .strip_prefix("urn:rss-mdm:agent:v1:")
-            .ok_or(Error::Unauthorized)?;
-        let (tenant, encoded) = remainder.split_once(':').ok_or(Error::Unauthorized)?;
-        let tenant = Uuid::parse_str(tenant).map_err(malformed)?;
-        let device = URL_SAFE_NO_PAD.decode(encoded).map_err(malformed)?;
-        if self::identity(tenant, std::str::from_utf8(&device).map_err(malformed)?)? != identity {
-            return Err(Error::Unauthorized);
-        }
-        let extensions = t.extensions.as_ref().ok_or(Error::Unauthorized)?;
-        let mut seen = std::collections::BTreeSet::new();
-        if extensions.iter().any(|ext| !seen.insert(ext.extn_id)) {
-            return Err(Error::Unauthorized);
-        }
-        let marker = extensions
-            .iter()
-            .find(|ext| ext.extn_id == STEP)
-            .ok_or(Error::Unauthorized)?;
-        let provisioner = Any::from_der(marker.extn_value.as_bytes())
-            .map_err(malformed)?
-            .sequence(|reader| {
-                Ok(Provisioner {
-                    kind: u8::decode(reader)?,
-                    name: OctetString::decode(reader)?,
-                    credential: OctetString::decode(reader)?,
-                })
-            })
-            .map_err(malformed)?;
-        if provisioner.kind != 1
-            || provisioner.name.as_bytes() != self.provisioner.as_bytes()
-            || provisioner.credential.as_bytes() != self.kid.as_bytes()
-        {
-            return Err(Error::Unauthorized);
-        }
+        let identity = rss_mdm_device_trust::agent_identity(&c, &generation)?;
         Ok(Metadata {
             profile: PROFILE,
             identity,
-            issuer: self.issuer_digest,
-            fingerprint: Sha256::digest(&chain[0]).into(),
+            issuer: Sha256::digest(&issuer_bytes).into(),
+            fingerprint: Sha256::digest(der).into(),
             spki: Sha256::digest(t.subject_public_key_info.to_der().map_err(malformed)?).into(),
             serial: t.serial_number.as_bytes().to_vec(),
             not_before: start,
             not_after: end,
-            provisioner: self.provisioner.clone(),
+            provisioner: generation.provisioner,
         })
     }
     pub fn validate_issued(
         &self,
+        chain: Vec<Vec<u8>>,
+        csr: &VerifiedAgentCsr,
+        identity: &str,
+        start: i64,
+        end: i64,
+        now: i64,
+    ) -> Result<IssuedAgentCertificate, Error> {
+        self.validate_issued_for(self.issuer_digest(), chain, csr, identity, start, end, now)
+    }
+    pub fn validate_issued_for(
+        &self,
+        expected_issuer: [u8; 32],
         chain: Vec<Vec<u8>>,
         csr: &VerifiedAgentCsr,
         identity: &str,
@@ -426,6 +360,40 @@ impl AgentTrust {
             .map(|c| CertificateDer::from(c.as_slice()))
             .collect::<Vec<_>>();
         let metadata = self.check(&refs, now)?;
+        if metadata.issuer != expected_issuer
+            || metadata.identity != identity
+            || metadata.spki != csr.spki()
+            || metadata.not_before != start
+            || metadata.not_after != end
+        {
+            return Err(Error::Conflict);
+        }
+        Ok(IssuedAgentCertificate {
+            metadata,
+            csr_digest: csr.digest(),
+            chain,
+        })
+    }
+    /// Resolve the original issued result, including an expired or revoked candidate.
+    /// The activation owner still requires a fresh live certificate and current authorization.
+    pub fn recover_issued_for(
+        &self,
+        expected_issuer: [u8; 32],
+        chain: Vec<Vec<u8>>,
+        csr: &VerifiedAgentCsr,
+        identity: &str,
+        start: i64,
+        end: i64,
+    ) -> Result<IssuedAgentCertificate, Error> {
+        if chain.is_empty() || chain.len() > 4 || chain.iter().any(|c| c.len() > 32768) {
+            return Err(Error::Malformed);
+        }
+        let issuer = expected_issuer
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        let generation = self.trust.verify_history(&chain[0], &issuer)?;
+        let metadata = self.metadata(&chain[0], generation)?;
         if metadata.identity != identity
             || metadata.spki != csr.spki()
             || metadata.not_before != start

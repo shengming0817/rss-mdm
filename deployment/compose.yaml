@@ -34,21 +34,21 @@ services:
     volumes: ["${MDM_ENV_ROOT:?}/probe/nginx.conf:/tmp/input.conf:ro"]
     command: [nginx, -e, stderr, -c, /tmp/input.conf, -g, 'daemon off;']
   step-ca:
-    profiles: [apple]
+    profiles: [pki]
     image: ${MDM_STEP_CA_IMAGE:?}
     labels: *owner
-    user: ${MDM_APPLE_CA_USER:?}
+    user: ${MDM_PKI_USER:?}
     restart: "no"
     entrypoint: [/usr/local/bin/step-ca]
-    command: ["${MDM_APPLE_CA_ROOT:?}/step/config/ca.json", --password-file, "${MDM_APPLE_CA_ROOT}/step-password"]
+    command: ["${MDM_PKI_ROOT:?}/step/config/ca.json", --password-file, "${MDM_PKI_ROOT}/step-password"]
     environment:
-      STEPPATH: ${MDM_APPLE_CA_ROOT}/step
-    extra_hosts: ["mdm.example.test:${MDM_APPLE_HOST_ADDRESS:?}"]
+      STEPPATH: ${MDM_PKI_ROOT}/step
+    extra_hosts: ["mdm.example.test:${MDM_PKI_HOST_ADDRESS:?}"]
     ports: ["127.0.0.1::${MDM_STEP_CA_INTERNAL_PORT:?}"]
     volumes:
       - type: bind
-        source: ${MDM_APPLE_CA_ROOT}
-        target: ${MDM_APPLE_CA_ROOT}
+        source: ${MDM_PKI_ROOT}
+        target: ${MDM_PKI_ROOT}
         bind:
           create_host_path: false
     healthcheck:
@@ -83,7 +83,11 @@ services:
     image: ${MDM_RUNTIME_IMAGE:?}
     labels: *owner
     command: [sh, -c, 'exec sleep infinity']
-    ports: ["${MDM_GATEWAY_PUBLISH:-127.0.0.1::8445}"]
+    ports:
+      - "${MDM_GATEWAY_PUBLISH:-127.0.0.1::8445}"
+      - "${MDM_WINDOWS_ENROLLMENT_PUBLISH:-127.0.0.1::8443}"
+      - "${MDM_WINDOWS_MANAGEMENT_PUBLISH:-127.0.0.1::8444}"
+      - "${MDM_AGENT_PUBLISH:-127.0.0.1::9445}"
   inputs:
     profiles: [product]
     image: ${MDM_RUNTIME_IMAGE:?}

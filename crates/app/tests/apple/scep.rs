@@ -24,7 +24,11 @@ pub(super) async fn unbound_leaf_and_replay(
     );
     ensure!(
         device
-            .enroll(&f.client()?, &f.app.apple()?.config.scep_url, request)
+            .enroll(
+                &f.client()?,
+                &f.app.apple()?.channel.scep_fixture()?.0,
+                request
+            )
             .await
             .is_err(),
         "identical SCEP request reauthorized"
@@ -47,7 +51,7 @@ async fn external_scep_issuance_and_lost_notify() -> Result<()> {
     f.lose_notify
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let der = device
-        .enroll(&f.client()?, &apple.config.scep_url, &request)
+        .enroll(&f.client()?, &apple.channel.scep_fixture()?.0, &request)
         .await?;
     f.lose_notify
         .store(false, std::sync::atomic::Ordering::SeqCst);

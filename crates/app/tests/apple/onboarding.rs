@@ -272,11 +272,11 @@ async fn enabling_agent_installation_preserves_existing_native_identity_and_righ
         f.app.protection.clone(),
         config,
         f.app.clock.unix_seconds()?,
+        super::fixture_providers(&f.root)?,
         pin.identity(rss_mdm_policy::Platform::Macos).cloned(),
     )?;
-    let trust = rss_mdm_certificate::apple::AppleDeviceTrust::from_bytes(
-        &std::fs::read(&f.app.apple()?.config.issuer_certificate_file)?,
-        f.app.clock.unix_seconds()?,
+    let trust = rss_mdm_certificate::apple::AppleDeviceTrust::from_trust(
+        f.app.apple()?.channel.device_trust().clone(),
     )?;
     let leaf = trust.verify(
         &[tokio_rustls::rustls::pki_types::CertificateDer::from(der)],

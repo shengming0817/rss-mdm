@@ -207,12 +207,13 @@ async fn prepare_on(
     let id = Uuid::new_v4();
     let enrollment = rss_mdm_registration_service::enrollment::store::uuid(&old, "enrollment")?;
     let secret = zeroize::Zeroizing::new(rss_mdm_registration_service::enrollment::random());
+    let (issuer, scep_url, scep_provisioner) = apple.active_scep()?;
     let signed = apple.signer.sign(
         &profile::enrollment(
             &profile::EnrollmentProfile {
                 access_rights: apple.access_rights() as u16,
-                scep_url: &apple.config.scep_url,
-                scep_provisioner: &apple.config.scep_provisioner,
+                scep_url: &scep_url,
+                scep_provisioner: &scep_provisioner,
                 apns_topic: &apple.config.apns_topic,
                 management_origin: &apple.config.management.origin,
                 subject: &certificate::subject(enrollment, id),
@@ -232,8 +233,8 @@ async fn prepare_on(
     )?;
     let registration: String = old.try_get("registration").map_err(db)?;
     let deadline = after.min(now + 3600);
-    sqlx::query("INSERT INTO mdm_apple.scep_attempts(tenant_id,id,enrollment,password_version,configuration,state,issuer,expires_at,registration,renewal_of,generation,challenge_hash,access_rights) SELECT $1::uuid,$2::uuid,$3::uuid,coalesce(max(password_version),0)+1,$4,'prepared',$5,to_timestamp($6),$7::uuid,$8::uuid,$9,$10,$11 FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND enrollment=$3::uuid")
-        .bind(tenant).bind(id.to_string()).bind(enrollment.to_string()).bind(apple.configuration.as_slice()).bind(apple.authority.issuer_fingerprint().as_slice()).bind(deadline as f64).bind(&registration).bind(&old_id).bind(generation).bind(Sha256::digest(secret.as_bytes()).as_slice()).bind(apple.access_rights()).execute(&mut *c).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_apple.scep_attempts(tenant_id,id,enrollment,password_version,configuration,state,issuer,expires_at,registration,renewal_of,generation,challenge_hash,access_rights,scep_url,scep_provisioner) SELECT $1::uuid,$2::uuid,$3::uuid,coalesce(max(password_version),0)+1,$4,'prepared',$5,to_timestamp($6),$7::uuid,$8::uuid,$9,$10,$11,$12,$13 FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND enrollment=$3::uuid")
+        .bind(tenant).bind(id.to_string()).bind(enrollment.to_string()).bind(apple.configuration.as_slice()).bind(issuer).bind(deadline as f64).bind(&registration).bind(&old_id).bind(generation).bind(Sha256::digest(secret.as_bytes()).as_slice()).bind(apple.access_rights()).bind(scep_url).bind(scep_provisioner).execute(&mut *c).await.map_err(db)?;
     let request = crate::protection::seal(
         &apple.protection,
         tenant,
@@ -282,7 +283,7 @@ async fn current(
     )
     .await?
     .ok_or(Error::Unauthorized)?;
-    let row=sqlx::query("SELECT s.state,s.enrollment::text,s.registration::text,s.renewal_of::text,s.configuration,s.challenge_hash,s.transaction_id,s.csr_digest,s.spki,s.fingerprint,s.generation,a.udid,$3::text AS device,old.spki AS old_spki FROM mdm_apple.scep_attempts s JOIN mdm_apple.scep_attempts old ON (old.tenant_id,old.id)=(s.tenant_id,s.renewal_of) JOIN mdm_apple.devices a ON (a.tenant_id,a.registration)=(s.tenant_id,s.registration) WHERE s.tenant_id=$1::uuid AND s.id=$2::uuid AND s.state IN ('prepared','consumed') AND s.expires_at>clock_timestamp() AND old.state='bound' AND old.not_after>extract(epoch FROM clock_timestamp()) AND s.generation=$4 AND a.state='active' AND EXISTS(SELECT 1 FROM mdm_apple.attempts delivery WHERE (delivery.tenant_id,delivery.certificate)=(s.tenant_id,s.id) AND delivery.phase='renew' AND delivery.state IN ('sent','not_now','acknowledged') AND delivery.deadline>clock_timestamp()) FOR UPDATE OF s,old,a").bind(tenant).bind(id).bind(device).bind(generation).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+    let row=sqlx::query("SELECT s.state,s.scep_provisioner,s.enrollment::text,s.registration::text,s.renewal_of::text,s.configuration,s.challenge_hash,s.transaction_id,s.csr_digest,s.spki,s.fingerprint,s.generation,a.udid,$3::text AS device,old.spki AS old_spki FROM mdm_apple.scep_attempts s JOIN mdm_apple.scep_attempts old ON (old.tenant_id,old.id)=(s.tenant_id,s.renewal_of) JOIN mdm_apple.devices a ON (a.tenant_id,a.registration)=(s.tenant_id,s.registration) WHERE s.tenant_id=$1::uuid AND s.id=$2::uuid AND s.state IN ('prepared','consumed') AND s.expires_at>clock_timestamp() AND old.state='bound' AND old.not_after>extract(epoch FROM clock_timestamp()) AND s.generation=$4 AND a.state='active' AND EXISTS(SELECT 1 FROM mdm_apple.attempts delivery WHERE (delivery.tenant_id,delivery.certificate)=(s.tenant_id,s.id) AND delivery.phase='renew' AND delivery.state IN ('sent','not_now','acknowledged') AND delivery.deadline>clock_timestamp()) FOR UPDATE OF s,old,a").bind(tenant).bind(id).bind(device).bind(generation).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
     Ok(Some(row))
 }
 pub async fn challenge(
@@ -290,20 +291,22 @@ pub async fn challenge(
     csr: &certificate::Csr,
     secret: &str,
     transaction: &str,
+    provisioner: &str,
     audit: &RequestAudit,
 ) -> Result<bool, Error> {
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
     let control = budget.control();
-    let outcome = app.audit_store.write(app.identity.tenant(), &control, (app, csr, secret, transaction, audit),
-        |(app, csr, secret, transaction, audit), tx| Box::pin(async move {
-            let replayed = tx.with_connection_context(&mut (*app, *csr, *secret, *transaction, *audit), |(app, csr, secret, transaction, audit), c| Box::pin(async move {
-                let app = *app; let csr = *csr; let secret = *secret; let transaction = *transaction; let audit = *audit;
+    let outcome = app.audit_store.write(app.identity.tenant(), &control, (app, csr, secret, transaction, provisioner, audit),
+        |(app, csr, secret, transaction, provisioner, audit), tx| Box::pin(async move {
+            let replayed = tx.with_connection_context(&mut (*app, *csr, *secret, *transaction, *provisioner, *audit), |(app, csr, secret, transaction, provisioner, audit), c| Box::pin(async move {
+                let app = *app; let csr = *csr; let secret = *secret; let transaction = *transaction; let provisioner=*provisioner; let audit = *audit;
     let tenant = app.identity.tenant().to_string();
     let Some(row) = current(c, &tenant, csr.attempt()).await? else {
         return Ok::<_, Error>(None);
     };
-    if row.try_get::<String, _>("state").map_err(db)? != "prepared"
+    if row.try_get::<Option<String>,_>("scep_provisioner").map_err(db)?.as_deref()!=Some(provisioner)
+        || row.try_get::<String, _>("state").map_err(db)? != "prepared"
         || rss_mdm_registration_service::enrollment::store::uuid(&row, "enrollment")? != csr.enrollment()
         || row.try_get::<Vec<u8>, _>("configuration").map_err(db)? != app.apple()?.configuration
         || row.try_get::<Vec<u8>, _>("old_spki").map_err(db)? == csr.spki()

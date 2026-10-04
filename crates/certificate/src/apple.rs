@@ -14,21 +14,16 @@ use ring::{
     signature::{self, KeyPair},
 };
 use sha2::{Digest, Sha256};
-use std::{sync::Arc, time::Duration};
-use tokio_rustls::rustls::{
-    self,
-    pki_types::{CertificateDer, UnixTime},
-    server::danger::ClientCertVerifier,
-};
+use std::sync::Arc;
+use tokio_rustls::rustls::{self, pki_types::CertificateDer, server::danger::ClientCertVerifier};
 use uuid::Uuid;
 use x509_cert::{
     Certificate,
     der::{
-        Decode, DecodePem, Encode,
+        Decode, Encode,
         asn1::{Any, ObjectIdentifier, OctetString, SetOfVec},
     },
     ext::pkix::{BasicConstraints, ExtendedKeyUsage, KeyUsage, SubjectAltName},
-    name::Name,
     request::CertReq,
     spki::AlgorithmIdentifierOwned,
 };
@@ -156,11 +151,10 @@ impl ProfileSigner {
     }
 }
 pub struct AppleDeviceTrust {
-    verifier: Arc<dyn ClientCertVerifier>,
-    issuer: Certificate,
-    issuer_fingerprint: [u8; 32],
+    pub trust: rss_mdm_device_trust::DeviceTrust,
 }
 pub struct CheckedLeaf {
+    issuer: [u8; 32],
     not_before: i64,
     not_after: i64,
     fingerprint: [u8; 32],
@@ -171,80 +165,57 @@ pub struct CheckedLeaf {
     certificate: Vec<u8>,
 }
 impl CheckedLeaf {
+    pub fn issuer(&self) -> [u8; 32] {
+        self.issuer
+    }
     pub fn fingerprint(&self) -> [u8; 32] {
         self.fingerprint
     }
 }
 impl AppleDeviceTrust {
     pub fn verifier(&self) -> Arc<dyn ClientCertVerifier> {
-        self.verifier.clone()
+        self.trust.verifier(false)
     }
     pub fn issuer_fingerprint(&self) -> [u8; 32] {
-        self.issuer_fingerprint
+        self.trust
+            .active()
+            .and_then(|g| rss_mdm_device_trust::decode(&g.certificate, 32768))
+            .map(|der| Sha256::digest(der).into())
+            .unwrap_or([0; 32])
     }
 
     pub fn expires(&self) -> u64 {
-        self.issuer
-            .tbs_certificate
-            .validity
-            .not_after
-            .to_unix_duration()
-            .as_secs()
+        self.trust
+            .active()
+            .and_then(|g| rss_mdm_device_trust::decode(&g.certificate, 32768))
+            .and_then(|der| {
+                Certificate::from_der(&der).map_err(|_| rss_mdm_device_trust::Error::Malformed)
+            })
+            .map(|c| {
+                c.tbs_certificate
+                    .validity
+                    .not_after
+                    .to_unix_duration()
+                    .as_secs()
+            })
+            .unwrap_or(0)
     }
-    pub fn from_bytes(pem: &[u8], now: i64) -> Result<Self, Error> {
-        if pem.len() > 131072 {
-            return Err(Error::Malformed);
-        }
-        let issuer = Certificate::from_pem(pem).map_err(invalid)?;
-        if !valid(&issuer, now)
-            || issuer
-                .tbs_certificate
-                .get::<BasicConstraints>()
-                .map_err(invalid)?
-                .is_none_or(|(_, v)| !v.ca)
-            || issuer
-                .tbs_certificate
-                .get::<KeyUsage>()
-                .map_err(invalid)?
-                .is_none_or(|(_, v)| !v.key_cert_sign())
-        {
-            return Err(Error::Malformed);
-        }
-        let der = issuer.to_der().map_err(invalid)?;
-        let mut roots = rustls::RootCertStore::empty();
-        roots
-            .add(CertificateDer::from(der.clone()))
-            .map_err(invalid)?;
-        let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
-            Arc::new(roots),
-            Arc::new(rustls::crypto::ring::default_provider()),
-        )
-        .build()
-        .map_err(invalid)?;
-        Ok(Self {
-            verifier,
-            issuer,
-            issuer_fingerprint: Sha256::digest(der).into(),
-        })
+    pub fn from_trust(trust: rss_mdm_device_trust::DeviceTrust) -> Result<Self, Error> {
+        let der = rss_mdm_device_trust::decode(&trust.active()?.certificate, 32768)?;
+        let issuer = Certificate::from_der(&der).map_err(invalid)?;
+        let _ = issuer;
+        Ok(Self { trust })
     }
     pub fn verify(&self, chain: &[CertificateDer<'_>], now: i64) -> Result<CheckedLeaf, Error> {
-        if chain.is_empty()
-            || chain.len() > 4
-            || chain.iter().any(|c| c.len() > 32768)
-            || !valid(&self.issuer, now)
-        {
-            return Err(Error::Unauthorized);
-        }
-        self.verifier
-            .verify_client_cert(
-                &chain[0],
-                &chain[1..],
-                UnixTime::since_unix_epoch(Duration::from_secs(now as u64)),
-            )
-            .map_err(|_| Error::Unauthorized)?;
+        let generation = self.trust.verify(chain, now)?;
+        let issuer = Certificate::from_der(&rss_mdm_device_trust::decode(
+            &generation.certificate,
+            32768,
+        )?)
+        .map_err(invalid)?;
         let c = Certificate::from_der(&chain[0]).map_err(invalid)?;
         let tbs = &c.tbs_certificate;
-        let (enrollment, attempt) = subject_ids(&tbs.subject)?;
+        let (enrollment, attempt) = rss_mdm_device_trust::apple_subject(&tbs.subject)?;
         if !valid(&c, now)
             || tbs
                 .validity
@@ -253,7 +224,7 @@ impl AppleDeviceTrust {
                 .as_secs()
                 .saturating_sub(tbs.validity.not_before.to_unix_duration().as_secs())
                 > 90 * 86400
-            || tbs.issuer != self.issuer.tbs_certificate.subject
+            || tbs.issuer != issuer.tbs_certificate.subject
             || tbs
                 .get::<BasicConstraints>()
                 .map_err(invalid)?
@@ -271,6 +242,11 @@ impl AppleDeviceTrust {
             return Err(Error::Unauthorized);
         }
         Ok(CheckedLeaf {
+            issuer: Sha256::digest(rss_mdm_device_trust::decode(
+                &generation.certificate,
+                32768,
+            )?)
+            .into(),
             not_before: tbs.validity.not_before.to_unix_duration().as_secs() as i64,
             not_after: tbs.validity.not_after.to_unix_duration().as_secs() as i64,
             fingerprint: Sha256::digest(&chain[0]).into(),
@@ -285,35 +261,6 @@ impl AppleDeviceTrust {
 pub fn subject(enrollment: Uuid, attempt: Uuid) -> String {
     // X.509 commonName is limited to 64 characters. Both UUIDs retain all 128 bits.
     format!("{}{}", enrollment.simple(), attempt.simple())
-}
-fn subject_ids(name: &Name) -> Result<(Uuid, Uuid), Error> {
-    use x509_cert::der::Tagged;
-    if name.0.len() != 1 || name.0[0].0.len() != 1 {
-        return Err(Error::Unauthorized);
-    }
-    let attribute = name.0[0].0.iter().next().ok_or(Error::Unauthorized)?;
-    if attribute.oid != ObjectIdentifier::new_unwrap("2.5.4.3")
-        || !matches!(
-            attribute.value.tag(),
-            x509_cert::der::Tag::Utf8String | x509_cert::der::Tag::PrintableString
-        )
-    {
-        return Err(Error::Unauthorized);
-    }
-    let value = std::str::from_utf8(attribute.value.value()).map_err(invalid)?;
-    if value.len() != 64
-        || !value
-            .bytes()
-            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
-    {
-        return Err(Error::Unauthorized);
-    }
-    let enrollment = Uuid::parse_str(&value[..32]).map_err(invalid)?;
-    let attempt = Uuid::parse_str(&value[32..]).map_err(invalid)?;
-    if enrollment.is_nil() || attempt.is_nil() {
-        return Err(Error::Unauthorized);
-    }
-    Ok((enrollment, attempt))
 }
 pub struct Csr {
     enrollment: Uuid,
@@ -345,7 +292,7 @@ pub fn csr(bytes: &[u8]) -> Result<Csr, Error> {
         c.signature.as_bytes().ok_or(Error::CertificateRequest)?,
     )
     .map_err(invalid)?;
-    let (enrollment, attempt) = subject_ids(&c.info.subject)?;
+    let (enrollment, attempt) = rss_mdm_device_trust::apple_subject(&c.info.subject)?;
     Ok(Csr {
         enrollment,
         attempt,

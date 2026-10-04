@@ -112,16 +112,12 @@ Linux host 网络使回环浏览器监听与同机 HTTPS 网关配合；Windows 
     "private_key_file": "/private/agent-tls.pk8"
   },
   "policy": {"user_device_limit": 10, "grant_seconds": 86400, "platforms": ["windows", "macos"]},
-  "ca_url": "https://ca.example.com:9000",
-  "tls_root_file": "/run/pki/root_ca.crt",
-  "issuer_certificate_file": "/run/pki/intermediate_ca.crt",
-  "provisioner_key_file": "/run/secrets/agent-provisioner.pk8",
-  "kid": "由部署生成的 JWK kid",
+  "trust_file": "/run/pki/agent-trust.json",
   "lifetime": {"mode":"standard"}
 }
 ```
 
-复用部署的 step-ca（固定验证版本 0.30.2），创建独立 `rss-agent` JWK provisioner。MDM 只加载其 RSA PKCS#8 DER 私钥、CA TLS 根证书和叶证书直接签发者的公开证书；CA 根/中间私钥及管理员凭据只归 CA 运维。私钥为服务账户独占读取的普通文件（0600/0400），禁止符号链接、公开权限、环境正文和源码提交。CA 网络只允许受控服务调用 `/sign`；MDM 固定 HTTPS origin、固定根、禁用代理和重定向。
+使用独立 purpose/issuer 数据库的 step-ca（固定验证版本 0.30.2），创建独立 `rss-agent` JWK provisioner。MDM 只加载其 RSA PKCS#8 DER 私钥、CA TLS 根证书和叶证书直接签发者的公开证书；CA 根/中间私钥及管理员凭据只归 CA 运维。私钥为服务账户独占读取的普通文件（0600/0400），禁止符号链接、公开权限、环境正文和源码提交。CA 网络只允许受控服务调用 `/sign`；MDM 固定 HTTPS origin、固定根、禁用代理和重定向。
 
 在受控目录生成 RSA 2048–8192 位 provisioner 密钥，并从同一密钥导出 public JWK 与 PKCS#8 DER，保持 kid 一致。将 public JWK 导入 provisioner，**不要**上传私钥或设置 encryptedKey，以免 CA 对外分发签发凭据。用部署的 CA 管理凭据执行：
 
@@ -136,3 +132,17 @@ step ca provisioner add rss-agent --type JWK --public-key agent-provisioner.pub.
 服务端已经提供持久 Agent 授权、候选签发、真实 mTLS 激活、在线撤销及人工恢复；旧 Bearer 注册与业务入口退出。终端 Agent、安装器、网页消费及真机 T3 由各自后续产品任务验收。
 
 Agent 注册与运行共用独立 Rust TLS 监听器，匿名 bootstrap 可无客户端证书，激活和运行必须有真实 TLS 客户端证书。不得经终止 TLS 的 HTTP 代理转发，不能信任证书头。浏览器 nginx 明确拒绝 `/api/v1/agent/`；Agent 直接访问配置的 endpoint origin。
+
+## 设备 PKI 配置
+
+所有设备 CA 路由由必填顶层 `device_pki` 持有，不保留旧 CA 字段别名或本地 Windows signer。每项固定 `purpose`（windows/apple/agent）、`issuer`（确切 issuer DER 的小写 SHA256）、CA HTTPS `origin`、`tls_root_file`、`provisioner`、`kid` 和 `provisioner_key_file`；Apple 另有同 CA origin 下的 `scep_url`。最多 48 项；每个 purpose/issuer 只有一条路线。准备新代次前先提供对应 provider，然后通过管理接口分发信任并激活。
+
+Windows/Apple 的 `native_protocols.<purpose>.trust_file`、Agent 的 `agent_pki.trust_file` 是可信部署渠道提供的公开 JSON。格式来自 `rss-mdm-agent-wire::pki::Trust`：version=1，绑定精确 HTTPS origin、tenant、purpose、单调 revision，包含完整 issuer 集合与 active/prepared/verify_only 状态；每个 issuer 包含确切 DER digest、base64 DER certificate/root/issuer CRL/root CRL、provisioner/kid。恰好一个 active，最多 16 代。不能把 HTTPS/APNs/Profile 签名证书当作设备 CA。公共材料可读，但初始部署来源必须受保护；私钥文件只归对应 owner。
+
+## 设备 PKI 升级
+
+旧部署不能直接运行新 `migrate` 或继续使用旧配置。停止旧签发入口，先用旧可执行文件处理 Agent、Windows 与 Apple 的未知签发、待激活结果及续期；确认这些工作已完成，再停止所有旧写入实例。保存原 CA 公共链和仍需验证的 legacy issuer，并在 CA 运维侧用原密钥产生可验签的当前 CRL；旧 Windows 私钥退出宿主，只在受控离线 CRL 操作中保管。准备新的 active step-ca 代次及公开 trust，旧代次为 verify_only。
+
+使用新镜像的 `upgrade-pki --config /run/operator/upgrade-pki.json`，输入包含 database、原完整 installation、profiles 和 trusts。profiles 是 Windows/Apple 旧稳定配置 hash 到新配置 hash 的显式替换集合；同 purpose 的目标配置必须一致，覆盖所有旧记录。trusts 覆盖每个实际使用的租户/purpose 及历史 issuer。升级只接受 exact 已完成的整个 pre-PKI 安装 manifest，检查并导入历史证书的签名、用途、登记映射和续期，原子写入新 PKI schema 和安装记录。过期/撤销证书可保留为历史记录，不能获得在线认证资格。未知提交后重跑会验证已完成的当前 manifest，不重复转换。
+
+普通 `migrate` 的完整 manifest 准入保持不变；没有旧格式运行时解析、自动重签、备用本地 CA 或混合版本写入。迁移成功后更新各公开 trust/provider 输入，启动新宿主并通过[运维路径](operations.md#设备-pki-轮换与撤销)处理后续轮换。

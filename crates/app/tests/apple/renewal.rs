@@ -107,7 +107,7 @@ impl Fixture {
             reused
                 .enroll(
                     &self.client()?,
-                    &self.app.apple()?.config.scep_url,
+                    &self.app.apple()?.channel.scep_fixture()?.0,
                     &request
                 )
                 .await
@@ -125,7 +125,7 @@ impl Fixture {
         let der = device
             .enroll(
                 &self.client()?,
-                &self.app.apple()?.config.scep_url,
+                &self.app.apple()?.channel.scep_fixture()?.0,
                 &request,
             )
             .await?;
@@ -135,7 +135,7 @@ impl Fixture {
             device
                 .enroll(
                     &self.client()?,
-                    &self.app.apple()?.config.scep_url,
+                    &self.app.apple()?.channel.scep_fixture()?.0,
                     &request
                 )
                 .await

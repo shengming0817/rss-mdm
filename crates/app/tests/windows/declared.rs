@@ -105,11 +105,7 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
                 .is_success()
         );
     }
-    let parent_cert = w.ca.sign(&w.ca.restore_intent(
-        &peer.intent.tbs,
-        &certificate::Csr::verify(&peer.intent.csr)?,
-        peer.intent.registration,
-    )?)?;
+    let parent_cert = sign_certificate(&w.ca, &peer.intent).await?;
     let at = now();
     let format_time = |at| {
         time::OffsetDateTime::from_unix_timestamp(at)
@@ -1047,11 +1043,7 @@ async fn linked_renewal_and_parent_child_supersession() -> anyhow::Result<()> {
     host.listen().await?;
     let parent = host.peer().await?;
     let ca = &host.app.windows()?.channel.ca;
-    let certificate = ca.sign(&ca.restore_intent(
-        &parent.intent.tbs,
-        &certificate::Csr::verify(&parent.intent.csr)?,
-        parent.intent.registration,
-    )?)?;
+    let certificate = sign_certificate(&ca, &parent.intent).await?;
     let child = linked_peer(&host, &parent, &certificate, &host.root.join("device.key")).await?;
     authenticate_child(&child.mutual, &child.url, &child.message, &parent.ack).await?;
     let renewed_child = renew(
@@ -1328,11 +1320,7 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
     host.listen().await?;
     let parent = host.peer().await?;
     let ca = &host.app.windows()?.channel.ca;
-    let certificate = ca.sign(&ca.restore_intent(
-        &parent.intent.tbs,
-        &certificate::Csr::verify(&parent.intent.csr)?,
-        parent.intent.registration,
-    )?)?;
+    let certificate = sign_certificate(&ca, &parent.intent).await?;
     let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
     let mut grants = [
         "resource_read",
@@ -1707,11 +1695,7 @@ async fn declared_readiness_has_closed_http_diagnosis_and_primary_remains_availa
         "Primary depended on child: {primary:?}"
     );
     let ca = &host.app.windows()?.channel.ca;
-    let certificate = ca.sign(&ca.restore_intent(
-        &parent.intent.tbs,
-        &certificate::Csr::verify(&parent.intent.csr)?,
-        parent.intent.registration,
-    )?)?;
+    let certificate = sign_certificate(&ca, &parent.intent).await?;
     let child = linked_peer(&host, &parent, &certificate, &host.root.join("device.key")).await?;
     let unready = client.call(Method::POST, "", Some(input())).await?;
     ensure!(
