@@ -73,10 +73,10 @@ def native_pki_journey(deployed,browser):
         status,trust=call(client,'GET','/api/v1/agent/enroll/trust')
         require(status==200 and trust['origin']==deployed.agent_origin and trust['purpose']=='agent','candidate public trust authority mismatch')
         profile=dict(capabilities=['inventory.collect.v1'],platform='macos',architecture='aarch64',
-                     executionContext=dict(revision=1,osVersion=[14,0,0,0],systemBroker=True,interactiveUser=None,sourceCredentials=[],msixSideload=False,msixUnsigned=False))
+                     executionContext=dict(revision=1,osVersion=[14,0,0,0],userHelper=False,systemBroker=True,interactiveUser=None,sourceCredentials=[],msixSideload=False,msixUnsigned=False))
         signing=dict(wireVersion=1,operationId=str(uuid.uuid4()),grantId=grant['grantId'],secret=secret,csr=csr,runtime=profile)
         status,candidate=call(client,'POST','/api/v1/agent/enroll/certificates',signing)
-        require(status==200,'candidate real CA signing failed')
+        require(status==200,f'candidate real CA signing failed: status={status}, code={candidate.get("code") if isinstance(candidate,dict) else None}')
         require(call(client,'POST','/api/v1/agent/enroll/certificates',signing)==(status,candidate),'candidate original signing replay changed result')
         path='/api/v1/agent/runtime/reports/'+str(uuid.uuid4())
         require(call(client,'GET',path)[0]==401,'candidate anonymous runtime accepted')

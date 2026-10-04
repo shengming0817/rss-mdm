@@ -103,9 +103,10 @@ def inputs(root, example, gateway_file, *, database_host="postgres"):
         subprocess.run(["openssl", *map(str,args)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
     openssl("req","-x509","-newkey","rsa:2048","-nodes","-days","1","-subj","/CN=MDM candidate CA",
             "-addext","basicConstraints=critical,CA:TRUE","-addext","keyUsage=critical,keyCertSign,cRLSign",
+            "-addext","subjectKeyIdentifier=hash",
             "-keyout",root/"ca.key","-out",root/"ca.crt")
     openssl("req","-new","-newkey","rsa:2048","-nodes","-subj","/CN=localhost","-keyout",root/"server.key","-out",root/"server.csr")
-    (root/"extensions").write_text("basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,DNS:mdm.example.test,DNS:mdm-other.example.test,DNS:idp.example.test,IP:127.0.0.1,DNS:"+database_host+"\n")
+    (root/"extensions").write_text("basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always\nsubjectAltName=DNS:localhost,DNS:mdm.example.test,DNS:mdm-other.example.test,DNS:idp.example.test,IP:127.0.0.1,DNS:"+database_host+"\n")
     openssl("x509","-req","-in",root/"server.csr","-CA",root/"ca.crt","-CAkey",root/"ca.key","-CAcreateserial","-days","1","-extfile",root/"extensions","-out",root/"server.crt")
     def write(directory, name, value):
         path=directory/name;path.write_text(value if isinstance(value,str) else json.dumps(value));path.chmod(0o600)

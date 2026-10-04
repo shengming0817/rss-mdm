@@ -191,6 +191,12 @@ class ExternalReviewRegressions(unittest.TestCase):
             candidate.inputs(root,Path(__file__).resolve().parents[1]/'fixtures/mdm-config.example.json',Path(__file__).resolve().parents[1]/'deployment/nginx.conf')
             self.assertEqual(root.stat().st_mode & 0o077,0)
             self.assertEqual((root/'server.key').stat().st_mode & 0o077,0)
+            verified=candidate.subprocess.run([
+                'openssl','verify','-x509_strict','-purpose','sslserver',
+                '-verify_hostname','localhost','-CAfile',str(root/'ca.crt'),str(root/'server.crt')
+            ],capture_output=True,text=True,timeout=10)
+            self.assertEqual(verified.returncode,0,verified.stderr)
+
 
     def test_ui_archive_mismatch_fails_before_image_load(self):
         with tempfile.TemporaryDirectory() as temporary:
