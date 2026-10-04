@@ -273,6 +273,9 @@ impl ExecutionService {
             return record_target(tx, id, device, None, Some("channel_unavailable")).await;
         }
         let (registration, generation) = registration[0];
+        if let Frozen::Execution { action, .. } = &operation.frozen {
+            if !crate::script_eligibility::require_in(tx,self.agent_store.clone(),&crate::Target{device:device.into(),registration,generation},action).await? { return record_target(tx,id,device,None,Some("script_ineligible")).await; }
+        }
         let tenant = tx.tenant_id().to_string();
         let name = device.to_owned();
         let count=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,i64>("SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND device=$2 AND state->>'execution' IN('not_started','running') AND state->>'cancellation'<>'confirmed' AND deadline>$3").bind(tenant).bind(name).bind(now).fetch_one(c).await})).await?;

@@ -2,6 +2,7 @@
 use super::*;
 pub(crate) enum PreviewInputs {
     Resource,
+    Script { platform: rss_mdm_policy::Platform, architecture: rss_mdm_policy::Architecture, profile: rss_mdm_agent_wire::runtime::ExecutorProfile },
     Software(Box<FrozenSoftwareAction>),
     Onboarding(Frozen),
 }
@@ -87,6 +88,7 @@ impl Inputs {
                     )
                     .await?;
                 }
+                return Ok(PreviewInputs::Script { platform: binding.platform, architecture: binding.architecture, profile: match prepared.definition().spec().profile { resource::ScriptProfile::PowerShell7 => rss_mdm_agent_wire::runtime::ExecutorProfile::PowerShell7, resource::ScriptProfile::PosixSh => rss_mdm_agent_wire::runtime::ExecutorProfile::PosixSh, resource::ScriptProfile::Bash => rss_mdm_agent_wire::runtime::ExecutorProfile::Bash, resource::ScriptProfile::Osquery => rss_mdm_agent_wire::runtime::ExecutorProfile::Osquery } });
             }
             PublicationInput::NativeCollection { binding, .. } => {
                 let (definition, _) = native_collection(&version, binding, verified)?;

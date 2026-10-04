@@ -58,6 +58,7 @@ pub async fn accept_for_device(
     use rss_mdm_policy::Frequency;
     let (version, owner, schedule, lifetime, frequency, entry, entry_source) = match policy {
         db::ScheduledPolicy::Script(definition) => {
+            if definition.frozen.parameters.has_input() || !crate::script_eligibility::require_in(tx,service.agent_store.clone(),target,&definition.frozen).await? { return Ok(()); }
             let Some(entry) = definition
                 .entry_in(&service.source, tx, &target.device, now)
                 .await?

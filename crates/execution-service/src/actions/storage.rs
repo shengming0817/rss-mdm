@@ -152,10 +152,7 @@ impl ScheduledPolicy {
         now: i64,
     ) -> Result<bool> {
         match self {
-            Self::Script(v) => {
-                v.authorized_in(&service.source, tx, &target.device, now)
-                    .await
-            }
+            Self::Script(v) => Ok(crate::script_eligibility::require_in(tx,service.agent_store.clone(),target,&v.frozen).await? && v.authorized_in(&service.source, tx, &target.device, now).await?),
             Self::Native(v) => {
                 v.authorized_in(&service.source, tx, &target.device, now)
                     .await

@@ -93,7 +93,8 @@ CREATE TABLE mdm_commands.action_polls (
     tenant_id uuid NOT NULL,
     registration uuid NOT NULL,
     cancellation_after uuid,
-    policy_after uuid
+    policy_after uuid,
+    profiles jsonb CHECK (profiles IS NULL OR (jsonb_typeof(profiles)='array' AND jsonb_array_length(profiles)<=4))
 );
 
 ALTER TABLE ONLY mdm_commands.action_polls FORCE ROW LEVEL SECURITY;
