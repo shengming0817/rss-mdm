@@ -169,22 +169,18 @@ pub struct UserAccess {
 impl UserAccess {
     pub(crate) async fn current_in(&self, c: &mut sqlx::PgConnection) -> Result<(), Error> {
         self.admission.revalidate_account_in(c).await?;
-        let row = store::binding(
-            c,
-            &self.admission.coordinates().tenant,
-            self.admission.coordinates().id,
-        )
-        .await?;
-        if row.try_get::<Uuid, _>("id").map_err(crate::database::db)? != self.flow
-            || row
-                .try_get::<String, _>("token_hash")
-                .map_err(crate::database::db)?
-                != self.hash
-            || row
-                .try_get::<i64, _>("authorization_version")
-                .map_err(crate::database::db)?
-                != self.admission.coordinates().version
-        {
+        let d = self.admission.coordinates();
+        let current: bool =
+            sqlx::query_scalar("SELECT mdm_apple.account_current($1::uuid,$2,$3,$4,$5)")
+                .bind(&d.tenant)
+                .bind(d.id)
+                .bind(d.version)
+                .bind(self.flow)
+                .bind(&self.hash)
+                .fetch_one(c)
+                .await
+                .map_err(crate::database::db)?;
+        if !current {
             return Err(Error::Unauthorized);
         }
         Ok(())

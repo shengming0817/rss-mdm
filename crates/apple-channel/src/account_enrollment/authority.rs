@@ -55,14 +55,15 @@ impl AccountAuthority for Authority {
     }
     fn current<'a>(&'a self, c: &'a mut sqlx::PgConnection, d: &'a Coordinates) -> Pending<'a> {
         Box::pin(async move {
-            let row = store::binding(c, &d.tenant, d.id)
-                .await
-                .map_err(registration_error)?;
-            if row
-                .try_get::<i64, _>("authorization_version")
-                .map_err(|_| rss_mdm_registration_service::Error::Storage)?
-                != d.version
-            {
+            let current: bool =
+                sqlx::query_scalar("SELECT mdm_apple.account_current($1::uuid,$2,$3,NULL,NULL)")
+                    .bind(&d.tenant)
+                    .bind(d.id)
+                    .bind(d.version)
+                    .fetch_one(c)
+                    .await
+                    .map_err(|_| rss_mdm_registration_service::Error::Storage)?;
+            if !current {
                 return Err(rss_mdm_registration_service::Error::Unauthorized);
             }
             Ok(())

@@ -29,7 +29,29 @@ async fn upgrade(conn: &mut PgConnection) -> Result<()> {
             .fetch_one(&mut *conn)
             .await?;
     let installation: super::Installation = serde_json::from_value(configuration)?;
-    conn.execute("ALTER TABLE mdm_commands.action_attempts DROP COLUMN execution_material; ALTER TABLE mdm_commands.action_runs DROP COLUMN software_effect,DROP COLUMN invocation_archive; ALTER TABLE mdm_access.registrations DROP COLUMN first_authenticated_at; DELETE FROM public.mdm_migrations WHERE name IN ('self-service-access-v1','enrollment-progress-v1')").await?;
+    // Account enrollment was not present in this released predecessor. Rewind its
+    // structure too; deleting ledger entries alone would describe an impossible schema.
+    conn.execute(
+        r#"
+        DROP FUNCTION mdm_apple.account_current(uuid,uuid,bigint,uuid,text);
+        DROP TABLE mdm_apple.account_flows, mdm_apple.account_bindings, mdm_apple.account_organizations;
+        ALTER TABLE mdm_apple.scep_attempts RENAME COLUMN authorization_version TO password_version;
+        ALTER TABLE mdm_access.requests DROP CONSTRAINT enrollment_shape;
+        ALTER TABLE mdm_access.requests DROP COLUMN account_version, DROP COLUMN account_reference, DROP COLUMN account_challenge;
+        ALTER TABLE mdm_access.requests DROP CONSTRAINT requests_authority_kind_check;
+        ALTER TABLE mdm_access.requests ADD CONSTRAINT requests_authority_kind_check CHECK(authority_kind IN ('password','parent_certificate'));
+        ALTER TABLE mdm_access.requests ADD CONSTRAINT enrollment_shape CHECK (
+          state='cancelled' OR (expected_generation IS NOT NULL AND expires_at IS NOT NULL AND issuance_operation IS NOT NULL AND (
+          (authority_kind='password' AND grant_id IS NOT NULL AND parent_id IS NULL AND password_digest IS NOT NULL AND password_version>0 AND credential_ref IS NOT NULL) OR
+          (authority_kind='parent_certificate' AND grant_id IS NULL AND source='mdm.windows' AND parent_id IS NOT NULL AND parent_generation IS NOT NULL AND parent_generation>0 AND parent_credential IS NOT NULL AND password_digest IS NULL AND password_version=0 AND credential_ref IS NULL)
+          )));
+        ALTER TABLE mdm_commands.action_attempts DROP COLUMN execution_material;
+        ALTER TABLE mdm_commands.action_runs DROP COLUMN software_effect,DROP COLUMN invocation_archive;
+        ALTER TABLE mdm_access.registrations DROP COLUMN first_authenticated_at;
+        DELETE FROM public.mdm_migrations WHERE name IN ('self-service-access-v1','enrollment-progress-v1','apple-account-authority-v1','apple-account-channel-v1');
+        "#,
+    )
+    .await?;
     let actual: Vec<(String, String, bool)> =
         sqlx::query_as("SELECT name,digest,complete FROM public.mdm_migrations")
             .fetch_all(&mut *conn)

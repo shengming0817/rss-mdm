@@ -101,7 +101,7 @@ pub(super) async fn enroll(
         .ok()
         .and_then(|s| s.parse::<u32>().ok())
         .ok_or(Error::Malformed)?;
-    if !product.starts_with("Mac") || major < 23 {
+    if !(product.starts_with("Mac") || product.starts_with("iMac")) || major < 23 {
         return Err(Error::Malformed);
     }
     let digest = rss_mdm_registration_service::enrollment::digest(&(
@@ -285,7 +285,7 @@ async fn bootstrap_on(c: &mut sqlx::PgConnection, input: Bootstrap<'_>) -> Resul
         tenant,
         store::NewFlow {
             id: flow,
-            organization: organization,
+            organization,
             revision: row.try_get("revision").map_err(db)?,
             target: flow,
             request_digest: digest.to_string(),
@@ -353,7 +353,7 @@ async fn profile_on(
     let (attempt, _, scep_url, scep_provisioner) = crate::enrollment::prepared(
         c,
         apple,
-        &admission.coordinates(),
+        admission.coordinates(),
         tenant,
         &current.try_get::<String, _>("deadline").map_err(db)?,
     )

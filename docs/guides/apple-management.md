@@ -145,3 +145,5 @@ Mac 的 Legacy 接管以关联的 `ProfileList(ManagedOnly=true)` 证明 MDM 所
 CA 公共证书由单独的受管理 `com.rss-mdm.pki.<registration>` Profile 持有，不放进 SCEP 身份 Profile，避免两份独立 CA 安装 owner。根载荷是 `com.apple.security.root` DER，中间载荷是 `com.apple.security.pem` PEM。InstallProfile 后发出原通道的 `ProfileList(ManagedOnly=true)`，逐项核对 Profile 与所有证书载荷的 identifier、UUID、类型和有序结构，再记录安装回执；InstallProfile ACK 不代替该证明。退役后的完整信任集合通过替换这个 Profile 移除旧 CA。
 
 服务 HTTPS/SCEP HTTPS 的证书信任独立于设备 CA，设备须预先信任这些服务证书；生产可使用受信任的服务 TLS 入口。当前协议验证不等于真实 macOS 安装/移除行为已验证，真机 T3 仍独立。轮换、撤销和 CRL 发布操作见[设备 PKI 运维](../deployment/operations.md#设备-pki-轮换与撤销)。
+
+真实 Apple 组织上线与 Mac 设备矩阵验收由 [#2687](https://dev.azure.com/shengming0923/rss/_workitems/edit/2687) 承接；本次后端实现关联 #2672，rss-web 管理界面另行规划。

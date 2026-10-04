@@ -504,10 +504,15 @@ fn accepted_ledger(
         .collect::<BTreeMap<_, _>>();
     let previous = current
         .iter()
-        .filter(|(name, _)| *name != "enrollment-progress-v1")
+        .take_while(|(name, _)| *name != "enrollment-progress-v1")
         .map(|(name, sql)| (*name, format!("{:x}", Sha256::digest(sql))))
         .collect::<BTreeMap<_, _>>();
-    matches(&predecessor) || matches(&previous)
+    let before_account = current
+        .iter()
+        .take_while(|(name, _)| *name != "apple-account-authority-v1")
+        .map(|(name, sql)| (*name, format!("{:x}", Sha256::digest(sql))))
+        .collect::<BTreeMap<_, _>>();
+    matches(&predecessor) || matches(&previous) || matches(&before_account)
 }
 
 async fn install_identity(

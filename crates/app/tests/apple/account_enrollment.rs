@@ -253,6 +253,18 @@ async fn account_enrollment_and_reauthentication_keep_one_registration() -> Resu
     }
     let initial = request(&f, Method::POST, &path, payload.clone(), &[]).await?;
     ensure!(initial.0 == StatusCode::UNAUTHORIZED);
+    ensure!(
+        request(
+            &f,
+            Method::POST,
+            &path,
+            signed(&f, "iMac20,1", "23A344")?,
+            &[]
+        )
+        .await?
+        .0 == StatusCode::UNAUTHORIZED,
+        "supported Intel iMac must enter account authentication"
+    );
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
@@ -362,6 +374,41 @@ async fn account_enrollment_and_reauthentication_keep_one_registration() -> Resu
         None,
     )
     .await?;
+    let mut command = pg.begin().await?;
+    sqlx::raw_sql("SET LOCAL ROLE mdm_command_runtime")
+        .execute(&mut *command)
+        .await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *command)
+        .await?;
+    let direct_access: bool = sqlx::query_scalar(
+        "SELECT has_table_privilege(current_user,'mdm_apple.account_flows','SELECT,UPDATE')",
+    )
+    .fetch_one(&mut *command)
+    .await?;
+    ensure!(
+        !direct_access,
+        "command role gained account material access"
+    );
+    let cross_tenant: bool =
+        sqlx::query_scalar("SELECT mdm_apple.account_current($1,$2,$3,NULL,NULL)")
+            .bind(Uuid::new_v4())
+            .bind(enrollment)
+            .bind(admission.coordinates().version)
+            .fetch_one(&mut *command)
+            .await?;
+    ensure!(!cross_tenant, "owner gate crossed the transaction tenant");
+    let wrong_token: bool =
+        sqlx::query_scalar("SELECT mdm_apple.account_current($1::uuid,$2,$3,NULL,$4)")
+            .bind(case_tenant())
+            .bind(enrollment)
+            .bind(admission.coordinates().version)
+            .bind("wrong-token-hash")
+            .fetch_one(&mut *command)
+            .await?;
+    ensure!(!wrong_token, "owner gate accepted a changed token hash");
+    command.rollback().await?;
     sqlx::query(
         "UPDATE mdm_access.requests SET expected_generation=1 WHERE tenant_id=$1::uuid AND id=$2",
     )

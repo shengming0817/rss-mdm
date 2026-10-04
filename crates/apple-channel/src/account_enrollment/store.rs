@@ -22,7 +22,7 @@ pub(super) async fn binding_read(
     let query = "SELECT f.* FROM mdm_apple.account_flows f JOIN mdm_apple.account_organizations o ON(o.tenant_id,o.id,o.revision)=(f.tenant_id,f.organization,f.organization_revision) JOIN mdm_apple.account_bindings b ON(b.tenant_id,b.organization,b.account,b.revision)=(f.tenant_id,f.organization,f.account,f.binding_revision) JOIN mdm_access.requests q ON(q.tenant_id,q.id,q.account_version)=(f.tenant_id,f.enrollment,f.authorization_version) JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE f.tenant_id=$1::uuid AND f.enrollment=$2 AND NOT f.revoked AND o.enabled AND b.enabled AND b.principal::text=g.actor AND b.instance::text=g.instance AND q.authority_kind='apple_account' AND q.state<>'cancelled' AND (q.state='pending' OR EXISTS(SELECT 1 FROM mdm_access.registrations r WHERE r.tenant_id=q.tenant_id AND r.request_id=q.id AND r.state='active')) ";
     let mut query = sqlx::QueryBuilder::new(query);
     if lock {
-        query.push(" FOR SHARE OF f,o,b,q,g");
+        query.push(" FOR SHARE OF f,o,b,q");
     }
     query
         .build()
@@ -63,6 +63,11 @@ pub(super) async fn new_flow(
         .execute(&mut *c)
         .await
         .map_err(db)?;
+    sqlx::query("DELETE FROM mdm_apple.account_flows WHERE tenant_id=$1::uuid AND id IN (SELECT id FROM mdm_apple.account_flows WHERE tenant_id=$1::uuid AND expires_at<=clock_timestamp() AND enrollment IS NULL ORDER BY expires_at,id LIMIT 128 FOR UPDATE SKIP LOCKED)")
+        .bind(tenant)
+        .execute(&mut *c)
+        .await
+        .map_err(db)?;
     let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_apple.account_flows WHERE tenant_id=$1::uuid AND expires_at>clock_timestamp() AND NOT revoked").bind(tenant).fetch_one(&mut *c).await.map_err(db)?;
     if count >= 1024 {
         return Err(Error::Unavailable(Failure::Capacity));
@@ -91,6 +96,6 @@ pub(super) async fn recovery(c: &mut PgConnection, tenant: &str, id: Uuid) -> Re
     let device:String=sqlx::query_scalar("SELECT g.device FROM mdm_access.requests q JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE q.tenant_id=$1::uuid AND q.id=$2 AND q.authority_kind='apple_account'")
         .bind(tenant).bind(id).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Unauthorized)?;
     crate::device::store::lock_channel(c, tenant, &device, rss_mdm_inventory::Channel::Mdm).await?;
-    sqlx::query("SELECT f.*,o.revision AS current_organization_revision FROM mdm_apple.account_flows f JOIN mdm_access.requests q ON(q.tenant_id,q.id,q.account_version)=(f.tenant_id,f.enrollment,f.authorization_version) JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) JOIN mdm_apple.account_organizations o ON(o.tenant_id,o.id)=(f.tenant_id,f.organization) JOIN mdm_apple.account_bindings b ON(b.tenant_id,b.organization,b.account)=(f.tenant_id,f.organization,f.account) WHERE f.tenant_id=$1::uuid AND f.enrollment=$2 AND NOT f.revoked AND q.authority_kind='apple_account' AND q.state<>'cancelled' AND o.enabled AND b.enabled AND b.principal::text=g.actor AND b.instance::text=g.instance AND (q.state='pending' OR EXISTS(SELECT 1 FROM mdm_access.registrations r JOIN mdm_access.credentials k ON(k.tenant_id,k.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=q.tenant_id AND r.request_id=q.id AND r.state='active' AND k.state='active')) FOR SHARE OF o,b,q,g,f")
+    sqlx::query("SELECT f.*,o.revision AS current_organization_revision FROM mdm_apple.account_flows f JOIN mdm_access.requests q ON(q.tenant_id,q.id,q.account_version)=(f.tenant_id,f.enrollment,f.authorization_version) JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) JOIN mdm_apple.account_organizations o ON(o.tenant_id,o.id)=(f.tenant_id,f.organization) JOIN mdm_apple.account_bindings b ON(b.tenant_id,b.organization,b.account)=(f.tenant_id,f.organization,f.account) WHERE f.tenant_id=$1::uuid AND f.enrollment=$2 AND NOT f.revoked AND q.authority_kind='apple_account' AND q.state<>'cancelled' AND o.enabled AND b.enabled AND b.principal::text=g.actor AND b.instance::text=g.instance AND (q.state='pending' OR EXISTS(SELECT 1 FROM mdm_access.registrations r JOIN mdm_access.credentials k ON(k.tenant_id,k.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=q.tenant_id AND r.request_id=q.id AND r.state='active' AND k.state='active')) FOR SHARE OF o,b,q,f")
         .bind(tenant).bind(id).fetch_optional(c).await.map_err(db)?.ok_or(Error::Unauthorized)
 }
