@@ -192,9 +192,15 @@ class ExternalGatewayTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'together'):self.env.gateway_settings()
         self.model['x-gateway']['key_file']='configured'
         for origin in ('http://mdm.example.test','https://mdm.example.test/path',
-                       'https://user:password@mdm.example.test','https://mdm.example.test;bad'):
+                       'https://user:password@mdm.example.test','https://mdm.example.test;bad',
+                       'https://mdm.example.test:443','https://MDM.EXAMPLE.TEST',
+                       'https://mdm.example.test:0','https://[broken'):
             self.model['x-gateway']['origin']=origin
             with self.assertRaisesRegex(ValueError,'HTTPS origin'):self.env.gateway_settings()
+        self.model['x-gateway']['origin']='https://mdm.example.test'
+        self.model['services']['runtime-netns']['ports'][0]['protocol']='udp'
+        with self.assertRaisesRegex(ValueError,'TCP'):self.env.gateway_settings()
+        self.model['services']['runtime-netns']['ports'][0]['protocol']='tcp'
         self.model['x-gateway']['origin']='https://mdm.example.test:9443'
         with self.assertRaisesRegex(ValueError,'match the origin port'):self.env.gateway_settings()
         self.model['services']['runtime-netns']['ports'][0]['published']='9443'

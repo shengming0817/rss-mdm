@@ -131,7 +131,7 @@ MDM_GATEWAY_TLS_KEY_FILE=./deployment/certs/privkey.pem
 ```
 
 这里的域名和文件名仅为示例；DNS 指向部署宿主机，证书必须覆盖实际 origin 的主机名。
-公开 origin 的端口必须与发布端口一致；网关内部仍监听 8445。
+公开 origin 使用小写主机名，默认 443 不显式写入 URL；非默认端口必须写入 origin 并与 TCP 发布端口一致。网关内部仍监听 8445。
 路径相对于当前 worktree 根目录解析，也可以使用绝对路径引用 worktree 外的已有证书。
 `.env` 和 `deployment/certs/` 被 Git 忽略，私钥内容不放进 env 或镜像。
 本入口仍为开发联调环境，包含 fixture 数据库和初始化账号；外部证书不改变其用途。

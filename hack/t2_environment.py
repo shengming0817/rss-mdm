@@ -98,16 +98,22 @@ class Environment:
         try:
             endpoint=urlsplit(origin)
             hostname=endpoint.hostname or ''
-            port=endpoint.port or 443
+            port=443 if endpoint.port is None else endpoint.port
+            canonical_host=hostname
             valid_host=bool(re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?',hostname))
-            try:ipaddress.ip_address(hostname);valid_host=True
-            except ValueError:pass
-            if any(character.isspace() for character in origin) or endpoint.scheme!='https' or not valid_host or endpoint.username is not None or endpoint.password is not None or endpoint.path or endpoint.query or endpoint.fragment or not 1<=port<=65535:
+            try:
+                address=ipaddress.ip_address(hostname);valid_host=True
+                canonical_host='['+address.compressed+']' if address.version==6 else address.compressed
+            except ValueError:
+                # URL parsers normalize numeric hosts as IPv4; require a normal DNS name here.
+                valid_host=valid_host and not re.fullmatch(r'(?:[0-9]+|0[xX][0-9a-fA-F]+)',hostname.rsplit('.',1)[-1])
+            canonical='https://'+canonical_host+(':'+str(port) if port!=443 else '')
+            if origin!=canonical or any(character.isspace() for character in origin) or endpoint.scheme!='https' or not valid_host or endpoint.username is not None or endpoint.password is not None or endpoint.path or endpoint.query or endpoint.fragment or not 1<=port<=65535:
                 raise ValueError()
-        except ValueError:raise ValueError('MDM_PRODUCT_ORIGIN must be an HTTPS origin without credentials, path, query or fragment') from None
+        except ValueError:raise ValueError('MDM_PRODUCT_ORIGIN must be a canonical HTTPS origin without credentials, path, query or fragment') from None
         ports=model['services']['runtime-netns']['ports']
-        if len(ports)!=1 or ports[0]['target']!=8445 or str(ports[0].get('published',''))!=str(port) or ports[0].get('host_ip','0.0.0.0') not in ('0.0.0.0','127.0.0.1'):
-            raise ValueError('gateway publish must bind 127.0.0.1 or 0.0.0.0 and match the origin port, targeting 8445')
+        if len(ports)!=1 or ports[0]['target']!=8445 or ports[0].get('protocol','tcp')!='tcp' or str(ports[0].get('published',''))!=str(port) or ports[0].get('host_ip','0.0.0.0') not in ('0.0.0.0','127.0.0.1'):
+            raise ValueError('gateway publish must use TCP, bind 127.0.0.1 or 0.0.0.0 and match the origin port, targeting 8445')
         mounts={volume['target']:Path(volume['source']) for volume in model['services']['inputs']['volumes'] if volume['type']=='bind'}
         certificate=mounts['/tls-input/server.crt'];key=mounts['/tls-input/server.key']
         if any(path.is_symlink() or not path.is_file() for path in (certificate,key)):
