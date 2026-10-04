@@ -3,6 +3,8 @@
     reason = "quota integration scenarios assert independent persistence and authorization risks"
 )]
 use crate::test_support::*;
+use anyhow::Context;
+use sqlx::Connection;
 use uuid::Uuid;
 const DEFAULTS: &str = "/api/v1/registration-quotas/defaults";
 const ME: &str = "/api/v1/registration-quotas/me";
@@ -80,10 +82,40 @@ async fn concurrent_self_enrollment_replays_and_preserves_live_reservations() ->
     first.operation = Some(Uuid::new_v4());
     let mut second = other.clone();
     second.operation = Some(Uuid::new_v4());
-    let (a, b) = tokio::join!(
+    // Block the tenant's real quota lock. One HTTP transaction must reach it
+    // while the other waits on that transaction's earlier Audit head lock.
+    let mut root =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let mut holder = root.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2670))")
+        .bind(case_tenant())
+        .execute(&mut *holder)
+        .await?;
+    let release = async {
+        let observed = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let competing: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM pg_stat_activity business JOIN pg_stat_activity audit ON business.pid=ANY(pg_blocking_pids(audit.pid)) WHERE business.datname=current_database() AND audit.datname=current_database() AND business.usename='mdm_access' AND audit.usename='mdm_access' AND business.wait_event_type='Lock' AND audit.wait_event_type='Lock' AND business.query LIKE '%pg_advisory_xact_lock(hashtextextended($1,2670))%' AND audit.query LIKE '%rss_audit.reserve%' AND pg_backend_pid()=ANY(pg_blocking_pids(business.pid)))"
+                ).fetch_one(&mut *holder).await?;
+                if competing { return Ok::<_, sqlx::Error>(()); }
+                sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *holder).await?;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await;
+        // Release on both success and timeout so neither HTTP request is stranded.
+        holder.rollback().await?;
+        observed.context(
+            "both self-enrollment requests must overlap in the actual Audit/quota lock chain",
+        )??;
+        Ok::<_, anyhow::Error>(())
+    };
+    let (a, b, released) = tokio::join!(
         first.call(&router, Method::POST, SELF, Some(native())),
-        second.call(&router, Method::POST, SELF, Some(native()))
+        second.call(&router, Method::POST, SELF, Some(native())),
+        release
     );
+    released?;
     let (a, b) = (a?, b?);
     ensure!([a.0, b.0].iter().filter(|s| **s == StatusCode::OK).count() == 1);
     let (mut winner, receipt, loser) = if a.0 == StatusCode::OK {
