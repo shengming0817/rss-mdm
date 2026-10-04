@@ -35,7 +35,15 @@ fn s3_storage() -> Result<(tempfile::TempDir, Value)> {
             .open(private.path().join(name))?
             .write_all(provider[key].as_str().unwrap().as_bytes())?;
     }
-    let storage = json!({"kind":"s3","endpoint":provider["endpoint"],"region":provider["region"],"bucket":provider["bucket"],"namespace":provider["namespace"],"credentials_reference":"content-test","access_key_file":private.path().join("access"),"secret_key_file":private.path().join("secret"),"private_ca_file":provider["ca"],"max_concurrent":4,"connect_seconds":5});
+    let example: Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/mdm-content-s3.example.json"
+    ))?;
+    let _: rss_mdm_content_service::Config = serde_json::from_value(example.clone())?;
+    let mut storage = example["storage"].clone();
+    let actual = json!({"kind":"s3","endpoint":provider["endpoint"],"region":provider["region"],"bucket":provider["bucket"],"namespace":provider["namespace"],"credentials_reference":"content-test","access_key_file":private.path().join("access"),"secret_key_file":private.path().join("secret"),"private_ca_file":provider["ca"],"max_concurrent":4,"connect_seconds":5});
+    for (key, value) in actual.as_object().unwrap() {
+        storage[key] = value.clone();
+    }
     Ok((private, storage))
 }
 #[tokio::test]
