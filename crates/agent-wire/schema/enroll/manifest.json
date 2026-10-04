@@ -48,6 +48,10 @@
     {
       "type": "AuthorizationRequest",
       "file": "authorization-request-v1.schema.json"
+    },
+    {
+      "type": "RenewalStatusRequest",
+      "file": "renewal-status-request-v1.schema.json"
     }
   ]
 }

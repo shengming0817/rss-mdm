@@ -128,6 +128,185 @@ fn chain(c: &wire::Candidate) -> anyhow::Result<Vec<Vec<u8>>> {
 }
 
 #[tokio::test]
+#[ignore = "make t2 MODULE=agent.pki: renewal grant response lost before predecessor expiry"]
+async fn renewal_grant_lookup_survives_expired_identity_without_writing_authority()
+-> anyhow::Result<()> {
+    use axum::{
+        Router,
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use http_body_util::BodyExt;
+    use std::sync::atomic::{AtomicI64, Ordering};
+    use tower::ServiceExt;
+    struct Time(AtomicI64);
+    impl rss_mdm_registration_service::agent_pki::Clock for Time {
+        fn unix_seconds(&self) -> Result<i64, rss_mdm_registration_service::Error> {
+            Ok(self.0.load(Ordering::Acquire))
+        }
+    }
+    async fn lookup(
+        router: &Router,
+        input: &wire::RenewalStatusRequest,
+    ) -> anyhow::Result<(StatusCode, serde_json::Value)> {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/agent/enroll/renewal-grants/status")
+                    .header("host", "mdm.example.test")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(input)?))?,
+            )
+            .await?;
+        Ok((
+            response.status(),
+            serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?,
+        ))
+    }
+    let original = service(deployment()).await?;
+    let db = Database::connect(options("mdm_access")?).await?;
+    let audit_store = db.audit_store(&crate::config::AuditConfig::Plain).await?;
+    let pki = serde_json::from_value::<crate::agent_pki::Config>(deployment())?
+        .load(
+            audit_store.clone(),
+            Arc::new(SystemClock),
+            fixture_providers()?,
+        )?
+        .unwrap();
+    let time = Arc::new(Time(AtomicI64::new(now())));
+    let assemble = |tenant: &str| -> anyhow::Result<Arc<Service>> {
+        Ok(Arc::new(Service::new(Assembly {
+            tenant: rss_request_context::TenantId::parse(tenant)?,
+            store: db.registration(),
+            audit: audit_store.clone(),
+            issuer: pki.issuer.clone(),
+            clock: time.clone(),
+            policy: pki.policy.clone(),
+            binding: Arc::new(crate::agent::Bindings),
+            native: Arc::new(NoNative),
+        })?))
+    };
+    let s = assemble(case_a())?;
+    let p = admin(case_a(), "admin-a").await?;
+    let initial = grant()?;
+    let r = original.create(&p, &initial, &audit()).await?;
+    let candidate = original
+        .issue(&signing(&initial, r.grant_id)?, &audit())
+        .await?;
+    let evidence = peer(original.trust(), &chain(&candidate)?, &root()).await?;
+    original
+        .activate(
+            &evidence,
+            &wire::ActivationRequest {
+                wire_version: 1,
+                issuance_id: candidate.issuance_id,
+                operation_id: Uuid::new_v4(),
+            },
+            &audit(),
+        )
+        .await?;
+    let expiry = original
+        .trust()
+        .verify_peer(&evidence, now())?
+        .metadata()
+        .not_after;
+    let renewal = grant()?;
+    audit_store.inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+    assert!(s.renew(&evidence, &renewal, &audit()).await.is_err());
+    // No renewal receipt was received. Advance the credential verifier to its exact expiry;
+    // the already committed grant retains its original database deadline.
+    time.0.store(expiry, Ordering::Release);
+    assert_eq!(
+        s.renew(&evidence, &renewal, &audit())
+            .await
+            .err()
+            .unwrap()
+            .code,
+        wire::ErrorCode::CertificateExpired
+    );
+    let router = Router::new().nest(
+        "/api/v1/agent/enroll",
+        rss_mdm_agent_channel::enroll::router(s.clone(), envelope("mdm.example.test").await?),
+    );
+    let request = wire::RenewalStatusRequest {
+        wire_version: 1,
+        operation_id: renewal.operation_id,
+        secret: renewal.secret.clone(),
+    };
+    let snapshot = || {
+        crate::test_support::pg_tenant(
+            case_a(),
+            &format!(
+                "SELECT (SELECT jsonb_agg(to_jsonb(g) ORDER BY id) FROM mdm_access.agent_grants g WHERE tenant_id='{tenant}'),(SELECT jsonb_agg(to_jsonb(i) ORDER BY id) FROM mdm_access.agent_issuances i WHERE tenant_id='{tenant}'),(SELECT jsonb_agg(to_jsonb(k) ORDER BY id) FROM mdm_access.credentials k WHERE tenant_id='{tenant}')",
+                tenant = case_a()
+            ),
+        )
+    };
+    let before = snapshot()?;
+    let (status, recovered) = lookup(&router, &request).await?;
+    assert_eq!(status, StatusCode::OK, "{recovered}");
+    let receipt: wire::GrantReceipt = serde_json::from_value(recovered.clone())?;
+    assert_eq!(receipt.state, wire::GrantState::Available);
+    assert_eq!(
+        lookup(&router, &request).await?,
+        (status, recovered.clone())
+    );
+    let mut wrong = request.clone();
+    wrong.secret = runtime::Secret::parse(&crate::enrollment::random())?;
+    let denied = lookup(&router, &wrong).await?;
+    assert_eq!(denied.0, StatusCode::UNAUTHORIZED);
+    wrong = request.clone();
+    wrong.operation_id = Uuid::new_v4();
+    assert_eq!(lookup(&router, &wrong).await?, denied);
+    // An existing non-renewal operation cannot be consumed through this endpoint.
+    wrong.operation_id = initial.operation_id;
+    wrong.secret = initial.secret;
+    assert_eq!(lookup(&router, &wrong).await?, denied);
+    assert_eq!(
+        assemble(case_b())?
+            .renewal_status(&request)
+            .await
+            .err()
+            .unwrap()
+            .code,
+        wire::ErrorCode::InvalidIdentity
+    );
+    assert_eq!(
+        snapshot()?,
+        before,
+        "lookup changed grant, issuance or credential facts"
+    );
+    // Revocation and expiry remain observable; neither query refreshes a deadline.
+    s.revoke(&p, receipt.grant_id, Uuid::new_v4(), &audit())
+        .await?;
+    let revoked = lookup(&router, &request).await?;
+    assert_eq!(revoked.0, StatusCode::OK);
+    assert_eq!(revoked.1["state"], "revoked");
+    assert_eq!(revoked.1["expiresAt"], recovered["expiresAt"]);
+    let another = grant()?;
+    let retained = original.renew(&evidence, &another, &audit()).await?;
+    crate::test_support::pg_tenant(
+        case_a(),
+        &format!(
+            "UPDATE mdm_access.agent_grants SET created_at=clock_timestamp()-interval '25 hours',expires_at=clock_timestamp()-interval '1 hour' WHERE tenant_id='{}' AND id='{}'",
+            case_a(),
+            retained.grant_id
+        ),
+    )?;
+    let expired_request = wire::RenewalStatusRequest {
+        wire_version: 1,
+        operation_id: another.operation_id,
+        secret: another.secret,
+    };
+    let before = snapshot()?;
+    let expired = lookup(&router, &expired_request).await?;
+    assert_eq!(expired.0, StatusCode::OK);
+    assert_eq!(expired.1["state"], "expired");
+    assert_eq!(snapshot()?, before);
+    Ok(())
+}
+
+#[tokio::test]
 #[ignore = "make t2 MODULE=agent.pki"]
 async fn restored_ca_signs_only_live_authorized_agent_csrs_and_tls_preserves_purpose()
 -> anyhow::Result<()> {
