@@ -145,13 +145,28 @@ impl Apple {
             providers,
         }
     }
-    pub(crate) fn active_scep(&self) -> Result<(Vec<u8>, String, String), Error> {
+    pub(crate) async fn active_scep(
+        &self,
+        c: &mut sqlx::PgConnection,
+        tenant: &str,
+    ) -> Result<(Vec<u8>, String, String), Error> {
         let trust = self.authority.trust.public().map_err(|_| Error::Conflict)?;
         let generation = trust
             .issuers
             .iter()
             .find(|g| g.mode == rss_mdm_agent_wire::pki::Mode::Active)
             .ok_or(Error::Conflict)?;
+        rss_mdm_pki_service::signing::require_active_in(
+            c,
+            uuid::Uuid::parse_str(tenant).map_err(|_| Error::Malformed)?,
+            "apple",
+            &generation.digest,
+        )
+        .await
+        .map_err(|error| match error {
+            rss_mdm_pki_service::Error::Conflict => Error::Conflict,
+            _ => Error::Unavailable(crate::Failure::Database),
+        })?;
         let url = self
             .providers
             .scep(&generation.digest)
@@ -332,8 +347,12 @@ pub const ACCESS_ADMISSION_SQL: &str = include_str!("access-admission.sql");
 #[cfg(feature = "integration")]
 impl Apple {
     pub fn scep_fixture(&self) -> Result<(String, String), Error> {
-        let (_, url, provisioner) = self.active_scep()?;
-        Ok((url, provisioner))
+        let generation = self.authority.trust.active().map_err(|_| Error::Conflict)?;
+        let url = self
+            .providers
+            .scep(&generation.digest)
+            .map_err(|_| Error::Conflict)?;
+        Ok((url.to_owned(), generation.provisioner))
     }
     pub fn trust_fixture(&self) -> &certificate::AppleDeviceTrust {
         &self.authority

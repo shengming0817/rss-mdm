@@ -3,6 +3,72 @@ use anyhow::{Result, ensure};
 use sqlx::Connection;
 use std::time::Duration;
 use uuid::Uuid;
+
+pub(super) async fn issuer_state(pg: &mut sqlx::PgConnection, state: &str) -> Result<()> {
+    let changed = sqlx::query("UPDATE mdm_pki.issuers SET state=$2 WHERE tenant_id=$1::uuid AND purpose='apple' AND state<>$2")
+        .bind(super::case_tenant()).bind(state).execute(pg).await?.rows_affected();
+    ensure!(changed == 1, "expected one fixture issuer");
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "MODULE=apple.scep: stale process snapshot must not authorize new issuance"]
+async fn stale_issuer_rejects_new_profiles_but_preserves_frozen_attempts() -> Result<()> {
+    use axum::{
+        body::Body,
+        http::{Method, Request},
+    };
+    use serde_json::json;
+    use tower::ServiceExt;
+    let mut f = Fixture::start().await?;
+    let (enrollment, attempt, password) = f.enrollment().await?;
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    // A different process has withdrawn this issuer; this channel keeps its old in-memory snapshot.
+    issuer_state(&mut pg, "verify_only").await?;
+    let profile = |id| {
+        Request::post(format!("/api/v1/enrollments/{id}/profile"))
+            .header("host", "mdm.example.test")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"password":password}).to_string()))
+            .unwrap()
+    };
+    let replay = f.router.clone().oneshot(profile(enrollment)).await?;
+    ensure!(
+        replay.status() == StatusCode::OK,
+        "frozen attempt was re-authorized"
+    );
+    let old: Uuid = sqlx::query_scalar(
+        "SELECT id FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND enrollment=$2",
+    )
+    .bind(super::case_tenant())
+    .bind(enrollment)
+    .fetch_one(&mut pg)
+    .await?;
+    ensure!(old == attempt);
+    let created = f.browser.call(&f.router, Method::POST, "/api/v1/enrollments",
+        Some(json!({"source":"mdm.apple","password":password,"deviceId":crate::test_support::case::name("stale-issuer-device")}))).await?;
+    ensure!(created.0 == StatusCode::OK, "create enrollment {created:?}");
+    let next = Uuid::parse_str(created.1["enrollmentId"].as_str().unwrap())?;
+    let denied = f.router.clone().oneshot(profile(next)).await?;
+    ensure!(
+        denied.status() == StatusCode::CONFLICT,
+        "stale issuer authorized new profile"
+    );
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND enrollment=$2",
+    )
+    .bind(super::case_tenant())
+    .bind(next)
+    .fetch_one(&mut pg)
+    .await?;
+    ensure!(count == 0, "stale authorization escaped rollback");
+    issuer_state(&mut pg, "active").await?;
+    ensure!(f.router.clone().oneshot(profile(next)).await?.status() == StatusCode::OK);
+    pg.close().await?;
+    f.close().await
+}
 pub(super) async fn unbound_leaf_and_replay(
     f: &Fixture,
     device: &scep_client::Device,

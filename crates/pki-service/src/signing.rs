@@ -68,6 +68,19 @@ pub async fn authorize_in(
     if !matches!(purpose, "windows" | "agent") || issuer.len() != 64 || intent.attempt.is_nil() {
         return Err(Error::Request);
     }
+    require_active_in(c, tenant, purpose, issuer).await?;
+    let bytes = binding(purpose, issuer, provider, intent)?;
+    sqlx::query("INSERT INTO mdm_pki.signing(tenant_id,attempt,purpose,issuer,binding,deadline,digest,state) VALUES($1,$2,$3,$4,$5,$6,$7,'prepared')")
+        .bind(tenant).bind(intent.attempt).bind(purpose).bind(issuer).bind(&bytes).bind(intent.deadline).bind(Sha256::digest(&bytes).to_vec()).execute(c).await.map_err(|_|Error::Storage)?;
+    Ok(())
+}
+/// Fence new issuance against the durable active generation in its original transaction.
+pub async fn require_active_in(
+    c: &mut sqlx::PgConnection,
+    tenant: Uuid,
+    purpose: &str,
+    issuer: &str,
+) -> Result<(), Error> {
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2639))")
         .bind(tenant.to_string())
         .execute(&mut *c)
@@ -78,9 +91,6 @@ pub async fn authorize_in(
     if !active {
         return Err(Error::Conflict);
     }
-    let bytes = binding(purpose, issuer, provider, intent)?;
-    sqlx::query("INSERT INTO mdm_pki.signing(tenant_id,attempt,purpose,issuer,binding,deadline,digest,state) VALUES($1,$2,$3,$4,$5,$6,$7,'prepared')")
-        .bind(tenant).bind(intent.attempt).bind(purpose).bind(issuer).bind(&bytes).bind(intent.deadline).bind(Sha256::digest(&bytes).to_vec()).execute(c).await.map_err(|_|Error::Storage)?;
     Ok(())
 }
 pub struct SigningStore {

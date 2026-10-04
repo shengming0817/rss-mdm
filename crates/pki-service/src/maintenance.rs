@@ -222,8 +222,11 @@ impl Registry {
         result
     }
     /// Refresh all generations of a purpose together, so a CA outage can recover without restart.
-    pub async fn sweep(&self, now: i64) -> Result<(), Error> {
-        self.synchronize(now).await?;
+    pub async fn sweep(
+        &self,
+        clock: impl Fn() -> Result<i64, Error> + Send + Sync,
+    ) -> Result<(), Error> {
+        self.synchronize(clock()?).await?;
         let mut failed = false;
         for binding in self.bindings() {
             let trust = binding.public().map_err(|_| Error::Storage)?;
@@ -264,7 +267,7 @@ impl Registry {
             a.identify_service("service:device-pki");
             a.operation(operation, "device_pki_crl_publish");
             let result = self
-                .publish_set(&inputs, trust.purpose, operation, &a, None, now)
+                .publish_set(&inputs, trust.purpose, operation, &a, None, clock()?)
                 .await;
             a.finalize(
                 result
@@ -280,12 +283,12 @@ impl Registry {
                 p.purpose == trust.purpose && trust.issuers.iter().any(|g| g.digest == p.issuer)
             }) {
                 for _ in 0..8 {
-                    let Some(job) = self.claim(&trust, provider, now).await? else {
+                    let Some(job) = self.claim(&trust, provider, clock()?).await? else {
                         break;
                     };
                     let acknowledged = provider
                         .client
-                        .revoke(job.attempt, &job.serial, now)
+                        .revoke(job.attempt, &job.serial, clock()?)
                         .await
                         .is_ok();
                     if acknowledged {

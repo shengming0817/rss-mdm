@@ -111,7 +111,7 @@ SCEP provisioner 名为 rss，最小 RSA 公钥 2048、禁用 renewal，默认�
 challenge 是一次性事务，先消费提交再 allow；CA 的重复传输不能再次授权。签发完成通知不是唯一绑定通道，真实 mTLS 叶证书可恢复丢失通知；签发响应本身丢失须新口令、新 attempt、新密钥，不能静默重签。
 ## 健康、告警与排障
 
-启用 Apple 后，`/readyz` 同时检查 SCEP issuer、Profile signer 和 APNs 证书有效期；任一过期即返回 503。后台输出 `apple_certificate_health`：用途为 `scep_issuer`、`profile_signer`、`apns`，剩余 30 日进入 `renew_soon`、7 日进入 `critical`、到期为 `expired`。每次进程运行仅在等级变化时输出；应由部署日志告警系统接收。替换材料后重启以装载新证书；issuer 变化仍须按注册配置身份规则重新注册，APNs/签名证书同一用途轮换不改变注册身份。
+启用 Apple 后，`/readyz` 同时检查 SCEP issuer、Profile signer 和 APNs 证书有效期；任一过期即返回 503。后台输出 `apple_certificate_health`：用途为 `scep_issuer`、`profile_signer`、`apns`，剩余 30 日进入 `renew_soon`、7 日进入 `critical`、到期为 `expired`。每次进程运行仅在等级变化时输出；应由部署日志告警系统接收。Profile signer 与 APNs 材料替换后重启以装载新证书，同一用途轮换不改变注册身份。SCEP issuer 按[设备 PKI 运维](../deployment/operations.md#设备-pki-轮换与撤销)完成受控 CA 轮换，无须重新注册；管理 origin、APNs topic 或 webhook ID 等稳定注册配置变化才要求重新注册。
 
 启动失败按闭合类别定位：`AppleListeners`、`AppleScep`、`AppleProfileSigner`、`AppleApns`、`AppleChallengeWebhook`、`AppleNotifyWebhook`；不会输出路径、密钥、口令或 provider 原文。
 

@@ -1,4 +1,5 @@
 //! Pinned CA, durable grant/issuance state and real TLS possession.
+mod maintenance;
 use crate::device::test_support::{admin, case_a, case_b, options};
 use crate::test_support::agent_tls::peer;
 use crate::{
@@ -801,7 +802,7 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
     );
     tokio::time::timeout(Duration::from_secs(90), async {
         loop {
-            registry.sweep(now()).await?;
+            registry.sweep(|| Ok(now())).await?;
             if registry
                 .transition(&p, Purpose::Agent, &retire, &audit(), now())
                 .await

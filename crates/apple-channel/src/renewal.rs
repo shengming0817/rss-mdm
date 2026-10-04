@@ -207,7 +207,7 @@ async fn prepare_on(
     let id = Uuid::new_v4();
     let enrollment = rss_mdm_registration_service::enrollment::store::uuid(&old, "enrollment")?;
     let secret = zeroize::Zeroizing::new(rss_mdm_registration_service::enrollment::random());
-    let (issuer, scep_url, scep_provisioner) = apple.active_scep()?;
+    let (issuer, scep_url, scep_provisioner) = apple.active_scep(c, tenant).await?;
     let signed = apple.signer.sign(
         &profile::enrollment(
             &profile::EnrollmentProfile {

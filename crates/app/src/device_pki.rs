@@ -70,7 +70,7 @@ pub(crate) fn registration(
             use crate::clock::Clock;
             let result=match crate::clock::SystemClock.unix_seconds() {
                 Ok(now)=>tokio::select!{biased;()=token.cancelled()=>return Ok(()),result=async {
-                    let sweep=pki.sweep(now).await;
+                    let sweep=pki.sweep(|| crate::clock::SystemClock.unix_seconds().map_err(|_|rss_mdm_pki_service::Error::Storage)).await;
                     for health in pki.health().await? {
                         if health.issuer_not_after-now<=30*86400 || health.root_not_after-now<=90*86400
                             || health.crl_next_update-now<=120 || health.root_crl_next_update-now<=7*86400

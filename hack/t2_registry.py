@@ -190,7 +190,7 @@ add('agent.pki', selectors=('agent_pki_tests::',), fixtures=('identity','agent_p
              'crates/app/src/agent_pki.rs','deployment/agent-leaf.tpl',
              'crates/registration-service/src/operations.rs','crates/pki-service/src/*','crates/pki-service/schema/*',
              'crates/device-trust/src/*','crates/app/src/device_pki.rs','crates/management-http/src/pki.rs'),
-    tests=('crates/app/tests/agent_pki/mod.rs',),
+    tests=('crates/app/tests/agent_pki/mod.rs','crates/app/tests/agent_pki/maintenance.rs'),
     support=('hack/agent_pki_fixtures.py','crates/app/tests/support/agent_tls.rs','crates/app/tests/device/support.rs',
              'crates/app/tests/enrollment/support.rs','crates/app/tests/support/audit.rs',
              'crates/app/tests/windows/support.rs'))

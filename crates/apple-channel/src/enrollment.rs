@@ -158,7 +158,7 @@ async fn prepared(
         ));
     }
     let id = Uuid::new_v4();
-    let (issuer, scep_url, scep_provisioner) = apple.active_scep()?;
+    let (issuer, scep_url, scep_provisioner) = apple.active_scep(tx, tenant).await?;
     sqlx::query("INSERT INTO mdm_apple.scep_attempts(tenant_id,id,enrollment,password_version,configuration,state,issuer,expires_at,access_rights,scep_url,scep_provisioner) VALUES($1::uuid,$3::uuid,$2::uuid,$6,$4,'prepared',$5,$7::timestamptz,$8,$9,$10)")
         .bind(tenant).bind(auth.id.to_string()).bind(id.to_string()).bind(apple.configuration.as_slice()).bind(issuer).bind(auth.version).bind(deadline).bind(apple.access_rights()).bind(&scep_url).bind(&scep_provisioner).execute(&mut *tx).await.map_err(db)?;
     Ok((id, false, scep_url, scep_provisioner))
