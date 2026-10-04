@@ -1,18 +1,22 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v6/task-claim-response.schema.json",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/task-event-ack.schema.json",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "wireVersion",
-    "task",
-    "cancellations"
+    "accepted",
+    "permit",
+    "cancelRequested"
   ],
   "properties": {
     "wireVersion": {
-      "const": 6
+      "const": 1
     },
-    "task": {
+    "accepted": {
+      "const": true
+    },
+    "permit": {
       "oneOf": [
         {
           "type": "null"
@@ -55,7 +59,7 @@
                   ],
                   "properties": {
                     "wireVersion": {
-                      "const": 6
+                      "const": 1
                     },
                     "tenantId": {
                       "type": "string",
@@ -305,7 +309,7 @@
                   ],
                   "properties": {
                     "wireVersion": {
-                      "const": 6
+                      "const": 1
                     },
                     "tenantId": {
                       "type": "string",
@@ -484,7 +488,7 @@
                   ],
                   "properties": {
                     "wireVersion": {
-                      "const": 6
+                      "const": 1
                     },
                     "tenantId": {
                       "type": "string",
@@ -617,35 +621,8 @@
         }
       ]
     },
-    "cancellations": {
-      "type": "array",
-      "maxItems": 128,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "taskId",
-          "attemptId"
-        ],
-        "properties": {
-          "taskId": {
-            "type": "string",
-            "format": "uuid",
-            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-            "not": {
-              "const": "00000000-0000-0000-0000-000000000000"
-            }
-          },
-          "attemptId": {
-            "type": "string",
-            "format": "uuid",
-            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-            "not": {
-              "const": "00000000-0000-0000-0000-000000000000"
-            }
-          }
-        }
-      }
+    "cancelRequested": {
+      "type": "boolean"
     }
   },
   "$defs": {

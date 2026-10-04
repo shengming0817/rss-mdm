@@ -139,7 +139,7 @@ async fn four_families_assets_recovery_and_withdrawal() -> Result<()> {
     let (peer, device) = f.ready_local_peer().await?;
     let denied = f.browser.call(
         &f.router, Method::POST,
-        &format!("/api/v3/devices/{}/operations", case_device()),
+        &format!("/api/v1/devices/{}/operations", case_device()),
         Some(json!({"operationId":Uuid::new_v4(),"inputVersion":"interactive","target":{"kind":"device"},
             "task":task(vec![declaration("interactive","com.apple.configuration.legacy.interactive",
                 json!({"ProfileURL":"https://external.invalid/sensitive.plist","VisibleName":"Interactive"}))],vec![]),
@@ -165,7 +165,7 @@ async fn four_families_assets_recovery_and_withdrawal() -> Result<()> {
         .call(
             &f.router,
             Method::GET,
-            &format!("/api/v4/resources/{resource}"),
+            &format!("/api/v1/resources/{resource}"),
             None,
         )
         .await?;
@@ -396,7 +396,7 @@ async fn legacy_takeover_retains_guards_until_correlated_absence() -> Result<()>
         .call(
             &f.router,
             Method::GET,
-            &format!("/api/v4/resources/{resource}"),
+            &format!("/api/v1/resources/{resource}"),
             None,
         )
         .await?;
@@ -538,12 +538,12 @@ async fn policy_coowners_share_native_publication_without_fabricating_removal() 
     crate::test_support::planning_http::native_configuration_resource(&mut f.browser,&f.router,resource,"macos","aarch64",
         json!({"target":{"kind":"device"},"apply":task(vec![subscription("policy-subscriptions")],vec![]),"remove":task(vec![],vec![])})).await?;
     let scope = Uuid::new_v4();
-    f.policy_post(&format!("/api/v2/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}})).await?;
+    f.policy_post(&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}})).await?;
     let definition = json!({"scope":scope,"action":{"resource":{"id":resource,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"kind":"configuration","exit":"remove"}});
     let first = Uuid::new_v4();
     let second = Uuid::new_v4();
     f.policy_post(
-        &format!("/api/v3/policies/{first}"),
+        &format!("/api/v1/policies/{first}"),
         0,
         json!({"action":"put","enabled":true,"definition":definition}),
     )
@@ -555,14 +555,14 @@ async fn policy_coowners_share_native_publication_without_fabricating_removal() 
     native(&peer, None, "status", Some(&report(&initial, true, "15.0"))).await?;
     ensure!(f.operation(applied).await?["commandStatus"] == "applied");
     f.policy_post(
-        &format!("/api/v3/policies/{second}"),
+        &format!("/api/v1/policies/{second}"),
         0,
         json!({"action":"put","enabled":true,"definition":definition}),
     )
     .await?;
     ensure!(f.policy_operation(second).await? == applied);
     f.policy_post(
-        &format!("/api/v3/policies/{first}"),
+        &format!("/api/v1/policies/{first}"),
         1,
         json!({"action":"disable"}),
     )
@@ -573,7 +573,7 @@ async fn policy_coowners_share_native_publication_without_fabricating_removal() 
         "one coowner removed a shared declaration"
     );
     f.policy_post(
-        &format!("/api/v3/policies/{second}"),
+        &format!("/api/v1/policies/{second}"),
         1,
         json!({"action":"disable"}),
     )
@@ -610,7 +610,7 @@ async fn policy_coowners_share_native_publication_without_fabricating_removal() 
     let mut retain_definition = definition.clone();
     retain_definition["action"]["exit"] = json!("retain");
     f.policy_post(
-        &format!("/api/v3/policies/{retained}"),
+        &format!("/api/v1/policies/{retained}"),
         0,
         json!({"action":"put","enabled":true,"definition":retain_definition}),
     )
@@ -628,7 +628,7 @@ async fn policy_coowners_share_native_publication_without_fabricating_removal() 
     .await?;
     ensure!(f.operation(retained_operation).await?["commandStatus"] == "applied");
     f.policy_post(
-        &format!("/api/v3/policies/{retained}"),
+        &format!("/api/v1/policies/{retained}"),
         1,
         json!({"action":"disable"}),
     )

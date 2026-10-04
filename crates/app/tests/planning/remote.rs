@@ -19,12 +19,12 @@ async fn scope_snapshot_result_views_and_authorization() -> Result<()> {
     crate::test_support::identity::set_grants(case_tenant(), &member, grants.clone()).await?;
     let automation = start_automation(base).await?;
     let scope = Uuid::new_v4();
-    let created=post(author,router,&format!("/api/v2/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"targets":[{"kind":"device","id":case_device_id()}],"limitations":null,"exclusions":[]}}})).await?;
+    let created=post(author,router,&format!("/api/v1/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"targets":[{"kind":"device","id":case_device_id()}],"limitations":null,"exclusions":[]}}})).await?;
     await_task(
         author,
         router,
         &format!(
-            "/api/v2/scopes/{scope}/tasks/{}",
+            "/api/v1/scopes/{scope}/tasks/{}",
             created["task"].as_str().unwrap()
         ),
     )
@@ -36,13 +36,13 @@ async fn scope_snapshot_result_views_and_authorization() -> Result<()> {
         "SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{}'",
         case_tenant()
     ))?;
-    let accepted = post(author, router, "/api/v3/remote-operations", input.clone()).await?;
-    ensure!(accepted == post(author, router, "/api/v3/remote-operations", input).await?);
+    let accepted = post(author, router, "/api/v1/remote-operations", input.clone()).await?;
+    ensure!(accepted == post(author, router, "/api/v1/remote-operations", input).await?);
     let directory = author
         .call(
             router,
             Method::GET,
-            &format!("/api/v3/remote-operations?kind=script&resource={resource}"),
+            &format!("/api/v1/remote-operations?kind=script&resource={resource}"),
             None,
         )
         .await?;
@@ -53,15 +53,15 @@ async fn scope_snapshot_result_views_and_authorization() -> Result<()> {
         "remote directory: {directory:?}"
     );
     let detail_url = directory.1["items"][0]["detailUrl"].as_str().unwrap();
-    ensure!(detail_url == format!("/api/v3/remote-operations/{id}"));
+    ensure!(detail_url == format!("/api/v1/remote-operations/{id}"));
     ensure!(author.call(router, Method::GET, detail_url, None).await?.0 == StatusCode::OK);
 
-    let changed=post(author,router,&format!("/api/v2/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"put","definition":{"targets":[],"limitations":null,"exclusions":[]}}})).await?;
+    let changed=post(author,router,&format!("/api/v1/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"put","definition":{"targets":[],"limitations":null,"exclusions":[]}}})).await?;
     await_task(
         author,
         router,
         &format!(
-            "/api/v2/scopes/{scope}/tasks/{}",
+            "/api/v1/scopes/{scope}/tasks/{}",
             changed["task"].as_str().unwrap()
         ),
     )
@@ -84,7 +84,7 @@ async fn scope_snapshot_result_views_and_authorization() -> Result<()> {
         .call(
             router,
             Method::GET,
-            &format!("/api/v3/remote-operations/{id}"),
+            &format!("/api/v1/remote-operations/{id}"),
             None,
         )
         .await?;
@@ -103,7 +103,7 @@ async fn scope_snapshot_result_views_and_authorization() -> Result<()> {
         .call(
             router,
             Method::GET,
-            &format!("/api/v3/remote-operations/{id}/runs/{task_id}"),
+            &format!("/api/v1/remote-operations/{id}/runs/{task_id}"),
             None,
         )
         .await?;
@@ -118,7 +118,7 @@ async fn scope_snapshot_result_views_and_authorization() -> Result<()> {
             router,
             Method::GET,
             &format!(
-                "/api/v3/remote-operations/{}/runs/{task_id}",
+                "/api/v1/remote-operations/{}/runs/{task_id}",
                 Uuid::new_v4()
             ),
             None,
@@ -138,7 +138,7 @@ async fn scope_snapshot_result_views_and_authorization() -> Result<()> {
         .call(
             router,
             Method::GET,
-            &format!("/api/v3/remote-operations/{id}/runs/{task_id}"),
+            &format!("/api/v1/remote-operations/{id}/runs/{task_id}"),
             None,
         )
         .await?;
@@ -148,7 +148,7 @@ async fn scope_snapshot_result_views_and_authorization() -> Result<()> {
     );
     ensure!(
         author
-            .call(router, Method::GET, "/api/v3/remote-operations", None)
+            .call(router, Method::GET, "/api/v1/remote-operations", None)
             .await?
             .0
             == StatusCode::FORBIDDEN
@@ -193,7 +193,7 @@ async fn bulk_pages_restart_and_cancellation_are_durable() -> Result<()> {
     let mut devices = crate::test_support::agent::bulk_task_agents(case_device_id(), 129)?;
     devices.extend((0..171).map(|n| format!("unregistered-{n:04}")));
     let bulk = Uuid::new_v4();
-    post(author,router,"/api/v3/remote-operations",json!({"operationId":bulk,"resource":policy_definition(resource,case_empty_scope())["action"]["resource"],"targets":{"kind":"devices","devices":devices},"action":{"kind":"execute","parameters":{}},"deadline":now+600})).await?;
+    post(author,router,"/api/v1/remote-operations",json!({"operationId":bulk,"resource":policy_definition(resource,case_empty_scope())["action"]["resource"],"targets":{"kind":"devices","devices":devices},"action":{"kind":"execute","parameters":{}},"deadline":now+600})).await?;
     let mut owner = worker(base).await?;
     checkpoint(bulk, false).await?;
     crate::test_support::stop_worker(owner).await?;
@@ -265,7 +265,7 @@ async fn bulk_pages_restart_and_cancellation_are_durable() -> Result<()> {
     let cancelled = post(
         author,
         router,
-        &format!("/api/v3/remote-operations/{bulk}/cancel"),
+        &format!("/api/v1/remote-operations/{bulk}/cancel"),
         json!({"operationId":Uuid::new_v4()}),
     )
     .await?;
@@ -274,7 +274,7 @@ async fn bulk_pages_restart_and_cancellation_are_durable() -> Result<()> {
         .call(
             router,
             Method::GET,
-            &format!("/api/v3/remote-operations/{bulk}"),
+            &format!("/api/v1/remote-operations/{bulk}"),
             None,
         )
         .await?;
@@ -313,7 +313,7 @@ async fn await_cancelled(author: &mut Browser, router: &Router, id: Uuid) -> Res
                 .call(
                     router,
                     Method::GET,
-                    &format!("/api/v3/remote-operations/{id}"),
+                    &format!("/api/v1/remote-operations/{id}"),
                     None,
                 )
                 .await?;

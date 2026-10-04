@@ -1,4 +1,4 @@
-//! V6 channel enrollment contracts. Device identity is derived from transport proof.
+//! V1 channel enrollment contracts. Device identity is derived from transport proof.
 use crate::runtime::{TaskArchitecture, TaskPlatform, WireError, strict_uuid};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -107,7 +107,7 @@ impl EnrollmentTaskSpec {
     /// Canonical signature domain, bound to every identity and enrollment input.
     pub fn signing_bytes(&self, key_id: &str) -> Result<Vec<u8>, WireError> {
         self.entry.validate(self.platform)?;
-        if self.wire_version != crate::runtime::PAYLOAD_VERSION
+        if self.wire_version != crate::runtime::WIRE_VERSION
             || self.tenant_id.is_nil()
             || self.organization != self.tenant_id
             || self.registration_id.is_nil()
@@ -125,7 +125,7 @@ impl EnrollmentTaskSpec {
         {
             return Err(WireError::InvalidValue);
         }
-        let mut bytes = b"rss-mdm-agent-mdm-enrollment-v6-ed25519\0".to_vec();
+        let mut bytes = b"rss-mdm-agent-mdm-enrollment-v1-ed25519\0".to_vec();
         bytes.extend(serde_json::to_vec(&(key_id, self)).map_err(|_| WireError::InvalidValue)?);
         Ok(bytes)
     }

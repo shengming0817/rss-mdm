@@ -10,7 +10,7 @@ pub(crate) async fn host_context_matrix(
     subject: &str,
 ) -> Result<()> {
     let path = format!(
-        "/api/identity-host/v1/tenants/{TENANT}/context",
+        "/api/v1/identity-host/tenants/{TENANT}/context",
         TENANT = case_tenant()
     );
     for permissions in [
@@ -38,7 +38,10 @@ pub(crate) async fn host_context_matrix(
             .call(
                 &router,
                 Method::GET,
-                &format!("/api/v2/tenants/{TENANT}/session", TENANT = case_tenant()),
+                &format!(
+                    "/api/v1/identity/tenants/{TENANT}/session",
+                    TENANT = case_tenant()
+                ),
                 None,
             )
             .await?
@@ -55,7 +58,10 @@ pub(crate) async fn host_context_matrix(
             .call(
                 &router,
                 Method::GET,
-                &format!("/api/v2/tenants/{TENANT}/session", TENANT = case_tenant()),
+                &format!(
+                    "/api/v1/identity/tenants/{TENANT}/session",
+                    TENANT = case_tenant()
+                ),
                 None,
             )
             .await?

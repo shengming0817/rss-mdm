@@ -262,7 +262,7 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
     let mut values = BTreeMap::new();
     ensure!(exchange(&peer, 970, &mut values).await?.is_empty());
     let scope = Uuid::new_v4();
-    let created=change(&mut client,&format!("/api/v2/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}})).await?;
+    let created=change(&mut client,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}})).await?;
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let page = client
@@ -271,7 +271,7 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
                     &client.router,
                     Method::GET,
                     &format!(
-                        "/api/v2/scopes/{scope}/tasks/{}",
+                        "/api/v1/scopes/{scope}/tasks/{}",
                         created["task"].as_str().unwrap()
                     ),
                     None,
@@ -290,7 +290,7 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
     let first = Uuid::new_v4();
     let second = Uuid::new_v4();
     for (id, resource) in [(first, &a), (second, &b)] {
-        change(&mut client,&format!("/api/v3/policies/{id}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"configuration","resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"remove"}}})).await?;
+        change(&mut client,&format!("/api/v1/policies/{id}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"configuration","resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"remove"}}})).await?;
     }
     let mut protected_pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
@@ -350,7 +350,7 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
     // Equal shared values do not make two different Sequence groups interchangeable.
     let overlapping_resource = resource(&mut client, &[CORTANA, TELEMETRY]).await?;
     let overlapping = Uuid::new_v4();
-    change(&mut client,&format!("/api/v3/policies/{overlapping}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"configuration","resource":{"id":overlapping_resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"remove"}}})).await?;
+    change(&mut client,&format!("/api/v1/policies/{overlapping}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"configuration","resource":{"id":overlapping_resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"remove"}}})).await?;
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let read = client
@@ -358,7 +358,7 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
                 .call(
                     &client.router,
                     Method::GET,
-                    &format!("/api/v3/policies/{overlapping}/devices"),
+                    &format!("/api/v1/policies/{overlapping}/devices"),
                     None,
                 )
                 .await?;
@@ -378,7 +378,7 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
     .await??;
     change(
         &mut client,
-        &format!("/api/v3/policies/{overlapping}"),
+        &format!("/api/v1/policies/{overlapping}"),
         1,
         json!({"action":"disable"}),
     )
@@ -390,14 +390,14 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
     );
     // Identical native input has two Policy owners, but one immutable operation.
     let shared = Uuid::new_v4();
-    change(&mut client,&format!("/api/v3/policies/{shared}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"configuration","resource":{"id":a,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"remove"}}})).await?;
+    change(&mut client,&format!("/api/v1/policies/{shared}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"configuration","resource":{"id":a,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"remove"}}})).await?;
     ensure!(
         published(&mut client, shared).await? == a_ops,
         "identical owners dispatched twice"
     );
     change(
         &mut client,
-        &format!("/api/v3/policies/{first}"),
+        &format!("/api/v1/policies/{first}"),
         1,
         json!({"action":"disable"}),
     )
@@ -419,11 +419,11 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
     // A remaining owner of one member must not let withdrawal clip a Sequence.
     let keeper_resource = resource(&mut client, &[CORTANA]).await?;
     let keeper = Uuid::new_v4();
-    change(&mut client,&format!("/api/v3/policies/{keeper}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"configuration","resource":{"id":keeper_resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"retain"}}})).await?;
+    change(&mut client,&format!("/api/v1/policies/{keeper}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"configuration","resource":{"id":keeper_resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"retain"}}})).await?;
     wait_diagnosis(&mut client, keeper, "native_group_conflict").await?;
     change(
         &mut client,
-        &format!("/api/v3/policies/{shared}"),
+        &format!("/api/v1/policies/{shared}"),
         1,
         json!({"action":"disable"}),
     )
@@ -437,7 +437,7 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
     );
     change(
         &mut client,
-        &format!("/api/v3/policies/{keeper}"),
+        &format!("/api/v1/policies/{keeper}"),
         1,
         json!({"action":"disable"}),
     )
@@ -522,7 +522,7 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
         .call(
             &client.router,
             Method::GET,
-            &format!("/api/v3/policies/{shared}/devices"),
+            &format!("/api/v1/policies/{shared}/devices"),
             None,
         )
         .await?;
@@ -550,12 +550,12 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
         .call(
             &client.router,
             Method::POST,
-            "/api/v3/remote-operations",
+            "/api/v1/remote-operations",
             Some(remote_input.clone()),
         )
         .await?;
     ensure!(accepted.0 == StatusCode::OK, "remote native: {accepted:?}");
-    ensure!(accepted.1["statusUrl"] == format!("/api/v3/remote-operations/{remote}"));
+    ensure!(accepted.1["statusUrl"] == format!("/api/v1/remote-operations/{remote}"));
     ensure!(
         accepted
             == client
@@ -563,7 +563,7 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
                 .call(
                     &client.router,
                     Method::POST,
-                    "/api/v3/remote-operations",
+                    "/api/v1/remote-operations",
                     Some(remote_input)
                 )
                 .await?,
@@ -581,7 +581,7 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
                 .call(
                     &client.router,
                     Method::GET,
-                    &format!("/api/v3/remote-operations/{remote}"),
+                    &format!("/api/v1/remote-operations/{remote}"),
                     None,
                 )
                 .await?;

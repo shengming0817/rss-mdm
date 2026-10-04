@@ -62,7 +62,7 @@ async fn agent_keepalive_requests_consume_budget_and_return_family_errors() {
             .clone()
             .oneshot(
                 axum::http::Request::builder()
-                    .uri("/api/agent/runtime/v1/reports")
+                    .uri("/api/v1/agent/runtime/reports")
                     .body(axum::body::Body::empty())
                     .unwrap(),
             )
@@ -75,7 +75,7 @@ async fn agent_keepalive_requests_consume_budget_and_return_family_errors() {
             .clone()
             .oneshot(
                 axum::http::Request::builder()
-                    .uri(format!("/api/agent/{family}/v1/status"))
+                    .uri(format!("/api/v1/agent/{family}/status"))
                     .body(axum::body::Body::empty())
                     .unwrap(),
             )
@@ -96,7 +96,7 @@ async fn agent_keepalive_requests_consume_budget_and_return_family_errors() {
     let response = router
         .oneshot(
             axum::http::Request::builder()
-                .uri("/api/agent/runtime/v1/reports")
+                .uri("/api/v1/agent/runtime/reports")
                 .body(axum::body::Body::empty())
                 .unwrap(),
         )

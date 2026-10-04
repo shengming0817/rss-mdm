@@ -24,7 +24,7 @@ WITH tables AS (
  ('mdm_commands.capability_queries','version_status'),
  ('mdm_commands.capability_queries','edition_status'),
  ('mdm_commands.devices','generation'),('mdm_commands.devices','epoch'),('mdm_commands.devices','registration'),('mdm_commands.devices','registration_generation'),('mdm_commands.devices','recovery_after'),
- ('mdm_commands.operations','dispatch_failure'),('mdm_commands.operations','approval'),('mdm_commands.operations','revision'),('mdm_commands.operations','gateway_accepted'),
+ ('mdm_commands.operations','diagnostic_progress'),('mdm_commands.operations','dispatch_failure'),('mdm_commands.operations','approval'),('mdm_commands.operations','revision'),('mdm_commands.operations','gateway_accepted'),
  ('mdm_access.report_sources','next_sequence'),('mdm_access.registrations','next_command'),('mdm_access.registrations','ready'),('mdm_access.enrollment_certificates','server_nonce'),
  ('mdm_access.management_sessions','state'),('mdm_access.management_sessions','last_message'),('mdm_access.management_sessions','client_authenticated'),('mdm_access.management_sessions','nonce'),('mdm_access.management_sessions','run_id'),
  ('mdm_access.collection_runs','evidence'),('mdm_access.collection_runs','attempts'),('mdm_access.collection_runs','result'),('mdm_access.collection_runs','reason'),('mdm_access.collection_runs','batch'),('mdm_access.collection_runs','digest'),('mdm_access.collection_runs','sealed_at'),('mdm_access.collection_runs','delivery_pending')
@@ -34,7 +34,7 @@ WITH tables AS (
 ), read_columns(relation,col) AS (VALUES
  ('mdm_access.agent_issuances','tenant_id'),('mdm_access.agent_issuances','credential'),('mdm_access.agent_issuances','not_after')
 ), allowed(relation,sel,ins,del) AS (VALUES
- ('mdm_flow.native_protection',true,true,false),('mdm_access.agent_grants',true,true,false),
+ ('mdm_content.diagnostic_artifacts',true,true,false),('mdm_flow.native_protection',true,true,false),('mdm_access.agent_grants',true,true,false),
  ('mdm.inventory',true,false,false),
  ('mdm.field_versions',true,false,false),('mdm.collection_definitions',true,true,false),('mdm.collection_results',true,true,false),
  ('mdm_software_composition.subjects',true,false,false),('mdm_software_composition.targets',true,false,false),('mdm_software_composition.projections',true,false,false),('mdm_software_release.aggregates',true,false,false),

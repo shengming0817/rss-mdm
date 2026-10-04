@@ -156,7 +156,7 @@ async fn manage_on(
         key,
         p,
         &prepared.input,
-        authenticated,
+        authenticated.then_some(prepared.package),
         prepared.history.as_ref(),
     )
     .await?;
@@ -311,6 +311,12 @@ async fn settle_one(
     {
         return Ok(());
     }
+    if native::diagnostic::input(&op.request.task).is_some() {
+        if package == channels::PackageState::Complete {
+            return settle_diagnostic(s, tx, &op).await;
+        }
+        return Ok(());
+    }
     let tenant = s.tenant.to_string();
     let rows=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT a.phase,i.kind,i.status,i.value,i.receipt_accepted,i.result_accepted FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id=$1::uuid AND a.operation=$2 AND a.ordinal=(SELECT max(last.ordinal) FROM mdm_commands.attempts last WHERE last.tenant_id=a.tenant_id AND last.operation=a.operation AND last.phase=a.phase) ORDER BY i.command,i.item_ordinal").bind(tenant).bind(id).fetch_all(c).await})).await?;
     if rows.is_empty() {
@@ -371,6 +377,73 @@ async fn settle_one(
     crate::wake::wake_native_in(s.source.clone(), tx, &op.device).await?;
     Ok(())
 }
+async fn settle_diagnostic(
+    s: &ExecutionService,
+    tx: &mut PgTransaction<'_>,
+    op: &storage::Operation,
+) -> Result<()> {
+    let tenant = s.tenant;
+    let id = op.id;
+    let state = tx
+        .with_connection(move |c| {
+            Box::pin(async move { Ok(native::diagnostic::load(c, tenant, id).await) })
+        })
+        .await??;
+    if matches!(state.transfer, native::diagnostic::Transfer::Blocked) {
+        if state.reason.as_deref() == Some("native_rejected") {
+            if s.store
+                .report(
+                    tx,
+                    &dc::DeviceReport {
+                        scope: op.scope,
+                        command_id: op.command_id()?,
+                        coordinate: op.coordinate,
+                        event: dc::DeviceEvent::Rejected,
+                    },
+                )
+                .await?
+                .outcome
+                == dc::Outcome::OutOfOrder
+            {
+                return Err(Error::Conflict.into());
+            }
+        } else {
+            if s.store
+                .cancel(tx, op.scope, &op.command_id()?, op.coordinate)
+                .await?
+                .outcome
+                == dc::Outcome::OutOfOrder
+            {
+                return Err(Error::Conflict.into());
+            }
+        }
+    } else if state.native.step == rss_mdm_windows_mdm::native::diagnostic::Step::Complete {
+        let mut report = dc::DeviceReport {
+            scope: op.scope,
+            command_id: op.command_id()?,
+            coordinate: op.coordinate,
+            event: dc::DeviceEvent::Received,
+        };
+        if s.store.report(tx, &report).await?.outcome == dc::Outcome::OutOfOrder {
+            return Err(Error::Conflict.into());
+        }
+        report.event =
+            dc::DeviceEvent::Reported(op.request.digest(&s.protection, s.tenant, &op.device)?);
+        if s.store.report(tx, &report).await?.outcome == dc::Outcome::OutOfOrder {
+            return Err(Error::Conflict.into());
+        }
+    }
+    if state.native.step == rss_mdm_windows_mdm::native::diagnostic::Step::Complete {
+        let target = crate::service::target(s.tenant, &op.device);
+        rss_reconcile_postgres::messaging::wake_in(tx, &target, (), |_, _| {
+            Box::pin(async { Ok(()) })
+        })
+        .await?;
+        crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRecovery).await?;
+    }
+    crate::wake::wake_native_in(s.source.clone(), tx, &op.device).await?;
+    Ok(())
+}
 pub async fn observation(
     tx: &mut PgTransaction<'_>,
     protection: &rss_mdm_native_protection::Protector,
@@ -389,7 +462,8 @@ pub async fn observation(
     let sensitive = op.request.task.permissions()?.iter().any(|p| {
         matches!(
             p,
-            crate::authorization::Permission::SecurityOperate
+            crate::authorization::Permission::DeviceDiagnostics
+                | crate::authorization::Permission::SecurityOperate
                 | crate::authorization::Permission::Credentials
                 | crate::authorization::Permission::AccountWrite
         )
@@ -423,9 +497,58 @@ pub async fn observation(
         };
         receipts.push(receipt);
     }
+    let diagnostic = if native::diagnostic::input(&op.request.task).is_some() {
+        let now = storage::now(tx).await?;
+        let tenant = tx.tenant_id();
+        let id = op.id;
+        let state = tx
+            .with_connection(move |c| {
+                Box::pin(async move { Ok(native::diagnostic::load(c, tenant, id).await) })
+            })
+            .await??;
+        let registration = op.registration;
+        let generation = op.registration_generation;
+        let artifact = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(rss_mdm_content_service::diagnostic::read_in(
+                        c,
+                        tenant,
+                        id,
+                        registration,
+                        generation,
+                    )
+                    .await)
+                })
+            })
+            .await?
+            .map_err(Error::from)?;
+        let expired = matches!(state.transfer, native::diagnostic::Transfer::Ready)
+            && state.expires_at.is_some_and(|expiry| expiry <= now);
+        Some(crate::queries::records::DiagnosticObservation {
+            step: state.native.step,
+            block_count: state.native.count,
+            received_bytes: state.native.length,
+            expires_at: state.expires_at,
+            transfer: if expired {
+                "expired".into()
+            } else {
+                format!("{:?}", state.transfer).to_lowercase()
+            },
+            reason: if expired {
+                Some("diagnostic_retention_expired".into())
+            } else {
+                state.reason
+            },
+            artifact,
+        })
+    } else {
+        None
+    };
     let assessment = effect_assessment(protection, tx, op).await?;
     Ok(crate::queries::records::NativeObservation::Windows {
         receipts,
+        diagnostic,
         progress: super::service::status(command_status).into(),
         effect: assessment.state,
         reason: assessment.reason,
@@ -465,6 +588,17 @@ async fn effect_assessment(
         Context, Execution,
         verification::{EffectAssessment, EffectFact, EffectState},
     };
+    if matches!(
+        op.request.task,
+        Task::Windows {
+            request: Execution::DiagnosticLog { .. }
+        }
+    ) {
+        return Ok(EffectAssessment {
+            state: EffectState::Unverifiable,
+            reason: Some("diagnostic_output_not_configuration_effect"),
+        });
+    }
     let Task::Windows {
         request: Execution::SyncMl { request },
     } = &op.request.task

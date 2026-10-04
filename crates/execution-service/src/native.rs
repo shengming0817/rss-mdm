@@ -7,6 +7,7 @@ use rss_mdm_windows_mdm::{
     syncml::{self as s, Command, Item, Message},
 };
 use sqlx::{PgConnection, Row};
+pub(crate) mod diagnostic;
 mod outbound;
 use crate::native_rules;
 pub use outbound::{Continuation, continue_on, outgoing_on};
@@ -118,10 +119,10 @@ pub async fn receive_on(
     protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     message: &Message,
-    authenticated: bool,
+    package: Option<crate::channels::PackageState>,
     history: Option<&s::Expected>,
 ) -> std::result::Result<Message, Error> {
-    if !authenticated {
+    if package.is_none() {
         return Ok(message.clone());
     }
     let history = history.ok_or_else(protocol)?;
@@ -150,6 +151,18 @@ pub async fn receive_on(
             .iter()
             .any(|command| refs(command).is_some_and(|(m, id)| m == msg && ids.contains(&id)))
         {
+            if package == Some(crate::channels::PackageState::Complete) {
+                let task = super::input_storage::open_row(
+                    protection,
+                    p.tenant(),
+                    row.try_get("operation").map_err(db)?,
+                    &row,
+                    "task_request",
+                )?;
+                if diagnostic::input(&task.task).is_some() {
+                    diagnostic::accept(c, protection, p, &task, attempt).await?;
+                }
+            }
             continue;
         }
         let report = correlate(history, message, &ids)?;
@@ -275,6 +288,9 @@ pub async fn receive_on(
             };
             sqlx::query("UPDATE mdm_commands.attempt_items SET status=$5,value=$6,receipt_accepted=$7,result_accepted=$8,received_at=CASE WHEN $9 AND (received_at IS NULL OR status IS DISTINCT FROM $5) THEN floor(extract(epoch FROM clock_timestamp()))::bigint ELSE received_at END,result_received_at=CASE WHEN $10 AND result_received_at IS NULL THEN floor(extract(epoch FROM clock_timestamp()))::bigint ELSE result_received_at END WHERE tenant_id=$1::uuid AND attempt=$2 AND command=$3 AND item_ordinal=$4")
                 .bind(&tenant).bind(attempt).bind(i64::from(id)).bind(item.try_get::<i32,_>("item_ordinal").map_err(db)?).bind(status).bind(value).bind(accepted).bind(result_accepted).bind(new_status).bind(new_result).execute(&mut *c).await.map_err(db)?;
+        }
+        if package == Some(crate::channels::PackageState::Complete) {
+            diagnostic::accept(c, protection, p, &task_request, attempt).await?;
         }
         consumed.extend(ids.into_iter().map(|id| (msg, id)));
     }
@@ -569,6 +585,10 @@ pub(crate) async fn send_on(
                 continue;
             }
         }
+        if diagnostic::cursor_busy(c, protection, p, &op).await? {
+            pending = true;
+            continue;
+        }
         let old=sqlx::query("SELECT a.id,a.ordinal,a.phase,a.session,a.platform,a.declared_versions FROM mdm_commands.attempts a WHERE a.tenant_id=$1::uuid AND a.operation=$2 ORDER BY a.ordinal DESC LIMIT 1").bind(&tenant).bind(op.operation_id).fetch_optional(&mut *c).await.map_err(db)?;
         let items = if let Some(old) = &old {
             sqlx::query("SELECT command,item_ordinal,kind,uri,status,receipt_accepted,value,value IS NOT NULL AS has_value,result_accepted FROM mdm_commands.attempt_items WHERE tenant_id=$1::uuid AND attempt=$2")
@@ -608,6 +628,14 @@ pub(crate) async fn send_on(
             .map(|v| serde_json::from_value::<Context>(v).map_err(|_| protocol()))
             .transpose()?;
         let platform = frozen.or(fresh);
+        if matches!(request, W::DiagnosticLog { .. }) {
+            let before = response.commands.len();
+            pending |= diagnostic::send(c, protection, p, &op, platform, response, limits).await?;
+            if response.commands.len() != before {
+                break;
+            }
+            continue;
+        }
         let prepared = match (request, platform) {
             (W::SyncMl { request }, Some(platform)) => {
                 match request.resolve().and_then(|r| r.prepare(platform)) {
@@ -793,6 +821,7 @@ pub(crate) async fn send_on(
             (_, Some(v)) => v.request.command_count().map_err(|_| protocol())?,
             (W::SyncMl { request }, _) => request.command_count().map_err(|_| protocol())?,
             (W::Msi { .. }, _) => 1,
+            (W::DiagnosticLog { .. }, _) => return Err(protocol()),
         };
         let id = crate::device::store::allocate_commands_in(c, p, i64::from(count)).await?;
         let command = match request {
@@ -816,6 +845,7 @@ pub(crate) async fn send_on(
                     }
                 }
             }
+            W::DiagnosticLog { .. } => return Err(protocol()),
             W::Msi { job } => {
                 let installer = rss_mdm_windows_mdm::software::Installer::new(job.clone())
                     .map_err(|_| protocol())?;
@@ -1135,7 +1165,7 @@ fn atomic_ancestor(
     false
 }
 
-pub(super) fn result_aad(
+pub(crate) fn result_aad(
     tenant: TenantId,
     registration: Uuid,
     generation: i64,

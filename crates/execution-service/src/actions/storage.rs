@@ -258,7 +258,7 @@ impl ScheduledPolicy {
                     .try_into()
                     .map_err(|_| Error::Malformed)?;
                 let spec = wire::SoftwareTaskSpec {
-                    wire_version: wire::PAYLOAD_VERSION,
+                    wire_version: wire::WIRE_VERSION,
                     tenant_id: checked_input(Uuid::parse_str(&tx.tenant_id().to_string()))?,
                     device_id: target.device.clone(),
                     platform: match platform {

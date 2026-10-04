@@ -4,9 +4,9 @@ Rust 服务端支持设备和用户通道，使用外部 step-ca v0.30.2 完成 
 
 ## 注册与凭据
 
-管理员在线登录并拥有目标设备的 `enrollment` 权限后，调用 `POST /api/v3/enrollments`，提交 `deviceId`、`source:"mdm.apple"`、256 位随机 `password`，以及非零 UUID `Idempotency-Key`。返回 HTTP 200 的 pending 授权。生命周期整组已切换 v3，旧版本不挂载；Windows 使用 `mdm.windows`，Agent 使用 `agent.builtin`，不接受请求 `channel`。
+管理员在线登录并拥有目标设备的 `enrollment` 权限后，调用 `POST /api/v1/enrollments`，提交 `deviceId`、`source:"mdm.apple"`、256 位随机 `password`，以及非零 UUID `Idempotency-Key`。返回 HTTP 200 的 pending 授权。注册生命周期管理入口统一使用 V1；Windows 原生注册使用 `mdm.windows`，不接受请求 `channel`。
 
-设备通过 HTTPS `POST /api/v3/enrollments/{id}/profile` 提交 `{"password":"…"}` 下载附带 CMS 签名的 mobileconfig；响应不缓存。口令和配置只交付给授权设备。Profile 配置 RSA 2048 SCEP 身份、设备范围、AccessRights 8191、生产 APNs topic、CheckOutWhenRemoved，以及 `per-user-connections`、`bootstraptoken` capability；`SignMessage=false`，管理传输必须使用原生 mTLS。UserAuthenticate 在已绑定 mTLS 身份下返回空 DigestChallenge；不接收目录密码或建立业务账户身份。服务端保存设备实际安装 profile 的权限；后来启用 Agent 安装配置不会增加已有设备权限，也不会使其原生身份失效。缺少查询或安装权限时，策略返回 missing_native_rights，需通过正常注册流程取得用户/系统授权。
+设备通过 HTTPS `POST /api/v1/enrollments/{id}/profile` 提交 `{"password":"…"}` 下载附带 CMS 签名的 mobileconfig；响应不缓存。口令和配置只交付给授权设备。Profile 配置 RSA 2048 SCEP 身份、设备范围、AccessRights 8191、生产 APNs topic、CheckOutWhenRemoved，以及 `per-user-connections`、`bootstraptoken` capability；`SignMessage=false`，管理传输必须使用原生 mTLS。UserAuthenticate 在已绑定 mTLS 身份下返回空 DigestChallenge；不接收目录密码或建立业务账户身份。服务端保存设备实际安装 profile 的权限；后来启用 Agent 安装配置不会增加已有设备权限，也不会使其原生身份失效。缺少查询或安装权限时，策略返回 missing_native_rights，需通过正常注册流程取得用户/系统授权。
 
 SCEP challenge 在返回 allow 前提交唯一消费事实，绑定 enrollment、签发 attempt、事务 ID、CSR 摘要、公钥和配置身份。相同请求重试也被拒绝。通知丢失时，首次携带匹配有效证书的 Authenticate 可完成绑定；签发响应丢失不能重新签发，须由原管理员 resume，换口令后重新下载 Profile。新 attempt 使用新密钥；活跃已消费公钥不能跨 attempt 复用。
 
@@ -28,7 +28,7 @@ GetBootstrapToken/SetBootstrapToken 由已绑定的设备证书认证，只有�
 
 ## 原生操作与 Profile
 
-设备 operation 使用 `POST /api/v3/devices/{id}/operations`，与 Policy/Resource 共用类型化原生输入。请求固定 `operationId`、`inputVersion`、`target`、`task` 和未来 Unix 秒 `deadline`。例如：
+设备 operation 使用 `POST /api/v1/devices/{id}/operations`，与 Policy/Resource 共用类型化原生输入。请求固定 `operationId`、`inputVersion`、`target`、`task` 和未来 Unix 秒 `deadline`。例如：
 
 ```json
 {"operationId":"97c3820e-4698-47dc-bb09-b33bd53da2f0","inputVersion":"v1","target":{"kind":"device"},"task":{"platform":"macos","request":{"kind":"command","command":{"requestType":"InstalledApplicationList","fields":{}}}},"deadline":1800000000}
@@ -105,7 +105,7 @@ SCEP provisioner 名为 rss，最小 RSA 公钥 2048、禁用 renewal，默认�
 {"subject":{"commonName":{{ toJson .Webhooks.rss.subject }}},"keyUsage":["digitalSignature"],"extKeyUsage":["clientAuth"],"basicConstraints":{"isCA":false}}
 ```
 
-通过 `step ca provisioner webhook add rss rss --kind SCEPCHALLENGE --url https://mdm.example.test/native/apple/scep/challenge` 配置 challenge；通过 `step ca provisioner webhook add rss rss_notify --kind NOTIFYING --url https://mdm.example.test/native/apple/scep/notify` 配置通知。命令需附该部署的 ca-url/root/admin 身份参数；分别将输出 ID 和 secret 写入受保护配置。不能把通知类型写成不存在的 SCEPNOTIFY。
+通过 `step ca provisioner webhook add rss rss --kind SCEPCHALLENGE --url https://mdm.example.test/api/v1/apple/scep/challenge` 配置 challenge；通过 `step ca provisioner webhook add rss rss_notify --kind NOTIFYING --url https://mdm.example.test/api/v1/apple/scep/notify` 配置通知。命令需附该部署的 ca-url/root/admin 身份参数；分别将输出 ID 和 secret 写入受保护配置。不能把通知类型写成不存在的 SCEPNOTIFY。
 
 配置后重启 CA，确认 `/scep/rss?operation=GetCACaps` 可访问：该版本只在启动时安装 SCEP HTTP authority。Webhook HTTPS 证书须被 CA 的系统信任根或配置 root 信任；`federatedRoots` 不参与该版本 webhook TLS 客户端验证。生产应使用受信任服务证书，不能禁用 TLS 校验。产品要求 Host 与 product_origin 精确一致，反向代理保持 Host 并转发原始请求体和 X-Smallstep-Webhook-ID/X-Smallstep-Signature。
 

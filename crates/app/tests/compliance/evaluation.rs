@@ -42,7 +42,7 @@ async fn collected_facts(b: &mut Browser, router: &Router, base: &Value) -> Resu
     .await?;
     let owner = start(runtime.clone()).await?;
     let id = Uuid::new_v4();
-    let path = format!("/api/v2/compliance-rules/{id}");
+    let path = format!("/api/v1/compliance-rules/{id}");
     let mut def = definition(json!({"kind":"all"}));
     def["platform"] = json!("windows");
     def["criteria"] = json!({"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"Collected"}});

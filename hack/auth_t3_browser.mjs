@@ -7,8 +7,8 @@ const {chromium}=require(process.env.MDM_PLAYWRIGHT_MODULE || '/opt/playwright-c
 const input=JSON.parse(fs.readFileSync(process.argv[2] || '/fixture/browser-input.json','utf8'));
 const origin=input.origin, other=input.otherOrigin;
 const faults=input.mode==='faults' ? await import('./auth_t3_faults.mjs') : null;
-const api=`/api/v2/tenants/${input.tenant}`;
-const inventory='/api/v2/devices/device-1/inventory';
+const api=`/api/v1/identity/tenants/${input.tenant}`;
+const inventory='/api/v1/devices/device-1/inventory';
 const checks={}, requests=[], privateValues=[];
 let stage='launch';
 const assert=(ok,message)=>{if(!ok)throw new Error(message)};
@@ -17,7 +17,7 @@ const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function poll(check,seconds=60){const end=Date.now()+seconds*1000;while(Date.now()<end){try{if(await check())return}catch{}await delay(500)}throw new Error('readiness deadline')}
 let browser;
 const consoleText=[];
-async function pageAt(url=origin){const ctx=await browser.newContext({locale:'en-US'});const page=await ctx.newPage();page.setDefaultTimeout(15000);page.on('console',m=>consoleText.push(m.text()));page.on('request',r=>{const u=new URL(r.url());if(u.pathname==='/api/v2/oidc/callback')for(const name of ['code','state']){const value=u.searchParams.get(name);if(value)privateValues.push(value)}});await page.goto(`${url}/tenants/${url===origin?input.tenant:input.otherTenant}/login`);return page}
+async function pageAt(url=origin){const ctx=await browser.newContext({locale:'en-US'});const page=await ctx.newPage();page.setDefaultTimeout(15000);page.on('console',m=>consoleText.push(m.text()));page.on('request',r=>{const u=new URL(r.url());if(u.pathname==='/api/v1/identity/oidc/callback')for(const name of ['code','state']){const value=u.searchParams.get(name);if(value)privateValues.push(value)}});await page.goto(`${url}/tenants/${url===origin?input.tenant:input.otherTenant}/login`);return page}
 async function request(page,path,method='GET',body,headers={}){
   const result=await page.evaluate(async ({path,method,body,headers})=>{
     const r=await fetch(path,{method,credentials:'same-origin',headers:{'Content-Type':'application/json','X-Identity-Request':'1',...headers},...(body===undefined?{}:{body:JSON.stringify(body)})});
@@ -64,7 +64,7 @@ try{
   stage='local_ui';admin=await pageAt();await login(admin,'admin',input.adminPassword);
   member=await pageAt();const initial=await login(member,'member',input.memberPassword);
   assert(initial.identity.principalId===input.member,'member coordinate');
-  const context=await request(member,`/api/identity-host/v1/tenants/${input.tenant}/context`);
+  const context=await request(member,`/api/v1/identity-host/tenants/${input.tenant}/context`);
   assert(context.status===200&&context.value.sessionId===initial.session.id&&!context.value.navigation.manageAccounts,'host context');await admin.locator(`nav a[href$='/accounts']`).waitFor();
   await admin.locator(`nav a[href$='/providers']`).waitFor();
   assert(await member.locator(`nav a[href$='/accounts'],nav a[href$='/providers']`).count()===0,'member navigation permissions');
@@ -79,9 +79,9 @@ try{
 
   stage='inventory';let r=await request(member,inventory);
   assert(r.status===200&&r.value.asset.device.fields['device.model'].state.value.value==='Model-2364','real authorized inventory');
-  assert((await request(member,'/api/v2/devices/outside/inventory')).status===403,'device scope');checks.inventory=true;
+  assert((await request(member,'/api/v1/devices/outside/inventory')).status===403,'device scope');checks.inventory=true;
 
-  stage='permissions';const group=crypto.randomUUID(),groupPath='/api/v2/groups/'+group;
+  stage='permissions';const group=crypto.randomUUID(),groupPath='/api/v1/groups/'+group;
   const change={operationId:crypto.randomUUID(),expectedRevision:0,input:{action:'create',name:'T3-2364',description:'product authorization fixture',criteria:null}};
   assert((await post(member,groupPath,change)).status===403,'management deny');
   assert((await request(admin,groupPath)).status===404,'denied write had effect');
@@ -99,7 +99,7 @@ try{
   assert((await request(member,api+'/session/refresh','POST',undefined)).status===403,'missing csrf');
   assert((await request(member,api+'/session/refresh','POST',undefined,{'X-CSRF-Token':'wrong'})).status===403,'incorrect csrf');
   const attacker=await pageAt(other);
-  const cross=await attacker.evaluate(async origin=>{try{await fetch(origin+'/api/v2/tenants/11111111-1111-4111-8111-111111111111/session/logout',{method:'POST',credentials:'include'});return false}catch{return true}},origin);
+  const cross=await attacker.evaluate(async origin=>{try{await fetch(origin+'/api/v1/identity/tenants/11111111-1111-4111-8111-111111111111/session/logout',{method:'POST',credentials:'include'});return false}catch{return true}},origin);
   assert(cross&&(await request(member,api+'/session')).status===200,'cross origin logout');checks.cookie_csrf=true;
 
   stage='refresh';const stale=await cloneSession(member);
@@ -111,8 +111,8 @@ try{
 
   stage='isolation';assert((await request(attacker,'/api/v1/authorization')).status===401,'host cookie isolation');
   const replay=await cloneSession(member,other);assert((await request(replay,'/api/v1/authorization')).status===401,'instance replay');
-  assert((await request(member,`/api/v2/tenants/${input.wrongTenant}/session`)).status===401,'tenant replay');
-  assert((await request(member,`/api/identity-host/v1/tenants/${input.wrongTenant}/context`)).status===401,'context tenant replay');
+  assert((await request(member,`/api/v1/identity/tenants/${input.wrongTenant}/session`)).status===401,'tenant replay');
+  assert((await request(member,`/api/v1/identity-host/tenants/${input.wrongTenant}/context`)).status===401,'context tenant replay');
   await replay.context().close();await attacker.context().close();checks.isolation=true;
 
   for(const [field,key] of [['enabled','account_disabled'],['membership','membership_removed']]){
@@ -131,7 +131,7 @@ try{
   await member.context().clearCookies();await login(member,'sso-member',input.memberPassword);
 
   stage='enterprise';const probe=await browser.newPage();await poll(async()=>{const r=await probe.goto(input.issuer+'/.well-known/openid-configuration');return r.status()===200});await probe.close();
-  const settings={issuer:input.issuer,clientId:'mdm',redirectUri:origin+'/api/v2/oidc/callback',scopes:['openid','profile','email'],claims:{email:'email',groups:null},jit:false};
+  const settings={issuer:input.issuer,clientId:'mdm',redirectUri:origin+'/api/v1/identity/oidc/callback',scopes:['openid','profile','email'],claims:{email:'email',groups:null},jit:false};
   r=await post(admin,api+'/providers',{settings,clientSecret:input.clientSecret,caPem:fs.readFileSync(input.caFile || '/fixture/ca.crt','utf8')});
   assert(r.status===201,'provider create');const provider=r.value.id;
   assert((await post(admin,`${api}/providers/${provider}/enabled`,{expectedVersion:r.value.version,enabled:true})).status===200,'provider enable');

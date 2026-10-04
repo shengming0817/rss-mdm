@@ -132,7 +132,7 @@ impl Fixture {
                 .call(
                     &self.router,
                     Method::GET,
-                    &format!("/api/v2/devices/{DEVICE}/inventory", DEVICE = case_device()),
+                    &format!("/api/v1/devices/{DEVICE}/inventory", DEVICE = case_device()),
                     None,
                 )
                 .await?;
@@ -225,7 +225,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     let result = async {
     let field = "custom.link_addresses";
     let definition = json!({"key":field,"version":1,"valueType":{"kind":"array","items":{"kind":"string","maxLength":128,"allowEmpty":false},"maxItems":100},"nullable":false,"manual":false,"sources":{"mdm.apple":0},"platforms":["macos"],"sensitivity":"standard","unit":null,"searchable":true,"itemKey":null});
-    let published = f.browser.call(&f.router, Method::PUT, &format!("/api/v2/asset-fields/{field}"), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":definition}}))).await?;
+    let published = f.browser.call(&f.router, Method::PUT, &format!("/api/v1/asset-fields/{field}"), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":definition}}))).await?;
     ensure!(
         published.0 == StatusCode::OK,
         "list definition: {published:?}"
@@ -276,9 +276,9 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     )
     .await?;
     let scope = Uuid::new_v4();
-    post(&mut f.browser,&f.router,&format!("/api/v2/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}}})).await?;
+    post(&mut f.browser,&f.router,&format!("/api/v1/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}}})).await?;
     let policy = Uuid::new_v4();
-    post(&mut f.browser,&f.router,&format!("/api/v3/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"native_collection","resource":{"id":id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"runLifetimeSeconds":300}}}})).await?;
+    post(&mut f.browser,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"native_collection","resource":{"id":id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"runLifetimeSeconds":300}}}})).await?;
     let (run, payload) = peer.next("DeviceInformation").await?;
     ensure!(
         payload["Queries"].as_array().unwrap()
@@ -310,7 +310,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
         .call(
             &f.router,
             Method::GET,
-            &format!("/api/v2/devices/{}/collections/{run}", case_device()),
+            &format!("/api/v1/devices/{}/collections/{run}", case_device()),
             None,
         )
         .await?;
@@ -323,7 +323,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
         "unchanged membership repeated native collection"
     );
     let item_path = format!(
-        "/api/v2/devices/{}/collections/{run}/fields/{field}/items",
+        "/api/v1/devices/{}/collections/{run}/fields/{field}/items",
         case_device()
     );
     let first = f
@@ -342,7 +342,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
         "item quality: {first:?}"
     );
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-    post(&mut f.browser,&f.router,"/api/v3/remote-operations",json!({"operationId":Uuid::new_v4(),"resource":{"id":id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"targets":{"kind":"devices","devices":[case_device()]},"action":{"kind":"collect_native"},"deadline":now+300})).await?;
+    post(&mut f.browser,&f.router,"/api/v1/remote-operations",json!({"operationId":Uuid::new_v4(),"resource":{"id":id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"targets":{"kind":"devices","devices":[case_device()]},"action":{"kind":"collect_native"},"deadline":now+300})).await?;
     let (refresh, _) = peer.next("DeviceInformation").await?;
     ensure!(refresh != run);
     peer.manage(
@@ -369,7 +369,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
             &f.router,
             Method::GET,
             &format!(
-                "/api/v2/devices/{}/collections/{refresh}/fields/{field}/items",
+                "/api/v1/devices/{}/collections/{refresh}/fields/{field}/items",
                 case_device()
             ),
             None,
@@ -388,7 +388,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
                 .call(
                     &f.router,
                     Method::GET,
-                    &format!("/api/v2/devices/{}/inventory-lists/{field}", case_device()),
+                    &format!("/api/v1/devices/{}/inventory-lists/{field}", case_device()),
                     None,
                 )
                 .await?;

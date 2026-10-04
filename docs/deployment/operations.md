@@ -2,9 +2,9 @@
 
 ## 版本切换
 
-当前版本只支持空库安装，以及完全一致的当前安装记录重放。 Agent V6 / 软件 Resource V4 同样没有原库升级路径：旧签名任务、不可变定义、原始导入证据和结果不得重签、重编码或重算摘要。待处理任务和回执须由匹配旧制品、数据库与密钥的旧部署处理；排空队列也不会使旧 Resource 数据库可供新服务读取。新版本使用空库安装并重新注册 V6 Agent；旧部署按历史证据保留和恢复。旧版本、前缀、缺失、未知、摘要修改或未完成的迁移记录均拒绝；不提供旧审计表导入或兼容迁移。拒绝时保留数据库及安装记录，不自动清库或重写摘要。
+当前版本只支持空库安装，以及完全一致的当前安装记录重放。 新 Agent V1（从当前 V6 完整重建）/ 软件 Resource V4 同样没有原库升级路径：旧签名任务、不可变定义、原始导入证据和结果不得重签、重编码或重算摘要。待处理任务和回执须由匹配旧制品、数据库与密钥的旧部署处理；排空队列也不会使旧 Resource 数据库可供新服务读取。新版本使用空库安装并重新注册新 V1 Agent（历史 V1 不兼容）；旧部署按历史证据保留和恢复。旧版本、前缀、缺失、未知、摘要修改或未完成的迁移记录均拒绝；不提供旧审计表导入或兼容迁移。拒绝时保留数据库及安装记录，不自动清库或重写摘要。
 
-部署使用配套数据库、服务、Agent 协议及可信签名配置。管理客户端使用 Enrollment `/api/v3`、状态型设备命令 `/api/v2`、企业脚本计划及运行 `/api/v3/script-plans`。安装前显式配置审计 Plain 或 Ledger；Ledger 的 key ID 与受保护密钥文件必须由部署方提供，缺失或错误时拒绝启动。
+部署使用配套数据库、服务、Agent 协议及可信签名配置。管理客户端使用 Enrollment `/api/v1`、状态型设备命令 `/api/v1`、企业脚本计划及运行 `/api/v1/script-plans`。安装前显式配置审计 Plain 或 Ledger；Ledger 的 key ID 与受保护密钥文件必须由部署方提供，缺失或错误时拒绝启动。
 
 恢复前停止全部写入实例，按同一备份时间点恢复数据库、内容卷和原 `native_protection_key_file`，确认服务账户可读且所有实例使用同一份 32 原始字节密钥后再启动。密钥备份应存入受控秘密存储并验证可取回；不要打印密钥或提交到代码/日志。当前不支持原地轮转或自行替换密钥；丢失原密钥后重新生成文件不能解密已有 native 数据，也不能解除 key identity 校验。原生输入认证或身份完整性损坏归为永久恢复失败，记录 `mdm_command_recovery_integrity_failure` / `native_input_integrity`，不持续退避；保留证据并从一致备份恢复，不能删除 guards 后重发变更。
 
@@ -14,7 +14,7 @@
 
 /livez 表示进程可响应。/readyz 要求启动 admission、首次有界恢复与投影通过、Identity 审计首轮投递成功，工作任务仍运行且尚未停机；不表示 backlog 已全部追平，健康查询不额外探测 IdP。
 
-经授权的 `GET /api/v2/runtime/diagnostics` 查询当前实例的组件汇总，返回 `alive`、`ready` 和 `components`。
+经授权的 `GET /api/v1/runtime/diagnostics` 查询当前实例的组件汇总，返回 `alive`、`ready` 和 `components`。
 管理员通过现有授权规则显式授予租户级 `runtime_diagnostics_read`；该权限不由设备读权限或授权管理权限隐式获得。
 查询为被动会话活动，经现有请求审计结算；认证、授权库或审计不可用时仍拒绝请求，没有匿名诊断旁路。
 公开健康探针只返回存活或就绪布尔值，详情和 `/readyz` 消费同一宿主聚合。
@@ -128,12 +128,14 @@ Compose 中 PostgreSQL 启动期每秒检查，稳定运行后每十秒检查。
 
 当前准确迁移集合由二进制 --describe 与 [迁移源码](../../crates/app/src/migration.rs) 持有。升级须停旧写入口；回退恢复匹配数据库、制品、密钥与旧服务，不能仅降级二进制。数据库角色与首次安装见 [安装指南](installation.md)。Apple 证书、APNs 与 CA 排障见 [Apple 管理](../guides/apple-management.md)。
 
+内容存储的 Resource/Diagnostic purpose、上传 Saved JSON 与 checkpoint 使用当前唯一格式。旧的平铺 Binding、Saved.storage_class 和对应 checkpoint MAC 不接受，也不自动转换或跳过。新安装须使用与当前 schema 匹配的新内容目录；不得把旧目录混入新安装。保留旧部署状态时恢复匹配的数据库、内容目录、密钥及二进制，不以重新初始化账本替代升级迁移。配置文件的固定加密域仍为 `content.native-configuration`，诊断有独立保护域。
+
 ## Agent CA 与签发恢复
 
 `agent_certificate_health` 在直接签发者状态变化时报告 healthy、renew_soon（完整签发窗口余量 30 天）、critical（余量 7 天）、issuance_unavailable（仍有效但不足一个完整叶证书窗口）、expired 或 clock_unavailable；过期及剩余期限不足均拒绝新签发。按公开 issuer 摘要核对信任锚，不在故障时另建 CA 或静默缩短叶证书期限。Agent 证书元数据包含 purpose/profile、服务端 tenant/device URI、issuer/SPKI/证书/CSR 摘要、serial 和绝对有效期。颁发输出只表示候选证书；只有实际完成的 TLS 握手可产生 peer evidence，且业务 owner 仍须逐次检查当前注册和撤销状态。
 
 每次签发先持久提交 grant 消费和 `agent_issuances` signing 意图，审计业务身份为 `agent-enroll:agent_certificate_authorize:<operation>`；离开事务请求 CA，严格验证返回证书后保存候选并提交 `agent-enroll:agent_certificate_result:<operation>`。网络、CA、返回校验或结果审计不确定均保留同一 issuanceId，返回 issuance_unknown；status 查询不得触发二次签发。step-ca 的 `/sign` 不提供幂等回执，token 单次消耗不能证明未签发。
 
-管理员从原 CA 持久记录找回原证书链，通过 `POST /api/v3/agent-issuances/{id}/recover` 提交稳定 operationId 与 certificateChain；服务端核对原 CSR/SPKI/SAN/签发窗口，以及签发前冻结的 issuer、provisioner/kid 和公钥摘要。当前部署与原签发者不一致时拒绝恢复，须先恢复原 CA/provisioner 配置；不能自动换 jti、重签或把另一 CA 的结果当作原结果。激活 ACK 丢失后使用原 activation operation 重试或查询状态，同一注册的恢复只替换凭据。日志及支持导出仅含分类和摘要，不含秘密、CSR 私钥或 JWT；step-ca 原生日志可能含 ott，必须作为受限秘密日志保存，禁止直接纳入通用日志聚合。
+管理员从原 CA 持久记录找回原证书链，通过 `POST /api/v1/agent-issuances/{id}/recover` 提交稳定 operationId 与 certificateChain；服务端核对原 CSR/SPKI/SAN/签发窗口，以及签发前冻结的 issuer、provisioner/kid 和公钥摘要。当前部署与原签发者不一致时拒绝恢复，须先恢复原 CA/provisioner 配置；不能自动换 jti、重签或把另一 CA 的结果当作原结果。激活 ACK 丢失后使用原 activation operation 重试或查询状态，同一注册的恢复只替换凭据。日志及支持导出仅含分类和摘要，不含秘密、CSR 私钥或 JWT；step-ca 原生日志可能含 ott，必须作为受限秘密日志保存，禁止直接纳入通用日志聚合。
 
 备份前停止 MDM 的签发调用及全部 CA 写入实例。作为同一恢复集备份 CA 数据库、root/intermediate 证书及加密私钥、CA 配置与模板、受控 CA 解密秘密、Agent provisioner 私钥/kid、MDM 配置及 Audit/Ledger 数据库；CA 配置中的绝对路径和数据库路径须按原位置恢复。秘密进入受控秘密备份，定期验证可取回。恢复时先恢复原 CA 身份与数据库，再用原 provisioner 私钥和匹配的 MDM 审计数据启动；核对 issuer/SPKI/kid 摘要、已有 serial 和 token 使用记录，并在隔离环境签发新授权、校验证书链及双阶段审计。不得删除 CA token 表、重置 Audit head、重新生成 CA 或用新密钥覆盖原文件来处理结果未知。可再生 T2 `agent.pki` 会停止 CA、备份并恢复原目录与数据库，再执行真实受控签发；生产恢复还须执行上述一致性核对。

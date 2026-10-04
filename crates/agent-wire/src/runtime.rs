@@ -2,7 +2,7 @@
 //! Strict Agent protocol values for RSS MDM.
 //!
 //! This package owns JSON values only. Device authority, persistence and HTTP authentication
-//! remain product responsibilities. V6 binds script and software tasks to one strict major.
+//! remain product responsibilities. V1 binds script and software tasks to one strict major.
 
 #[path = "onboarding.rs"]
 mod onboarding;
@@ -19,19 +19,19 @@ use zeroize::Zeroizing;
 /// Independent runtime HTTP API version.
 pub const API_VERSION: u8 = 1;
 /// Exact supported wire major.
-pub const PAYLOAD_VERSION: u8 = 6;
+pub const WIRE_VERSION: u8 = 1;
 /// Maximum complete JSON request accepted by the product adapter.
 pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
-/// Canonical manifest for every public Agent V6 JSON shape.
-pub const SCHEMA_MANIFEST: &str = include_str!("../schema/runtime/agent-v6.schema-manifest.json");
+/// Canonical manifest for every public Agent V1 JSON shape.
+pub const SCHEMA_MANIFEST: &str = include_str!("../schema/runtime/agent-v1.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "7bca6dd2cd28cb743ded8d4822976f0cfc36db1849cd2378f1760bd8a085afdc";
+    "efc310dad72251da97b6926601f495eb605cbc16a34a1f71066a84920078f5c9";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WireError {
-    /// A value is malformed or outside the V6 profile.
+    /// A value is malformed or outside the V1 profile.
     InvalidValue,
 }
 impl std::fmt::Display for WireError {
@@ -101,107 +101,107 @@ impl<'de> Deserialize<'de> for Secret {
     }
 }
 
-/// Closed V6 capability set.
+/// Closed V1 capability set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Capability {
     /// Full/partial/failed reports for the two basic inventory fields.
-    #[serde(rename = "inventory.collect.v6")]
-    InventoryCollectionV6,
+    #[serde(rename = "inventory.collect.v1")]
+    InventoryCollectionV1,
     /// Receive and execute signed task offers.
-    #[serde(rename = "task.execute.v6")]
-    TaskExecuteV6,
-    /// Execute the exact software.msi.system.v6 profile.
-    #[serde(rename = "software.msi.system.v6")]
-    SoftwareMsiSystemV6,
-    /// Execute the exact software.msi.user.v6 profile.
-    #[serde(rename = "software.msi.user.v6")]
-    SoftwareMsiUserV6,
-    /// Execute the exact software.pkg.system.v6 profile.
-    #[serde(rename = "software.pkg.system.v6")]
-    SoftwarePkgSystemV6,
-    /// Execute the exact software.bundle.windows.system.v6 profile.
-    #[serde(rename = "software.bundle.windows.system.v6")]
-    SoftwareBundleWindowsSystemV6,
-    /// Execute the exact software.bundle.windows.user.v6 profile.
-    #[serde(rename = "software.bundle.windows.user.v6")]
-    SoftwareBundleWindowsUserV6,
-    /// Execute the exact software.bundle.macos.system.v6 profile.
-    #[serde(rename = "software.bundle.macos.system.v6")]
-    SoftwareBundleMacosSystemV6,
-    /// Execute the exact software.bundle.macos.user.v6 profile.
-    #[serde(rename = "software.bundle.macos.user.v6")]
-    SoftwareBundleMacosUserV6,
-    /// Execute the exact software.winget.system.v6 profile.
-    #[serde(rename = "software.winget.system.v6")]
-    SoftwareWingetSystemV6,
-    /// Execute the exact software.winget.user.v6 profile.
-    #[serde(rename = "software.winget.user.v6")]
-    SoftwareWingetUserV6,
-    /// Execute the exact software.brew.bottle.user.v6 profile.
-    #[serde(rename = "software.brew.bottle.user.v6")]
-    SoftwareBrewBottleUserV6,
-    /// Execute the exact software.exe.system.v6 profile.
-    #[serde(rename = "software.exe.system.v6")]
-    SoftwareExeSystemV6,
-    /// Execute the exact software.exe.user.v6 profile.
-    #[serde(rename = "software.exe.user.v6")]
-    SoftwareExeUserV6,
-    /// Execute the exact software.dmg.app.system.v6 profile.
-    #[serde(rename = "software.dmg.app.system.v6")]
-    SoftwareDmgAppSystemV6,
-    /// Execute the exact software.dmg.app.user.v6 profile.
-    #[serde(rename = "software.dmg.app.user.v6")]
-    SoftwareDmgAppUserV6,
-    /// Execute the exact software.dmg.pkg.system.v6 profile.
-    #[serde(rename = "software.dmg.pkg.system.v6")]
-    SoftwareDmgPkgSystemV6,
-    /// Execute the exact software.msix.registration.user.v6 profile.
-    #[serde(rename = "software.msix.registration.user.v6")]
-    SoftwareMsixRegistrationUserV6,
-    /// Execute the exact software.msix.provisioning.system.v6 profile.
-    #[serde(rename = "software.msix.provisioning.system.v6")]
-    SoftwareMsixProvisioningSystemV6,
+    #[serde(rename = "task.execute.v1")]
+    TaskExecuteV1,
+    /// Execute the exact software.msi.system.v1 profile.
+    #[serde(rename = "software.msi.system.v1")]
+    SoftwareMsiSystemV1,
+    /// Execute the exact software.msi.user.v1 profile.
+    #[serde(rename = "software.msi.user.v1")]
+    SoftwareMsiUserV1,
+    /// Execute the exact software.pkg.system.v1 profile.
+    #[serde(rename = "software.pkg.system.v1")]
+    SoftwarePkgSystemV1,
+    /// Execute the exact software.bundle.windows.system.v1 profile.
+    #[serde(rename = "software.bundle.windows.system.v1")]
+    SoftwareBundleWindowsSystemV1,
+    /// Execute the exact software.bundle.windows.user.v1 profile.
+    #[serde(rename = "software.bundle.windows.user.v1")]
+    SoftwareBundleWindowsUserV1,
+    /// Execute the exact software.bundle.macos.system.v1 profile.
+    #[serde(rename = "software.bundle.macos.system.v1")]
+    SoftwareBundleMacosSystemV1,
+    /// Execute the exact software.bundle.macos.user.v1 profile.
+    #[serde(rename = "software.bundle.macos.user.v1")]
+    SoftwareBundleMacosUserV1,
+    /// Execute the exact software.winget.system.v1 profile.
+    #[serde(rename = "software.winget.system.v1")]
+    SoftwareWingetSystemV1,
+    /// Execute the exact software.winget.user.v1 profile.
+    #[serde(rename = "software.winget.user.v1")]
+    SoftwareWingetUserV1,
+    /// Execute the exact software.brew.bottle.user.v1 profile.
+    #[serde(rename = "software.brew.bottle.user.v1")]
+    SoftwareBrewBottleUserV1,
+    /// Execute the exact software.exe.system.v1 profile.
+    #[serde(rename = "software.exe.system.v1")]
+    SoftwareExeSystemV1,
+    /// Execute the exact software.exe.user.v1 profile.
+    #[serde(rename = "software.exe.user.v1")]
+    SoftwareExeUserV1,
+    /// Execute the exact software.dmg.app.system.v1 profile.
+    #[serde(rename = "software.dmg.app.system.v1")]
+    SoftwareDmgAppSystemV1,
+    /// Execute the exact software.dmg.app.user.v1 profile.
+    #[serde(rename = "software.dmg.app.user.v1")]
+    SoftwareDmgAppUserV1,
+    /// Execute the exact software.dmg.pkg.system.v1 profile.
+    #[serde(rename = "software.dmg.pkg.system.v1")]
+    SoftwareDmgPkgSystemV1,
+    /// Execute the exact software.msix.registration.user.v1 profile.
+    #[serde(rename = "software.msix.registration.user.v1")]
+    SoftwareMsixRegistrationUserV1,
+    /// Execute the exact software.msix.provisioning.system.v1 profile.
+    #[serde(rename = "software.msix.provisioning.system.v1")]
+    SoftwareMsixProvisioningSystemV1,
     /// Open the standard MDM enrollment entry with OS/user approval.
-    #[serde(rename = "mdm.enrollment.v6")]
-    MdmEnrollmentV6,
+    #[serde(rename = "mdm.enrollment.v1")]
+    MdmEnrollmentV1,
 }
 impl Capability {
     /// Software support always refers to one concrete native/script scope profile.
     pub fn is_software(self) -> bool {
         !matches!(
             self,
-            Self::InventoryCollectionV6 | Self::TaskExecuteV6 | Self::MdmEnrollmentV6
+            Self::InventoryCollectionV1 | Self::TaskExecuteV1 | Self::MdmEnrollmentV1
         )
     }
     /// Canonical persisted and queryable capability identity.
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::InventoryCollectionV6 => "inventory.collect.v6",
-            Self::TaskExecuteV6 => "task.execute.v6",
-            Self::SoftwareMsiSystemV6 => "software.msi.system.v6",
-            Self::SoftwareMsiUserV6 => "software.msi.user.v6",
-            Self::SoftwarePkgSystemV6 => "software.pkg.system.v6",
-            Self::SoftwareBundleWindowsSystemV6 => "software.bundle.windows.system.v6",
-            Self::SoftwareBundleWindowsUserV6 => "software.bundle.windows.user.v6",
-            Self::SoftwareBundleMacosSystemV6 => "software.bundle.macos.system.v6",
-            Self::SoftwareBundleMacosUserV6 => "software.bundle.macos.user.v6",
-            Self::SoftwareWingetSystemV6 => "software.winget.system.v6",
-            Self::SoftwareWingetUserV6 => "software.winget.user.v6",
-            Self::SoftwareBrewBottleUserV6 => "software.brew.bottle.user.v6",
-            Self::SoftwareExeSystemV6 => "software.exe.system.v6",
-            Self::SoftwareExeUserV6 => "software.exe.user.v6",
-            Self::SoftwareDmgAppSystemV6 => "software.dmg.app.system.v6",
-            Self::SoftwareDmgAppUserV6 => "software.dmg.app.user.v6",
-            Self::SoftwareDmgPkgSystemV6 => "software.dmg.pkg.system.v6",
-            Self::SoftwareMsixRegistrationUserV6 => "software.msix.registration.user.v6",
-            Self::SoftwareMsixProvisioningSystemV6 => "software.msix.provisioning.system.v6",
-            Self::MdmEnrollmentV6 => "mdm.enrollment.v6",
+            Self::InventoryCollectionV1 => "inventory.collect.v1",
+            Self::TaskExecuteV1 => "task.execute.v1",
+            Self::SoftwareMsiSystemV1 => "software.msi.system.v1",
+            Self::SoftwareMsiUserV1 => "software.msi.user.v1",
+            Self::SoftwarePkgSystemV1 => "software.pkg.system.v1",
+            Self::SoftwareBundleWindowsSystemV1 => "software.bundle.windows.system.v1",
+            Self::SoftwareBundleWindowsUserV1 => "software.bundle.windows.user.v1",
+            Self::SoftwareBundleMacosSystemV1 => "software.bundle.macos.system.v1",
+            Self::SoftwareBundleMacosUserV1 => "software.bundle.macos.user.v1",
+            Self::SoftwareWingetSystemV1 => "software.winget.system.v1",
+            Self::SoftwareWingetUserV1 => "software.winget.user.v1",
+            Self::SoftwareBrewBottleUserV1 => "software.brew.bottle.user.v1",
+            Self::SoftwareExeSystemV1 => "software.exe.system.v1",
+            Self::SoftwareExeUserV1 => "software.exe.user.v1",
+            Self::SoftwareDmgAppSystemV1 => "software.dmg.app.system.v1",
+            Self::SoftwareDmgAppUserV1 => "software.dmg.app.user.v1",
+            Self::SoftwareDmgPkgSystemV1 => "software.dmg.pkg.system.v1",
+            Self::SoftwareMsixRegistrationUserV1 => "software.msix.registration.user.v1",
+            Self::SoftwareMsixProvisioningSystemV1 => "software.msix.provisioning.system.v1",
+            Self::MdmEnrollmentV1 => "mdm.enrollment.v1",
         }
     }
 }
-/// The only supported ordered capability sets for Agent V6.
+/// The only supported ordered capability sets for Agent V1.
 pub fn supported_capabilities(value: &[Capability]) -> bool {
-    value.first() == Some(&Capability::InventoryCollectionV6)
+    value.first() == Some(&Capability::InventoryCollectionV1)
         && value.len() <= 20
         && value.windows(2).all(|pair| pair[0] < pair[1])
 }
@@ -259,7 +259,7 @@ struct RawBindingProfile {
 impl<'de> Deserialize<'de> for BindingProfile {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = RawBindingProfile::deserialize(deserializer)?;
-        if raw.wire_version != PAYLOAD_VERSION
+        if raw.wire_version != WIRE_VERSION
             || raw.collections.is_empty()
             || raw.collections.len() > 16
             || raw
@@ -318,7 +318,7 @@ pub enum FailureCode {
     CollectionFailed,
 }
 
-/// Closed V6 report body.
+/// Closed V1 report body.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReportBody {
     /// Complete coverage. Omitted fields are absent from this source.
@@ -371,7 +371,7 @@ impl<'de> Deserialize<'de> for ReportBody {
     }
 }
 
-/// Strict V6 inventory report.
+/// Strict V1 inventory report.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportRequest {
@@ -397,7 +397,7 @@ struct RawReportRequest {
 impl<'de> Deserialize<'de> for ReportRequest {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = RawReportRequest::deserialize(deserializer)?;
-        if raw.wire_version != PAYLOAD_VERSION {
+        if raw.wire_version != WIRE_VERSION {
             return Err(D::Error::custom(WireError::InvalidValue));
         }
         Self::new(
@@ -411,7 +411,7 @@ impl<'de> Deserialize<'de> for ReportRequest {
     }
 }
 impl ReportRequest {
-    /// Construct and canonicalize one strict V6 report.
+    /// Construct and canonicalize one strict V1 report.
     pub fn new(
         report_id: Uuid,
         sequence: u64,
@@ -426,7 +426,7 @@ impl ReportRequest {
             ReportBody::Snapshot(values) | ReportBody::Partial(values) => values,
             ReportBody::Failed { .. } => {
                 return Ok(Self {
-                    wire_version: PAYLOAD_VERSION,
+                    wire_version: WIRE_VERSION,
                     report_id,
                     sequence,
                     observed_at,
@@ -449,7 +449,7 @@ impl ReportRequest {
             return Err(WireError::InvalidValue);
         }
         Ok(Self {
-            wire_version: PAYLOAD_VERSION,
+            wire_version: WIRE_VERSION,
             report_id,
             sequence,
             observed_at,
@@ -527,7 +527,7 @@ struct RawReportAck {
 impl<'de> Deserialize<'de> for ReportAck {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = RawReportAck::deserialize(deserializer)?;
-        if raw.wire_version != PAYLOAD_VERSION || raw.received_at < 0 {
+        if raw.wire_version != WIRE_VERSION || raw.received_at < 0 {
             return Err(D::Error::custom(WireError::InvalidValue));
         }
         Ok(Self {

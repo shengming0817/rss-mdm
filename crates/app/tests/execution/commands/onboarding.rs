@@ -148,9 +148,9 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
     let (initial, execute) = execute(&peer, &mut client, policy).await?;
     let url = peer.url.replace(
         "/ManagementServer/MDM.svc",
-        "/api/agent/enroll/v1/native-grants",
+        "/api/v1/agent/enroll/native-grants",
     );
-    let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("managed-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v6","task.execute.v6"]}});
+    let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("managed-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v1","task.execute.v1"]}});
     let spoof = peer
         .mutual
         .post(&url)
@@ -189,7 +189,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
     ensure!(
         generated
             .path()
-            .starts_with("/api/agent/enroll/v1/installations/")
+            .starts_with("/api/v1/agent/enroll/installations/")
     );
     let package = Request::builder()
         .uri(generated.path())
@@ -238,7 +238,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
         ),
         (
             "capabilities",
-            json!(["inventory.collect.v6", "inventory.collect.v6"]),
+            json!(["inventory.collect.v1", "inventory.collect.v1"]),
             "malformed_request",
         ),
         ("deviceId", json!("untrusted"), "malformed_request"),
@@ -361,12 +361,12 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
     );
     ensure!(package_status(&client.router, operation).await? == StatusCode::FORBIDDEN);
     ensure!(peer.mutual.post(&url).json(&input).send().await?.status() == StatusCode::UNAUTHORIZED);
-    let report = json!({"wireVersion":6,"collection":receipt["collections"][0],"reportId":Uuid::new_v4(),"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"collectionFailed"}});
+    let report = json!({"wireVersion":1,"collection":receipt["collections"][0],"reportId":Uuid::new_v4(),"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"collectionFailed"}});
     ensure!(
         agent_call(
             &client.router,
             Method::POST,
-            "/api/agent/runtime/v1/reports",
+            "/api/v1/agent/runtime/reports",
             Some(&credential("managed-agent")),
             Some(report)
         )
@@ -380,7 +380,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
 async fn package_status(router: &Router, operation: Uuid) -> Result<StatusCode> {
     let request = Request::builder()
         .uri(format!(
-            "/api/agent/enroll/v1/installations/{operation}/package"
+            "/api/v1/agent/enroll/installations/{operation}/package"
         ))
         .header("host", "mdm.example.test:9445")
         .body(Body::empty())?;
@@ -396,10 +396,12 @@ async fn start_fixture() -> Result<(
     Uuid,
     Uuid,
 )> {
-    start_fixture_until(None).await
+    let (host, client, peer, commands, owner, policy, operation, _) =
+        start_fixture_until(None).await?;
+    Ok((host, client, peer, commands, owner, policy, operation))
 }
 async fn start_fixture_until(
-    until: Option<i64>,
+    window_seconds: Option<i64>,
 ) -> Result<(
     crate::windows::test_support::Host,
     Client,
@@ -408,6 +410,7 @@ async fn start_fixture_until(
     rss_runtime::ShutdownStack,
     Uuid,
     Uuid,
+    Option<i64>,
 )> {
     let mut host = crate::windows::test_support::Host::with_agent(
         Some(setup::pin(true)),
@@ -440,6 +443,15 @@ async fn start_fixture_until(
     );
     launch.finish();
     let commands = client.command_worker(host.notifications.signals.clone())?;
+    use crate::clock::Clock;
+    // Fixture bootstrapping does not consume the business schedule window.
+    let until = window_seconds
+        .map(|window| {
+            crate::clock::SystemClock
+                .unix_seconds()
+                .map(|now| now + window)
+        })
+        .transpose()?;
     let policy = setup::publish_until(
         &mut client.browser,
         &client.router,
@@ -459,7 +471,9 @@ async fn start_fixture_until(
     );
     post(&peer, &reply(&initial, &response, false)).await?;
     let operation = setup::operation(policy).await?;
-    Ok((host, client, peer, commands, owner, policy, operation))
+    Ok((
+        host, client, peer, commands, owner, policy, operation, until,
+    ))
 }
 async fn execute(
     peer: &crate::windows::test_support::Peer,
@@ -632,9 +646,9 @@ async fn cancellation_blocks_registration_and_preserves_uncertain_native_effect(
     ensure!(result.0 == StatusCode::OK, "{result:?}");
     let url = peer.url.replace(
         "/ManagementServer/MDM.svc",
-        "/api/agent/enroll/v1/native-grants",
+        "/api/v1/agent/enroll/native-grants",
     );
-    let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("cancelled-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v6","task.execute.v6"]}});
+    let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("cancelled-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v1","task.execute.v1"]}});
     ensure!(peer.mutual.post(url).json(&input).send().await?.status() == StatusCode::FORBIDDEN);
     ensure!(package_status(&client.router, operation).await? == StatusCode::FORBIDDEN);
     let state = client
@@ -654,9 +668,9 @@ async fn cancellation_blocks_registration_and_preserves_uncertain_native_effect(
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -> Result<()> {
     use crate::clock::Clock;
-    let until = crate::clock::SystemClock.unix_seconds()? + 20;
-    let (host, mut client, peer, commands, owner, policy, operation) =
-        start_fixture_until(Some(until)).await?;
+    let (host, mut client, peer, commands, owner, policy, operation, until) =
+        start_fixture_until(Some(20)).await?;
+    let until = until.expect("scheduled fixture");
     execute(&peer, &mut client, policy).await?;
     ensure!(
         client
@@ -674,9 +688,9 @@ async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -
     .await??;
     let url = peer.url.replace(
         "/ManagementServer/MDM.svc",
-        "/api/agent/enroll/v1/native-grants",
+        "/api/v1/agent/enroll/native-grants",
     );
-    let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("expired-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v6","task.execute.v6"]}});
+    let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("expired-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v1","task.execute.v1"]}});
     ensure!(peer.mutual.post(url).json(&input).send().await?.status() == StatusCode::FORBIDDEN);
     ensure!(package_status(&client.router, operation).await? == StatusCode::FORBIDDEN);
     let state = client
@@ -699,9 +713,9 @@ async fn replacement_rejects_old_installation_and_requires_current_epoch_absence
     let current = host.peer().await?;
     let url = peer.url.replace(
         "/ManagementServer/MDM.svc",
-        "/api/agent/enroll/v1/native-grants",
+        "/api/v1/agent/enroll/native-grants",
     );
-    let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("replacement-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v6","task.execute.v6"]}});
+    let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("replacement-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v1","task.execute.v1"]}});
     ensure!(peer.mutual.post(&url).json(&input).send().await?.status() == StatusCode::UNAUTHORIZED);
     ensure!(
         current
@@ -767,7 +781,7 @@ async fn scope_exit_preserves_dispatched_installation_authority_until_its_deadli
         .call(
             &client.router,
             Method::GET,
-            &format!("/api/v3/policies/{policy}"),
+            &format!("/api/v1/policies/{policy}"),
             None,
         )
         .await?;
@@ -775,7 +789,7 @@ async fn scope_exit_preserves_dispatched_installation_authority_until_its_deadli
     let scope = policy_view.1["definition"]["scope"]
         .as_str()
         .context("policy scope")?;
-    let scope_path = format!("/api/v2/scopes/{scope}");
+    let scope_path = format!("/api/v1/scopes/{scope}");
     let changed = software::write(
         &mut client.browser,
         &client.router,
@@ -802,9 +816,9 @@ async fn scope_exit_preserves_dispatched_installation_authority_until_its_deadli
     ensure!(package_status(&client.router, operation).await? == StatusCode::OK);
     let url = peer.url.replace(
         "/ManagementServer/MDM.svc",
-        "/api/agent/enroll/v1/native-grants",
+        "/api/v1/agent/enroll/native-grants",
     );
-    let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("scope-exit-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v6","task.execute.v6"]}});
+    let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("scope-exit-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v1","task.execute.v1"]}});
     let response = peer.mutual.post(&url).json(&input).send().await?;
     let status = response.status();
     let receipt: Value = response.json().await?;
@@ -836,7 +850,7 @@ async fn policy_freeze_distinguishes_superseded_identity_from_withdrawn_approval
         .call(
             &client.router,
             Method::GET,
-            &format!("/api/v3/policies/{policy}"),
+            &format!("/api/v1/policies/{policy}"),
             None,
         )
         .await?;
@@ -852,7 +866,7 @@ async fn policy_freeze_distinguishes_superseded_identity_from_withdrawn_approval
         .call(
             &client.router,
             Method::POST,
-            &format!("/api/v3/policies/{}", Uuid::new_v4()),
+            &format!("/api/v1/policies/{}", Uuid::new_v4()),
             Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,
             "input":{"action":"put","enabled":true,"definition":wrong}})),
         )
@@ -864,7 +878,7 @@ async fn policy_freeze_distinguishes_superseded_identity_from_withdrawn_approval
     crate::test_support::software::write(
         &mut client.browser,
         &client.router,
-        &format!("/api/v3/software/resources/{resource}/versions/v1"),
+        &format!("/api/v1/software/resources/{resource}/versions/v1"),
         1,
         json!({"action":"withdraw","evidence":["freeze-rejection-contract"]}),
     )
@@ -874,7 +888,7 @@ async fn policy_freeze_distinguishes_superseded_identity_from_withdrawn_approval
         .call(
             &client.router,
             Method::POST,
-            &format!("/api/v3/policies/{}", Uuid::new_v4()),
+            &format!("/api/v1/policies/{}", Uuid::new_v4()),
             Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,
             "input":{"action":"put","enabled":true,"definition":definition}})),
         )

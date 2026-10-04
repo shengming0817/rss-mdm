@@ -209,7 +209,7 @@ pub(crate) async fn admit_agent(
     let Some(_peer_slot) = gate.owner.peer_request(gate.peer) else {
         gate.owner.refused(1);
         use axum::http::{HeaderValue, StatusCode, header};
-        let body = if request.uri().path().starts_with("/api/agent/enroll/v1/") {
+        let body = if request.uri().path().starts_with("/api/v1/agent/enroll/") {
             serde_json::to_value(rss_mdm_agent_wire::enroll::ErrorBody {
                 code: rss_mdm_agent_wire::enroll::ErrorCode::ServiceUnavailable,
                 issuance_id: None,

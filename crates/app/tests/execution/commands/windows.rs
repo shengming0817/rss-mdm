@@ -60,7 +60,7 @@ fn task_packet(
     }
     packet
 }
-async fn operation(client: &mut Client) -> anyhow::Result<Value> {
+pub(super) async fn operation(client: &mut Client) -> anyhow::Result<Value> {
     let (status, body) = client
         .call(Method::GET, &format!("/{}", client.operation), None)
         .await?;
@@ -344,7 +344,7 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
     grants.extend(identity::device_grants(None, &["operation_read"])?);
     identity::set_grants(case_tenant(), &fixture.author_id, grants).await?;
     for descending in [false, true] {
-        let mut path = format!("/api/v3/operations?limit=1&descending={descending}");
+        let mut path = format!("/api/v1/operations?limit=1&descending={descending}");
         let mut kinds = Vec::new();
         loop {
             let (status, page) = fixture
@@ -371,7 +371,7 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
                 ensure!(item["evidence"]["observation"].get("value").is_none());
                 ensure!(
                     item["detailUrl"]
-                        == format!("/api/v3/devices/{}/operations/{id}", case_device())
+                        == format!("/api/v1/devices/{}/operations/{id}", case_device())
                 );
             } else {
                 ensure!(item["evidence"]["result"].get("output").is_none());
@@ -397,7 +397,7 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
                 break;
             };
             path = format!(
-                "/api/v3/operations?limit=1&descending={descending}&after={}&afterKind={}",
+                "/api/v1/operations?limit=1&descending={descending}&after={}&afterKind={}",
                 cursor["id"].as_str().unwrap(),
                 cursor["kind"].as_str().unwrap()
             );
@@ -416,7 +416,7 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
         .call(
             &fixture.router,
             Method::GET,
-            "/api/v3/operations?limit=1",
+            "/api/v1/operations?limit=1",
             None,
         )
         .await?;
@@ -433,7 +433,7 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
         .call(
             &fixture.router,
             Method::GET,
-            &format!("/api/v3/operations?device={}", case_device()),
+            &format!("/api/v1/operations?device={}", case_device()),
             None,
         )
         .await?;

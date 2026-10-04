@@ -115,7 +115,7 @@ async fn exact_rest_community_and_brew_imports_preserve_evidence_and_replay() ->
         ),
     ] {
         let source_id = format!("{id}-{revision}");
-        let source_path = format!("/api/v3/software/sources/{source_id}/revisions/{revision}");
+        let source_path = format!("/api/v1/software/sources/{source_id}/revisions/{revision}");
         let registered=write(&mut f.user,&f.router,&source_path,0,json!({"action":"register","definition":{"id":source_id,"revision":revision,"protocol":protocol}})).await?;
         write(
             &mut f.user,
@@ -144,7 +144,7 @@ async fn exact_rest_community_and_brew_imports_preserve_evidence_and_replay() ->
                     .call(
                         &f.router,
                         Method::POST,
-                        "/api/v3/software/imports",
+                        "/api/v1/software/imports",
                         Some(old)
                     )
                     .await?
@@ -161,7 +161,7 @@ async fn exact_rest_community_and_brew_imports_preserve_evidence_and_replay() ->
                         .call(
                             &f.router,
                             Method::POST,
-                            "/api/v3/software/imports",
+                            "/api/v1/software/imports",
                             Some(old)
                         )
                         .await?
@@ -175,7 +175,7 @@ async fn exact_rest_community_and_brew_imports_preserve_evidence_and_replay() ->
             .call(
                 &f.router,
                 Method::POST,
-                "/api/v3/software/imports",
+                "/api/v1/software/imports",
                 Some(request.clone()),
             )
             .await?;
@@ -188,7 +188,7 @@ async fn exact_rest_community_and_brew_imports_preserve_evidence_and_replay() ->
             .call(
                 &f.router,
                 Method::GET,
-                &format!("/api/v4/resources/{resource}"),
+                &format!("/api/v1/resources/{resource}"),
                 None,
             )
             .await?;
@@ -211,7 +211,7 @@ async fn exact_rest_community_and_brew_imports_preserve_evidence_and_replay() ->
             "original bytes changed"
         );
         let content_path = format!(
-            "/api/v3/resources/{resource}/content/mirror?version=v1&variant=default&platform={platform}&architecture=x86_64&operation={}",
+            "/api/v1/resources/{resource}/content/mirror?version=v1&variant=default&platform={platform}&architecture=x86_64&operation={}",
             Uuid::new_v4()
         );
         let mirrored = f
@@ -220,7 +220,7 @@ async fn exact_rest_community_and_brew_imports_preserve_evidence_and_replay() ->
             .await?;
         ensure!(mirrored.0.is_success(), "mirror: {mirrored:?}");
         if revision == "bottle" {
-            let mirror=f.user.call(&f.router,Method::POST,&format!("/api/v3/resources/{resource}/content/mirror?version=v1&variant=default&platform=macos&architecture=x86_64&artifact=source&operation={}",Uuid::new_v4()),None).await?;
+            let mirror=f.user.call(&f.router,Method::POST,&format!("/api/v1/resources/{resource}/content/mirror?version=v1&variant=default&platform=macos&architecture=x86_64&artifact=source&operation={}",Uuid::new_v4()),None).await?;
             ensure!(
                 mirror.0 == StatusCode::CREATED,
                 "source material mirror: {mirror:?}"
@@ -229,7 +229,7 @@ async fn exact_rest_community_and_brew_imports_preserve_evidence_and_replay() ->
         write(
             &mut f.user,
             &f.router,
-            &format!("/api/v4/resources/{resource}"),
+            &format!("/api/v1/resources/{resource}"),
             2,
             json!({"action":"activate","version":"v1"}),
         )
@@ -237,7 +237,7 @@ async fn exact_rest_community_and_brew_imports_preserve_evidence_and_replay() ->
         write(
             &mut f.user,
             &f.router,
-            &format!("/api/v3/software/resources/{resource}/versions/v1"),
+            &format!("/api/v1/software/resources/{resource}/versions/v1"),
             0,
             json!({"action":"approve","evidence":["complete hash-only materials"]}),
         )
@@ -263,7 +263,7 @@ async fn exact_rest_community_and_brew_imports_preserve_evidence_and_replay() ->
             .call(
                 &f.router,
                 Method::POST,
-                "/api/v3/software/imports",
+                "/api/v1/software/imports",
                 Some(request),
             )
             .await?;

@@ -77,7 +77,7 @@ impl AssetService {
             failure: state.failure,
             result_url: state
                 .ready
-                .then(|| format!("/api/v2/device-queries/{task}/items")),
+                .then(|| format!("/api/v1/device-queries/{task}/items")),
         })
     }
     fn query_cursor(&self, token: &str, task: Uuid, scope: &ReadScope) -> Result<Position> {

@@ -1361,7 +1361,7 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
     let worker = automation(&host).await?;
     let commands = client.command_worker(host.notifications.signals.clone())?;
     let scope = Uuid::new_v4();
-    let created=change(&mut client,&format!("/api/v2/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":crate::test_support::case::name("tls-device")}],"limitations":null,"exclusions":[]}})).await?;
+    let created=change(&mut client,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":crate::test_support::case::name("tls-device")}],"limitations":null,"exclusions":[]}})).await?;
     tokio::time::timeout(std::time::Duration::from_secs(30), async {
         loop {
             let read = client
@@ -1370,7 +1370,7 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
                     &client.router,
                     Method::GET,
                     &format!(
-                        "/api/v2/scopes/{scope}/tasks/{}",
+                        "/api/v1/scopes/{scope}/tasks/{}",
                         created["task"].as_str().unwrap()
                     ),
                     None,
@@ -1394,7 +1394,7 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
     let definition = |resource: &str| json!({"scope":scope,"action":{"kind":"configuration","resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"remove"}});
     change(
         &mut client,
-        &format!("/api/v3/policies/{first}"),
+        &format!("/api/v1/policies/{first}"),
         0,
         json!({"action":"put","enabled":true,"definition":definition(&resource)}),
     )
@@ -1445,7 +1445,7 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
     let second = Uuid::new_v4();
     change(
         &mut client,
-        &format!("/api/v3/policies/{second}"),
+        &format!("/api/v1/policies/{second}"),
         0,
         json!({"action":"put","enabled":true,"definition":definition(&other_resource)}),
     )
@@ -1453,14 +1453,14 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
     wait_diagnosis(&mut client, second, "configuration_conflict").await?;
     change(
         &mut client,
-        &format!("/api/v3/policies/{second}"),
+        &format!("/api/v1/policies/{second}"),
         1,
         json!({"action":"disable"}),
     )
     .await?;
     change(
         &mut client,
-        &format!("/api/v3/policies/{first}"),
+        &format!("/api/v1/policies/{first}"),
         1,
         json!({"action":"disable"}),
     )
@@ -1616,7 +1616,7 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
     );
     change(
         &mut client,
-        &format!("/api/v3/policies/{second}"),
+        &format!("/api/v1/policies/{second}"),
         2,
         json!({"action":"put","enabled":true,"definition":definition(&other_resource)}),
     )
@@ -1642,7 +1642,7 @@ async fn remote_not_ready(
     use axum::http::Method;
     use serde_json::json;
     let operation = Uuid::new_v4();
-    let response=client.browser.call(&client.router,Method::POST,"/api/v3/remote-operations",Some(json!({"operationId":operation,"resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"targets":{"kind":"devices","devices":[crate::test_support::case::name("tls-device")]},"action":{"kind":"apply_configuration"},"deadline":now()+600}))).await?;
+    let response=client.browser.call(&client.router,Method::POST,"/api/v1/remote-operations",Some(json!({"operationId":operation,"resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"targets":{"kind":"devices","devices":[crate::test_support::case::name("tls-device")]},"action":{"kind":"apply_configuration"},"deadline":now()+600}))).await?;
     ensure!(
         response.0 == StatusCode::OK,
         "remote native input: {response:?}"
@@ -1654,7 +1654,7 @@ async fn remote_not_ready(
                 .call(
                     &client.router,
                     Method::GET,
-                    &format!("/api/v3/remote-operations/{operation}"),
+                    &format!("/api/v1/remote-operations/{operation}"),
                     None,
                 )
                 .await?;

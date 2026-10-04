@@ -1,7 +1,7 @@
 use super::*;
 async fn waiting_group_does_not_spin(b: &mut Browser, router: &Router, base: &Value) -> Result<()> {
     let group = Uuid::new_v4();
-    let gp = format!("/api/v2/groups/{group}");
+    let gp = format!("/api/v1/groups/{group}");
     let created=ok(b,router,Method::POST,&gp,Some(request(0,json!({"action":"create","name":"held group","description":"","criteria":{"kind":"predicate","field":"custom.office_floor","op":"ge","value":{"kind":"integer","value":0}}})))).await?;
     let group_task = created["task"].as_str().unwrap();
     // Hold only the external group input. No claim was created while the worker was stopped.
@@ -9,7 +9,7 @@ async fn waiting_group_does_not_spin(b: &mut Browser, router: &Router, base: &Va
         "UPDATE mdm_automation.automation_jobs SET forwarded=true WHERE id='{group_task}'"
     ))?;
     let rule = Uuid::new_v4();
-    let path = format!("/api/v2/compliance-rules/{rule}");
+    let path = format!("/api/v1/compliance-rules/{rule}");
     let waiting = ok(
         b,
         router,
@@ -28,7 +28,7 @@ async fn waiting_group_does_not_spin(b: &mut Browser, router: &Router, base: &Va
         finished["diagnostic"]["reason"] == "group_input_pending" && finished["processed"] == 0
     );
     let independent = Uuid::new_v4();
-    let independent_path = format!("/api/v2/compliance-rules/{independent}");
+    let independent_path = format!("/api/v1/compliance-rules/{independent}");
     let run = ok(
         b,
         router,
@@ -70,7 +70,7 @@ async fn group_applicability_membership_versions_and_stale_input() -> Result<()>
     let automation = start_automation(base).await?;
     status(&mut browser, router, "compliance-a", "non_compliant").await?;
     let group = Uuid::new_v4();
-    let gp = format!("/api/v2/groups/{group}");
+    let gp = format!("/api/v1/groups/{group}");
     let group_rule = json!({"kind":"predicate","field":"custom.office_floor","op":"ge","value":{"kind":"integer","value":3}});
     crate::test_support::http::ok(&mut browser,router,Method::POST,&gp,Some(request(0,json!({"action":"create","name":"compliance target","description":"","criteria":group_rule})))).await?;
     let def = definition(json!({"kind":"groups","ids":[group]}));
@@ -93,7 +93,7 @@ async fn group_applicability_membership_versions_and_stale_input() -> Result<()>
             &mut browser,
             router,
             Method::PUT,
-            "/api/v2/devices/compliance-a/manual-fields/custom.office_floor",
+            "/api/v1/devices/compliance-a/manual-fields/custom.office_floor",
             Some(request(
                 revision,
                 json!({"action":"set","value":{"kind":"integer","value":floor}}),
@@ -107,7 +107,7 @@ async fn group_applicability_membership_versions_and_stale_input() -> Result<()>
         &mut browser,
         router,
         Method::PUT,
-        "/api/v2/devices/compliance-b/manual-fields/custom.office_floor",
+        "/api/v1/devices/compliance-b/manual-fields/custom.office_floor",
         Some(request(
             0,
             json!({"action":"set","value":{"kind":"integer","value":1}}),
@@ -181,7 +181,7 @@ async fn pending_group_input_does_not_spin_or_starve_other_rules() -> Result<()>
         &mut browser,
         router,
         Method::PUT,
-        "/api/v2/devices/compliance-a/manual-fields/custom.office_floor",
+        "/api/v1/devices/compliance-a/manual-fields/custom.office_floor",
         Some(request(
             0,
             json!({"action":"set","value":{"kind":"integer","value":1}}),

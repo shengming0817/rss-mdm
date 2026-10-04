@@ -67,7 +67,7 @@ async fn status_authority_and_user_scope_are_independent() -> Result<()> {
     let user = Uuid::new_v4();
     peer.user_token(user, 45).await?;
     let operation = Uuid::new_v4();
-    let reply=f.browser.call(&f.router,Method::POST,&format!("/api/v3/devices/{}/operations",case_device()),
+    let reply=f.browser.call(&f.router,Method::POST,&format!("/api/v1/devices/{}/operations",case_device()),
         Some(json!({"operationId":operation,"inputVersion":"user-v1","target":{"kind":"user","userId":user},"task":task(vec![subscription("user-subscriptions")],vec![]),"deadline":f.app.clock.unix_seconds()?+300}))).await?;
     ensure!(reply.0 == StatusCode::ACCEPTED, "user DDM {reply:?}");
     for _ in 0..100 {
@@ -147,7 +147,7 @@ async fn status_authority_and_user_scope_are_independent() -> Result<()> {
             &f.router,
             Method::GET,
             &format!(
-                "/api/v3/devices/{}/operations/{device_operation}",
+                "/api/v1/devices/{}/operations/{device_operation}",
                 case_device()
             ),
             None,

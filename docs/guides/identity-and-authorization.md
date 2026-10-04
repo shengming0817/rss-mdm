@@ -6,7 +6,7 @@ MDM 嵌入 rss-identity 公共组件，由 Identity 持有账户、认证与会�
 
 浏览器通过同源网关访问 rss-web 与产品 API。真实 TCP peer 必须匹配可信网关后才接受覆盖后的来源地址；cookie、Origin、CSRF 保护不可由前端隐藏按钮替代。每次请求在线验证会话，存储故障拒绝授权，被动 GET 不延长 idle。
 
-配置入口为 [示例配置](../../fixtures/mdm-config.example.json)。不启用 OIDC 时本地认证独立可用；启用时使用产品域名的 `/api/v2/oidc/callback`，精确匹配注册回调。外部主体按 issuer/subject 显式关联，不按邮箱自动绑定。IdP 不可用不阻断本地认证。账户停用、会话注销和来源禁用必须及时阻断后续访问。
+配置入口为 [示例配置](../../fixtures/mdm-config.example.json)。不启用 OIDC 时本地认证独立可用；启用时使用产品域名的 `/api/v1/identity/oidc/callback`，精确匹配注册回调。外部主体按 issuer/subject 显式关联，不按邮箱自动绑定。IdP 不可用不阻断本地认证。账户停用、会话注销和来源禁用必须及时阻断后续访问。
 
 私有 IdP 需显式批准 tenant、issuer、client 和全部解析地址，仍验证 TLS；网络准入不代表 MFA 或业务授权。私钥与 client secret 由受保护部署配置持有。敏感账户/IdP 操作要求近期认证；恢复密码使用 maintenance 凭据，不能把它挂入运行服务。
 
@@ -24,10 +24,10 @@ MDM 嵌入 rss-identity 公共组件，由 Identity 持有账户、认证与会�
 
 ## 管理审计检索
 
-`GET /api/v3/audit-events` 与设备时间线复用既有 `authorization_read` 管理入口及正常请求上下文，不新增权限项或分页授权读取。支持按设备、operation、主体、动作、结果和记录时间检索；租户/实例来自可信会话，客户端不能覆盖。响应仅包含安全事实投影，不返回凭据、原始 payload、任意 details 或执行输出。普通审计读取不表示已完成密码学账本验证。
+`GET /api/v1/audit-events` 与设备时间线复用既有 `authorization_read` 管理入口及正常请求上下文，不新增权限项或分页授权读取。支持按设备、operation、主体、动作、结果和记录时间检索；租户/实例来自可信会话，客户端不能覆盖。响应仅包含安全事实投影，不返回凭据、原始 payload、任意 details 或执行输出。普通审计读取不表示已完成密码学账本验证。
 ## 运行诊断
 
-运行诊断通过 `GET /api/v2/runtime/diagnostics` 查询；使用现有授权规则，为获准运维主体显式授予
+运行诊断通过 `GET /api/v1/runtime/diagnostics` 查询；使用现有授权规则，为获准运维主体显式授予
 `{"operation":"runtime_diagnostics_read","scope":{"kind":"tenant"}}`。设备范围无效，既有管理权限不隐式包含此权限。
 撤回规则后后续请求重新加载授权并拒绝查询；查询绑定当前宿主实例和租户。
 诊断语义与认证或审计依赖失败时的处理见[运维与恢复](../deployment/operations.md)。

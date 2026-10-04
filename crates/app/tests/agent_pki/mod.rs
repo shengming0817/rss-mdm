@@ -69,7 +69,7 @@ fn signing(g: &wire::GrantRequest, id: Uuid) -> anyhow::Result<wire::Certificate
         secret: g.secret.clone(),
         csr: g.csr.clone().unwrap(),
         runtime: serde_json::from_value(
-            crate::test_support::json!({"capabilities":["inventory.collect.v6"],"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)}),
+            crate::test_support::json!({"capabilities":["inventory.collect.v1"],"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)}),
         )?,
     })
 }
@@ -184,7 +184,7 @@ async fn explicit_development_limit_and_unknown_result_remain_auditable() -> any
     use http_body_util::BodyExt;
     use tower::ServiceExt;
     let router = Router::new().nest(
-        "/api/agent/enroll/v1",
+        "/api/v1/agent/enroll",
         rss_mdm_agent_channel::enroll::router(unknown.clone(), envelope("mdm.example.test").await?),
     );
     let mut failures = Vec::new();
@@ -194,7 +194,7 @@ async fn explicit_development_limit_and_unknown_result_remain_auditable() -> any
         let response = router
             .clone()
             .oneshot(
-                Request::post("/api/agent/enroll/v1/certificates")
+                Request::post("/api/v1/agent/enroll/certificates")
                     .header("host", "mdm.example.test")
                     .header("content-type", "application/json")
                     .body(Body::from(serde_json::to_vec(&input)?))?,
@@ -534,7 +534,7 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
     let (status, body) = agent_http(
         &mut anonymous,
         "POST",
-        "/api/agent/enroll/v1/requests",
+        "/api/v1/agent/enroll/requests",
         Some(serde_json::to_value(&g)?),
     )
     .await?;
@@ -550,13 +550,13 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
     let (status, body) = agent_http(
         &mut anonymous,
         "POST",
-        "/api/agent/enroll/v1/certificates",
+        "/api/v1/agent/enroll/certificates",
         Some(serde_json::to_value(signing(&g, receipt.grant_id)?)?),
     )
     .await?;
     assert_eq!(status, 200, "anonymous signing: {body}");
     let candidate: wire::Candidate = serde_json::from_value(body)?;
-    let path = format!("/api/agent/runtime/v1/reports/{}", Uuid::new_v4());
+    let path = format!("/api/v1/agent/runtime/reports/{}", Uuid::new_v4());
     let (status, body) = agent_http(&mut anonymous, "GET", &path, None).await?;
     assert_eq!(status, 401);
     assert_eq!(body["code"], "invalid_identity");
@@ -570,7 +570,7 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
     let (status, body) = agent_http(
         &mut certified,
         "POST",
-        "/api/agent/enroll/v1/activate",
+        "/api/v1/agent/enroll/activate",
         Some(serde_json::to_value(wire::ActivationRequest {
             wire_version: 1,
             issuance_id: candidate.issuance_id,

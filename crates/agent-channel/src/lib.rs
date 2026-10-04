@@ -313,7 +313,7 @@ fn parse_report(body: &[u8]) -> Result<wire::ReportRequest, AgentError> {
         .get("wireVersion")
         .and_then(Value::as_u64)
         .ok_or(AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
-    if version != u64::from(wire::PAYLOAD_VERSION) {
+    if version != u64::from(wire::WIRE_VERSION) {
         return Err(AgentError::Wire(wire::ErrorCode::UnsupportedWire));
     }
     serde_json::from_value(value).map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))
@@ -373,7 +373,7 @@ fn batch(input: &wire::ReportRequest) -> Result<Batch, AgentError> {
 
 fn ack(report_id: Uuid, received_at: i64) -> wire::ReportAck {
     wire::ReportAck {
-        wire_version: wire::PAYLOAD_VERSION,
+        wire_version: wire::WIRE_VERSION,
         report_id,
         received_at,
         intake: wire::IntakeStatus::Durable,

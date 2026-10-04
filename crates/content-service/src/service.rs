@@ -31,15 +31,16 @@ pub struct Selection {
     pub operation: Option<Uuid>,
 }
 impl Selection {
-    pub fn from_binding(b: &Binding) -> Self {
-        Self {
-            version: b.version.clone(),
-            variant: b.variant.clone(),
-            platform: b.platform,
-            architecture: b.architecture,
+    pub fn from_binding(b: &Binding) -> Result<Self, Error> {
+        let resource = b.resource()?;
+        Ok(Self {
+            version: resource.version.clone(),
+            variant: resource.variant.clone(),
+            platform: resource.platform,
+            architecture: resource.architecture,
             artifact: Some(b.reference.clone()),
             operation: None,
-        }
+        })
     }
 }
 async fn resolve_in(
@@ -140,19 +141,22 @@ async fn resolve_in(
         _ => (None, None),
     };
     Ok(Binding {
-        storage_class: if matches!(variant.declaration(), r::Declaration::Configuration { .. }) {
-            crate::StorageClass::NativeConfiguration
-        } else {
-            crate::StorageClass::Artifact
-        },
-        source,
-        origin,
-        resource: id.into(),
-        version: input.version.clone(),
-        variant: input.variant.clone(),
-        platform: input.platform,
-        architecture: input.architecture,
-        resource_digest: version.digest().bytes(),
+        purpose: crate::Purpose::Resource(crate::ResourceBinding {
+            storage_class: if matches!(variant.declaration(), r::Declaration::Configuration { .. })
+            {
+                crate::StorageClass::NativeConfiguration
+            } else {
+                crate::StorageClass::Artifact
+            },
+            source,
+            origin,
+            resource: id.into(),
+            version: input.version.clone(),
+            variant: input.variant.clone(),
+            platform: input.platform,
+            architecture: input.architecture,
+            resource_digest: version.digest().bytes(),
+        }),
         reference: artifact.reference().as_str().into(),
         length: artifact.length(),
         sha256: artifact.digest().bytes(),
@@ -197,7 +201,7 @@ pub async fn current(
             app.clock.unix_seconds().ok_or(Error::Clock)?,
         )
         .await?;
-    if value.binding.resource != id
+    if value.binding.resource()?.resource != id
         || value.binding.actor != format!("{}:{}", proof.instance_id(), proof.principal_id())
     {
         return Err(Error::Forbidden);
@@ -207,7 +211,7 @@ pub async fn current(
         proof,
         audit,
         id,
-        &Selection::from_binding(&value.binding),
+        &Selection::from_binding(&value.binding)?,
     )
     .await?;
     if binding != value.binding {
@@ -224,7 +228,7 @@ pub async fn record(
 ) -> Result<(), Error> {
     audit.operation(upload.id, "management_write");
     let verified = store(app)?
-        .verify_class(&upload.binding.artifact()?, upload.binding.storage_class)
+        .verify_class(&upload.binding.artifact()?, upload.binding.class())
         .await?;
     transaction::run(
         &app.audit_store,
@@ -237,22 +241,27 @@ pub async fn record(
                 let (app, proof, audit, upload, verified, source_catalog) = *ctx;
                 tx.prepare_outbox_partitions(&[crate::event::partition(
                     app.tenant,
-                    &upload.binding.resource,
+                    &upload.binding.resource()?.resource,
                 )?])
                 .await?;
                 if let Some(catalog) = source_catalog {
                     catalog
                         .source_admitted_in(
                             tx,
-                            upload.binding.source.as_ref().ok_or(Error::Malformed)?,
+                            upload
+                                .binding
+                                .resource()?
+                                .source
+                                .as_ref()
+                                .ok_or(Error::Malformed)?,
                         )
                         .await?;
                 }
                 let current = resolve_in(
                     tx,
                     proof,
-                    &upload.binding.resource,
-                    &Selection::from_binding(&upload.binding),
+                    &upload.binding.resource()?.resource,
+                    &Selection::from_binding(&upload.binding)?,
                 )
                 .await?;
                 if current != upload.binding
@@ -294,12 +303,21 @@ pub async fn reclaim_in(
     candidate: crate::Garbage,
     authorize: impl FnOnce() -> Result<(), Error> + Send,
 ) -> Result<bool, Error> {
-    let referenced = rss_mdm_resource_postgres::artifact_referenced_in(
-        tx,
-        r::Digest::from_bytes(candidate.digest),
-    )
-    .await
-    .map_err(transaction::storage_error)?;
+    let referenced = if candidate.class == crate::StorageClass::NativeDiagnostic {
+        let tenant = tx.tenant_id().to_string();
+        let digest = candidate.digest;
+        tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_content.diagnostic_artifacts WHERE tenant_id=$1::uuid AND sha256=$2 AND expires_at>extract(epoch FROM clock_timestamp()))")
+                .bind(tenant).bind(digest.as_slice()).fetch_one(c).await
+        })).await.map_err(transaction::storage_error)?
+    } else {
+        rss_mdm_resource_postgres::artifact_referenced_in(
+            tx,
+            r::Digest::from_bytes(candidate.digest),
+        )
+        .await
+        .map_err(transaction::storage_error)?
+    };
     authorize()?;
     if !referenced {
         candidate.remove().map_err(Error::from)?;
@@ -359,7 +377,11 @@ pub async fn mirror(
     let operation = input.operation.ok_or(Error::Malformed)?;
     audit.operation(operation, "management_write");
     let binding = resolve(app, proof, audit, id, input).await?;
-    let source = binding.source.as_ref().ok_or(Error::Malformed)?;
+    let source = binding
+        .resource()?
+        .source
+        .as_ref()
+        .ok_or(Error::Malformed)?;
     let catalog = app.catalog.as_ref();
     transaction::inspect(&app.runtime, app.tenant, (catalog, source), |ctx, tx| {
         Box::pin(async move {
@@ -390,7 +412,11 @@ pub async fn mirror(
         }
         let response = reader
             .open(
-                binding.origin.as_deref().ok_or(Error::Malformed)?,
+                binding
+                    .resource()?
+                    .origin
+                    .as_deref()
+                    .ok_or(Error::Malformed)?,
                 binding.length,
             )
             .await

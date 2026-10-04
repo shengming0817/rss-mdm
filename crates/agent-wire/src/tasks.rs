@@ -1,7 +1,7 @@
 //! Strict task messages. Authentication and durable authority remain server responsibilities.
 #[path = "tasks/context.rs"]
 mod context;
-use super::{PAYLOAD_VERSION, WireError, strict_uuid};
+use super::{WIRE_VERSION, WireError, strict_uuid};
 use base64::Engine;
 pub use context::{
     SoftwareExecutionContext, SoftwareExecutionTarget, SoftwareInteractiveUser,
@@ -23,7 +23,7 @@ pub const MAX_TASK_DURATION_MS: u64 = 604_800_000;
 
 pub(crate) fn version<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
     let value = u8::deserialize(d)?;
-    if value != PAYLOAD_VERSION {
+    if value != WIRE_VERSION {
         return Err(serde::de::Error::custom("unsupported wire version"));
     }
     Ok(value)
@@ -109,7 +109,7 @@ impl TaskClaimResponse {
             return Err(WireError::InvalidValue);
         }
         Ok(Self {
-            wire_version: PAYLOAD_VERSION,
+            wire_version: WIRE_VERSION,
             task,
             cancellations,
         })
@@ -147,7 +147,7 @@ impl TaskEventAck {
     /// Construct a durable accepted receipt with the fixed wire version.
     pub const fn new(permit: Option<SignedTask>, cancel_requested: bool) -> Self {
         Self {
-            wire_version: PAYLOAD_VERSION,
+            wire_version: WIRE_VERSION,
             accepted: true,
             permit,
             cancel_requested,
@@ -417,7 +417,7 @@ impl From<TaskEventRequest> for EventInput {
 impl TryFrom<EventInput> for TaskEventRequest {
     type Error = WireError;
     fn try_from(v: EventInput) -> Result<Self, WireError> {
-        if v.wire_version != PAYLOAD_VERSION {
+        if v.wire_version != WIRE_VERSION {
             return Err(WireError::InvalidValue);
         }
         Self::new(v.operation_id, v.attempt_id, v.event, v.execution_context)
@@ -439,7 +439,7 @@ impl TaskEventRequest {
             result.validate()?;
         }
         let input = EventInput {
-            wire_version: PAYLOAD_VERSION,
+            wire_version: WIRE_VERSION,
             operation_id,
             attempt_id,
             event,
@@ -492,7 +492,7 @@ impl From<TaskClaimRequest> for ClaimInput {
 impl TryFrom<ClaimInput> for TaskClaimRequest {
     type Error = WireError;
     fn try_from(v: ClaimInput) -> Result<Self, WireError> {
-        if v.wire_version != PAYLOAD_VERSION {
+        if v.wire_version != WIRE_VERSION {
             return Err(WireError::InvalidValue);
         }
         Self::new(v.operation_id, v.profiles, v.execution_context)
@@ -516,7 +516,7 @@ impl TaskClaimRequest {
             return Err(WireError::InvalidValue);
         }
         Ok(Self(ClaimInput {
-            wire_version: PAYLOAD_VERSION,
+            wire_version: WIRE_VERSION,
             operation_id,
             profiles,
             execution_context,
@@ -629,7 +629,7 @@ pub struct TaskSpec {
 impl TaskSpec {
     /// Validate the signed closed profile without authenticating it.
     pub fn validate(&self) -> Result<(), WireError> {
-        if self.wire_version != PAYLOAD_VERSION
+        if self.wire_version != WIRE_VERSION
             || self.tenant_id.is_nil()
             || self.registration_id.is_nil()
             || self.task_id.is_nil()
@@ -704,7 +704,7 @@ impl TaskSpec {
         {
             return Err(WireError::InvalidValue);
         }
-        let mut bytes = b"rss-mdm-agent-script-task-v6-ed25519\0".to_vec();
+        let mut bytes = b"rss-mdm-agent-script-task-v1-ed25519\0".to_vec();
         bytes.extend((key_id.len() as u32).to_be_bytes());
         bytes.extend(key_id.as_bytes());
         bytes.extend(serde_json::to_vec(self).map_err(|_| WireError::InvalidValue)?);
@@ -828,41 +828,41 @@ impl SoftwareTaskAction {
             })
         };
         match &self.behavior {
-            B::Msi(n) => native(n.scope, C::SoftwareMsiSystemV6, C::SoftwareMsiUserV6),
-            B::Pkg(n) if n.scope == S::System => Some(C::SoftwarePkgSystemV6),
+            B::Msi(n) => native(n.scope, C::SoftwareMsiSystemV1, C::SoftwareMsiUserV1),
+            B::Pkg(n) if n.scope == S::System => Some(C::SoftwarePkgSystemV1),
             B::Pkg(_) => None,
-            B::Winget(n) => native(n.scope, C::SoftwareWingetSystemV6, C::SoftwareWingetUserV6),
-            B::Brew(n) if n.scope == S::User => Some(C::SoftwareBrewBottleUserV6),
+            B::Winget(n) => native(n.scope, C::SoftwareWingetSystemV1, C::SoftwareWingetUserV1),
+            B::Brew(n) if n.scope == S::User => Some(C::SoftwareBrewBottleUserV1),
             B::Brew(_) => None,
-            B::Exe(n) => native(n.scope, C::SoftwareExeSystemV6, C::SoftwareExeUserV6),
+            B::Exe(n) => native(n.scope, C::SoftwareExeSystemV1, C::SoftwareExeUserV1),
             B::Bundle(n) => Some(match (platform, n.install.invocation.run_as) {
                 (TaskPlatform::Windows, ExecutionIdentity::System) => {
-                    C::SoftwareBundleWindowsSystemV6
+                    C::SoftwareBundleWindowsSystemV1
                 }
                 (TaskPlatform::Windows, ExecutionIdentity::LoggedInUser) => {
-                    C::SoftwareBundleWindowsUserV6
+                    C::SoftwareBundleWindowsUserV1
                 }
-                (TaskPlatform::Macos, ExecutionIdentity::System) => C::SoftwareBundleMacosSystemV6,
+                (TaskPlatform::Macos, ExecutionIdentity::System) => C::SoftwareBundleMacosSystemV1,
                 (TaskPlatform::Macos, ExecutionIdentity::LoggedInUser) => {
-                    C::SoftwareBundleMacosUserV6
+                    C::SoftwareBundleMacosUserV1
                 }
             }),
             B::Dmg(n) => match (&n.payload, n.scope) {
                 (SoftwareTaskDmgPayload::AppCopy { .. }, S::System) => {
-                    Some(C::SoftwareDmgAppSystemV6)
+                    Some(C::SoftwareDmgAppSystemV1)
                 }
-                (SoftwareTaskDmgPayload::AppCopy { .. }, S::User) => Some(C::SoftwareDmgAppUserV6),
+                (SoftwareTaskDmgPayload::AppCopy { .. }, S::User) => Some(C::SoftwareDmgAppUserV1),
                 (SoftwareTaskDmgPayload::ContainedPkg { .. }, S::System) => {
-                    Some(C::SoftwareDmgPkgSystemV6)
+                    Some(C::SoftwareDmgPkgSystemV1)
                 }
                 _ => None,
             },
             B::Msix(n) => Some(match n.deployment {
                 SoftwareTaskMsixDeployment::TargetUserRegistration { .. } => {
-                    C::SoftwareMsixRegistrationUserV6
+                    C::SoftwareMsixRegistrationUserV1
                 }
                 SoftwareTaskMsixDeployment::DeviceProvisioning => {
-                    C::SoftwareMsixProvisioningSystemV6
+                    C::SoftwareMsixProvisioningSystemV1
                 }
             }),
         }
@@ -936,7 +936,7 @@ impl SoftwareTaskSpec {
                 && s.split('/')
                     .all(|part| !part.is_empty() && part != "." && part != "..")
         };
-        if self.wire_version != PAYLOAD_VERSION
+        if self.wire_version != WIRE_VERSION
             || self.tenant_id.is_nil()
             || self.registration_id.is_nil()
             || self.task_id.is_nil()
@@ -1001,7 +1001,7 @@ impl SoftwareTaskSpec {
         {
             return Err(WireError::InvalidValue);
         }
-        let mut bytes = b"rss-mdm-agent-software-task-v6-ed25519\0".to_vec();
+        let mut bytes = b"rss-mdm-agent-software-task-v1-ed25519\0".to_vec();
         bytes.extend((key_id.len() as u32).to_be_bytes());
         bytes.extend(key_id.as_bytes());
         bytes.extend(serde_json::to_vec(self).map_err(|_| WireError::InvalidValue)?);

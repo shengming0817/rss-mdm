@@ -108,7 +108,7 @@ async fn exercise(ledger: bool) -> Result<()> {
     .await?;
     let request = Request::builder()
         .method("POST")
-        .uri(format!("/api/v2/tenants/{TENANT}/login", TENANT = case_tenant()))
+        .uri(format!("/api/v1/identity/tenants/{TENANT}/login", TENANT = case_tenant()))
         .header("host", "mdm.example.test")
         .header("origin", "https://mdm.example.test")
         .header("x-identity-request", "1")

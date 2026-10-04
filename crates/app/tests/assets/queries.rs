@@ -6,7 +6,7 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
     let router = &fixture.router;
     let subject = &fixture.subject;
     let mut browser = fixture.browser.clone();
-    let floor = "/api/v2/devices/asset-a/manual-fields/custom.office_floor";
+    let floor = "/api/v1/devices/asset-a/manual-fields/custom.office_floor";
     ok(
         &mut browser,
         router,
@@ -23,12 +23,12 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
         &mut browser,
         router,
         Method::POST,
-        "/api/v2/device-queries",
+        "/api/v1/device-queries",
         Some(query),
     )
     .await?;
     let items_path = format!(
-        "/api/v2/device-queries/{}/items",
+        "/api/v1/device-queries/{}/items",
         result["asset"]["snapshot"].as_str().unwrap()
     );
     let first = ok(
@@ -52,7 +52,7 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
             == "asset-b"
     );
     let saved = Uuid::new_v4();
-    let saved_path = format!("/api/v2/saved-queries/{saved}");
+    let saved_path = format!("/api/v1/saved-queries/{saved}");
     let put = request(
         0,
         json!({"action":"put","definition":{"name":"Floor 3","query":{"criteria":predicate("custom.office_floor","integer",json!(3))}}}),
@@ -109,7 +109,7 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
             &mut other,
             router,
             Method::GET,
-            "/api/v2/saved-queries",
+            "/api/v1/saved-queries",
             None
         )
         .await?["asset"]["items"]
@@ -123,7 +123,7 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
             .call(
                 router,
                 Method::GET,
-                "/api/v2/devices/asset-b/inventory",
+                "/api/v1/devices/asset-b/inventory",
                 None
             )
             .await?
@@ -147,7 +147,7 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
             &mut browser,
             router,
             Method::POST,
-            "/api/v2/device-queries",
+            "/api/v1/device-queries",
             Some(json!({}))
         )
         .await?["asset"]["summary"]["total"]
@@ -198,7 +198,7 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
             &mut browser,
             router,
             Method::PUT,
-            &format!("/api/v2/devices/{device}/manual-fields/custom.office_floor"),
+            &format!("/api/v1/devices/{device}/manual-fields/custom.office_floor"),
             Some(request(
                 0,
                 json!({"action":"set","value":{"kind":"integer","value":99}}),
@@ -212,12 +212,12 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
             &mut browser,
             router,
             Method::POST,
-            "/api/v2/device-queries",
+            "/api/v1/device-queries",
             Some(query),
         )
         .await?;
         let base = format!(
-            "/api/v2/device-queries/{}/items?limit=1",
+            "/api/v1/device-queries/{}/items?limit=1",
             result["asset"]["snapshot"].as_str().unwrap()
         );
         let mut path = base.clone();

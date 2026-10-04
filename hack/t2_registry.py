@@ -653,10 +653,10 @@ consume(('crates/execution-service/src/freeze_inputs.rs', 'crates/flow-service/s
         'planning.agent_policy planning.remote planning.onboarding')
 TASK_CONSUMERS = 'planning.onboarding planning.policy planning.agent_policy planning.frequency planning.remote planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
 consume(('crates/agent-wire/src/tasks.rs', 'crates/agent-wire/schema/runtime/task-*.json',
-         'crates/agent-wire/schema/runtime/signed-task-v6.schema.json', 'crates/execution-service/src/task_signing.rs'), TASK_CONSUMERS)
+         'crates/agent-wire/schema/runtime/signed-task-v1.schema.json', 'crates/execution-service/src/task_signing.rs'), TASK_CONSUMERS)
 # lib.rs owns shared identities, capability, errors, registration and report shapes.
-consume(('crates/agent-wire/src/lib.rs','crates/agent-wire/src/runtime.rs','crates/agent-wire/schema/runtime/error-body-v6.schema.json',
-         'crates/agent-wire/schema/runtime/agent-v6.schema-manifest.json'), TASK_CONSUMERS + ' agent.registration agent.reports execution.commands.onboarding apple.onboarding')
+consume(('crates/agent-wire/src/lib.rs','crates/agent-wire/src/runtime.rs','crates/agent-wire/schema/runtime/error-body-v1.schema.json',
+         'crates/agent-wire/schema/runtime/agent-v1.schema-manifest.json'), TASK_CONSUMERS + ' agent.registration agent.reports execution.commands.onboarding apple.onboarding')
 consume(('crates/agent-wire/schema/runtime/binding-profile-*.json',), 'agent.registration')
 consume(('crates/agent-wire/schema/runtime/report-*.json',), 'agent.reports planning.onboarding')
 consume(('crates/agent-wire/src/onboarding.rs',),
@@ -685,6 +685,8 @@ consume(('crates/apple-channel/src/push.rs',), 'apple.push apple.host')
 consume(('crates/certificate/src/apple.rs',), 'apple.scep apple.renewal apple.identity')
 consume(('crates/software-service/src/lib.rs', 'crates/software-service/src/publication/mod.rs'),
         'software.catalog software.http publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery publication.artifact')
+consume(('crates/app/src/publication_config.rs',),
+        'publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery')
 consume(('crates/software-service/src/catalog/*',),
         'software.http planning.software execution.software.offer execution.software.content execution.software.recovery')
 AUTH_CONSUMERS = 'agent.pki certificate-archive.http diagnostics.http authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission api.identity_context enrollment.http enrollment.recovery assets.http planning.http planning.policy planning.agent_policy planning.frequency planning.remote planning.software compliance.http software.http content.http content.mirror content.gc execution.commands.admission windows.issuance windows.management apple.scep apple.profile apple.policy apple.onboarding apple.renewal'
@@ -699,6 +701,13 @@ consume(('crates/execution-service/src/remote_operations/*',), 'planning.remote'
 consume(('crates/execution-service/src/sources/software.rs',),
         'planning.software execution.software.offer execution.software.recovery')
 consume(('crates/flow-service/src/planning/policies/*',), 'planning.policy planning.agent_policy planning.frequency')
+consume(('crates/flow-service/src/automation/jobs.rs',),
+        'assets.queries assets.group_input compliance.http compliance.group_input planning.group_scope planning.scope planning.policy planning.agent_policy planning.frequency planning.recovery diagnostics.http')
+consume(('crates/management-http/src/planning/mod.rs',),
+        'planning.http planning.policy planning.agent_policy planning.frequency planning.remote planning.software')
+consume(('hack/enrollment-password.py',), 'enrollment.http enrollment.recovery')
+consume(('crates/management-http/src/software_native.rs',),
+        'publication.winget publication.brew publication.withdrawal')
 consume(('crates/flow-service/src/planning/automation/groups.rs',), 'planning.group_scope assets.group_input compliance.group_input')
 consume(('crates/flow-service/src/planning/automation/scopes.rs',), 'planning.scope planning.group_scope planning.frequency planning.remote planning.software')
 consume(('crates/execution-service/src/actions/poll.rs',), 'execution.agent.poll execution.agent.delivery')
@@ -729,7 +738,9 @@ consume(('crates/windows-channel/src/collection.rs', 'crates/windows-channel/src
 consume(('crates/app/src/assembly/windows/*',), 'windows.enrollment windows.issuance windows.management windows.retention windows.limits native.tls')
 consume(('crates/inventory-service/src/collection*',), 'agent.reports windows.management windows.retention apple.collection apple.renewal inventory.runtime')
 consume(('crates/inventory-service/src/groups/*',), 'planning.http planning.group_scope assets.group_input compliance.group_input')
-consume(('crates/content-service/src/lib.rs', 'crates/content-service/src/bindings.rs', 'crates/content-service/src/service*', 'crates/content-service/src/transaction.rs'), 'content.http content.mirror content.gc execution.agent.content execution.software.content software.http')
+consume(('crates/content-service/src/lib.rs', 'crates/content-service/src/bindings.rs', 'crates/content-service/src/service*', 'crates/content-service/src/transaction.rs', 'crates/content-service/src/admission.sql'), 'content.http content.mirror content.gc execution.agent.content execution.software.content software.http')
+consume(('crates/content-service/src/catalog.sql', 'crates/content-service/src/catalog.json'),
+        'catalog.contract content.http content.mirror content.gc execution.agent.content execution.software.content software.http')
 consume(('crates/flow-service/src/storage*',), 'planning.recovery assets.http compliance.http planning.http software.http content.http')
 consume(('crates/apple-channel/src/boundary.rs',), 'apple.scep apple.collection apple.profile apple.renewal apple.identity apple.host')
 
@@ -1044,6 +1055,8 @@ consume(('crates/execution-service/src/lib.rs','crates/execution-service/src/err
 # Execution owner inputs follow their real read, write and channel consumers.
 QUERY_CONSUMERS = 'execution.agent.history execution.commands.windows planning.http planning.agent_policy planning.remote planning.software'
 COMMAND_CONSUMERS = 'execution.commands.admission execution.commands.dispatch execution.commands.recovery execution.commands.windows execution.commands.configuration execution.commands.onboarding windows.management windows.commands apple.profile apple.onboarding'
+consume(('crates/app/src/execution_assembly.rs',),
+        TASK_CONSUMERS + ' ' + COMMAND_CONSUMERS + ' ' + QUERY_CONSUMERS + ' content.http content.mirror content.gc software.http host.lifecycle')
 consume(('crates/execution-service/src/queries.rs',
          'crates/execution-service/src/queries/records.rs',
          'crates/execution-service/src/queries/error.rs'), QUERY_CONSUMERS)
@@ -1486,6 +1499,14 @@ for provider in ('flow-service','inventory-service','authorization-service','aud
     prefix=f'crates/{provider}/'
     consumers={name for name,module in MODULES.items() if any(path.startswith(prefix) for path in module.production_inputs)}
     consume_dependencies(consumers, dev=f'rss-mdm-{provider}')
+
+consume(('crates/windows-mdm/src/native/diagnostic.rs', 'crates/execution-service/src/native/diagnostic.rs',
+         'crates/execution-service/src/diagnostic_artifacts.rs', 'crates/execution-service/src/queries/diagnostics.rs',
+         'crates/content-service/src/diagnostic.rs'), 'execution.commands.windows content.gc')
+
+MODULES['execution.commands.windows'] = replace(MODULES['execution.commands.windows'],
+    selectors=(*MODULES['execution.commands.windows'].selectors, 'execution::t2::commands::diagnostics::'),
+    test_inputs=(*MODULES['execution.commands.windows'].test_inputs, 'crates/app/tests/execution/commands/diagnostics.rs'))
 
 add('content.s3', build=Build('rss-mdm-content-s3'), selectors=('s3_tests::',), profile='none', fixtures=('s3',),
     sources=('crates/content-s3/src/*',), tests=('crates/content-s3/tests/s3.rs',),

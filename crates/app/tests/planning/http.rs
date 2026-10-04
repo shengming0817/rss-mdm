@@ -17,7 +17,7 @@ async fn console_collection_routes_reuse_current_policy() -> Result<()> {
         json!(["group_read", "scope_read", "policy_read", "resource_read"]),
     )
     .await?;
-    for path in ["/api/v2/groups", "/api/v2/scopes", "/api/v4/resources"] {
+    for path in ["/api/v1/groups", "/api/v1/scopes", "/api/v1/resources"] {
         let (status, page) = browser.call(&router, Method::GET, path, None).await?;
         ensure!(
             status == StatusCode::OK,
@@ -40,7 +40,7 @@ async fn console_collection_routes_reuse_current_policy() -> Result<()> {
         );
     }
     set_management_grants(&subject, json!([])).await?;
-    for path in ["/api/v2/groups", "/api/v2/scopes", "/api/v4/resources"] {
+    for path in ["/api/v1/groups", "/api/v1/scopes", "/api/v1/resources"] {
         ensure!(browser.call(&router, Method::GET, path, None).await?.0 == StatusCode::FORBIDDEN);
     }
     Ok(())
@@ -61,13 +61,13 @@ async fn console_pending_directory_and_permission_changes() -> Result<()> {
     )
     .await?;
     browser.operation = Some(uuid::Uuid::new_v4());
-    let (status, enrollment) = browser.call(&router, Method::POST, "/api/v3/enrollments", Some(json!({"deviceId":device,"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows","windowsProfile":"Device"}))).await?;
+    let (status, enrollment) = browser.call(&router, Method::POST, "/api/v1/enrollments", Some(json!({"deviceId":device,"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows","windowsProfile":"Device"}))).await?;
     ensure!(
         status == StatusCode::OK,
         "enrollment: {status} {enrollment}"
     );
     let (status, page) = browser
-        .call(&router, Method::GET, "/api/v3/devices?limit=1", None)
+        .call(&router, Method::GET, "/api/v1/devices?limit=1", None)
         .await?;
     ensure!(
         status == StatusCode::OK,
@@ -79,7 +79,7 @@ async fn console_pending_directory_and_permission_changes() -> Result<()> {
         .call(
             &router,
             Method::GET,
-            &format!("/api/v3/devices/{device}"),
+            &format!("/api/v1/devices/{device}"),
             None,
         )
         .await?;
@@ -97,7 +97,7 @@ async fn console_pending_directory_and_permission_changes() -> Result<()> {
     for id in [device, case::name("hidden-console")] {
         ensure!(
             browser
-                .call(&router, Method::GET, &format!("/api/v3/devices/{id}"), None)
+                .call(&router, Method::GET, &format!("/api/v1/devices/{id}"), None)
                 .await?
                 .0
                 == StatusCode::FORBIDDEN
@@ -105,7 +105,7 @@ async fn console_pending_directory_and_permission_changes() -> Result<()> {
     }
     ensure!(
         browser
-            .call(&router, Method::GET, "/api/v3/devices", None)
+            .call(&router, Method::GET, "/api/v1/devices", None)
             .await?
             .0
             == StatusCode::FORBIDDEN
@@ -130,7 +130,7 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
     let revoked = case::name("b-revoked");
     let registered = case::name("c-registered");
     browser.operation = Some(Uuid::new_v4());
-    ensure!(browser.call(&router,Method::POST,"/api/v3/enrollments",Some(json!({"deviceId":pending,"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows","windowsProfile":"Device"}))).await?.0==StatusCode::OK);
+    ensure!(browser.call(&router,Method::POST,"/api/v1/enrollments",Some(json!({"deviceId":pending,"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows","windowsProfile":"Device"}))).await?.0==StatusCode::OK);
     let principal = crate::device::test_support::admin(case_tenant(), "other-a").await?;
     let service = rss_mdm_registration_service::DeviceService::new(
         fixture.access.registration(),
@@ -174,7 +174,7 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
         format!("http://{address}"),
     ));
     for descending in [false, true] {
-        let mut path = format!("/api/v3/devices?limit=1&descending={descending}");
+        let mut path = format!("/api/v1/devices?limit=1&descending={descending}");
         let mut ids = Vec::new();
         loop {
             let (status, page) = browser.call(&router, Method::GET, &path, None).await?;
@@ -192,7 +192,7 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
             let Some(after) = page["nextCursor"].as_str() else {
                 break;
             };
-            path = format!("/api/v3/devices?limit=1&descending={descending}&after={after}");
+            path = format!("/api/v1/devices?limit=1&descending={descending}&after={after}");
             ensure!(ids.len() <= 3, "directory repeated page");
         }
         let mut expected = vec![pending, revoked, registered];
@@ -205,7 +205,7 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
         .call(
             &router,
             Method::GET,
-            &format!("/api/v3/devices/{revoked}"),
+            &format!("/api/v1/devices/{revoked}"),
             None,
         )
         .await?;
@@ -213,13 +213,13 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
     ensure!(detail["capabilities"][0]["devicePrerequisite"]["reason"] == "not_registered");
     set_device_grants(&mut browser, &router, pending, &["inventory_read"]).await?;
     let (_, page) = browser
-        .call(&router, Method::GET, "/api/v3/devices?limit=1", None)
+        .call(&router, Method::GET, "/api/v1/devices?limit=1", None)
         .await?;
     ensure!(page["statistics"]["total"] == 1 && page["items"][0]["id"] == pending);
     for id in [revoked, case::name("absent")] {
         ensure!(
             browser
-                .call(&router, Method::GET, &format!("/api/v3/devices/{id}"), None)
+                .call(&router, Method::GET, &format!("/api/v1/devices/{id}"), None)
                 .await?
                 .0
                 == StatusCode::FORBIDDEN
@@ -248,7 +248,7 @@ async fn console_script_support_requires_signer_and_content() -> Result<()> {
             .call(
                 &router,
                 Method::GET,
-                &format!("/api/v3/devices/{}", case_device_id()),
+                &format!("/api/v1/devices/{}", case_device_id()),
                 None,
             )
             .await?;
@@ -298,7 +298,7 @@ async fn console_script_support_requires_signer_and_content() -> Result<()> {
         .call(
             &fixture.router,
             Method::GET,
-            &format!("/api/v3/devices/{}", case_device_id()),
+            &format!("/api/v1/devices/{}", case_device_id()),
             None,
         )
         .await?;
@@ -337,13 +337,13 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
     let mut groups = [Uuid::new_v4(), Uuid::new_v4()];
     groups.sort();
     for (i, id) in groups.iter().enumerate() {
-        call(&mut browser,&router,&format!("/api/v2/groups/{id}"),0,json!({"action":"create","name":format!("console-{i}"),"description":"","criteria":null})).await?;
+        call(&mut browser,&router,&format!("/api/v1/groups/{id}"),0,json!({"action":"create","name":format!("console-{i}"),"description":"","criteria":null})).await?;
     }
     let (_, first) = browser
         .call(
             &router,
             Method::GET,
-            "/api/v2/groups?limit=1&kind=static",
+            "/api/v1/groups?limit=1&kind=static",
             None,
         )
         .await?;
@@ -355,7 +355,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
         .call(
             &router,
             Method::GET,
-            &format!("/api/v2/groups?limit=1&after={}", groups[0]),
+            &format!("/api/v1/groups?limit=1&after={}", groups[0]),
             None,
         )
         .await?;
@@ -364,7 +364,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
         .call(
             &router,
             Method::GET,
-            "/api/v2/groups?name=console-1&descending=true",
+            "/api/v1/groups?name=console-1&descending=true",
             None,
         )
         .await?;
@@ -376,7 +376,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
     call(
         &mut browser,
         &router,
-        &format!("/api/v4/resources/{resource}"),
+        &format!("/api/v1/resources/{resource}"),
         0,
         json!({"action":"create","kind":"script"}),
     )
@@ -385,7 +385,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
         .call(
             &router,
             Method::GET,
-            "/api/v4/resources?kind=script&active=false",
+            "/api/v1/resources?kind=script&active=false",
             None,
         )
         .await?;
@@ -395,11 +395,11 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
             && resources["items"][0]["activeVersion"].is_null()
     );
     for path in [
-        "/api/v2/groups?kind=wrong",
-        "/api/v4/resources?kind=wrong",
-        "/api/v3/policies?limit=0",
-        "/api/v3/policies?action=wrong",
-        "/api/v2/scopes?limit=1001",
+        "/api/v1/groups?kind=wrong",
+        "/api/v1/resources?kind=wrong",
+        "/api/v1/policies?limit=0",
+        "/api/v1/policies?action=wrong",
+        "/api/v1/scopes?limit=1001",
     ] {
         ensure!(
             browser.call(&router, Method::GET, path, None).await?.0 == StatusCode::BAD_REQUEST,
@@ -410,7 +410,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
         .call(
             &router,
             Method::GET,
-            "/api/mdm-candidate/v1/workspace",
+            "/api/v1/mdm-candidate/workspace",
             None,
         )
         .await?;
@@ -426,7 +426,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
         .call(
             &router,
             Method::GET,
-            "/api/mdm-candidate/v1/workspace",
+            "/api/v1/mdm-candidate/workspace",
             None,
         )
         .await?;
@@ -444,7 +444,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
             .call(
                 &router,
                 Method::GET,
-                &format!("/api/v2/groups?after={}", groups[0]),
+                &format!("/api/v1/groups?after={}", groups[0]),
                 None
             )
             .await?
@@ -463,7 +463,7 @@ async fn console_scope_ready_tracks_current_admission() -> Result<()> {
     let subject = browser_subject(&browser, &router).await?;
     set_management_grants(&subject, json!(["scope_read", "scope_write"])).await?;
     let scope = Uuid::new_v4();
-    let path = format!("/api/v2/scopes/{scope}");
+    let path = format!("/api/v1/scopes/{scope}");
     let owner = start_automation(&fixture.base).await?;
     call(
         &mut browser,
@@ -475,7 +475,7 @@ async fn console_scope_ready_tracks_current_admission() -> Result<()> {
     .await?;
     await_ingress().await?;
     let fresh = browser
-        .call(&router, Method::GET, "/api/v2/scopes?ready=true", None)
+        .call(&router, Method::GET, "/api/v1/scopes?ready=true", None)
         .await?;
     ensure!(
         fresh.0 == StatusCode::OK && fresh.1["items"][0]["id"] == scope.to_string(),
@@ -486,10 +486,10 @@ async fn console_scope_ready_tracks_current_admission() -> Result<()> {
     ensure!(changed.0 == StatusCode::OK, "scope update: {changed:?}");
     ensure!(pg(&format!("SELECT resolution IS NOT NULL FROM mdm_planning.scopes WHERE tenant_id='{}' AND id='{scope}'", case_tenant()))?.trim() == "t", "fixture lost historical resolution");
     let fresh = browser
-        .call(&router, Method::GET, "/api/v2/scopes?ready=true", None)
+        .call(&router, Method::GET, "/api/v1/scopes?ready=true", None)
         .await?;
     let stale = browser
-        .call(&router, Method::GET, "/api/v2/scopes?ready=false", None)
+        .call(&router, Method::GET, "/api/v1/scopes?ready=false", None)
         .await?;
     ensure!(
         fresh.0 == StatusCode::OK && fresh.1["items"] == json!([]),
@@ -508,7 +508,7 @@ async fn console_scope_ready_tracks_current_admission() -> Result<()> {
     .await?;
     await_ingress().await?;
     let fresh = browser
-        .call(&router, Method::GET, "/api/v2/scopes?ready=true", None)
+        .call(&router, Method::GET, "/api/v1/scopes?ready=true", None)
         .await?;
     ensure!(
         fresh.0 == StatusCode::OK && fresh.1["items"][0]["id"] == scope.to_string(),
@@ -576,7 +576,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
     for token in [None, Some("incorrect-token".to_owned())] {
         browser.csrf = token;
         let blocked = uuid::Uuid::new_v4();
-        let response=browser.call(&router,Method::POST,&format!("/api/v2/groups/{blocked}"),Some(json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create","name":"csrf-must-not-write","description":"","criteria":null}}))).await?;
+        let response=browser.call(&router,Method::POST,&format!("/api/v1/groups/{blocked}"),Some(json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create","name":"csrf-must-not-write","description":"","criteria":null}}))).await?;
         ensure!(
             response.0 == StatusCode::FORBIDDEN,
             "planning write accepted absent/incorrect csrf token: {}",
@@ -595,7 +595,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
     let scope = uuid::Uuid::new_v4();
     let policy = uuid::Uuid::new_v4();
     let resource = uuid::Uuid::new_v4();
-    let group_path = format!("/api/v2/groups/{group}");
+    let group_path = format!("/api/v1/groups/{group}");
     call(&mut browser,&router,&group_path,0,json!({"action":"create","name":"managed","description":"","criteria":{"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"Model-A"}}})).await?;
     let (_, current) = browser
         .call(&router, Method::GET, &group_path, None)
@@ -702,7 +702,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
             json!([crate::test_support::case::name("device-1"), second]),
         ),
     ] {
-        let path = format!("/api/v2/groups/{id}");
+        let path = format!("/api/v1/groups/{id}");
         call(
             &mut browser,
             &router,
@@ -720,7 +720,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
         )
         .await?;
     }
-    let scope_receipt = call(&mut browser,&router,&format!("/api/v2/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":target_group}],"limitations":[{"kind":"group","id":limit_group}],"exclusions":[{"kind":"device","id":second}]}})).await?;
+    let scope_receipt = call(&mut browser,&router,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":target_group}],"limitations":[{"kind":"group","id":limit_group}],"exclusions":[{"kind":"device","id":second}]}})).await?;
     native_configuration_resource(
         &mut browser,
         &router,
@@ -730,15 +730,15 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
         windows_configuration(),
     )
     .await?;
-    let resource_path = format!("/api/v4/resources/{resource}");
-    let policy_path = format!("/api/v3/policies/{policy}");
+    let resource_path = format!("/api/v1/resources/{resource}");
+    let policy_path = format!("/api/v1/policies/{policy}");
     let definition = json!({"scope":scope,"action": {"resource": {"id":resource,"version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"kind":"configuration","exit":"retain"}});
     let mut assigned = definition.clone();
     let empty_scope = uuid::Uuid::new_v4();
     let empty = call(
         &mut browser,
         &router,
-        &format!("/api/v2/scopes/{empty_scope}"),
+        &format!("/api/v1/scopes/{empty_scope}"),
         0,
         json!({"action":"put","definition":{"targets":[],"limitations":null,"exclusions":[]}}),
     )
@@ -747,7 +747,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
         &mut browser,
         &router,
         &format!(
-            "/api/v2/scopes/{empty_scope}/tasks/{}",
+            "/api/v1/scopes/{empty_scope}/tasks/{}",
             empty["task"].as_str().unwrap()
         ),
     )
@@ -782,7 +782,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
         json!({"action":"put","enabled":true,"definition":assigned}),
     )
     .await?;
-    let referenced=browser.call(&router,Method::POST,&format!("/api/v2/scopes/{empty_scope}"),Some(json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":1,"input":{"action":"delete"}}))).await?;
+    let referenced=browser.call(&router,Method::POST,&format!("/api/v1/scopes/{empty_scope}"),Some(json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":1,"input":{"action":"delete"}}))).await?;
     ensure!(
         referenced.0 == StatusCode::CONFLICT,
         "referenced Scope was deleted: {referenced:?}"
@@ -803,7 +803,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
             &router,
             Method::GET,
             &format!(
-                "/api/v2/scopes/{scope}/results/{}/decisions",
+                "/api/v1/scopes/{scope}/results/{}/decisions",
                 scope_receipt["task"].as_str().unwrap()
             ),
             None,
@@ -840,7 +840,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
     }
     set_management_grants(&member, json!(["group_write"])).await?;
     pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_flow_runtime")?;
-    let failed=browser.call(&router,Method::POST,&format!("/api/v2/groups/{}",uuid::Uuid::new_v4()),Some(json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create","name":"must-rollback","description":"","criteria":null}}))).await?;
+    let failed=browser.call(&router,Method::POST,&format!("/api/v1/groups/{}",uuid::Uuid::new_v4()),Some(json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create","name":"must-rollback","description":"","criteria":null}}))).await?;
     pg("GRANT INSERT ON mdm_audit.receipts TO mdm_flow_runtime")?;
     ensure!(
         failed.0 == StatusCode::INTERNAL_SERVER_ERROR && failed.1["code"] == "audit_contract_error"
@@ -885,11 +885,11 @@ async fn derived_result_authorization(
     let absent = uuid::Uuid::new_v4();
     for (route, code) in [
         (
-            format!("/api/v3/policies/{absent}/devices"),
+            format!("/api/v1/policies/{absent}/devices"),
             "policy_not_found",
         ),
         (
-            format!("/api/v2/groups/{absent}/results/{group_result}/members"),
+            format!("/api/v1/groups/{absent}/results/{group_result}/members"),
             "group_not_found",
         ),
         (
@@ -897,11 +897,11 @@ async fn derived_result_authorization(
             "group_not_found",
         ),
         (
-            format!("/api/v2/scopes/{absent}/results/{scope_result}/members"),
+            format!("/api/v1/scopes/{absent}/results/{scope_result}/members"),
             "scope_not_found",
         ),
         (
-            format!("/api/v2/scopes/{scope}/results/{absent}/members"),
+            format!("/api/v1/scopes/{scope}/results/{absent}/members"),
             "scope_not_found",
         ),
     ] {
@@ -913,7 +913,7 @@ async fn derived_result_authorization(
     }
     let mut paths = vec![
         format!("{group}/tasks/{group_result}"),
-        format!("/api/v2/scopes/{scope}/tasks/{scope_result}"),
+        format!("/api/v1/scopes/{scope}/tasks/{scope_result}"),
         format!("{policy}/devices"),
     ];
     for kind in ["members", "changes", "decisions"] {
@@ -921,7 +921,7 @@ async fn derived_result_authorization(
     }
     for kind in ["members", "decisions"] {
         paths.push(format!(
-            "/api/v2/scopes/{scope}/results/{scope_result}/{kind}?limit=1"
+            "/api/v1/scopes/{scope}/results/{scope_result}/{kind}?limit=1"
         ));
     }
     // Keep an actually issued cursor, then shrink the subject's device access.
@@ -959,7 +959,7 @@ async fn derived_result_authorization(
         )?;
         for (path, revision, input) in [
             (
-                format!("/api/v2/groups/{}", uuid::Uuid::new_v4()),
+                format!("/api/v1/groups/{}", uuid::Uuid::new_v4()),
                 0,
                 json!({"action":"create","name":"denied-dynamic","description":"","criteria":criteria}),
             ),

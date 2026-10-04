@@ -12,7 +12,7 @@ EXE 固定安装/升级/卸载调用、完整离线文件布局和独立检测�
 
 所有材料、行为、依赖、来源证据和导出元数据参与冻结摘要。同版本不得换字节，旧批准不能批准另一份定义。Resource.Active 或 Published 不能代替企业批准；撤回阻止新准入、下载和启动，不自动卸载。历史回执和未知事实保留。已授权任务可处理匹配的用户已有安装；目标已满足可无修改完成，核实成功不代表本次发生安装，也不伪造历史安装来源或原生管理状态。
 
-管理写使用 `operationId`、`expectedRevision` 和 `input`；相同身份重放相同请求，更换内容冲突。以下路径位于 `/api/v3`：
+管理写使用 `operationId`、`expectedRevision` 和 `input`；相同身份重放相同请求，更换内容冲突。以下路径位于 `/api/v1`：
 
 | 路径 | 行为与权限 |
 |---|---|
@@ -31,7 +31,7 @@ Brew 使用完整消费的受限静态解析，不执行 Ruby。只接受固定 
 
 `content.imports` 按来源 ID 配置受控 `{base, addresses, private_ca}`：固定解析地址、证书与主机名验证、无代理/重定向/凭据转发。注册来源本身不扩大网络白名单。产物声明 origin 后可调用既有 `/content/mirror`，逐个镜像完整对象，提交前重新核对当前批准。
 
-以下内容路径位于 `/api/v3/resources/{id}`，写入需要 ResourceWrite：
+以下内容路径位于 `/api/v1/resources/{id}`，写入需要 ResourceWrite：
 
 - `POST /content?version=...&variant=...&platform=...&architecture=...&operation=<UUID>` 完整流式上传；多材料使用 `artifact=<reference>`。
 - `POST /uploads/{uploadId}` 建立同样绑定；`GET /uploads/{uploadId}` 查询 offset。
@@ -49,7 +49,7 @@ RSS Bundle 的 manifest 位于 `behavior.manifest`，ZIP `manifest.json` 为规�
 
 Test → Pilot → Production 每环重新验证和审批，默认分离批准者与发布者；后台驱动不充当管理员批准。发布与撤回使用现有事务、锁、审计、Outbox 和投影。
 
-WinGet 由 rss-mdm 公开只读托管，挂载 `/software/native/sources/{source}/{ring}/`：information、manifestSearch、精确 packageManifests，以及 `/exports/{publication}/` 冻结来源。仅明确批准并发布的内容可读取，响应 no-store。发布/撤回直接更新本地事务和投影，不 HTTP 调用自己。没有 Entra、代理或认证占位；WinGet 配置的 credentials 必须为空。
+WinGet 由 rss-mdm 公开只读托管，挂载 `/api/v1/software/native/sources/{source}/{ring}/`：information、manifestSearch、精确 packageManifests，以及 `/exports/{publication}/` 冻结来源。仅明确批准并发布的内容可读取，响应 no-store。发布/撤回直接更新本地事务和投影，不 HTTP 调用自己。没有 Entra、代理或认证占位；WinGet 配置的 credentials 必须为空。
 
 Brew 将专用系统 Git bare 仓库固定映射到来源/ring，生成无父提交的不可变 Tap，保留 bottle/token/依赖布局，Formula 的 source install 明确拒绝。`/exports/{publication}.git` 只提供固定 namespace 的 upload-pack，不提供 receive-pack、任意 SHA want 或通用 Git 服务。只有 Brew 使用来源范围只读 credential_reference；秘密来自宿主配置，wire 只包含引用。撤回移除该快照的读取权，不影响其他版本或包。
 

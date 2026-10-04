@@ -6,6 +6,7 @@ mod bundle;
 mod cleanup;
 mod native;
 pub use cleanup::Garbage;
+pub mod diagnostic;
 mod protected;
 #[cfg(test)]
 #[path = "../tests/unit.rs"]
@@ -47,6 +48,19 @@ pub enum StorageClass {
     #[default]
     Artifact,
     NativeConfiguration,
+    NativeDiagnostic,
+}
+impl StorageClass {
+    fn protection_domain(self) -> &'static str {
+        match self {
+            Self::Artifact => "content.artifact",
+            Self::NativeConfiguration => "content.native-configuration",
+            Self::NativeDiagnostic => "content.native_diagnostic",
+        }
+    }
+    fn protected(self) -> bool {
+        self != Self::Artifact
+    }
 }
 pub struct Store {
     protection: Arc<rss_mdm_native_protection::Protector>,
@@ -108,6 +122,7 @@ pub struct Verified {
     native: Option<(
         Arc<rss_mdm_native_protection::Protector>,
         rss_request_context::TenantId,
+        StorageClass,
     )>,
     timer: Arc<dyn Clock>,
     pub artifact: Artifact,
@@ -357,7 +372,7 @@ fn verify_file(
     file.seek(SeekFrom::Start(0)).map_err(|_| storage())?;
     Ok(())
 }
-pub use upload::{Binding, Upload};
+pub use upload::{Binding, Purpose, ResourceBinding, Upload};
 
 #[derive(Clone, Copy, Debug, thiserror::Error, serde::Serialize)]
 #[serde(rename_all = "snake_case")]

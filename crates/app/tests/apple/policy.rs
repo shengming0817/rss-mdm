@@ -95,12 +95,12 @@ impl Fixture {
             json!({"target":{"kind":"device"},"apply":profile_task(profile,true),"remove":remove_profile_task(profile)}),
         ).await?;
         let scope = Uuid::new_v4();
-        self.policy_post(&format!("/api/v2/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}})).await?;
+        self.policy_post(&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}})).await?;
         let definition = json!({"scope":scope,"action": {"resource": {"id":resource,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"kind":"configuration","exit":"remove"}});
         let first = Uuid::new_v4();
         let second = Uuid::new_v4();
         self.policy_post(
-            &format!("/api/v3/policies/{first}"),
+            &format!("/api/v1/policies/{first}"),
             0,
             json!({"action":"put","enabled":true,"definition":definition}),
         )
@@ -120,21 +120,21 @@ impl Fixture {
         .await?;
         ensure!(self.operation(install).await?["commandStatus"] == "applied");
         self.policy_post(
-            &format!("/api/v3/policies/{second}"),
+            &format!("/api/v1/policies/{second}"),
             0,
             json!({"action":"put","enabled":true,"definition":definition}),
         )
         .await?;
         ensure!(self.policy_operation(second).await? == install);
         self.policy_post(
-            &format!("/api/v3/policies/{first}"),
+            &format!("/api/v1/policies/{first}"),
             1,
             json!({"action":"disable"}),
         )
         .await?;
         ensure!(self.policy_operation(second).await? == install);
         self.policy_post(
-            &format!("/api/v3/policies/{second}"),
+            &format!("/api/v1/policies/{second}"),
             1,
             json!({"action":"disable"}),
         )
@@ -270,7 +270,7 @@ impl Fixture {
                 &self.router,
                 Method::POST,
                 &format!(
-                    "/api/v3/devices/{DEVICE}/operations/{op}/cancel",
+                    "/api/v1/devices/{DEVICE}/operations/{op}/cancel",
                     DEVICE = case_device()
                 ),
                 Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":1})),

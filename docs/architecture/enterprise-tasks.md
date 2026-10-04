@@ -22,7 +22,7 @@ Execution 的 `ResourcePreparation` 是四类资源预检输入，`PublicationIn
 
 Execution 不依赖 Flow。App 注入 Flow 实现的 `SourceAuthority`，在执行方原事务连接上读取类型化 Scope 准入、稳定快照、预览和分配设备页及 Policy 候选；不创建第二事务，也不传递完整 Flow 对象或授权黑盒。原生交付、回执及 Windows 缓存重放都重验当前来源、世代和授权。分配页锁定当前不可变 Scope 结果，在执行方合并有界来源页与自有执行记录。软件阶段计数保留单 SQL 的声明级快照，避免拆查询造成分母与 Run 事实不一致。
 
-`Queries` 独立持有所需读依赖，不持有完整执行服务、outbox、reconcile 或签名私钥。目录、统计、复合游标、摘要、详情、能力及观察以类型化事实返回。摘要结果与完整详情分离，摘要移除输出和诊断流；详情与能力在事务内检查当前授权。目录先过滤可见设备，再统计和分页。HTTP 装配读写入口并持有路径：命令 v3、Policy Run v2、远程操作及其 Run v3。
+`Queries` 独立持有所需读依赖，不持有完整执行服务、outbox、reconcile 或签名私钥。目录、统计、复合游标、摘要、详情、能力及观察以类型化事实返回。摘要结果与完整详情分离，摘要移除输出和诊断流；详情与能力在事务内检查当前授权。目录先过滤可见设备，再统计和分页。HTTP 装配读写入口统一使用 `/api/v1`，实际路由由 [Management HTTP 装配](../../crates/management-http/src/router.rs) 单源定义。
 
 数据库对象、序列化标签、请求身份和保护 AAD 保持原样，迁移按当前 owner 装配。Execution 持有 `mdm_commands` 以及配置核对、远程操作表；Flow 持有 Scope 和编排表。共用操作响应回执由 Audit Integration 单源持有，并借用调用方原事务；业务审计事实仍由实际业务 owner 生成。提交未知与回滚失败不会被转换为成功。
 

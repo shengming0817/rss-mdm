@@ -5,6 +5,7 @@ pub struct Garbage {
     path: PathBuf,
     _guard: File,
     pub digest: [u8; 32],
+    pub class: StorageClass,
 }
 impl Garbage {
     // No detached unlink may outlive the transaction protecting the reference check.
@@ -129,10 +130,12 @@ impl Store {
                     .and_then(|v| Uuid::parse_str(v).ok())
                 {
                     let binding = store.load_upload(id, i64::MIN)?.binding;
-                    protected.insert((binding.storage_class, binding.sha256));
+                    protected.insert((binding.class(), binding.sha256));
                 } else {
                     let (class, digest) = if let Some(value) = name.strip_prefix("native-") {
                         (StorageClass::NativeConfiguration, value)
+                    } else if let Some(value) = name.strip_prefix("diagnostic-") {
+                        (StorageClass::NativeDiagnostic, value)
                     } else {
                         (StorageClass::Artifact, name.as_ref())
                     };
@@ -177,6 +180,7 @@ impl Store {
                     Ok(guard) => garbage.push(Garbage {
                         path,
                         digest,
+                        class,
                         _guard: guard,
                     }),
                     Err(Error::Conflict) => (),

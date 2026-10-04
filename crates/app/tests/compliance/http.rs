@@ -12,7 +12,7 @@ async fn history_boundaries(
     task: &str,
     subject: &str,
 ) -> Result<()> {
-    let history = "/api/v2/devices/compliance-a/compliance/history";
+    let history = "/api/v1/devices/compliance-a/compliance/history";
     for filter in ["from=0", "until=9999999999"] {
         ensure!(
             b.call(
@@ -104,7 +104,7 @@ async fn history_boundaries(
             .call(
                 &other_router,
                 Method::POST,
-                &format!("/api/v2/tenants/{tenant}/login"),
+                &format!("/api/v1/identity/tenants/{tenant}/login"),
                 Some(json!({"login":case::login("admin"),"password":PASSWORD}))
             )
             .await?
@@ -169,7 +169,7 @@ async fn http_history_cursors_authorization_and_disable() -> Result<()> {
         &mut browser,
         router,
         Method::GET,
-        "/api/v2/compliance-rules",
+        "/api/v1/compliance-rules",
         None,
     )
     .await?;
@@ -186,7 +186,7 @@ async fn http_history_cursors_authorization_and_disable() -> Result<()> {
         &mut browser,
         router,
         Method::GET,
-        "/api/v2/devices/compliance-a/compliance/history",
+        "/api/v1/devices/compliance-a/compliance/history",
         None,
     )
     .await?;
@@ -211,7 +211,7 @@ async fn http_history_cursors_authorization_and_disable() -> Result<()> {
         &mut browser,
         router,
         Method::GET,
-        "/api/v2/devices/compliance-a/compliance/history?limit=1",
+        "/api/v1/devices/compliance-a/compliance/history?limit=1",
         None,
     )
     .await?;
@@ -220,7 +220,7 @@ async fn http_history_cursors_authorization_and_disable() -> Result<()> {
         &mut browser,
         router,
         Method::GET,
-        &format!("/api/v2/devices/compliance-a/compliance/history?limit=1&cursor={next}"),
+        &format!("/api/v1/devices/compliance-a/compliance/history?limit=1&cursor={next}"),
         None,
     )
     .await?;
@@ -229,7 +229,7 @@ async fn http_history_cursors_authorization_and_disable() -> Result<()> {
         .call(
             router,
             Method::GET,
-            &format!("/api/v2/devices/compliance-b/compliance/history?cursor={next}"),
+            &format!("/api/v1/devices/compliance-b/compliance/history?cursor={next}"),
             None,
         )
         .await?;
@@ -254,7 +254,7 @@ async fn http_history_cursors_authorization_and_disable() -> Result<()> {
             .call(
                 router,
                 Method::GET,
-                &format!("/api/v2/devices/compliance-b/{suffix}"),
+                &format!("/api/v1/devices/compliance-b/{suffix}"),
                 None,
             )
             .await?;
@@ -298,7 +298,7 @@ async fn http_history_cursors_authorization_and_disable() -> Result<()> {
             &mut browser,
             router,
             Method::GET,
-            "/api/v2/devices/compliance-a/compliance/history",
+            "/api/v1/devices/compliance-a/compliance/history",
             None
         )
         .await?["items"]

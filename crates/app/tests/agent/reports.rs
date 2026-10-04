@@ -27,7 +27,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     let (status, error) = agent_call(
         router,
         Method::GET,
-        "/api/agent/runtime/v1/reports/not-a-uuid",
+        "/api/v1/agent/runtime/reports/not-a-uuid",
         Some(credential),
         None,
     )
@@ -39,7 +39,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     let (status, error) = agent_call(
         router,
         Method::POST,
-        "/api/agent/runtime/v1/reports",
+        "/api/v1/agent/runtime/reports",
         Some(credential),
         Some(json!({"oversized":"x".repeat(17_000)})),
     )
@@ -51,7 +51,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     let (status, error) = agent_call(
         router,
         Method::POST,
-        "/api/agent/runtime/v1/reports",
+        "/api/v1/agent/runtime/reports",
         Some(credential),
         Some(json!({"oversized":"x".repeat(2 * 1024 * 1024 + 1)})),
     )
@@ -65,7 +65,7 @@ async fn durable_reports_and_projection() -> Result<()> {
         agent_call(
             router,
             Method::GET,
-            &format!("/api/agent/runtime/v1/reports/{missing}"),
+            &format!("/api/v1/agent/runtime/reports/{missing}"),
             Some(credential),
             None
         )
@@ -76,7 +76,7 @@ async fn durable_reports_and_projection() -> Result<()> {
         agent_call(
             router,
             Method::GET,
-            &format!("/api/agent/runtime/v1/reports/{missing}"),
+            &format!("/api/v1/agent/runtime/reports/{missing}"),
             Some(password),
             None
         )
@@ -85,7 +85,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     );
     let report_id = uuid::Uuid::new_v4();
     let report = json!({
-        "wireVersion":6,
+        "wireVersion":1,
         "collection":registration["collections"][0],
         "reportId":report_id,
         "sequence":0,
@@ -95,10 +95,50 @@ async fn durable_reports_and_projection() -> Result<()> {
             {"field":"device.os.version","value":{"kind":"value","value":{"kind":"string","value":"1.0"}}}
         ]}
     });
+    for version in [2, 3, 4, 5, 6, 255] {
+        let mut retired = report.clone();
+        retired["wireVersion"] = json!(version);
+        ensure!(
+            agent_call(
+                router,
+                Method::POST,
+                "/api/v1/agent/runtime/reports",
+                Some(credential),
+                Some(retired)
+            )
+            .await?
+            .0 == StatusCode::BAD_REQUEST
+        );
+    }
+    let mut historical = report.clone();
+    historical.as_object_mut().unwrap().remove("collection");
+    ensure!(
+        agent_call(
+            router,
+            Method::POST,
+            "/api/v1/agent/runtime/reports",
+            Some(credential),
+            Some(historical)
+        )
+        .await?
+        .0 == StatusCode::BAD_REQUEST
+    );
+    ensure!(
+        agent_call(
+            router,
+            Method::GET,
+            &format!("/api/v1/agent/runtime/reports/{report_id}"),
+            Some(credential),
+            None
+        )
+        .await?
+        .0 == StatusCode::NOT_FOUND,
+        "retired input created a report"
+    );
     let (status, ack) = agent_call(
         router,
         Method::POST,
-        "/api/agent/runtime/v1/reports",
+        "/api/v1/agent/runtime/reports",
         Some(credential),
         Some(report.clone()),
     )
@@ -111,7 +151,7 @@ async fn durable_reports_and_projection() -> Result<()> {
         agent_call(
             router,
             Method::POST,
-            "/api/agent/runtime/v1/reports",
+            "/api/v1/agent/runtime/reports",
             Some(credential),
             Some(report.clone())
         )
@@ -120,7 +160,7 @@ async fn durable_reports_and_projection() -> Result<()> {
         "report replay changed acknowledgement"
     );
     let concurrent_id = uuid::Uuid::new_v4();
-    let concurrent = json!({"wireVersion":6,"collection":registration["collections"][0],"reportId":concurrent_id,"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
+    let concurrent = json!({"wireVersion":1,"collection":registration["collections"][0],"reportId":concurrent_id,"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
     let mut same_id = tokio::task::JoinSet::new();
     for _ in 0..4 {
         let router = router.clone();
@@ -129,7 +169,7 @@ async fn durable_reports_and_projection() -> Result<()> {
             agent_call(
                 &router,
                 Method::POST,
-                "/api/agent/runtime/v1/reports",
+                "/api/v1/agent/runtime/reports",
                 Some(credential),
                 Some(body),
             )
@@ -160,7 +200,7 @@ async fn durable_reports_and_projection() -> Result<()> {
         agent_call(
             router,
             Method::POST,
-            "/api/agent/runtime/v1/reports",
+            "/api/v1/agent/runtime/reports",
             Some(credential),
             Some(changed)
         )
@@ -171,7 +211,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     let (status, current) = agent_call(
         router,
         Method::GET,
-        &format!("/api/agent/runtime/v1/reports/{report_id}"),
+        &format!("/api/v1/agent/runtime/reports/{report_id}"),
         Some(credential),
         None,
     )
@@ -198,14 +238,14 @@ async fn durable_reports_and_projection() -> Result<()> {
     let partial_id = uuid::Uuid::new_v4();
     let failed_id = uuid::Uuid::new_v4();
     for body in [
-        json!({"wireVersion":6,"collection":registration["collections"][0],"reportId":partial_id,"sequence":1,"observedAt":2,"body":{"kind":"partial","values":[{"field":"device.model","value":{"kind":"value","value":{"kind":"string","value":"Unconfirmed"}}}]}}),
-        json!({"wireVersion":6,"collection":registration["collections"][0],"reportId":failed_id,"sequence":2,"observedAt":3,"body":{"kind":"failed","code":"collectionFailed"}}),
+        json!({"wireVersion":1,"collection":registration["collections"][0],"reportId":partial_id,"sequence":1,"observedAt":2,"body":{"kind":"partial","values":[{"field":"device.model","value":{"kind":"value","value":{"kind":"string","value":"Unconfirmed"}}}]}}),
+        json!({"wireVersion":1,"collection":registration["collections"][0],"reportId":failed_id,"sequence":2,"observedAt":3,"body":{"kind":"failed","code":"collectionFailed"}}),
     ] {
         ensure!(
             agent_call(
                 router,
                 Method::POST,
-                "/api/agent/runtime/v1/reports",
+                "/api/v1/agent/runtime/reports",
                 Some(credential),
                 Some(body)
             )
@@ -221,12 +261,12 @@ async fn durable_reports_and_projection() -> Result<()> {
     let mut capacity = tokio::task::JoinSet::new();
     for sequence in [3, 4] {
         let router = router.clone();
-        let body = json!({"wireVersion":6,"collection":registration["collections"][0],"reportId":uuid::Uuid::new_v4(),"sequence":sequence,"observedAt":4,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
+        let body = json!({"wireVersion":1,"collection":registration["collections"][0],"reportId":uuid::Uuid::new_v4(),"sequence":sequence,"observedAt":4,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
         capacity.spawn(async move {
             agent_call(
                 &router,
                 Method::POST,
-                "/api/agent/runtime/v1/reports",
+                "/api/v1/agent/runtime/reports",
                 Some(credential),
                 Some(body),
             )
@@ -271,12 +311,12 @@ async fn durable_reports_and_projection() -> Result<()> {
     ] {
         let expected = "operation_unknown";
         let fault_report = uuid::Uuid::new_v4();
-        let body = json!({"wireVersion":6,"collection":registration["collections"][0],"reportId":fault_report,"sequence":100+number,"observedAt":100+number,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
+        let body = json!({"wireVersion":1,"collection":registration["collections"][0],"reportId":fault_report,"sequence":100+number,"observedAt":100+number,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
         audit_store.inject_next_fault(fault);
         let failed = agent_call(
             router,
             Method::POST,
-            "/api/agent/runtime/v1/reports",
+            "/api/v1/agent/runtime/reports",
             Some(credential),
             Some(body.clone()),
         )
@@ -290,7 +330,7 @@ async fn durable_reports_and_projection() -> Result<()> {
         let retry = agent_call(
             router,
             Method::POST,
-            "/api/agent/runtime/v1/reports",
+            "/api/v1/agent/runtime/reports",
             Some(credential),
             Some(body.clone()),
         )
@@ -300,7 +340,7 @@ async fn durable_reports_and_projection() -> Result<()> {
             agent_call(
                 router,
                 Method::POST,
-                "/api/agent/runtime/v1/reports",
+                "/api/v1/agent/runtime/reports",
                 Some(credential),
                 Some(body)
             )

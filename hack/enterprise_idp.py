@@ -47,7 +47,7 @@ def fixture(root, environment):
     try:
         realm={'realm':'mdm','enabled':True,'sslRequired':'all','duplicateEmailsAllowed':True,'loginWithEmailAllowed':False,
             'clients':[{'clientId':'mdm','secret':'fixture-secret','publicClient':False,'standardFlowEnabled':True,
-                'redirectUris':['https://mdm.example.test/api/v2/oidc/callback'],'attributes':{'pkce.code.challenge.method':'S256'}}],
+                'redirectUris':['https://mdm.example.test/api/v1/identity/oidc/callback'],'attributes':{'pkce.code.challenge.method':'S256'}}],
             'users':[{'username':user,'enabled':True,'email':'same@example.test','emailVerified':True,'firstName':user,'lastName':'Fixture',
                 'credentials':[{'type':'password','value':'Fixture-provider-password-2026!','temporary':False},
                     {'type':'otp','userLabel':'fixture-totp','secretData':json.dumps({'value':'fixture-totp-secret-2339'}),

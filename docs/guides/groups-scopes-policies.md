@@ -1,9 +1,9 @@
 # 组、范围与 Policy
 
-Group 持有成员求值；Scope 组合目标并集、限制并集和排除并集；Policy 持续引用 Scope 并分配闭合 Action；资源绑定位于需要资源的 Action 内。管理入口是 `/api/v2`，资源入口是 `/api/v3`。写入带 operationId、expectedRevision、input；提交未知时重试原身份和原文档。
+Group 持有成员求值；Scope 组合目标并集、限制并集和排除并集；Policy 持续引用 Scope 并分配闭合 Action；资源绑定位于需要资源的 Action 内。管理入口是 `/api/v1`，资源入口是 `/api/v1`。写入带 operationId、expectedRevision、input；提交未知时重试原身份和原文档。
 
-目录读取使用 `GET /api/v2/groups`、`GET /api/v2/scopes`、`GET /api/v2/policies` 和
-`GET /api/v3/resources`，返回 `items/nextCursor`。统一支持 `limit`（默认 64、1–1000）、
+目录读取使用 `GET /api/v1/groups`、`GET /api/v1/scopes`、`GET /api/v1/policies` 和
+`GET /api/v1/resources`，返回 `items/nextCursor`。统一支持 `limit`（默认 64、1–1000）、
 `after` 和 `descending`，按 ID 排序；`nextCursor` 作为下次请求的 `after`。
 Group 可筛选 `kind/deleted/name`，Scope 可筛选 `deleted/ready`，Policy 可筛选
 `enabled/action/scope/resource`，Resource 可筛选 `kind/active`。删除对象默认不进入 Group/Scope 目录。

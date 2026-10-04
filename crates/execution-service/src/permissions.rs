@@ -24,6 +24,10 @@ pub(super) fn required(task: &Task) -> Result<Vec<P>, Error> {
     let mut permissions = BTreeSet::new();
     match task {
         Task::Windows { request } => match request {
+            rss_mdm_windows_mdm::native::Execution::DiagnosticLog { request } => {
+                request.validate().map_err(|_| Error::Malformed)?;
+                permissions.insert(P::DeviceDiagnostics);
+            }
             rss_mdm_windows_mdm::native::Execution::Msi { job } => {
                 rss_mdm_windows_mdm::software::Installer::new(job.clone())
                     .map_err(|_| Error::Malformed)?;

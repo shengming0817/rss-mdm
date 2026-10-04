@@ -66,7 +66,7 @@ pub(crate) async fn publish_until(
     use software::write;
     grants(user, router).await?;
     let source = Uuid::new_v4();
-    let source_path = format!("/api/v3/software/sources/{source}/revisions/1");
+    let source_path = format!("/api/v1/software/sources/{source}/revisions/1");
     let registered=write(user,router,&source_path,0,json!({"action":"register","definition":{"id":source,"revision":"1","protocol":{"kind":"private"}}})).await?;
     write(
         user,
@@ -77,7 +77,7 @@ pub(crate) async fn publish_until(
     )
     .await?;
     let resource = Uuid::new_v4();
-    let path = format!("/api/v4/resources/{resource}");
+    let path = format!("/api/v1/resources/{resource}");
     write(
         user,
         router,
@@ -95,7 +95,7 @@ pub(crate) async fn publish_until(
     };
     let definition = json!({"source":registered["snapshot"],"package":"RSS.Agent","version":"1.2.3","artifacts":{"package":{"reference":"agent-installer","length":bytes().len(),"sha256":Sha256::digest(bytes()).to_vec()}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":if windows{"msi"}else{"pkg"},"installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":detect,"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
     write(user,router,&path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":platform,"architecture":arch,"key":"default","declaration":{"kind":"software","definition":definition}}]})).await?;
-    let request=Request::builder().method(Method::POST).uri(format!("/api/v3/resources/{resource}/content?version=v1&variant=default&platform={platform}&architecture={arch}&operation={}",Uuid::new_v4()))
+    let request=Request::builder().method(Method::POST).uri(format!("/api/v1/resources/{resource}/content?version=v1&variant=default&platform={platform}&architecture={arch}&operation={}",Uuid::new_v4()))
         .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1").header("x-csrf-token",user.csrf.as_ref().unwrap())
         .header("cookie",user.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; ")).header("content-type","application/octet-stream").body(Body::from(bytes()))?;
     {
@@ -118,15 +118,15 @@ pub(crate) async fn publish_until(
     let approved = write(
         user,
         router,
-        &format!("/api/v3/software/resources/{resource}/versions/v1"),
+        &format!("/api/v1/software/resources/{resource}/versions/v1"),
         0,
         json!({"action":"approve","evidence":["controlled-agent"]}),
     )
     .await?;
     let group = Uuid::new_v4();
-    crate::test_support::planning_http::call(user,router,&format!("/api/v2/groups/{group}"),0,json!({"action":"create","name":"Agent missing","description":"","criteria":{"kind":"predicate","field":"channel.agent.installation","op":"eq","value":{"kind":"string","value":"absent"}}})).await?;
+    crate::test_support::planning_http::call(user,router,&format!("/api/v1/groups/{group}"),0,json!({"action":"create","name":"Agent missing","description":"","criteria":{"kind":"predicate","field":"channel.agent.installation","op":"eq","value":{"kind":"string","value":"absent"}}})).await?;
     let scope = Uuid::new_v4();
-    write(user,router,&format!("/api/v2/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}})).await?;
+    write(user,router,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}})).await?;
     let policy = Uuid::new_v4();
     let mut input = json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"ensure_agent_installed","resource":{"kind":"software","id":resource,"version":"v1","variants":{if windows{"windows_x86_64"}else{"macos_aarch64"}:"default"}},"admissionOperation":approved["admission"]["operation"],"runLifetimeSeconds":600}}});
     if let Some(until) = until {
@@ -135,7 +135,7 @@ pub(crate) async fn publish_until(
     write(
         user,
         router,
-        &format!("/api/v3/policies/{policy}"),
+        &format!("/api/v1/policies/{policy}"),
         0,
         input,
     )
@@ -162,7 +162,7 @@ pub(crate) async fn diagnosis(
         .call(
             router,
             Method::GET,
-            &format!("/api/v3/policies/{policy}/devices"),
+            &format!("/api/v1/policies/{policy}/devices"),
             None,
         )
         .await?;

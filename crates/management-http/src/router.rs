@@ -88,7 +88,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         apple: state.apple,
         windows: state.windows,
     });
-    let protected_v1 = Router::new()
+    let core = Router::new()
         .merge(crate::certificate_archive::routes().with_state(state.certificate_archive))
         .merge(
             crate::software_publication::http::routes().with_state(Arc::new(
@@ -107,30 +107,19 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
             "/devices/{id}/collection-runs/{run}",
             get(collection_run).with_state(collection_read),
         )
-        .route("/devices/{id}/actions", post(action))
-        .route_layer(middleware::from_fn_with_state(
-            authentication_state.clone(),
-            crate::authorization::http::protect,
-        ));
-    let protected_v2 = Router::new()
+        .route("/devices/{id}/actions", post(action));
+    let planning_routes = Router::new()
         .merge(crate::runtime_diagnostics::routes().with_state(state.diagnostics))
-        .merge(crate::planning::routes_v2().with_state(planning.clone()))
+        .merge(crate::planning::routes().with_state(planning.clone()))
         .merge(crate::execution::actions::http::routes().with_state(state.queries.clone()))
         .merge(crate::assets::routes().with_state(assets))
-        .merge(crate::compliance::http::routes().with_state(state.compliance))
-        .route_layer(middleware::from_fn_with_state(
-            authentication_state.clone(),
-            crate::authorization::http::protect,
-        ));
-    let protected_v4 = crate::resource_catalog::http::routes()
-        .with_state(Arc::new(crate::resource_catalog::http::HttpState {
+        .merge(crate::compliance::http::routes().with_state(state.compliance));
+    let resources = crate::resource_catalog::http::routes().with_state(Arc::new(
+        crate::resource_catalog::http::HttpState {
             catalog: state.catalog,
-        }))
-        .route_layer(middleware::from_fn_with_state(
-            authentication_state.clone(),
-            crate::authorization::http::protect,
-        ));
-    let protected_v3 = Router::new()
+        },
+    ));
+    let operations = Router::new()
         .merge(crate::agent_enrollment::routes(state.agent_enrollment))
         .merge(crate::execution::routes(state.queries.clone()).with_state(execution))
         .merge(
@@ -145,34 +134,29 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         .merge(crate::content::http::routes().with_state(state.content))
         .merge(crate::enrollment::http::routes().with_state(enrollment))
         .merge(crate::enrollment::directory::routes().with_state(directory))
-        .merge(crate::timeline::routes().with_state(state.timeline))
-        .route_layer(middleware::from_fn_with_state(
-            authentication_state.clone(),
-            crate::authorization::http::protect,
-        ));
+        .merge(crate::timeline::routes().with_state(state.timeline));
     let host_context = Router::new()
         .route(
-            "/api/identity-host/v1/tenants/{tenant}/context",
+            "/api/v1/identity-host/tenants/{tenant}/context",
             get(identity_context).with_state(identity_context_state),
         )
         .route_layer(middleware::from_fn_with_state(
             authentication_state.clone(),
             crate::authorization::http::identity_only,
         ));
-    let workspace = Router::new()
-        .route("/api/mdm-candidate/v1/workspace", get(workspace))
+    let protected = core
+        .merge(planning_routes)
+        .merge(operations)
+        .merge(resources)
+        .route("/mdm-candidate/workspace", get(workspace))
         .route_layer(middleware::from_fn_with_state(
-            authentication_state.clone(),
+            authentication_state,
             crate::authorization::http::protect,
         ));
     crate::boundary::wrap(
         Router::new()
             .merge(host_context)
-            .merge(workspace)
-            .nest("/api/v1", protected_v1)
-            .nest("/api/v2", protected_v2)
-            .nest("/api/v3", protected_v3)
-            .nest("/api/v4", protected_v4)
+            .nest("/api/v1", protected)
             .layer(axum::extract::DefaultBodyLimit::max(16384)),
         envelope,
     )
