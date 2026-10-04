@@ -913,6 +913,39 @@ pub(crate) async fn sign_certificate(
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
+    let mut tx = access.archive_pool().begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM mdm_pki.signing WHERE tenant_id=$1::uuid AND attempt=$2)",
+    )
+    .bind(case_tenant())
+    .bind(intent.credential)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !exists {
+        rss_mdm_pki_service::signing::authorize_in(
+            &mut tx,
+            Uuid::parse_str(case_tenant())?,
+            "windows",
+            &issuer,
+            providers.get(rss_mdm_agent_wire::pki::Purpose::Windows, &issuer)?,
+            rss_mdm_pki_service::Sign {
+                attempt: intent.credential,
+                csr_pem: &csr.pem()?,
+                csr_digest: &csr.digest(),
+                subject: &intent.registration.to_string(),
+                sans: &[],
+                start: profile.start,
+                end: profile.end,
+                deadline: profile.start + 60,
+            },
+        )
+        .await?;
+    }
+    tx.commit().await?;
     let chain = rss_mdm_pki_service::signing::SigningStore::new(audit)
         .issue(
             Uuid::parse_str(case_tenant())?,

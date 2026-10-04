@@ -50,13 +50,17 @@ def running(root, env, *, case):
     ca_config['crl']=dict(enabled=True,generateOnRevoke=True,cacheDuration='10m',renewPeriod='1m')
     ca_config['authority']['backdate']='0s'
     ca_config['kms']=dict(type='softkms')
-    ca_config['root'] = [str(step_path/'certs/root_ca.crt'), str(root/'ca.crt')]
+    shutil.copyfile(root/'ca.crt',step_path/'certs/control_ca.crt')
+    ca_config['root'] = [str(step_path/'certs/root_ca.crt'), str(step_path/'certs/control_ca.crt')]
     private(configuration, ca_config)
     ca_root = step_path/'certs/root_ca.crt'
     from pki_fixtures import root_crl, trust, isolate_root
     offline=root_crl(root,ca_root,step_path/'secrets/root_ca_key',password)
     isolate_root(step_path/'secrets/root_ca_key',password,offline)
-    template = private(root/'apple-leaf.tpl', '{"subject":{"commonName":{{ toJson .Webhooks.rss.subject }}},"keyUsage":["digitalSignature"],"extKeyUsage":["clientAuth"],"basicConstraints":{"isCA":false}}')
+    (step_path/'templates').mkdir(mode=0o700,exist_ok=True)
+    template = private(step_path/'templates/apple-leaf.tpl', '{"subject":{"commonName":{{ toJson .Webhooks.rss.subject }}},"keyUsage":["digitalSignature"],"extKeyUsage":["clientAuth"],"basicConstraints":{"isCA":false}}')
+    for name in ('apple-issuer.pem','apple-issuer.key'):
+        shutil.copyfile(root/name,step_path/'secrets'/name);(step_path/'secrets'/name).chmod(0o600)
     provider.owner.prepare_inputs(certificates=False)
     try:
         origin = provider.start()
@@ -64,8 +68,8 @@ def running(root, env, *, case):
         admin = ['--ca-url',origin,'--root',ca_root,'--admin-subject','rss-admin',
                  '--admin-provisioner','rss-admin','--admin-password-file',password]
         cli('ca','provisioner','add','rss','--type','SCEP','--min-public-key-length','2048',
-            '--encryption-algorithm-identifier','2','--scep-decrypter-certificate-file',root/'apple-issuer.pem',
-            '--scep-decrypter-key-file',root/'apple-issuer.key','--x509-template',template,
+            '--encryption-algorithm-identifier','2','--scep-decrypter-certificate-file',step_path/'secrets/apple-issuer.pem',
+            '--scep-decrypter-key-file',step_path/'secrets/apple-issuer.key','--x509-template',template,
             '--disable-renewal','--x509-max-dur','2160h','--x509-default-dur','24h',*admin)
         config = json.loads((root/'apple.json').read_text())
         for kind,name,phase in [('SCEPCHALLENGE','rss','challenge'),('NOTIFYING','rss_notify','notify')]:

@@ -122,7 +122,8 @@ def running(root, env, *, case, windows=False, agent=False, agent_origin=None, a
             cli('crypto','jwk','create',root/'windows.pub.json',root/'windows.private.json','--from-pem',key,
                 '--alg','RS256','--use','sig','--kid','windows-t2-key','--no-password','--insecure')
             (root/'windows.private.json').unlink()
-            template=private(root/'windows-leaf.tpl','{"subject":{"commonName":{{ toJson .Token.sub }}},"keyUsage":["digitalSignature"],"extKeyUsage":["clientAuth"],"basicConstraints":{"isCA":false}}')
+            (root/'step/templates').mkdir(mode=0o700,exist_ok=True)
+            template=private(root/'step/templates/windows-leaf.tpl','{"subject":{"commonName":{{ toJson .Token.sub }}},"keyUsage":["digitalSignature"],"extKeyUsage":["clientAuth"],"basicConstraints":{"isCA":false}}')
             cli('ca','provisioner','add','rss-windows','--type','JWK','--public-key',root/'windows.pub.json',
                 '--x509-template',template,'--disable-renewal','--ssh=false','--x509-default-dur','2160h','--x509-max-dur','2160h',*admin)
         env.update(MDM_STEP_CLI=str(step),MDM_STEP_CA_URL=origin,MDM_STEP_CA_ROOT=str(root_certificate),MDM_PKI_FIXTURES=str(root))

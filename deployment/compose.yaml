@@ -51,8 +51,14 @@ services:
     ports: ["${MDM_PKI_PUBLISH:-127.0.0.1::${MDM_STEP_CA_INTERNAL_PORT:?}}"]
     volumes:
       - type: bind
-        source: ${MDM_PKI_ROOT}
-        target: ${MDM_PKI_ROOT}
+        source: ${MDM_PKI_ROOT}/step
+        target: ${MDM_PKI_ROOT}/step
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${MDM_PKI_ROOT}/step-password
+        target: ${MDM_PKI_ROOT}/step-password
+        read_only: true
         bind:
           create_host_path: false
     healthcheck:
