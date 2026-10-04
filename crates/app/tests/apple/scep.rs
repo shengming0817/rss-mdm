@@ -200,7 +200,7 @@ async fn self_enrollment_uses_current_user_and_one_macos_allocation() -> Result<
         &Uuid::new_v4().to_string(),
         f.app.clock.unix_seconds()?,
     )?;
-    let der = device
+    device
         .enroll(&f.client()?, &apple.channel.scep_fixture()?.0, &request)
         .await?;
     let issued = f.self_progress(enrollment).await?;
@@ -220,7 +220,6 @@ async fn self_enrollment_uses_current_user_and_one_macos_allocation() -> Result<
         )]),
         csrf: Some(secret.csrf()),
         operation: Some(Uuid::new_v4()),
-        ..Default::default()
     };
     let (status, resumed) = browser
         .call(
