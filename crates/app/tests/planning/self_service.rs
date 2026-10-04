@@ -1168,7 +1168,12 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
     );
     ensure!(call(&f, Method::GET, DIRECTORY, None, true, false).await?.0 == StatusCode::OK);
     f.author = Browser::default();
-    ensure!(f.author.login(&f.router, "other").await? == StatusCode::OK);
+    ensure!(
+        f.author
+            .login_password(&f.router, "other", crate::test_support::identity::PASSWORD)
+            .await?
+            == StatusCode::OK
+    );
     let reread = call(
         &f,
         Method::GET,
@@ -1241,10 +1246,20 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
         .call(&f.router, Method::GET, "/api/v1/authorization", None)
         .await?
         .1;
-    let mut administrator_grants: Vec<crate::authorization::Grant> =
-        serde_json::from_value(administrator["grants"].clone())?;
-    let employee_grants: Vec<crate::authorization::Grant> =
-        serde_json::from_value(employee["grants"].clone())?;
+    let grants = |view: &Value| {
+        view["grants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|grant| {
+                serde_json::from_value::<crate::authorization::Grant>(
+                    json!({"operation":grant["operation"],"scope":grant["scope"]}),
+                )
+            })
+            .collect::<serde_json::Result<Vec<_>>>()
+    };
+    let mut administrator_grants = grants(&administrator)?;
+    let employee_grants = grants(&employee)?;
     for grant in employee_grants {
         if !administrator_grants.contains(&grant) {
             administrator_grants.push(grant);
