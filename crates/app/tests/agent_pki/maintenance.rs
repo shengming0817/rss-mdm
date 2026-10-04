@@ -7,6 +7,7 @@ use rss_mdm_pki_service::{
     providers::{Provider, Providers},
     registry::Registry,
 };
+use sqlx::Connection;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 #[tokio::test]

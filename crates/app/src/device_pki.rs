@@ -68,10 +68,11 @@ pub(crate) fn registration(
         let mut failures=0_u64;
         loop {
             use crate::clock::Clock;
-            let result=match crate::clock::SystemClock.unix_seconds() {
-                Ok(now)=>tokio::select!{biased;()=token.cancelled()=>return Ok(()),result=async {
+            let result=tokio::select!{biased;()=token.cancelled()=>return Ok(()),result=async {
                     let sweep=pki.sweep(|| crate::clock::SystemClock.unix_seconds().map_err(|_|rss_mdm_pki_service::Error::Storage)).await;
-                    for health in pki.health().await? {
+                    let health=pki.health().await?;
+                    let now=crate::clock::SystemClock.unix_seconds().map_err(|_|rss_mdm_pki_service::Error::Storage)?;
+                    for health in health {
                         if health.issuer_not_after-now<=30*86400 || health.root_not_after-now<=90*86400
                             || health.crl_next_update-now<=120 || health.root_crl_next_update-now<=7*86400
                             || health.unpublished_revocations>0 {
@@ -79,7 +80,7 @@ pub(crate) fn registration(
                         }
                     }
                     sweep
-                }=>result},Err(_)=>Err(rss_mdm_pki_service::Error::Storage),
+                }=>result,
             };
             if result.is_err(){failures=failures.saturating_add(1);if failures.is_power_of_two(){eprintln!("{}",serde_json::json!({"event":"device_pki_maintenance_failure","count":failures}));}}else{failures=0;}
             tokio::select!{biased;()=token.cancelled()=>return Ok(()),()=tokio::time::sleep(std::time::Duration::from_secs(60))=>{}}

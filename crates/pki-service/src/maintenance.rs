@@ -263,11 +263,12 @@ impl Registry {
                     .try_into()
                     .map_err(|_| Error::Storage)?,
             );
+            let publication_now = clock()?;
             let a = RequestAudit::new(trust.tenant.to_string(), "device_pki_crl_publish");
             a.identify_service("service:device-pki");
             a.operation(operation, "device_pki_crl_publish");
             let result = self
-                .publish_set(&inputs, trust.purpose, operation, &a, None, clock()?)
+                .publish_set(&inputs, trust.purpose, operation, &a, None, publication_now)
                 .await;
             a.finalize(
                 result
