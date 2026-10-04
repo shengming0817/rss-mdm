@@ -128,7 +128,14 @@ Compose 中 PostgreSQL 启动期每秒检查，稳定运行后每十秒检查。
 
 当前准确迁移集合由二进制 --describe 与 [迁移源码](../../crates/app/src/migration.rs) 持有。升级须停旧写入口；回退恢复匹配数据库、制品、密钥与旧服务，不能仅降级二进制。数据库角色与首次安装见 [安装指南](installation.md)。Apple 证书、APNs 与 CA 排障见 [Apple 管理](../guides/apple-management.md)。
 
-内容存储的 Resource/Diagnostic purpose、上传 Saved JSON 与 checkpoint 使用当前唯一格式。旧的平铺 Binding、Saved.storage_class 和对应 checkpoint MAC 不接受，也不自动转换或跳过。新安装须使用与当前 schema 匹配的新内容目录；不得把旧目录混入新安装。保留旧部署状态时恢复匹配的数据库、内容目录、密钥及二进制，不以重新初始化账本替代升级迁移。配置文件的固定加密域仍为 `content.native-configuration`，诊断有独立保护域。
+内容仓的 PostgreSQL journal 持有上传进度、对象版本、清单、额度和读 pin；服务端卷与 S3 都不能通过扫描目录或 bucket 重建业务状态。旧目录配置、上传 Saved JSON 和 checkpoint 不接受，也不自动迁移。全新安装须使用匹配 schema 和空内容 namespace；恢复旧部署时恢复匹配数据库、内容、密钥与二进制。
+
+备份须保存数据库、`native_protection_key_file` 及清单引用的全部物理对象：卷模式保存完整租户目录，S3 模式保存确切对象版本及版本控制状态。停写后制作一致备份并联合恢复；只恢复当前 S3 key 的内容不足以恢复清单。后端身份和保护密钥标识在租户首次启用时固定，更改 endpoint/bucket/namespace/卷目录不能作为数据迁移方式。
+
+S3 使用只读挂载的 access/secret/session token 文件；宿主在启动时安全读取并保存在内存，SDK 查询凭据时不执行磁盘 I/O。轮换后重启同一配置实例，静态 session token 的有效期由部署 owner 管理。私有 CA 文件有界读取且不接受符号链接；不提供关闭 TLS 校验的选项。Compose 现有 `runtime:/run/mdm:ro` 可容纳这些秘密，S3 模式不使用 content 卷；卷模式继续挂载持久 content 卷。
+
+清理先在短事务内核对业务引用与读 pin，提交“删除中”屏障后，再逐个删除确切物理版本；已删除部分持久登记，下轮继续。结果未知保留原对象意图和额度，不把未知当作不存在。不能用外部 lifecycle 规则、删除 bucket 版本或直接删除卷文件代替产品清理。原生配置保护域仍为 `content.native-configuration`，诊断使用独立保护域。
+
 
 ## Agent CA 与签发恢复
 

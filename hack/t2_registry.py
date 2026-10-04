@@ -1511,3 +1511,10 @@ MODULES['execution.commands.windows'] = replace(MODULES['execution.commands.wind
 add('content.s3', build=Build('rss-mdm-content-s3'), selectors=('s3_tests::',), profile='none', fixtures=('s3',),
     sources=('crates/content-s3/src/*',), tests=('crates/content-s3/tests/s3.rs',),
     support=('hack/s3_fixtures.py','fixtures/s3-provider.lock.json'))
+
+add('content.storage', selectors=('content::t2::storage::',), fixtures=('identity','s3'),
+    sources=('crates/content-service/src/backend.rs','crates/content-service/src/journal.rs','crates/content-service/src/reader.rs'),
+    tests=('crates/app/tests/content/storage.rs',), support=('hack/s3_fixtures.py','fixtures/s3-provider.lock.json','crates/app/tests/content/http.rs'))
+MODULES['content.storage']=replace(MODULES['content.storage'],db_mode='fresh')
+consume(('crates/content-service/src/backend.rs','crates/content-service/src/journal.rs','crates/content-service/src/reader.rs','crates/content-service/schema/*.sql'),
+        'content.storage content.http content.mirror content.gc catalog.contract software.http execution.agent.content execution.software.content execution.commands.configuration execution.commands.windows planning.agent_policy')

@@ -63,11 +63,19 @@ CREATE TABLE mdm_content.pins (
 CREATE TABLE mdm_content.settings (
  tenant_id uuid NOT NULL, identity jsonb NOT NULL, PRIMARY KEY(tenant_id)
 );
-DO $$ DECLARE t text; BEGIN
- FOREACH t IN ARRAY ARRAY['uploads','objects','manifests','pins','settings'] LOOP
- EXECUTE format('ALTER TABLE mdm_content.%I ENABLE ROW LEVEL SECURITY',t);
- EXECUTE format('ALTER TABLE mdm_content.%I FORCE ROW LEVEL SECURITY',t);
- EXECUTE format('CREATE POLICY tenant ON mdm_content.%I USING(tenant_id=NULLIF(current_setting(''rss.tenant_id'',true),)::uuid) WITH CHECK(tenant_id=NULLIF(current_setting(rss.tenant_id,true),)::uuid)',t);
- END LOOP;
-END $$;
+ALTER TABLE mdm_content.uploads ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_content.uploads FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_content.uploads USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
+ALTER TABLE mdm_content.objects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_content.objects FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_content.objects USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
+ALTER TABLE mdm_content.manifests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_content.manifests FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_content.manifests USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
+ALTER TABLE mdm_content.pins ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_content.pins FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_content.pins USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
+ALTER TABLE mdm_content.settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_content.settings FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_content.settings USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 COMMIT;

@@ -1,0 +1,25 @@
+{
+  "storage": {
+    "kind": "s3",
+    "endpoint": "https://s3.example.test/",
+    "region": "us-east-1",
+    "bucket": "rss-mdm-content",
+    "namespace": "content",
+    "credentials_reference": "content-workload",
+    "access_key_file": "/run/mdm/content-access-key",
+    "secret_key_file": "/run/mdm/content-secret-key",
+    "session_token_file": null,
+    "private_ca_file": null,
+    "max_concurrent": 8,
+    "connect_seconds": 5
+  },
+  "imports": {},
+  "max_artifact_bytes": 8589934592,
+  "max_temporary_bytes": 17179869184,
+  "max_uploads": 8,
+  "transfer_seconds": 300,
+  "retention_seconds": 86400,
+  "max_bundle_bytes": 8589934592,
+  "max_bundle_entries": 1000,
+  "max_expansion_ratio": 100
+}

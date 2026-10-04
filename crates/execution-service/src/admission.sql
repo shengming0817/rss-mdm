@@ -34,7 +34,7 @@ WITH tables AS (
 ), read_columns(relation,col) AS (VALUES
  ('mdm_access.agent_issuances','tenant_id'),('mdm_access.agent_issuances','credential'),('mdm_access.agent_issuances','not_after')
 ), allowed(relation,sel,ins,del) AS (VALUES
- ('mdm_content.diagnostic_artifacts',true,true,false),('mdm_flow.native_protection',true,true,false),('mdm_access.agent_grants',true,true,false),
+ ('mdm_content.manifests',true,false,false),('mdm_content.diagnostic_artifacts',true,true,false),('mdm_flow.native_protection',true,true,false),('mdm_access.agent_grants',true,true,false),
  ('mdm.inventory',true,false,false),
  ('mdm.field_versions',true,false,false),('mdm.collection_definitions',true,true,false),('mdm.collection_results',true,true,false),
  ('mdm_software_composition.subjects',true,false,false),('mdm_software_composition.targets',true,false,false),('mdm_software_composition.projections',true,false,false),('mdm_software_release.aggregates',true,false,false),

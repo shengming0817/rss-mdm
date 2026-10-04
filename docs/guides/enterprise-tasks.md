@@ -9,7 +9,7 @@ Resource.Script 和 Resource.Software 分别持有不可变执行定义。管理
 ```json
 {
   "content": {
-    "directory": "/var/lib/rss-mdm/content",
+    "storage": {"kind": "volume", "directory": "/var/lib/rss-mdm/content"},
     "imports": {},
     "max_artifact_bytes": 8589934592,
     "max_temporary_bytes": 34359738368,
@@ -28,9 +28,9 @@ Resource.Script 和 Resource.Software 分别持有不可变执行定义。管理
 }
 ```
 
-`directory` 必须预先存在，服务按 tenant 隔离内容和上传会话。数据以 SHA-256 寻址；临时文件长度/hash 全部核对后才原子发布。正文按固定缓冲流式读写，脚本自身仍限制为 16MiB。`max_uploads` 限定占用临时空间的上传会话数量，并作为全进程共享的内容校验/传输并发上限；配额不足拒绝，不建立无界等待队列。`transfer_seconds` 限制传输预算，`retention_seconds` 限制上传恢复窗口。单个软件产物硬上限为 1TiB，实际部署必须显式选择更小或相等的预算；网关正文上限与之配套。
+`storage` 必须显式选择后端；卷模式的 `directory` 必须预先存在。内容以逻辑 SHA-256 和长度寻址，物理对象使用独立不可变身份，由 PostgreSQL 清单绑定。脚本与原生配置自身仍限制为 16MiB。`max_uploads` 限定活跃上传数量，并作为当前实例内容校验/传输并发上限；临时额度由 PostgreSQL 在同租户多实例间共享，配额不足拒绝，不建立无界等待队列。`transfer_seconds` 限制单次传输的绝对预算，`retention_seconds` 限制上传恢复窗口。单个软件产物硬上限为 1TiB，实际部署必须显式选择更小或相等的预算；网关正文上限与之配套。
 
-同一上传 ID 的元数据持久化已确认 offset；未确认文件尾部在续传时截断。过期会话在新上传或显式清理时回收。原子落盘后数据库事务失败可能留下未引用文件；`POST /api/v1/software/content/cleanup` 需要 ResourceWrite，每轮至多清理 128 个超过保留窗口且无有效引用、无活跃读写的对象。清理查询 ResourceStore 的全部产物引用索引，包括复用已有摘要但未重新上传的资源。归档不抹去批准、发布或执行证据；仍被引用的内容不会清理。跨进程 blob 锁使用固定 256 个摘要分片，锁文件不随制品数量增长；不同摘要落入同一分片时，互斥写入可能返回冲突，清理会略过被占用的分片，稍后重试。不得手工删除 `.upload-*`、`.blob-lock-*` 或正在使用的内容文件。
+同一 actor/上传 ID 的元数据由 PostgreSQL 持久化已确认 offset。续传从已确认清单恢复，未确认对象由登记意图保留并参与额度计算；多实例的 epoch 防止旧写者推进新 frontier。`POST /api/v1/software/content/cleanup` 需要 ResourceWrite，每轮有界检查过期且无有效引用、无活跃读写的候选。清理查询 ResourceStore 的全部产物引用索引，包括复用已有摘要但未重新上传的资源。归档不抹去批准、发布或执行证据；仍被引用的内容不会清理。删除屏障与新 Resource 引用串行，S3/卷 I/O 在事务外执行。不得手工删除内容控制状态或正在使用的物理对象。
 
 密钥为 Ed25519 PKCS#8，按其他 secret 文件的权限要求部署；活动私钥必须匹配配置中的可信公钥。Agent 公钥集合通过受信任部署提供，不能信任任务自行携带的 keyId 或公钥。签名覆盖 keyId、tenant/device/registration/generation、task/attempt、平台与架构、用途、期限及精确资源输入；脚本包含解释器、参数和预算，软件包含定义、批准身份、安装意图与全部产物摘要。消费方调用 `SignedTask::verify` 时提供本地身份及预期 task/attempt/permit。
 
@@ -118,3 +118,7 @@ Apple 新注册 profile 在启用该能力时申请已安装应用查询与企�
 `action:{kind:"request_mdm_enrollment",organization:"本租户 UUID",runLifetimeSeconds}` 使用部署 `enrollment_entries:{windows:"https://发现服务域名",macos:"https://注册页面"}`，需要全设备 Enrollment 权限和 Agent 的 `mdm.enrollment.v1` 能力。任务有签名 Offer/Start permit，Windows 打开标准注册 UI，macOS 打开 HTTPS 注册页面，保留系统、账户和用户确认。`enrollment_result` 的 `opened`、`user_required`、`third_party_conflict`、`unsupported`、`failed`、`unknown` 分开保存；取消使用独立的 `{kind:"cancelled"}` 事件。opened 不证明 MDM 已注册。自动触发在同一 Agent 注册下去重；未知执行阻止重试，管理员显式 rerun 仍受当前权限、观察、期限和取消约束。
 
 两种动作分别配置与启停，不依赖另一通道先完成，也不使用跨通道设备关联。物理设备关联由 #2578 持有；生产 Agent 和安装包由独立客户端任务消费本契约。
+
+内容仓必须显式选择 `content.storage.kind=volume|s3`。服务端卷目录须存在、可写且为绝对路径；多实例共享同一目录。S3 配置参考 [S3 内容配置](../../fixtures/mdm-content-s3.example.json)，要求 HTTPS、启用版本控制的 bucket，以及指定 namespace 下对象读写和确切版本删除权限。实际对象前缀包含租户 UUID；下载始终经产品授权入口，不向客户端暴露 S3 凭据或地址。外部第三方下载 URL 不属于软件上传入口。
+
+任意 PATCH 大小和字节偏移继续有效。普通内容按 128 MiB 完整块和一个尾快照保存，完成后冻结清单，不进行整包复制或 multipart 合成。请求体完整结束、对象校验和 PostgreSQL 提交后才确认偏移。原生配置与诊断的逻辑摘要保持明文身份，但所有持久对象都为受保护密文。只有 ZIP/MSIX 校验使用有额度限制的临时 seek 文件；普通下载按逻辑 Range 读取清单。

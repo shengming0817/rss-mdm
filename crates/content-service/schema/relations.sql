@@ -20,6 +20,8 @@ BEGIN
  END IF;
  RETURN NEW;
 END $$;
+REVOKE ALL ON FUNCTION mdm_content.reference_ready() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_content.reference_ready() TO mdm_flow_runtime;
 CREATE TRIGGER content_reference_ready BEFORE INSERT OR UPDATE ON mdm_resource.artifact_refs
  FOR EACH ROW EXECUTE FUNCTION mdm_content.reference_ready();
 COMMIT;

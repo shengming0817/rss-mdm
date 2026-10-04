@@ -45,9 +45,19 @@ impl Garbage {
         tx.with_connection(move|conn|Box::pin(async move{sqlx::query("UPDATE mdm_content.manifests SET state='deleting' WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4 AND state<>'deleted'").bind(tenant).bind(c).bind(digest.as_slice()).bind(length as i64).execute(conn).await?;Ok(())})).await.map_err(|_|storage())
     }
     pub async fn remove(self) -> Result<(), Error> {
+        let artifact = Artifact::new(
+            rss_mdm_resource::Id::new("gc").map_err(|_| invariant())?,
+            self.length,
+            rss_mdm_resource::Digest::from_bytes(self.digest),
+        )
+        .map_err(|_| invariant())?;
+        let document = self.store.sign(
+            &self.store.manifest_key(self.class, &artifact),
+            &self.manifest,
+        )?;
         let mut tx = self.store.tx().await?;
-        let deleting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content.manifests WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4 AND state='deleting')")
-         .bind(self.store.tenant.to_string()).bind(journal::class(self.class)).bind(self.digest.as_slice()).bind(self.length as i64).fetch_one(&mut *tx).await.map_err(|_|storage())?;
+        let deleting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content.manifests WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4 AND state='deleting' AND document=$5)")
+         .bind(self.store.tenant.to_string()).bind(journal::class(self.class)).bind(self.digest.as_slice()).bind(self.length as i64).bind(&document).fetch_one(&mut *tx).await.map_err(|_|storage())?;
         if !deleting {
             return Err(Error::Conflict);
         }
@@ -69,12 +79,12 @@ impl Garbage {
             commit(tx).await?;
         }
         let mut tx = self.store.tx().await?;
-        sqlx::query("UPDATE mdm_content.manifests SET state='deleted' WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4 AND state='deleting'").bind(self.store.tenant.to_string()).bind(journal::class(self.class)).bind(self.digest.as_slice()).bind(self.length as i64).execute(&mut *tx).await.map_err(|_|storage())?;
+        sqlx::query("UPDATE mdm_content.manifests SET state='deleted' WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4 AND state='deleting' AND document=$5").bind(self.store.tenant.to_string()).bind(journal::class(self.class)).bind(self.digest.as_slice()).bind(self.length as i64).bind(document).execute(&mut *tx).await.map_err(|_|storage())?;
         commit(tx).await
     }
 }
 impl Store {
-    async fn clean_orphans(&self, now: i64) -> Result<(), Error> {
+    pub(super) async fn clean_orphans(&self, now: i64) -> Result<(), Error> {
         let deadline = self.deadline()?;
         let mut tx = self.tx().await?;
         sqlx::query(
@@ -83,7 +93,7 @@ impl Store {
         .execute(&mut *tx)
         .await
         .map_err(|_| storage())?;
-        let rows=sqlx::query("SELECT o.id,o.intent,o.coordinate,o.content FROM mdm_content.objects o WHERE o.state<>'deleted' AND o.expires<=$1 AND NOT EXISTS(SELECT 1 FROM mdm_content.uploads u WHERE u.id=o.owner AND (u.expires>$1 OR u.held_until>$1)) AND NOT EXISTS(SELECT 1 FROM mdm_content.manifests m WHERE m.state<>'deleted' AND m.document->'value'->'pieces' @> jsonb_build_array(jsonb_build_object('id',o.id))) ORDER BY o.id LIMIT 128 FOR UPDATE OF o")
+        let rows=sqlx::query("SELECT o.id,o.intent,o.coordinate,o.content FROM mdm_content.objects o WHERE o.state<>'deleted' AND o.expires<=$1 AND NOT EXISTS(SELECT 1 FROM mdm_content.uploads u WHERE u.id=o.owner AND (u.held_until>$1 OR (u.expires>$1 AND (u.document->'value'->'pieces' @> jsonb_build_array(jsonb_build_object('id',o.id)) OR o.coordinate IS NULL)))) AND NOT EXISTS(SELECT 1 FROM mdm_content.manifests m WHERE m.state<>'deleted' AND m.document->'value'->'pieces' @> jsonb_build_array(jsonb_build_object('id',o.id))) ORDER BY o.id LIMIT 128 FOR UPDATE OF o")
    .bind(now).fetch_all(&mut *tx).await.map_err(|_|storage())?;
         for row in &rows {
             let id: Uuid = row.try_get("id").map_err(|_| storage())?;

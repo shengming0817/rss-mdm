@@ -99,6 +99,7 @@ impl Store {
         {
             return Err(Error::Malformed);
         }
+        self.clean_orphans(now).await?;
         binding.artifact()?;
         let expires = match &binding.purpose {
             Purpose::Diagnostic(i) => i.expires_at,
@@ -162,6 +163,7 @@ impl Store {
         now: i64,
         body: R,
     ) -> Result<Upload, Error> {
+        self.clean_orphans(now).await?;
         let _permit = self
             .transfers
             .clone()

@@ -269,6 +269,9 @@ impl Store {
         if count != 1 {
             return Err(Error::Conflict);
         }
+        let pieces = saved.pieces.iter().map(|p| p.id).collect::<Vec<_>>();
+        sqlx::query("UPDATE mdm_content.objects SET expires=0 WHERE tenant_id=$1::uuid AND owner=$2 AND state='ready' AND NOT(id=ANY($3))")
+         .bind(self.tenant.to_string()).bind(saved.upload.storage_key()).bind(pieces).execute(&mut *tx).await.map_err(|_|storage())?;
         self.check_deadline(deadline)?;
         commit(tx).await
     }
