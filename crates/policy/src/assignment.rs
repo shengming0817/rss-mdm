@@ -210,7 +210,7 @@ pub enum Action {
     },
 }
 /// Desired software assignment behavior.
-#[derive(schemars::JsonSchema, Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(PartialEq, Eq, schemars::JsonSchema, Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SoftwareIntent {
     /// Enforce the approved software version.
@@ -301,6 +301,11 @@ impl Definition {
                 return Err(Error::Malformed);
             }
             config.validate()?;
+            if matches!(self.action, Action::Software { .. })
+                && config.risk_level.is_some_and(|risk| risk != crate::ScriptRisk::CONFIRM)
+            {
+                return Err(Error::Malformed);
+            }
         }
         Ok(())
     }

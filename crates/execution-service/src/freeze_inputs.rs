@@ -37,7 +37,7 @@ pub(crate) async fn freeze_script_in(
     let artifact = prepared.artifact();
     Ok(FrozenAction {
         collection,
-        resource: wire::ScriptResource {
+        resource: wire::TaskResource {
             id: prepared.version().resource().as_str().into(),
             version: prepared.version().label().as_str().into(),
             variant: prepared.variant().key().as_str().into(),

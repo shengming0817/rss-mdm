@@ -81,6 +81,7 @@ type DiagnosticAssociationGate = (Arc<tokio::sync::Notify>, Arc<tokio::sync::Not
 pub struct ExecutionService {
     pub(crate) inputs: Arc<Inputs>,
     pub(crate) source: Arc<dyn source_authority::SourceAuthority>,
+    pub(crate) sessions: Arc<authorization::session::SessionAuthority>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) agent_store: Arc<dyn channels::Agent>,
     pub(crate) apple_profiles: Arc<dyn channels::AppleProfiles>,
@@ -105,6 +106,7 @@ pub struct ExecutionService {
     pub(crate) diagnostic_association_gate: Mutex<Option<DiagnosticAssociationGate>>,
 }
 pub struct Dependencies {
+    pub sessions: Arc<authorization::session::SessionAuthority>,
     pub inputs: Arc<Inputs>,
     pub source: Arc<dyn source_authority::SourceAuthority>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
@@ -132,6 +134,7 @@ impl ExecutionService {
             diagnostic_commit_fault: Mutex::new(None),
             #[cfg(feature = "integration")]
             diagnostic_association_gate: Mutex::new(None),
+            sessions: dependencies.sessions,
             inputs: dependencies.inputs,
             source: dependencies.source,
             protection: dependencies.protection,

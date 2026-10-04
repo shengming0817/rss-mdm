@@ -100,7 +100,7 @@ pub async fn migrate(options: &PgConnectOptions, installation: &Installation) ->
         )),
     }
 }
-fn units() -> Vec<(&'static str, &'static str)> {
+fn baseline_units() -> Vec<(&'static str, &'static str)> {
     vec![
         ("audit-v1", rss_audit_postgres::MIGRATION_SQL),
         ("audit-ledger-v1", rss_ledger_postgres::MIGRATION_SQL),
@@ -287,6 +287,14 @@ fn units() -> Vec<(&'static str, &'static str)> {
         ),
     ]
 }
+fn units() -> Vec<(&'static str, &'static str)> {
+    let mut units = baseline_units();
+    units.push((
+        "self-service-access-v1",
+        include_str!("../schema/self-service-access.sql"),
+    ));
+    units
+}
 /// Exact immutable migration units embedded in this executable, without database access.
 pub fn manifest() -> serde_json::Value {
     serde_json::json!({"units":units().into_iter().map(|(name, sql)| serde_json::json!({"name":name,"sha256":format!("{:x}", Sha256::digest(sql))})).collect::<Vec<_>>()})
@@ -455,10 +463,24 @@ fn accepted_ledger(
         .iter()
         .map(|(name, sql)| (*name, format!("{:x}", Sha256::digest(sql))))
         .collect::<BTreeMap<_, _>>();
-    actual.len() == candidate.len()
-        && actual
-            .iter()
-            .all(|(name, digest)| candidate.get(name).is_some_and(|value| value == digest))
+    let matches = |expected: &BTreeMap<&str, String>| {
+        actual.len() == expected.len()
+            && actual
+                .iter()
+                .all(|(name, digest)| expected.get(name).is_some_and(|value| value == digest))
+    };
+    if matches(&candidate) {
+        return true;
+    }
+    // Only the complete, explicitly named predecessor may upgrade; arbitrary prefixes fail.
+    if current != units() {
+        return false;
+    }
+    let predecessor = baseline_units()
+        .into_iter()
+        .map(|(name, sql)| (name, format!("{:x}", Sha256::digest(sql))))
+        .collect::<BTreeMap<_, _>>();
+    matches(&predecessor)
 }
 
 async fn install_identity(

@@ -566,7 +566,7 @@ pub enum ExecutorProfile {
     Osquery,
 }
 /// Required operating-system execution identity.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionIdentity {
     /// Service identity.
@@ -625,9 +625,9 @@ pub struct TaskSpec {
     /// Exact Resource version digest, including its full execution interface.
     pub resource_digest: [u8; 32],
     /// Exact selected Resource coordinates.
-    pub resource: super::ScriptResource,
+    pub resource: super::TaskResource,
     /// Trusted server authorization decision.
-    pub authorization: super::ScriptAuthorization,
+    pub authorization: super::TaskAuthorization,
     /// Complete resolved values, covered by the task signature.
     pub parameters: BTreeMap<String, Value>,
     /// Absolute Run deadline, independent of the permit expiry.
@@ -640,6 +640,8 @@ pub struct TaskSpec {
     pub sql_parameters: Option<BTreeMap<String, serde_json::Value>>,
     /// Required execution identity.
     pub run_as: ExecutionIdentity,
+    /// Exact effect target covered by the same signature as the script inputs.
+    pub execution_target: SoftwareExecutionTarget,
     /// Literal arguments, with no shell interpolation.
     pub arguments: Vec<String>,
     /// Only explicit product parameter variables.
@@ -655,6 +657,19 @@ impl TaskSpec {
     /// Validate the signed closed profile without authenticating it.
     pub fn validate(&self) -> Result<(), WireError> {
         self.authorization.validate(self.tenant_id)?;
+        self.execution_target.validate_for(self.platform)?;
+        match (&self.execution_target, self.run_as) {
+            (SoftwareExecutionTarget::Device, ExecutionIdentity::System) => (),
+            (
+                SoftwareExecutionTarget::User {
+                    identity,
+                    session_id,
+                },
+                ExecutionIdentity::LoggedInUser,
+            ) if !identity.is_empty() && !session_id.is_nil() => (),
+            _ => return Err(WireError::InvalidValue),
+        }
+
         if self.deadline < self.expires_at
             || self.parameters.len() > 32
             || serde_json::to_vec(&self.parameters)
@@ -969,6 +984,8 @@ pub struct SoftwareTaskSpec {
     pub expires_at: i64,
     /// Current execution environment, frozen across Offer and Start.
     pub execution_context: SoftwareExecutionContext,
+    /// Same server-owned origin decision as script tasks, covered by the signature.
+    pub authorization: super::TaskAuthorization,
     /// Ordered prerequisites followed by the requested action.
     pub steps: Vec<SoftwareTaskStep>,
     /// SHA-256 of canonical serialized steps.
@@ -1002,6 +1019,13 @@ impl SoftwareTaskSpec {
             || self.device_id.chars().any(char::is_control)
             || self.steps.is_empty()
             || self.steps.len() > 32
+        {
+            return Err(WireError::InvalidValue);
+        }
+        self.authorization.validate(self.tenant_id)?;
+        let self_service = matches!(self.authorization, super::TaskAuthorization::SelfService { .. });
+        if (self.start_mode == SoftwareStartMode::UserInitiated) != self_service
+            || (self_service && self.intent != SoftwareTaskIntent::Install)
         {
             return Err(WireError::InvalidValue);
         }
