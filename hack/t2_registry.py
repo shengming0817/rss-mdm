@@ -1544,3 +1544,6 @@ consume(('crates/windows-channel/src/protocol_device.rs',), 'windows.issuance wi
 consume(('crates/registration-service/src/quotas.rs', 'crates/registration-service/schema/quota-usage.sql'), 'agent.registration')
 
 consume(('crates/management-http/src/enrollment/mod.rs',), 'enrollment.http enrollment.quotas')
+
+T1_INPUTS += ('crates/registration-service/tests/credentials.rs',)
+consume(('crates/windows-channel/src/enrollment_store.rs',), 'windows.issuance windows.enrollment windows.declared')
