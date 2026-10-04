@@ -170,6 +170,7 @@ pub struct SelfServiceMetadata {
     pub keywords: Vec<String>,
     /// Effective administrator AI switch.
     pub allow_ai: bool,
+    #[serde(deserialize_with = "deserialize_risk")]
     #[schemars(schema_with = "risk_schema")]
     /// Effective risk level, one or two.
     pub risk_level: u8,

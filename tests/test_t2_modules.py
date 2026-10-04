@@ -53,7 +53,7 @@ class ModuleImpactTests(unittest.TestCase):
                 'planning.group_scope', 'planning.scope', 'planning.policy', 'planning.agent_policy',
                 'planning.frequency', 'planning.recovery', 'diagnostics.http'},
             'crates/management-http/src/planning/mod.rs': {
-                'planning.http', 'planning.policy', 'planning.agent_policy', 'planning.frequency',
+                'planning.self_service', 'planning.http', 'planning.policy', 'planning.agent_policy', 'planning.frequency',
                 'planning.remote', 'planning.software'},
             'crates/management-http/src/software_native.rs': {
                 'publication.winget', 'publication.brew', 'publication.withdrawal'},
