@@ -114,7 +114,7 @@ impl Store {
         let key = storage_key(&binding.actor, id);
         let mut tx = self.tx().await?;
         self.quota(&mut tx, 0).await?;
-        let old:Option<serde_json::Value>=sqlx::query_scalar("SELECT document FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(self.tenant.to_string()).bind(key).fetch_optional(&mut *tx).await.map_err(|_|storage())?;
+        let old:Option<serde_json::Value>=sqlx::query_scalar("SELECT document FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(self.tenant.to_string()).bind(key).fetch_optional(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         if let Some(old) = old {
             let saved: journal::Saved = self.unsign(&key.to_string(), old)?;
             if saved.upload.binding != binding
@@ -133,7 +133,7 @@ impl Store {
         .bind(now)
         .fetch_one(&mut *tx)
         .await
-        .map_err(|_| storage())?;
+        .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?;
         if count >= self.config.max_uploads as i64 {
             return Err(Error::Conflict);
         }
@@ -148,7 +148,7 @@ impl Store {
             upload: upload.clone(),
             pieces: vec![],
         };
-        sqlx::query("INSERT INTO mdm_content.uploads(tenant_id,id,document,expires,reserved,complete) VALUES($1::uuid,$2,$3,$4,$5,false)").bind(self.tenant.to_string()).bind(key).bind(self.sign(&key.to_string(),&saved)?).bind(upload.expires).bind(reserved as i64).execute(&mut *tx).await.map_err(|_|storage())?;
+        sqlx::query("INSERT INTO mdm_content.uploads(tenant_id,id,document,expires,reserved,complete) VALUES($1::uuid,$2,$3,$4,$5,false)").bind(self.tenant.to_string()).bind(key).bind(self.sign(&key.to_string(),&saved)?).bind(upload.expires).bind(reserved as i64).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         journal::commit(tx).await?;
         Ok(upload)
     }
@@ -314,15 +314,16 @@ impl Store {
         let result=async {
    if saved.upload.offset!=saved.upload.binding.length{return Err(Error::Conflict)}
    let a=saved.upload.binding.artifact()?;let c=saved.upload.binding.class();
-   self.check_pieces(&saved.pieces,&a,c,deadline).await?;
+   let (_,digest)=self.check_pieces(&saved.pieces,&a,c,deadline).await?;
+   if digest!=a.digest().bytes(){return Err(Error::Malformed)}
    self.check_deadline(deadline)?;let mut tx=self.tx().await?;
-   let owns:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3 AND NOT complete)").bind(self.tenant.to_string()).bind(key).bind(epoch).fetch_one(&mut *tx).await.map_err(|_|storage())?;if !owns{return Err(Error::Conflict)}
+   let owns:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3 AND NOT complete)").bind(self.tenant.to_string()).bind(key).bind(epoch).fetch_one(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;if !owns{return Err(Error::Conflict)}
    let manifest=journal::Manifest{pieces:saved.pieces.clone()};
    sqlx::query("INSERT INTO mdm_content.manifests(tenant_id,class,sha256,length,document,expires,state) VALUES($1::uuid,$2,$3,$4,$5,$6,'ready') ON CONFLICT(tenant_id,class,sha256,length) DO UPDATE SET expires=EXCLUDED.expires, document=CASE WHEN mdm_content.manifests.state='deleted' THEN EXCLUDED.document ELSE mdm_content.manifests.document END,state='ready' WHERE mdm_content.manifests.state<>'deleting'")
-    .bind(self.tenant.to_string()).bind(journal::class(c)).bind(a.digest().bytes().as_slice()).bind(a.length() as i64).bind(self.sign(&self.manifest_key(c,&a),&manifest)?).bind(saved.upload.expires).execute(&mut *tx).await.map_err(|_|storage())?;
-   let state:String=sqlx::query_scalar("SELECT state FROM mdm_content.manifests WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4 FOR UPDATE").bind(self.tenant.to_string()).bind(journal::class(c)).bind(a.digest().bytes().as_slice()).bind(a.length() as i64).fetch_one(&mut *tx).await.map_err(|_|storage())?;
+    .bind(self.tenant.to_string()).bind(journal::class(c)).bind(a.digest().bytes().as_slice()).bind(a.length() as i64).bind(self.sign(&self.manifest_key(c,&a),&manifest)?).bind(saved.upload.expires).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
+   let state:String=sqlx::query_scalar("SELECT state FROM mdm_content.manifests WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4 FOR UPDATE").bind(self.tenant.to_string()).bind(journal::class(c)).bind(a.digest().bytes().as_slice()).bind(a.length() as i64).fetch_one(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
    if state!="ready"{return Err(Error::Conflict)}saved.upload.complete=true;
-   let changed=sqlx::query("UPDATE mdm_content.uploads SET complete=true,document=$4,epoch=NULL,held_until=0 WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3").bind(self.tenant.to_string()).bind(key).bind(epoch).bind(self.sign(&key.to_string(),&saved)?).execute(&mut *tx).await.map_err(|_|storage())?.rows_affected();if changed!=1{return Err(Error::Conflict)}
+   let changed=sqlx::query("UPDATE mdm_content.uploads SET complete=true,document=$4,epoch=NULL,held_until=0 WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3").bind(self.tenant.to_string()).bind(key).bind(epoch).bind(self.sign(&key.to_string(),&saved)?).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?.rows_affected();if changed!=1{return Err(Error::Conflict)}
    self.check_deadline(deadline)?;journal::commit(tx).await?;Ok(saved.upload)
   }.await;
         if result.is_err() {

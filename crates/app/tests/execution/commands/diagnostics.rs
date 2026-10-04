@@ -367,7 +367,10 @@ async fn complete_file_restarts_replays_downloads_and_stops_after_revocation() -
     let downloaded = download(&client, path).await?;
     ensure!(
         downloaded.0 == StatusCode::OK && downloaded.1 == bytes,
-        "complete bytes changed"
+        "complete download: status {}, received {} bytes, expected {}",
+        downloaded.0,
+        downloaded.1.len(),
+        bytes.len()
     );
     recover(&client).await?;
     let mut pg =

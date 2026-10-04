@@ -48,7 +48,7 @@ impl Store {
         a: &Artifact,
         c: StorageClass,
         deadline: Deadline,
-    ) -> Result<Option<Zeroizing<Vec<u8>>>, Error> {
+    ) -> Result<(Option<Zeroizing<Vec<u8>>>, [u8; 32]), Error> {
         if pieces.is_empty() || pieces.len() > 8193 || (c.protected() && pieces.len() != 1) {
             return Err(Error::Invariant);
         }
@@ -94,10 +94,10 @@ impl Store {
             offset = offset.checked_add(p.length).ok_or(Error::Invariant)?;
         }
         self.check_deadline(deadline)?;
-        if offset != a.length() || hash.finalize().as_slice() != a.digest().bytes() {
+        if offset != a.length() {
             return Err(Error::Invariant);
         }
-        Ok(small)
+        Ok((small, hash.finalize().into()))
     }
     pub async fn verify(self: &Arc<Self>, a: &Artifact) -> Result<Verified, Error> {
         self.verify_class(a, StorageClass::Artifact).await
@@ -139,9 +139,13 @@ impl Store {
             plaintext: None,
             _permit: None,
         };
-        verified.plaintext = self
+        let (plaintext, digest) = self
             .check_pieces(&verified.manifest.pieces, a, c, d)
             .await?;
+        if digest != a.digest().bytes() {
+            return Err(Error::Invariant);
+        }
+        verified.plaintext = plaintext;
         Ok(verified)
     }
     pub async fn verify_materials(

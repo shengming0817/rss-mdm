@@ -34,6 +34,22 @@ struct Signed {
     value: serde_json::Value,
     mac: Vec<u8>,
 }
+pub(super) fn pg_error(operation: &str, error: sqlx::Error) -> Error {
+    let (kind, code) = match &error {
+        sqlx::Error::Database(e) => ("database", e.code().map(|s| s.into_owned())),
+        sqlx::Error::ColumnDecode { .. } | sqlx::Error::Decode(_) => ("decode", None),
+        sqlx::Error::RowNotFound => ("missing", None),
+        sqlx::Error::PoolTimedOut => ("pool_timeout", None),
+        sqlx::Error::PoolClosed => ("pool_closed", None),
+        _ => ("storage", None),
+    };
+    // Query text, values and driver messages may contain protected material.
+    eprintln!(
+        "{}",
+        serde_json::json!({"event":"mdm_content_pg_error","operation":operation,"kind":kind,"sqlstate":code})
+    );
+    storage()
+}
 pub(super) fn class(c: StorageClass) -> &'static str {
     match c {
         StorageClass::Artifact => "artifact",
@@ -97,13 +113,17 @@ impl Store {
         format!("{}:{}:{}", class(c), hex(a.digest().bytes()), a.length())
     }
     pub(super) async fn tx(&self) -> Result<Transaction<'_, Postgres>, Error> {
-        let mut tx = self.pool.begin().await.map_err(|_| storage())?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
             .execute(&mut *tx)
             .await
-            .map_err(|_| storage())?;
+            .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','6000',true),set_config('lock_timeout','6000',true)")
-   .bind(self.tenant.to_string()).execute(&mut *tx).await.map_err(|_|storage())?;
+   .bind(self.tenant.to_string()).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         Ok(tx)
     }
     pub(super) async fn quota(
@@ -115,11 +135,11 @@ impl Store {
             .bind(self.tenant.to_string())
             .execute(&mut **tx)
             .await
-            .map_err(|_| storage())?;
+            .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?;
         // Active sessions reserve the remaining content plus one tail rewrite. Unknown/orphan writes
         // remain charged, including after expiry; only exact confirmed reclamation releases bytes.
         let used:i64=sqlx::query_scalar("WITH physical AS (SELECT owner,sum((content->>'length')::bigint) AS bytes FROM mdm_content.objects o WHERE state<>'deleted' AND NOT EXISTS(SELECT 1 FROM mdm_content.manifests m WHERE m.state<>'deleted' AND m.document->'value'->'pieces' @> jsonb_build_array(jsonb_build_object('id',o.id))) GROUP BY owner), live AS (SELECT u.id,greatest(u.reserved,coalesce(p.bytes,0)) AS bytes FROM mdm_content.uploads u LEFT JOIN physical p ON p.owner=u.id WHERE NOT u.complete) SELECT (coalesce((SELECT sum(bytes) FROM live),0)+coalesce((SELECT sum(p.bytes) FROM physical p WHERE NOT EXISTS(SELECT 1 FROM live l WHERE l.id=p.owner)),0)+coalesce((SELECT sum(reserved) FROM mdm_content.pins),0))::bigint")
-   .fetch_one(&mut **tx).await.map_err(|_|storage())?;
+   .fetch_one(&mut **tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         if used < 0
             || (used as u64)
                 .checked_add(extra)
@@ -132,14 +152,14 @@ impl Store {
     pub(super) async fn journal_admit(&self) -> Result<(), Error> {
         let mut tx = self.tx().await?;
         let identity = serde_json::json!({"protection":self.protection.id(),"backend":self.backend.identity()?});
-        sqlx::query("INSERT INTO mdm_content.settings(tenant_id,identity) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(self.tenant.to_string()).bind(&identity).execute(&mut *tx).await.map_err(|_|storage())?;
+        sqlx::query("INSERT INTO mdm_content.settings(tenant_id,identity) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(self.tenant.to_string()).bind(&identity).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         let old: serde_json::Value = sqlx::query_scalar(
             "SELECT identity FROM mdm_content.settings WHERE tenant_id=$1::uuid",
         )
         .bind(self.tenant.to_string())
         .fetch_one(&mut *tx)
         .await
-        .map_err(|_| storage())?;
+        .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?;
         if old != identity {
             return Err(Error::Configuration);
         }
@@ -149,7 +169,7 @@ impl Store {
         let key = upload::storage_key(actor, id);
         let mut tx = self.tx().await?;
         let row:Option<serde_json::Value>=sqlx::query_scalar("SELECT document FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND id=$2 AND expires>$3")
-   .bind(self.tenant.to_string()).bind(key).bind(now).fetch_optional(&mut *tx).await.map_err(|_|storage())?;
+   .bind(self.tenant.to_string()).bind(key).bind(now).fetch_optional(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         let saved: Saved = self.unsign(&key.to_string(), row.ok_or(Error::Conflict)?)?;
         if saved.upload.id != id || saved.upload.binding.actor != actor {
             return Err(Error::Metadata);
@@ -167,28 +187,32 @@ impl Store {
         let key = upload::storage_key(actor, id);
         let mut tx = self.tx().await?;
         let row=sqlx::query("SELECT document,held_until FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND id=$2 AND expires>$3 FOR UPDATE")
-   .bind(self.tenant.to_string()).bind(key).bind(now).fetch_optional(&mut *tx).await.map_err(|_|storage())?.ok_or(Error::Conflict)?;
+   .bind(self.tenant.to_string()).bind(key).bind(now).fetch_optional(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?.ok_or(Error::Conflict)?;
         let saved: Saved = self.unsign(
             &key.to_string(),
-            row.try_get("document").map_err(|_| storage())?,
+            row.try_get("document")
+                .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?,
         )?;
         if saved.upload.id != id || saved.upload.binding.actor != actor {
             return Err(Error::Metadata);
         }
-        if row.try_get::<i64, _>("held_until").map_err(|_| storage())? > now
+        if row
+            .try_get::<i64, _>("held_until")
+            .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?
+            > now
             || saved.upload.complete
             || offset.is_some_and(|o| o != saved.upload.offset)
         {
             return Err(Error::Conflict);
         }
         let epoch = Uuid::new_v4();
-        sqlx::query("UPDATE mdm_content.uploads SET epoch=$3,held_until=$4 WHERE tenant_id=$1::uuid AND id=$2").bind(self.tenant.to_string()).bind(key).bind(epoch).bind(now.checked_add(self.config.transfer_seconds as i64).ok_or(Error::Malformed)?).execute(&mut *tx).await.map_err(|_|storage())?;
+        sqlx::query("UPDATE mdm_content.uploads SET epoch=$3,held_until=$4 WHERE tenant_id=$1::uuid AND id=$2").bind(self.tenant.to_string()).bind(key).bind(epoch).bind(now.checked_add(self.config.transfer_seconds as i64).ok_or(Error::Malformed)?).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         commit(tx).await?;
         Ok((saved, epoch))
     }
     pub(super) async fn release(&self, key: Uuid, epoch: Uuid) -> Result<(), Error> {
         let mut tx = self.tx().await?;
-        sqlx::query("UPDATE mdm_content.uploads SET held_until=0,epoch=NULL WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3").bind(self.tenant.to_string()).bind(key).bind(epoch).execute(&mut *tx).await.map_err(|_|storage())?;
+        sqlx::query("UPDATE mdm_content.uploads SET held_until=0,epoch=NULL WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3").bind(self.tenant.to_string()).bind(key).bind(epoch).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         commit(tx).await
     }
     pub(super) async fn put_piece(
@@ -210,15 +234,35 @@ impl Store {
         let intent = self.backend.intent(id, content)?;
         let mut tx = self.tx().await?;
         self.quota(&mut tx, 0).await?;
-        let extra:i64=sqlx::query_scalar("SELECT greatest(u.reserved,coalesce((SELECT sum((content->>'length')::bigint) FROM mdm_content.objects o WHERE o.owner=u.id AND o.state<>'deleted' AND NOT EXISTS(SELECT 1 FROM mdm_content.manifests m WHERE m.state<>'deleted' AND m.document->'value'->'pieces' @> jsonb_build_array(jsonb_build_object('id',o.id))),0)+$2)-greatest(u.reserved,coalesce((SELECT sum((content->>'length')::bigint) FROM mdm_content.objects o WHERE o.owner=u.id AND o.state<>'deleted' AND NOT EXISTS(SELECT 1 FROM mdm_content.manifests m WHERE m.state<>'deleted' AND m.document->'value'->'pieces' @> jsonb_build_array(jsonb_build_object('id',o.id))),0)) FROM mdm_content.uploads u WHERE u.id=$1")
-   .bind(owner).bind(content.length as i64).fetch_one(&mut *tx).await.map_err(|_|storage())?;
+        let extra: i64 = sqlx::query_scalar(
+            r#"SELECT (greatest(u.reserved, p.bytes + $2::bigint)
+                      - greatest(u.reserved, p.bytes))::bigint
+               FROM mdm_content.uploads u
+               CROSS JOIN LATERAL (
+                   SELECT coalesce(sum((o.content->>'length')::bigint), 0) AS bytes
+                   FROM mdm_content.objects o
+                   WHERE o.owner=u.id AND o.state<>'deleted'
+                     AND NOT EXISTS (
+                         SELECT 1 FROM mdm_content.manifests m
+                         WHERE m.state<>'deleted'
+                           AND m.document->'value'->'pieces' @>
+                               jsonb_build_array(jsonb_build_object('id',o.id))
+                     )
+               ) p
+               WHERE u.id=$1"#,
+        )
+        .bind(owner)
+        .bind(content.length as i64)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?;
         self.quota(&mut tx, extra as u64).await?;
-        let owns:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3 AND NOT complete)").bind(self.tenant.to_string()).bind(owner).bind(epoch).fetch_one(&mut *tx).await.map_err(|_|storage())?;
+        let owns:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3 AND NOT complete)").bind(self.tenant.to_string()).bind(owner).bind(epoch).fetch_one(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         if !owns {
             return Err(Error::Conflict);
         }
         sqlx::query("INSERT INTO mdm_content.objects(tenant_id,id,owner,content,intent,expires,state) VALUES($1::uuid,$2,$3,$4,$5,$6,'pending')")
-   .bind(self.tenant.to_string()).bind(id).bind(owner).bind(encode(&content)?).bind(encode(&intent)?).bind(expires).execute(&mut *tx).await.map_err(|_|storage())?;
+   .bind(self.tenant.to_string()).bind(id).bind(owner).bind(encode(&content)?).bind(encode(&intent)?).bind(expires).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         commit(tx).await?;
         let coordinate = self
             .backend
@@ -234,7 +278,7 @@ impl Store {
         .bind(encode(&coordinate)?)
         .execute(&mut *tx)
         .await
-        .map_err(|_| storage())?;
+        .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?;
         commit(tx).await?;
         let verified = self
             .backend
@@ -246,7 +290,7 @@ impl Store {
             return Err(Error::Invariant);
         }
         let mut tx = self.tx().await?;
-        sqlx::query("UPDATE mdm_content.objects SET state='ready' WHERE tenant_id=$1::uuid AND id=$2 AND state='pending'").bind(self.tenant.to_string()).bind(id).execute(&mut *tx).await.map_err(|_|storage())?;
+        sqlx::query("UPDATE mdm_content.objects SET state='ready' WHERE tenant_id=$1::uuid AND id=$2 AND state='pending'").bind(self.tenant.to_string()).bind(id).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         commit(tx).await?;
         Ok(Piece {
             id,
@@ -265,13 +309,13 @@ impl Store {
         self.check_deadline(deadline)?;
         let mut tx = self.tx().await?;
         let count=sqlx::query("UPDATE mdm_content.uploads SET document=$4,held_until=0,epoch=NULL WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3 AND NOT complete")
-   .bind(self.tenant.to_string()).bind(saved.upload.storage_key()).bind(epoch).bind(self.sign(&saved.upload.storage_key().to_string(),saved)?).execute(&mut *tx).await.map_err(|_|storage())?.rows_affected();
+   .bind(self.tenant.to_string()).bind(saved.upload.storage_key()).bind(epoch).bind(self.sign(&saved.upload.storage_key().to_string(),saved)?).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?.rows_affected();
         if count != 1 {
             return Err(Error::Conflict);
         }
         let pieces = saved.pieces.iter().map(|p| p.id).collect::<Vec<_>>();
         sqlx::query("UPDATE mdm_content.objects SET expires=0 WHERE tenant_id=$1::uuid AND owner=$2 AND state='ready' AND NOT(id=ANY($3))")
-         .bind(self.tenant.to_string()).bind(saved.upload.storage_key()).bind(pieces).execute(&mut *tx).await.map_err(|_|storage())?;
+         .bind(self.tenant.to_string()).bind(saved.upload.storage_key()).bind(pieces).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         self.check_deadline(deadline)?;
         commit(tx).await
     }
@@ -293,14 +337,14 @@ impl Store {
         let mut tx = self.tx().await?;
         self.quota(&mut tx, reserved).await?;
         let row:Option<serde_json::Value>=sqlx::query_scalar("SELECT document FROM mdm_content.manifests WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4 AND state='ready' FOR UPDATE")
-   .bind(self.tenant.to_string()).bind(class(c)).bind(a.digest().bytes().as_slice()).bind(a.length() as i64).fetch_optional(&mut *tx).await.map_err(|_|storage())?;
+   .bind(self.tenant.to_string()).bind(class(c)).bind(a.digest().bytes().as_slice()).bind(a.length() as i64).fetch_optional(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         let manifest = self.unsign(&self.manifest_key(c, a), row.ok_or(Error::Invariant)?)?;
         let id = Uuid::new_v4();
         let now: i64 =
             sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
                 .fetch_one(&mut *tx)
                 .await
-                .map_err(|_| storage())?;
+                .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?;
         let expires = now
             .checked_add(
                 deadline
@@ -310,7 +354,7 @@ impl Store {
                     + 1,
             )
             .ok_or(Error::Deadline)?;
-        sqlx::query("INSERT INTO mdm_content.pins(tenant_id,id,class,sha256,length,expires,reserved) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)").bind(self.tenant.to_string()).bind(id).bind(class(c)).bind(a.digest().bytes().as_slice()).bind(a.length() as i64).bind(expires).bind(reserved as i64).execute(&mut *tx).await.map_err(|_|storage())?;
+        sqlx::query("INSERT INTO mdm_content.pins(tenant_id,id,class,sha256,length,expires,reserved) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)").bind(self.tenant.to_string()).bind(id).bind(class(c)).bind(a.digest().bytes().as_slice()).bind(a.length() as i64).bind(expires).bind(reserved as i64).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         commit(tx).await?;
         Ok((manifest, id))
     }
@@ -321,7 +365,7 @@ impl Store {
             .bind(id)
             .execute(&mut *tx)
             .await
-            .map_err(|_| storage())?;
+            .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?;
         commit(tx).await
     }
 }

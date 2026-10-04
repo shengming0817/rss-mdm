@@ -805,8 +805,9 @@ impl rss_request_context::Clock for ContentClock {
     }
 }
 pub async fn stored_content() -> Arc<rss_mdm_content_service::Store> {
-    static DIRECTORY: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
-    let dir = DIRECTORY.get_or_init(|| tempfile::tempdir().unwrap());
+    let directory = PathBuf::from(std::env::var("MDM_CONTENT_DIRECTORY").unwrap());
+    std::fs::create_dir_all(&directory).unwrap();
+    let key = std::fs::read(std::env::var("MDM_NATIVE_PROTECTION_KEY_FILE").unwrap()).unwrap();
     let c = pg::config();
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(4)
@@ -823,11 +824,9 @@ pub async fn stored_content() -> Arc<rss_mdm_content_service::Store> {
         .await
         .unwrap();
     rss_mdm_content_service::Store::open(
-        Arc::new(rss_mdm_native_protection::Protector::new(&[82; 32]).unwrap()),
+        Arc::new(rss_mdm_native_protection::Protector::new(&key).unwrap()),
         &rss_mdm_content_service::Config {
-            storage: rss_mdm_content_service::Storage::Volume {
-                directory: dir.path().to_owned(),
-            },
+            storage: rss_mdm_content_service::Storage::Volume { directory },
             imports: Default::default(),
             max_artifact_bytes: 16 * 1024 * 1024,
             max_temporary_bytes: 64 * 1024 * 1024,

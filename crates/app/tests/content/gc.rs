@@ -1,5 +1,6 @@
 use crate::test_support::software::Fixture;
 use crate::test_support::*;
+use sqlx::Connection;
 async fn cleanup_preserves_resource_references(
     user: &mut Browser,
     router: &Router,
@@ -255,10 +256,10 @@ async fn inherited_delete_privilege_fails_admission() -> Result<()> {
     Ok(())
 }
 
-async fn reclaim_diagnostic(
+async fn aged_diagnostic(
     fixture: &Fixture,
     artifact: &rss_mdm_resource::Artifact,
-) -> Result<bool> {
+) -> Result<rss_mdm_content_service::Garbage> {
     pg(&format!(
         "UPDATE mdm_content.uploads SET expires=0 WHERE tenant_id='{}' AND document->'value'->'upload'->'binding'->'sha256'='{}'::jsonb; UPDATE mdm_content.manifests SET expires=0 WHERE tenant_id='{}' AND class='native_diagnostic' AND sha256=decode('{}','hex')",
         case_tenant(),
@@ -271,7 +272,21 @@ async fn reclaim_diagnostic(
             .map(|b| format!("{b:02x}"))
             .collect::<String>()
     ))?;
-    let candidate = fixture
+    // Verified drops release durable pins asynchronously. Wait for this exact read
+    // lease before asking GC for an eligible candidate; live pins must still exclude it.
+    let mut connection =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let pinned: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content.pins WHERE tenant_id=$1::uuid AND class='native_diagnostic' AND sha256=$2 AND length=$3 AND expires>extract(epoch FROM clock_timestamp()))")
+                .bind(case_tenant()).bind(artifact.digest().bytes().as_slice()).bind(artifact.length() as i64)
+                .fetch_one(&mut connection).await?;
+            if !pinned { return Ok::<_,sqlx::Error>(()); }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await??;
+    fixture
         .content
         .as_ref()
         .unwrap()
@@ -282,7 +297,14 @@ async fn reclaim_diagnostic(
             c.class == rss_mdm_content_service::StorageClass::NativeDiagnostic
                 && c.digest == artifact.digest().bytes()
         })
-        .ok_or_else(|| anyhow::anyhow!("aged diagnostic candidate missing"))?;
+        .ok_or_else(|| anyhow::anyhow!("aged diagnostic candidate missing"))
+}
+
+async fn reclaim_diagnostic(
+    fixture: &Fixture,
+    artifact: &rss_mdm_resource::Artifact,
+) -> Result<bool> {
+    let candidate = aged_diagnostic(fixture, artifact).await?;
     let tenant = rss_request_context::TenantId::parse(case_tenant())?;
     let deletion = candidate.clone();
     let removed = fixture
@@ -321,7 +343,6 @@ async fn reclaim_diagnostic(
 #[ignore = "MODULE=content.gc: diagnostic associations and real protected orphan deletion"]
 async fn diagnostic_gc_preserves_live_associations_and_reclaims_expired_orphans() -> Result<()> {
     use rss_mdm_content_service::diagnostic::{Identity, record_in};
-    use sqlx::Connection;
     let fixture = Fixture::open(false).await?;
     let store = fixture.content.as_ref().unwrap();
     let bytes = case::name("diagnostic-gc-private-bytes").as_bytes();
@@ -401,5 +422,104 @@ async fn diagnostic_gc_preserves_live_associations_and_reclaims_expired_orphans(
         "orphan diagnostic bytes survived unlink"
     );
     pg.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "MODULE=content.gc: real PG association cannot cross a committed deletion barrier"]
+async fn diagnostic_association_waits_for_gc_and_rejects_deleted_content() -> Result<()> {
+    use rss_mdm_content_service::diagnostic::{Identity, record_in};
+    let fixture = Fixture::open(false).await?;
+    let store = fixture.content.as_ref().unwrap();
+    let now = crate::windows::test_support::now();
+    let identity = Identity {
+        operation: Uuid::new_v4(),
+        registration: Uuid::new_v4(),
+        generation: 1,
+        input_version: "diagnostic-race".into(),
+        input_digest: [1; 32],
+        sources_digest: [2; 32],
+        accepted_at: now,
+        expires_at: now + 600,
+    };
+    let verified = store
+        .promote_diagnostic(&identity, case::name("diagnostic gc race").as_bytes(), now)
+        .await?;
+    let artifact = verified.artifact.clone();
+    drop(verified);
+    let candidate = aged_diagnostic(&fixture, &artifact).await?;
+    let deletion = candidate.clone();
+    let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+    let mut connection =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let checked = Arc::new(tokio::sync::Notify::new());
+    let resume = Arc::new(tokio::sync::Notify::new());
+    let ready = checked.clone();
+    let release = resume.clone();
+    let runtime = fixture.runtime.clone();
+    let gc = tokio::spawn(async move {
+        runtime
+            .local_tx_with_context(
+                tenant,
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                    Duration::from_secs(6),
+                ),
+                (candidate, ready, release),
+                |ctx, tx| {
+                    Box::pin(async move {
+                        let (candidate, ready, release) = ctx;
+                        let removed =
+                            rss_mdm_content_service::service::reclaim_in(tx, candidate, || Ok(()))
+                                .await
+                                .map_err(|_| {
+                                    rss_transactional_messaging_postgres::PgError::from(
+                                        sqlx::Error::Protocol("diagnostic race reclaim".into()),
+                                    )
+                                })?;
+                        assert!(removed);
+                        ready.notify_one();
+                        release.notified().await;
+                        Ok(())
+                    })
+                },
+            )
+            .await
+            .fold(Ok, Err, Err, Err, Err, Err)
+    });
+    tokio::time::timeout(Duration::from_secs(5), checked.notified()).await?;
+    let writer_ready = Arc::new(tokio::sync::Notify::new());
+    let attempted = writer_ready.clone();
+    let input = artifact.clone();
+    let mut writer = tokio::spawn(async move {
+        let mut tx = connection.begin().await?;
+        sqlx::query("SET LOCAL ROLE mdm_command_runtime")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(tenant.to_string())
+            .execute(&mut *tx)
+            .await?;
+        attempted.notify_one();
+        let result = record_in(&mut tx, tenant, &identity, &input).await;
+        tx.rollback().await?;
+        Ok::<_, anyhow::Error>(result)
+    });
+    tokio::time::timeout(Duration::from_secs(5), writer_ready.notified()).await?;
+    let early = tokio::time::timeout(Duration::from_millis(200), &mut writer).await;
+    resume.notify_one();
+    gc.await??;
+    let blocked = early.is_err();
+    let result = match early {
+        Ok(result) => result??,
+        Err(_) => writer.await??,
+    };
+    ensure!(blocked, "association bypassed the GC transaction lock");
+    ensure!(
+        matches!(result, Err(rss_mdm_content_service::Error::Conflict)),
+        "association crossed the deleting barrier"
+    );
+    deletion.remove().await?;
+    ensure!(store.diagnostic_reader().verify(&artifact).await.is_err());
     Ok(())
 }

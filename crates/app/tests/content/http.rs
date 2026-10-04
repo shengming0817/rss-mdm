@@ -3,9 +3,9 @@ use crate::test_support::*;
 #[tokio::test]
 #[ignore = "MODULE=content.http: real streamed HTTP, binding transactions and storage"]
 async fn upload_recovery_download_range_and_authorization() -> Result<()> {
-    upload_contract(Fixture::open(false).await?).await
+    upload_contract(Fixture::open(false).await?, 16_777_217).await
 }
-pub(super) async fn upload_contract(fixture: Fixture) -> Result<()> {
+pub(super) async fn upload_contract(fixture: Fixture, length: usize) -> Result<()> {
     let router = &fixture.router;
     let runtime = &fixture.runtime;
     let client = &fixture.client;
@@ -22,7 +22,7 @@ pub(super) async fn upload_contract(fixture: Fixture) -> Result<()> {
         json!({"action":"create","kind":"software"}),
     )
     .await?;
-    let bytes = vec![7u8; 16_777_217];
+    let bytes = vec![7u8; length];
     let definition =
         publication_support::private_definition(registered["snapshot"].clone(), &bytes);
     write(&mut user,router,&resource_path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":"windows","architecture":"x86_64","key":"default","declaration":{"kind":"software","definition":definition}}]})).await?;
@@ -54,19 +54,23 @@ pub(super) async fn upload_contract(fixture: Fixture) -> Result<()> {
         .join("; ");
     let length = bytes.len();
     let fault_runtime = runtime.clone();
+    let observer = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(crate::device::test_support::options("postgres")?)
+        .await?;
     let stream = futures::stream::unfold(
-        (0usize, fault_runtime),
-        move |(position, runtime)| async move {
+        (0usize, fault_runtime, observer),
+        move |(position, runtime, observer)| async move {
             if position >= length {
-                runtime.inject_next_transaction_fault(
-                    rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
-                );
+                inject_after_upload_intent(&observer, &runtime, operation)
+                    .await
+                    .expect("upload preflight settled before commit fault");
                 None
             } else {
                 let n = (length - position).min(65536);
                 Some((
                     Ok::<_, std::io::Error>(vec![7u8; n]),
-                    (position + n, runtime),
+                    (position + n, runtime, observer),
                 ))
             }
         },
@@ -128,6 +132,34 @@ pub(super) async fn upload_contract(fixture: Fixture) -> Result<()> {
         approved,
     )
     .await
+}
+// Client EOF can precede the server's authorization/preflight transaction. Wait for
+// its committed upload intent so the injected runtime fault belongs to final binding.
+async fn inject_after_upload_intent(
+    observer: &sqlx::PgPool,
+    runtime: &rss_transactional_messaging_postgres::PgRuntime,
+    operation: Uuid,
+) -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let ready: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND document->'value'->'upload'->>'id'=$2)",
+            )
+            .bind(case_tenant())
+            .bind(operation.to_string())
+            .fetch_one(observer)
+            .await?;
+            if ready {
+                return Ok::<_, sqlx::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await??;
+    runtime.inject_next_transaction_fault(
+        rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+    );
+    Ok(())
 }
 async fn approval_contract(
     fixture: &Fixture,
@@ -214,12 +246,12 @@ async fn download_contract(
         .get(&download)
         .header("host", "mdm.example.test")
         .header("cookie", &cookie)
-        .header("Range", "bytes=16777210-")
+        .header("Range", format!("bytes={}-", bytes.len() - 7))
         .send()
         .await?;
     ensure!(
         partial.status() == StatusCode::PARTIAL_CONTENT
-            && partial.bytes().await?.as_ref() == &bytes[16777210..]
+            && partial.bytes().await?.as_ref() == &bytes[bytes.len() - 7..]
     );
     let rejected = client
         .get(&download)

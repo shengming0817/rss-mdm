@@ -50,7 +50,9 @@ fn s3_storage() -> Result<(tempfile::TempDir, Value)> {
 #[ignore = "MODULE=content.storage: real S3 product HTTP range, authorization and settlement"]
 async fn s3_product_http_contract() -> Result<()> {
     let (_secrets, storage) = s3_storage()?;
-    super::http::upload_contract(Fixture::with_storage(storage).await?).await
+    // HTTP authorization and recovery use a bounded payload within the host request budget.
+    // Large provider pieces and cross-piece ranges are exercised separately below.
+    super::http::upload_contract(Fixture::with_storage(storage).await?, 1024 * 1024 + 1).await
 }
 #[tokio::test]
 #[ignore = "MODULE=content.storage: durable PG control, real S3 fixed chunks and native snapshots"]
