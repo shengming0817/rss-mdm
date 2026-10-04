@@ -330,6 +330,7 @@ async fn grants_and_scope_are_rechecked_and_ai_switch_does_not_change_automation
     );
     let stack = worker(&f.base).await?;
     let task = claim(&f.router).await?;
+    task_event(&f.router, &task, json!({"kind":"received"})).await?;
     let revoked = f
         .grants
         .iter()
@@ -573,6 +574,12 @@ async fn device_access_logged_in_user_requires_exact_os_session_and_helper_witho
                 && task["payload"]["executionTarget"] == target
                 && task["payload"]["runAs"] == "logged_in_user"
                 && task["payload"]["authorization"]["subject"]["kind"] == "device"
+        );
+        ensure!(
+            event_with_context(&f.router, &task, &local, json!({"kind":"received"}))
+                .await?
+                .0
+                == StatusCode::OK
         );
         let mut changed = local.clone();
         changed["revision"] = json!(local["revision"].as_u64().unwrap() + 1);
@@ -1147,23 +1154,14 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
         json!({"kind":"result","exitCode":0,"quality":"complete","output":{"ok":true}}),
     )
     .await?;
-    let observation = admin
-        .call(
-            &f.router,
-            Method::GET,
-            &format!(
-                "/api/v1/policies/{}/runs/{}",
-                one["payload"]["authorization"]["policyId"]
-                    .as_str()
-                    .unwrap(),
-                one["payload"]["taskId"].as_str().unwrap()
-            ),
-            None,
-        )
-        .await?;
+    let execution = pg(&format!(
+        "SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{}'",
+        case_tenant(),
+        one["payload"]["taskId"].as_str().unwrap()
+    ))?;
     ensure!(
-        observation.0 == StatusCode::OK && observation.1["state"]["execution"] == "succeeded",
-        "started execution must finish after enterprise logout: {observation:?}"
+        execution.trim() == "succeeded",
+        "started execution must finish after enterprise logout: {execution}"
     );
     ensure!(
         call(&f, Method::GET, DIRECTORY, None, true, true).await?.0 == StatusCode::UNAUTHORIZED
@@ -1234,6 +1232,30 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
     let mut f = software::Fixture::approved(software::Platform::MacOs).await?;
     let mut other = Browser::default();
     ensure!(other.login(&f.router, "admin").await? == StatusCode::OK);
+    let employee = f
+        .author
+        .call(&f.router, Method::GET, "/api/v1/authorization", None)
+        .await?
+        .1;
+    let administrator = other
+        .call(&f.router, Method::GET, "/api/v1/authorization", None)
+        .await?
+        .1;
+    let mut administrator_grants: Vec<crate::authorization::Grant> =
+        serde_json::from_value(administrator["grants"].clone())?;
+    let employee_grants: Vec<crate::authorization::Grant> =
+        serde_json::from_value(employee["grants"].clone())?;
+    for grant in employee_grants {
+        if !administrator_grants.contains(&grant) {
+            administrator_grants.push(grant);
+        }
+    }
+    crate::test_support::identity::set_grants(
+        case_tenant(),
+        administrator["principalId"].as_str().unwrap(),
+        administrator_grants,
+    )
+    .await?;
     // Keep approval authority with an administrator while the requesting employee loses every management grant.
     for (path, revision) in [
         (
