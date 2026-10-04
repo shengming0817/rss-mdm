@@ -136,7 +136,7 @@ impl<'de> Deserialize<'de> for SummaryResult {
 #[serde(rename_all = "camelCase")]
 pub struct RunSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
-    authorization: Option<rss_mdm_agent_wire::runtime::ScriptAuthorization>,
+    authorization: Option<rss_mdm_agent_wire::runtime::TaskAuthorization>,
     #[serde(skip_serializing_if = "Option::is_none")]
     attempt_id: Option<Uuid>,
     task_id: Uuid,
@@ -162,7 +162,7 @@ pub type RunPage = Page<RunSummary, RunCursor>;
 #[serde(rename_all = "camelCase")]
 pub struct RunDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
-    authorization: Option<rss_mdm_agent_wire::runtime::ScriptAuthorization>,
+    authorization: Option<rss_mdm_agent_wire::runtime::TaskAuthorization>,
     #[serde(skip_serializing_if = "Option::is_none")]
     attempt_id: Option<Uuid>,
     task_id: Uuid,

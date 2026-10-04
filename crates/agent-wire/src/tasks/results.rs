@@ -260,13 +260,22 @@ impl SoftwareTaskResult {
         &self,
         task: &SoftwareTaskSpec,
     ) -> Result<SoftwareEvidenceAssessment, WireError> {
+        self.assess_execution(task.intent, task.definition_digest, &task.steps)
+    }
+    /// Assess server-retained immutable execution evidence without creating Start authority.
+    pub fn assess_execution(
+        &self,
+        intent: SoftwareTaskIntent,
+        definition_digest: [u8; 32],
+        steps: &[SoftwareTaskStep],
+    ) -> Result<SoftwareEvidenceAssessment, WireError> {
         use SoftwareEvidenceAssessment as A;
-        self.validate_association(task)?;
+        self.validate_association(intent, definition_digest, steps)?;
         if self.steps.iter().any(|step| step.after.is_unknown()) {
             return Ok(A::Unknown);
         }
         let reboot = self.steps.iter().any(|step| step.reboot_required);
-        let reboot_allowed = self.steps.iter().zip(&task.steps).all(|(result, step)| {
+        let reboot_allowed = self.steps.iter().zip(steps).all(|(result, step)| {
             !result.reboot_required || step.action.reboot == SoftwareTaskReboot::Report
         });
         if reboot {
@@ -276,21 +285,21 @@ impl SoftwareTaskResult {
                 A::Unsatisfied
             });
         }
-        let matches =
-            self.steps
-                .iter()
-                .zip(&task.steps)
-                .enumerate()
-                .all(|(index, (result, step))| {
-                    let intent = if index + 1 == task.steps.len() {
-                        task.intent
-                    } else {
-                        SoftwareTaskIntent::Install
-                    };
-                    result
-                        .after
-                        .satisfies(intent, &step.action.detected_version())
-                });
+        let matches = self
+            .steps
+            .iter()
+            .zip(steps)
+            .enumerate()
+            .all(|(index, (result, step))| {
+                let intent = if index + 1 == steps.len() {
+                    intent
+                } else {
+                    SoftwareTaskIntent::Install
+                };
+                result
+                    .after
+                    .satisfies(intent, &step.action.detected_version())
+            });
         Ok(if matches {
             A::Satisfied
         } else {
@@ -298,15 +307,20 @@ impl SoftwareTaskResult {
         })
     }
     /// Evidence from another step, target, package or native scope cannot satisfy this task.
-    fn validate_association(&self, task: &SoftwareTaskSpec) -> Result<(), WireError> {
+    fn validate_association(
+        &self,
+        intent: SoftwareTaskIntent,
+        definition_digest: [u8; 32],
+        steps: &[SoftwareTaskStep],
+    ) -> Result<(), WireError> {
         self.validate()?;
-        if self.definition_digest != task.definition_digest
-            || self.intent != task.intent
-            || self.steps.len() != task.steps.len()
+        if self.definition_digest != definition_digest
+            || self.intent != intent
+            || self.steps.len() != steps.len()
         {
             return Err(WireError::InvalidValue);
         }
-        for (result, step) in self.steps.iter().zip(&task.steps) {
+        for (result, step) in self.steps.iter().zip(steps) {
             if result.step_digest != step.digest()?
                 || result.target != step.target
                 || result.package != step.action.package

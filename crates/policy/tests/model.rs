@@ -1,5 +1,5 @@
 use rss_mdm_policy::*;
-use serde_json::json;
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 #[test]
@@ -151,7 +151,7 @@ fn native_delivery_source_and_ring_are_execution_semantics() {
 #[test]
 fn parameter_sources_and_self_service_have_independent_versions() {
     let id = Uuid::new_v4();
-    let mut value = json!({"scope":id,"action":{"kind":"execution","resource":{"id":"r","version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"parameters":{"path":{"kind":"fixed","value":"/Applications"},"name":{"kind":"input"}},"schedule":{"trigger":{"kind":"manual"},"misfire":{"kind":"coalesce_one"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null},"runLifetimeSeconds":300},"selfService":{"published":true,"displayName":"Repair","description":"Repair application","prerequisites":"","sideEffects":"Restart","category":"Support","keywords":[]}});
+    let mut value = json!({"scope":id,"action":{"kind":"execution","resource":{"id":"r","version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"parameters":{"path":{"kind":"fixed","value":"/Applications"},"name":{"kind":"input"}},"schedule":{"trigger":{"kind":"manual"},"misfire":{"kind":"coalesce_one"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null},"runLifetimeSeconds":300},"selfService":{"access":{"kind":"authenticated_user"},"published":true,"displayName":"Repair","description":"Repair application","prerequisites":"","sideEffects":"Restart","category":"Support","keywords":[]}});
     let apply = |old: Option<&Policy>, v: serde_json::Value| {
         Policy::apply(
             id,
@@ -240,5 +240,73 @@ fn input_is_exact_and_cannot_override_fixed_values() {
     }
     for invalid in [0, 3, 255] {
         assert!(serde_json::from_value::<ScriptRisk>(json!(invalid)).is_err());
+    }
+}
+
+#[test]
+fn self_service_requires_explicit_bounded_access_and_supports_only_available_software() {
+    let id = Uuid::new_v4();
+    let base = json!({"scope":id,"action":{"kind":"execution","resource":{"id":"r","version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"parameters":{},"runLifetimeSeconds":300},"selfService":{"access":{"kind":"device"},"published":true,"displayName":"Repair","description":"","prerequisites":"","sideEffects":"","category":"Support","keywords":[]}});
+    let mut missing = base.clone();
+    missing["selfService"]
+        .as_object_mut()
+        .unwrap()
+        .remove("access");
+    assert!(serde_json::from_value::<Definition>(missing).is_err());
+    for access in [
+        json!(null),
+        json!({"kind":"users","selectors":[]}),
+        json!({"kind":"users","selectors":[{"kind":"user_group","id":id},{"kind":"user_group","id":id}]}),
+        json!({"kind":"users","selectors":(0..257).map(|_|json!({"kind":"user_group","id":Uuid::new_v4()})).collect::<Vec<_>>()}),
+    ] {
+        let mut invalid = base.clone();
+        invalid["selfService"]["access"] = access;
+        assert!(
+            serde_json::from_value::<Definition>(invalid)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
+    let mut draft = base.clone();
+    draft["selfService"]["access"] = Value::Null;
+    draft["selfService"]["published"] = json!(false);
+    assert!(
+        serde_json::from_value::<Definition>(draft)
+            .unwrap()
+            .validate()
+            .is_ok()
+    );
+    for kind in ["device", "authenticated_user"] {
+        let mut valid = base.clone();
+        valid["selfService"]["access"] = json!({"kind":kind});
+        assert!(
+            serde_json::from_value::<Definition>(valid)
+                .unwrap()
+                .validate()
+                .is_ok()
+        );
+    }
+    for intent in [
+        "available_install",
+        "required_install",
+        "explicit_uninstall",
+    ] {
+        let mut software = base.clone();
+        software["action"] = json!({"kind":"software","resource":{"kind":"software","id":"acme","version":"1","variants":{"macos_aarch64":"default"}},"delivery":{"kind":"direct"},"intent":intent,"admissionOperation":id,"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":id,"opensAt":0}]}});
+        assert_eq!(
+            serde_json::from_value::<Definition>(software.clone())
+                .unwrap()
+                .validate()
+                .is_ok(),
+            intent == "available_install"
+        );
+        software["selfService"]["riskLevel"] = json!(1);
+        assert!(
+            serde_json::from_value::<Definition>(software)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
     }
 }

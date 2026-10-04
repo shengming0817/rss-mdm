@@ -1,5 +1,20 @@
 {
   "$defs": {
+    "ExecutionIdentity": {
+      "description": "Required operating-system execution identity.",
+      "oneOf": [
+        {
+          "const": "system",
+          "description": "Service identity.",
+          "type": "string"
+        },
+        {
+          "const": "logged_in_user",
+          "description": "Current logged-in user, without fallback.",
+          "type": "string"
+        }
+      ]
+    },
     "ScriptParameterSource": {
       "description": "Public source of one Resource-declared parameter.",
       "oneOf": [
@@ -51,44 +66,10 @@
         }
       ]
     },
-    "ScriptResource": {
-      "additionalProperties": false,
-      "description": "Exact Resource identity accompanying its signed digest.",
-      "properties": {
-        "id": {
-          "description": "Logical Resource identity.",
-          "type": "string"
-        },
-        "variant": {
-          "description": "Exact selected variant.",
-          "type": "string"
-        },
-        "version": {
-          "description": "Immutable Resource version.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "id",
-        "version",
-        "variant"
-      ],
-      "type": "object"
-    },
     "SelfServiceDirectoryItem": {
       "additionalProperties": false,
       "description": "One currently authorized script and its Resource-owned parameter schema.",
       "properties": {
-        "parameterSchema": {
-          "description": "Resource-owned JSON Schema for full resolved parameters."
-        },
-        "parameterSources": {
-          "additionalProperties": {
-            "$ref": "#/$defs/ScriptParameterSource"
-          },
-          "description": "Complete source map; Fixed values cannot be overridden.",
-          "type": "object"
-        },
         "policyId": {
           "description": "Logical Policy identity.",
           "format": "uuid",
@@ -105,13 +86,13 @@
           "format": "uuid",
           "type": "string"
         },
-        "resource": {
-          "$ref": "#/$defs/ScriptResource",
-          "description": "Exact selected Resource coordinates."
-        },
         "selfService": {
           "$ref": "#/$defs/SelfServiceMetadata",
           "description": "Normalized presentation and invocation settings."
+        },
+        "task": {
+          "$ref": "#/$defs/SelfServiceTask",
+          "description": "Closed task kind and the exact invocation interface."
         }
       },
       "required": [
@@ -119,9 +100,7 @@
         "policyRevision",
         "policyVersion",
         "selfService",
-        "resource",
-        "parameterSources",
-        "parameterSchema"
+        "task"
       ],
       "type": "object"
     },
@@ -183,6 +162,144 @@
         "keywords",
         "allowAi",
         "riskLevel"
+      ],
+      "type": "object"
+    },
+    "SelfServiceTask": {
+      "description": "One directory interface; software does not inherit script parameter semantics.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Resource-owned script execution interface.",
+          "properties": {
+            "kind": {
+              "const": "script",
+              "type": "string"
+            },
+            "parameterSchema": {
+              "description": "Full resolved parameter constraints owned by Resource."
+            },
+            "parameterSources": {
+              "additionalProperties": {
+                "$ref": "#/$defs/ScriptParameterSource"
+              },
+              "description": "Complete sources for script parameters.",
+              "type": "object"
+            },
+            "resource": {
+              "$ref": "#/$defs/TaskResource",
+              "description": "Exact Resource selection."
+            },
+            "runAs": {
+              "$ref": "#/$defs/ExecutionIdentity",
+              "description": "Required operating-system identity."
+            }
+          },
+          "required": [
+            "kind",
+            "resource",
+            "runAs",
+            "parameterSources",
+            "parameterSchema"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Explicit request for approved AvailableInstall software.",
+          "properties": {
+            "kind": {
+              "const": "software",
+              "type": "string"
+            },
+            "resource": {
+              "$ref": "#/$defs/TaskResource",
+              "description": "Exact Resource selection."
+            },
+            "runAs": {
+              "$ref": "#/$defs/ExecutionIdentity",
+              "description": "Required operating-system identity of the root operation."
+            },
+            "target": {
+              "$ref": "#/$defs/SoftwareExecutionTarget",
+              "description": "Exact effect target, distinct from enterprise login."
+            }
+          },
+          "required": [
+            "kind",
+            "resource",
+            "runAs",
+            "target"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SoftwareExecutionTarget": {
+      "description": "Concrete effect target bound before an Offer is signed.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Device installation or provisioning; user registration is a different target.",
+          "properties": {
+            "kind": {
+              "const": "device",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One exact live interactive OS account and login generation.",
+          "properties": {
+            "identity": {
+              "description": "Exact SID/UID.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "user",
+              "type": "string"
+            },
+            "sessionId": {
+              "description": "Exact login generation.",
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "identity",
+            "sessionId"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TaskResource": {
+      "additionalProperties": false,
+      "description": "Exact Resource identity accompanying its signed digest.",
+      "properties": {
+        "id": {
+          "description": "Logical Resource identity.",
+          "type": "string"
+        },
+        "variant": {
+          "description": "Exact selected variant.",
+          "type": "string"
+        },
+        "version": {
+          "description": "Immutable Resource version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "variant"
       ],
       "type": "object"
     }

@@ -320,7 +320,7 @@ END $$;
 COMMIT;
 "#,
         TENANT = case_tenant(),
-        execution_context = serde_json::json!({"revision":1,"osVersion":[14,0,0,0],"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false}),
+        execution_context = serde_json::json!({"revision":1,"osVersion":[14,0,0,0],"userHelper":true,"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false}),
     ))?;
     let mut devices = vec![canonical.to_owned()];
     devices.extend((1..=count).map(|n| format!("restart-agent-{n:03}")));

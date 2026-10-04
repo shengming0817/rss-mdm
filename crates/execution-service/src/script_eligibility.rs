@@ -82,6 +82,21 @@ pub async fn require_in(
     target: &Target,
     frozen: &crate::action_contract::FrozenAction,
 ) -> Result<bool> {
+    let Some(binding) = channels::agent_binding_in(tx, store.clone(), target.registration).await?
+    else {
+        return Ok(false);
+    };
+    let platform = match frozen.input.platform {
+        Platform::Windows => wire::TaskPlatform::Windows,
+        Platform::Macos => wire::TaskPlatform::Macos,
+    };
+    if frozen
+        .execution_identity()
+        .execution_target(platform, &binding.execution_context)
+        .is_err()
+    {
+        return Ok(false);
+    }
     Ok(check_in(
         tx,
         store,

@@ -214,13 +214,51 @@ impl ScheduledPolicy {
         run: &Run,
         now: i64,
     ) -> Result<bool> {
-        if !self.authorized_in(service, tx, &run.target, now).await? {
-            return Ok(false);
+        match &run.invocation {
+            Some(invocation) => {
+                invocation
+                    .valid_in(service, tx, self, &run.target, now)
+                    .await
+            }
+            None if matches!(self, Self::Software(v) if v.assignment.intent() == rss_mdm_policy::SoftwareIntent::AvailableInstall) => {
+                Ok(false)
+            }
+            None => self.authorized_in(service, tx, &run.target, now).await,
         }
-        match (&run.invocation, self) {
-            (Some(invocation), Self::Script(script)) => invocation.valid_in(tx, script, now).await,
-            (Some(_), _) => Ok(false),
-            (None, _) => Ok(true),
+    }
+
+    /// Completion keeps current business authority without requiring a fresh executor context.
+    /// Capability and OS helper admission remains mandatory for every new Offer and Start.
+    pub async fn completion_authorized_in(
+        &self,
+        service: &crate::ExecutionService,
+        tx: &mut PgTransaction<'_>,
+        target: &Target,
+        now: i64,
+    ) -> Result<bool> {
+        if let Self::Script(v) = self {
+            return v
+                .authorized_in(&service.source, tx, &target.device, now)
+                .await;
+        }
+        if let Self::Software(v) = self {
+            let Some((platform, architecture)) =
+                agent_profile_in(service, tx, target.registration).await?
+            else {
+                return Ok(false);
+            };
+            v.assignment
+                .authorized_in(
+                    &service.admission(),
+                    tx,
+                    &target.device,
+                    platform,
+                    architecture,
+                    now,
+                )
+                .await
+        } else {
+            self.authorized_in(service, tx, target, now).await
         }
     }
     pub async fn withdrawn_in(
@@ -233,9 +271,9 @@ impl ScheduledPolicy {
         match self {
             Self::Script(v) => v.withdrawn_in(&service.source, tx, &target.device).await,
             Self::Native(v) => v.withdrawn_in(&service.source, tx, &target.device).await,
-            Self::Software(_) | Self::Enrollment(_) => {
-                Ok(!self.authorized_in(service, tx, target, now).await?)
-            }
+            Self::Software(_) | Self::Enrollment(_) => Ok(!self
+                .completion_authorized_in(service, tx, target, now)
+                .await?),
         }
     }
     pub async fn task(
@@ -258,12 +296,12 @@ impl ScheduledPolicy {
                     )
                 } else {
                     let authorization = if v.policy().is_some() {
-                        wire::ScriptAuthorization::Policy {
+                        wire::TaskAuthorization::Policy {
                             policy_id: v.owner,
                             policy_version: v.id,
                         }
                     } else {
-                        wire::ScriptAuthorization::RemoteOperation { operation_id: v.id }
+                        wire::TaskAuthorization::RemoteOperation { operation_id: v.id }
                     };
                     (
                         authorization,
@@ -282,6 +320,14 @@ impl ScheduledPolicy {
                     authorization,
                     parameters,
                     run.deadline,
+                    &crate::channels::agent_binding_in(
+                        tx,
+                        service.agent_store.clone(),
+                        target.registration,
+                    )
+                    .await?
+                    .ok_or(Error::Forbidden)?
+                    .execution_context,
                 )?)
             }
             Self::Software(v) => {
@@ -312,6 +358,15 @@ impl ScheduledPolicy {
                     .as_ref()
                     .try_into()
                     .map_err(|_| Error::Malformed)?;
+                let run = load_run(tx, issue.run).await?;
+                let authorization = run
+                    .invocation
+                    .as_ref()
+                    .map(|i| i.authorization.clone())
+                    .unwrap_or(wire::TaskAuthorization::Policy {
+                        policy_id: v.owner,
+                        policy_version: v.id,
+                    });
                 let spec = wire::SoftwareTaskSpec {
                     wire_version: wire::WIRE_VERSION,
                     tenant_id: checked_input(Uuid::parse_str(&tx.tenant_id().to_string()))?,
@@ -332,6 +387,7 @@ impl ScheduledPolicy {
                     expires_at: issue.expiry,
                     steps,
                     execution_context: binding.execution_context,
+                    authorization,
                     definition_digest: digest,
                     intent: match v.assignment.intent() {
                         rss_mdm_policy::SoftwareIntent::RequiredInstall

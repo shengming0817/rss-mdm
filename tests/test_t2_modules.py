@@ -9,6 +9,11 @@ from ci_impact import select_inputs, SelectionError
 
 
 class ModuleImpactTests(unittest.TestCase):
+    def test_self_service_consumes_trusted_subject_and_session_authority(self):
+        for path in ('crates/authorization-service/src/evaluate.rs',
+                     'crates/authorization-service/src/session.rs'):
+            self.assertIn('planning.self_service', select_inputs([path]).modules, path)
+
     def test_agent_pki_consumes_authorization_registration_audit_and_tls_inputs(self):
         for path in ('crates/authorization-service/src/context.rs',
                      'crates/registration-service/src/enrollment/store.rs',
@@ -35,7 +40,7 @@ class ModuleImpactTests(unittest.TestCase):
         cases={
             'crates/execution-service/src/actions/output.rs': {'execution.agent.delivery'},
             'crates/execution-service/src/actions/native_collection.rs': {'windows.management','apple.collection'},
-            'crates/execution-service/src/actions/recovery.rs': {'windows.management','apple.collection','execution.agent.recovery','execution.software.recovery'},
+            'crates/execution-service/src/actions/recovery.rs': {'windows.management','apple.collection','execution.agent.recovery','execution.software.recovery','installation.upgrade_runtime'},
         }
         for path,expected in cases.items():
             selected=select_inputs([path])
@@ -272,7 +277,7 @@ class ModuleImpactTests(unittest.TestCase):
 
     def test_shared_registration_fixture_selects_only_direct_consumers(self):
         self.assertEqual(self.selected('crates/app/tests/support/agent.rs'),
-                         {'planning.self_service','agent.registration','agent.reports','planning.remote','execution.agent.poll','execution.agent.recovery','planning.onboarding','execution.commands.onboarding','execution.agent.delivery','execution.software.recovery','planning.agent_policy','execution.software.offer','execution.agent.history','assets.http','execution.agent.content','apple.onboarding','planning.software','planning.http','execution.software.content','planning.frequency','execution.commands.windows','software.http'})
+                         {'installation.upgrade_runtime','planning.self_service','agent.registration','agent.reports','planning.remote','execution.agent.poll','execution.agent.recovery','planning.onboarding','execution.commands.onboarding','execution.agent.delivery','execution.software.recovery','planning.agent_policy','execution.software.offer','execution.agent.history','assets.http','execution.agent.content','apple.onboarding','planning.software','planning.http','execution.software.content','planning.frequency','execution.commands.windows','software.http'})
 
     def test_content_range_selects_real_download_consumers(self):
         self.assertEqual(self.selected('crates/content-service/src/range.rs'),

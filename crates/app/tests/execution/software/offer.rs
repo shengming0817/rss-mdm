@@ -131,11 +131,10 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
         json!({"action":"put","enabled":true,"definition":authored("available_install", &first_operation)}),
     )
     .await?;
-    let optional = claim(&router).await?;
+    let poll = agent(&router,"/api/v1/agent/runtime/tasks/claim",Some(json!({"wireVersion":1,"executionContext":context(Platform::MacOs),"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
     ensure!(
-        optional["payload"]["intent"] == "install"
-            && optional["payload"]["startMode"] == "user_initiated",
-        "optional: {optional}"
+        poll.0 == StatusCode::OK && poll.1["task"].is_null(),
+        "AvailableInstall must never queue before an explicit request"
     );
     let awaiting = author
         .call(
@@ -146,55 +145,7 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
         )
         .await?;
     ensure!(
-        awaiting.1["stages"][0]["reported"] == 0,
-        "self-service task auto-reported: {awaiting:?}"
-    );
-    ensure!(
-        awaiting.1["stages"][0]["waitingUser"] == 1,
-        "optional offer not visible as waiting_user: {awaiting:?}"
-    );
-    let optional_detail = author
-        .call(
-            &router,
-            Method::GET,
-            &format!(
-                "/api/v1/policies/{available}/runs/{}",
-                optional["payload"]["taskId"].as_str().unwrap()
-            ),
-            None,
-        )
-        .await?;
-    ensure!(
-        optional_detail.1["userAction"] == "waiting_user",
-        "optional run missing user wait: {optional_detail:?}"
-    );
-    ensure!(
-        event(&router, &optional, json!({"kind":"received"}))
-            .await?
-            .0
-            == StatusCode::OK
-    );
-    ensure!(event(&router, &optional, json!({"kind":"start"})).await?.0 == StatusCode::OK);
-    ensure!(
-        event(
-            &router,
-            &optional,
-            result_event(&optional, "install", Some(17), "present", false)?
-        )
-        .await?
-        .0 == StatusCode::OK
-    );
-    let optional_status = author
-        .call(
-            &router,
-            Method::GET,
-            &format!("/api/v1/policies/{available}/software/rollout"),
-            None,
-        )
-        .await?;
-    ensure!(
-        optional_status.1["stages"][0]["verifiedSuccess"] == 1,
-        "detector must be independent of installer exit: {optional_status:?}"
+        awaiting.1["stages"][0]["reported"] == 0 && awaiting.1["stages"][0]["waitingUser"] == 0
     );
     write(
         &mut author,

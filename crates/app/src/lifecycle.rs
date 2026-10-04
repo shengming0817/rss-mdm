@@ -225,6 +225,13 @@ pub async fn serve(
                             )
                             .await
                             .map_err(|e| ProcessError::at("startup.flow", e))?;
+                        let identity = crate::identity::Identity::connect(
+                            &compiled.config,
+                            compiled.identity_management.clone(),
+                            |resource| startup.stage_resource(resource),
+                        )
+                        .await
+                        .map_err(|error| ProcessError::at("startup.identity", error))?;
                         let execution = crate::execution_assembly::open(
                             &compiled.config,
                             protection,
@@ -232,6 +239,12 @@ pub async fn serve(
                             content,
                             planning.publications.services.clone(),
                             rss_device_command_postgres::CommandClock::Postgres,
+                            Arc::new(
+                                rss_mdm_authorization_service::session::SessionAuthority::new(
+                                    identity.authority.clone(),
+                                    identity.tenant,
+                                ),
+                            ),
                         )
                         .await
                         .map_err(|e| ProcessError::at("startup.execution", e))?;
@@ -258,13 +271,6 @@ pub async fn serve(
                         let listen = compiled.config.listen;
                         let tenant = compiled.config.identity.tenant_id.clone();
                         let gateway = compiled.config.trusted_gateway;
-                        let identity = crate::identity::Identity::connect(
-                            &compiled.config,
-                            compiled.identity_management.clone(),
-                            |resource| startup.stage_resource(resource),
-                        )
-                        .await
-                        .map_err(|error| ProcessError::at("startup.identity", error))?;
                         let identity_audit = crate::identity_audit::Worker::open(
                             &compiled.config,
                             identity.audit_readiness.clone(),

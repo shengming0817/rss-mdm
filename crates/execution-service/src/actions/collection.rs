@@ -193,6 +193,7 @@ pub async fn finish(
     run: &mut Run,
     result: &rss_mdm_agent_wire::runtime::TaskResult,
     allowed: bool,
+    effect_allowed: bool,
     now: i64,
 ) -> Result<()> {
     use rss_mdm_agent_wire::runtime::OutputQuality;
@@ -213,7 +214,7 @@ pub async fn finish(
         && run
             .state
             .trusts_result(now, frozen.definition.spec().timeout_seconds);
-    if !allowed {
+    if !effect_allowed {
         run.state
             .uncertain_result(run.state.attempt().ok_or(crate::Error::Conflict)?)?;
     } else {

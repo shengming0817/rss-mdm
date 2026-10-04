@@ -99,6 +99,7 @@ pub(crate) async fn open(
         Arc<rss_mdm_software_service::publication::PublicationService>,
     >,
     command_clock: rss_device_command_postgres::CommandClock,
+    sessions: Arc<rss_mdm_authorization_service::session::SessionAuthority>,
 ) -> std::result::Result<Assembly, Error> {
     let bad = || Error::Configuration(crate::ConfigIssue::Execution);
     let database = &config.execution.database;
@@ -244,6 +245,7 @@ pub(crate) async fn open(
         ));
         let service = Arc::new(ExecutionService::new(
             rss_mdm_execution_service::Dependencies {
+                sessions,
                 source,
                 protection: protection.clone(),
                 inputs: inputs.clone(),

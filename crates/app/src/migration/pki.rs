@@ -143,11 +143,10 @@ async fn prepare_on(
             .fetch_all(&mut *tx)
             .await
             .map_err(|_| invalid())?;
-    let baseline: Vec<_> = units()
-        .into_iter()
-        .filter(|(n, _)| *n != "device-pki-v1")
-        .collect();
-    if !accepted_ledger(&installed, &baseline) {
+    if !pre_pki_manifests()
+        .iter()
+        .any(|baseline| accepted_ledger(&installed, baseline))
+    {
         return Err(invalid());
     }
     let mut profiles = Vec::new();
@@ -188,6 +187,20 @@ async fn prepare_on(
     }
     tx.rollback().await.map_err(|_| invalid())?;
     Ok(profiles)
+}
+// Explicit offline upgrade accepts the complete manifests immediately before
+// device PKI, with or without the independently installed self-service unit.
+fn pre_pki_manifests() -> [Vec<(&'static str, &'static str)>; 2] {
+    [
+        baseline_units()
+            .into_iter()
+            .filter(|(name, _)| *name != "device-pki-v1")
+            .collect(),
+        units()
+            .into_iter()
+            .filter(|(name, _)| *name != "device-pki-v1")
+            .collect(),
+    ]
 }
 fn validate_profiles(input: &Upgrade) -> Result<()> {
     let targets = target_profiles(
@@ -244,10 +257,6 @@ async fn on(conn: &mut PgConnection, input: &Upgrade) -> Result<()> {
             "old signing work must be resolved and activated by the old executable",
         )
     };
-    let baseline: Vec<_> = units()
-        .into_iter()
-        .filter(|(name, _)| *name != "device-pki-v1")
-        .collect();
     // Preserve exact full-manifest admission; this does not relax migrate to accept a prefix.
     let installed: Vec<(String, String, bool)> =
         sqlx::query_as("SELECT name,digest,complete FROM public.mdm_migrations")
@@ -257,12 +266,12 @@ async fn on(conn: &mut PgConnection, input: &Upgrade) -> Result<()> {
     if accepted_ledger(&installed, &units()) {
         return migrate_units(conn, &input.installation, &units()).await;
     }
-    if installed.is_empty() || !accepted_ledger(&installed, &baseline) {
-        return Err(MigrationError::at(
-            "device-pki-v1",
-            "requires exact completed pre-PKI manifest",
-        ));
-    }
+    let baseline = pre_pki_manifests()
+        .into_iter()
+        .find(|baseline| !installed.is_empty() && accepted_ledger(&installed, baseline))
+        .ok_or_else(|| {
+            MigrationError::at("device-pki-v1", "requires exact completed pre-PKI manifest")
+        })?;
     migrate_units(conn, &input.installation, &baseline).await?;
     let checked = checked_trusts(input)?;
     let mut tx = conn.begin().await.map_err(|_| invalid())?;
@@ -289,7 +298,8 @@ async fn on(conn: &mut PgConnection, input: &Upgrade) -> Result<()> {
     .await?;
     tx.commit()
         .await
-        .map_err(|_| MigrationError::at("device-pki-v1", "commit acknowledgement unknown"))
+        .map_err(|_| MigrationError::at("device-pki-v1", "commit acknowledgement unknown"))?;
+    migrate_units(conn, &input.installation, &units()).await
 }
 async fn apply_legacy(
     tx: &mut PgConnection,

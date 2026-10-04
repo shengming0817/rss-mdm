@@ -25,7 +25,7 @@
         }
       ]
     },
-    "ScriptCancellation": {
+    "RunCancellation": {
       "description": "Public cancellation observation.",
       "oneOf": [
         {
@@ -41,112 +41,6 @@
         {
           "const": "confirmed",
           "description": "Cancellation acknowledged or stopped before execution.",
-          "type": "string"
-        }
-      ]
-    },
-    "ScriptDelivery": {
-      "description": "Public delivery observation, independent of the server reducer implementation.",
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "description": "Awaiting a device claim.",
-          "properties": {
-            "kind": {
-              "const": "queued",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "description": "Claimed by one leased attempt.",
-          "properties": {
-            "attempt": {
-              "description": "Attempt identity.",
-              "format": "uuid",
-              "type": "string"
-            },
-            "kind": {
-              "const": "claimed",
-              "type": "string"
-            },
-            "leaseUntil": {
-              "description": "Lease expiry in Unix seconds.",
-              "format": "int64",
-              "type": "integer"
-            }
-          },
-          "required": [
-            "kind",
-            "attempt",
-            "leaseUntil"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "description": "Receipt acknowledged by one leased attempt.",
-          "properties": {
-            "attempt": {
-              "description": "Attempt identity.",
-              "format": "uuid",
-              "type": "string"
-            },
-            "kind": {
-              "const": "received",
-              "type": "string"
-            },
-            "leaseUntil": {
-              "description": "Lease expiry in Unix seconds.",
-              "format": "int64",
-              "type": "integer"
-            }
-          },
-          "required": [
-            "kind",
-            "attempt",
-            "leaseUntil"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "ScriptExecution": {
-      "description": "Public execution observation. Unknown never authorizes a blind retry.",
-      "oneOf": [
-        {
-          "const": "not_started",
-          "description": "No Start has been admitted.",
-          "type": "string"
-        },
-        {
-          "const": "running",
-          "description": "Execution was admitted and is running.",
-          "type": "string"
-        },
-        {
-          "const": "succeeded",
-          "description": "A successful result was recorded.",
-          "type": "string"
-        },
-        {
-          "const": "failed",
-          "description": "A failed result was recorded.",
-          "type": "string"
-        },
-        {
-          "const": "waiting_reboot",
-          "description": "Execution awaits a reboot observation.",
-          "type": "string"
-        },
-        {
-          "const": "unknown",
-          "description": "The effect is uncertain.",
           "type": "string"
         }
       ]
@@ -243,43 +137,144 @@
       ],
       "type": "object"
     },
-    "ScriptRunState": {
-      "additionalProperties": false,
-      "description": "Current durable Run observation, without server-side reducer methods.",
-      "properties": {
-        "cancellation": {
-          "$ref": "#/$defs/ScriptCancellation",
-          "description": "Current cancellation observation."
+    "SelfServiceResult": {
+      "description": "Authorized evidence; execution state is available independently from sensitive output.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Script evidence returned only when output-read permissions permit it.",
+          "properties": {
+            "evidence": {
+              "$ref": "#/$defs/ScriptRunResult",
+              "description": "Original bounded script evidence."
+            },
+            "kind": {
+              "const": "script",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "evidence"
+          ],
+          "type": "object"
         },
-        "deadline": {
-          "description": "Final Run deadline in Unix seconds.",
-          "format": "int64",
-          "type": "integer"
-        },
-        "delivery": {
-          "$ref": "#/$defs/ScriptDelivery",
-          "description": "Current delivery observation."
-        },
-        "execution": {
-          "$ref": "#/$defs/ScriptExecution",
-          "description": "Current execution observation."
-        },
-        "startedAt": {
-          "description": "Server time at which execution was admitted.",
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
+        {
+          "additionalProperties": false,
+          "description": "Software outcome; process streams and native evidence stay in management reads.",
+          "properties": {
+            "effect": {
+              "$ref": "#/$defs/SelfServiceSoftwareEffect",
+              "description": "Current independent detection outcome."
+            },
+            "kind": {
+              "const": "software",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "effect"
+          ],
+          "type": "object"
         }
-      },
-      "required": [
-        "delivery",
-        "execution",
-        "cancellation",
-        "deadline"
-      ],
-      "type": "object"
+      ]
+    },
+    "SelfServiceSoftwareEffect": {
+      "description": "Closed software effect projection.",
+      "oneOf": [
+        {
+          "const": "verified",
+          "description": "Independently satisfied.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Independently failed.",
+          "type": "string"
+        },
+        {
+          "const": "waiting_reboot",
+          "description": "Waiting for reboot and detection.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "Effect unresolved; no blind retry.",
+          "type": "string"
+        }
+      ]
+    },
+    "TaskDelivery": {
+      "description": "Public delivery observation, independent of the server reducer implementation.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Awaiting a device claim.",
+          "properties": {
+            "kind": {
+              "const": "queued",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Claimed by one leased attempt.",
+          "properties": {
+            "attempt": {
+              "description": "Attempt identity.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "kind": {
+              "const": "claimed",
+              "type": "string"
+            },
+            "leaseUntil": {
+              "description": "Lease expiry in Unix seconds.",
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "attempt",
+            "leaseUntil"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Receipt acknowledged by one leased attempt.",
+          "properties": {
+            "attempt": {
+              "description": "Attempt identity.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "kind": {
+              "const": "received",
+              "type": "string"
+            },
+            "leaseUntil": {
+              "description": "Lease expiry in Unix seconds.",
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "attempt",
+            "leaseUntil"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "TaskDiagnostics": {
       "additionalProperties": false,
@@ -326,6 +321,41 @@
       ],
       "type": "object"
     },
+    "TaskExecution": {
+      "description": "Public execution observation. Unknown never authorizes a blind retry.",
+      "oneOf": [
+        {
+          "const": "not_started",
+          "description": "No Start has been admitted.",
+          "type": "string"
+        },
+        {
+          "const": "running",
+          "description": "Execution was admitted and is running.",
+          "type": "string"
+        },
+        {
+          "const": "succeeded",
+          "description": "A successful result was recorded.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "A failed result was recorded.",
+          "type": "string"
+        },
+        {
+          "const": "waiting_reboot",
+          "description": "Execution awaits a reboot observation.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "The effect is uncertain.",
+          "type": "string"
+        }
+      ]
+    },
     "TaskFailure": {
       "description": "Closed executor failure classification.",
       "oneOf": [
@@ -360,6 +390,44 @@
           "type": "string"
         }
       ]
+    },
+    "TaskRunState": {
+      "additionalProperties": false,
+      "description": "Current durable Run observation, without server-side reducer methods.",
+      "properties": {
+        "cancellation": {
+          "$ref": "#/$defs/RunCancellation",
+          "description": "Current cancellation observation."
+        },
+        "deadline": {
+          "description": "Final Run deadline in Unix seconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "delivery": {
+          "$ref": "#/$defs/TaskDelivery",
+          "description": "Current delivery observation."
+        },
+        "execution": {
+          "$ref": "#/$defs/TaskExecution",
+          "description": "Current execution observation."
+        },
+        "startedAt": {
+          "description": "Server time at which execution was admitted.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "delivery",
+        "execution",
+        "cancellation",
+        "deadline"
+      ],
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -392,7 +460,7 @@
     "result": {
       "anyOf": [
         {
-          "$ref": "#/$defs/ScriptRunResult"
+          "$ref": "#/$defs/SelfServiceResult"
         },
         {
           "type": "null"
@@ -406,7 +474,7 @@
       "type": "string"
     },
     "state": {
-      "$ref": "#/$defs/ScriptRunState",
+      "$ref": "#/$defs/TaskRunState",
       "description": "Current durable Run observation."
     }
   },

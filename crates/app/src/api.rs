@@ -95,15 +95,6 @@ pub(crate) async fn application_fixture(
             |_| {},
         )
         .await?;
-    let execution = crate::execution_assembly::open(
-        &config,
-        protection,
-        audit_store.clone(),
-        content,
-        planning.publications.services.clone(),
-        rss_device_command_postgres::CommandClock::Postgres,
-    )
-    .await?;
     let compiled = config.compile()?;
     let identity = match identity {
         Some(identity) => identity,
@@ -116,6 +107,21 @@ pub(crate) async fn application_fixture(
             .await?
         }
     };
+    let execution = crate::execution_assembly::open(
+        &compiled.config,
+        protection,
+        audit_store.clone(),
+        content,
+        planning.publications.services.clone(),
+        rss_device_command_postgres::CommandClock::Postgres,
+        Arc::new(
+            rss_mdm_authorization_service::session::SessionAuthority::new(
+                identity.authority.clone(),
+                identity.tenant,
+            ),
+        ),
+    )
+    .await?;
     let timeline = access.timeline(audit_store.clone(), identity.tenant, &planning.cursor_key)?;
     timeline
         .initialize()

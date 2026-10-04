@@ -21,7 +21,7 @@
     "version",
     "variant"
   ],
-  "title": "ScriptResource",
+  "title": "TaskResource",
   "type": "object",
-  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/script-resource.schema.json"
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/task-resource.schema.json"
 }

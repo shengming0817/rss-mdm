@@ -32,7 +32,7 @@ MDM 宿主使用同一份运行配置生成两份公开 bootstrap 输入：`ui.j
 Identity callback 固定 `/api/v1/identity/oidc/callback`，其它 API 保留后端路由和错误，不能落入 SPA。
 这些宿主配置和 HTTP 接缝由后端验证；前端消费和页面验收由前端 owner 负责。
 
-使用 candidate.json 固定的依赖和二进制 --describe 声明的安装单元。只接受空库或完全一致的当前安装记录；失败恢复见 [运维](operations.md)。
+使用 candidate.json 固定的依赖和二进制 --describe 声明的安装单元。接受空库或完全一致的当前安装记录；唯一前驱转换见[自助访问前驱升级](#自助访问前驱升级)，失败恢复见[运维](operations.md)。
 
 由数据库管理员创建专用数据库和 `mdm_owner`、`mdm_runtime`、`mdm_api`、`mdm_access` 基础角色。所有产品角色均禁止 SUPERUSER、BYPASSRLS 和高权继承；`mdm_owner` 需要该数据库与 public schema 的 CREATE 权限，但不持有 CREATEROLE。`mdm_api` 是组件 reader 的验证角色，不进入 serve 配置。
 
@@ -53,6 +53,14 @@ docker run --name rss-mdm --network host --mount type=bind,src=/private/mdm-runt
 ~~~
 
 IMAGE 替换为 candidate.json 固定镜像身份。秘密和配置文件由 UID 10001 持有且权限 0600。安装目录与运行目录分开准备；镜像不嵌入配置或私钥。
+
+## 自助访问前驱升级
+
+`self-service-access-v1` 只允许[迁移源码](../../crates/app/src/migration.rs)的 `baseline_units()` 所定义的唯一完整前驱安装升级。前驱的所有单元名称、SQL 摘要和完成标记必须精确一致；任意更早版本、部分前缀、缺失或未知单元、摘要漂移及未完成账本均拒绝。安装器在执行任何新增单元前，先校验原安装的 instance、target、lineage、epoch、租户名单与 audit mode 绑定，不能以新安装坐标转换旧库。当前完整账本重放不再次转换数据。
+
+升级先停止旧服务写入口，保留一致的数据库、内容与密钥备份，再使用候选的 `migrate` 和原 installation 输入。转换将缺少 `access` 的自助配置暂停发布并显式设为 null；管理员须填写访问依据后重新发布。旧自助调用依据永久撤回，未启动的旧自助任务终止。后台自动 Policy 与 RemoteOperation 尚未签发 Offer 的 queued Run 保留；已签发但未启动的旧后台 Offer 退休，在同一 Run 下按当前协议重新领取，不新建业务执行坐标。
+
+已启动任务按原 attempt 和不可变执行材料安全收尾，软件材料一次性规范化供结果关联校验。新 Start 仍核对当前注册、权限和确切 OS/helper；缺少新执行能力本身不撤回已启动任务，真实撤回、世代与期限等边界继续适用。原 signed Offer/permit 保留为审计证据，不重签，也不引入旧 signed DTO decoder、兼容路由或别名。Agent 后续领取和新 Start 必须消费当前协议及指纹，见[企业任务](../guides/enterprise-tasks.md#自助任务与调用参数)。失败或回退须恢复匹配的数据库、制品、内容与密钥，不能仅降级二进制或改写迁移账本。
 
 ## 桌面与 Agent 入口及服务器证书信任
 
@@ -86,17 +94,17 @@ docker run --rm --network host --mount type=bind,src=/private/mdm-operator,dst=/
 
 Linux host 网络使回环浏览器监听与同机 HTTPS 网关配合；Windows 协议由产品直接终止 TLS/mTLS。采用 `deployment/nginx.conf`，替换产品域名和证书路径；覆盖 X-Forwarded-For 为真实 peer，清空 Forwarded，限制真实 peer 的登录频率、连接数、正文与读取时间。后端只在真实 TCP peer 匹配 trusted_gateway 后采用覆盖后的单一来源地址。不能把浏览器监听直接暴露或接到未受控转发器。
 
-资源/计划/执行使用当前全新安装结构。产品配置中的 `flow.storage` 持有数据库连接及 target/lineage/epoch，`flow.publication` 持有发布数据库与 sources，`execution.database` 持有执行数据库连接；具体字段以[配置示例](../../fixtures/mdm-config.example.json)为准。旧综合 `management` 和混合 `tasks` 配置不再接受。`content.storage` 显式选择 `volume` 或启用版本控制的 HTTPS `s3`（[S3 配置示例](../../fixtures/mdm-content-s3.example.json)）；PostgreSQL 持有内容控制状态，`content` 配置共享内容仓，`task_signing` 单独配置任务签名；脚本任务要求两者齐备，软件入库/批准不需要任务私钥，原生协议的 `management` 监听配置保持独立。其它安装单元保持准确清单准入；设备 PKI 仅通过下述停写后的显式 `upgrade-pki` 转换，不提供通用旧库升级。
+资源/计划/执行使用当前全新安装结构。产品配置中的 `flow.storage` 持有数据库连接及 target/lineage/epoch，`flow.publication` 持有发布数据库与 sources，`execution.database` 持有执行数据库连接；具体字段以[配置示例](../../fixtures/mdm-config.example.json)为准。旧综合 `management` 和混合 `tasks` 配置不再接受。`content.storage` 显式选择 `volume` 或启用版本控制的 HTTPS `s3`（[S3 配置示例](../../fixtures/mdm-content-s3.example.json)）；PostgreSQL 持有内容控制状态，`content` 配置共享内容仓，`task_signing` 单独配置任务签名；脚本任务要求两者齐备，软件入库/批准不需要任务私钥，原生协议的 `management` 监听配置保持独立。历史转换仅限下述停写后的显式 `upgrade-pki` 和[自助访问前驱升级](#自助访问前驱升级)，其它安装单元保持准确清单准入，不提供通用旧库升级。
 
 内容与网关的大小及时间预算必须一致配置。随附 nginx 配置仅为精确上传路由关闭 request buffering，示例正文上限 8GiB；普通请求继续保留原限制。内容目录须以可写持久卷提供给服务，签名秘密仍使用独立只读挂载。
 
 ## 时间线索引恢复
 
-时间线索引是产品派生数据，`rss_audit` 持久事实仍是唯一来源。安装包含 timeline-service schema；旧 schema 继续按现有精确安装清单拒绝，不支持前缀升级。后台任务自动从 checkpoint 追赶，故障可见，恢复后继续读取原事实。
+时间线索引是产品派生数据，`rss_audit` 持久事实仍是唯一来源。安装包含 timeline-service schema；旧 schema 的接受集合遵循[自助访问前驱升级](#自助访问前驱升级)，不支持部分前缀升级。后台任务自动从 checkpoint 追赶，故障可见，恢复后继续读取原事实。
 
 需要重建时先停止本安装的所有服务实例，由数据库 owner 在一个事务内设置目标租户上下文，删除该租户的 `mdm_timeline.facts`，将其 checkpoint 的 `position`、`source_through` 置为 -1、`healthy` 置为 true，并为 `generation` 设置新的 UUID。保留既有游标签名秘密和全部 Audit/Ledger 数据，再启动服务。旧游标因世代变化被拒绝；历史追赶完成前，API 明确返回覆盖进度。不得删除 Audit 事实、修补审计回执或改写迁移清单来恢复索引。
 
-证书存档新增 `certificate-archive-schema-v1`，保持空库安装/准确安装记录重放，不升级旧候选账本。运行不需要存档主密码；存档通过现有租户授权管理授予独立权限，详见[证书目录](../../crates/certificate-archive-service/README.md)。
+安装包含 `certificate-archive-schema-v1`；包含该单元的完整前驱是否可升级，以[自助访问前驱升级](#自助访问前驱升级)为准，不为缺少该单元的旧候选补装。运行不需要存档主密码；存档通过现有租户授权管理授予独立权限，详见[证书目录](../../crates/certificate-archive-service/README.md)。
 
 ## Agent 专用 PKI
 

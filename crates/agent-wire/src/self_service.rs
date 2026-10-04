@@ -5,7 +5,7 @@ use uuid::Uuid;
 /// Origin attested by the authenticated system service, never taken from model arguments.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum ScriptCaller {
+pub enum SelfServiceCaller {
     /// Interactive employee action.
     Human,
     /// AI tool action forwarded by the system service.
@@ -14,13 +14,37 @@ pub enum ScriptCaller {
 /// Authenticated product user; contains no session credential.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ScriptActor {
+pub struct SelfServiceUser {
     /// Product tenant.
     pub tenant_id: Uuid,
     /// Identity instance.
     pub instance_id: Uuid,
     /// Authenticated principal.
     pub principal_id: Uuid,
+}
+/// Subject selected by the server's explicit Policy access basis.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SelfServiceSubject {
+    /// Device credential plus effective device scope; no enterprise session.
+    Device,
+    /// A live enterprise session matched by product authorization.
+    User {
+        /// Authenticated enterprise coordinates, without a credential.
+        user: SelfServiceUser,
+    },
+}
+impl SelfServiceSubject {
+    fn valid(&self, tenant: Uuid) -> bool {
+        match self {
+            Self::Device => true,
+            Self::User { user } => {
+                user.tenant_id == tenant
+                    && !user.instance_id.is_nil()
+                    && !user.principal_id.is_nil()
+            }
+        }
+    }
 }
 /// Server decision covered by the same signature as all script execution inputs.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
@@ -30,7 +54,7 @@ pub struct ScriptActor {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
-pub enum ScriptAuthorization {
+pub enum TaskAuthorization {
     /// Ordinary scheduled Policy execution.
     Policy {
         /// Policy identity.
@@ -48,9 +72,9 @@ pub enum ScriptAuthorization {
         /// Idempotency identity of the call.
         request_id: Uuid,
         /// Real employee identity.
-        actor: ScriptActor,
+        subject: SelfServiceSubject,
         /// Trusted service's caller classification.
-        source: ScriptCaller,
+        source: SelfServiceCaller,
         /// Policy identity.
         policy_id: Uuid,
         /// Configuration revision approved at invocation.
@@ -67,7 +91,7 @@ pub enum ScriptAuthorization {
         confirmed: bool,
     },
 }
-impl ScriptAuthorization {
+impl TaskAuthorization {
     /// Validate closed authorization coordinates and mandatory AI confirmation.
     pub fn validate(&self, tenant: Uuid) -> Result<(), super::runtime::WireError> {
         let valid = match self {
@@ -78,7 +102,7 @@ impl ScriptAuthorization {
             Self::RemoteOperation { operation_id } => !operation_id.is_nil(),
             Self::SelfService {
                 request_id,
-                actor,
+                subject,
                 source,
                 policy_id,
                 policy_revision,
@@ -88,14 +112,12 @@ impl ScriptAuthorization {
                 confirmed,
             } => {
                 !request_id.is_nil()
-                    && actor.tenant_id == tenant
-                    && !actor.instance_id.is_nil()
-                    && !actor.principal_id.is_nil()
+                    && subject.valid(tenant)
                     && !policy_id.is_nil()
                     && *policy_revision > 0
                     && !policy_version.is_nil()
                     && matches!(risk_level, 1 | 2)
-                    && (*source != ScriptCaller::Ai
+                    && (*source != SelfServiceCaller::Ai
                         || (*allow_ai && (*risk_level == 1 || *confirmed)))
             }
         };
@@ -109,7 +131,7 @@ impl ScriptAuthorization {
 /// Exact Resource identity accompanying its signed digest.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ScriptResource {
+pub struct TaskResource {
     /// Logical Resource identity.
     pub id: String,
     /// Immutable Resource version.
@@ -130,7 +152,7 @@ pub struct SelfServiceInvoke {
     /// Immutable execution version returned by the directory.
     pub policy_version: Uuid,
     /// Caller origin attested by the device service.
-    pub source: ScriptCaller,
+    pub source: SelfServiceCaller,
     /// Service-attested employee confirmation for these exact inputs.
     pub confirmed: bool,
     /// Exactly the Policy's Input parameters; Fixed values cannot be submitted.
@@ -141,7 +163,7 @@ pub struct SelfServiceInvoke {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SelfServiceDirectory {
     /// Caller origin.
-    pub source: ScriptCaller,
+    pub source: SelfServiceCaller,
     /// Last examined Policy identity.
     pub after: Option<Uuid>,
 }
@@ -211,12 +233,38 @@ pub struct SelfServiceDirectoryItem {
     pub policy_version: Uuid,
     /// Normalized presentation and invocation settings.
     pub self_service: SelfServiceMetadata,
-    /// Exact selected Resource coordinates.
-    pub resource: ScriptResource,
-    /// Complete source map; Fixed values cannot be overridden.
-    pub parameter_sources: BTreeMap<String, ScriptParameterSource>,
-    /// Resource-owned JSON Schema for full resolved parameters.
-    pub parameter_schema: serde_json::Value,
+    /// Closed task kind and the exact invocation interface.
+    pub task: SelfServiceTask,
+}
+/// One directory interface; software does not inherit script parameter semantics.
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum SelfServiceTask {
+    /// Resource-owned script execution interface.
+    Script {
+        /// Exact Resource selection.
+        resource: TaskResource,
+        /// Required operating-system identity.
+        run_as: crate::runtime::ExecutionIdentity,
+        /// Complete sources for script parameters.
+        parameter_sources: BTreeMap<String, ScriptParameterSource>,
+        /// Full resolved parameter constraints owned by Resource.
+        parameter_schema: serde_json::Value,
+    },
+    /// Explicit request for approved AvailableInstall software.
+    Software {
+        /// Exact Resource selection.
+        resource: TaskResource,
+        /// Required operating-system identity of the root operation.
+        run_as: crate::runtime::ExecutionIdentity,
+        /// Exact effect target, distinct from enterprise login.
+        target: crate::runtime::SoftwareExecutionTarget,
+    },
 }
 /// Durable acceptance receipt; retries return the same Run identity.
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -241,7 +289,7 @@ pub struct SelfServiceAccepted {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
-pub enum ScriptDelivery {
+pub enum TaskDelivery {
     /// Awaiting a device claim.
     Queued,
     /// Claimed by one leased attempt.
@@ -262,7 +310,7 @@ pub enum ScriptDelivery {
 /// Public execution observation. Unknown never authorizes a blind retry.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum ScriptExecution {
+pub enum TaskExecution {
     /// No Start has been admitted.
     NotStarted,
     /// Execution was admitted and is running.
@@ -279,7 +327,7 @@ pub enum ScriptExecution {
 /// Public cancellation observation.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum ScriptCancellation {
+pub enum RunCancellation {
     /// No cancellation requested.
     None,
     /// Cancellation requested but not acknowledged.
@@ -290,13 +338,13 @@ pub enum ScriptCancellation {
 /// Current durable Run observation, without server-side reducer methods.
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ScriptRunState {
+pub struct TaskRunState {
     /// Current delivery observation.
-    pub delivery: ScriptDelivery,
+    pub delivery: TaskDelivery,
     /// Current execution observation.
-    pub execution: ScriptExecution,
+    pub execution: TaskExecution,
     /// Current cancellation observation.
-    pub cancellation: ScriptCancellation,
+    pub cancellation: RunCancellation,
     /// Final Run deadline in Unix seconds.
     pub deadline: i64,
     /// Server time at which execution was admitted.
@@ -313,15 +361,43 @@ pub struct SelfServiceStatus {
     /// Current attempt identity, if claimed.
     pub attempt_id: Option<Uuid>,
     /// Current durable Run observation.
-    pub state: ScriptRunState,
+    pub state: TaskRunState,
     /// Earliest server admission time in Unix seconds.
     pub available_at: i64,
     /// Final Run deadline in Unix seconds.
     pub deadline: i64,
     /// Authorized result with native collection time and server receipt time.
-    #[schemars(required, schema_with = "nullable_schema::<ScriptRunResult>")]
+    #[schemars(required, schema_with = "nullable_schema::<SelfServiceResult>")]
     #[serde(deserialize_with = "crate::runtime::required_option")]
-    pub result: Option<ScriptRunResult>,
+    pub result: Option<SelfServiceResult>,
+}
+/// Authorized evidence; execution state is available independently from sensitive output.
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SelfServiceResult {
+    /// Script evidence returned only when output-read permissions permit it.
+    Script {
+        /// Original bounded script evidence.
+        evidence: ScriptRunResult,
+    },
+    /// Software outcome; process streams and native evidence stay in management reads.
+    Software {
+        /// Current independent detection outcome.
+        effect: SelfServiceSoftwareEffect,
+    },
+}
+/// Closed software effect projection.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SelfServiceSoftwareEffect {
+    /// Independently satisfied.
+    Verified,
+    /// Independently failed.
+    Failed,
+    /// Waiting for reboot and detection.
+    WaitingReboot,
+    /// Effect unresolved; no blind retry.
+    Unknown,
 }
 /// Server-persisted script evidence; only Resource output has a dynamic shape.
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]

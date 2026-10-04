@@ -210,7 +210,7 @@ pub enum Action {
     },
 }
 /// Desired software assignment behavior.
-#[derive(schemars::JsonSchema, Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(PartialEq, Eq, schemars::JsonSchema, Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SoftwareIntent {
     /// Enforce the approved software version.
@@ -271,7 +271,7 @@ pub struct Definition {
     pub scope: Uuid,
     /// Closed action or configuration semantics.
     pub action: Action,
-    /// Optional script self-service publication and presentation.
+    /// Optional task self-service publication and presentation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub self_service: Option<crate::SelfService>,
 }
@@ -290,10 +290,24 @@ impl Definition {
         }
         self.action.validate()?;
         if let Some(config) = &self.self_service {
-            if !matches!(self.action, Action::Execution { .. }) {
+            if !matches!(
+                self.action,
+                Action::Execution { .. }
+                    | Action::Software {
+                        intent: SoftwareIntent::AvailableInstall,
+                        ..
+                    }
+            ) {
                 return Err(Error::Malformed);
             }
             config.validate()?;
+            if matches!(self.action, Action::Software { .. })
+                && config
+                    .risk_level
+                    .is_some_and(|risk| risk != crate::ScriptRisk::CONFIRM)
+            {
+                return Err(Error::Malformed);
+            }
         }
         Ok(())
     }
