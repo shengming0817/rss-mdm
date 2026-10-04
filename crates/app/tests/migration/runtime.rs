@@ -233,6 +233,10 @@ async fn upgraded_started_software_still_observes_registration_revocation() -> R
     started_software(Withdrawal::Registration).await
 }
 
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "shared integration scenario keeps ordered upgrade and independent withdrawal assertions visible"
+)]
 async fn started_software(withdrawal: Withdrawal) -> Result<()> {
     let mut local = software::context(software::Platform::Windows);
     local["interactiveUser"] =
