@@ -40,7 +40,7 @@ impl AuditConfig {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Database {
     pub host: String,

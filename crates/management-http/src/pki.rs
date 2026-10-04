@@ -37,6 +37,7 @@ fn error(e: rss_mdm_pki_service::Error) -> Error {
         P::Conflict => Error::Conflict,
         P::Forbidden => Error::Forbidden,
         P::Unknown { .. } => Error::CommitUnknown,
+        P::Audit(e) => e.into(),
         P::Storage => Error::Unavailable(Failure::Database),
     }
 }
@@ -115,7 +116,7 @@ async fn publish(
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     body: Result<
-        Json<rss_mdm_pki_service::maintenance::Publication>,
+        Json<rss_mdm_pki_service::maintenance::PublicationSet>,
         axum::extract::rejection::JsonRejection,
     >,
 ) -> Result<axum::http::StatusCode, Error> {

@@ -49,14 +49,14 @@ pub(crate) async fn run<C: Send, R: Send>(
                 }
                 let fact =
                     Fact::business(a, &change.key, &change.fingerprint, 200, "success", None)
-                        .map_err(|_| Error::Storage)?;
+                        .map_err(|e| Error::Audit(e.into()))?;
                 store.append(tx, &fact, change.replay).await?;
                 a.mark_commit_started();
                 Ok(change.value)
             })
         })
         .await;
-    outcome.fold(
+    let result = outcome.fold(
         |r| {
             a.mark_committed();
             Ok(r.into_value())
@@ -68,7 +68,9 @@ pub(crate) async fn run<C: Send, R: Send>(
         },
         |_| {
             a.mark_rollback_failed();
-            Err(Error::Storage)
+            Err(Error::Audit(
+                rss_mdm_audit_integration::Error::RollbackFailed,
+            ))
         },
         |_| {
             Err(Error::Unknown {
@@ -76,13 +78,22 @@ pub(crate) async fn run<C: Send, R: Send>(
             })
         },
         |e| Err(error(e)),
-    )
+    );
+    if let Err(Error::Audit(error)) = &result {
+        eprintln!("device_pki_audit: {:?}", error.class());
+    }
+    result
 }
 
 fn error(e: rss_audit_postgres::TransactionError<Error>) -> Error {
     match e {
         rss_audit_postgres::TransactionError::Operation(e) => e,
-        _ => Error::Storage,
+        rss_audit_postgres::TransactionError::Audit(e) => {
+            Error::Audit(rss_mdm_audit_integration::Error::Audit(e))
+        }
+        rss_audit_postgres::TransactionError::Rollback { .. } => {
+            Error::Audit(rss_mdm_audit_integration::Error::RollbackFailed)
+        }
     }
 }
 pub async fn replay(

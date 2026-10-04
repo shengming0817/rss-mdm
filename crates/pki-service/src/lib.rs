@@ -33,6 +33,8 @@ pub enum Error {
     Forbidden,
     #[error("PKI persistence unavailable")]
     Storage,
+    #[error("PKI audit failure: {0}")]
+    Audit(#[from] rss_mdm_audit_integration::Error),
     #[error("PKI operation result unknown")]
     Unknown { attempt: Uuid },
 }
@@ -339,11 +341,5 @@ impl StepCa {
             .map_err(|_| Error::Unknown { attempt })?,
         );
         self.post("/revoke", attempt, body).await.map(|_| ())
-    }
-}
-
-impl From<rss_mdm_audit_integration::Error> for Error {
-    fn from(_: rss_mdm_audit_integration::Error) -> Self {
-        Self::Storage
     }
 }

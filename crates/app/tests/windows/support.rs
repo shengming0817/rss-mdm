@@ -139,7 +139,7 @@ impl Host {
             rss_device_command_postgres::CommandClock::Postgres,
             None,
             None,
-            Some("renewal-ca.pem"),
+            Some("renewal-window"),
             false,
             false,
         )
@@ -198,9 +198,9 @@ impl Host {
             serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json"))?;
         value["native_protocols"]["windows"] =
             serde_json::from_slice(&std::fs::read(root.join("windows.json"))?)?;
-        if let Some(ca) = ca {
-            value["native_protocols"]["windows"]["ca_certificate_file"] =
-                serde_json::json!(root.join(ca));
+        if ca.is_some() {
+            value["native_protocols"]["windows"]["lifetime"] =
+                serde_json::json!({"mode":"development", "seconds":6*86400});
         }
         value["native_protocols"]["windows"]["enrollment"]["origin"] =
             serde_json::json!(format!("https://localhost:{}", enroll.local_addr()?.port()));
@@ -210,6 +210,17 @@ impl Host {
             serde_json::json!(format!("https://localhost:{}", manage.local_addr()?.port()));
         value["native_protocols"]["windows"]["management"]["listen"] =
             serde_json::json!(manage.local_addr()?.to_string());
+        let trust_path = root.join(format!("host-trust-{}.json", manage.local_addr()?.port()));
+        let mut trust: rss_mdm_agent_wire::pki::Trust = serde_json::from_slice(&std::fs::read(
+            value["native_protocols"]["windows"]["trust_file"]
+                .as_str()
+                .unwrap(),
+        )?)?;
+        trust.origin = format!("https://localhost:{}", manage.local_addr()?.port());
+        std::fs::write(&trust_path, serde_json::to_vec(&trust)?)?;
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&trust_path, std::fs::Permissions::from_mode(0o600))?;
+        value["native_protocols"]["windows"]["trust_file"] = serde_json::json!(trust_path);
         value["identity"] = serde_json::from_slice::<serde_json::Value>(&std::fs::read(
             std::env::var("MDM_TEST_CONFIG")?,
         )?)?["identity"]
@@ -218,7 +229,6 @@ impl Host {
         let db: sqlx::postgres::PgConnectOptions = std::env::var("DATABASE_URL")?.parse()?;
         let management_password = root.join("management-password");
         std::fs::write(&management_password, "runtime-fixture")?;
-        use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&management_password, std::fs::Permissions::from_mode(0o600))?;
         value["flow"]["storage"]["database"] = serde_json::json!({"host":"localhost","port":db.get_port(),"name":db.get_database().unwrap(),"user":"mdm_flow_runtime","password_file":management_password,"ca_file":root.join("ca.crt")});
         value["execution"]["database"] = value["flow"]["storage"]["database"].clone();

@@ -25,7 +25,9 @@ impl From<rss_mdm_device_trust::Error> for Error {
     fn from(e: rss_mdm_device_trust::Error) -> Self {
         match e {
             rss_mdm_device_trust::Error::Malformed => Self::Malformed,
-            rss_mdm_device_trust::Error::Unauthorized => Self::Unauthorized,
+            rss_mdm_device_trust::Error::Unauthorized | rss_mdm_device_trust::Error::Revoked => {
+                Self::Unauthorized
+            }
             rss_mdm_device_trust::Error::Conflict => Self::Conflict,
             rss_mdm_device_trust::Error::Expired => Self::Expired,
         }

@@ -13,6 +13,8 @@ pub struct WindowsConfig {
     pub management: TlsEndpoint,
     pub trust_file: PathBuf,
     pub protocol_key_file: PathBuf,
+    #[serde(default)]
+    pub lifetime: certificate::Lifetime,
     pub provider_id: String,
     pub poll: rss_mdm_windows_mdm::provisioning::Poll,
     pub push: Option<WindowsPushConfig>,
@@ -108,7 +110,14 @@ impl Windows {
         {
             return Err(Error::Configuration(ConfigIssue::EnrollmentCa));
         }
+        if matches!(config.lifetime, certificate::Lifetime::Development { .. })
+            && (!config.enrollment.listen.ip().is_loopback()
+                || !config.management.listen.ip().is_loopback())
+        {
+            return Err(Error::Configuration(ConfigIssue::EnrollmentCa));
+        }
         let ca = certificate::WindowsDeviceTrust::from_trust(trust)
+            .and_then(|ca| ca.with_lifetime(config.lifetime))
             .map_err(|_| Error::Configuration(ConfigIssue::EnrollmentCa))?;
         let enrollment_tls =
             tls::configuration(&config.enrollment, Some(ca.enrollment_verifier()))?;

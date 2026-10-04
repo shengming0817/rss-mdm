@@ -163,7 +163,10 @@ impl SigningStore {
         let chain = match provider.sign(intent, now).await {
             Ok(chain) if validate(&chain) => chain,
             _ => {
-                let _ = self.settle(tenant, intent.attempt, &hash, None).await;
+                if let Err(error) = self.settle(tenant, intent.attempt, &hash, None).await {
+                    // The original dispatch remains unknown; retain the canonical audit diagnosis.
+                    return Err(error);
+                }
                 return Err(unknown());
             }
         };

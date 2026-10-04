@@ -38,6 +38,9 @@ services:
     volumes: ["${MDM_ENV_ROOT:?}/probe/nginx.conf:/tmp/input.conf:ro"]
     command: [nginx, -e, stderr, -c, /tmp/input.conf, -g, 'daemon off;']
   step-ca:
+    networks:
+      default:
+        aliases: ["${MDM_PKI_INTERNAL_HOST:-step-ca}"]
     profiles: [pki]
     image: ${MDM_STEP_CA_IMAGE:?}
     labels: *owner

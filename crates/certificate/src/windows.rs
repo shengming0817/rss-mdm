@@ -89,7 +89,28 @@ impl CheckedLeaf {
         self.fingerprint
     }
 }
+#[derive(Clone, Copy, Default, serde::Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Lifetime {
+    #[default]
+    Production,
+    Development {
+        seconds: u32,
+    },
+}
+impl Lifetime {
+    pub fn seconds(self) -> Result<i64, Error> {
+        match self {
+            Self::Production => Ok(90 * 86400),
+            Self::Development { seconds } if (60..=7 * 86400).contains(&seconds) => {
+                Ok(i64::from(seconds))
+            }
+            _ => Err(Error::Malformed),
+        }
+    }
+}
 pub struct WindowsDeviceTrust {
+    lifetime: Lifetime,
     pub trust: rss_mdm_device_trust::DeviceTrust,
 }
 impl WindowsDeviceTrust {
@@ -112,7 +133,15 @@ impl WindowsDeviceTrust {
         let der = rss_mdm_device_trust::decode(&active.certificate, 32768)?;
         let certificate = Certificate::from_der(&der).map_err(invalid)?;
         let _ = certificate;
-        Ok(Self { trust })
+        Ok(Self {
+            trust,
+            lifetime: Lifetime::Production,
+        })
+    }
+    pub fn with_lifetime(mut self, lifetime: Lifetime) -> Result<Self, Error> {
+        lifetime.seconds()?;
+        self.lifetime = lifetime;
+        Ok(self)
     }
     pub fn profile(
         &self,
@@ -125,7 +154,9 @@ impl WindowsDeviceTrust {
         if !valid_at(&certificate.tbs_certificate, now) {
             return Err(Error::Expired);
         }
-        let end = now.checked_add(90 * 86400).ok_or(Error::Malformed)?;
+        let end = now
+            .checked_add(self.lifetime.seconds()?)
+            .ok_or(Error::Malformed)?;
         if end as u64
             > certificate
                 .tbs_certificate

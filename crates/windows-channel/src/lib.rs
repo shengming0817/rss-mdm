@@ -55,6 +55,25 @@ pub struct Windows {
     protection: protection::Protection,
     configuration: String,
 }
+/// Canonical stable protocol identity, shared by runtime construction and controlled upgrade.
+pub fn protocol_identity(
+    enrollment_origin: &str,
+    management_origin: &str,
+    provider_id: &str,
+    protocol_key: &[u8],
+    poll: &rss_mdm_windows_mdm::provisioning::Poll,
+) -> Result<String, Error> {
+    poll.validate().map_err(|_| Error::Malformed)?;
+    let protection = protection::Protection::from_bytes(protocol_key)?;
+    Ok(enrollment::digest(&(
+        "mdm.windows.profile.v3",
+        poll,
+        enrollment_origin,
+        management_origin,
+        provider_id,
+        &protection.id,
+    )))
+}
 impl Windows {
     pub fn new(
         enrollment_origin: String,
@@ -67,14 +86,13 @@ impl Windows {
     ) -> Result<Self, Error> {
         poll.validate().map_err(|_| Error::Malformed)?;
         let protection = protection::Protection::from_bytes(protocol_key)?;
-        let configuration = enrollment::digest(&(
-            "mdm.windows.profile.v3",
-            &poll,
+        let configuration = protocol_identity(
             &enrollment_origin,
             &management_origin,
             &provider_id,
-            &protection.id,
-        ));
+            protocol_key,
+            &poll,
+        )?;
         Ok(Self {
             poll,
             push: None,

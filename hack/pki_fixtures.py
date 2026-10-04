@@ -69,15 +69,15 @@ def trust(root, purpose, origin, tenant, provisioner, kid, ca_origin):
 
 
 @contextmanager
-def running(root, env, *, case, windows=False, agent=False, agent_origin=None, agent_template=None):
+def running(root, env, *, case, windows=False, agent=False, agent_origin=None, agent_template=None, compose_file=None, providers=None, generation=None):
     import shutil
     case_root=Path(root).resolve()
     purpose='agent' if agent else 'windows'
     if agent and windows: raise RuntimeError('one CA database per device purpose is required')
-    root=case_root/'pki'/purpose;root.mkdir(mode=0o700,parents=True)
+    root=case_root/'pki'/(purpose+('-'+generation if generation else ''));root.mkdir(mode=0o700,parents=True)
     for name in ('ca.crt','server.crt','case.json'):
         shutil.copyfile(case_root/name,root/name);(root/name).chmod(0o600)
-    provider=Provider(root,hashlib.sha256((case+':'+purpose).encode()).hexdigest()[:20]);step=binary('step')
+    provider=Provider(root,hashlib.sha256((case+':'+purpose+(':'+generation if generation else '')).encode()).hexdigest()[:20], compose_file=compose_file, providers=providers);step=binary('step')
     subprocess.run(['openssl','pkcs8','-topk8','-nocrypt','-in',str(case_root/'server.key'),'-outform','DER',
                     '-out',str(case_root/'agent-tls.pk8')],check=True,capture_output=True,timeout=30)
     (case_root/'agent-tls.pk8').chmod(0o600)
@@ -86,7 +86,7 @@ def running(root, env, *, case, windows=False, agent=False, agent_origin=None, a
     def cli(*args):
         return subprocess.run([str(step),*map(str,args)],env=child,text=True,capture_output=True,timeout=30,check=True).stdout
     cli('ca','init','--deployment-type','standalone','--name','RSS Device PKI T2',
-        '--dns','localhost,step-ca,host.docker.internal','--address',f"0.0.0.0:{PKI_CA['port']}",
+        '--dns','localhost,step-ca,host.docker.internal,'+provider.internal_host,'--address',f"0.0.0.0:{PKI_CA['port']}",
         '--provisioner','rss-admin','--admin-subject','rss-admin','--password-file',password,'--remote-management')
     configuration=root/'step/config/ca.json';config=json.loads(configuration.read_text())
     config['kms']=dict(type='softkms')
@@ -114,6 +114,11 @@ def running(root, env, *, case, windows=False, agent=False, agent_origin=None, a
             restore(root)
             origin=provider.start();provider.wait(origin,'/health',root_certificate)
         if windows:
+            # Disposable actual issuer key is exported only outside the CA mount for adversarial leaves.
+            issuer_key=root/'windows-issuer-test.pk8'
+            subprocess.run(['openssl','pkcs8','-topk8','-nocrypt','-in',str(root/'step/secrets/intermediate_ca_key'),
+                '-passin','file:'+str(password),'-outform','DER','-out',str(issuer_key)],check=True,capture_output=True,timeout=30)
+            issuer_key.chmod(0o600)
             key=root/'windows-provisioner.pem'
             subprocess.run(['openssl','genpkey','-algorithm','RSA','-pkeyopt','rsa_keygen_bits:2048','-out',str(key)],check=True,capture_output=True,timeout=30)
             key.chmod(0o600)
@@ -135,12 +140,12 @@ def running(root, env, *, case, windows=False, agent=False, agent_origin=None, a
             value['endpoint']['private_key_file']=str(case_root/'agent-tls.pk8')
             if agent_origin:value['endpoint']['origin']=agent_origin
             value['trust_file']=str(trust(root,'agent',value['endpoint']['origin'],tenant,'rss-agent','agent-t2-key',origin))
-            private(case_root/'agent-pki.json',value)
+            private(case_root/('agent-pki'+('-'+generation if generation else '')+'.json'),value)
         if windows:
             value=json.loads((case_root/'windows.json').read_text())
             value.pop('ca_certificate_file',None);value.pop('ca_private_key_file',None)
             value['trust_file']=str(trust(root,'windows',value['management']['origin'],tenant,'rss-windows','windows-t2-key',origin))
-            private(case_root/'windows.json',value)
+            private(case_root/('windows'+('-'+generation if generation else '')+'.json'),value)
         providers_file=case_root/'device-pki.json'
         providers=json.loads(providers_file.read_text()) if providers_file.exists() else []
         trust_value=json.loads(Path(value['trust_file']).read_text())
@@ -148,10 +153,10 @@ def running(root, env, *, case, windows=False, agent=False, agent_origin=None, a
             tls_root_file=str(root_certificate),provisioner='rss-'+purpose,kid=purpose+'-t2-key',
             provisioner_key_file=str(root/(purpose+'-provisioner.pk8'))))
         private(providers_file,providers)
-        env['MDM_'+purpose.upper()+'_PKI_FIXTURES']=str(root)
+        env['MDM_'+purpose.upper()+'_PKI'+('_CANDIDATE' if generation else '')+'_FIXTURES']=str(root)
         if agent:
             # The same DB and frozen origin survive actual cold standby promotion.
-            standby=Provider(root,hashlib.sha256((case+':agent-standby').encode()).hexdigest()[:20])
+            standby=Provider(root,hashlib.sha256((case+':agent-standby'+(':'+generation if generation else '')).encode()).hexdigest()[:20], compose_file=compose_file, providers=providers, internal_host=provider.internal_host)
             origin=standby.promote_from(provider,origin)
             provider.reset()
             provider=standby

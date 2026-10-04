@@ -332,10 +332,10 @@ class Candidate:
         private(self.root/'windows.json',windows)
         private(self.root/'case.json',dict(tenant=self.tenant))
         env={**os.environ}
-        self.pki_stack.enter_context(running(self.root,env,case=self.name,windows=True))
+        windows_provider=self.pki_stack.enter_context(running(self.root,env,case=self.name,windows=True, compose_file=self.directory/'deployment/compose.yaml', providers=self.providers))
         agent_origin='https://localhost:'+self.compose('port','runtime-netns','9445',stage=Stage.PORT).rsplit(':',1)[1]
         self.agent_provider=self.pki_stack.enter_context(running(self.root,env,case=self.name,agent=True,agent_origin=agent_origin,
-                                            agent_template=self.directory/'deployment/agent-leaf.tpl'))
+                                            agent_template=self.directory/'deployment/agent-leaf.tpl', compose_file=self.directory/'deployment/compose.yaml', providers=self.providers))
         def copy_file(source):
             source=Path(source)
             target=self.runtime/(sha(source)[:32]+'-'+source.name)
@@ -349,7 +349,9 @@ class Candidate:
         agent=json.loads((self.root/'agent-pki.json').read_text());agent['endpoint']['listen']='0.0.0.0:9445'
         self.config['agent_pki']=copy(agent)
         providers=json.loads((self.root/'device-pki.json').read_text())
-        for provider in providers:provider['origin']=provider['origin'].replace('https://localhost:', 'https://host.docker.internal:')
+        for config, provider in zip(providers, [windows_provider, self.agent_provider], strict=True):
+            docker('network','connect', provider.owner.project+'_default', self.container('runtime-netns'), stage=Stage.SERVER)
+            config['origin']='https://'+provider.internal_host+':19443'
         self.config['device_pki']=copy(providers)
         self.agent_origin=agent_origin
         self.agent_port=int(agent_origin.rsplit(':',1)[1])

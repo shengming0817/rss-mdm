@@ -6,6 +6,8 @@ pub enum Error {
     Malformed,
     #[error("device trust rejected")]
     Unauthorized,
+    #[error("device identity or issuer revoked")]
+    Revoked,
     #[error("device trust rollback or conflict")]
     Conflict,
     #[error("device trust expired or not yet valid")]
@@ -176,6 +178,14 @@ struct Generation {
     crl: Crl,
     root_crl: Crl,
 }
+impl Generation {
+    fn issuer_revoked(&self) -> bool {
+        self.certificate != self.root
+            && self.root_crl.revoked.contains(&serial(
+                self.certificate.tbs_certificate.serial_number.as_bytes(),
+            ))
+    }
+}
 struct Snapshot {
     trust: Trust,
     generations: Vec<Generation>,
@@ -308,13 +318,6 @@ impl DeviceTrust {
             if certificate == root && issuer_crl.der != root_crl.der {
                 return Err(Error::Conflict);
             }
-            if certificate != root
-                && root_crl.revoked.contains(&serial(
-                    certificate.tbs_certificate.serial_number.as_bytes(),
-                ))
-            {
-                return Err(Error::Unauthorized);
-            }
             roots.add(CertificateDer::from(root_der)).map_err(invalid)?;
             crls.push(CertificateRevocationListDer::from(issuer_crl.der.clone()));
             if certificate != root {
@@ -361,11 +364,16 @@ impl DeviceTrust {
         Ok(self.inner.read().map_err(invalid)?.trust.clone())
     }
     pub fn active(&self) -> Result<Issuer, Error> {
-        self.public()?
-            .issuers
-            .into_iter()
-            .find(|g| g.mode == Mode::Active)
-            .ok_or(Error::Malformed)
+        let snapshot = self.inner.read().map_err(invalid)?;
+        let g = snapshot
+            .generations
+            .iter()
+            .find(|g| g.public.mode == Mode::Active)
+            .ok_or(Error::Malformed)?;
+        if g.issuer_revoked() {
+            return Err(Error::Revoked);
+        }
+        Ok(g.public.clone())
     }
     pub fn update(&self, trust: Trust, now: i64) -> Result<(), Error> {
         let mut old = self.inner.write().map_err(invalid)?;
@@ -560,6 +568,13 @@ impl DeviceTrust {
                 || now >= g.root_crl.next_update
             {
                 return Err(Error::Expired);
+            }
+            if g.issuer_revoked()
+                || g.crl
+                    .revoked
+                    .contains(&serial(leaf.tbs_certificate.serial_number.as_bytes()))
+            {
+                return Err(Error::Revoked);
             }
             let issuer = CertificateDer::from(g.certificate.to_der().map_err(invalid)?);
             snapshot

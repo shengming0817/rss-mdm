@@ -43,10 +43,12 @@ def private(path, content):
     return path
 
 class Environment:
-    def __init__(self, worktree=ROOT, *, group='main'):
+    def __init__(self, worktree=ROOT, *, group='main', compose_file=None, providers=None):
         if not re.fullmatch(r'[a-z][a-z0-9-]*', group):
             raise ValueError('invalid environment group')
         self.worktree = Path(worktree).resolve()
+        self.compose_file = Path(compose_file).resolve() if compose_file else ROOT/'deployment/compose.yaml'
+        self.providers = dict(providers or PROVIDERS)
         self.identity = project_name(self.worktree)
         self.project = self.identity + '-' + group
         self.root = self.worktree / 'artifacts/dev-environment' / group
@@ -72,9 +74,9 @@ class Environment:
                   'MDM_GATEWAY_TLS_CERT_FILE':tls['certificate_file'], 'MDM_GATEWAY_TLS_KEY_FILE':tls['key_file']} if gateway else {}
         return {**{k:v for k,v in os.environ.items() if not k.startswith('COMPOSE_') and k not in ('MDM_SERVER_IMAGE','MDM_WEB_IMAGE')}, **images,
                 'MDM_ENV_ROOT': str(self.root), 'MDM_WORKTREE_ID': self.identity,
-                'MDM_POSTGRES_IMAGE': PROVIDERS['postgres'], 'MDM_RUNTIME_IMAGE': PROVIDERS['runtime'],
-                'MDM_KEYCLOAK_IMAGE':PROVIDERS['keycloak'],'MDM_NGINX_IMAGE':PROVIDERS['nginx'],
-                'MDM_STEP_CA_IMAGE':PKI_CA['image'], 'MDM_STEP_CA_INTERNAL_PORT':str(PKI_CA['port']),
+                'MDM_POSTGRES_IMAGE': self.providers['postgres'], 'MDM_RUNTIME_IMAGE': self.providers['runtime'],
+                'MDM_KEYCLOAK_IMAGE':self.providers['keycloak'],'MDM_NGINX_IMAGE':self.providers['nginx'],
+                'MDM_STEP_CA_IMAGE':self.providers['step-ca'], 'MDM_STEP_CA_INTERNAL_PORT':str(PKI_CA['port']),
                 'MDM_PKI_ROOT':str(self.root/'pki'), 'MDM_PKI_USER':f'{os.getuid()}:{os.getgid()}',
                 'MDM_PKI_HOST_ADDRESS':'host-gateway',
                 **settings, **getattr(self,'extra',{})}
@@ -91,7 +93,7 @@ class Environment:
         if not configured.exists() and not any(os.environ.get(name) for name in names):return self.local_gateway()
         # Compose owns dotenv parsing, interpolation, shell precedence and relative bind paths.
         model=json.loads(run(['docker','compose','--env-file',configured if configured.exists() else os.devnull,
-            '--project-directory',self.worktree,'-p',self.project,'-f',ROOT/'deployment/compose.yaml',
+            '--project-directory',self.worktree,'-p',self.project,'-f',self.compose_file,
             '--profile','product','config','--format','json'],env=self.variables(gateway=False),capture_output=True).stdout)
         settings=model['x-gateway']
         origin=settings['origin']
@@ -149,7 +151,7 @@ class Environment:
                     private_values.append(value)
                     private_value(value)
         try:
-            return run(['docker','compose','--env-file',os.devnull,'--project-directory',self.worktree,'-p',self.project,'-f',ROOT/'deployment/compose.yaml',*args],
+            return run(['docker','compose','--env-file',os.devnull,'--project-directory',self.worktree,'-p',self.project,'-f',self.compose_file,*args],
                        env=self.variables(), capture_output=True, **kwargs).stdout.strip()
         except subprocess.CalledProcessError as error:
             from candidate_runtime import safe_evidence

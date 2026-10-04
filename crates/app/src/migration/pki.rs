@@ -7,16 +7,17 @@ use x509_cert::{
     Certificate, TbsCertificate,
     der::{Decode, Encode},
 };
-#[derive(Deserialize)]
+#[derive(Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Upgrade {
     pub database: crate::config::Database,
     pub installation: Installation,
+    pub target_config_file: std::path::PathBuf,
     pub profiles: Vec<Profile>,
     pub trusts: Vec<Trust>,
 }
 /// Approved stable protocol identity replacement, separate from issuer identity.
-#[derive(Deserialize)]
+#[derive(Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Profile {
     pub purpose: Purpose,
@@ -24,8 +25,173 @@ pub struct Profile {
     pub current: String,
 }
 
+/// Read-only preparation uses the same protected target configuration as the new runtime.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Prepare {
+    pub database: crate::config::Database,
+    pub installation: Installation,
+    pub target_config_file: std::path::PathBuf,
+    pub trusts: Vec<Trust>,
+}
+fn target_profiles(
+    path: &std::path::Path,
+    installation: &Installation,
+    trusts: &[Trust],
+) -> Result<std::collections::BTreeMap<String, String>> {
+    let invalid = || MigrationError::at("device-pki-v1", "target runtime configuration rejected");
+    let config: crate::config::Config = crate::config::load(path).map_err(|_| invalid())?;
+    let config = config.compile().map_err(|_| invalid())?.config;
+    if config.identity.instance_id != installation.instance_id
+        || !installation.tenants.contains(&config.identity.tenant_id)
+    {
+        return Err(invalid());
+    }
+    let now =
+        crate::clock::Clock::unix_seconds(&crate::clock::SystemClock).map_err(|_| invalid())?;
+    let mut targets = std::collections::BTreeMap::new();
+    let check = |path: &std::path::Path, purpose: Purpose| -> Result<()> {
+        let target = crate::device_pki::load(path, purpose, now)
+            .map_err(|_| invalid())?
+            .public()
+            .map_err(|_| invalid())?;
+        if !trusts.contains(&target) {
+            return Err(invalid());
+        }
+        Ok(())
+    };
+    if let Some(w) = &config.native_protocols.windows {
+        check(&w.trust_file, Purpose::Windows)?;
+        let key = crate::config::read(&w.protocol_key_file, 32, true).map_err(|_| invalid())?;
+        targets.insert(
+            "Windows".into(),
+            rss_mdm_windows_channel::protocol_identity(
+                &w.enrollment.origin,
+                &w.management.origin,
+                &w.provider_id,
+                &key,
+                &w.poll,
+            )
+            .map_err(|_| invalid())?,
+        );
+    }
+    if let Some(a) = &config.native_protocols.apple {
+        check(&a.trust_file, Purpose::Apple)?;
+        let options = rss_mdm_apple_channel::Config {
+            management: rss_mdm_apple_channel::Origin {
+                origin: a.management.origin.clone(),
+            },
+            apns_topic: a.apns_topic.clone(),
+            challenge_webhook: rss_mdm_apple_channel::Webhook {
+                id: a.challenge_webhook.id.clone(),
+            },
+            notify_webhook: rss_mdm_apple_channel::Webhook {
+                id: a.notify_webhook.id.clone(),
+            },
+        };
+        targets.insert(
+            "Apple".into(),
+            rss_mdm_apple_channel::protocol_identity(&options)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
+        );
+    }
+    Ok(targets)
+}
+pub async fn prepare(input: Prepare) -> Result<Upgrade> {
+    input.installation.validate()?;
+    let targets = target_profiles(
+        &input.target_config_file,
+        &input.installation,
+        &input.trusts,
+    )?;
+    let invalid = || MigrationError::at("device-pki-v1", "read-only upgrade preparation rejected");
+    let options = input.database.options().map_err(|_| invalid())?;
+    let mut conn =
+        tokio::time::timeout(Duration::from_secs(5), PgConnection::connect_with(&options))
+            .await
+            .map_err(|_| invalid())?
+            .map_err(|_| invalid())?;
+    let mut tx = conn.begin().await.map_err(|_| invalid())?;
+    sqlx::raw_sql("SET TRANSACTION READ ONLY; SET LOCAL statement_timeout='5s'")
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| invalid())?;
+    let installed: Vec<(String, String, bool)> =
+        sqlx::query_as("SELECT name,digest,complete FROM public.mdm_migrations")
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|_| invalid())?;
+    let baseline: Vec<_> = units()
+        .into_iter()
+        .filter(|(n, _)| *n != "device-pki-v1")
+        .collect();
+    if !accepted_ledger(&installed, &baseline) {
+        return Err(invalid());
+    }
+    let mut profiles = Vec::new();
+    for tenant in &input.installation.tenants {
+        scope(&mut tx, tenant).await?;
+        for (purpose, query) in [
+            (
+                Purpose::Windows,
+                "SELECT configuration FROM mdm_access.enrollment_intents WHERE tenant_id=$1::uuid UNION SELECT configuration FROM mdm_windows.renewals WHERE tenant_id=$1::uuid",
+            ),
+            (
+                Purpose::Apple,
+                "SELECT DISTINCT encode(configuration,'hex') FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid",
+            ),
+        ] {
+            let previous: Vec<String> = sqlx::query_scalar(query)
+                .bind(tenant)
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(|_| invalid())?;
+            for previous in previous {
+                let current = targets
+                    .get(&format!("{purpose:?}"))
+                    .ok_or_else(invalid)?
+                    .clone();
+                if !profiles
+                    .iter()
+                    .any(|p: &Profile| p.purpose == purpose && p.previous == previous)
+                {
+                    profiles.push(Profile {
+                        purpose,
+                        previous,
+                        current,
+                    });
+                }
+            }
+        }
+    }
+    tx.rollback().await.map_err(|_| invalid())?;
+    conn.close().await.map_err(|_| invalid())?;
+    Ok(Upgrade {
+        database: input.database,
+        installation: input.installation,
+        target_config_file: input.target_config_file,
+        profiles,
+        trusts: input.trusts,
+    })
+}
+
 pub async fn run(input: Upgrade) -> Result<()> {
     input.installation.validate()?;
+    let targets = target_profiles(
+        &input.target_config_file,
+        &input.installation,
+        &input.trusts,
+    )?;
+    for profile in &input.profiles {
+        if targets.get(&format!("{:?}", profile.purpose)) != Some(&profile.current) {
+            return Err(MigrationError::at(
+                "device-pki-v1",
+                "profile does not match target runtime configuration",
+            ));
+        }
+    }
     let options = input
         .database
         .options()

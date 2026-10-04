@@ -21,12 +21,13 @@ from t2_processes import check_cancelled, cleanup, private_value, record_output,
 
 
 class Provider:
-    def __init__(self, root, case):
+    def __init__(self, root, case, *, compose_file=None, providers=None, internal_host=None):
         if not re.fullmatch(r'[0-9a-f]{20}', case):
             raise ValueError('invalid PKI fixture case identity')
         self.root = Path(root).resolve()
-        self.owner = Environment(group='t2-pki-'+case)
-        self.owner.extra = {'MDM_PKI_ROOT':str(self.root)}
+        self.owner = Environment(group='t2-pki-'+case, compose_file=compose_file, providers=providers)
+        self.internal_host = internal_host or 'ca-'+case
+        self.owner.extra = {'MDM_PKI_ROOT':str(self.root), 'MDM_PKI_INTERNAL_HOST':self.internal_host}
         self.container = None
 
     def compose(self, *args, **kwargs):
@@ -42,6 +43,10 @@ class Provider:
         self.container = self.compose('ps', '-q', 'step-ca', timeout=15)
         if not self.container or '\n' in self.container:
             raise RuntimeError('fixed step-ca container missing during startup')
+        actual = json.loads(run(['docker','inspect',self.container],capture_output=True).stdout)[0]
+        expected = run(['docker','image','inspect',self.owner.providers['step-ca'],'--format','{{.Id}}'],capture_output=True).stdout.strip()
+        if actual['Image'] != expected:
+            raise RuntimeError('CA container image differs from fixed provider')
         address = self.compose('port', 'step-ca', str(PKI_CA['port']), timeout=15)
         parsed = urlsplit('https://'+address)
         if parsed.hostname != '127.0.0.1' or not parsed.port or address != f'127.0.0.1:{parsed.port}':
@@ -63,6 +68,10 @@ class Provider:
         parsed=urlsplit(origin)
         if parsed.scheme!='https' or parsed.hostname!='localhost' or not parsed.port:
             raise RuntimeError('invalid stable CA fixture origin')
+        if self.owner.compose_file != previous.owner.compose_file or self.owner.providers != previous.owner.providers:
+            raise RuntimeError('CA failover changed fixed deployment inputs')
+        self.internal_host = previous.internal_host
+        self.owner.extra['MDM_PKI_INTERNAL_HOST'] = self.internal_host
         previous.fence()
         self.owner.prepare_inputs(certificates=False)
         self.owner.extra['MDM_PKI_PUBLISH']=f'127.0.0.1:{parsed.port}:{PKI_CA["port"]}'

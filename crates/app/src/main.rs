@@ -21,7 +21,7 @@ async fn execute() -> Result<(), ProcessError> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args == ["--help"] {
         println!(
-            "rss-mdm serve|migrate|upgrade-pki|initialize|initialize-authorization|recover-password --config /absolute/private-config.json\nrss-mdm --version|--describe"
+            "rss-mdm serve|migrate|prepare-pki-upgrade|upgrade-pki|initialize|initialize-authorization|recover-password --config /absolute/private-config.json\nrss-mdm --version|--describe"
         );
         return Ok(());
     }
@@ -51,6 +51,14 @@ async fn execute() -> Result<(), ProcessError> {
                 .options()
                 .map_err(|e| ProcessError::at("migration.database_configuration", e))?;
             rss_mdm_app::migration::migrate(&options, &config.installation).await?;
+            Ok(())
+        }
+        "prepare-pki-upgrade" => {
+            let prepared = rss_mdm_app::migration::pki::prepare(config::load(path)?).await?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&prepared).expect("public upgrade mapping")
+            );
             Ok(())
         }
         "upgrade-pki" => {

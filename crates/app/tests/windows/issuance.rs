@@ -620,21 +620,22 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
 
 // Deliberately bypass the product issuer to exercise rejection of validly signed bad leaves.
 fn sign_fixture(tbs: &x509_cert::TbsCertificate) -> anyhow::Result<Vec<u8>> {
-    let key =
-        ring::signature::RsaKeyPair::from_pkcs8(&std::fs::read(root()?.join("device-ca.pk8"))?)
-            .map_err(|_| anyhow::anyhow!("fixture key"))?;
-    let mut signature = vec![0; key.public().modulus_len()];
-    key.sign(
-        &ring::signature::RSA_PKCS1_SHA256,
+    let key = ring::signature::EcdsaKeyPair::from_pkcs8(
+        &ring::signature::ECDSA_P256_SHA256_ASN1_SIGNING,
+        &std::fs::read(
+            PathBuf::from(std::env::var("MDM_WINDOWS_PKI_FIXTURES")?)
+                .join("windows-issuer-test.pk8"),
+        )?,
         &ring::rand::SystemRandom::new(),
-        &tbs.to_der()?,
-        &mut signature,
     )
-    .map_err(|_| anyhow::anyhow!("fixture signature"))?;
+    .map_err(|_| anyhow::anyhow!("fixture issuer key"))?;
+    let signature = key
+        .sign(&ring::rand::SystemRandom::new(), &tbs.to_der()?)
+        .map_err(|_| anyhow::anyhow!("fixture issuer signature"))?;
     Ok(x509_cert::Certificate {
         tbs_certificate: tbs.clone(),
         signature_algorithm: tbs.signature.clone(),
-        signature: x509_cert::der::asn1::BitString::from_bytes(&signature)?,
+        signature: x509_cert::der::asn1::BitString::from_bytes(signature.as_ref())?,
     }
     .to_der()?)
 }
@@ -647,16 +648,7 @@ async fn startup_failures_keep_windows_input_categories() -> anyhow::Result<()> 
         serde_json::from_slice(&std::fs::read(root()?.join("windows.json"))?)?;
     let scratch = tempfile::tempdir()?;
     for (field, issue, private) in [
-        (
-            "ca_certificate_file",
-            crate::ConfigIssue::EnrollmentCa,
-            false,
-        ),
-        (
-            "ca_private_key_file",
-            crate::ConfigIssue::EnrollmentCa,
-            true,
-        ),
+        ("trust_file", crate::ConfigIssue::EnrollmentCa, true),
         ("protocol_key_file", crate::ConfigIssue::ProtocolKey, true),
     ] {
         for fault in ["absent", "invalid", "unsafe", "oversized"] {
@@ -673,7 +665,7 @@ async fn startup_failures_keep_windows_input_categories() -> anyhow::Result<()> 
                         if field == "protocol_key_file" {
                             33
                         } else {
-                            32769
+                            16 * 1024 * 1024 + 1
                         }
                     ]
                 } else {

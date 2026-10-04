@@ -69,6 +69,20 @@ impl Health {
         self.push_available && !self.certificates_expired()
     }
 }
+/// Canonical stable protocol identity, independent of issuer rotation.
+pub fn protocol_identity(config: &Config) -> [u8; 32] {
+    Sha256::digest(
+        serde_json::to_vec(&(
+            "mdm.apple.enrollment/v3",
+            &config.management.origin,
+            &config.apns_topic,
+            &config.challenge_webhook.id,
+            &config.notify_webhook.id,
+        ))
+        .expect("closed configuration"),
+    )
+    .into()
+}
 impl Apple {
     pub fn trust_certificates(
         &self,
@@ -116,17 +130,7 @@ impl Apple {
         agent_identity: Option<rss_mdm_execution_service::agent_install::Identity>,
         providers: Arc<rss_mdm_pki_service::providers::Providers>,
     ) -> Self {
-        let configuration = Sha256::digest(
-            serde_json::to_vec(&(
-                "mdm.apple.enrollment/v3",
-                &config.management.origin,
-                &config.apns_topic,
-                &config.challenge_webhook.id,
-                &config.notify_webhook.id,
-            ))
-            .expect("closed configuration"),
-        )
-        .into();
+        let configuration = protocol_identity(&config);
         Self {
             protection,
             agent_identity,

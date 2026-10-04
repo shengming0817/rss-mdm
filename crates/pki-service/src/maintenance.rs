@@ -17,11 +17,17 @@ use x509_cert::{Certificate, der::Decode};
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Publication {
-    pub operation: Uuid,
-    pub purpose: Purpose,
     pub issuer: String,
     pub crl: String,
     pub root_crl: String,
+}
+/// One atomic purpose snapshot; no single-publication compatibility route.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicationSet {
+    pub operation: Uuid,
+    pub purpose: Purpose,
+    pub publications: Vec<Publication>,
 }
 /// Public certificate/publication deadlines and durable CA work; contains no key or endpoint.
 #[derive(Serialize)]
@@ -95,7 +101,7 @@ impl Registry {
     pub async fn publish(
         &self,
         p: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
-        input: &Publication,
+        input: &PublicationSet,
         a: &RequestAudit,
         now: i64,
     ) -> Result<(), Error> {
@@ -108,20 +114,12 @@ impl Registry {
             return Err(Error::Forbidden);
         }
         a.operation(input.operation, "device_pki_crl_publish");
-        self.publication(input, a, Some(p), now).await
-    }
-    async fn publication(
-        &self,
-        input: &Publication,
-        a: &RequestAudit,
-        principal: Option<&rss_mdm_authorization_service::context::AuthorizedPrincipal>,
-        now: i64,
-    ) -> Result<(), Error> {
         self.publish_set(
-            std::slice::from_ref(input),
+            &input.publications,
+            input.purpose,
             input.operation,
             a,
-            principal,
+            Some(p),
             now,
         )
         .await
@@ -129,21 +127,19 @@ impl Registry {
     async fn publish_set(
         &self,
         inputs: &[Publication],
+        requested_purpose: Purpose,
         operation: Uuid,
         a: &RequestAudit,
         principal: Option<&rss_mdm_authorization_service::context::AuthorizedPrincipal>,
         now: i64,
     ) -> Result<(), Error> {
-        let first = inputs.first().ok_or(Error::Request)?;
-        if inputs.len() > 16
-            || operation.is_nil()
-            || inputs.iter().any(|i| i.purpose != first.purpose)
-        {
+        if inputs.is_empty() || inputs.len() > 16 || operation.is_nil() {
             return Err(Error::Request);
         }
-        let mut next = self.trust(first.purpose)?;
+        let mut next = self.trust(requested_purpose)?;
         let mut publications = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
+        let mut roots = std::collections::BTreeMap::new();
         for input in inputs {
             if !seen.insert(&input.issuer) {
                 return Err(Error::Request);
@@ -164,17 +160,30 @@ impl Registry {
             .map_err(|_| Error::Request)?;
             g.crl = input.crl.clone();
             let root = g.root.clone();
+            if roots
+                .insert(root.clone(), input.root_crl.clone())
+                .is_some_and(|old| old != input.root_crl)
+            {
+                return Err(Error::Request);
+            }
             // One offline root publication applies to every generation sharing that exact root.
             for sibling in next.issuers.iter_mut().filter(|g| g.root == root) {
                 sibling.root_crl = input.root_crl.clone();
             }
             publications.push((input.issuer.clone(), published));
         }
-        DeviceTrust::new(next.clone(), first.purpose, now).map_err(|_| Error::Request)?;
+        DeviceTrust::new(next.clone(), requested_purpose, now).map_err(|_| Error::Request)?;
         let tenant = next.tenant;
+        let mut canonical = inputs.iter().collect::<Vec<_>>();
+        canonical.sort_by(|a, b| a.issuer.cmp(&b.issuer));
         let fingerprint = Sha256::digest(
-            serde_json::to_vec(&("device-pki-publication/v1", operation, inputs))
-                .map_err(|_| Error::Request)?,
+            serde_json::to_vec(&(
+                "device-pki-publication/v2",
+                requested_purpose,
+                operation,
+                canonical,
+            ))
+            .map_err(|_| Error::Request)?,
         )
         .to_vec();
         let result=self.mutation(TenantId::parse(&tenant.to_string()).map_err(|_|Error::Request)?,a,
@@ -206,7 +215,7 @@ impl Registry {
                 Ok(Change{value:(),replay,key:format!("pki:{operation}:crl_publish"),fingerprint:fingerprint.clone()})
             })).await;
         if result.is_ok() {
-            self.binding(first.purpose)?
+            self.binding(requested_purpose)?
                 .update(next, now)
                 .map_err(|_| Error::Storage)?;
         }
@@ -231,8 +240,6 @@ impl Registry {
                 };
                 match client.published_crl().await {
                     Ok(bytes) => inputs.push(Publication {
-                        operation: Uuid::nil(),
-                        purpose: trust.purpose,
                         issuer: g.digest.clone(),
                         crl: base64::Engine::encode(
                             &base64::engine::general_purpose::STANDARD,
@@ -256,7 +263,9 @@ impl Registry {
             let a = RequestAudit::new(trust.tenant.to_string(), "device_pki_crl_publish");
             a.identify_service("service:device-pki");
             a.operation(operation, "device_pki_crl_publish");
-            let result = self.publish_set(&inputs, operation, &a, None, now).await;
+            let result = self
+                .publish_set(&inputs, trust.purpose, operation, &a, None, now)
+                .await;
             a.finalize(
                 result
                     .as_ref()
