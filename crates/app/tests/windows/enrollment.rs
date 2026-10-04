@@ -1,5 +1,5 @@
+use crate::api::Assembly;
 use crate::windows::test_support::*;
-use crate::{api::Assembly, device::test_support::options};
 use anyhow::ensure;
 use axum::http::StatusCode;
 use rss_mdm_windows_mdm::{
@@ -519,7 +519,14 @@ async fn self_enrollment_preserves_server_identity_and_terminal_protocol_id() ->
 
 async fn authenticate_self_peer(peer: &Peer) -> anyhow::Result<()> {
     ensure!(
-        crate::execution::test_support::native::post(&peer.mutual, &peer.url, &peer.ack)
+        peer.mutual
+            .post(&peer.url)
+            .header("content-type", "application/vnd.syncml.dm+xml")
+            .body(rss_mdm_windows_mdm::syncml::encode(
+                &peer.ack,
+                &CodecLimits::default()
+            )?)
+            .send()
             .await?
             .status()
             == StatusCode::OK
