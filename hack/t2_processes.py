@@ -10,6 +10,12 @@ _owner = None
 _diagnostic = ContextVar('t2_fixture_diagnostic', default=None)
 
 
+def check_cancelled():
+    """Check the existing run owner during fixture waits without spawning a child."""
+    if _owner is not None:
+        _owner.check()
+
+
 @contextmanager
 def diagnostics(path):
     """Keep each concurrent scenario's preparation/cleanup evidence separate.
