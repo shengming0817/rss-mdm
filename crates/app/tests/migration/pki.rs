@@ -46,7 +46,7 @@ async fn explicit_upgrade_prepares_from_old_manifest_and_rejects_wrong_target_be
             .ssl_root_cert(std::env::var("PG_CA_FILE")?),
     )
     .await?;
-    let baseline = units()
+    let baseline = baseline_units()
         .into_iter()
         .filter(|(name, _)| *name != "device-pki-v1")
         .collect::<Vec<_>>();

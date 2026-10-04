@@ -92,6 +92,7 @@ async fn external_scep_issuance_and_lost_notify() -> Result<()> {
     );
     oracle.compare("/checkin", &body, &[]).await?;
     let peer = lifecycle::Peer {
+        installed_trust: Default::default(),
         client,
         oracle,
         origin: apple.config.management.origin.clone(),

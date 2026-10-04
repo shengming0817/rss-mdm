@@ -454,7 +454,11 @@ async fn mi_dispatch(
         .commands
         .iter()
         .filter_map(|c| {
-            if let Command::Get { id, items, .. } = c {
+            if let Command::Get { id, items, .. } = c
+                && !items[0].target.as_deref().is_some_and(|uri| {
+                    uri.starts_with("./Device/Vendor/MSFT/RootCATrustedCertificates/")
+                })
+            {
                 Some((*id, items[0].target.clone().unwrap()))
             } else {
                 None

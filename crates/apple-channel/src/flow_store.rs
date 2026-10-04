@@ -380,18 +380,25 @@ impl channels::Apple for super::Apple {
                 .map_err(Into::into)
         })
     }
+    fn trust<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        p: &'a DevicePrincipal,
+        audit: &'a rss_mdm_audit_integration::RequestAudit,
+    ) -> Pending<'a, channels::Reply> {
+        Box::pin(async move {
+            let (bytes, facts) = crate::trust_installation::send(c, self, p, audit)
+                .await
+                .map_err(channels::Rejection::from)?;
+            Ok(channels::Reply { bytes, facts })
+        })
+    }
     fn collection<'a>(
         &'a self,
         c: &'a mut PgConnection,
         p: &'a DevicePrincipal,
     ) -> Pending<'a, channels::Reply> {
         Box::pin(async move {
-            let (bytes, facts) = crate::trust_installation::send(c, self, p)
-                .await
-                .map_err(channels::Rejection::from)?;
-            if !bytes.is_empty() {
-                return Ok(channels::Reply { bytes, facts });
-            }
             let (mut bytes, facts) =
                 crate::agent_collection::send(c, &self.protection, p, self.agent_identity.as_ref())
                     .await

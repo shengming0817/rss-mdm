@@ -68,6 +68,17 @@ fn respond(
                     status(output, message, *id, s::CommandName::Sequence, 200);
                     commands(children, output, message, values, writes)?;
                 }
+                s::Command::Add { id, items, .. } => {
+                    for item in items {
+                        let uri = item.target.as_deref().unwrap();
+                        ensure!(
+                            uri.starts_with("./Device/Vendor/MSFT/RootCATrustedCertificates/"),
+                            "unexpected Add {uri}"
+                        );
+                        values.insert(uri.into(), item.data.as_ref().unwrap().0.clone());
+                    }
+                    status(output, message, *id, s::CommandName::Add, 200);
+                }
                 s::Command::Replace { id, items, .. } | s::Command::Delete { id, items, .. } => {
                     for item in items {
                         let uri = item.target.as_deref().unwrap();
@@ -103,6 +114,11 @@ fn respond(
                             "./DevInfo/Mod" => Some("fixture-model"),
                             "./DevDetail/SwV" => Some("10.0.22621.0"),
                             "./Vendor/MSFT/DeviceStatus/OS/Edition" => Some("48"),
+                            uri if uri
+                                .starts_with("./Device/Vendor/MSFT/RootCATrustedCertificates/") =>
+                            {
+                                values.get(uri).map(String::as_str)
+                            }
                             _ => {
                                 ensure!(
                                     [CORTANA, CAMERA, TELEMETRY].contains(&uri),

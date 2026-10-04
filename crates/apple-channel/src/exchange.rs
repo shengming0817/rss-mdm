@@ -51,6 +51,7 @@ impl ports::AppleExchange for Exchange {
         self: Box<Self>,
         c: &'a mut PgConnection,
         p: &'a DevicePrincipal,
+        audit: &'a rss_mdm_audit_integration::RequestAudit,
     ) -> ports::Pending<'a, ports::AppleReception> {
         Box::pin(async move {
             let Some(id) = self.command else {
@@ -64,7 +65,7 @@ impl ports::AppleExchange for Exchange {
                     id,
                     self.status,
                     &self.dictionary,
-                    &self.bytes,
+                    (&self.bytes, audit),
                 )
                 .await
                 .map_err(ports::Rejection::from)?

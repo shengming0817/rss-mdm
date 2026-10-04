@@ -320,7 +320,10 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
     let mut base: serde_json::Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     // The real Windows Host below owns this case's Windows endpoint and trust.
-    base["native_protocols"]["windows"] = serde_json::Value::Null;
+    base["native_protocols"]
+        .as_object_mut()
+        .unwrap()
+        .remove("windows");
     let mut fixture = agent::Fixture::from_config(base).await?;
     fixture.register().await?;
     let (resource, _, _) = fixture.resource().await?;

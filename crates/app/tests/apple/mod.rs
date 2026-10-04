@@ -611,76 +611,6 @@ impl Fixture {
             .await?;
         Ok((device, der))
     }
-    async fn local_leaf(&mut self) -> Result<(scep_client::Device, Vec<u8>)> {
-        use base64::{Engine, engine::general_purpose::STANDARD};
-        let (enrollment, attempt, password) = self.enrollment().await?;
-        let device = scep_client::Device::new(enrollment, attempt, &password)?;
-        let apple = self.app.apple()?;
-        let timestamp = time::OffsetDateTime::from_unix_timestamp(self.app.clock.unix_seconds()?)?
-            .format(&time::format_description::well_known::Rfc3339)?;
-        let body = serde_json::to_vec(
-            &json!({"timestamp":timestamp,"provisionerName":apple.channel.scep_fixture()?.1,
-            "x509CertificateRequest":{"raw":STANDARD.encode(&device.csr)},"scepChallenge":password,"scepTransactionID":Uuid::new_v4().to_string()}),
-        )?;
-        let signature = apple
-            .channel
-            .challenge_signature_fixture(&body)
-            .as_ref()
-            .iter()
-            .map(|v| format!("{v:02x}"))
-            .collect::<String>();
-        let response = self
-            .router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method(Method::POST)
-                    .uri("/api/v1/apple/scep/challenge")
-                    .header("host", "mdm.example.test")
-                    .header("content-type", "application/json")
-                    .header("x-smallstep-webhook-id", &apple.config.challenge_webhook.id)
-                    .header("x-smallstep-signature", signature)
-                    .body(Body::from(body))?,
-            )
-            .await?;
-        ensure!(
-            response.status() == StatusCode::OK,
-            "fixture challenge: {}",
-            response.status()
-        );
-        let extensions = device.root.path().join("leaf.ext");
-        std::fs::write(
-            &extensions,
-            "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n",
-        )?;
-        let leaf = device.root.path().join("leaf.der");
-        let serial = Uuid::new_v4().as_u128().to_string();
-        scep_client::openssl(&[
-            "x509".as_ref(),
-            "-req".as_ref(),
-            "-inform".as_ref(),
-            "DER".as_ref(),
-            "-in".as_ref(),
-            device.root.path().join("device.csr").as_os_str(),
-            "-CA".as_ref(),
-            self.root.join("apple-issuer.pem").as_os_str(),
-            "-CAkey".as_ref(),
-            self.root.join("apple-issuer.key").as_os_str(),
-            "-set_serial".as_ref(),
-            serial.as_ref(),
-            "-days".as_ref(),
-            "1".as_ref(),
-            "-sha256".as_ref(),
-            "-extfile".as_ref(),
-            extensions.as_os_str(),
-            "-outform".as_ref(),
-            "DER".as_ref(),
-            "-out".as_ref(),
-            leaf.as_os_str(),
-        ])?;
-        let der = std::fs::read(leaf)?;
-        Ok((device, der))
-    }
     async fn authenticate_peer(
         &self,
         device: &scep_client::Device,
@@ -696,6 +626,7 @@ impl Fixture {
                     self.root.join("ca.crt"),
                 )?)?)
                 .build()?,
+            installed_trust: Default::default(),
             oracle: oracle::Oracle::new(der)?,
             origin: apple.config.management.origin.clone(),
             topic: apple.config.apns_topic.clone(),
@@ -721,7 +652,7 @@ impl Fixture {
         Ok(peer)
     }
     async fn ready_local_peer(&mut self) -> Result<(lifecycle::Peer, scep_client::Device)> {
-        let (device, der) = self.local_leaf().await?;
+        let (device, der) = self.scep_leaf().await?;
         let peer = self.authenticate_peer(&device, &der).await?;
         peer.token().await?;
         Ok((peer, device))

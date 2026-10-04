@@ -132,7 +132,15 @@ async fn session_replay_nonce_collection_and_revoke() -> anyhow::Result<()> {
         .commands
         .iter()
         .filter_map(|c| match c {
-            Command::Get { id, items, .. } => Some((*id, items[0].target.clone().unwrap())),
+            Command::Get { id, items, .. }
+                if !items[0]
+                    .target
+                    .as_deref()
+                    .unwrap()
+                    .starts_with("./Device/Vendor/MSFT/RootCATrustedCertificates/") =>
+            {
+                Some((*id, items[0].target.clone().unwrap()))
+            }
             _ => None,
         })
         .collect();
@@ -751,3 +759,112 @@ async fn native_unenrollment_notification_retires_only_its_authenticated_registr
 #[cfg(feature = "integration")]
 #[path = "wns.rs"]
 mod wns;
+
+// Real CSP replies are the installation proof; an Add ACK alone is insufficient.
+#[cfg(feature = "integration")]
+#[tokio::test]
+#[ignore = "make t2 MODULE=windows.management"]
+async fn native_trust_requires_exact_csp_readback_before_confirmation() -> anyhow::Result<()> {
+    use crate::execution::test_support::native;
+    use sqlx::Connection;
+    let mut host = Host::open().await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    let mut observer = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
+    for (index, session) in [201, 202, 203, 204].into_iter().enumerate() {
+        let opened = native::begin(
+            &peer.mutual,
+            &peer.url,
+            &peer.message,
+            &peer.ack,
+            session,
+            None,
+        )
+        .await?;
+        let mut report = native::report(&opened.first, &opened.gets, "10.0.19045.0", 200);
+        let business = report.commands.split_off(1);
+        let mut store = std::collections::BTreeMap::new();
+        for command in &opened.response.commands {
+            if let Command::Add { id, items, .. } = command {
+                for item in items {
+                    if let Some(uri) = item.target.as_ref().filter(|u| {
+                        u.starts_with("./Device/Vendor/MSFT/RootCATrustedCertificates/")
+                    }) {
+                        store.insert(uri.clone(), item.data.as_ref().unwrap().0.clone());
+                        report.commands.push(Command::Status(syncml::Status {
+                            id: report.commands.len() as u32 + 1,
+                            message_ref: opened.response.header.message_id,
+                            command_ref: *id,
+                            command: CommandName::Add,
+                            code: 200,
+                            target_refs: vec![],
+                            source_refs: vec![],
+                            items: vec![],
+                            challenge: None,
+                            credential: None,
+                        }));
+                    }
+                }
+            }
+        }
+        for command in &opened.response.commands {
+            if let Command::Get { id, items, .. } = command {
+                for item in items {
+                    if let Some(uri) = item.target.as_ref().filter(|u| store.contains_key(*u)) {
+                        report.commands.push(Command::Status(syncml::Status {
+                            id: report.commands.len() as u32 + 1,
+                            message_ref: opened.response.header.message_id,
+                            command_ref: *id,
+                            command: CommandName::Get,
+                            code: 200,
+                            target_refs: vec![],
+                            source_refs: vec![],
+                            items: vec![],
+                            challenge: None,
+                            credential: None,
+                        }));
+                        report.commands.push(Command::Results(syncml::Results {
+                            id: report.commands.len() as u32 + 1,
+                            message_ref: Some(opened.response.header.message_id),
+                            command_ref: Some(*id),
+                            command: Some(CommandName::Get),
+                            meta: None,
+                            items: vec![syncml::Item {
+                                source: Some(uri.clone()),
+                                target: None,
+                                more_data: false,
+                                meta: None,
+                                data: Some(Secret(if index == 0 {
+                                    "AA==".into()
+                                } else {
+                                    store[uri].clone()
+                                })),
+                            }],
+                        }));
+                    }
+                }
+            }
+        }
+        // Preserve the server's command order and unique reply CmdIDs.
+        let offset = report.commands.len() as u32 - 1;
+        for mut command in business {
+            match &mut command {
+                Command::Status(s) => s.id += offset,
+                Command::Results(r) => r.id += offset,
+                _ => anyhow::bail!("unexpected business fixture reply"),
+            }
+            report.commands.push(command);
+        }
+        let response = native::post(&peer.mutual, &peer.url, &report).await?;
+        ensure!(response.status() == StatusCode::OK);
+        let count:i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_pki.installations WHERE tenant_id=$1::uuid AND purpose='windows'")
+            .bind(case_tenant()).fetch_one(&mut observer).await?;
+        if index == 0 {
+            ensure!(count == 0, "wrong CSP readback confirmed trust");
+        } else if count == 1 {
+            observer.close().await?;
+            return host.close().await;
+        }
+    }
+    anyhow::bail!("exact native Root/CA readback did not confirm installed trust")
+}

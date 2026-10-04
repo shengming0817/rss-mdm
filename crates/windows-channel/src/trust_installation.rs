@@ -105,8 +105,12 @@ pub(crate) async fn send(
     p: &DevicePrincipal,
     response: &mut s::Message,
     limits: &CodecLimits,
-    facts: &mut Vec<rss_mdm_audit_integration::Fact>,
+    effects: (
+        &mut Vec<rss_mdm_audit_integration::Fact>,
+        &crate::RequestAudit,
+    ),
 ) -> Result<bool, Error> {
+    let (facts, audit) = effects;
     let trust = w.ca.trust.public().map_err(|_| Error::Conflict)?;
     let digest = trust.installation_digest();
     let tenant = p.tenant().to_string();
@@ -224,7 +228,7 @@ pub(crate) async fn send(
     sqlx::query("INSERT INTO mdm_windows.trust_deliveries(tenant_id,id,registration,generation,credential,revision,digest,session,message,first_command,request,results,authority) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)")
         .bind(&tenant).bind(id).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(trust.revision as i64).bind(&digest).bind(session)
         .bind(i64::from(response.header.message_id)).bind(i64::from(first)).bind(sealed).bind(results).bind(&authority_digest).execute(&mut *c).await.map_err(db)?;
-    let a = crate::RequestAudit::new(tenant, "windows_pki_install");
+    let a = audit.fact_copy("windows_pki_install");
     a.identify_device(p.registration());
     a.registration(p.registration());
     a.target(p.device());

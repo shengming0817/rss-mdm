@@ -337,7 +337,7 @@ impl WindowsSession for Session {
                         p,
                         response,
                         &self.limits,
-                        &mut self.facts,
+                        (&mut self.facts, &self.audit),
                     )
                     .await?
                 } else {

@@ -262,6 +262,7 @@ pub trait AppleExchange: Send {
         self: Box<Self>,
         c: &'a mut PgConnection,
         p: &'a DevicePrincipal,
+        audit: &'a rss_mdm_audit_integration::RequestAudit,
     ) -> Pending<'a, AppleReception>;
 }
 pub enum AppleReception {
@@ -314,6 +315,13 @@ pub trait Apple: Send + Sync {
         p: &'a DevicePrincipal,
         command: &'a AppleCommand,
     ) -> Pending<'a, AppleDispatch>;
+    /// Deliver device trust maintenance before business commands.
+    fn trust<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        p: &'a DevicePrincipal,
+        audit: &'a rss_mdm_audit_integration::RequestAudit,
+    ) -> Pending<'a, Reply>;
     fn collection<'a>(
         &'a self,
         c: &'a mut PgConnection,

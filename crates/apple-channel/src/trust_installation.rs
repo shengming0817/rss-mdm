@@ -11,6 +11,7 @@ pub(crate) async fn send(
     c: &mut PgConnection,
     apple: &Apple,
     p: &DevicePrincipal,
+    audit: &RequestAudit,
 ) -> Result<(Vec<u8>, Vec<Fact>), Error> {
     let tenant = p.tenant().to_string();
     let trust = apple.device_trust().public().map_err(|_| Error::Conflict)?;
@@ -25,7 +26,14 @@ pub(crate) async fn send(
     if rights & 3 != 3 {
         return Err(Error::Forbidden);
     }
-    let delivery=sqlx::query("SELECT id,body,profile FROM mdm_apple.trust_deliveries WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND revision=$4 AND digest=$5 FOR UPDATE")
+    // Immutable deliveries require no UPDATE privilege. Serialize creators with
+    // a transaction lock rather than granting write access solely for FOR UPDATE.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2639))")
+        .bind(format!("apple-trust:{tenant}:{}", p.registration()))
+        .execute(&mut *c)
+        .await
+        .map_err(db)?;
+    let delivery=sqlx::query("SELECT id,body,profile FROM mdm_apple.trust_deliveries WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND revision=$4 AND digest=$5")
         .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(trust.revision as i64).bind(&digest).fetch_optional(&mut *c).await.map_err(db)?;
     let (delivery, profile, frozen) = if let Some(row) = delivery {
         let frozen: Trust = serde_json::from_slice(&row.try_get::<Vec<u8>, _>("body").map_err(db)?)
@@ -124,7 +132,7 @@ pub(crate) async fn send(
         )?;
         sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,trust,phase,ordinal,request,state,deadline) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,'pending',clock_timestamp()+interval '15 minutes')")
             .bind(&tenant).bind(id).bind(p.registration()).bind(p.generation()).bind(delivery).bind(phase).bind(ordinal).bind(sealed).execute(&mut *c).await.map_err(db)?;
-        let a = RequestAudit::new(tenant.clone(), "apple_pki_install");
+        let a = audit.fact_copy("apple_pki_install");
         a.identify_device(p.registration());
         a.registration(p.registration());
         a.target(p.device());
@@ -150,8 +158,9 @@ pub(crate) async fn receive(
     id: Uuid,
     status: protocol::Status,
     report: &plist::Dictionary,
-    bytes: &[u8],
+    input: (&[u8], &RequestAudit),
 ) -> Result<Option<Vec<Fact>>, Error> {
+    let (bytes, audit) = input;
     let row=sqlx::query("SELECT a.phase,a.deadline>clock_timestamp() AS live,d.body,d.profile FROM mdm_apple.attempts a JOIN mdm_apple.trust_deliveries d ON (d.tenant_id,d.id)=(a.tenant_id,a.trust) WHERE a.tenant_id=$1::uuid AND a.id=$2 AND a.registration=$3 AND a.generation=$4")
         .bind(p.tenant().to_string()).bind(id).bind(p.registration()).bind(p.generation()).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else {
@@ -199,7 +208,7 @@ pub(crate) async fn receive(
     )
     .await
     .map_err(|_| Error::Conflict)?;
-    let a = RequestAudit::new(p.tenant().to_string(), "apple_pki_confirm");
+    let a = audit.fact_copy("apple_pki_confirm");
     a.identify_device(p.registration());
     a.registration(p.registration());
     a.target(p.device());

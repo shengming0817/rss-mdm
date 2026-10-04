@@ -66,9 +66,14 @@ impl Oracle {
         );
         let bytes = reply.bytes().await?;
         if path == "/mdm" && !response.is_empty() {
+            let actual = protocol::decode(&bytes)?;
+            let expected = protocol::decode(response)?;
             ensure!(
-                protocol::decode(&bytes)? == protocol::decode(response)?,
-                "NanoMDM returned different command fields"
+                actual == expected,
+                "NanoMDM returned different command fields: actual UUID {:?}, expected UUID {:?}, input status {:?}",
+                actual.get("CommandUUID"),
+                expected.get("CommandUUID"),
+                request_dictionary.get("Status")
             );
         }
         Ok(())

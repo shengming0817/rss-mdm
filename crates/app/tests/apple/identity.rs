@@ -122,6 +122,7 @@ impl Fixture {
             .build()?;
         let peer = Peer {
             client,
+            installed_trust: Default::default(),
             oracle: oracle::Oracle::new(&der)?,
             origin: apple.config.management.origin.clone(),
             topic: apple.config.apns_topic.clone(),

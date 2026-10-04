@@ -153,6 +153,7 @@ impl Fixture {
                 .build()?,
             origin: old.origin.clone(),
             topic: old.topic.clone(),
+            installed_trust: Default::default(),
             oracle: oracle::Oracle::new(&der)?,
         };
         let wrong = peer
