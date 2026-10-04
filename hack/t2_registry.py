@@ -655,7 +655,8 @@ consume(('crates/execution-service/src/freeze_inputs.rs', 'crates/flow-service/s
         'planning.agent_policy planning.remote planning.onboarding')
 TASK_CONSUMERS = 'planning.self_service planning.onboarding planning.policy planning.agent_policy planning.frequency planning.remote planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
 consume(('crates/agent-wire/src/tasks.rs', 'crates/agent-wire/schema/runtime/task-*.json',
-         'crates/agent-wire/schema/runtime/signed-task-v1.schema.json', 'crates/execution-service/src/task_signing.rs'), TASK_CONSUMERS)
+         'crates/agent-wire/schema/runtime/signed-task-v1.schema.json', 'crates/execution-service/src/task_signing.rs',
+         'crates/execution-service/src/actions/mod.rs'), TASK_CONSUMERS)
 # lib.rs owns shared identities, capability, errors, registration and report shapes.
 consume(('crates/agent-wire/src/lib.rs','crates/agent-wire/src/runtime.rs','crates/agent-wire/schema/runtime/error-body-v1.schema.json',
          'crates/agent-wire/schema/runtime/agent-v1.schema-manifest.json'), TASK_CONSUMERS + ' agent.registration agent.reports execution.commands.onboarding apple.onboarding')
@@ -705,8 +706,9 @@ consume(('crates/execution-service/src/sources/software.rs',),
 consume(('crates/flow-service/src/planning/policies/*',), 'planning.policy planning.agent_policy planning.frequency')
 consume(('crates/flow-service/src/automation/jobs.rs',),
         'assets.queries assets.group_input compliance.http compliance.group_input planning.group_scope planning.scope planning.policy planning.agent_policy planning.frequency planning.recovery diagnostics.http')
-consume(('crates/management-http/src/planning/mod.rs',),
-        'planning.http planning.policy planning.agent_policy planning.frequency planning.remote planning.software')
+consume(('crates/management-http/src/planning/mod.rs',
+         'crates/management-http/src/planning/policies/mod.rs'),
+        'planning.self_service planning.http planning.policy planning.agent_policy planning.frequency planning.remote planning.software')
 consume(('hack/enrollment-password.py',), 'enrollment.http enrollment.recovery')
 consume(('crates/management-http/src/software_native.rs',),
         'publication.winget publication.brew publication.withdrawal')
