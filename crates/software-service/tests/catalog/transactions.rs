@@ -52,7 +52,7 @@ impl Fixture {
         let catalog = Catalog::new(
             runtime.clone(),
             pg::tenant(),
-            materials::host(runtime.clone(), audit).audit,
+            materials::host(runtime.clone(), audit).await.audit,
         );
         Self { runtime, catalog }
     }

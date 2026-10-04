@@ -490,7 +490,7 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
         &config,
         config.native_protector()?,
         crate::test_support::identity::audit_store(&config).await?,
-        crate::execution_assembly::open_content(&config, config.native_protector()?)?,
+        crate::execution_assembly::open_content(&config, config.native_protector()?).await?,
         std::collections::BTreeMap::new(),
         rss_device_command_postgres::CommandClock::Postgres,
     ))

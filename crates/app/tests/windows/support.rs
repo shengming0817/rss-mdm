@@ -288,7 +288,7 @@ impl Host {
             .await?;
         let content = {
             let _guard = crate::test_support::software::content_setup_guard().await?;
-            crate::execution_assembly::open_content(&config, config.native_protector()?)?
+            crate::execution_assembly::open_content(&config, config.native_protector()?).await?
         };
         let execution = crate::execution_assembly::open(
             &config,

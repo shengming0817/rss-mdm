@@ -4,7 +4,7 @@ async fn cleanup_preserves_resource_references(
     user: &mut Browser,
     router: &Router,
     store: &Arc<rss_mdm_content_service::Store>,
-    directory: &std::path::Path,
+    _directory: &std::path::Path,
     retained: &rss_mdm_resource::Artifact,
 ) -> Result<()> {
     let data = case::name("orphaned upload without resource reference").as_bytes();
@@ -32,23 +32,17 @@ async fn cleanup_preserves_resource_references(
     store.begin(upload, binding, 1).await?;
     store.append("fixture", upload, 0, 1, data).await?;
     store.finish("fixture", upload, 1).await?;
-    let tenant_dir = directory.join(case_tenant());
-    let metadata_path = super::upload_metadata(&tenant_dir, upload)?;
-    let mut metadata: Value = serde_json::from_slice(&std::fs::read(&metadata_path)?)?;
-    metadata["upload"]["expires"] = json!(0);
-    std::fs::write(metadata_path, serde_json::to_vec(&metadata)?)?;
-    for owned in [&artifact, retained] {
-        let digest = owned
+    super::expire_upload(upload)?;
+    pg(&format!(
+        "UPDATE mdm_content.manifests SET expires=0 WHERE tenant_id='{}' AND sha256=decode('{}','hex')",
+        case_tenant(),
+        retained
             .digest()
             .bytes()
             .iter()
             .map(|b| format!("{b:02x}"))
-            .collect::<String>();
-        std::fs::File::options()
-            .write(true)
-            .open(tenant_dir.join(digest))?
-            .set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))?;
-    }
+            .collect::<String>()
+    ))?;
     let cleanup = user
         .call(
             router,
@@ -146,6 +140,7 @@ async fn gc_reference_race(
         .await?;
     content.append("fixture", id, 0, 1, data).await?;
     content.finish("fixture", id, 1).await?;
+    super::expire_upload(id)?;
     let candidate = content
         .garbage(i64::MAX / 2)
         .await?
@@ -157,6 +152,7 @@ async fn gc_reference_race(
     let gc_runtime = runtime.clone();
     let ready = checked.clone();
     let release = resume.clone();
+    let deletion = candidate.clone();
     let gc = tokio::spawn(async move {
         gc_runtime
             .local_tx_with_context(
@@ -176,7 +172,7 @@ async fn gc_reference_race(
                         assert!(
                             rss_mdm_content_service::service::reclaim_in(
                                 tx,
-                                candidate.take().unwrap(),
+                                candidate.as_ref().unwrap(),
                                 || Ok(())
                             )
                             .await
@@ -203,12 +199,13 @@ async fn gc_reference_race(
     let raced = early.is_ok();
     resume.notify_one();
     gc.await??;
+    deletion.remove().await?;
     match early {
         Ok(result) => {
-            result??;
+            ensure!(result?.is_err());
         }
         Err(_) => {
-            writer.await??;
+            ensure!(writer.await?.is_err(), "writer crossed deletion barrier");
         }
     }
     ensure!(
@@ -262,6 +259,18 @@ async fn reclaim_diagnostic(
     fixture: &Fixture,
     artifact: &rss_mdm_resource::Artifact,
 ) -> Result<bool> {
+    pg(&format!(
+        "UPDATE mdm_content.uploads SET expires=0 WHERE tenant_id='{}' AND document->'value'->'upload'->'binding'->'sha256'='{}'::jsonb; UPDATE mdm_content.manifests SET expires=0 WHERE tenant_id='{}' AND class='native_diagnostic' AND sha256=decode('{}','hex')",
+        case_tenant(),
+        serde_json::to_string(&artifact.digest().bytes())?,
+        case_tenant(),
+        artifact
+            .digest()
+            .bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    ))?;
     let candidate = fixture
         .content
         .as_ref()
@@ -275,7 +284,8 @@ async fn reclaim_diagnostic(
         })
         .ok_or_else(|| anyhow::anyhow!("aged diagnostic candidate missing"))?;
     let tenant = rss_request_context::TenantId::parse(case_tenant())?;
-    Ok(fixture
+    let deletion = candidate.clone();
+    let removed = fixture
         .runtime
         .local_tx_with_context(
             tenant,
@@ -287,7 +297,7 @@ async fn reclaim_diagnostic(
                 Box::pin(async move {
                     rss_mdm_content_service::service::reclaim_in(
                         tx,
-                        candidate.take().unwrap(),
+                        candidate.as_ref().unwrap(),
                         || Ok(()),
                     )
                     .await
@@ -300,7 +310,11 @@ async fn reclaim_diagnostic(
             },
         )
         .await
-        .fold(Ok, Err, Err, Err, Err, Err)?)
+        .fold(Ok, Err, Err, Err, Err, Err)?;
+    if removed {
+        deletion.remove().await?;
+    }
+    Ok(removed)
 }
 
 #[tokio::test]

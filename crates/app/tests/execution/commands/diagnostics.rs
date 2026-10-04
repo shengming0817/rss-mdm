@@ -529,18 +529,11 @@ async fn published_file_without_committed_association_recovers_same_identity() -
         .as_ref()
         .unwrap()
         .config
-        .directory
+        .storage
+        .volume_directory()
+        .unwrap()
         .join(case_tenant());
-    let files = std::fs::read_dir(&directory)?
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with("diagnostic-")
-        })
-        .collect::<Vec<_>>();
+    let files = crate::content::t2::physical_paths(&directory, "native_diagnostic")?;
     ensure!(files.len() == 1, "complete orphan missing: {files:?}");
     ensure!(
         !std::fs::read(&files[0])?
@@ -566,11 +559,7 @@ async fn published_file_without_committed_association_recovers_same_identity() -
         .1 == bytes
     );
     ensure!(
-        std::fs::read_dir(&directory)?
-            .filter_map(Result::ok)
-            .filter(|e| e.file_name().to_string_lossy().starts_with("diagnostic-"))
-            .count()
-            == 1,
+        crate::content::t2::physical_paths(&directory, "native_diagnostic")?.len() == 1,
         "recovery duplicated file"
     );
     host.close().await?;
@@ -669,15 +658,12 @@ async fn completed_output_cancels_pending_transfer_before_and_after_file_work() 
                 .as_ref()
                 .unwrap()
                 .config
-                .directory
+                .storage
+                .volume_directory()
+                .unwrap()
                 .join(case_tenant());
             ensure!(
-                std::fs::read_dir(directory)?
-                    .filter_map(Result::ok)
-                    .any(|entry| entry
-                        .file_name()
-                        .to_string_lossy()
-                        .starts_with("diagnostic-")),
+                !crate::content::t2::physical_paths(&directory, "native_diagnostic")?.is_empty(),
                 "test never reached physical publication"
             );
             waiting = Some((task, resume));

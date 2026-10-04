@@ -1,9 +1,11 @@
 use crate::test_support::software::{Fixture, write};
 use crate::test_support::*;
 #[tokio::test]
-#[ignore = "MODULE=content.http: real streamed HTTP, binding transactions and files"]
+#[ignore = "MODULE=content.http: real streamed HTTP, binding transactions and storage"]
 async fn upload_recovery_download_range_and_authorization() -> Result<()> {
-    let fixture = Fixture::open(false).await?;
+    upload_contract(Fixture::open(false).await?).await
+}
+pub(super) async fn upload_contract(fixture: Fixture) -> Result<()> {
     let router = &fixture.router;
     let runtime = &fixture.runtime;
     let client = &fixture.client;
@@ -298,34 +300,15 @@ async fn corrupt_uploads_have_no_binding_and_new_operations_reuse_verified_conte
             // Rejected bodies remain resumable and reserve tenant upload capacity.
             // Retire only this case's finished negative request, retaining successful
             // content/bindings and every other case's active upload.
-            let directory = fixture.directory.join(case_tenant());
-            let _directory = lock_upload_fixture(&directory.join(".upload.lock"))?;
-            let metadata = super::upload_metadata(&directory, operation)?;
-            let _session = lock_upload_fixture(&metadata.with_extension("part"))?;
-            for extension in ["json", "next", "part"] {
-                match std::fs::remove_file(metadata.with_extension(extension)) {
-                    Ok(()) => (),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-                    Err(error) => return Err(error.into()),
-                }
-            }
+            super::expire_upload(operation)?;
+            fixture
+                .content
+                .as_ref()
+                .unwrap()
+                .garbage(crate::windows::test_support::now())
+                .await?;
         }
     }
     ensure!(pg(&format!("SELECT count(*) FROM mdm_content.bindings WHERE tenant_id='{TENANT}' AND resource='{resource}'", TENANT = case_tenant()))?.trim() == "2");
     Ok(())
-}
-
-// Match the filesystem lock protocol while cleaning this test's rejected resumable upload.
-fn lock_upload_fixture(path: &std::path::Path) -> anyhow::Result<std::fs::File> {
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    let file = options.open(path)?;
-    anyhow::ensure!(file.metadata()?.is_file());
-    file.try_lock()?;
-    Ok(file)
 }

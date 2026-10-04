@@ -82,7 +82,7 @@ pub(crate) async fn application_fixture(
     )
     .await?;
     let protection = config.native_protector()?;
-    let content = crate::execution_assembly::open_content(&config, protection.clone())?;
+    let content = crate::execution_assembly::open_content(&config, protection.clone()).await?;
     let planning = config
         .flow
         .open(

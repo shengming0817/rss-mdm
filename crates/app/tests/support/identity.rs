@@ -119,7 +119,7 @@ async fn prepare_identity() -> Result<()> {
     write(
         &root.join("content.json"),
         &serde_json::to_vec(
-            &json!({"directory":content,"imports":{},"max_artifact_bytes":33554432,"max_temporary_bytes":67108864,"max_uploads":4,"transfer_seconds":60,"retention_seconds":3600,"max_bundle_bytes":67108864,"max_bundle_entries":100,"max_expansion_ratio":100}),
+            &json!({"storage":{"kind":"volume","directory":content},"imports":{},"max_artifact_bytes":33554432,"max_temporary_bytes":67108864,"max_uploads":4,"transfer_seconds":60,"retention_seconds":3600,"max_bundle_bytes":67108864,"max_bundle_entries":100,"max_expansion_ratio":100}),
         )?,
     )?;
     let mut costs = Vec::new();
