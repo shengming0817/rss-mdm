@@ -648,7 +648,7 @@ async fn startup_failures_keep_windows_input_categories() -> anyhow::Result<()> 
         serde_json::from_slice(&std::fs::read(root()?.join("windows.json"))?)?;
     let scratch = tempfile::tempdir()?;
     for (field, issue, private) in [
-        ("trust_file", crate::ConfigIssue::EnrollmentCa, true),
+        ("trust_file", crate::ConfigIssue::EnrollmentCa, false),
         ("protocol_key_file", crate::ConfigIssue::ProtocolKey, true),
     ] {
         for fault in ["absent", "invalid", "unsafe", "oversized"] {
@@ -665,7 +665,7 @@ async fn startup_failures_keep_windows_input_categories() -> anyhow::Result<()> 
                         if field == "protocol_key_file" {
                             33
                         } else {
-                            16 * 1024 * 1024 + 1
+                            64 * 1024 * 1024 + 1
                         }
                     ]
                 } else {

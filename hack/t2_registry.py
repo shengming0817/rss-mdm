@@ -187,7 +187,8 @@ def app_family(owner, *, namespace=None, identity=True,
 add('agent.pki', selectors=('agent_pki_tests::',), fixtures=('identity','agent_pki'),
     sources=('crates/certificate/src/agent.rs','crates/registration-service/src/agent_pki.rs',
              'crates/app/src/agent_pki.rs','deployment/agent-leaf.tpl',
-             'crates/registration-service/src/operations.rs'),
+             'crates/registration-service/src/operations.rs','crates/pki-service/src/*','crates/pki-service/schema/*',
+             'crates/device-trust/src/*','crates/app/src/device_pki.rs','crates/management-http/src/pki.rs'),
     tests=('crates/app/tests/agent_pki/mod.rs',),
     support=('hack/agent_pki_fixtures.py','crates/app/tests/support/agent_tls.rs','crates/app/tests/device/support.rs',
              'crates/app/tests/enrollment/support.rs','crates/app/tests/support/audit.rs',
@@ -197,12 +198,16 @@ MODULES['agent.pki'] = replace(MODULES['agent.pki'], policies=(
                'reuse', 'pair'),
     CasePolicy('agent_pki_tests::agent_ingress_holds_one_global_permit_per_request', 'reuse', 'tenant'),
     CasePolicy('agent_pki_tests::production_agent_listener_bootstraps_activates_and_rechecks_revocation', 'reuse', 'tenant',('identity','windows','agent_pki')),
+    CasePolicy('agent_pki_tests::rotation_requires_installed_trust_and_published_revocation_before_retirement', 'reuse', 'tenant',('identity','agent_pki','pki_rotation')),
+    CasePolicy('agent_pki_tests::multiple_expired_publications_require_one_atomic_set_and_replay_exactly', 'reuse', 'tenant',('identity','agent_pki','pki_rotation')),
+    CasePolicy('agent_pki_tests::unknown_original_ca_result_blocks_retirement_after_rotation', 'reuse', 'tenant',('identity','agent_pki','pki_rotation')),
 ))
 
-add('installation.migration', selectors=('migration::tests::',), profile='empty',
-    sources=('crates/app/src/migration.rs',),
-    tests=('crates/app/tests/migration/mod.rs',),
+add('installation.migration', selectors=('migration::tests::','migration::pki::tests::'), profile='empty',
+    sources=('crates/app/src/migration.rs','crates/app/src/migration/pki.rs'),
+    tests=('crates/app/tests/migration/mod.rs','crates/app/tests/migration/pki.rs'),
     python='installation', support=('hack/t2_modules/installation.py',))
+MODULES['installation.migration'] = replace(MODULES['installation.migration'], policies=(CasePolicy('migration::pki::tests::explicit_upgrade_prepares_from_old_manifest_and_rejects_wrong_target_before_writes','fresh','objects',('windows',)),))
 add('certificate-archive.http',fixtures=('identity',),selectors=('certificate_archive_tests::',),
     sources=('crates/certificate-archive-service/src/*','crates/certificate-archive-service/schema/*','crates/management-http/src/certificate_archive/*','crates/app/src/certificate_archive.rs'),
     tests=('crates/app/tests/certificate_archive/mod.rs',),support=('crates/app/tests/support/authority.rs','crates/app/tests/support/planning_http.rs','crates/app/tests/device/support.rs'))
@@ -827,7 +832,7 @@ for name, path in (('apple.push','push_cycle'), ('apple.host','production')):
 # Runtime fixture consumers sign durable candidates and use completed TLS peers.
 AGENT_FIXTURE_CONSUMERS = tuple(('planning.self_service agent.registration agent.reports execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.recovery execution.agent.history execution.software.offer execution.software.content execution.software.recovery planning.onboarding execution.commands.onboarding apple.onboarding planning.agent_policy planning.frequency planning.remote planning.http assets.http planning.software').split())
 AGENT_FIXTURES = ('identity','apple','scep','windows','agent_pki')
-AGENT_FIXTURE_INPUTS = ('crates/app/tests/support/agent.rs','crates/app/tests/support/agent_tls.rs','hack/agent_pki_fixtures.py')
+AGENT_FIXTURE_INPUTS = ('crates/app/tests/support/agent.rs','crates/app/tests/support/agent_tls.rs','hack/agent_pki_fixtures.py','hack/pki_fixtures.py','hack/pki_ca.py')
 for name in AGENT_FIXTURE_CONSUMERS:
     module=MODULES[name]
     policies=tuple(replace(policy, fixtures=tuple(dict.fromkeys((*policy.fixtures,*AGENT_FIXTURES)))) if policy.fixtures is not None else policy for policy in module.policies)

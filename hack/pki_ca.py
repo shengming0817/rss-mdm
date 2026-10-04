@@ -27,7 +27,7 @@ class Provider:
         self.root = Path(root).resolve()
         self.owner = Environment(group='t2-pki-'+case, compose_file=compose_file, providers=providers)
         self.internal_host = internal_host or 'ca-'+case
-        self.owner.extra = {'MDM_PKI_ROOT':str(self.root), 'MDM_PKI_INTERNAL_HOST':self.internal_host}
+        self.owner.extra = {'MDM_PKI_ROOT':str(self.root), 'MDM_PKI_INTERNAL_HOST':self.internal_host, 'MDM_NETWORK_NAME':self.owner.project+'_default'}
         self.container = None
 
     def compose(self, *args, **kwargs):

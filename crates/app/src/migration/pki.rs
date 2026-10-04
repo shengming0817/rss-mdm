@@ -97,6 +97,9 @@ fn target_profiles(
                 .collect(),
         );
     }
+    if let crate::agent_pki::Config::StepCa { trust_file, .. } = &config.agent_pki {
+        check(trust_file, Purpose::Agent)?;
+    }
     Ok(targets)
 }
 pub async fn prepare(input: Prepare) -> Result<Upgrade> {
@@ -113,6 +116,23 @@ pub async fn prepare(input: Prepare) -> Result<Upgrade> {
             .await
             .map_err(|_| invalid())?
             .map_err(|_| invalid())?;
+    let profiles = prepare_on(&mut conn, &input.installation, &targets).await?;
+    conn.close().await.map_err(|_| invalid())?;
+    Ok(Upgrade {
+        database: input.database,
+        installation: input.installation,
+        target_config_file: input.target_config_file,
+        profiles,
+        trusts: input.trusts,
+    })
+}
+
+async fn prepare_on(
+    conn: &mut PgConnection,
+    installation: &Installation,
+    targets: &std::collections::BTreeMap<String, String>,
+) -> Result<Vec<Profile>> {
+    let invalid = || MigrationError::at("device-pki-v1", "read-only upgrade preparation rejected");
     let mut tx = conn.begin().await.map_err(|_| invalid())?;
     sqlx::raw_sql("SET TRANSACTION READ ONLY; SET LOCAL statement_timeout='5s'")
         .execute(&mut *tx)
@@ -131,7 +151,7 @@ pub async fn prepare(input: Prepare) -> Result<Upgrade> {
         return Err(invalid());
     }
     let mut profiles = Vec::new();
-    for tenant in &input.installation.tenants {
+    for tenant in &installation.tenants {
         scope(&mut tx, tenant).await?;
         for (purpose, query) in [
             (
@@ -167,18 +187,9 @@ pub async fn prepare(input: Prepare) -> Result<Upgrade> {
         }
     }
     tx.rollback().await.map_err(|_| invalid())?;
-    conn.close().await.map_err(|_| invalid())?;
-    Ok(Upgrade {
-        database: input.database,
-        installation: input.installation,
-        target_config_file: input.target_config_file,
-        profiles,
-        trusts: input.trusts,
-    })
+    Ok(profiles)
 }
-
-pub async fn run(input: Upgrade) -> Result<()> {
-    input.installation.validate()?;
+fn validate_profiles(input: &Upgrade) -> Result<()> {
     let targets = target_profiles(
         &input.target_config_file,
         &input.installation,
@@ -192,6 +203,11 @@ pub async fn run(input: Upgrade) -> Result<()> {
             ));
         }
     }
+    Ok(())
+}
+pub async fn run(input: Upgrade) -> Result<()> {
+    input.installation.validate()?;
+    validate_profiles(&input)?;
     let options = input
         .database
         .options()
@@ -674,3 +690,7 @@ fn history(
     }
     Ok(matches.into_iter().next().ok_or_else(invalid)?)
 }
+
+#[cfg(test)]
+#[path = "../../tests/migration/pki.rs"]
+mod tests;

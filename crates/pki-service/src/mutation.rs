@@ -73,6 +73,10 @@ pub(crate) async fn run<C: Send, R: Send>(
             ))
         },
         |_| {
+            eprintln!(
+                "device_pki_audit: {:?}",
+                rss_mdm_audit_integration::ErrorClass::CommitUnknown
+            );
             Err(Error::Unknown {
                 attempt: a.snapshot().operation_id.unwrap_or(a.request_id()),
             })
