@@ -300,9 +300,12 @@ pub async fn record(
 }
 pub async fn reclaim_in(
     tx: &mut PgTransaction<'_>,
-    candidate: crate::Garbage,
+    candidate: &crate::Garbage,
     authorize: impl FnOnce() -> Result<(), Error> + Send,
 ) -> Result<bool, Error> {
+    if !candidate.lock_in(tx).await? {
+        return Ok(false);
+    }
     let referenced = if candidate.class == crate::StorageClass::NativeDiagnostic {
         let tenant = tx.tenant_id().to_string();
         let digest = candidate.digest;
@@ -320,7 +323,7 @@ pub async fn reclaim_in(
     };
     authorize()?;
     if !referenced {
-        candidate.remove().map_err(Error::from)?;
+        candidate.deleting_in(tx).await.map_err(Error::from)?;
     }
     Ok(!referenced)
 }
@@ -338,11 +341,8 @@ pub async fn cleanup(
         .await?;
     let mut removed = 0usize;
     for candidate in candidates {
-        let deleted = transaction::inspect(
-            &app.runtime,
-            app.tenant,
-            (proof, Some(candidate)),
-            |ctx, tx| {
+        let deleted =
+            transaction::inspect(&app.runtime, app.tenant, (proof, &candidate), |ctx, tx| {
                 Box::pin(async move {
                     let (proof, candidate) = ctx;
                     let proof = *proof;
@@ -352,16 +352,14 @@ pub async fn cleanup(
                         Permission::ResourceWrite,
                         None,
                     )?;
-                    reclaim_in(tx, candidate.take().expect("one reclaim"), || {
-                        proof.check_live().map_err(Error::from)
-                    })
-                    .await
-                    .map_err(Into::into)
+                    reclaim_in(tx, candidate, || proof.check_live().map_err(Error::from))
+                        .await
+                        .map_err(Into::into)
                 })
-            },
-        )
-        .await?;
+            })
+            .await?;
         if deleted {
+            candidate.remove().await?;
             removed += 1;
         }
     }

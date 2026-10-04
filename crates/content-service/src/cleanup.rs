@@ -1,195 +1,179 @@
-//! Reclaim only expired sessions and unreferenced immutable blobs, under cross-process locks.
+//! Qualification, exact provider deletion, and settlement are distinct durable operations.
 use super::*;
+use journal::{Manifest, commit, decode};
+use rss_transactional_messaging_postgres::PgTransaction;
+use sqlx::Row;
 use uuid::Uuid;
+#[derive(Clone)]
 pub struct Garbage {
-    path: PathBuf,
-    _guard: File,
+    store: Store,
+    manifest: Manifest,
     pub digest: [u8; 32],
     pub class: StorageClass,
+    length: u64,
 }
 impl Garbage {
-    // No detached unlink may outlive the transaction protecting the reference check.
-    // Only unlink/fsync metadata is done here; body I/O and hashing remain outside PG.
-    pub fn remove(self) -> Result<(), Error> {
-        let _guard = self._guard;
-        let parent = self.path.parent().ok_or_else(storage)?;
-        fs::remove_file(&self.path).map_err(|_| Error::Cleanup)?;
-        sync_dir(parent).map_err(|_| Error::Cleanup)
+    pub async fn lock_in(&self, tx: &mut PgTransaction<'_>) -> Result<bool, Error> {
+        let tenant = tx.tenant_id().to_string();
+        let digest = self.digest;
+        let c = journal::class(self.class);
+        let length = self.length;
+        let artifact = Artifact::new(
+            rss_mdm_resource::Id::new("gc").map_err(|_| invariant())?,
+            length,
+            rss_mdm_resource::Digest::from_bytes(digest),
+        )
+        .map_err(|_| invariant())?;
+        let document = self.store.sign(
+            &self.store.manifest_key(self.class, &artifact),
+            &self.manifest,
+        )?;
+
+        tx.with_connection(move|conn|Box::pin(async move{
+   let state:Option<String>=sqlx::query_scalar("SELECT state FROM mdm_content.manifests WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4 AND document=$5 FOR UPDATE").bind(&tenant).bind(c).bind(digest.as_slice()).bind(length as i64).bind(document).fetch_optional(&mut *conn).await?;
+   if state.as_deref()==Some("deleted") || state.is_none(){return Ok(false)}
+   let busy:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content.pins WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4 AND expires>extract(epoch FROM clock_timestamp())) OR EXISTS(SELECT 1 FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND expires>extract(epoch FROM clock_timestamp()) AND document->'value'->'upload'->'binding'->'sha256'=$5)")
+    .bind(&tenant).bind(c).bind(digest.as_slice()).bind(length as i64).bind(serde_json::json!(digest)).fetch_one(&mut *conn).await?;
+   Ok(!busy)
+  })).await.map_err(|_|storage())
+    }
+    pub async fn deleting_in(&self, tx: &mut PgTransaction<'_>) -> Result<(), Error> {
+        let tenant = tx.tenant_id().to_string();
+        let digest = self.digest;
+        let c = journal::class(self.class);
+        let length = self.length;
+        tx.with_connection(move|conn|Box::pin(async move{sqlx::query("UPDATE mdm_content.manifests SET state='deleting' WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4 AND state<>'deleted'").bind(tenant).bind(c).bind(digest.as_slice()).bind(length as i64).execute(conn).await?;Ok(())})).await.map_err(|_|storage())
+    }
+    pub async fn remove(self) -> Result<(), Error> {
+        let mut tx = self.store.tx().await?;
+        let deleting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content.manifests WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4 AND state='deleting')")
+         .bind(self.store.tenant.to_string()).bind(journal::class(self.class)).bind(self.digest.as_slice()).bind(self.length as i64).fetch_one(&mut *tx).await.map_err(|_|storage())?;
+        if !deleting {
+            return Err(Error::Conflict);
+        }
+        commit(tx).await?;
+        let deadline = self.store.deadline()?;
+        for p in &self.manifest.pieces {
+            if !self.store.backend.delete(&p.coordinate, deadline).await? {
+                return Err(Error::CommitUnknown);
+            }
+            let mut tx = self.store.tx().await?;
+            sqlx::query(
+                "UPDATE mdm_content.objects SET state='deleted' WHERE tenant_id=$1::uuid AND id=$2",
+            )
+            .bind(self.store.tenant.to_string())
+            .bind(p.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| storage())?;
+            commit(tx).await?;
+        }
+        let mut tx = self.store.tx().await?;
+        sqlx::query("UPDATE mdm_content.manifests SET state='deleted' WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4 AND state='deleting'").bind(self.store.tenant.to_string()).bind(journal::class(self.class)).bind(self.digest.as_slice()).bind(self.length as i64).execute(&mut *tx).await.map_err(|_|storage())?;
+        commit(tx).await
     }
 }
 impl Store {
-    fn clean_orphan(&self, id: Uuid, path: &Path, now: i64) -> Result<(), Error> {
-        let metadata = match fs::symlink_metadata(path) {
-            Ok(metadata) => metadata,
-            // An earlier metadata/companion entry in this same scan may already remove it.
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(_) => return Err(storage()),
-        };
-        let age = metadata
-            .modified()
-            .map_err(|_| storage())?
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| storage())?
-            .as_secs();
-        if !metadata.is_file()
-            || now < 0
-            || (now as u64).saturating_sub(age) < self.config.retention_seconds
-        {
-            return Ok(());
-        }
-        let _guard = match lock(&self.upload_path(id, "part")) {
-            Ok(f) => f,
-            Err(Error::Conflict) => return Ok(()),
-            Err(e) => return Err(e),
-        };
-        for extension in ["next", "part"] {
-            let path = self.upload_path(id, extension);
-            if path.exists() {
-                regular(&path)?;
-                fs::remove_file(path).map_err(|_| storage())?;
-            }
-        }
-        sync_dir(&self.directory)
-    }
-    pub(super) fn clean_partials_locked(&self, now: i64) -> Result<(), Error> {
-        for entry in fs::read_dir(&self.directory).map_err(|_| storage())? {
-            let entry = entry.map_err(|_| storage())?;
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if let Some(raw) = name
-                .strip_prefix(".upload-")
-                .and_then(|v| v.strip_suffix(".part").or_else(|| v.strip_suffix(".next")))
-            {
-                if let Ok(id) = Uuid::parse_str(raw)
-                    && id.to_string() == raw
-                    && !self.upload_path(id, "json").exists()
-                {
-                    self.clean_orphan(id, &entry.path(), now)?;
-                }
-                continue;
-            }
-            let Some(raw) = name
-                .strip_prefix(".upload-")
-                .and_then(|v| v.strip_suffix(".json"))
-            else {
-                continue;
-            };
-            let Ok(id) = Uuid::parse_str(raw) else {
-                continue;
-            };
-            if id.to_string() != raw {
-                continue;
-            }
-            let upload = self.load_upload(id, i64::MIN)?;
-            if upload.complete && self.upload_path(id, "part").exists() {
-                match lock(&self.upload_path(id, "part")) {
-                    Ok(_guard) => {
-                        fs::remove_file(self.upload_path(id, "part")).map_err(|_| storage())?;
-                        sync_dir(&self.directory)?;
-                    }
-                    Err(Error::Conflict) => continue,
-                    Err(e) => return Err(e),
-                }
-            }
-            if upload.expires > now {
-                continue;
-            }
-            let path = self.upload_path(id, "part");
-            let guard = match lock(&path) {
-                Ok(f) => f,
-                Err(Error::Conflict) => continue,
-                Err(e) => return Err(e),
-            };
-            // The per-session lock excludes an in-flight append/finalize across all processes.
-            for extension in ["json", "next", "part"] {
-                let path = self.upload_path(id, extension);
-                if path.exists() {
-                    regular(&path)?;
-                    fs::remove_file(path).map_err(|_| storage())?;
-                }
-            }
-            drop(guard);
-            sync_dir(&self.directory)?;
-        }
-        Ok(())
-    }
-    pub async fn garbage(self: &Arc<Self>, now: i64) -> Result<Vec<Garbage>, Error> {
-        let store = self.clone();
-        tokio::task::spawn_blocking(move || {
-            let _directory = lock(&store.directory.join(".upload.lock"))?;
-            store.clean_partials_locked(now)?;
-            let mut protected = std::collections::BTreeSet::new();
-            let mut candidates = Vec::new();
-            for entry in fs::read_dir(&store.directory).map_err(|_| storage())? {
-                let entry = entry.map_err(|_| storage())?;
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                if let Some(id) = name
-                    .strip_prefix(".upload-")
-                    .and_then(|v| v.strip_suffix(".json"))
-                    .and_then(|v| Uuid::parse_str(v).ok())
-                {
-                    let binding = store.load_upload(id, i64::MIN)?.binding;
-                    protected.insert((binding.class(), binding.sha256));
-                } else {
-                    let (class, digest) = if let Some(value) = name.strip_prefix("native-") {
-                        (StorageClass::NativeConfiguration, value)
-                    } else if let Some(value) = name.strip_prefix("diagnostic-") {
-                        (StorageClass::NativeDiagnostic, value)
-                    } else {
-                        (StorageClass::Artifact, name.as_ref())
-                    };
-                    if digest.len() != 64
-                        || !digest
-                            .bytes()
-                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-                    {
-                        continue;
-                    }
-                    let metadata = fs::symlink_metadata(entry.path()).map_err(|_| storage())?;
-                    if !metadata.is_file() {
-                        continue;
-                    }
-                    let modified = metadata
-                        .modified()
-                        .map_err(|_| storage())?
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_err(|_| storage())?
-                        .as_secs();
-                    if now < 0
-                        || (now as u64).saturating_sub(modified) < store.config.retention_seconds
-                    {
-                        continue;
-                    }
-                    candidates.push((
-                        entry.path(),
-                        class,
-                        rss_mdm_resource::Digest::parse(digest)
-                            .map_err(|_| invariant())?
-                            .bytes(),
-                    ));
-                }
-            }
-            let mut garbage = Vec::new();
-            for (path, class, digest) in candidates
-                .into_iter()
-                .filter(|(_, class, d)| !protected.contains(&(*class, *d)))
-                .take(128)
-            {
-                match lock(&store.class_lock(digest, class)) {
-                    Ok(guard) => garbage.push(Garbage {
-                        path,
-                        digest,
-                        class,
-                        _guard: guard,
-                    }),
-                    Err(Error::Conflict) => (),
-                    Err(e) => return Err(e),
-                }
-            }
-            Ok(garbage)
-        })
+    async fn clean_orphans(&self, now: i64) -> Result<(), Error> {
+        let deadline = self.deadline()?;
+        let mut tx = self.tx().await?;
+        sqlx::query(
+            "DELETE FROM mdm_content.pins WHERE expires<=extract(epoch FROM clock_timestamp())",
+        )
+        .execute(&mut *tx)
         .await
-        .map_err(|_| storage())?
+        .map_err(|_| storage())?;
+        let rows=sqlx::query("SELECT o.id,o.intent,o.coordinate,o.content FROM mdm_content.objects o WHERE o.state<>'deleted' AND o.expires<=$1 AND NOT EXISTS(SELECT 1 FROM mdm_content.uploads u WHERE u.id=o.owner AND (u.expires>$1 OR u.held_until>$1)) AND NOT EXISTS(SELECT 1 FROM mdm_content.manifests m WHERE m.state<>'deleted' AND m.document->'value'->'pieces' @> jsonb_build_array(jsonb_build_object('id',o.id))) ORDER BY o.id LIMIT 128 FOR UPDATE OF o")
+   .bind(now).fetch_all(&mut *tx).await.map_err(|_|storage())?;
+        for row in &rows {
+            let id: Uuid = row.try_get("id").map_err(|_| storage())?;
+            sqlx::query("UPDATE mdm_content.objects SET state='deleting' WHERE id=$1")
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| storage())?;
+        }
+        commit(tx).await?;
+        for row in rows {
+            self.check_deadline(deadline)?;
+            let id: Uuid = row.try_get("id").map_err(|_| storage())?;
+            let content = decode(row.try_get("content").map_err(|_| storage())?)?;
+            let coordinate = match row
+                .try_get::<Option<serde_json::Value>, _>("coordinate")
+                .map_err(|_| storage())?
+            {
+                Some(c) => Some(decode(c)?),
+                None => {
+                    self.backend
+                        .recover(
+                            &decode(row.try_get("intent").map_err(|_| storage())?)?,
+                            content,
+                            deadline,
+                        )
+                        .await?
+                }
+            };
+            if let Some(c) = coordinate {
+                // Save recovered exact versions before deleting; an ambiguous delete can be retried safely.
+                let mut tx = self.tx().await?;
+                sqlx::query("UPDATE mdm_content.objects SET coordinate=$2 WHERE id=$1")
+                    .bind(id)
+                    .bind(journal::encode(&c)?)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|_| storage())?;
+                commit(tx).await?;
+                if self.backend.delete(&c, deadline).await? {
+                    let mut tx = self.tx().await?;
+                    sqlx::query("UPDATE mdm_content.objects SET state='deleted' WHERE id=$1")
+                        .bind(id)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|_| storage())?;
+                    commit(tx).await?;
+                }
+            }
+            // Unresolved recovery is never evidence that a write did not happen.
+        }
+        let mut tx = self.tx().await?;
+        sqlx::query("DELETE FROM mdm_content.uploads u WHERE u.expires<=$1 AND u.held_until<=$1 AND NOT EXISTS(SELECT 1 FROM mdm_content.objects o WHERE o.owner=u.id AND o.state<>'deleted' AND NOT EXISTS(SELECT 1 FROM mdm_content.manifests m WHERE m.state<>'deleted' AND m.document->'value'->'pieces' @> jsonb_build_array(jsonb_build_object('id',o.id))))").bind(now).execute(&mut *tx).await.map_err(|_|storage())?;
+        commit(tx).await
+    }
+    pub async fn garbage(&self, now: i64) -> Result<Vec<Garbage>, Error> {
+        if now < 0 {
+            return Err(Error::Malformed);
+        }
+        self.clean_orphans(now).await?;
+        let mut tx = self.tx().await?;
+        let rows=sqlx::query("SELECT class,sha256,length,document FROM mdm_content.manifests WHERE ((state='ready' AND expires<=$1) OR state='deleting') AND NOT EXISTS(SELECT 1 FROM mdm_content.pins p WHERE p.class=mdm_content.manifests.class AND p.sha256=mdm_content.manifests.sha256 AND p.length=mdm_content.manifests.length AND p.expires>extract(epoch FROM clock_timestamp())) ORDER BY class,sha256 LIMIT 128").bind(now).fetch_all(&mut *tx).await.map_err(|_|storage())?;
+        let mut out = Vec::new();
+        for row in rows {
+            let c: String = row.try_get("class").map_err(|_| storage())?;
+            let c: StorageClass = decode(serde_json::json!(c))?;
+            let length = row.try_get::<i64, _>("length").map_err(|_| storage())? as u64;
+            let digest: [u8; 32] = row
+                .try_get::<Vec<u8>, _>("sha256")
+                .map_err(|_| storage())?
+                .try_into()
+                .map_err(|_| invariant())?;
+            let a = Artifact::new(
+                rss_mdm_resource::Id::new("gc").map_err(|_| invariant())?,
+                length,
+                rss_mdm_resource::Digest::from_bytes(digest),
+            )
+            .map_err(|_| invariant())?;
+            out.push(Garbage {
+                store: self.clone(),
+                manifest: self.unsign(
+                    &self.manifest_key(c, &a),
+                    row.try_get("document").map_err(|_| storage())?,
+                )?,
+                digest,
+                class: c,
+                length,
+            });
+        }
+        commit(tx).await?;
+        Ok(out)
     }
 }

@@ -110,6 +110,11 @@ pub async fn record_in(
     identity: &Identity,
     artifact: &Artifact,
 ) -> Result<(Metadata, bool), Error> {
+    let ready:Option<String>=sqlx::query_scalar("SELECT state FROM mdm_content.manifests WHERE tenant_id=$1::uuid AND class='native_diagnostic' AND sha256=$2 AND length=$3 FOR SHARE")
+      .bind(tenant.to_string()).bind(artifact.digest().bytes().as_slice()).bind(artifact.length() as i64).fetch_optional(&mut *c).await.map_err(|_|crate::storage())?;
+    if ready.as_deref() != Some("ready") {
+        return Err(Error::Conflict);
+    }
     let binding = serde_json::to_value(identity).map_err(|_| Error::Malformed)?;
     let fresh = sqlx::query("INSERT INTO mdm_content.diagnostic_artifacts(tenant_id,operation,registration,generation,identity,reference,length,sha256,expires_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(tenant_id,operation) DO NOTHING")
         .bind(tenant.to_string()).bind(identity.operation).bind(identity.registration).bind(identity.generation)

@@ -1,5 +1,6 @@
 WITH tables AS (SELECT c.oid,c.relname FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_content' AND c.relkind='r')
 SELECT jsonb_build_object(
+ 'reference_guard', (SELECT jsonb_build_array(pg_get_triggerdef(t.oid),pg_get_functiondef(t.tgfoid),t.tgenabled) FROM pg_trigger t WHERE t.tgrelid='mdm_resource.artifact_refs'::regclass AND t.tgname='content_reference_ready'),
  'columns', (SELECT jsonb_agg(jsonb_build_array(t.relname,a.attname,
    format_type(a.atttypid,a.atttypmod),a.attnotnull,pg_get_expr(d.adbin,d.adrelid),
    a.attidentity,a.attgenerated) ORDER BY t.relname COLLATE "C",a.attnum)
