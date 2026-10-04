@@ -30,7 +30,7 @@
     [
       "asset_dispatch",
       "cursor",
-      "uuid",
+      "text",
       false,
       null,
       "",
@@ -936,7 +936,7 @@
       "asset_dispatch",
       "asset_dispatch_phase_check",
       "c",
-      "CHECK ((phase = ANY (ARRAY['groups'::text, 'devices'::text, 'compliance'::text])))",
+      "CHECK ((phase = ANY (ARRAY['groups'::text, 'devices'::text, 'scopes'::text, 'compliance'::text])))",
       true
     ],
     [
