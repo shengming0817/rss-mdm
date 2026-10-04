@@ -432,7 +432,7 @@ async fn account_enrollment_and_reauthentication_keep_one_registration() -> Resu
     .bind(enrollment)
     .execute(&mut pg)
     .await?;
-    let device = scep_client::Device::new(enrollment, attempt, challenge)?;
+    let mut device = scep_client::Device::new(enrollment, attempt, challenge)?;
     let csr = device.request(
         &f.root.join("apple-issuer.pem"),
         &Uuid::new_v4().to_string(),
@@ -445,7 +445,7 @@ async fn account_enrollment_and_reauthentication_keep_one_registration() -> Resu
             &csr,
         )
         .await?;
-    let peer = f.authenticate_peer(&device, &der).await?;
+    let mut peer = f.authenticate_peer(&device, &der).await?;
     peer.token().await?;
     ensure!(
         native_user(
@@ -527,6 +527,11 @@ async fn account_enrollment_and_reauthentication_keep_one_registration() -> Resu
             .status()
             == StatusCode::UNAUTHORIZED
     );
+    // Certificate renewal retains the original account profile after browser logout;
+    // it does not revive the invalid user-channel bearer.
+    (peer, device) = f
+        .renewal_cycle(&peer, &device, enrollment, Some(name))
+        .await?;
     let rejected = user_token(&peer, Some(&bearer)).await?;
     ensure!(rejected.0 == StatusCode::UNAUTHORIZED);
     let renewal_cookie = start(&f, &flow_path(&rejected.1)?, name).await?;

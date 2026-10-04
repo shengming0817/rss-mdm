@@ -207,11 +207,28 @@ async fn prepare_on(
     let id = Uuid::new_v4();
     let enrollment = rss_mdm_registration_service::enrollment::store::uuid(&old, "enrollment")?;
     let secret = zeroize::Zeroizing::new(rss_mdm_registration_service::enrollment::random());
+    // The assigned account is an immutable enrollment attribute, independent of
+    // current browser sessions and control-plane binding revisions.
+    let (authority, assigned): (String, Option<String>) = sqlx::query_as(
+        "SELECT q.authority_kind,(SELECT f.account FROM mdm_apple.account_flows f WHERE f.tenant_id=q.tenant_id AND f.enrollment=q.id AND f.account IS NOT NULL ORDER BY f.authorization_version,f.id LIMIT 1) FROM mdm_access.requests q WHERE q.tenant_id=$1::uuid AND q.id=$2 AND q.source='mdm.apple'",
+    )
+    .bind(tenant)
+    .bind(enrollment)
+    .fetch_one(&mut *c)
+    .await
+    .map_err(db)?;
+    let mode = match (authority.as_str(), assigned.as_deref()) {
+        ("apple_account", Some(managed_account)) => {
+            profile::EnrollmentMode::Account { managed_account }
+        }
+        ("password", None) => profile::EnrollmentMode::Profile,
+        _ => return Err(Error::Unavailable(crate::Failure::AppleInvariant)),
+    };
     let (issuer, scep_url, scep_provisioner) = apple.active_scep(c, tenant).await?;
     let signed = apple.signer.sign(
         &profile::enrollment(
             &profile::EnrollmentProfile {
-                mode: profile::EnrollmentMode::Profile,
+                mode,
                 access_rights: apple.access_rights() as u16,
                 scep_url: &scep_url,
                 scep_provisioner: &scep_provisioner,
