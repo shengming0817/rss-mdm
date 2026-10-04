@@ -264,6 +264,12 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
     });
     let enrollment = Arc::new(crate::enrollment::http::HttpState {
         native: Arc::new(crate::enrollment_progress::EnrollmentProgress {
+            sessions: Arc::new(
+                rss_mdm_authorization_service::session::SessionAuthority::new(
+                    identity.authority.clone(),
+                    identity.tenant,
+                ),
+            ),
             windows: None,
             apple: None,
         }),

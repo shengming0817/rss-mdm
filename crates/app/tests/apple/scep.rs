@@ -248,7 +248,7 @@ async fn self_enrollment_uses_current_user_and_one_macos_allocation() -> Result<
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
-    let current: Uuid = sqlx::query_scalar("SELECT s.id FROM mdm_apple.scep_attempts s JOIN mdm_access.requests q ON(q.tenant_id,q.id,q.password_version)=(s.tenant_id,s.enrollment,s.password_version) WHERE s.tenant_id=$1::uuid AND s.enrollment=$2 AND s.state='prepared'")
+    let current: Uuid = sqlx::query_scalar("SELECT s.id FROM mdm_apple.scep_attempts s JOIN mdm_access.requests q ON(q.tenant_id,q.id,q.password_version)=(s.tenant_id,s.enrollment,s.authorization_version) WHERE s.tenant_id=$1::uuid AND s.enrollment=$2 AND s.state='prepared'")
         .bind(case_tenant()).bind(enrollment).fetch_one(&mut pg).await?;
     ensure!(current != attempt);
     pg.close().await?;

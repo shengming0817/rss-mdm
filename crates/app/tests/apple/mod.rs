@@ -3,6 +3,7 @@
     reason = "sequential real protocol and persistence assertions"
 )]
 //! Real Apple mTLS participant and fixed external SCEP provider; no principal or status stubs.
+mod account_enrollment;
 mod commands;
 mod ddm;
 mod lifecycle;
@@ -76,6 +77,13 @@ impl Fixture {
         }
         let mut apple: config::Config =
             serde_json::from_slice(&std::fs::read(root.join("apple.json"))?)?;
+        apple.account_keys.insert(
+            "organization".into(),
+            config::AccountSigningKey {
+                certificate_file: root.join("apple-profile.pem"),
+                private_key_file: root.join("apple-profile.pk8"),
+            },
+        );
         apple.management.listen = manage.local_addr()?;
         apple.management.origin = format!("https://localhost:{}", manage.local_addr()?.port());
         let mut trust: rss_mdm_agent_wire::pki::Trust =

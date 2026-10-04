@@ -236,6 +236,7 @@ impl Fixture {
                             crate::test_support::case::name("rss-t2-apple").into(),
                         ),
                     ]))?,
+                    None,
                 )?,
                 &audit,
             )
@@ -331,7 +332,7 @@ async fn certificate_renewal_preserves_registration() -> Result<()> {
         )
         .await?;
     ensure!(status == StatusCode::OK, "resume {status} {resumed}");
-    let distinct: bool = sqlx::query_scalar("SELECT q.password_version<>s.password_version FROM mdm_access.requests q JOIN mdm_apple.scep_attempts s ON(s.tenant_id,s.enrollment)=(q.tenant_id,q.id) WHERE q.tenant_id=$1::uuid AND q.id=$2 AND s.state='bound'")
+    let distinct: bool = sqlx::query_scalar("SELECT q.password_version<>s.authorization_version FROM mdm_access.requests q JOIN mdm_apple.scep_attempts s ON(s.tenant_id,s.enrollment)=(q.tenant_id,q.id) WHERE q.tenant_id=$1::uuid AND q.id=$2 AND s.state='bound'")
         .bind(case_tenant()).bind(enrollment).fetch_one(&mut pg).await?;
     ensure!(
         distinct,

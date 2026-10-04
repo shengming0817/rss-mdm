@@ -173,6 +173,10 @@ async fn concurrent_self_enrollment_replays_and_preserves_live_reservations() ->
             guessed,
             Uuid::parse_str(id)?,
             &crate::enrollment_progress::EnrollmentProgress {
+                sessions: crate::test_support::identity::session_authority(
+                    &crate::test_support::identity::config(case_tenant())?
+                )
+                .await?,
                 windows: None,
                 apple: None
             },

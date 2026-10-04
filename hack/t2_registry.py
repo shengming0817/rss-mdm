@@ -413,6 +413,13 @@ for part in ('cms', 'apns', 'scep', 'collection', 'profile', 'policy', 'onboardi
         fixtures=fixtures, sources=tuple(('crates/app/src/assembly/apple/' if path in ('mod.rs','config.rs') else 'crates/certificate/src/' if path=='certificate.rs' else 'crates/apple-mdm/src/' if path in ('protocol.rs','profile.rs') else 'crates/apple-channel/src/') + ('apple.rs' if path=='certificate.rs' else path) for path in source),
         tests=(('crates/app/tests/apple/apns.rs',) if part == 'apns' else
                ('crates/app/tests/apple/cms.rs',) if part == 'cms' else (f'crates/app/tests/apple/{part}.rs',)))
+MODULES['apple.cms'] = replace(MODULES['apple.cms'], production_inputs=(*MODULES['apple.cms'].production_inputs, 'crates/certificate/src/apple/account.rs'))
+add('apple.account_enrollment', selectors=('apple::tests::account_enrollment::',), profile='product',
+    fixtures=('apple','identity','oracle','scep'),
+    sources=('crates/apple-channel/src/account_enrollment/*', 'crates/apple-channel/schema/account-enrollment.sql',
+             'crates/registration-service/src/enrollment/native.rs', 'crates/registration-service/schema/apple-account.sql',
+             'crates/certificate/src/apple/account.rs', 'crates/app/src/enrollment_progress.rs'),
+    tests=('crates/app/tests/apple/account_enrollment.rs',))
 add('catalog.contract', build=None, python='catalog',
     sources=('crates/*-service/src/*/catalog.sql', 'crates/*-service/src/*/catalog.json',
              'crates/software-service/src/*/catalog.sql', 'crates/software-service/src/*/catalog.json'),
