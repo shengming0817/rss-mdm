@@ -115,7 +115,7 @@ async fn device_pages_commit_unknown_restart_and_later_window() {
     let peer = crate::test_support::case::peer();
     let foreign = format!("!foreign-{prefix}");
     sql(&format!(
-        "INSERT INTO mdm_access.devices VALUES('{peer}','{foreign}'); INSERT INTO mdm_planning.configuration_devices(tenant_id,device,input_revision) VALUES('{peer}','{foreign}',7); INSERT INTO mdm_planning.asset_dispatch(tenant_id) VALUES('{peer}')"
+        "SET rss.tenant_id='{peer}'; INSERT INTO mdm_access.devices VALUES('{peer}','{foreign}'); INSERT INTO mdm_planning.configuration_devices(tenant_id,device,input_revision) VALUES('{peer}','{foreign}',7); INSERT INTO mdm_planning.asset_dispatch(tenant_id) VALUES('{peer}')"
     ));
     // Repeated changes in one fixed window must not repeat a device wake.
     sql(&format!(
@@ -268,11 +268,14 @@ async fn installation_fallback_and_scope_pages_do_not_repeat_wakes() {
         "INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES('{}','{device}')",
         tenant()
     ));
+    let preparer = RunningAutomation::start(service.clone()).await;
+    let mut initial_tasks = Vec::new();
     for _ in 0..33 {
-        execute(
+        let scope = Uuid::new_v4();
+        let accepted = execute(
             &service,
             &Command::Scope {
-                id: Uuid::new_v4(),
+                id: scope,
                 change: operation(
                     0,
                     ScopeChange::Put {
@@ -287,14 +290,31 @@ async fn installation_fallback_and_scope_pages_do_not_repeat_wakes() {
         )
         .await
         .unwrap();
+        initial_tasks.push((
+            scope,
+            Uuid::parse_str(accepted["task"].as_str().unwrap()).unwrap(),
+        ));
     }
+    // Publish initial Scope work so new invalidation creates new jobs rather
+    // than being absorbed by the legitimate pending-job deduplication.
+    for (scope, task) in initial_tasks {
+        wait_task(
+            &service,
+            task,
+            crate::automation::TaskKind::Scope,
+            &scope.to_string(),
+        )
+        .await;
+    }
+    preparer.stop().await;
+    let devices = vec![device];
+    let initial_revision = revisions(&devices)[0];
     // Start after registration ingress; only the real inventory trigger supplies
     // the wake input, whose identity carries registration rather than device.
     sql(&format!(
-        "INSERT INTO mdm_planning.asset_dispatch(tenant_id,consumed,watermark) SELECT '{t}',revision,revision FROM mdm.asset_clock WHERE tenant_id='{t}'; INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,collection_sequence,source,epoch) VALUES('{t}','fallback','1','device','fixture','channel.agent.installation','present','batch',1,1,'known','{registration}',1,'mdm.windows',(SELECT epoch::text FROM mdm_access.report_sources WHERE tenant_id='{t}' AND registration='{registration}'::uuid LIMIT 1))",
+        "INSERT INTO mdm_planning.asset_dispatch(tenant_id,consumed,watermark) SELECT '{t}',revision,revision FROM mdm.asset_clock WHERE tenant_id='{t}' ON CONFLICT (tenant_id) DO UPDATE SET consumed=EXCLUDED.consumed,watermark=EXCLUDED.watermark,cursor=NULL,phase='groups'; INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,collection_sequence,source,epoch) VALUES('{t}','fallback','1','device','fixture','channel.agent.installation','present','batch',1,1,'known','{registration}',1,'mdm.windows',(SELECT epoch::text FROM mdm_access.report_sources WHERE tenant_id='{t}' AND registration='{registration}'::uuid LIMIT 1))",
         t = tenant()
     ));
-    let devices = vec![device];
     let worker = connect(&service).await;
     let current = claim(&worker).await;
     for phase in ["devices", "scopes", "compliance", "groups"] {
@@ -303,7 +323,7 @@ async fn installation_fallback_and_scope_pages_do_not_repeat_wakes() {
             .unwrap();
         assert_eq!(checkpoint()[2], phase);
     }
-    assert_eq!(revisions(&devices), vec![2]);
+    assert_eq!(revisions(&devices), vec![initial_revision + 1]);
     // A new authority change selects all 33 Scope references across two pages.
     let jobs_before: i64 = sql(&format!(
         "SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{}'",
@@ -322,7 +342,7 @@ async fn installation_fallback_and_scope_pages_do_not_repeat_wakes() {
             .unwrap();
         assert_eq!(checkpoint()[2], phase);
         if phase == "scopes" || phase == "compliance" || phase == "groups" {
-            assert_eq!(revisions(&devices), vec![3]);
+            assert_eq!(revisions(&devices), vec![initial_revision + 2]);
         }
     }
     let jobs_after: i64 = sql(&format!(
