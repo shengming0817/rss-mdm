@@ -59,6 +59,7 @@ async fn policy(
 async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
     let mut fixture = Fixture::new().await?;
     fixture.register().await?;
+    claim_request(&fixture.router, Uuid::new_v4()).await?;
     let (id, _bytes, _definition) = fixture.resource().await?;
     fixture
         .scope(
@@ -179,6 +180,7 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
 async fn explicit_rerun_deduplicates() -> Result<()> {
     let mut fixture = Fixture::new().await?;
     fixture.register().await?;
+    claim_request(&fixture.router, Uuid::new_v4()).await?;
     let (id, _bytes, _definition) = fixture.resource().await?;
     fixture
         .scope(
@@ -243,6 +245,7 @@ async fn explicit_rerun_deduplicates() -> Result<()> {
 async fn policy_scan_reaches_late_match() -> Result<()> {
     let mut fixture = Fixture::new().await?;
     fixture.register().await?;
+    claim_request(&fixture.router, Uuid::new_v4()).await?;
     let (resource, _bytes, _definition) = fixture.resource().await?;
     fixture
         .scope(
@@ -429,6 +432,7 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
         format!("http://{address}"),
     ));
     fixture.register().await?;
+    claim_request(&fixture.router, Uuid::new_v4()).await?;
     fixture
         .scope(
             case_task_scope(),

@@ -165,6 +165,8 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
  'windows.limits': ('crates/app/src/native/admission.rs',)}
 
 
+CAPABILITY_INPUTS['planning.self_service'] = ('crates/execution-service/src/self_service.rs', 'crates/execution-service/src/script_eligibility.rs', 'crates/agent-channel/src/tasks.rs')
+
 def app_family(owner, *, namespace=None, identity=True,
                fixtures=(), profile='product'):
     namespace = namespace or owner.replace('.', '::') + '::t2'
@@ -651,7 +653,7 @@ consume(('crates/execution-service/src/input_preparation.rs',
         'execution.commands.configuration')
 consume(('crates/execution-service/src/freeze_inputs.rs', 'crates/flow-service/src/resource_catalog/mod.rs'),
         'planning.agent_policy planning.remote planning.onboarding')
-TASK_CONSUMERS = 'planning.onboarding planning.policy planning.agent_policy planning.frequency planning.remote planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
+TASK_CONSUMERS = 'planning.self_service planning.onboarding planning.policy planning.agent_policy planning.frequency planning.remote planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
 consume(('crates/agent-wire/src/tasks.rs', 'crates/agent-wire/schema/runtime/task-*.json',
          'crates/agent-wire/schema/runtime/signed-task-v1.schema.json', 'crates/execution-service/src/task_signing.rs'), TASK_CONSUMERS)
 # lib.rs owns shared identities, capability, errors, registration and report shapes.
@@ -1511,3 +1513,7 @@ MODULES['execution.commands.windows'] = replace(MODULES['execution.commands.wind
 add('content.s3', build=Build('rss-mdm-content-s3'), selectors=('s3_tests::',), profile='none', fixtures=('s3',),
     sources=('crates/content-s3/src/*',), tests=('crates/content-s3/tests/s3.rs',),
     support=('hack/s3_fixtures.py','fixtures/s3-provider.lock.json'))
+
+MODULES['planning.self_service'] = replace(MODULES['planning.self_service'], fixtures=('identity','tls','local_worker'), scope='tenant', support_inputs=(*MODULES['planning.self_service'].support_inputs,'crates/app/tests/support/agent.rs','crates/app/tests/support/agent_execution.rs','crates/app/tests/support/software.rs'))
+consume(('crates/agent-wire/src/self_service.rs','crates/agent-wire/schema/runtime/script-*.json','crates/agent-wire/schema/runtime/self-service-*.json','crates/execution-service/schema/self-service/*','crates/management-http/schema/*','crates/agent-wire/examples/*','crates/execution-service/examples/*','crates/management-http/examples/*'), TASK_CONSUMERS)
+consume(('crates/policy/src/self_service.rs','crates/execution-service/src/script_eligibility.rs'), TASK_CONSUMERS)
