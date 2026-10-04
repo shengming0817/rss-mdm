@@ -563,13 +563,17 @@ async fn bind_on(
     let command = *command;
     let audit = *audit;
     // The accepted request supplies the target; its UUID alone never authorizes binding.
-    let request = sqlx::query("SELECT g.device,r.source FROM mdm_access.requests r JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(r.tenant_id,r.grant_id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND g.actor=$3 AND g.instance=$4 AND g.state='consumed' AND r.state<>'cancelled'")
+    let request = sqlx::query("SELECT g.device,r.source,r.self_service FROM mdm_access.requests r JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(r.tenant_id,r.grant_id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND g.actor=$3 AND g.instance=$4 AND g.state='consumed' AND r.state<>'cancelled'")
             .bind(admin.tenant_id()).bind(command.request_id.to_string()).bind(admin.principal_id()).bind(admin.instance_id()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
     let device: String = request.try_get("device").map_err(db)?;
     if request.try_get::<String, _>("source").map_err(db)? != command.source.as_str() {
         return Err(Error::Forbidden);
     }
-    let _permission = admin.enrollment(&device)?;
+    let permission = if request.try_get::<bool, _>("self_service").map_err(db)? {
+        admin.self_enrollment(&device)?
+    } else {
+        admin.enrollment(&device)?
+    };
     audit.target(&device);
     let digest = digest(&(
         "registration_bind",
@@ -586,7 +590,7 @@ async fn bind_on(
         let receipt: RegistrationReceipt =
             serde_json::from_str(&old).map_err(|_| Error::Storage)?;
         audit.registration(receipt.registration);
-        admin.enrollment(&device)?;
+        permission.check()?;
         return Ok((receipt, true, digest));
     }
     let receipt = bind_in(

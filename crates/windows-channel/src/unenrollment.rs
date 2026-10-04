@@ -169,14 +169,16 @@ pub(crate) async fn replay(
     let mut tx = app.access.begin_read(&tenant.to_string()).await?;
     let row = sqlx::query("SELECT u.registration,u.generation,u.credential,u.session,u.digest,u.response,r.device FROM mdm_windows.unenrollment_receipts u JOIN mdm_access.credentials c ON (c.tenant_id,c.registration,c.id)=(u.tenant_id,u.registration,u.credential) JOIN mdm_access.registrations r ON (r.tenant_id,r.id,r.generation)=(u.tenant_id,u.registration,u.generation) WHERE u.tenant_id=$1::uuid AND c.channel='mdm' AND c.locator=$2 AND c.state='revoked' AND r.state='revoked'")
         .bind(tenant.to_string()).bind(locator).fetch_optional(&mut *tx).await.map_err(db)?;
-    tx.rollback().await.map_err(db)?;
     let Some(row) = row else { return Ok(None) };
     let registration: Uuid = row.try_get("registration").map_err(db)?;
     let generation: i64 = row.try_get("generation").map_err(db)?;
     let credential: Uuid = row.try_get("credential").map_err(db)?;
     let session: i64 = row.try_get("session").map_err(db)?;
     let device: String = row.try_get("device").map_err(db)?;
-    if device != message.header.source
+    let protocol_device =
+        crate::protocol_device::on(&mut tx, &tenant.to_string(), registration, &device).await?;
+    tx.rollback().await.map_err(db)?;
+    if protocol_device != message.header.source
         || session != i64::from(message.header.session_id)
         || message.header.message_id != 1
     {

@@ -6,6 +6,7 @@ mod linked;
 pub mod management;
 mod operations;
 mod protection;
+mod protocol_device;
 pub mod push;
 mod push_channel;
 mod push_worker;
@@ -376,7 +377,7 @@ async fn enrollment(
         if proof.principal_id() != auth.actor || proof.instance_id() != auth.instance {
             return Err(Error::Unauthorized);
         }
-        let _permission = proof.enrollment(&auth.device)?;
+        auth.authorize(&proof)?;
         proof.bind_audit(&audit)?;
         audit.target(&auth.device);
         let now = app
@@ -421,7 +422,9 @@ async fn enrollment(
             return Err(Error::Unsupported);
         };
         for (key, value) in &input.additional_context.0 {
-            if key == "DeviceID" && value != &auth.device {
+            // A self-service request owns a new server identity. The terminal DeviceID
+            // is descriptive input; it cannot select or supersede another registration.
+            if key == "DeviceID" && !auth.self_service && value != &auth.device {
                 return Err(Error::Forbidden);
             }
         }
@@ -437,12 +440,18 @@ async fn enrollment(
             _ => return Err(Error::Malformed),
         };
         audit.operation(auth.operation, "enrollment_issue");
-        let intent = crate::issuance::issuance_intent(
+        let intent = crate::issuance::issuance_for_device(
             &app.access,
             app.windows()?,
             &auth,
             &proof,
             (&csr.0, enrollment_type),
+            input
+                .additional_context
+                .0
+                .iter()
+                .find(|(k, _)| k == "DeviceID")
+                .map(|(_, v)| v.as_str()),
             now,
         )
         .await?;
@@ -471,7 +480,7 @@ async fn enrollment(
                 app.credentials.get(auth.credential_ref)?,
             )
             .await?;
-        let _permission = proof.enrollment(&auth.device)?;
+        auth.authorize(&proof)?;
         crate::issuance::complete_issuance(
             &app.audit_store,
             app.windows()?,
