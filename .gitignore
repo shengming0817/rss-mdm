@@ -33,6 +33,7 @@ tmp/
 /.codex-backups/
 
 # Local env / secrets
+/deployment/certs/
 /.venv/
 __pycache__/
 *.py[cod]
