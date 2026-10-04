@@ -174,7 +174,7 @@ class PreparationTests(unittest.TestCase):
                      patch.object(environment, 'host_ports'):
                     environment.reset()
                     verify.assert_called_once()
-                    compose.assert_called_once_with('--profile', '*', 'down', '--volumes', '--remove-orphans')
+                    compose.assert_called_once_with('--profile', '*', 'down', '--volumes', '--remove-orphans', timeout=30)
             finally:
                 fixture.cert_directory.cleanup()
 
