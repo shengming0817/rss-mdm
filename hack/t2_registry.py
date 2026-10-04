@@ -44,6 +44,7 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
  'authorization.admission': ('crates/authorization-service/src/access-contract.json',),
  'enrollment.http': ('crates/management-http/src/enrollment/http.rs',
                      'crates/registration-service/src/enrollment/read.rs'),
+ 'enrollment.quotas': ('crates/registration-service/src/quotas.rs', 'crates/registration-service/src/quotas/*', 'crates/registration-service/schema/quotas.sql', 'crates/registration-service/schema/quota-usage.sql', 'crates/management-http/src/enrollment/quotas.rs'),
  'enrollment.recovery': ('crates/registration-service/src/enrollment/store.rs',),
  'device.binding': ('crates/registration-service/src/device.rs',
                     'crates/registration-service/src/device/store.rs'),
@@ -233,6 +234,7 @@ for name in ('rules', 'membership', 'capacity', 'initialization', 'admission'):
     key = 'authorization.' + name
     MODULES[key] = replace(MODULES[key], support_inputs=('crates/app/tests/authorization/mod.rs',))
 app_family('enrollment')
+MODULES['enrollment.quotas'] = replace(MODULES['enrollment.quotas'], scope='tenant', support_inputs=(*MODULES['enrollment.quotas'].support_inputs, 'crates/app/tests/support/authority.rs', 'crates/app/tests/support/software.rs', 'crates/app/tests/device/support.rs'))
 app_family('device')
 for part in ('binding', 'revocation', 'recovery', 'admission'):
     key = 'device.' + part
@@ -1541,3 +1543,14 @@ consume_dependencies('content.storage', normal='rss-mdm-content-s3 tokio-util', 
 MODULES['planning.self_service'] = replace(MODULES['planning.self_service'], fixtures=('identity','local_worker','apple','scep','windows','agent_pki'), scope='tenant', support_inputs=(*MODULES['planning.self_service'].support_inputs,'crates/app/tests/support/agent_execution.rs','crates/app/tests/support/software.rs'))
 consume(('crates/agent-wire/src/self_service.rs','crates/agent-wire/schema/runtime/script-*.json','crates/agent-wire/schema/runtime/self-service-*.json','crates/management-http/schema/*','crates/agent-wire/examples/*','crates/management-http/examples/*'), TASK_CONSUMERS)
 consume(('crates/policy/src/self_service.rs','crates/execution-service/src/script_eligibility.rs'), TASK_CONSUMERS)
+
+consume(('crates/registration-service/src/enrollment.rs','crates/registration-service/src/enrollment/*','crates/registration-service/src/agent/grants.rs','crates/management-http/src/agent_enrollment.rs','crates/authorization-service/src/context.rs'), 'enrollment.quotas')
+
+consume(('crates/windows-channel/src/protocol_device.rs',), 'windows.issuance windows.enrollment windows.management windows.declared')
+
+consume(('crates/registration-service/src/quotas.rs', 'crates/registration-service/schema/quota-usage.sql'), 'agent.registration')
+
+consume(('crates/management-http/src/enrollment/mod.rs',), 'enrollment.http enrollment.quotas')
+
+T1_INPUTS += ('crates/registration-service/tests/credentials.rs',)
+consume(('crates/windows-channel/src/enrollment_store.rs',), 'windows.issuance windows.enrollment windows.declared')

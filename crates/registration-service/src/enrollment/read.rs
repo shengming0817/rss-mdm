@@ -42,9 +42,10 @@ pub async fn enrollment_status(
     permission: EnrollmentPermission<'_>,
     id: Uuid,
 ) -> Result<Status, Error> {
+    permission.check()?;
     let mut tx = database.begin(permission.proof().tenant_id()).await?;
-    let row = sqlx::query("SELECT q.state,q.source,floor(extract(epoch FROM q.expires_at))::bigint AS expires_at,r.id::text AS registration FROM mdm_access.requests q JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(q.tenant_id,q.grant_id) LEFT JOIN mdm_access.registrations r ON (r.tenant_id,r.request_id)=(q.tenant_id,q.id) WHERE q.tenant_id=$1::uuid AND q.id=$2::uuid AND g.device=$3 AND q.issuance_operation IS NOT NULL")
-            .bind(permission.proof().tenant_id()).bind(id.to_string()).bind(permission.device()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
+    let row = sqlx::query("SELECT q.state,q.source,floor(extract(epoch FROM q.expires_at))::bigint AS expires_at,r.id::text AS registration FROM mdm_access.requests q JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(q.tenant_id,q.grant_id) LEFT JOIN mdm_access.registrations r ON (r.tenant_id,r.request_id)=(q.tenant_id,q.id) WHERE q.tenant_id=$1::uuid AND q.id=$2::uuid AND g.device=$3 AND q.issuance_operation IS NOT NULL AND (NOT $4 OR (q.self_service AND g.instance=$5 AND g.actor=$6))")
+            .bind(permission.proof().tenant_id()).bind(id.to_string()).bind(permission.device()).bind(permission.self_service()).bind(permission.proof().instance_id()).bind(permission.proof().principal_id()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
     Ok(Status {
         enrollment_id: id,
         status: row.try_get("state").map_err(db)?,

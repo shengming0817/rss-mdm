@@ -91,6 +91,7 @@ pub struct Receipt {
 }
 /// All fields originate in PG, never in device claims.
 pub struct Authorization {
+    pub self_service: bool,
     pub id: Uuid,
     pub device: String,
     pub actor: String,
@@ -102,6 +103,37 @@ pub struct Authorization {
     pub state: String,
     pub source: ReportSource,
     pub windows_profile: Option<WindowsProfile>,
+}
+
+impl Authorization {
+    /// Ownership is immutable authorization origin, independent of mutable organization metadata.
+    pub fn authorize(
+        &self,
+        proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+    ) -> Result<(), Error> {
+        proof.check_live()?;
+        if self.actor != proof.principal_id() || self.instance != proof.instance_id() {
+            return Err(Error::Unauthorized);
+        }
+        if !self.self_service {
+            proof.enrollment(&self.device)?;
+        }
+        Ok(())
+    }
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SelfCreate {
+    pub password: Password,
+    pub source: ReportSource,
+    pub windows_profile: Option<WindowsProfile>,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelfReceipt {
+    pub device_id: String,
+    #[serde(flatten)]
+    pub receipt: Receipt,
 }
 
 /// Enrollment password generation, independent of browser authentication.
@@ -147,6 +179,9 @@ pub struct ResumeCommand<'a> {
     pub operation: Uuid,
 }
 impl EnrollmentService {
+    pub fn quotas(&self) -> crate::quotas::Quotas {
+        crate::quotas::Quotas::new(self.access.clone(), self.audit_store.clone())
+    }
     pub fn new(
         access: std::sync::Arc<crate::Store>,
         credentials: std::sync::Arc<credentials::Credentials>,
@@ -178,7 +213,7 @@ impl EnrollmentService {
             rss_identity_core::session::SessionSecret::parse(continuation.expose().into())
                 .map_err(|_| Error::Unauthorized)?,
         )?;
-        store::create_enrollment(
+        let result = store::create_enrollment(
             &self.audit_store,
             permission,
             &input.password,
@@ -188,7 +223,49 @@ impl EnrollmentService {
             key,
             audit,
         )
-        .await
+        .await;
+        self.settle_handoff(reference, result, audit)
+    }
+    pub async fn create_self(
+        &self,
+        proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+        input: &SelfCreate,
+        continuation: &rss_identity_core::session::SessionSecret,
+        key: Uuid,
+        audit: &rss_mdm_audit_integration::RequestAudit,
+    ) -> Result<SelfReceipt, Error> {
+        if key.is_nil()
+            || input.source == ReportSource::AgentBuiltin
+            || (input.source == ReportSource::MdmWindows) != input.windows_profile.is_some()
+        {
+            return Err(Error::Malformed);
+        }
+        // Namespace is derived from authenticated identity and operation, never a device claim.
+        let device_id = format!(
+            "self:{}:{}:{}",
+            proof.instance_id(),
+            proof.principal_id(),
+            key
+        );
+        let permission = proof.self_enrollment(&device_id)?;
+        audit.target(&device_id);
+        let reference = self.credentials.insert(
+            rss_identity_core::session::SessionSecret::parse(continuation.expose().into())
+                .map_err(|_| Error::Unauthorized)?,
+        )?;
+        let result = store::create_enrollment(
+            &self.audit_store,
+            permission,
+            &input.password,
+            input.source,
+            input.windows_profile,
+            reference,
+            key,
+            audit,
+        )
+        .await;
+        let receipt = self.settle_handoff(reference, result, audit)?;
+        Ok(SelfReceipt { device_id, receipt })
     }
     pub async fn resume(
         &self,
@@ -197,14 +274,14 @@ impl EnrollmentService {
         continuation: &rss_identity_core::session::SessionSecret,
         audit: &rss_mdm_audit_integration::RequestAudit,
     ) -> Result<Receipt, Error> {
-        let device = store::enrollment_target(&self.access, proof, command.id).await?;
-        let permission = proof.enrollment(&device)?;
+        let permission = store::owned_permission(&self.access, proof, command.id).await?;
+        let device = permission.device().to_owned();
         audit.target(&device);
         let reference = self.credentials.insert(
             rss_identity_core::session::SessionSecret::parse(continuation.expose().into())
                 .map_err(|_| Error::Unauthorized)?,
         )?;
-        store::change_enrollment(
+        let result = store::change_enrollment(
             &self.audit_store,
             permission,
             command.id,
@@ -212,7 +289,22 @@ impl EnrollmentService {
             command.operation,
             audit,
         )
-        .await
+        .await;
+        self.settle_handoff(reference, result, audit)
+    }
+    fn settle_handoff<T>(
+        &self,
+        reference: Uuid,
+        result: Result<T, Error>,
+        audit: &rss_mdm_audit_integration::RequestAudit,
+    ) -> Result<T, Error> {
+        // The lifecycle producer sets Replayed only after returning the locked
+        // old receipt without using this attempt's reference.
+        let replayed = matches!(
+            audit.snapshot().management_result,
+            Some(rss_mdm_audit_integration::ManagementResult::Replayed)
+        );
+        self.credentials.settle(reference, result, replayed)
     }
 }
 
@@ -223,8 +315,8 @@ impl EnrollmentService {
         id: Uuid,
         audit: &rss_mdm_audit_integration::RequestAudit,
     ) -> Result<read::Status, Error> {
-        let device = store::enrollment_target(&self.access, proof, id).await?;
-        let permission = proof.enrollment(&device)?;
+        let permission = store::owned_permission(&self.access, proof, id).await?;
+        let device = permission.device().to_owned();
         audit.target(&device);
         read::enrollment_status(&self.access, permission, id).await
     }
@@ -243,8 +335,8 @@ impl EnrollmentService {
         key: Uuid,
         audit: &rss_mdm_audit_integration::RequestAudit,
     ) -> Result<Receipt, Error> {
-        let device = store::enrollment_target(&self.access, proof, id).await?;
-        let permission = proof.enrollment(&device)?;
+        let permission = store::owned_permission(&self.access, proof, id).await?;
+        let device = permission.device().to_owned();
         audit.target(&device);
         store::change_enrollment(&self.audit_store, permission, id, None, key, audit).await
     }

@@ -545,30 +545,80 @@ impl Host {
         self.peer_profile(rss_mdm_registration_service::enrollment::WindowsProfile::Device)
             .await
     }
+    pub(crate) async fn self_peer(&self) -> anyhow::Result<Peer> {
+        self.peer_with_authority(
+            rss_mdm_registration_service::enrollment::WindowsProfile::Device,
+            true,
+        )
+        .await
+    }
     pub(crate) async fn peer_profile(
         &self,
         profile: rss_mdm_registration_service::enrollment::WindowsProfile,
+    ) -> anyhow::Result<Peer> {
+        self.peer_with_authority(profile, false).await
+    }
+    async fn enrollment_receipt(
+        &self,
+        profile: rss_mdm_registration_service::enrollment::WindowsProfile,
+        self_service: bool,
+        plain: &str,
+    ) -> anyhow::Result<(AuthorizedPrincipal, Password, crate::enrollment::Receipt)> {
+        let proof = admin(
+            case_tenant(),
+            if self_service { "other-a" } else { "admin-a" },
+        )
+        .await?;
+        let password = Password::new(plain.to_owned())?;
+        let receipt = if self_service {
+            crate::test_support::identity::set_grants(case_tenant(), proof.principal_id(), vec![])
+                .await?;
+            let secret = crate::test_support::identity::credential(&self.app.identity, "other")?;
+            let mut browser = crate::test_support::Browser {
+                cookies: std::collections::BTreeMap::from([(
+                    "__Host-identity-session".into(),
+                    secret.expose().into(),
+                )]),
+                csrf: Some(secret.csrf()),
+                operation: Some(Uuid::new_v4()),
+                ..Default::default()
+            };
+            let (status,value)=browser.call(&self.browser,axum::http::Method::POST,"/api/v1/self-enrollments",Some(serde_json::json!({"source":"mdm.windows","password":plain,"windowsProfile":profile}))).await?;
+            ensure!(status == StatusCode::OK, "self enrollment {status} {value}");
+            serde_json::from_value::<crate::enrollment::Receipt>({
+                let mut value = value;
+                value.as_object_mut().unwrap().remove("deviceId");
+                value
+            })?
+        } else {
+            crate::enrollment::test_support::create_windows(
+                &self.store,
+                &proof,
+                crate::test_support::case::name("tls-device"),
+                &password,
+                self.reference,
+                Uuid::new_v4(),
+                profile,
+            )
+            .await?
+        };
+        Ok((proof, password, receipt))
+    }
+    async fn peer_with_authority(
+        &self,
+        profile: rss_mdm_registration_service::enrollment::WindowsProfile,
+        self_service: bool,
     ) -> anyhow::Result<Peer> {
         use x509_cert::der::{EncodePem, pem::LineEnding};
         let root = &self.root;
         let app = &self.app;
         let store = &self.store;
-        let reference = self.reference;
         let client = &self.client;
         let root_cert = &self.root_cert;
-        let proof = admin(case_tenant(), "admin-a").await?;
         let plain = crate::enrollment::random();
-        let password = Password::new(plain.clone())?;
-        let receipt = crate::enrollment::test_support::create_windows(
-            store,
-            &proof,
-            crate::test_support::case::name("tls-device"),
-            &password,
-            reference,
-            Uuid::new_v4(),
-            profile,
-        )
-        .await?;
+        let (proof, password, receipt) = self
+            .enrollment_receipt(profile, self_service, &plain)
+            .await?;
         let path = format!(
             "{}/EnrollmentServer/Enrollment.svc",
             app.windows()?.config.enrollment.origin

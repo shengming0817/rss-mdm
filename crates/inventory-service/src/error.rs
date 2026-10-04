@@ -86,7 +86,7 @@ impl From<rss_mdm_registration_service::Error> for Error {
             R::RollbackFailed => Self::RollbackFailed,
             R::Audit(e) => Self::Audit(e),
             R::Deadline => Self::Unavailable(Failure::RequestDeadline),
-            R::Capacity => Self::Unavailable(Failure::Capacity),
+            R::Capacity | R::RegistrationLimit => Self::Unavailable(Failure::Capacity),
             _ => Self::Unavailable(Failure::Database),
         }
     }

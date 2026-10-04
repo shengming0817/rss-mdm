@@ -22,6 +22,8 @@ pub enum Error {
     RollbackFailed,
     #[error("registration not found")]
     NotFound,
+    #[error("self-service registration quota reached")]
+    RegistrationLimit,
     #[error("credential handoff capacity reached")]
     Capacity,
     #[error("credential handoff unavailable")]

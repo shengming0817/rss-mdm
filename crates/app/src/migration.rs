@@ -279,6 +279,10 @@ fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_apple_channel::RELATIONS_SQL,
         ),
         (
+            "registration-quotas-v1",
+            rss_mdm_registration_service::QUOTAS_SQL,
+        ),
+        (
             "timeline-service-schema-v1",
             rss_mdm_timeline_service::INSTALL_SQL,
         ),

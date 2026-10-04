@@ -36,7 +36,7 @@ impl From<Error> for Failure {
             Error::Forbidden => C::PermissionDenied,
             Error::Conflict => C::OperationConflict,
             Error::CommitUnknown | Error::RollbackFailed => C::ActivationUnknown,
-            Error::Capacity => C::RegistrationLimit,
+            Error::Capacity | Error::RegistrationLimit => C::RegistrationLimit,
             _ => C::ServiceUnavailable,
         };
         Self {
@@ -55,14 +55,12 @@ impl From<rss_mdm_authorization_service::Error> for Failure {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Policy {
-    pub user_device_limit: u32,
     pub grant_seconds: u32,
     pub platforms: Vec<runtime::TaskPlatform>,
 }
 impl Default for Policy {
     fn default() -> Self {
         Self {
-            user_device_limit: 10,
             grant_seconds: 86400,
             platforms: vec![runtime::TaskPlatform::Windows, runtime::TaskPlatform::Macos],
         }
