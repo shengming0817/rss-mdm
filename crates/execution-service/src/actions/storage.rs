@@ -36,10 +36,11 @@ pub struct Run {
     pub deadline: i64,
     pub state: RunState,
     pub result: Option<Value>,
+    pub invocation: Option<crate::self_service::Invocation>,
 }
 pub async fn load_run(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Run> {
     let tenant = tx.tenant_id().to_string();
-    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT source_kind,policy_version,remote_operation,device,registration::text,generation,available_at,deadline,state,result FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::missing::ExecutionError::MissingTask))?;
+    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT source_kind,policy_version,remote_operation,device,registration::text,generation,available_at,deadline,state,result,invocation FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::missing::ExecutionError::MissingTask))?;
     Ok(Run {
         id,
         source: match row.try_get::<&str, _>("source_kind")? {
@@ -60,6 +61,11 @@ pub async fn load_run(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Run> {
         deadline: row.try_get("deadline")?,
         state: stored(serde_json::from_value(row.try_get("state")?))?,
         result: row.try_get("result")?,
+        invocation: row
+            .try_get::<Option<Value>, _>("invocation")?
+            .map(serde_json::from_value)
+            .map(crate::stored)
+            .transpose()?,
     })
 }
 pub async fn save_run(tx: &mut PgTransaction<'_>, run: &Run) -> Result<()> {
@@ -152,10 +158,15 @@ impl ScheduledPolicy {
         now: i64,
     ) -> Result<bool> {
         match self {
-            Self::Script(v) => {
-                v.authorized_in(&service.source, tx, &target.device, now)
-                    .await
-            }
+            Self::Script(v) => Ok(crate::script_eligibility::require_in(
+                tx,
+                service.agent_store.clone(),
+                target,
+                &v.frozen,
+            )
+            .await?
+                && v.authorized_in(&service.source, tx, &target.device, now)
+                    .await?),
             Self::Native(v) => {
                 v.authorized_in(&service.source, tx, &target.device, now)
                     .await
@@ -196,6 +207,22 @@ impl ScheduledPolicy {
             }
         }
     }
+    pub async fn authorized_run_in(
+        &self,
+        service: &crate::ExecutionService,
+        tx: &mut PgTransaction<'_>,
+        run: &Run,
+        now: i64,
+    ) -> Result<bool> {
+        if !self.authorized_in(service, tx, &run.target, now).await? {
+            return Ok(false);
+        }
+        match (&run.invocation, self) {
+            (Some(invocation), Self::Script(script)) => invocation.valid_in(tx, script, now).await,
+            (Some(_), _) => Ok(false),
+            (None, _) => Ok(true),
+        }
+    }
     pub async fn withdrawn_in(
         &self,
         service: &crate::ExecutionService,
@@ -221,14 +248,42 @@ impl ScheduledPolicy {
         match self {
             Self::Enrollment(v) => v.task(service, tx, target, issue).await,
             Self::Native(_) => Err(Error::Unsupported.into()),
-            Self::Script(v) => Ok(v.frozen.task(
-                checked_input(Uuid::parse_str(&tx.tenant_id().to_string()))?,
-                target,
-                issue.run,
-                issue.attempt,
-                issue.permit,
-                issue.expiry,
-            )?),
+            Self::Script(v) => {
+                use rss_mdm_agent_wire::runtime as wire;
+                let run = load_run(tx, issue.run).await?;
+                let (authorization, parameters) = if let Some(invocation) = &run.invocation {
+                    (
+                        invocation.authorization.clone(),
+                        invocation.parameters.clone(),
+                    )
+                } else {
+                    let authorization = if v.policy().is_some() {
+                        wire::ScriptAuthorization::Policy {
+                            policy_id: v.owner,
+                            policy_version: v.id,
+                        }
+                    } else {
+                        wire::ScriptAuthorization::RemoteOperation { operation_id: v.id }
+                    };
+                    (
+                        authorization,
+                        checked_input(serde_json::from_value(
+                            v.frozen.parameters.resolve(&serde_json::json!({}))?,
+                        ))?,
+                    )
+                };
+                Ok(v.frozen.task(
+                    checked_input(Uuid::parse_str(&tx.tenant_id().to_string()))?,
+                    target,
+                    issue.run,
+                    issue.attempt,
+                    issue.permit,
+                    issue.expiry,
+                    authorization,
+                    parameters,
+                    run.deadline,
+                )?)
+            }
             Self::Software(v) => {
                 use rss_mdm_agent_wire::runtime as wire;
                 let (platform, architecture) = agent_profile_in(service, tx, target.registration)

@@ -93,7 +93,8 @@ CREATE TABLE mdm_commands.action_polls (
     tenant_id uuid NOT NULL,
     registration uuid NOT NULL,
     cancellation_after uuid,
-    policy_after uuid
+    policy_after uuid,
+    profiles jsonb CHECK (profiles IS NULL OR (jsonb_typeof(profiles)='array' AND jsonb_array_length(profiles)<=4))
 );
 
 ALTER TABLE ONLY mdm_commands.action_polls FORCE ROW LEVEL SECURITY;
@@ -129,6 +130,7 @@ CREATE TABLE mdm_commands.action_runs (
     dispatch_fingerprint bytea NOT NULL,
     dispatch_failure jsonb CHECK (dispatch_failure IS NULL OR (jsonb_typeof(dispatch_failure)='object' AND octet_length(dispatch_failure::text)<=8192)),
     result jsonb,
+    invocation jsonb CHECK (invocation IS NULL OR (jsonb_typeof(invocation)='object' AND octet_length(invocation::text)<=131072)),
     CONSTRAINT action_runs_available_at_check CHECK ((available_at >= 0)),
     CONSTRAINT action_runs_check CHECK ((((source_kind = 'policy'::text) AND (policy_version IS NOT NULL) AND (remote_operation IS NULL)) OR ((source_kind = 'remote_operation'::text) AND (policy_version IS NULL) AND (remote_operation IS NOT NULL)))),
     CONSTRAINT action_runs_check1 CHECK ((deadline > available_at)),

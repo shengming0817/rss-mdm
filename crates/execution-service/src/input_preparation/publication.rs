@@ -32,7 +32,7 @@ impl Inputs {
             let prepared = script(
                 &version,
                 exact,
-                parameters,
+                *parameters,
                 verified.ok_or(Error::Conflict)?,
             )?;
             return Ok(Frozen::Execution {
@@ -41,6 +41,7 @@ impl Inputs {
                         tx,
                         self.tenant,
                         &prepared,
+                        parameters.checked(prepared.definition())?,
                         (*schedule).clone(),
                         *run_lifetime_seconds,
                     )
@@ -88,7 +89,6 @@ impl Inputs {
                         input: ExecutionInput {
                             platform: exact.platform,
                             architecture: exact.architecture,
-                            parameters: json!({}),
                             schedule: (*schedule).clone(),
                             run_lifetime_seconds: *run_lifetime_seconds,
                         },

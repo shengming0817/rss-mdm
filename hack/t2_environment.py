@@ -160,7 +160,7 @@ class Environment:
              '-keyout',self.root/'ca.key','-out',self.root/'ca.crt'], **quiet)
         run(['openssl','req','-new','-newkey','rsa:2048','-nodes','-subj','/CN=localhost',
              '-keyout',self.root/'server.key','-out',self.root/'server.csr'], **quiet)
-        private(self.root/'extensions', 'basicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,DNS:postgres,DNS:mdm.example.test,IP:127.0.0.1\n')
+        private(self.root/'extensions', 'basicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,DNS:postgres,DNS:mdm.example.test,IP:127.0.0.1\n')
         run(['openssl','x509','-req','-in',self.root/'server.csr','-CA',self.root/'ca.crt','-CAkey',self.root/'ca.key',
              '-CAcreateserial','-days','30','-extfile',self.root/'extensions','-out',self.root/'server.crt'], **quiet)
         for name in ('ca.key','server.key'): (self.root/name).chmod(0o600)
@@ -173,7 +173,7 @@ class Environment:
         quiet=dict(capture_output=True)
         run(['openssl','req','-new','-newkey','rsa:2048','-nodes','-subj','/CN='+names[0],
              '-keyout',directory/'server.key','-out',directory/'server.csr'],**quiet)
-        private(directory/'extensions','basicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nauthorityKeyIdentifier=keyid,issuer\nsubjectAltName='+','.join('DNS:'+name for name in names)+',IP:127.0.0.1\n')
+        private(directory/'extensions','basicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\nextendedKeyUsage=serverAuth\nsubjectAltName='+','.join('DNS:'+name for name in names)+',IP:127.0.0.1\n')
         run(['openssl','x509','-req','-in',directory/'server.csr','-CA',self.root/'ca.crt','-CAkey',self.root/'ca.key',
              '-CAcreateserial','-days','30','-extfile',directory/'extensions','-out',directory/'server.crt'],**quiet)
         (directory/'server.key').chmod(0o600)

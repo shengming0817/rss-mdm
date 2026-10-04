@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 /// Execution platform selected by the product resource resolver.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Platform {
     /// Windows execution.
@@ -12,7 +12,7 @@ pub enum Platform {
     Macos,
 }
 /// Machine architecture required by a resource variant.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Architecture {
     /// 64-bit x86.
@@ -21,7 +21,7 @@ pub enum Architecture {
     Aarch64,
 }
 /// Closed configuration mutations. Execution progress cannot mutate this CAS.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(
     tag = "action",
     rename_all = "snake_case",
@@ -42,7 +42,7 @@ pub enum Change {
     Disable,
 }
 /// The one persistent Policy aggregate.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 pub struct Policy {
     /// Stable Policy identity within its owning tenant.
     pub id: Uuid,
@@ -96,7 +96,7 @@ impl Policy {
             .checked_add(1)
             .filter(|v| *v <= i64::MAX as u64)
             .ok_or(Error::Conflict)? as i64;
-        let (definition, enabled) = match input {
+        let (mut definition, enabled) = match input {
             Change::Put {
                 definition,
                 enabled,
@@ -104,6 +104,9 @@ impl Policy {
             Change::Enable => (old.ok_or(Error::NotFound)?.definition.clone(), true),
             Change::Disable => (old.ok_or(Error::NotFound)?.definition.clone(), false),
         };
+        if let Some(config) = &mut definition.self_service {
+            config.normalize(old.and_then(|p| p.definition.self_service.as_ref()));
+        }
         definition.validate()?;
         let semantic = definition.semantic()?;
         let changed = old.map(|p| p.definition.semantic()).transpose()?.as_ref() != Some(&semantic);
@@ -163,5 +166,34 @@ impl crate::Action {
             _ => serde_json::to_vec(self),
         }
         .map_err(|_| Error::Malformed)
+    }
+}
+/// Public management projection; the display version and immutable version ID are distinct.
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct View {
+    /// Stable Policy identity.
+    pub id: Uuid,
+    /// Configuration CAS.
+    pub revision: i64,
+    /// Display execution version number.
+    pub version: i64,
+    /// Immutable execution version identity.
+    pub version_id: Uuid,
+    /// Automatic and self-service assignment enablement.
+    pub enabled: bool,
+    /// Complete authored definition, with normalized stored self-service defaults.
+    pub definition: Definition,
+}
+impl From<&Policy> for View {
+    fn from(policy: &Policy) -> Self {
+        Self {
+            id: policy.id,
+            revision: policy.revision,
+            version: policy.number,
+            version_id: policy.version,
+            enabled: policy.enabled,
+            definition: policy.definition.clone(),
+        }
     }
 }

@@ -27,6 +27,7 @@ def result(stdout='', returncode=0):
     return SimpleNamespace(stdout=stdout, stderr='', returncode=returncode)
 
 
+@patch.dict(ci.os.environ, {'CI_FULL': '0', 'CI_T2': 'none'})
 class Selection(unittest.TestCase):
     def test_failed_selector_diagnostic_reaches_formal_entry(self):
         location = ['version=baseline:base', 'stage=metadata', 'exit=7', 'diagnostic=dependency-fetch']
@@ -239,6 +240,7 @@ class Selection(unittest.TestCase):
                 self.assertTrue(plan['gates'][name]['check'])
 
 
+@patch.dict(ci.os.environ, {'CI_FULL': '0', 'CI_T2': 'none'})
 class EntryModes(unittest.TestCase):
     def test_named_targets_override_inherited_or_command_line_preview(self):
         import os

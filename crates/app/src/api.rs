@@ -495,6 +495,13 @@ pub(crate) fn from_state(
         )
         .merge(rss_mdm_agent_channel::task_router(
             Arc::new(crate::agent::TaskState {
+                identity: Arc::new(
+                    rss_mdm_authorization_service::session::SessionAuthority::new(
+                        state.identity.authority.clone(),
+                        state.identity.tenant,
+                    ),
+                ),
+                authorization: state.access.authorization_store(),
                 enrollment: service.clone(),
                 access: Arc::new(state.access.agent_store()),
                 execution: state.execution.clone(),

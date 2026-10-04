@@ -60,7 +60,7 @@ pub struct TaskAdmission {
     stage: Option<usize>,
 }
 impl TaskAdmission {
-    pub(super) fn new(state: TaskAdmissionState, stage: Option<usize>) -> Self {
+    pub(crate) fn new(state: TaskAdmissionState, stage: Option<usize>) -> Self {
         Self { state, stage }
     }
     pub fn is_eligible(&self) -> bool {

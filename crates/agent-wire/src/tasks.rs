@@ -206,7 +206,7 @@ pub use export::*;
 mod results;
 pub use results::*;
 /// Output completeness controls whether collection facts may be accepted.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputQuality {
     /// Complete successful capture within all budgets.
@@ -219,7 +219,7 @@ pub enum OutputQuality {
     Failed,
 }
 /// Closed executor failure classification.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskFailure {
     /// The executor process could not be launched.
@@ -236,17 +236,25 @@ pub enum TaskFailure {
     CaptureFailed,
 }
 /// Private bounded process diagnostics.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "DiagnosticsInput", into = "DiagnosticsInput")]
 pub struct TaskDiagnostics(DiagnosticsInput);
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DiagnosticsInput {
+    #[schemars(length(max = MAX_TASK_DIAGNOSTIC_BYTES), regex(pattern = "^[^\\u0000]*$"))]
     stdout: String,
+    #[schemars(length(max = MAX_TASK_DIAGNOSTIC_BYTES), regex(pattern = "^[^\\u0000]*$"))]
     stderr: String,
+    #[schemars(range(max = MAX_TASK_DURATION_MS))]
     duration_ms: u64,
+    #[schemars(range(min = 1))]
     executed_at: i64,
     #[serde(deserialize_with = "required_option")]
+    #[schemars(
+        required,
+        schema_with = "crate::self_service::nullable_schema::<TaskFailure>"
+    )]
     failure: Option<TaskFailure>,
 }
 impl From<TaskDiagnostics> for DiagnosticsInput {
@@ -325,6 +333,7 @@ struct ResultInput {
     quality: OutputQuality,
     output: Value,
     diagnostics: TaskDiagnostics,
+    collected_at: i64,
 }
 impl From<TaskResult> for ResultInput {
     fn from(value: TaskResult) -> Self {
@@ -339,6 +348,7 @@ impl TryFrom<ResultInput> for TaskResult {
             value.quality,
             value.output,
             value.diagnostics,
+            value.collected_at,
         )
     }
 }
@@ -349,6 +359,7 @@ impl TaskResult {
         quality: OutputQuality,
         output: Value,
         diagnostics: TaskDiagnostics,
+        collected_at: i64,
     ) -> Result<Self, WireError> {
         let quality_is_coherent = match quality {
             OutputQuality::Complete => exit_code == Some(0) && diagnostics.failure().is_none(),
@@ -361,7 +372,8 @@ impl TaskResult {
             Some(TaskFailure::LaunchFailed) => exit_code.is_none(),
             _ => true,
         };
-        if !quality_is_coherent
+        if collected_at < diagnostics.executed_at()
+            || !quality_is_coherent
             || !failure_is_coherent
             || serde_json::to_vec(&output)
                 .map_err(|_| WireError::InvalidValue)?
@@ -375,7 +387,12 @@ impl TaskResult {
             quality,
             output,
             diagnostics,
+            collected_at,
         }))
+    }
+    /// Agent-native timestamp of completed capture.
+    pub const fn collected_at(&self) -> i64 {
+        self.0.collected_at
     }
     /// Process exit code, if the process produced one.
     pub const fn exit_code(&self) -> Option<i32> {
@@ -607,6 +624,14 @@ pub struct TaskSpec {
     pub expires_at: i64,
     /// Exact Resource version digest, including its full execution interface.
     pub resource_digest: [u8; 32],
+    /// Exact selected Resource coordinates.
+    pub resource: super::ScriptResource,
+    /// Trusted server authorization decision.
+    pub authorization: super::ScriptAuthorization,
+    /// Complete resolved values, covered by the task signature.
+    pub parameters: BTreeMap<String, Value>,
+    /// Absolute Run deadline, independent of the permit expiry.
+    pub deadline: i64,
     /// Exact downloadable artifact.
     pub content: TaskContent,
     /// Fixed interpreter profile.
@@ -629,6 +654,34 @@ pub struct TaskSpec {
 impl TaskSpec {
     /// Validate the signed closed profile without authenticating it.
     pub fn validate(&self) -> Result<(), WireError> {
+        self.authorization.validate(self.tenant_id)?;
+        if self.deadline < self.expires_at
+            || self.parameters.len() > 32
+            || serde_json::to_vec(&self.parameters)
+                .map_err(|_| WireError::InvalidValue)?
+                .len()
+                > 65_536
+            || self.parameters.values().any(|v| {
+                !(v.is_string() || v.is_boolean() || v.as_i64().is_some())
+                    || v.as_str().is_some_and(|s| s.contains('\0'))
+            })
+            || [
+                &self.resource.id,
+                &self.resource.version,
+                &self.resource.variant,
+            ]
+            .iter()
+            .any(|s| {
+                s.is_empty()
+                    || s.len() > 128
+                    || !s
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"._-/".contains(&b))
+                    || s.split('/').any(|p| p.is_empty() || p == "." || p == "..")
+            })
+        {
+            return Err(WireError::InvalidValue);
+        }
         if self.wire_version != WIRE_VERSION
             || self.tenant_id.is_nil()
             || self.registration_id.is_nil()
@@ -1011,7 +1064,7 @@ impl SoftwareTaskSpec {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 enum RawTaskPayload {
-    Script(TaskSpec),
+    Script(Box<TaskSpec>),
     Software(SoftwareTaskSpec),
     /// Standard MDM enrollment entry.
     Enrollment(crate::runtime::EnrollmentTaskSpec),
@@ -1021,7 +1074,7 @@ enum RawTaskPayload {
 #[serde(try_from = "RawTaskPayload", into = "RawTaskPayload")]
 pub enum TaskPayload {
     /// Existing script task, upgraded to the current wire major.
-    Script(TaskSpec),
+    Script(Box<TaskSpec>),
     /// Approved software task.
     Software(SoftwareTaskSpec),
     /// Standard MDM enrollment entry.
@@ -1059,7 +1112,7 @@ impl TryFrom<TaskSpec> for TaskPayload {
     type Error = WireError;
     fn try_from(value: TaskSpec) -> Result<Self, WireError> {
         value.signing_bytes("validation")?;
-        Ok(Self::Script(value))
+        Ok(Self::Script(Box::new(value)))
     }
 }
 impl TryFrom<SoftwareTaskSpec> for TaskPayload {

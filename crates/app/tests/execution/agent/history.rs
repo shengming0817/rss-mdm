@@ -7,6 +7,7 @@ use std::collections::BTreeSet;
 async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
     let mut fixture = Fixture::new().await?;
     fixture.register().await?;
+    claim_request(&fixture.router, Uuid::new_v4()).await?;
     let (resource, _bytes, _definition) = fixture.resource().await?;
     fixture
         .scope(
@@ -172,6 +173,7 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
     use crate::authorization::{Grant, Permission, Scope};
     let mut f = Fixture::new().await?;
     f.register().await?;
+    claim_request(&f.router, Uuid::new_v4()).await?;
     f.grants.push(Grant {
         operation: Permission::InventoryFieldsWrite,
         scope: Scope::Tenant,
@@ -286,6 +288,7 @@ async fn device_capabilities_use_current_permissions_after_proof_capture() -> Re
     use crate::authorization::Permission;
     let mut f = Fixture::new().await?;
     f.register().await?;
+    claim_request(&f.router, Uuid::new_v4()).await?;
     let stale = crate::device::test_support::admin(case_tenant(), "other-a").await?;
     ensure!(
         stale

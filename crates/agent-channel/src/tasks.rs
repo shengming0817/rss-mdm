@@ -18,6 +18,15 @@ fn body<T>(v: Body<T>) -> Result<T, Error> {
 pub(crate) fn routes() -> Router<Arc<TaskState>> {
     Router::new()
         .route("/tasks/claim", post(claim))
+        .route("/self-service/scripts", get(directory))
+        .route(
+            "/self-service/scripts/invocations",
+            post(invoke).layer(DefaultBodyLimit::max(131072)),
+        )
+        .route(
+            "/self-service/scripts/invocations/{id}",
+            get(invocation_status),
+        )
         .route(
             "/tasks/{id}/events",
             post(event).layer(DefaultBodyLimit::max(wire::MAX_TASK_REQUEST_BYTES)),
@@ -139,6 +148,8 @@ pub struct TaskState {
     pub access: Arc<crate::Store>,
     pub enrollment: Arc<rss_mdm_registration_service::agent::Service>,
     pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    pub identity: Arc<rss_mdm_authorization_service::session::SessionAuthority>,
+    pub authorization: Arc<rss_mdm_authorization_service::Store>,
 }
 
 pub(crate) fn installation_routes() -> Router<Arc<rss_mdm_execution_service::ExecutionService>> {
@@ -158,4 +169,88 @@ async fn installation_package(
     crate::content::response(content, &headers)
         .await
         .map_err(task_error)
+}
+
+async fn employee(
+    app: &TaskState,
+    headers: &HeaderMap,
+    audit: &RequestAudit,
+) -> Result<rss_mdm_authorization_service::context::AuthorizedPrincipal, crate::AgentError> {
+    let credentials = headers
+        .get_all("x-rss-user-session")
+        .iter()
+        .collect::<Vec<_>>();
+    if credentials.len() != 1 {
+        return Err(Error::Unauthorized.into());
+    }
+    let secret = rss_identity_core::session::SessionSecret::parse(
+        credentials[0]
+            .to_str()
+            .map_err(|_| Error::Unauthorized)?
+            .into(),
+    )
+    .map_err(|_| Error::Unauthorized)?;
+    let proof = app
+        .identity
+        .authenticate(&app.authorization, secret)
+        .await
+        .map_err(Error::from)?;
+    proof.bind_audit(audit).map_err(Error::from)?;
+    Ok(proof)
+}
+async fn directory(
+    State(app): State<Arc<TaskState>>,
+    Extension(audit): Extension<RequestAudit>,
+    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    headers: HeaderMap,
+    Query(input): Query<wire::SelfServiceDirectory>,
+) -> Result<Json<Value>, crate::AgentError> {
+    crate::bounded(async {
+        let p = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
+        let proof = employee(&app, &headers, &audit).await?;
+        app.execution
+            .self_service_directory(&p, &proof, &input, &audit)
+            .await
+            .map(Json)
+            .map_err(task_error)
+    })
+    .await
+}
+async fn invoke(
+    State(app): State<Arc<TaskState>>,
+    Extension(audit): Extension<RequestAudit>,
+    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    headers: HeaderMap,
+    input: Body<wire::SelfServiceInvoke>,
+) -> Result<(axum::http::StatusCode, Json<Value>), crate::AgentError> {
+    crate::bounded(async {
+        let input = body(input)?;
+        let p = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
+        let proof = employee(&app, &headers, &audit).await?;
+        let response = app
+            .execution
+            .invoke_self_service(&p, &proof, &input, &audit)
+            .await
+            .map_err(task_error)?;
+        Ok((axum::http::StatusCode::ACCEPTED, Json(response)))
+    })
+    .await
+}
+async fn invocation_status(
+    State(app): State<Arc<TaskState>>,
+    Extension(audit): Extension<RequestAudit>,
+    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>, crate::AgentError> {
+    crate::bounded(async {
+        let p = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
+        let proof = employee(&app, &headers, &audit).await?;
+        app.execution
+            .self_service_status(&p, &proof, id, &audit)
+            .await
+            .map(Json)
+            .map_err(task_error)
+    })
+    .await
 }

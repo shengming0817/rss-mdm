@@ -19,3 +19,5 @@ mod remote;
 mod policy;
 
 mod onboarding;
+
+mod self_service;
