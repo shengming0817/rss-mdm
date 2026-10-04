@@ -58,7 +58,17 @@ pub async fn accept_for_device(
     use rss_mdm_policy::Frequency;
     let (version, owner, schedule, lifetime, frequency, entry, entry_source) = match policy {
         db::ScheduledPolicy::Script(definition) => {
-            if definition.frozen.parameters.has_input() || !crate::script_eligibility::require_in(tx,service.agent_store.clone(),target,&definition.frozen).await? { return Ok(()); }
+            if definition.frozen.parameters.has_input()
+                || !crate::script_eligibility::require_in(
+                    tx,
+                    service.agent_store.clone(),
+                    target,
+                    &definition.frozen,
+                )
+                .await?
+            {
+                return Ok(());
+            }
             let Some(entry) = definition
                 .entry_in(&service.source, tx, &target.device, now)
                 .await?
@@ -109,13 +119,7 @@ pub async fn accept_for_device(
         db::ScheduledPolicy::Software(_) => return Ok(()),
     };
     let enrollment = matches!(policy, db::ScheduledPolicy::Enrollment(_));
-    let tenant = tx.tenant_id().to_string();
-    let device = target.device.clone();
-    let registration = target.registration.to_string();
-    let (pending,last)=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_as::<_,(bool,Option<i64>)>("SELECT coalesce(bool_or(state->>'execution'='unknown' OR ((state->>'execution'='running' OR (state->>'execution'='not_started' AND deadline>$4)) AND state->>'cancellation'<>'confirmed')),false),max(created_at) FILTER(WHERE policy_version=$6) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND (v.policy=$2::uuid OR ($7 AND v.frozen->>'kind'='mdm_enrollment')) AND device=$3 AND registration=$5::uuid")
-            .bind(tenant).bind(owner.to_string()).bind(device).bind(now).bind(registration).bind(version).bind(enrollment).fetch_one(c).await
-    })).await?;
+    let (pending, last) = policy_pending_in(tx, owner, version, target, now, enrollment).await?;
     if pending {
         return Ok(());
     }
@@ -157,13 +161,7 @@ pub async fn accept_for_device(
     let occurrence = if explicit.is_some() {
         event.clone()
     } else {
-        match frequency {
-            Frequency::OncePerVersion => format!("version:{}", target.registration),
-            Frequency::OncePerEntry => {
-                format!("entry:{}:{entry}:{}", entry_source, target.registration)
-            }
-            Frequency::EveryTrigger => format!("{event}:{}", target.registration),
-        }
+        policy_occurrence(frequency, target, &entry_source, entry, &event)
     };
     let Some(slot) = schedule.occurrence(coordinate, target.device.as_bytes())? else {
         return Ok(());
@@ -178,14 +176,7 @@ pub async fn accept_for_device(
     if deadline <= available {
         return Ok(());
     }
-    let tenant = tx.tenant_id().to_string();
-    let device = target.device.clone();
-    let key = occurrence.clone();
-    let (exists,active)=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_as::<_,(bool,i64)>("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND policy_version=$2::uuid AND device=$3 AND occurrence=$4),(SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND device=$3 AND state->>'execution' IN ('not_started','running') AND state->>'cancellation'<>'confirmed' AND deadline>$5)")
-            .bind(tenant).bind(version.to_string()).bind(device).bind(key).bind(now).fetch_one(c).await
-    })).await?;
-    if exists || active >= 128 {
+    if !occurrence_available_in(tx, version, target, &occurrence, now).await? {
         return Ok(());
     }
     let id = Uuid::new_v4();
@@ -282,4 +273,54 @@ pub async fn queue_run_in(
             .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
     );
     result
+}
+
+/// Outstanding work and Unknown evidence remain a shared safety gate across registration changes.
+pub async fn policy_pending_in(
+    tx: &mut PgTransaction<'_>,
+    owner: Uuid,
+    version: Uuid,
+    target: &crate::Target,
+    now: i64,
+    enrollment: bool,
+) -> Result<(bool, Option<i64>)> {
+    let tenant = tx.tenant_id().to_string();
+    let device = target.device.clone();
+    let registration = target.registration.to_string();
+    let value=tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query_as::<_,(bool,Option<i64>)>("SELECT coalesce(bool_or(state->>'execution'='unknown' OR ((state->>'execution'='running' OR (state->>'execution'='not_started' AND deadline>$4)) AND state->>'cancellation'<>'confirmed')),false),max(created_at) FILTER(WHERE policy_version=$6) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND (v.policy=$2::uuid OR ($7 AND v.frozen->>'kind'='mdm_enrollment')) AND device=$3 AND (registration=$5::uuid OR state->>'execution'='unknown')")
+            .bind(tenant).bind(owner.to_string()).bind(device).bind(now).bind(registration).bind(version).bind(enrollment).fetch_one(c).await
+    })).await?;
+    Ok(value)
+}
+/// The same frequency coordinate is consumed by check-in and targeted calls.
+pub fn policy_occurrence(
+    frequency: rss_mdm_policy::Frequency,
+    target: &crate::Target,
+    entry_source: &str,
+    entry: i64,
+    event: &str,
+) -> String {
+    match frequency {
+        rss_mdm_policy::Frequency::OncePerVersion => format!("version:{}", target.registration),
+        rss_mdm_policy::Frequency::OncePerEntry => {
+            format!("entry:{entry_source}:{entry}:{}", target.registration)
+        }
+        rss_mdm_policy::Frequency::EveryTrigger => format!("{event}:{}", target.registration),
+    }
+}
+pub async fn occurrence_available_in(
+    tx: &mut PgTransaction<'_>,
+    version: Uuid,
+    target: &crate::Target,
+    occurrence: &str,
+    now: i64,
+) -> Result<bool> {
+    let tenant = tx.tenant_id().to_string();
+    let device = target.device.clone();
+    let key = occurrence.to_owned();
+    let (exists,active)=tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query_as::<_,(bool,i64)>("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND policy_version=$2::uuid AND device=$3 AND occurrence=$4),(SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND device=$3 AND state->>'execution' IN ('not_started','running') AND state->>'cancellation'<>'confirmed' AND deadline>$5)").bind(tenant).bind(version).bind(device).bind(key).bind(now).fetch_one(c).await
+    })).await?;
+    Ok(!exists && active < 128)
 }

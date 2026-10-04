@@ -24,6 +24,7 @@ use rss_mdm_authorization_service as authorization;
 
 mod payload;
 pub mod script_eligibility;
+pub mod self_service;
 mod target;
 pub use target::Target;
 

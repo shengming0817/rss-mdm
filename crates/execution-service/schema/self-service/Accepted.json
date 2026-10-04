@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "policyId": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "policyRevision": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "policyVersion": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "requestId": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "runId": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "requestId",
+    "runId",
+    "policyId",
+    "policyRevision",
+    "policyVersion"
+  ],
+  "title": "Accepted",
+  "type": "object"
+}

@@ -44,6 +44,22 @@
     {
       "type": "TaskEventAck",
       "file": "task-event-ack-v1.schema.json"
+    },
+    {
+      "type": "ScriptAuthorization",
+      "file": "script-authorization-v1.schema.json"
+    },
+    {
+      "type": "ScriptResource",
+      "file": "script-resource-v1.schema.json"
+    },
+    {
+      "type": "SelfServiceInvoke",
+      "file": "self-service-invoke-v1.schema.json"
+    },
+    {
+      "type": "SelfServiceDirectory",
+      "file": "self-service-directory-v1.schema.json"
     }
   ],
   "apiVersion": 1

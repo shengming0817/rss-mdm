@@ -122,6 +122,7 @@ struct ResultInput {
     quality: OutputQuality,
     diagnostics: TaskDiagnostics,
     manifest: OutputManifest,
+    collected_at: i64,
 }
 impl From<ChunkedTaskResult> for ResultInput {
     fn from(v: ChunkedTaskResult) -> Self {
@@ -136,6 +137,7 @@ impl TryFrom<ResultInput> for ChunkedTaskResult {
             v.quality,
             serde_json::Value::Null,
             v.diagnostics.clone(),
+            v.collected_at,
         )?;
         Ok(Self(v))
     }
@@ -161,6 +163,7 @@ impl ChunkedTaskResult {
                 exit_code: result.exit_code(),
                 quality: result.quality(),
                 diagnostics: result.diagnostics().clone(),
+                collected_at: result.collected_at(),
                 manifest,
             }),
             chunks,
@@ -198,6 +201,7 @@ impl ChunkedTaskResult {
             self.0.quality,
             output,
             self.0.diagnostics.clone(),
+            self.0.collected_at,
         )
     }
 }

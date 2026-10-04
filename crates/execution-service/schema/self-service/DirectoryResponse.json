@@ -1,0 +1,226 @@
+{
+  "$defs": {
+    "DirectoryItem": {
+      "additionalProperties": false,
+      "properties": {
+        "parameterSchema": true,
+        "parameterSources": {
+          "$ref": "#/$defs/ParameterSources"
+        },
+        "policyId": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "policyRevision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "policyVersion": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "resource": {
+          "$ref": "#/$defs/ScriptResource"
+        },
+        "selfService": {
+          "$ref": "#/$defs/SelfService"
+        }
+      },
+      "required": [
+        "policyId",
+        "policyRevision",
+        "policyVersion",
+        "selfService",
+        "resource",
+        "parameterSources",
+        "parameterSchema"
+      ],
+      "type": "object"
+    },
+    "ParameterSource": {
+      "description": "Where one Resource-declared argument obtains its value.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Administrator-selected literal; callers cannot override it.",
+          "properties": {
+            "kind": {
+              "const": "fixed",
+              "type": "string"
+            },
+            "value": {
+              "anyOf": [
+                {
+                  "pattern": "^[^\\u0000]*$",
+                  "type": "string"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "maximum": 9223372036854775807,
+                  "minimum": -9223372036854775808,
+                  "type": "integer"
+                }
+              ],
+              "description": "Value checked against the Resource's parameter schema."
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Required call-time argument, governed by the same Resource schema.",
+          "properties": {
+            "kind": {
+              "const": "input",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ParameterSources": {
+      "additionalProperties": {
+        "$ref": "#/$defs/ParameterSource"
+      },
+      "description": "Complete parameter-source map; Resource owns all value constraints.",
+      "type": "object"
+    },
+    "ScriptResource": {
+      "additionalProperties": false,
+      "description": "Exact Resource identity accompanying its signed digest.",
+      "properties": {
+        "id": {
+          "description": "Logical Resource identity.",
+          "type": "string"
+        },
+        "variant": {
+          "description": "Exact selected variant.",
+          "type": "string"
+        },
+        "version": {
+          "description": "Immutable Resource version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "variant"
+      ],
+      "type": "object"
+    },
+    "ScriptRisk": {
+      "enum": [
+        1,
+        2
+      ],
+      "type": "integer"
+    },
+    "SelfService": {
+      "additionalProperties": false,
+      "description": "Policy-owned self-service configuration. Missing input defaults are normalized by CAS.",
+      "properties": {
+        "allowAi": {
+          "default": null,
+          "description": "Defaults only at first configuration; normalized stored values are always present.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "category": {
+          "description": "Presentation category, independent of Scope.",
+          "type": "string"
+        },
+        "description": {
+          "description": "Intended purpose.",
+          "type": "string"
+        },
+        "displayName": {
+          "description": "Display name in the authorized directory.",
+          "type": "string"
+        },
+        "keywords": {
+          "description": "Bounded search terms.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "prerequisites": {
+          "description": "Preconditions shown before invocation.",
+          "type": "string"
+        },
+        "published": {
+          "description": "Whether new self-service calls are accepted.",
+          "type": "boolean"
+        },
+        "riskLevel": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScriptRisk"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Defaults to confirmation at first configuration; only levels one and two are legal."
+        },
+        "sideEffects": {
+          "description": "Expected side effects shown before invocation.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "published",
+        "displayName",
+        "description",
+        "prerequisites",
+        "sideEffects",
+        "category",
+        "keywords"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Directory response consumed by the Agent service and employee UI.",
+  "properties": {
+    "asOf": {
+      "format": "int64",
+      "type": "integer"
+    },
+    "items": {
+      "items": {
+        "$ref": "#/$defs/DirectoryItem"
+      },
+      "type": "array"
+    },
+    "nextCursor": {
+      "format": "uuid",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "items",
+    "asOf"
+  ],
+  "title": "DirectoryResponse",
+  "type": "object"
+}

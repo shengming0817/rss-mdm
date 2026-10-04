@@ -7,6 +7,7 @@ fn output_chunks_are_bounded_complete_and_digest_bound() {
         OutputQuality::Complete,
         value.clone(),
         TaskDiagnostics::new("".into(), "".into(), 1, 1, None).unwrap(),
+        2,
     )
     .unwrap();
     let (reference, chunks) = ChunkedTaskResult::split(result).unwrap();

@@ -11,6 +11,7 @@ pub enum ParameterSource {
     /// Administrator-selected literal; callers cannot override it.
     Fixed {
         /// Value checked against the Resource's parameter schema.
+        #[schemars(schema_with = "scalar_schema")]
         value: Value,
     },
     /// Required call-time argument, governed by the same Resource schema.
@@ -201,4 +202,7 @@ impl schemars::JsonSchema for ScriptRisk {
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
         schemars::json_schema!({"type":"integer","enum":[1,2]})
     }
+}
+fn scalar_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({"anyOf":[{"type":"string","pattern":"^[^\\u0000]*$"},{"type":"boolean"},{"type":"integer","minimum":-9223372036854775808i64,"maximum":9223372036854775807i64}]})
 }

@@ -168,3 +168,32 @@ impl crate::Action {
         .map_err(|_| Error::Malformed)
     }
 }
+/// Public management projection; the display version and immutable version ID are distinct.
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct View {
+    /// Stable Policy identity.
+    pub id: Uuid,
+    /// Configuration CAS.
+    pub revision: i64,
+    /// Display execution version number.
+    pub version: i64,
+    /// Immutable execution version identity.
+    pub version_id: Uuid,
+    /// Automatic and self-service assignment enablement.
+    pub enabled: bool,
+    /// Complete authored definition, with normalized stored self-service defaults.
+    pub definition: Definition,
+}
+impl From<&Policy> for View {
+    fn from(policy: &Policy) -> Self {
+        Self {
+            id: policy.id,
+            revision: policy.revision,
+            version: policy.number,
+            version_id: policy.version,
+            enabled: policy.enabled,
+            definition: policy.definition.clone(),
+        }
+    }
+}

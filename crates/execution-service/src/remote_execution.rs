@@ -274,7 +274,20 @@ impl ExecutionService {
         }
         let (registration, generation) = registration[0];
         if let Frozen::Execution { action, .. } = &operation.frozen {
-            if !crate::script_eligibility::require_in(tx,self.agent_store.clone(),&crate::Target{device:device.into(),registration,generation},action).await? { return record_target(tx,id,device,None,Some("script_ineligible")).await; }
+            if !crate::script_eligibility::require_in(
+                tx,
+                self.agent_store.clone(),
+                &crate::Target {
+                    device: device.into(),
+                    registration,
+                    generation,
+                },
+                action,
+            )
+            .await?
+            {
+                return record_target(tx, id, device, None, Some("script_ineligible")).await;
+            }
         }
         let tenant = tx.tenant_id().to_string();
         let name = device.to_owned();

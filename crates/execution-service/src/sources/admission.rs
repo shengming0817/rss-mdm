@@ -32,6 +32,12 @@ pub async fn read_in(
     })
 }
 impl<T: ScheduledInput> ExecutionPolicy<T> {
+    pub fn policy(&self) -> Option<&Policy> {
+        match &self.authority {
+            Authority::Policy(p) => Some(p),
+            Authority::Remote(_) => None,
+        }
+    }
     pub fn entry_source(&self) -> String {
         match &self.authority {
             Authority::Policy(p) => format!("scope:{}", p.definition.scope),

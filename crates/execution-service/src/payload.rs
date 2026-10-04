@@ -15,6 +15,10 @@ impl FrozenAction {
             r::ScriptProfile::Osquery => wire::ExecutorProfile::Osquery,
         }
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "all signed execution coordinates are explicit"
+    )]
     pub fn task(
         &self,
         tenant: Uuid,
@@ -23,8 +27,13 @@ impl FrozenAction {
         attempt: Uuid,
         permit: wire::TaskPermit,
         expiry: i64,
+        authorization: wire::ScriptAuthorization,
+        parameters: BTreeMap<String, Value>,
+        deadline: i64,
     ) -> Result<wire::TaskPayload, Error> {
-        let parameters = self.parameters.resolve(&serde_json::json!({}))?;
+        self.definition
+            .validate_parameters(&serde_json::json!(parameters))
+            .map_err(|_| Error::Malformed)?;
         let spec = self.definition.spec();
         let mut positional = BTreeMap::new();
         let mut arguments = Vec::new();
@@ -69,13 +78,15 @@ impl FrozenAction {
             permit,
             expires_at: expiry,
             resource_digest: self.resource_digest,
+            resource: self.resource.clone(),
+            authorization,
+            parameters: parameters.clone(),
+            deadline,
             content: self.content.clone(),
             profile: self.executor_profile(),
             sql_parameters: if spec.sql.is_some() {
                 Some(
                     parameters
-                        .as_object()
-                        .ok_or(Error::Malformed)?
                         .iter()
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect(),

@@ -1,5 +1,5 @@
 //! Product-owned side-effect runs, deliberately separate from desired-state execution.
-mod agent;
+pub(crate) mod agent;
 
 pub mod production;
 pub mod recovery;

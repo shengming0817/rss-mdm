@@ -1,0 +1,70 @@
+{
+  "$defs": {
+    "ScriptCaller": {
+      "description": "Origin attested by the authenticated system service, never taken from model arguments.",
+      "oneOf": [
+        {
+          "const": "human",
+          "description": "Interactive employee action.",
+          "type": "string"
+        },
+        {
+          "const": "ai",
+          "description": "AI tool action forwarded by the system service.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One call-time request. The device is selected exclusively by its credential.",
+  "properties": {
+    "confirmed": {
+      "description": "Service-attested employee confirmation for these exact inputs.",
+      "type": "boolean"
+    },
+    "operationId": {
+      "description": "Durable idempotency identity.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "parameters": {
+      "additionalProperties": true,
+      "description": "Exactly the Policy's Input parameters; Fixed values cannot be submitted.",
+      "type": "object"
+    },
+    "policyId": {
+      "description": "Policy chosen from the authorized directory.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "policyRevision": {
+      "description": "Current configuration CAS.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "policyVersion": {
+      "description": "Immutable execution version returned by the directory.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "source": {
+      "$ref": "#/$defs/ScriptCaller",
+      "description": "Caller origin attested by the device service."
+    }
+  },
+  "required": [
+    "operationId",
+    "policyId",
+    "policyRevision",
+    "policyVersion",
+    "source",
+    "confirmed",
+    "parameters"
+  ],
+  "title": "SelfServiceInvoke",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/self-service-invoke.schema.json"
+}

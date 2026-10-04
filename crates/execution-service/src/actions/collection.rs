@@ -14,6 +14,7 @@ pub async fn accept(
     output: &Value,
     trusted: bool,
     now: i64,
+    collected_at: i64,
 ) -> Result<()> {
     let ScriptPurpose::Collection { mappings } = &frozen.definition.spec().purpose else {
         return Ok(());
@@ -70,7 +71,11 @@ pub async fn accept(
         };
         values.insert(key, outcome);
     }
-    let progress = stored(CollectionProgress::native(definition.clone(), values, now))?;
+    let progress = stored(CollectionProgress::native(
+        definition.clone(),
+        values,
+        collected_at,
+    ))?;
     let tenant = tx.tenant_id();
     let report = crate::collection::enterprise::Report {
         registration: run.target.registration,
@@ -204,12 +209,18 @@ pub async fn finish(
     let success = process_complete && budget_valid && (schema_valid || frozen.collection.is_some());
     let trusted = success
         && allowed
+        && result.collected_at() <= now
         && run
             .state
             .trusts_result(now, frozen.definition.spec().timeout_seconds);
-    run.state
-        .result(run.state.attempt().ok_or(crate::Error::Conflict)?, success)?;
-    accept(tx, frozen, run, output, trusted, now).await?;
+    if !allowed {
+        run.state
+            .uncertain_result(run.state.attempt().ok_or(crate::Error::Conflict)?)?;
+    } else {
+        run.state
+            .result(run.state.attempt().ok_or(crate::Error::Conflict)?, success)?;
+    }
+    accept(tx, frozen, run, output, trusted, now, result.collected_at()).await?;
     let (output, reference) = if !budget_valid || bytes.len() > 1024 * 1024 {
         (
             Value::Null,
@@ -219,7 +230,7 @@ pub async fn finish(
         (output.clone(), Value::Null)
     };
     run.result = Some(
-        serde_json::json!({"exitCode":result.exit_code(),"quality":result.quality(),"schemaValid":schema_valid,"budgetValid":budget_valid,"output":output,"outputReference":reference,"diagnostics":result.diagnostics(),"trusted":trusted}),
+        serde_json::json!({"collectedAt":result.collected_at(),"receivedAt":now,"exitCode":result.exit_code(),"quality":result.quality(),"schemaValid":schema_valid,"budgetValid":budget_valid,"output":output,"outputReference":reference,"diagnostics":result.diagnostics(),"trusted":trusted}),
     );
     Ok(())
 }
