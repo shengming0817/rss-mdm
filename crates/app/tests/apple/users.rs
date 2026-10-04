@@ -74,7 +74,7 @@ async fn user_commands_push_and_retirement_are_scoped() -> Result<()> {
     peer.user_token(user, 43).await?;
     peer.user_token(other, 44).await?;
     let id = Uuid::new_v4();
-    let path = format!("/api/v3/devices/{}/operations", case_device());
+    let path = format!("/api/v1/devices/{}/operations", case_device());
     let task = json!({"platform":"macos","request":{"kind":"command","command":{"requestType":"InstalledApplicationList","fields":{}}}});
     let reply=f.browser.call(&f.router,Method::POST,&path,Some(json!({"operationId":id,"inputVersion":"user-v1","target":{"kind":"user","userId":user.to_string()},"task":task,"deadline":f.app.clock.unix_seconds()?+300}))).await?;
     ensure!(reply.0 == StatusCode::ACCEPTED, "user operation {reply:?}");
@@ -317,7 +317,7 @@ async fn bootstrap_escrow_requires_evidence_and_clears_secrets() -> Result<()> {
 
 async fn user_operation(f: &mut Fixture, user: Uuid, task: serde_json::Value) -> Result<Uuid> {
     let id = Uuid::new_v4();
-    let path = format!("/api/v3/devices/{}/operations", case_device());
+    let path = format!("/api/v1/devices/{}/operations", case_device());
     let reply=f.browser.call(&f.router,Method::POST,&path,Some(json!({"operationId":id,"inputVersion":"user-v1","target":{"kind":"user","userId":user.to_string()},"task":task,"deadline":f.app.clock.unix_seconds()?+300}))).await?;
     ensure!(reply.0 == StatusCode::ACCEPTED, "user operation {reply:?}");
     for _ in 0..100 {

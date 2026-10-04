@@ -120,11 +120,11 @@ pub fn browser_routes(app: Arc<HttpState>, envelope: boundary::Envelope) -> axum
     boundary::wrap(
         axum::Router::new()
             .route(
-                "/api/v3/enrollments/{id}/profile",
+                "/api/v1/enrollments/{id}/profile",
                 post(enrollment::download),
             )
-            .route("/native/apple/scep/challenge", post(enrollment::challenge))
-            .route("/native/apple/scep/notify", post(enrollment::notify))
+            .route("/api/v1/apple/scep/challenge", post(enrollment::challenge))
+            .route("/api/v1/apple/scep/notify", post(enrollment::notify))
             .with_state(app)
             .layer(axum::extract::DefaultBodyLimit::max(128 * 1024)),
         envelope,
@@ -141,7 +141,7 @@ pub fn router(app: Arc<HttpState>, envelope: boundary::Envelope) -> axum::Router
             )
             .route("/mdm", put(checkin::manage))
             .route(
-                "/api/agent/enroll/v1/native-grants",
+                "/api/v1/agent/enroll/native-grants",
                 axum::routing::post(checkin::register_agent),
             )
             .with_state(app)

@@ -59,7 +59,7 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
             browser,
             router,
             Method::GET,
-            "/api/v2/devices/tie-a/inventory",
+            "/api/v1/devices/tie-a/inventory",
             None,
         )
         .await?;
@@ -79,7 +79,7 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
             browser,
             router,
             Method::POST,
-            "/api/v2/device-queries",
+            "/api/v1/device-queries",
             Some(json!({"criteria":criteria})),
         )
         .await?;
@@ -91,7 +91,7 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
             search["asset"]["items"][0]["quality"] == detail["asset"]["device"]["quality"],
             "query lost frozen collection quality"
         );
-        let group = format!("/api/v2/groups/{}", Uuid::new_v4());
+        let group = format!("/api/v1/groups/{}", Uuid::new_v4());
         ok(browser,router,Method::POST,&group,Some(request(0,json!({"action":"create","name":result,"description":"collection proof","criteria":criteria})))).await?;
         let preview = preview(browser, router, &group).await?;
         ensure!(preview.members["page"]["items"] == json!(["tie-a"]));
@@ -110,7 +110,7 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
         browser,
         router,
         Method::GET,
-        "/api/v2/devices/tie-a/inventory",
+        "/api/v1/devices/tie-a/inventory",
         None,
     )
     .await?;
@@ -121,7 +121,7 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
         browser,
         router,
         Method::POST,
-        "/api/v2/device-queries",
+        "/api/v1/device-queries",
         Some(json!({"criteria":criteria})),
     )
     .await?;
@@ -129,7 +129,7 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
         query["asset"]["summary"]["matched"] == 0
             && query["asset"]["summary"]["unknown"].as_u64().unwrap() > 0
     );
-    let group = format!("/api/v2/groups/{}", Uuid::new_v4());
+    let group = format!("/api/v1/groups/{}", Uuid::new_v4());
     ok(browser,router,Method::POST,&group,Some(request(0,json!({"action":"create","name":"unsupported","description":"explicit source status","criteria":criteria})))).await?;
     let preview = preview(browser, router, &group).await?;
     ensure!(preview.members["page"]["items"] == json!([]));
@@ -162,14 +162,14 @@ async fn typed_and_collected_facts_become_group_input() -> Result<()> {
             &mut browser,
             router,
             Method::PUT,
-            &format!("/api/v2/devices/asset-a/manual-fields/{field}"),
+            &format!("/api/v1/devices/asset-a/manual-fields/{field}"),
             Some(request(
                 0,
                 json!({"action":"set","value":{"kind":kind,"value":value}}),
             )),
         )
         .await?;
-        let group = format!("/api/v2/groups/{}", Uuid::new_v4());
+        let group = format!("/api/v1/groups/{}", Uuid::new_v4());
         ok(&mut browser,router,Method::POST,&group,Some(request(0,json!({"action":"create","name":field,"description":"asset input","criteria":predicate(field,kind,value)})))).await?;
         ensure!(
             preview(&mut browser, router, &group).await?.members["page"]["items"]
@@ -179,7 +179,7 @@ async fn typed_and_collected_facts_become_group_input() -> Result<()> {
     seed_source("asset-b", "mdm", "mdm.windows", "Same")?;
     seed_source("asset-b", "agent", "agent.builtin", "Different")?;
     let query = json!({"criteria":predicate("device.model","string",json!("Same"))});
-    let group = format!("/api/v2/groups/{}", Uuid::new_v4());
+    let group = format!("/api/v1/groups/{}", Uuid::new_v4());
     ok(&mut browser,router,Method::POST,&group,Some(request(0,json!({"action":"create","name":"conflict","description":"","criteria":query["criteria"]})))).await?;
     let preview = preview(&mut browser, router, &group).await?;
     ensure!(
@@ -229,13 +229,13 @@ async fn script_health_projection_is_queryable_group_input() -> Result<()> {
         &mut browser,
         &fixture.router,
         Method::POST,
-        "/api/v2/device-queries",
+        "/api/v1/device-queries",
         Some(json!({"criteria":criteria})),
     )
     .await?;
     ensure!(query["asset"]["summary"]["matched"] == 1);
     ensure!(query["asset"]["items"][0]["device"] == "asset-a");
-    let group = format!("/api/v2/groups/{}", Uuid::new_v4());
+    let group = format!("/api/v1/groups/{}", Uuid::new_v4());
     ok(&mut browser, &fixture.router, Method::POST, &group,
         Some(request(0,json!({"action":"create","name":"healthy-script","description":"projected Agent input","criteria":criteria})))).await?;
     ensure!(

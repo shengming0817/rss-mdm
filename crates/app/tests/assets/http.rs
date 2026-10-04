@@ -7,7 +7,7 @@ mod identity_read {
         let fixture = authority::Authority::open().await?;
         let (authorized, _) = app_with_access(&fixture.base, fixture.access.clone()).await?;
         let mut browser = fixture.browser("other")?;
-        let query = &format!("/api/v2/devices/{}/inventory", case::name("device-1"));
+        let query = &format!("/api/v1/devices/{}/inventory", case::name("device-1"));
         ensure!(
             browser.call(&authorized, Method::GET, query, None).await?.0 == StatusCode::FORBIDDEN
         );
@@ -36,7 +36,7 @@ mod identity_read {
                 && assets["asset"]["device"]["device"]
                     == crate::test_support::case::name("device-1")
         );
-        let outside = "/api/v2/devices/outside/inventory";
+        let outside = "/api/v1/devices/outside/inventory";
         ensure!(
             browser
                 .call(&authorized, Method::GET, outside, None)
@@ -324,7 +324,7 @@ mod manual {
             &mut browser,
             router,
             Method::GET,
-            "/api/v2/asset-fields",
+            "/api/v1/asset-fields",
             None,
         )
         .await?;
@@ -339,7 +339,7 @@ mod manual {
             ("custom.purchase_date", "time", json!(1_700_000_000)),
         ];
         for (field, kind, value) in cases {
-            let path = format!("/api/v2/devices/asset-a/manual-fields/{field}");
+            let path = format!("/api/v1/devices/asset-a/manual-fields/{field}");
             let write = request(
                 0,
                 json!({"action":"set","value":{"kind":kind,"value":value}}),
@@ -377,7 +377,7 @@ mod manual {
                 &mut browser,
                 router,
                 Method::GET,
-                "/api/v2/devices/asset-a/inventory",
+                "/api/v1/devices/asset-a/inventory",
                 None,
             )
             .await?;
@@ -390,7 +390,7 @@ mod manual {
                 &mut browser,
                 router,
                 Method::POST,
-                "/api/v2/device-queries",
+                "/api/v1/device-queries",
                 Some(json!({"criteria":criteria})),
             )
             .await?;
@@ -399,7 +399,7 @@ mod manual {
                     && result["asset"]["items"][0]["device"] == "asset-a"
             );
         }
-        let floor = "/api/v2/devices/asset-a/manual-fields/custom.office_floor";
+        let floor = "/api/v1/devices/asset-a/manual-fields/custom.office_floor";
         for input in [
             json!({"action":"set","value":{"kind":"string","value":"3"}}),
             json!({"action":"set","value":{"kind":"integer","value":3},"validUntil":1}),
@@ -418,7 +418,7 @@ mod manual {
                 .call(
                     router,
                     Method::PUT,
-                    "/api/v2/devices/asset-a/manual-fields/device.model",
+                    "/api/v1/devices/asset-a/manual-fields/device.model",
                     Some(request(
                         0,
                         json!({"action":"set","value":{"kind":"string","value":"spoof"}})
@@ -433,7 +433,7 @@ mod manual {
                 .call(
                     router,
                     Method::GET,
-                    "/api/v2/devices/asset-a/inventory?source=mdm.windows",
+                    "/api/v1/devices/asset-a/inventory?source=mdm.windows",
                     None
                 )
                 .await?
@@ -479,7 +479,7 @@ mod manual {
             &mut browser,
             router,
             Method::GET,
-            "/api/v2/devices/asset-a/inventory",
+            "/api/v1/devices/asset-a/inventory",
             None,
         )
         .await?;
@@ -498,7 +498,7 @@ mod manual {
             &mut browser,
             router,
             Method::GET,
-            "/api/v2/devices/asset-a/inventory",
+            "/api/v1/devices/asset-a/inventory",
             None,
         )
         .await?;
@@ -542,7 +542,7 @@ async fn field_catalog_admin_publish_and_reference_checks_need_no_approval() -> 
     use crate::test_support::agent_execution::Fixture;
     let mut fixture = Fixture::new().await?;
     let key = "custom.registry_example";
-    let path = format!("/api/v2/asset-fields/{key}");
+    let path = format!("/api/v1/asset-fields/{key}");
     let definition = json!({"key":key,"version":1,"valueType":{"kind":"string","maxLength":128,"allowEmpty":false},"nullable":false,"manual":false,"sources":{"agent.script":100},"platforms":["macos"],"sensitivity":"standard","unit":null,"searchable":true,"itemKey":null});
     let create = json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":definition}});
     ensure!(
@@ -579,7 +579,7 @@ async fn field_catalog_admin_publish_and_reference_checks_need_no_approval() -> 
             == published,
         "field publication replay changed"
     );
-    let saved = format!("/api/v2/saved-queries/{}", Uuid::new_v4());
+    let saved = format!("/api/v1/saved-queries/{}", Uuid::new_v4());
     let value = json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"name":"field reference","query":{"criteria":{"kind":"predicate","field":key,"op":"eq","value":{"kind":"string","value":"yes"}},"select":[key],"sort":null}}}});
     let response = fixture
         .author
@@ -659,15 +659,15 @@ async fn typed_list_pages_remain_frozen_across_field_updates() -> Result<()> {
         .await?;
     let key = "custom.page_values";
     let definition = json!({"key":key,"version":1,"valueType":{"kind":"array","items":{"kind":"integer"},"maxItems":1000},"nullable":true,"manual":true,"sources":{"manual":0},"platforms":["macos","windows"],"sensitivity":"standard","unit":null,"searchable":true,"itemKey":null});
-    let result = f.author.call(&f.router, Method::PUT, &format!("/api/v2/asset-fields/{key}"), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":definition}}))).await?;
+    let result = f.author.call(&f.router, Method::PUT, &format!("/api/v1/asset-fields/{key}"), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":definition}}))).await?;
     ensure!(result.0 == StatusCode::OK, "list field: {result:?}");
-    let field_path = format!("/api/v2/devices/{}/manual-fields/{key}", case_device_id());
+    let field_path = format!("/api/v1/devices/{}/manual-fields/{key}", case_device_id());
     let values: Vec<_> = (0..205)
         .map(|v| json!({"kind":"integer","value":v}))
         .collect();
     let result = f.author.call(&f.router, Method::PUT, &field_path, Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"set","value":{"kind":"array","value":values}}}))).await?;
     ensure!(result.0 == StatusCode::OK, "list write: {result:?}");
-    let list_path = format!("/api/v2/devices/{}/inventory-lists/{key}", case_device_id());
+    let list_path = format!("/api/v1/devices/{}/inventory-lists/{key}", case_device_id());
     let first = f
         .author
         .call(

@@ -29,7 +29,7 @@ pub(crate) async fn resource_input(
     secrets: &[&str],
 ) -> anyhow::Result<String> {
     let id = Uuid::new_v4().to_string();
-    let path = format!("/api/v4/resources/{id}");
+    let path = format!("/api/v1/resources/{id}");
     change(
         client,
         &path,
@@ -41,7 +41,7 @@ pub(crate) async fn resource_input(
     let sha = rss_mdm_resource::Digest::of(&bytes).bytes();
     change(client,&path,1,json!({"action":"version","version":"1","kind":"configuration","variants":[{"platform":"windows","architecture":"x86_64","key":"native","declaration":{"kind":"configuration","artifact":{"reference":"native-input","length":bytes.len(),"sha256":sha}}}]})).await?;
     let upload = format!(
-        "/api/v3/resources/{id}/content?version=1&variant=native&platform=windows&architecture=x86_64&operation={}",
+        "/api/v1/resources/{id}/content?version=1&variant=native&platform=windows&architecture=x86_64&operation={}",
         Uuid::new_v4()
     );
     let request = Request::builder()
@@ -104,7 +104,7 @@ pub(crate) async fn published(client: &mut Client, policy: Uuid) -> anyhow::Resu
                 .call(
                     &client.router,
                     Method::GET,
-                    &format!("/api/v3/policies/{policy}/devices"),
+                    &format!("/api/v1/policies/{policy}/devices"),
                     None,
                 )
                 .await?;
@@ -148,7 +148,7 @@ pub(crate) async fn wait_diagnosis(
                 .call(
                     &client.router,
                     Method::GET,
-                    &format!("/api/v3/policies/{policy}/devices"),
+                    &format!("/api/v1/policies/{policy}/devices"),
                     None,
                 )
                 .await?;

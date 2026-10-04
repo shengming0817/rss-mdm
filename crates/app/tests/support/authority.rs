@@ -58,7 +58,7 @@ impl Authority {
 
     pub(crate) fn enrollment(&self) -> Router {
         Router::new().nest(
-            "/api/v3",
+            "/api/v1",
             crate::enrollment::http::routes().with_state(Arc::new(
                 crate::enrollment::http::HttpState {
                     service: Arc::new(crate::enrollment::EnrollmentService::new(

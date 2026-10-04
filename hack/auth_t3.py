@@ -38,7 +38,7 @@ def enterprise(stack):
     issuer='https://idp.example.test:8443/realms/mdm'
     realm={'realm':'mdm','enabled':True,'sslRequired':'all','loginWithEmailAllowed':False,
            'clients':[{'clientId':'mdm','secret':stack.client_secret,'publicClient':False,'standardFlowEnabled':True,
-                       'redirectUris':['https://mdm.example.test/api/v2/oidc/callback'],
+                       'redirectUris':['https://mdm.example.test/api/v1/identity/oidc/callback'],
                        'attributes':{'pkce.code.challenge.method':'S256'}}],
            'users':[{'id':'external-'+name,'username':name,'enabled':True,'emailVerified':True,
                      'email':name+'@example.test','firstName':name,'lastName':'Fixture',
@@ -91,11 +91,11 @@ def seed_inventory(stack):
 
 def prepare_member(stack):
     browser=Browser(stack.port,stack.root/'ca.crt')
-    require(browser.call('POST',f'/api/v2/tenants/{TENANT}/login',dict(login='admin',password=stack.password))[0]==200,'bootstrap login')
+    require(browser.call('POST',f'/api/v1/identity/tenants/{TENANT}/login',dict(login='admin',password=stack.password))[0]==200,'bootstrap login')
     stack.member_password=secrets.token_urlsafe(28)
     stack.private_values.append(stack.member_password)
     for name in ['member','sso-member']:
-        status,result=browser.call('POST',f'/api/v2/tenants/{TENANT}/accounts',dict(login=name,password=stack.member_password))
+        status,result=browser.call('POST',f'/api/v1/identity/tenants/{TENANT}/accounts',dict(login=name,password=stack.member_password))
         require(status==201,'bootstrap account')
         principal=result['principalId']
         if name=='member':stack.member=principal
@@ -104,7 +104,7 @@ def prepare_member(stack):
         require(browser.call('PUT','/api/v1/authorization/rules/'+str(uuid.uuid4()),dict(operationId=str(uuid.uuid4()),expectedRevision=0,value=grant))[0]==200,'explicit member inventory authorization')
     grant=dict(subject=dict(kind='user',user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=ADMIN)),grants=[dict(operation=operation,scope=dict(kind='tenant')) for operation in ['group_read','group_write','release_read']]+[dict(operation='inventory_read',scope=dict(kind='all_devices'))])
     require(browser.call('PUT','/api/v1/authorization/rules/'+str(uuid.uuid4()),dict(operationId=str(uuid.uuid4()),expectedRevision=0,value=grant))[0]==200,'explicit administrator management authorization')
-    require(browser.call('POST',f'/api/v2/tenants/{TENANT}/session/logout')[0]==204,'bootstrap logout')
+    require(browser.call('POST',f'/api/v1/identity/tenants/{TENANT}/session/logout')[0]==204,'bootstrap logout')
 
 def installation_mismatch(stack):
     before=stack.sql("SELECT md5(string_agg(row_to_json(a)::text,',' ORDER BY principal_id)) FROM identity_authority.accounts a")

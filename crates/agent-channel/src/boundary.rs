@@ -193,10 +193,10 @@ fn project(error: Error) -> Response {
 }
 fn route_action(route: &str) -> &'static str {
     match route {
-        "/api/agent/enroll/v1/certificates" | "/certificates" => "agent_certificate_authorize",
-        "/api/agent/enroll/v1/activate" | "/activate" => "agent_certificate_activate",
-        "/api/agent/runtime/v1/reports" | "/reports" => "agent_report",
-        "/api/agent/runtime/v1/reports/{id}" | "/reports/{id}" => "agent_report_read",
+        "/api/v1/agent/enroll/certificates" | "/certificates" => "agent_certificate_authorize",
+        "/api/v1/agent/enroll/activate" | "/activate" => "agent_certificate_activate",
+        "/api/v1/agent/runtime/reports" | "/reports" => "agent_report",
+        "/api/v1/agent/runtime/reports/{id}" | "/reports/{id}" => "agent_report_read",
         _ => "protected_request",
     }
 }
@@ -207,7 +207,7 @@ mod tests {
     #[test]
     fn registration_rejections_keep_the_agent_action() {
         assert_eq!(
-            route_action("/api/agent/enroll/v1/activate"),
+            route_action("/api/v1/agent/enroll/activate"),
             "agent_certificate_activate"
         );
     }

@@ -49,7 +49,7 @@ impl channels::Agent for Bindings {
         registrations: Vec<Uuid>,
     ) -> Pending<'a, std::collections::BTreeMap<Uuid, AgentBinding>> {
         Box::pin(async move {
-            let rows=sqlx::query("SELECT registration,platform,architecture,capabilities,execution_context FROM mdm_agent.bindings WHERE tenant_id=$1::uuid AND registration=ANY($2) AND wire_version=6").bind(tenant).bind(registrations).fetch_all(c).await.map_err(|e|channels::Rejection::from(db(e)))?;
+            let rows=sqlx::query("SELECT registration,platform,architecture,capabilities,execution_context FROM mdm_agent.bindings WHERE tenant_id=$1::uuid AND registration=ANY($2) AND wire_version=1").bind(tenant).bind(registrations).fetch_all(c).await.map_err(|e|channels::Rejection::from(db(e)))?;
             rows.into_iter()
                 .map(|r| {
                     let value = |key: &str| {
@@ -111,7 +111,7 @@ pub(crate) async fn bind_agent_in(
         rss_mdm_agent_wire::runtime::TaskArchitecture::X86_64 => "x86_64",
         rss_mdm_agent_wire::runtime::TaskArchitecture::Aarch64 => "aarch64",
     };
-    sqlx::query("INSERT INTO mdm_agent.bindings(tenant_id,registration,wire_version,capabilities,platform,architecture,execution_context) VALUES($1::uuid,$2::uuid,6,$3,$4,$5,$6)")
+    sqlx::query("INSERT INTO mdm_agent.bindings(tenant_id,registration,wire_version,capabilities,platform,architecture,execution_context) VALUES($1::uuid,$2::uuid,1,$3,$4,$5,$6)")
         .bind(tenant).bind(registration.to_string()).bind(capabilities).bind(platform).bind(architecture).bind(context)
         .execute(&mut *tx).await.map_err(db)?;
     Ok(())
@@ -142,7 +142,7 @@ impl rss_mdm_registration_service::agent::RuntimeBinding for Bindings {
                 .await
                 .map_err(|_| rss_mdm_registration_service::Error::Storage)?;
             Ok(rss_mdm_agent_wire::runtime::BindingProfile {
-                wire_version: 6,
+                wire_version: 1,
                 operation_id: b.operation,
                 device_id: b.device,
                 registration_id: b.registration,

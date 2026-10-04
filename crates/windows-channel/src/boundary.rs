@@ -46,7 +46,7 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
         .map(|p| p.as_str())
         .unwrap_or("");
     let soap = route.starts_with("/EnrollmentServer/");
-    let agent = route == "/api/agent/enroll/v1/native-grants";
+    let agent = route == "/api/v1/agent/enroll/native-grants";
     let audit = RequestAudit::new(envelope.tenant.clone(), route_action(route));
     let id = audit.request_id();
     let _permit = match envelope.admission.clone().try_acquire_owned() {
@@ -168,7 +168,7 @@ fn project(error: Error) -> Response {
 }
 fn route_action(route: &str) -> &'static str {
     match route {
-        "/api/agent/enroll/v1/native-grants" => "agent_native_grant",
+        "/api/v1/agent/enroll/native-grants" => "agent_native_grant",
         "/EnrollmentConfiguration" | "/EnrollmentServer/Discovery.svc" => "windows_discovery",
         "/EnrollmentServer/LinkedPolicy.svc" | "/EnrollmentServer/Policy.svc" => "windows_policy",
         "/EnrollmentServer/LinkedEnrollment.svc" | "/EnrollmentServer/Enrollment.svc" => {

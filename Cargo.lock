@@ -2749,7 +2749,7 @@ dependencies = [
 [[package]]
 name = "rss-identity-core"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=c8e1c42824225e2d9de81662539174a0fefedd39#c8e1c42824225e2d9de81662539174a0fefedd39"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=8193566e04a9f26c788f71bc984d95773643170c#8193566e04a9f26c788f71bc984d95773643170c"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -2770,7 +2770,7 @@ dependencies = [
 [[package]]
 name = "rss-identity-http-axum"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=c8e1c42824225e2d9de81662539174a0fefedd39#c8e1c42824225e2d9de81662539174a0fefedd39"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=8193566e04a9f26c788f71bc984d95773643170c#8193566e04a9f26c788f71bc984d95773643170c"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2792,7 +2792,7 @@ dependencies = [
 [[package]]
 name = "rss-identity-oidc"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=c8e1c42824225e2d9de81662539174a0fefedd39#c8e1c42824225e2d9de81662539174a0fefedd39"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=8193566e04a9f26c788f71bc984d95773643170c#8193566e04a9f26c788f71bc984d95773643170c"
 dependencies = [
  "ipnet",
  "openidconnect",
@@ -2810,7 +2810,7 @@ dependencies = [
 [[package]]
 name = "rss-identity-postgres"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=c8e1c42824225e2d9de81662539174a0fefedd39#c8e1c42824225e2d9de81662539174a0fefedd39"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=8193566e04a9f26c788f71bc984d95773643170c#8193566e04a9f26c788f71bc984d95773643170c"
 dependencies = [
  "futures",
  "rand_core 0.6.4",
@@ -2896,7 +2896,7 @@ dependencies = [
 
 [[package]]
 name = "rss-mdm-agent-wire"
-version = "6.0.0"
+version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
  "jsonschema",

@@ -45,7 +45,7 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
         .get::<axum::extract::MatchedPath>()
         .map(|p| p.as_str())
         .unwrap_or("");
-    let agent = route == "/api/agent/enroll/v1/native-grants";
+    let agent = route == "/api/v1/agent/enroll/native-grants";
     let audit = RequestAudit::new(envelope.tenant.clone(), route_action(route));
     let id = audit.request_id();
     let _permit = match envelope.admission.clone().try_acquire_owned() {
@@ -154,12 +154,12 @@ fn project(error: Error) -> Response {
 }
 fn route_action(route: &str) -> &'static str {
     match route {
-        "/api/agent/enroll/v1/native-grants" => "agent_native_grant",
+        "/api/v1/agent/enroll/native-grants" => "agent_native_grant",
         "/checkin" => "apple_checkin",
         "/native/apple/ddm/assets/{operation}/{identifier}" => "apple_asset",
         "/mdm" => "apple_management",
-        "/native/apple/scep/challenge" | "/native/apple/scep/notify" => "apple_scep",
-        p if p.starts_with("/api/v3/enrollments/") && p.ends_with("/profile") => "apple_profile",
+        "/api/v1/apple/scep/challenge" | "/api/v1/apple/scep/notify" => "apple_scep",
+        p if p.starts_with("/api/v1/enrollments/") && p.ends_with("/profile") => "apple_profile",
         _ => "protected_request",
     }
 }

@@ -1,6 +1,6 @@
 use crate::test_support::*;
 use anyhow::Context;
-const PATH: &str = "/api/v2/runtime/diagnostics";
+const PATH: &str = "/api/v1/runtime/diagnostics";
 
 #[tokio::test]
 #[ignore = "make t2 MODULE=diagnostics.http: real host wiring, session, permission and audit"]
@@ -30,6 +30,34 @@ async fn runtime_diagnostics_requires_explicit_permission() -> Result<()> {
             .is_some_and(|items| items.len() >= 4)
     );
     ensure!(audit_count(|r| r.action() == "runtime_diagnostics_read" && r.status() == 200)? > 0);
+    // The complete host serves the current V1 catalog; retired mounts cannot fall back to it.
+    for path in [
+        "/api/v2/runtime/diagnostics",
+        "/api/v3/enrollments",
+        "/api/v4/resources",
+        "/api/v2/device-queries",
+        "/api/v3/operations",
+        "/api/mdm-candidate/v1/workspace",
+        "/api/identity-host/v1/tenants/retired/context",
+        "/api/v2/tenants/retired/session",
+        "/api/v2/oidc/callback",
+        "/software/native/sources/retired/test/information",
+    ] {
+        ensure!(
+            member.call(&router, Method::GET, path, None).await?.0 == StatusCode::NOT_FOUND,
+            "retired HTTP mount accepted {path}"
+        );
+    }
+    for path in ["/native/apple/scep/challenge", "/native/apple/scep/notify"] {
+        ensure!(
+            member
+                .call(&router, Method::POST, path, Some(json!({})))
+                .await?
+                .0
+                == StatusCode::NOT_FOUND,
+            "retired Apple provider callback accepted {path}"
+        );
+    }
     set_management_grants(&subject, json!([])).await?;
     ensure!(member.call(&router, Method::GET, PATH, None).await?.0 == StatusCode::FORBIDDEN);
     reader.close().await;
@@ -270,7 +298,7 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
     let router = fixture.authority.router(
         fixture.authority.authorization().merge(
             Router::new().nest(
-                "/api/v2",
+                "/api/v1",
                 rss_mdm_management_http::runtime_diagnostics::routes()
                     .with_state(fixture.source.clone() as Arc<dyn Source>),
             ),
@@ -366,7 +394,7 @@ async fn dependency_failure_preserves_partial_results_and_authority() -> Result<
     let router = fixture.authority.router(
         fixture.authority.authorization().merge(
             Router::new().nest(
-                "/api/v2",
+                "/api/v1",
                 rss_mdm_management_http::runtime_diagnostics::routes()
                     .with_state(fixture.source.clone() as Arc<dyn Source>),
             ),

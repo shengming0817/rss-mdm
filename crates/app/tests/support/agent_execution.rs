@@ -43,7 +43,7 @@ pub(crate) async fn resource(
     post(
         browser,
         router,
-        &format!("/api/v4/resources/{id}"),
+        &format!("/api/v1/resources/{id}"),
         json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":input}),
     )
     .await
@@ -65,7 +65,7 @@ pub(crate) async fn upload_for(
     architecture: &str,
 ) -> Result<StatusCode> {
     let _guard = super::software::content_setup_guard().await?;
-    let request=Request::builder().method(Method::POST).uri(format!("/api/v3/resources/{id}/content?version=v1&variant=default&platform={platform}&architecture={architecture}&operation={}",Uuid::new_v4()))
+    let request=Request::builder().method(Method::POST).uri(format!("/api/v1/resources/{id}/content?version=v1&variant=default&platform={platform}&architecture={architecture}&operation={}",Uuid::new_v4()))
         .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1").header("x-csrf-token",browser.csrf.as_ref().unwrap())
         .header("cookie",browser.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; ")).header("content-type","application/octet-stream").body(Body::from(bytes.to_vec()))?;
     Ok(router.clone().oneshot(request).await?.status())
@@ -89,15 +89,15 @@ pub(crate) async fn task_event_request(
         };
         kind["diagnostics"] = json!({"stdout":"captured stdout","stderr":"captured stderr","durationMs":1,"executedAt":1,"failure":failure});
     }
-    agent_call(router,Method::POST,&format!("/api/agent/runtime/v1/tasks/{}/events",task["payload"]["taskId"].as_str().unwrap()),Some(case_credential()),Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":operation,"attemptId":task["payload"]["attemptId"],"event":kind}))).await
+    agent_call(router,Method::POST,&format!("/api/v1/agent/runtime/tasks/{}/events",task["payload"]["taskId"].as_str().unwrap()),Some(case_credential()),Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":operation,"attemptId":task["payload"]["attemptId"],"event":kind}))).await
 }
 pub(crate) async fn claim_request(router: &Router, operation: Uuid) -> Result<(StatusCode, Value)> {
     agent_call(
         router,
         Method::POST,
-        "/api/agent/runtime/v1/tasks/claim",
+        "/api/v1/agent/runtime/tasks/claim",
         Some(case_credential()),
-        Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":operation})),
+        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":operation})),
     )
     .await
 }
@@ -219,7 +219,7 @@ impl Fixture {
         })
     }
     pub(crate) async fn register(&mut self) -> Result<Value> {
-        self.register_profile(json!(["inventory.collect.v6", "task.execute.v6"]))
+        self.register_profile(json!(["inventory.collect.v1", "task.execute.v1"]))
             .await
     }
     pub(crate) async fn register_profile(&mut self, capabilities: Value) -> Result<Value> {
@@ -246,12 +246,12 @@ impl Fixture {
         let router = &self.router;
         let author = &mut self.author;
         let setup_automation = start_automation(base).await?;
-        let created=post(author,router,&format!("/api/v2/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"targets":targets,"limitations":null,"exclusions":[]}}})).await?;
+        let created=post(author,router,&format!("/api/v1/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"targets":targets,"limitations":null,"exclusions":[]}}})).await?;
         await_task(
             author,
             router,
             &format!(
-                "/api/v2/scopes/{scope}/tasks/{}",
+                "/api/v1/scopes/{scope}/tasks/{}",
                 created["task"].as_str().unwrap()
             ),
         )
@@ -295,7 +295,7 @@ impl Fixture {
 }
 pub(crate) async fn publish(author: &mut Browser, router: &Router, resource: Uuid) -> Result<Uuid> {
     let id = Uuid::new_v4();
-    post(author,router,&format!("/api/v3/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,case_task_scope())}})).await?;
+    post(author,router,&format!("/api/v1/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,case_task_scope())}})).await?;
     Ok(id)
 }
 pub(crate) async fn worker(base: &Value) -> Result<Option<rss_runtime::ShutdownStack>> {

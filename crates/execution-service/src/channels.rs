@@ -369,11 +369,11 @@ pub struct AgentBinding {
 impl AgentBinding {
     pub fn inventory(&self) -> bool {
         self.capabilities
-            .contains(&rss_mdm_agent_wire::runtime::Capability::InventoryCollectionV6)
+            .contains(&rss_mdm_agent_wire::runtime::Capability::InventoryCollectionV1)
     }
     pub fn script(&self) -> bool {
         self.capabilities
-            .contains(&rss_mdm_agent_wire::runtime::Capability::TaskExecuteV6)
+            .contains(&rss_mdm_agent_wire::runtime::Capability::TaskExecuteV1)
     }
     pub fn software(&self) -> bool {
         self.capabilities
@@ -382,7 +382,7 @@ impl AgentBinding {
     }
     pub fn enrollment(&self) -> bool {
         self.capabilities
-            .contains(&rss_mdm_agent_wire::runtime::Capability::MdmEnrollmentV6)
+            .contains(&rss_mdm_agent_wire::runtime::Capability::MdmEnrollmentV1)
     }
     pub fn task(&self) -> bool {
         self.script() || self.software() || self.enrollment()
@@ -499,7 +499,7 @@ pub async fn agent_targets_in(
 }
 
 impl Rejection {
-    /// The native registration endpoint speaks the same closed Agent V6 errors.
+    /// The native registration endpoint speaks the same closed Agent V1 errors.
     pub fn agent_error(self) -> (u16, rss_mdm_agent_wire::runtime::ErrorBody) {
         use rss_mdm_agent_wire::runtime::ErrorCode as C;
         let (status, code) = match self {

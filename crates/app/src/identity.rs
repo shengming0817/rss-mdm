@@ -360,7 +360,7 @@ impl OidcConfig {
             )
             .map_err(|_| invalid())?,
             rss_identity_postgres::FederationConfig {
-                callback: format!("{origin}/api/v2/oidc/callback"),
+                callback: format!("{origin}/api/v1/identity/oidc/callback"),
                 credential_keys: Arc::new(
                     rss_identity_postgres::CredentialKeys::new(
                         self.active_credential_key.clone(),

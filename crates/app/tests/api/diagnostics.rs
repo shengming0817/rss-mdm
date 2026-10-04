@@ -15,7 +15,7 @@ async fn audit_failure_logs_preserve_action_and_origin() {
         pool.close().await;
         let router = Router::new()
             .route(
-                "/api/v2/devices/{id}/inventory",
+                "/api/v1/devices/{id}/inventory",
                 get(move || async move {
                     if mode == "transaction" {
                         Error::Unavailable(Failure::Audit).into_response()
@@ -38,7 +38,7 @@ async fn audit_failure_logs_preserve_action_and_origin() {
         let response = router
             .oneshot(
                 Request::builder()
-                    .uri("/api/v2/devices/sensitive-target/inventory")
+                    .uri("/api/v1/devices/sensitive-target/inventory")
                     .header("host", "mdm.example.test")
                     .body(axum::body::Body::empty())
                     .unwrap(),

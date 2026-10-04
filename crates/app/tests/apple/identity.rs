@@ -4,7 +4,7 @@ use sqlx::Connection;
 impl Fixture {
     pub async fn before_token(&mut self, peer: &Peer) -> Result<()> {
         for path in [
-            format!("/api/v3/enrollments/{}/profile", Uuid::new_v4()),
+            format!("/api/v1/enrollments/{}/profile", Uuid::new_v4()),
             format!(
                 "/api/v1/devices/{DEVICE}/collection-runs",
                 DEVICE = case_device()

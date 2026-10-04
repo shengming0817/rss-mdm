@@ -79,7 +79,7 @@ async fn discovery_wstep_replay_and_tls_identity() -> anyhow::Result<()> {
             &host.browser,
             axum::http::Method::GET,
             &format!(
-                "/api/v3/devices/{}/timeline",
+                "/api/v1/devices/{}/timeline",
                 crate::test_support::case::name("tls-device")
             ),
             None,

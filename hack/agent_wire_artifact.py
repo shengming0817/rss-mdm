@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Task payload schema is canonical; derive embeddings, then verify the V6 artifact."""
+"""Task payload schema is canonical; derive embeddings, then verify the V1 artifact."""
 import hashlib
 import json
 from pathlib import Path
@@ -9,12 +9,12 @@ import copy
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMAS = ROOT / "crates/agent-wire/schema/runtime"
-MANIFEST = SCHEMAS / "agent-v6.schema-manifest.json"
+MANIFEST = SCHEMAS / "agent-v1.schema-manifest.json"
 LIB = ROOT / "crates/agent-wire/src/runtime.rs"
 EMBEDDED = {
-    "signed-task-v6.schema.json": ("properties", "payload"),
-    "task-claim-response-v6.schema.json": ("properties", "task", "oneOf", 1, "properties", "payload"),
-    "task-event-ack-v6.schema.json": ("properties", "permit", "oneOf", 1, "properties", "payload"),
+    "signed-task-v1.schema.json": ("properties", "payload"),
+    "task-claim-response-v1.schema.json": ("properties", "task", "oneOf", 1, "properties", "payload"),
+    "task-event-ack-v1.schema.json": ("properties", "permit", "oneOf", 1, "properties", "payload"),
 }
 
 
@@ -54,7 +54,7 @@ def collection_definitions():
 
 
 def write_collections():
-    for name in ["report-request-v6.schema.json","binding-profile-v6.schema.json"]:
+    for name in ["report-request-v1.schema.json","binding-profile-v1.schema.json"]:
         path=SCHEMAS/name
         schema=json.loads(path.read_text())
         schema.setdefault("$defs",{}).update(collection_definitions())
@@ -78,14 +78,14 @@ def event_variant(schema):
 
 def write():
     write_collections()
-    payload = json.loads((SCHEMAS / "task-payload-v6.schema.json").read_text())
+    payload = json.loads((SCHEMAS / "task-payload-v1.schema.json").read_text())
     for name, path in EMBEDDED.items():
         file = SCHEMAS / name
         schema = json.loads(file.read_text())
         embedded(schema, path)["oneOf"] = copy.deepcopy(payload["oneOf"])
         schema["$defs"] = copy.deepcopy(payload["$defs"])
         file.write_text(json.dumps(schema, indent=2, ensure_ascii=False) + "\n")
-    event_file=SCHEMAS / "task-event-request-v6.schema.json"
+    event_file=SCHEMAS / "task-event-request-v1.schema.json"
     event_schema=json.loads(event_file.read_text())
     variant=event_variant(event_schema);variant.clear();variant.update(software_result_event(payload))
     event_schema["$defs"]=copy.deepcopy(payload["$defs"])
@@ -102,38 +102,52 @@ def write():
     LIB.write_text(source)
 
 
+def check_wire_versions(value, name):
+    if isinstance(value, dict):
+        properties = value.get("properties", {})
+        if "wireVersion" in properties and properties["wireVersion"] != {"const": 1}:
+            raise ValueError(f"{name}: non-V1 wireVersion constraint")
+        for child in value.values():
+            check_wire_versions(child, name)
+    elif isinstance(value, list):
+        for child in value:
+            check_wire_versions(child, name)
+
+
 def check():
     manifest = json.loads(MANIFEST.read_text())
-    if manifest.get("wireVersion") != 6 or manifest.get("apiVersion") != 1:
-        raise ValueError("manifest must declare Agent V6")
+    if manifest.get("wireVersion") != 1 or manifest.get("apiVersion") != 1:
+        raise ValueError("manifest must declare Agent V1")
     files = [entry["file"] for entry in manifest["schemas"]]
-    if len(files) != len(set(files)) or not files or any(not name.endswith("-v6.schema.json") for name in files):
-        raise ValueError("manifest has duplicate or non-V6 schema entries")
+    if len(files) != len(set(files)) or not files or any(not name.endswith("-v1.schema.json") for name in files):
+        raise ValueError("manifest has duplicate or non-V1 schema entries")
     actual = {path.name for path in SCHEMAS.glob("*.json")}
     if actual != set(files) | {MANIFEST.name}:
-        raise ValueError("schema directory differs from the V6 manifest")
-    for name in ["report-request-v6.schema.json","binding-profile-v6.schema.json"]:
+        raise ValueError("schema directory differs from the V1 manifest")
+    for name in ["report-request-v1.schema.json","binding-profile-v1.schema.json"]:
         definitions=json.loads((SCHEMAS/name).read_text()).get("$defs",{})
         if any(definitions.get(key)!=value for key,value in collection_definitions().items()):
             raise ValueError(f"{name}: collection contracts differ from their canonical schema")
-    payload = json.loads((SCHEMAS / "task-payload-v6.schema.json").read_text())
+    payload = json.loads((SCHEMAS / "task-payload-v1.schema.json").read_text())
     for name, path in EMBEDDED.items():
         schema = json.loads((SCHEMAS / name).read_text())
         if embedded(schema, path)["oneOf"] != payload["oneOf"] or schema.get("$defs") != payload["$defs"]:
             raise ValueError(f"{name}: embedded task contract differs from the canonical payload")
-    event=json.loads((SCHEMAS / "task-event-request-v6.schema.json").read_text())
+    event=json.loads((SCHEMAS / "task-event-request-v1.schema.json").read_text())
     if event_variant(event)!=software_result_event(payload) or event.get("$defs")!=payload["$defs"]:
-        raise ValueError("task-event-request-v6.schema.json: software result differs from the canonical contract")
+        raise ValueError("task-event-request-v1.schema.json: software result differs from the canonical contract")
     digest = hashlib.sha256()
     for name in files:
         data = (SCHEMAS / name).read_bytes()
         schema = json.loads(data)
-        if "/agent/runtime/v1/payload/v6/" not in schema.get("$id", ""):
-            raise ValueError(f"{name}: non-V6 schema identifier")
+        expected_id = "https://rss.example/mdm/agent/runtime/v1/payload/v1/" + name.replace("-v1.schema.json", ".schema.json")
+        if schema.get("$id") != expected_id:
+            raise ValueError(f"{name}: non-V1 schema identifier")
+        check_wire_versions(schema, name)
         digest.update(data)
     expected = re.search(r'pub const SCHEMA_FINGERPRINT: &str =\s*"([0-9a-f]{64})"', LIB.read_text())
     if expected is None or expected.group(1) != digest.hexdigest():
-        raise ValueError("schema fingerprint differs from the declared V6 artifact")
+        raise ValueError("schema fingerprint differs from the declared V1 artifact")
 
 
 ENROLL=ROOT / "crates/agent-wire/schema/enroll"
@@ -143,9 +157,9 @@ def enrollment(write=False):
     if manifest.get("apiVersion")!=1:raise ValueError("enrollment manifest version")
     files=[entry["file"] for entry in manifest["schemas"]]
     if len(files)!=len(set(files)) or {p.name for p in ENROLL.glob("*.json")}!=set(files)|{"manifest.json"}:raise ValueError("enrollment schema directory differs from manifest")
-    binding=json.loads((SCHEMAS/"binding-profile-v6.schema.json").read_text())
+    binding=json.loads((SCHEMAS/"binding-profile-v1.schema.json").read_text())
     binding_shape={k:v for k,v in binding.items() if k not in ("$schema","$id","$defs")}
-    task=json.loads((SCHEMAS/"task-payload-v6.schema.json").read_text())
+    task=json.loads((SCHEMAS/"task-payload-v1.schema.json").read_text())
     canonical_defs={**binding["$defs"],"SoftwareExecutionContext":task["$defs"]["SoftwareExecutionContext"]}
     digest=hashlib.sha256()
     for name in files:
@@ -185,7 +199,7 @@ def main():
     except (ValueError, OSError, KeyError, TypeError) as error:
         print(f"agent-wire artifact: {error}", file=sys.stderr)
         return 1
-    print("Agent enrollment V1 and runtime V1 / payload V6 artifacts are complete")
+    print("Agent enrollment V1 and runtime V1 / payload V1 artifacts are complete")
     return 0
 
 

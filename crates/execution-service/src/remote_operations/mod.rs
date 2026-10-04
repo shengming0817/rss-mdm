@@ -211,7 +211,7 @@ impl ExecutionService {
                 sqlx::query("INSERT INTO mdm_planning.remote_operations(tenant_id,id,resource,resource_version,frozen,snapshot,created_at,deadline,author) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)").bind(tenant).bind(id).bind(resource).bind(version).bind(content).bind(snapshot).bind(at).bind(deadline).bind(author).execute(c).await?;Ok(())
             })).await?;
             storage::wake_in(tx,input.operation_id).await?;
-            let value=json!({"operationId":input.operation_id,"deadline":input.deadline,"statusUrl":format!("/api/v3/remote-operations/{}",input.operation_id)});
+            let value=json!({"operationId":input.operation_id,"deadline":input.deadline,"statusUrl":format!("/api/v1/remote-operations/{}",input.operation_id)});
             receipts::receipt(tx,audit,input.operation_id,&hash,&value).await?;
             s.audit_store.append_in(tx,&Fact::business(audit,&format!("remote:{}:accept",input.operation_id),&hash,202,"success",None)?,false).await?;
             proof.check_live()?;Ok(value)

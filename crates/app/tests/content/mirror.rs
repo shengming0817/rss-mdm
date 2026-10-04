@@ -22,7 +22,7 @@ async fn mirror_resource(
     let operation = Uuid::new_v4();
     Ok((
         format!(
-            "/api/v3/resources/{resource}/content/mirror?version=v1&variant=default&platform=windows&architecture=x86_64&operation={operation}"
+            "/api/v1/resources/{resource}/content/mirror?version=v1&variant=default&platform=windows&architecture=x86_64&operation={operation}"
         ),
         operation,
     ))
@@ -84,7 +84,7 @@ async fn mirror_matrix(
         let mirror =
             tokio::spawn(async move { client.call(&app, Method::POST, &request, None).await });
         tokio::time::timeout(Duration::from_secs(10), started.notified()).await?;
-        let source_path = format!("/api/v3/software/sources/{}/revisions/1", server.logical);
+        let source_path = format!("/api/v1/software/sources/{}/revisions/1", server.logical);
         if revoke {
             write(
                 user,

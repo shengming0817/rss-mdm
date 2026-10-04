@@ -39,7 +39,7 @@ impl Client {
             .call(
                 &client.router,
                 Method::POST,
-                &format!("/api/v2/tenants/{TENANT}/login", TENANT = case_tenant()),
+                &format!("/api/v1/identity/tenants/{TENANT}/login", TENANT = case_tenant()),
                 Some(json!({"login":crate::test_support::case::login("admin"),"password":crate::test_support::identity::PASSWORD})),
             )
             .await?;
@@ -78,7 +78,7 @@ impl Client {
                 &self.router,
                 method,
                 &format!(
-                    "/api/v3/devices/{DEVICE}/operations{suffix}",
+                    "/api/v1/devices/{DEVICE}/operations{suffix}",
                     DEVICE = case_device()
                 ),
                 body,

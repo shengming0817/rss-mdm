@@ -190,7 +190,7 @@ impl Browser {
                 .call(
                     app,
                     Method::GET,
-                    &format!("/api/v2/tenants/{}/session", case_tenant()),
+                    &format!("/api/v1/identity/tenants/{}/session", case_tenant()),
                     None,
                 )
                 .await?
@@ -208,7 +208,10 @@ impl Browser {
             .call(
                 app,
                 Method::POST,
-                &format!("/api/v2/tenants/{TENANT}/login", TENANT = case_tenant()),
+                &format!(
+                    "/api/v1/identity/tenants/{TENANT}/login",
+                    TENANT = case_tenant()
+                ),
                 Some(json!({"login":case::login(login),"password":password})),
             )
             .await?
@@ -449,7 +452,7 @@ pub(crate) async fn agent_call(
             content_type.as_deref() == Some("application/json"),
             "Agent error escaped JSON content type: {status} {content_type:?}"
         );
-        if path.starts_with("/api/agent/enroll/v1/") {
+        if path.starts_with("/api/v1/agent/enroll/") {
             let _: rss_mdm_agent_wire::enroll::ErrorBody = serde_json::from_value(value.clone())?;
         } else {
             let _: rss_mdm_agent_wire::runtime::ErrorBody = serde_json::from_value(value.clone())?;
@@ -471,7 +474,7 @@ pub(crate) async fn wait_agent_status(
             let (status, body) = agent_call(
                 router,
                 Method::GET,
-                &format!("/api/agent/runtime/v1/reports/{report_id}"),
+                &format!("/api/v1/agent/runtime/reports/{report_id}"),
                 Some(credential),
                 None,
             )

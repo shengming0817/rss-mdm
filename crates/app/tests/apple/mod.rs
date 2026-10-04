@@ -242,7 +242,7 @@ impl Fixture {
                 let failure = failure.clone();
                 async move {
                     use axum::response::IntoResponse;
-                    if request.uri().path() == "/native/apple/scep/notify"
+                    if request.uri().path() == "/api/v1/apple/scep/notify"
                         && failure.load(std::sync::atomic::Ordering::SeqCst)
                     {
                         return StatusCode::SERVICE_UNAVAILABLE.into_response();
@@ -387,7 +387,7 @@ impl Fixture {
             .call(
                 &self.router,
                 Method::POST,
-                "/api/v3/enrollments",
+                "/api/v1/enrollments",
                 Some(json!({"deviceId":case_device(),"source":"mdm.apple","password":password})),
             )
             .await?;
@@ -396,7 +396,7 @@ impl Fixture {
         let enrollment = Uuid::parse_str(reply.1["enrollmentId"].as_str().unwrap())?;
         let request = Request::builder()
             .method(Method::POST)
-            .uri(format!("/api/v3/enrollments/{enrollment}/profile"))
+            .uri(format!("/api/v1/enrollments/{enrollment}/profile"))
             .header("host", "mdm.example.test")
             .header("content-type", "application/json")
             .body(Body::from(json!({"password":password}).to_string()))?;
@@ -571,7 +571,7 @@ impl Fixture {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/native/apple/scep/challenge")
+                    .uri("/api/v1/apple/scep/challenge")
                     .header("host", "mdm.example.test")
                     .header("content-type", "application/json")
                     .header("x-smallstep-webhook-id", &apple.config.challenge_webhook.id)

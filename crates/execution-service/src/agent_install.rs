@@ -195,7 +195,7 @@ impl Package {
     }
     pub fn url(&self, operation: Uuid) -> String {
         format!(
-            "{}/api/agent/enroll/v1/installations/{operation}/package",
+            "{}/api/v1/agent/enroll/installations/{operation}/package",
             self.content_origin.trim_end_matches('/')
         )
     }

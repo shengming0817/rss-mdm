@@ -7,22 +7,22 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
     let fixture = Fixture::new().await?;
     let router = fixture.router;
     let mut author = fixture.author;
-    let (_,registration)=crate::test_support::agent::enroll_profile(&router,&mut author,case_inventory_credential(),json!({"capabilities":["inventory.collect.v6"],"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)})).await?;
-    ensure!(registration["capabilities"] == json!(["inventory.collect.v6"]));
+    let (_,registration)=crate::test_support::agent::enroll_profile(&router,&mut author,case_inventory_credential(),json!({"capabilities":["inventory.collect.v1"],"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)})).await?;
+    ensure!(registration["capabilities"] == json!(["inventory.collect.v1"]));
     let taskless = agent_call(
         &router,
         Method::POST,
-        "/api/agent/runtime/v1/tasks/claim",
+        "/api/v1/agent/runtime/tasks/claim",
         Some(case_inventory_credential()),
-        Some(json!({"wireVersion":6,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
+        Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
     )
     .await?;
     ensure!(
         taskless.0 == StatusCode::FORBIDDEN,
         "inventory-only registration entered task API: {taskless:?}"
     );
-    let (_,registration)=crate::test_support::agent::enroll_profile(&router,&mut author,case_credential(),json!({"capabilities":["inventory.collect.v6","task.execute.v6"],"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)})).await?;
-    ensure!(registration["capabilities"] == json!(["inventory.collect.v6", "task.execute.v6"]));
+    let (_,registration)=crate::test_support::agent::enroll_profile(&router,&mut author,case_credential(),json!({"capabilities":["inventory.collect.v1","task.execute.v1"],"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)})).await?;
+    ensure!(registration["capabilities"] == json!(["inventory.collect.v1", "task.execute.v1"]));
     // Legacy URL and major cannot enter task intake.
     let old = router
         .clone()
@@ -35,16 +35,33 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
         )
         .await?;
     ensure!(old.status() == StatusCode::NOT_FOUND);
+    let operation = Uuid::new_v4();
+    let valid = json!({"wireVersion":1,"operationId":operation,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"profiles":["posix_sh","bash","power_shell7","osquery"]});
+    for version in [2, 3, 4, 5, 6, 255] {
+        let mut retired = valid.clone();
+        retired["wireVersion"] = json!(version);
+        ensure!(
+            agent_call(
+                &router,
+                Method::POST,
+                "/api/v1/agent/runtime/tasks/claim",
+                Some(case_credential()),
+                Some(retired)
+            )
+            .await?
+            .0 == StatusCode::BAD_REQUEST
+        );
+    }
     ensure!(
         agent_call(
             &router,
             Method::POST,
-            "/api/agent/runtime/v1/tasks/claim",
+            "/api/v1/agent/runtime/tasks/claim",
             Some(case_credential()),
-            Some(json!({"wireVersion":2,"operationId":Uuid::new_v4()}))
+            Some(valid)
         )
         .await?
-        .0 == StatusCode::BAD_REQUEST
+        .0 == StatusCode::OK
     );
     Ok(())
 }
@@ -120,6 +137,24 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
         !reserved.trim().is_empty(),
         "collection was not frozen before Offer"
     );
+    let event_operation = Uuid::new_v4();
+    for version in [2, 3, 4, 5, 6, 255] {
+        let retired = json!({"wireVersion":version,"operationId":event_operation,"attemptId":task["payload"]["attemptId"],"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"event":{"kind":"received"}});
+        ensure!(
+            agent_call(
+                &router,
+                Method::POST,
+                &format!(
+                    "/api/v1/agent/runtime/tasks/{}/events",
+                    task["payload"]["taskId"].as_str().unwrap()
+                ),
+                Some(case_credential()),
+                Some(retired)
+            )
+            .await?
+            .0 == StatusCode::BAD_REQUEST
+        );
+    }
     task_event(&router, &task, json!({"kind":"received"})).await?;
     let permit = task_event(&router, &task, json!({"kind":"start"})).await?;
     let ack: rss_mdm_agent_wire::runtime::TaskEventAck = serde_json::from_value(permit)?;
@@ -200,7 +235,7 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
             &router,
             Method::GET,
             &format!(
-                "/api/v2/devices/{DEVICE_ID}/inventory",
+                "/api/v1/devices/{DEVICE_ID}/inventory",
                 DEVICE_ID = case_device_id()
             ),
             None,

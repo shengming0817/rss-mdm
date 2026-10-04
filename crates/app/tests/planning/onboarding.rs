@@ -10,11 +10,11 @@ async fn fixture() -> Result<Fixture> {
     f.grants
         .extend(identity::device_grants(None, &["enrollment"])?);
     identity::set_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
-    f.register_profile(json!(["inventory.collect.v6", "mdm.enrollment.v6"]))
+    f.register_profile(json!(["inventory.collect.v1", "mdm.enrollment.v1"]))
         .await?;
     let setup = start_automation(&f.base).await?;
     let group = Uuid::new_v4();
-    planning_http::call(&mut f.author,&f.router,&format!("/api/v2/groups/{group}"),0,json!({"action":"create","name":"MDM missing","description":"","criteria":{"kind":"predicate","field":"channel.mdm.enrollment","op":"eq","value":{"kind":"string","value":"unenrolled"}}})).await?;
+    planning_http::call(&mut f.author,&f.router,&format!("/api/v1/groups/{group}"),0,json!({"action":"create","name":"MDM missing","description":"","criteria":{"kind":"predicate","field":"channel.mdm.enrollment","op":"eq","value":{"kind":"string","value":"unenrolled"}}})).await?;
     stop_worker(setup).await?;
     f.scope(case_task_scope(), json!([{"kind":"group","id":group}]))
         .await?;
@@ -22,7 +22,7 @@ async fn fixture() -> Result<Fixture> {
 }
 async fn publish(f: &mut Fixture) -> Result<Uuid> {
     let id = Uuid::new_v4();
-    post(&mut f.author,&f.router,&format!("/api/v3/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":case_task_scope(),"action":{"kind":"request_mdm_enrollment","organization":case_tenant(),"runLifetimeSeconds":300}}}})).await?;
+    post(&mut f.author,&f.router,&format!("/api/v1/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":case_task_scope(),"action":{"kind":"request_mdm_enrollment","organization":case_tenant(),"runLifetimeSeconds":300}}}})).await?;
     Ok(id)
 }
 async fn report(f: &Fixture, sequence: u64, state: &str) -> Result<()> {
@@ -38,11 +38,11 @@ async fn report(f: &Fixture, sequence: u64, state: &str) -> Result<()> {
             })
         })
         .ok_or_else(|| anyhow::anyhow!("server did not publish enrollment collection"))?;
-    let input = json!({"wireVersion":6,"collection":collection,"reportId":id,"sequence":sequence,"observedAt":1,"body":{"kind":"snapshot","values":[{"field":"channel.mdm.enrollment","value":{"kind":"value","value":{"kind":"string","value":state}}}]}});
+    let input = json!({"wireVersion":1,"collection":collection,"reportId":id,"sequence":sequence,"observedAt":1,"body":{"kind":"snapshot","values":[{"field":"channel.mdm.enrollment","value":{"kind":"value","value":{"kind":"string","value":state}}}]}});
     let response = agent_call(
         &f.router,
         Method::POST,
-        "/api/agent/runtime/v1/reports",
+        "/api/v1/agent/runtime/reports",
         Some(case_credential()),
         Some(input.clone()),
     )
@@ -53,7 +53,7 @@ async fn report(f: &Fixture, sequence: u64, state: &str) -> Result<()> {
             == agent_call(
                 &f.router,
                 Method::POST,
-                "/api/agent/runtime/v1/reports",
+                "/api/v1/agent/runtime/reports",
                 Some(case_credential()),
                 Some(input)
             )
@@ -108,7 +108,7 @@ async fn explicit_source_absence_drives_one_standard_entry_without_creating_mdm_
     );
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
     let rerun = Uuid::new_v4();
-    let path = format!("/api/v3/policies/{id}/reruns");
+    let path = format!("/api/v1/policies/{id}/reruns");
     let request = json!({"operationId":rerun,"expectedRevision":1,"input":{"deadline":now+600}});
     let accepted = post(&mut f.author, &f.router, &path, request.clone()).await?;
     ensure!(post(&mut f.author, &f.router, &path, request).await? == accepted);
@@ -213,7 +213,7 @@ async fn uncertain_entry_survives_application_restart_and_policy_disable() -> Re
     post(
         &mut f.author,
         &router,
-        &format!("/api/v3/policies/{id}"),
+        &format!("/api/v1/policies/{id}"),
         json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"disable"}}),
     )
     .await?;

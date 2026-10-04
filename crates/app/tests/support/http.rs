@@ -10,7 +10,7 @@ pub(crate) async fn ok(
     path: &str,
     body: Option<Value>,
 ) -> Result<Value> {
-    let query = method == Method::POST && path == "/api/v2/device-queries";
+    let query = method == Method::POST && path == "/api/v1/device-queries";
     let saved = method == Method::POST && path.ends_with("/execute");
     let body = if query || saved {
         Some(request(

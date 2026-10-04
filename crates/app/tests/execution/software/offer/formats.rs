@@ -61,29 +61,29 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
     }
     let profiles = match format {
         "exe" => json!([
-            "inventory.collect.v6",
-            "software.msi.system.v6",
-            "software.exe.system.v6"
+            "inventory.collect.v1",
+            "software.msi.system.v1",
+            "software.exe.system.v1"
         ]),
         "dmg_app" => json!([
-            "inventory.collect.v6",
-            "software.pkg.system.v6",
-            "software.dmg.app.system.v6"
+            "inventory.collect.v1",
+            "software.pkg.system.v1",
+            "software.dmg.app.system.v1"
         ]),
         "dmg_pkg" => json!([
-            "inventory.collect.v6",
-            "software.pkg.system.v6",
-            "software.dmg.pkg.system.v6"
+            "inventory.collect.v1",
+            "software.pkg.system.v1",
+            "software.dmg.pkg.system.v1"
         ]),
         "msix" if user => json!([
-            "inventory.collect.v6",
-            "software.msi.system.v6",
-            "software.msix.registration.user.v6"
+            "inventory.collect.v1",
+            "software.msi.system.v1",
+            "software.msix.registration.user.v1"
         ]),
         "msix" => json!([
-            "inventory.collect.v6",
-            "software.msi.system.v6",
-            "software.msix.provisioning.system.v6"
+            "inventory.collect.v1",
+            "software.msi.system.v1",
+            "software.msix.provisioning.system.v1"
         ]),
         _ => anyhow::bail!("unknown matrix entry"),
     };
@@ -106,7 +106,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
         _ => unreachable!(),
     };
     let resource = Uuid::new_v4();
-    let path = format!("/api/v4/resources/{resource}");
+    let path = format!("/api/v1/resources/{resource}");
     let version = if format == "msix" { "1.0.0.0" } else { "1.0" };
     // Non-MSIX cases prove prerequisites use the same support decision and result binding.
     let deps = if format == "msix" {
@@ -160,7 +160,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
     write(&mut f.author,&f.router,&path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":os,"architecture":arch,"key":"default","declaration":{"kind":"software","definition":definition}}]})).await?;
     let content_setup = crate::test_support::software::content_setup_guard().await?;
     let request = Request::builder().method(Method::POST)
-        .uri(format!("/api/v3/resources/{resource}/content?version=v1&variant=default&platform={os}&architecture={arch}&operation={}",Uuid::new_v4()))
+        .uri(format!("/api/v1/resources/{resource}/content?version=v1&variant=default&platform={os}&architecture={arch}&operation={}",Uuid::new_v4()))
         .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
         .header("x-csrf-token",f.author.csrf.as_ref().unwrap())
         .header("cookie",f.author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
@@ -182,24 +182,24 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
     let admitted = write(
         &mut f.author,
         &f.router,
-        &format!("/api/v3/software/resources/{resource}/versions/v1"),
+        &format!("/api/v1/software/resources/{resource}/versions/v1"),
         0,
         json!({"action":"approve","evidence":["hash-only enterprise review"]}),
     )
     .await?;
     drop(content_setup);
     let policy = Uuid::new_v4();
-    let policy_path = format!("/api/v3/policies/{policy}");
+    let policy_path = format!("/api/v1/policies/{policy}");
     write(&mut f.author,&f.router,&policy_path,0,json!({"action":"put","enabled":true,"definition":{"scope":f.scope,"action":{"kind":"software","resource":{"kind":"software","id":resource,"version":"v1","variants":{selector:"default"}},"intent":"required_install","delivery":{"kind":"direct"},"admissionOperation":admitted["admission"]["operation"],"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":f.scope,"opensAt":0}]}}}})).await?;
     let task = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let r = agent_call(
                 &f.router,
                 Method::POST,
-                "/api/agent/runtime/v1/tasks/claim",
+                "/api/v1/agent/runtime/tasks/claim",
                 Some(&f.credential),
                 Some(
-                    json!({"wireVersion":6,"profiles":[],"executionContext":local,"operationId":Uuid::new_v4()}),
+                    json!({"wireVersion":1,"profiles":[],"executionContext":local,"operationId":Uuid::new_v4()}),
                 ),
             )
             .await?;
@@ -265,7 +265,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
     let content = Request::builder()
         .method(Method::GET)
         .uri(format!(
-            "/api/agent/runtime/v1/tasks/{}/content?attempt={}&artifact={}%2Fpackage",
+            "/api/v1/agent/runtime/tasks/{}/content?attempt={}&artifact={}%2Fpackage",
             task["payload"]["taskId"].as_str().unwrap(),
             task["payload"]["attemptId"].as_str().unwrap(),
             spec.steps.len() - 1
@@ -350,7 +350,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
         .call(
             &f.router,
             Method::GET,
-            &format!("/api/v2/policies/{policy}/software/rollout"),
+            &format!("/api/v1/policies/{policy}/software/rollout"),
             None,
         )
         .await?;

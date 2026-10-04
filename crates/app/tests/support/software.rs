@@ -128,7 +128,7 @@ impl Fixture {
             || case::name("private-fixture").to_owned(),
             |peer| peer.logical.clone(),
         );
-        let source_path = format!("/api/v3/software/sources/{source}/revisions/1");
+        let source_path = format!("/api/v1/software/sources/{source}/revisions/1");
         let registered=write(&mut user,&router,&source_path,0,json!({"action":"register","definition":{"id":source,"revision":"1","protocol":{"kind":"private"}}})).await?;
         write(
             &mut user,
@@ -175,7 +175,7 @@ pub(crate) async fn create_software_version(
 ) -> Result<(String, Value)> {
     let resource = Uuid::new_v4().to_string();
     definition["package"] = json!(format!("Private.{resource}"));
-    let path = format!("/api/v4/resources/{resource}");
+    let path = format!("/api/v1/resources/{resource}");
     write(
         user,
         router,
@@ -189,7 +189,7 @@ pub(crate) async fn create_software_version(
         .call(
             router,
             Method::GET,
-            &format!("/api/v3/software/resources/{resource}/versions/v1"),
+            &format!("/api/v1/software/resources/{resource}/versions/v1"),
             None,
         )
         .await?;
@@ -209,7 +209,7 @@ impl Fixture {
             .map(|(k, v)| format!("{k}={v}"))
             .collect::<Vec<_>>()
             .join("; ");
-        let response = self.client.post(format!("{}/api/v3/resources/{id}/content?version=v1&variant=default&platform=windows&architecture=x86_64&operation={}", self.origin, Uuid::new_v4()))
+        let response = self.client.post(format!("{}/api/v1/resources/{id}/content?version=v1&variant=default&platform=windows&architecture=x86_64&operation={}", self.origin, Uuid::new_v4()))
             .header("host", "mdm.example.test").header("origin", "https://mdm.example.test")
             .header("x-identity-request", "1").header("x-csrf-token", user.csrf.as_ref().unwrap())
             .header("cookie", cookie).header("content-type", "application/octet-stream")

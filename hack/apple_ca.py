@@ -75,7 +75,7 @@ def running(root, env):
             config = json.loads((root/'apple.json').read_text())
             for kind, name, phase in [('SCEPCHALLENGE', 'rss', 'challenge'), ('NOTIFYING', 'rss_notify', 'notify')]:
                 output = cli('ca', 'provisioner', 'webhook', 'add', 'rss', name, '--kind', kind,
-                             '--url', f'https://localhost:{webhook_port}/native/apple/scep/{phase}', *admin)
+                             '--url', f'https://localhost:{webhook_port}/api/v1/apple/scep/{phase}', *admin)
                 hook = re.search(r'Webhook ID: ([^\s]+)\s+Secret: ([^\s]+)', output)
                 if not hook:
                     raise RuntimeError('fixed step CLI omitted webhook credentials')

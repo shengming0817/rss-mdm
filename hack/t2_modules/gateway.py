@@ -39,25 +39,27 @@ def verify(context):
         from candidate_runtime import public_host_inputs
         public=public_host_inputs({'product_origin':'https://mdm.example.test','identity':{'tenant_id':'11111111-1111-4111-8111-111111111111','oidc':None}})['mdm.json']
         subprocess.run(['docker','exec','-i',name,'sh','-ec','mkdir -p /run/config; cat > /run/config/mdm.json; chmod 644 /run/config/mdm.json'],input=json.dumps(public),check=True,capture_output=True,text=True,timeout=10)
-        status,body=request('/api/mdm-host/v1/config.json',method='GET')
+        status,body=request('/api/v1/mdm-host/config.json',method='GET')
         if status!=200 or json.loads(body)!=public:raise RuntimeError('MDM host configuration was not served by the exact static route')
         status,body=request('/api/unsupported-test',method='GET')
         if status!=404 or json.loads(body)!={'code':'not_found'}:raise RuntimeError('API error fell through to SPA')
-        for path in ['/api/agent/enroll/v1/certificates', '/api/agent/runtime/v1/tasks/task/content', '/api/agent/runtime/v1/installations/operation/package']:
+        status,body=request('/software/native/sources/retired/test/information',method='GET')
+        if status!=404 or json.loads(body)!={'code':'not_found'}:raise RuntimeError('retired native software API fell through to SPA')
+        for path in ['/api/v1/agent/enroll/certificates', '/api/v1/agent/runtime/tasks/task/content', '/api/v1/agent/enroll/installations/operation/package']:
             if request(path,method='GET')[0] != 404: raise RuntimeError('Agent route leaked through browser gateway: '+path)
         status, forwarded=request('/api/probe','203.0.113.254')
         if status!=200 or not forwarded or forwarded==b'203.0.113.254':raise RuntimeError('gateway failed to overwrite source header')
         statuses=[]
         for n in range(25):
-            status,body=request('/api/v2/tenants/11111111-1111-4111-8111-111111111111/login','203.0.113.'+str(n));statuses.append(status)
+            status,body=request('/api/v1/identity/tenants/11111111-1111-4111-8111-111111111111/login','203.0.113.'+str(n));statuses.append(status)
             if status==429 and json.loads(body)!={'code':'request_limited'}:raise RuntimeError('incorrect rate-limit response')
         if 200 not in statuses or 429 not in statuses or statuses.count(200)>14:raise RuntimeError('caller-controlled source bypassed login admission')
         time.sleep(3.2)
-        if request('/api/v2/tenants/11111111-1111-4111-8111-111111111111/login')[0]!=200:raise RuntimeError('login budget did not recover')
-        for path,limit in [('/api/v3/devices/device/operations',16777216),('/api/v4/resources/resource',8388608)]:
+        if request('/api/v1/identity/tenants/11111111-1111-4111-8111-111111111111/login')[0]!=200:raise RuntimeError('login budget did not recover')
+        for path,limit in [('/api/v1/devices/device/operations',16777216),('/api/v1/resources/resource',8388608)]:
             if request(path,body=b'x'*limit)[0]!=200:raise RuntimeError('native JSON budget rejected exact boundary: '+path)
             if request(path,body=b'x'*(limit+1))[0]!=413:raise RuntimeError('native JSON budget exceeded: '+path)
-        for path in ['/api/v3/devices/device/operations/id/cancel','/api/v3/resources/resource']:
+        for path in ['/api/v1/devices/device/operations/id/cancel','/api/v1/resources/resource/unrelated']:
             if request(path,body=b'x'*16385)[0]!=413:raise RuntimeError('unrelated route inherited native body budget: '+path)
         if request('/api/probe',body='x'*16385)[0]!=413:raise RuntimeError('oversized request was not rejected')
         if request('/api/probe?credential=synthetic-sensitive-value')[0]!=200:raise RuntimeError('gateway probe failed')

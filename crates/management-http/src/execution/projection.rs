@@ -13,14 +13,14 @@ pub fn directory(facts: ExecutionDirectory) -> Value {
                 let device = url::form_urlencoded::byte_serialize(item.metadata.device.as_bytes())
                     .collect::<String>()
                     .replace('+', "%20");
-                format!("/api/v3/devices/{device}/operations/{}", item.metadata.id)
+                format!("/api/v1/devices/{device}/operations/{}", item.metadata.id)
             }
             ExecutionKind::ActionRun => {
                 if let Some(policy) = item.metadata.policy {
-                    format!("/api/v2/policies/{policy}/runs/{}", item.metadata.id)
+                    format!("/api/v1/policies/{policy}/runs/{}", item.metadata.id)
                 } else {
                     format!(
-                        "/api/v3/remote-operations/{}/runs/{}",
+                        "/api/v1/remote-operations/{}/runs/{}",
                         item.metadata.remote_operation.expect("stored run source"),
                         item.metadata.id
                     )
@@ -55,7 +55,7 @@ pub fn remote_directory(facts: RemoteDirectory) -> Value {
     let urls = facts
         .items
         .iter()
-        .map(|item| format!("/api/v3/remote-operations/{}", item.id))
+        .map(|item| format!("/api/v1/remote-operations/{}", item.id))
         .collect::<Vec<_>>();
     let mut value = serde_json::to_value(facts).expect("directory facts serialize");
     for (item, url) in value["items"]

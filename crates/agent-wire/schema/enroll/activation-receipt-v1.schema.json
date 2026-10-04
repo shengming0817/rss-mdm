@@ -333,7 +333,7 @@
       ],
       "properties": {
         "wireVersion": {
-          "const": 6
+          "const": 1
         },
         "operationId": {
           "$ref": "#/$defs/nonNilUuid"
@@ -365,31 +365,31 @@
           "uniqueItems": true,
           "prefixItems": [
             {
-              "const": "inventory.collect.v6"
+              "const": "inventory.collect.v1"
             }
           ],
           "items": {
             "enum": [
-              "inventory.collect.v6",
-              "task.execute.v6",
-              "software.msi.system.v6",
-              "software.msi.user.v6",
-              "software.pkg.system.v6",
-              "software.bundle.windows.system.v6",
-              "software.bundle.windows.user.v6",
-              "software.bundle.macos.system.v6",
-              "software.bundle.macos.user.v6",
-              "software.winget.system.v6",
-              "software.winget.user.v6",
-              "software.brew.bottle.user.v6",
-              "software.exe.system.v6",
-              "software.exe.user.v6",
-              "software.dmg.app.system.v6",
-              "software.dmg.app.user.v6",
-              "software.dmg.pkg.system.v6",
-              "software.msix.registration.user.v6",
-              "software.msix.provisioning.system.v6",
-              "mdm.enrollment.v6"
+              "inventory.collect.v1",
+              "task.execute.v1",
+              "software.msi.system.v1",
+              "software.msi.user.v1",
+              "software.pkg.system.v1",
+              "software.bundle.windows.system.v1",
+              "software.bundle.windows.user.v1",
+              "software.bundle.macos.system.v1",
+              "software.bundle.macos.user.v1",
+              "software.winget.system.v1",
+              "software.winget.user.v1",
+              "software.brew.bottle.user.v1",
+              "software.exe.system.v1",
+              "software.exe.user.v1",
+              "software.dmg.app.system.v1",
+              "software.dmg.app.user.v1",
+              "software.dmg.pkg.system.v1",
+              "software.msix.registration.user.v1",
+              "software.msix.provisioning.system.v1",
+              "mdm.enrollment.v1"
             ]
           }
         },

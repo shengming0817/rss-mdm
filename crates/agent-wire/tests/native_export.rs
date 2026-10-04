@@ -34,7 +34,7 @@ fn frozen_source_binds_tenant_material_and_scoped_credentials_without_a_token_fi
         dependencies: vec![],
         artifacts: vec![SoftwareExportArtifact {
             url:
-                "https://mdm.example/software/native/sources/enterprise/artifacts/acme/v1/setup.msi"
+                "https://mdm.example/api/v1/software/native/sources/enterprise/artifacts/acme/v1/setup.msi"
                     .into(),
             length: 1024,
             sha256: [6; 32],
@@ -51,7 +51,7 @@ fn frozen_source_binds_tenant_material_and_scoped_credentials_without_a_token_fi
         export: SoftwareTaskExport::Winget {
             binding: binding.clone(),
             uri:
-                "https://mdm.example/software/native/sources/enterprise/pilot/exports/publication/"
+                "https://mdm.example/api/v1/software/native/sources/enterprise/pilot/exports/publication/"
                     .into(),
             identifier: "rss.publication".into(),
         },
@@ -80,7 +80,7 @@ fn frozen_source_binds_tenant_material_and_scoped_credentials_without_a_token_fi
 #[test]
 fn invocation_schema_matches_literal_argument_and_environment_validation() {
     let canonical: serde_json::Value = serde_json::from_str(include_str!(
-        "../schema/runtime/task-payload-v6.schema.json"
+        "../schema/runtime/task-payload-v1.schema.json"
     ))
     .unwrap();
     let schema =
@@ -108,7 +108,7 @@ fn invocation_schema_matches_literal_argument_and_environment_validation() {
         }];
         use sha2::{Digest, Sha256};
         let spec = SoftwareTaskSpec {
-            wire_version: 6,
+            wire_version: 1,
             tenant_id: id,
             device_id: "device".into(),
             platform: TaskPlatform::Windows,
@@ -140,7 +140,7 @@ fn invocation_schema_matches_literal_argument_and_environment_validation() {
 #[test]
 fn app_copy_rust_and_schema_reject_the_retired_directory_digest() {
     let canonical: serde_json::Value = serde_json::from_str(include_str!(
-        "../schema/runtime/task-payload-v6.schema.json"
+        "../schema/runtime/task-payload-v1.schema.json"
     ))
     .unwrap();
     let schema = json!({"$ref":"#/$defs/SoftwareTaskAction","$defs":canonical["$defs"]});

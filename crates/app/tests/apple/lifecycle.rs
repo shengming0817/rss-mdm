@@ -153,7 +153,7 @@ impl Fixture {
                 &self.router,
                 Method::GET,
                 &format!(
-                    "/api/v3/devices/{DEVICE}/operations/{id}",
+                    "/api/v1/devices/{DEVICE}/operations/{id}",
                     DEVICE = case_device()
                 ),
                 None,
@@ -175,7 +175,7 @@ impl Fixture {
     ) -> Result<Uuid> {
         let body = json!({"operationId":id,"inputVersion":"1","target":{"kind":"device"},"task":task(id),"deadline":self.app.clock.unix_seconds()?+300});
         let path = format!(
-            "/api/v3/devices/{DEVICE}/operations",
+            "/api/v1/devices/{DEVICE}/operations",
             DEVICE = case_device()
         );
         let reply = self

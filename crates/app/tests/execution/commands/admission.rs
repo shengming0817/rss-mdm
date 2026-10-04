@@ -131,7 +131,7 @@ impl Client {
             }
         }
         let path = format!(
-            "/api/v3/devices/{}/timeline?operationId={}",
+            "/api/v1/devices/{}/timeline?operationId={}",
             case_device(),
             self.operation
         );
@@ -193,7 +193,7 @@ impl Client {
         body["operationId"] = concurrent.to_string().into();
         let (mut one, mut two) = (self.browser.clone(), self.browser.clone());
         let path = format!(
-            "/api/v3/devices/{DEVICE}/operations",
+            "/api/v1/devices/{DEVICE}/operations",
             DEVICE = case_device()
         );
         let (a, b) = tokio::join!(
@@ -273,7 +273,7 @@ impl Client {
                 &self.router,
                 Method::GET,
                 &format!(
-                    "/api/v3/devices/another-device/operations/{}",
+                    "/api/v1/devices/another-device/operations/{}",
                     self.operation
                 ),
                 None,
@@ -473,7 +473,7 @@ async fn cancellation_request_identity_does_not_claim_another_device() -> anyhow
     ensure!(cancelled.0 == StatusCode::OK, "cancel: {cancelled:?}");
     client.drain_timeline().await?;
     let path = format!(
-        "/api/v3/devices/{other}/timeline?action=command_cancel&operationId={other_operation}"
+        "/api/v1/devices/{other}/timeline?action=command_cancel&operationId={other_operation}"
     );
     let (status, page) = client
         .browser
@@ -484,7 +484,7 @@ async fn cancellation_request_identity_does_not_claim_another_device() -> anyhow
         "request UUID claimed other device: {page}"
     );
     let path = format!(
-        "/api/v3/devices/{}/timeline?action=command_cancel&operationId={}",
+        "/api/v1/devices/{}/timeline?action=command_cancel&operationId={}",
         case_device(),
         client.operation
     );
@@ -523,7 +523,7 @@ async fn child_dispatch_keeps_its_device_and_parent_search_link() -> anyhow::Res
         .await?;
     client.drain_timeline().await?;
     let path =
-        format!("/api/v3/devices/{other}/timeline?action=command_dispatch&operationId={child}");
+        format!("/api/v1/devices/{other}/timeline?action=command_dispatch&operationId={child}");
     let (_, page) = client
         .browser
         .call(&client.router, Method::GET, &path, None)
@@ -533,7 +533,7 @@ async fn child_dispatch_keeps_its_device_and_parent_search_link() -> anyhow::Res
         "child fact leaked to sibling/native UUID: {page}"
     );
     let path = format!(
-        "/api/v3/devices/{}/timeline?action=command_dispatch&operationId={parent}",
+        "/api/v1/devices/{}/timeline?action=command_dispatch&operationId={parent}",
         case_device()
     );
     let (_, page) = client
@@ -568,7 +568,7 @@ impl Client {
         let request = |id| json!({"operationId":id,"inputVersion":"1","target":{"kind":"device"},"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./DevInfo/Mod","instance":[],"operation":"get","value":null}}},"deadline":self.app.clock.unix_seconds().unwrap()+300});
         let id = Uuid::new_v4();
         let mut other_browser = crate::test_support::Browser::default();
-        let login = other_browser.call(&self.router,Method::POST,&format!("/api/v2/tenants/{}/login",case_tenant()),Some(json!({"login":crate::test_support::case::login("other"),"password":crate::test_support::identity::PASSWORD}))).await?;
+        let login = other_browser.call(&self.router,Method::POST,&format!("/api/v1/identity/tenants/{}/login",case_tenant()),Some(json!({"login":crate::test_support::case::login("other"),"password":crate::test_support::identity::PASSWORD}))).await?;
         ensure!(login.0 == StatusCode::OK, "other login: {login:?}");
         let other_subject =
             crate::test_support::browser_subject(&other_browser, &self.router).await?;
@@ -583,7 +583,7 @@ impl Client {
                 .call(
                     &self.router,
                     Method::POST,
-                    &format!("/api/v3/devices/{other}/operations"),
+                    &format!("/api/v1/devices/{other}/operations"),
                     Some(request(id))
                 )
                 .await?

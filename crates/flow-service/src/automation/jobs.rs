@@ -93,12 +93,12 @@ pub async fn enqueue_job_in(
 pub fn accepted(id: Uuid, input: &JobInput) -> Value {
     let status_url = match input {
         JobInput::Compliance { input } => {
-            format!("/api/v2/compliance-rules/{}/tasks/{id}", input.rule)
+            format!("/api/v1/compliance-rules/{}/tasks/{id}", input.rule)
         }
-        JobInput::AssetQuery { .. } => format!("/api/v2/device-queries/{id}"),
-        JobInput::Group { group, .. } => format!("/api/v2/groups/{group}/tasks/{id}"),
-        JobInput::Scope { scope } => format!("/api/v2/scopes/{scope}/tasks/{id}"),
-        JobInput::PolicyReconcile { policy } => format!("/api/v2/policies/{policy}"),
+        JobInput::AssetQuery { .. } => format!("/api/v1/device-queries/{id}"),
+        JobInput::Group { group, .. } => format!("/api/v1/groups/{group}/tasks/{id}"),
+        JobInput::Scope { scope } => format!("/api/v1/scopes/{scope}/tasks/{id}"),
+        JobInput::PolicyReconcile { policy } => format!("/api/v1/policies/{policy}"),
     };
     serde_json::json!({"task":id,"kind":input.kind(),"target":input.target(),"status_url":status_url})
 }

@@ -58,7 +58,7 @@ def run_smoke(directory):
         sql=deployed.sql
         browser=Browser(deployed.port,deployed.root/"ca.crt")
         require(browser.call("GET", "/livez") == (200, {"alive": True}), "candidate liveness failed")
-        tenant="/api/v2/tenants/"+TENANT
+        tenant="/api/v1/identity/tenants/"+TENANT
         require(browser.call("GET","/api/v1/authorization")[0]==401,"anonymous candidate accepted")
         require(browser.call("POST",tenant+"/login",dict(login="admin",password=PASSWORD))[0]==200,"local candidate login failed")
         status,principal=browser.call("GET","/api/v1/authorization")
@@ -67,18 +67,18 @@ def run_smoke(directory):
         require(browser.call('PUT','/api/v1/authorization/rules/'+str(uuid.uuid4()),dict(operationId=str(uuid.uuid4()),expectedRevision=0,value=rule))[0]==200,'candidate explicit authorization')
         operation=str(uuid.uuid4())
         enrollment=dict(deviceId="device-1",password="A"*43,source="mdm.windows",windowsProfile="Device")
-        status,receipt=browser.call("POST","/api/v3/enrollments",enrollment,operation)
+        status,receipt=browser.call("POST","/api/v1/enrollments",enrollment,operation)
         require(status==200 and receipt["status"]=="pending","candidate enrollment failed")
-        require(browser.call("POST","/api/v3/enrollments",enrollment,operation)==(status,receipt),"candidate replay changed enrollment")
-        require(browser.call("GET","/api/v3/enrollments/"+receipt["enrollmentId"])[1]["status"]=="pending","candidate enrollment query failed")
+        require(browser.call("POST","/api/v1/enrollments",enrollment,operation)==(status,receipt),"candidate replay changed enrollment")
+        require(browser.call("GET","/api/v1/enrollments/"+receipt["enrollmentId"])[1]["status"]=="pending","candidate enrollment query failed")
         denied=str(uuid.uuid4())
-        require(browser.call("POST","/api/v3/enrollments",dict(deviceId="outside",password="A"*43,source="mdm.windows",windowsProfile="Device"),denied)[0]==403,"device scope bypass")
+        require(browser.call("POST","/api/v1/enrollments",dict(deviceId="outside",password="A"*43,source="mdm.windows",windowsProfile="Device"),denied)[0]==403,"device scope bypass")
         require(sql("SELECT count(*) FROM mdm_access.grants WHERE device='outside'")=="0","denied enrollment wrote business state")
         require(browser.request_id is not None,"candidate protected response has no request identity")
         event_id = "e-" + hashlib.sha256(browser.request_id.encode()).hexdigest()
         require(sql("SELECT count(*) FROM rss_audit.records WHERE tenant_id='"+TENANT+"' AND source_id='mdm.request' AND event_id='"+event_id+"'")=="1","candidate denial audit missing")
         require(browser.call("POST","/api/v1/devices/device-1/actions",dict(action="wipe"),str(uuid.uuid4()))[0]==403,"wipe permission bypass")
-        require(browser.call("GET","/api/v2/devices/outside/inventory")[0]==403,"inventory scope bypass")
+        require(browser.call("GET","/api/v1/devices/outside/inventory")[0]==403,"inventory scope bypass")
         old_cookie=browser.cookie
         require(browser.call("POST",tenant+"/session/refresh")[0]==200 and browser.cookie!=old_cookie,"candidate refresh failed")
         stale=Browser(deployed.port,deployed.root/"ca.crt");stale.cookie=old_cookie

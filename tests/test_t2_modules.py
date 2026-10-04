@@ -46,6 +46,23 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertTrue({'planning.http', 'planning.recovery', 'planning.resource_archive', 'planning.software', 'planning.onboarding'} <= set(selected.modules))
         self.assertFalse({'enrollment.http', 'agent.registration', 'audit.recovery'} & set(selected.modules))
 
+    def test_shared_job_and_route_owners_are_selected(self):
+        expected = {
+            'crates/flow-service/src/automation/jobs.rs': {
+                'assets.queries', 'assets.group_input', 'compliance.http', 'compliance.group_input',
+                'planning.group_scope', 'planning.scope', 'planning.policy', 'planning.agent_policy',
+                'planning.frequency', 'planning.recovery', 'diagnostics.http'},
+            'crates/management-http/src/planning/mod.rs': {
+                'planning.http', 'planning.policy', 'planning.agent_policy', 'planning.frequency',
+                'planning.remote', 'planning.software'},
+            'crates/management-http/src/software_native.rs': {
+                'publication.winget', 'publication.brew', 'publication.withdrawal'},
+            'hack/enrollment-password.py': {'enrollment.http', 'enrollment.recovery'},
+        }
+        for path, modules in expected.items():
+            with self.subTest(path=path):
+                self.assertEqual(set(select_inputs([path]).modules), modules)
+
     def test_export_reader_selects_publication_read_and_withdrawal_consumers(self):
         selected = select_inputs(['crates/software-service/src/publication/execution.rs'])
         self.assertTrue({'publication.winget', 'publication.brew', 'publication.withdrawal', 'execution.software.offer'} <= set(selected.modules))
@@ -338,16 +355,34 @@ class ModuleImpactTests(unittest.TestCase):
                     'execution.agent.recovery','execution.software.offer','execution.software.content',
                     'execution.software.recovery'}
         for path in ('crates/agent-wire/src/tasks.rs',
-                     'crates/agent-wire/schema/runtime/signed-task-v6.schema.json',
+                     'crates/agent-wire/schema/runtime/signed-task-v1.schema.json',
                      'crates/execution-service/src/task_signing.rs'):
             selected = self.selected(path)
             self.assertTrue(expected <= selected, expected - selected)
             self.assertTrue(selected.isdisjoint({'agent.registration','agent.reports','windows.management',
                                                 'apple.policy','identity.sso','gateway.admission'}))
-        self.assertEqual(self.selected('crates/agent-wire/schema/runtime/binding-profile-v6.schema.json'),
+        self.assertEqual(self.selected('crates/agent-wire/schema/runtime/binding-profile-v1.schema.json'),
                          {'agent.registration'})
-        self.assertEqual(self.selected('crates/agent-wire/schema/runtime/report-request-v6.schema.json'),
+        self.assertEqual(self.selected('crates/agent-wire/schema/runtime/report-request-v1.schema.json'),
                          {'agent.reports','planning.onboarding'})
+
+    def test_wire_schema_renames_keep_baseline_and_current_consumers(self):
+        from dataclasses import replace
+        from ci_impact import current_registry
+        current = current_registry()
+        baseline = replace(current, modules={
+            name: {**module, 'production_inputs': tuple(
+                path.replace('-v1.schema', '-v6.schema') for path in module['production_inputs'])}
+            for name, module in current.modules.items()
+        })
+        for shape in ['signed-task', 'binding-profile', 'report-request', 'error-body', 'agent']:
+            suffix = '.schema-manifest.json' if shape == 'agent' else '.schema.json'
+            old = f'crates/agent-wire/schema/runtime/{shape}-v6{suffix}'
+            new = f'crates/agent-wire/schema/runtime/{shape}-v1{suffix}'
+            with self.subTest(shape=shape):
+                self.assertEqual(select_inputs([old], baseline).modules,
+                                 select_inputs([new], current).modules)
+                self.assertTrue(select_inputs([new], current).modules)
 
     def test_onboarding_wire_selects_its_actual_consumers(self):
         inputs = {
@@ -399,6 +434,8 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertTrue(selected.isdisjoint({'publication.artifact','sources.brew_git','apple.apns','apple.cms'}))
 
     def test_publication_files_select_their_real_semantic_modules(self):
+        self.assertEqual(self.selected('crates/app/src/publication_config.rs'),
+                         {'publication.winget','publication.brew','publication.mapping','publication.withdrawal','publication.recovery'})
         self.assertEqual(self.selected('crates/software-service/src/publication/driver.rs'),
                          {'publication.winget','publication.brew','publication.withdrawal','publication.recovery'})
         self.assertEqual(self.selected('crates/software-service/src/publication/references.rs'),

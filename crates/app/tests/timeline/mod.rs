@@ -100,7 +100,7 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
     identity::set_grants(case_tenant(), &subject, grants).await?;
     let operation = Uuid::new_v4();
     f.admin.operation = Some(operation);
-    let (status,issued)=f.admin.call(&f.router,Method::POST,"/api/v3/enrollments",Some(json!({"deviceId":device,"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows","windowsProfile":"Device"}))).await?;
+    let (status,issued)=f.admin.call(&f.router,Method::POST,"/api/v1/enrollments",Some(json!({"deviceId":device,"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows","windowsProfile":"Device"}))).await?;
     ensure!(status == StatusCode::OK);
     let enrollment = issued["enrollmentId"].as_str().unwrap();
     ensure!(
@@ -108,7 +108,7 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
             .call(
                 &f.router,
                 Method::GET,
-                &format!("/api/v3/enrollments/{enrollment}"),
+                &format!("/api/v1/enrollments/{enrollment}"),
                 None
             )
             .await?
@@ -121,7 +121,7 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
             .call(
                 &f.router,
                 Method::POST,
-                &format!("/api/v3/enrollments/{enrollment}/resume"),
+                &format!("/api/v1/enrollments/{enrollment}/resume"),
                 Some(json!({"password":"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA"}))
             )
             .await?
@@ -134,7 +134,7 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
             .call(
                 &f.router,
                 Method::POST,
-                &format!("/api/v3/enrollments/{enrollment}/cancel"),
+                &format!("/api/v1/enrollments/{enrollment}/cancel"),
                 Some(json!({}))
             )
             .await?
@@ -158,7 +158,7 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
             &f.router,
             Method::POST,
             &format!(
-                "/api/v3/devices/{device}/registrations/{}/revoke",
+                "/api/v1/devices/{device}/registrations/{}/revoke",
                 registration.registration
             ),
             Some(json!({})),
@@ -166,10 +166,10 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
         .await?;
     ensure!(status == StatusCode::OK, "revoke: {status} {value}");
     let manual = Uuid::new_v4();
-    let (status,value)=f.admin.call(&f.router,Method::PUT,&format!("/api/v2/devices/{device}/manual-fields/custom.office_floor"),Some(json!({"operationId":manual,"expectedRevision":0,"input":{"action":"set","value":{"kind":"integer","value":9}}}))).await?;
+    let (status,value)=f.admin.call(&f.router,Method::PUT,&format!("/api/v1/devices/{device}/manual-fields/custom.office_floor"),Some(json!({"operationId":manual,"expectedRevision":0,"input":{"action":"set","value":{"kind":"integer","value":9}}}))).await?;
     ensure!(status == StatusCode::OK, "manual: {status} {value}");
     // Replay and denied manual writes retain a source-owned device coordinate.
-    let (replay_status,_)=f.admin.call(&f.router,Method::PUT,&format!("/api/v2/devices/{device}/manual-fields/custom.office_floor"),Some(json!({"operationId":manual,"expectedRevision":0,"input":{"action":"set","value":{"kind":"integer","value":9}}}))).await?;
+    let (replay_status,_)=f.admin.call(&f.router,Method::PUT,&format!("/api/v1/devices/{device}/manual-fields/custom.office_floor"),Some(json!({"operationId":manual,"expectedRevision":0,"input":{"action":"set","value":{"kind":"integer","value":9}}}))).await?;
     ensure!(replay_status == StatusCode::OK);
     let other = f.authority.browser("other")?;
     let denied_subject = browser_subject(&other, &f.router).await?;
@@ -181,7 +181,7 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
     .await?;
     let mut other = other;
     let denied = Uuid::new_v4();
-    let (denied_status,_)=other.call(&f.router,Method::PUT,&format!("/api/v2/devices/{device}/manual-fields/custom.office_floor"),Some(json!({"operationId":denied,"expectedRevision":1,"input":{"action":"set","value":{"kind":"integer","value":10}}}))).await?;
+    let (denied_status,_)=other.call(&f.router,Method::PUT,&format!("/api/v1/devices/{device}/manual-fields/custom.office_floor"),Some(json!({"operationId":denied,"expectedRevision":1,"input":{"action":"set","value":{"kind":"integer","value":10}}}))).await?;
     ensure!(denied_status == StatusCode::FORBIDDEN);
     // Actual management API denial is a persisted fact, never a fabricated execution success.
     let management = Uuid::new_v4();
@@ -190,13 +190,13 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
         .call(
             &f.router,
             Method::GET,
-            &format!("/api/v3/devices/{device}/operations/{management}"),
+            &format!("/api/v1/devices/{device}/operations/{management}"),
             None,
         )
         .await?;
     ensure!(status == StatusCode::FORBIDDEN);
     f.catch_up().await?;
-    let page = f.get(&format!("/api/v3/devices/{device}/timeline")).await?;
+    let page = f.get(&format!("/api/v1/devices/{device}/timeline")).await?;
     let items = page["items"].as_array().unwrap();
     for action in [
         "enrollment_create",
@@ -231,7 +231,7 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
         ensure!(item["effect"] == "unknown");
     }
     let filtered = f
-        .get(&format!("/api/v3/audit-events?operationId={manual}"))
+        .get(&format!("/api/v1/audit-events?operationId={manual}"))
         .await?;
     ensure!(!filtered["items"].as_array().unwrap().is_empty());
     ensure!(
@@ -250,21 +250,21 @@ async fn fixed_watermark_pagination_survives_new_events_and_rebuild_rejects_old_
 -> Result<()> {
     let mut f = Fixture::open().await?;
     for _ in 0..6 {
-        f.get("/api/v3/audit-events").await?;
+        f.get("/api/v1/audit-events").await?;
     }
     f.catch_up().await?;
-    let all = f.get("/api/v3/audit-events").await?;
+    let all = f.get("/api/v1/audit-events").await?;
     let expected = all["items"].as_array().unwrap();
-    let first = f.get("/api/v3/audit-events?limit=2").await?;
+    let first = f.get("/api/v1/audit-events?limit=2").await?;
     let mut items = first["items"].as_array().unwrap().clone();
     let mut cursor = first["nextCursor"].as_str().map(str::to_owned);
-    f.get("/api/v3/audit-events").await?;
+    f.get("/api/v1/audit-events").await?;
     f.catch_up().await?;
     let stale = cursor.clone().unwrap();
     for _ in 0..50 {
         let Some(token) = cursor.take() else { break };
         let page = f
-            .get(&format!("/api/v3/audit-events?limit=2&cursor={token}"))
+            .get(&format!("/api/v1/audit-events?limit=2&cursor={token}"))
             .await?;
         items.extend(page["items"].as_array().unwrap().clone());
         cursor = page["nextCursor"].as_str().map(str::to_owned);
@@ -278,10 +278,10 @@ async fn fixed_watermark_pagination_survives_new_events_and_rebuild_rejects_old_
                 > (w[1]["recordedAt"].as_i64(), w[1]["position"].as_u64()))
     );
     for path in [
-        format!("/api/v3/audit-events?action=inventory_read&cursor={stale}"),
-        format!("/api/v3/devices/absent/timeline?cursor={stale}"),
-        "/api/v3/audit-events?cursor=invalid".into(),
-        "/api/v3/audit-events?limit=201".into(),
+        format!("/api/v1/audit-events?action=inventory_read&cursor={stale}"),
+        format!("/api/v1/devices/absent/timeline?cursor={stale}"),
+        "/api/v1/audit-events?cursor=invalid".into(),
+        "/api/v1/audit-events?limit=201".into(),
     ] {
         let status = f.admin.call(&f.router, Method::GET, &path, None).await?.0;
         ensure!(
@@ -300,7 +300,7 @@ async fn fixed_watermark_pagination_survives_new_events_and_rebuild_rejects_old_
             .call(
                 &f.router,
                 Method::GET,
-                &format!("/api/v3/audit-events?cursor={stale}"),
+                &format!("/api/v1/audit-events?cursor={stale}"),
                 None
             )
             .await?
@@ -314,7 +314,7 @@ async fn fixed_watermark_pagination_survives_new_events_and_rebuild_rejects_old_
 async fn administrators_use_existing_access_and_tenant_isolation_is_preserved() -> Result<()> {
     let mut f = Fixture::open().await?;
     f.catch_up().await?;
-    let page = f.get("/api/v3/audit-events").await?;
+    let page = f.get("/api/v1/audit-events").await?;
     ensure!(
         page["items"]
             .as_array()
@@ -322,11 +322,11 @@ async fn administrators_use_existing_access_and_tenant_isolation_is_preserved() 
             .iter()
             .all(|v| v["actor"] != case::context().admin_for(case::peer()))
     );
-    f.get("/api/v3/devices/unknown-device/timeline").await?;
+    f.get("/api/v1/devices/unknown-device/timeline").await?;
     let mut anonymous = Browser::default();
     ensure!(
         anonymous
-            .call(&f.router, Method::GET, "/api/v3/audit-events", None)
+            .call(&f.router, Method::GET, "/api/v1/audit-events", None)
             .await?
             .0
             == StatusCode::UNAUTHORIZED
@@ -334,7 +334,7 @@ async fn administrators_use_existing_access_and_tenant_isolation_is_preserved() 
     let mut other = f.authority.browser("other")?;
     ensure!(
         other
-            .call(&f.router, Method::GET, "/api/v3/audit-events", None)
+            .call(&f.router, Method::GET, "/api/v1/audit-events", None)
             .await?
             .0
             == StatusCode::FORBIDDEN
@@ -354,7 +354,7 @@ async fn administrators_use_existing_access_and_tenant_isolation_is_preserved() 
             .call(
                 &f.router,
                 Method::GET,
-                "/api/v3/devices/unknown-device/timeline",
+                "/api/v1/devices/unknown-device/timeline",
                 None
             )
             .await?
@@ -367,7 +367,7 @@ async fn administrators_use_existing_access_and_tenant_isolation_is_preserved() 
 #[ignore = "make t2 MODULE=timeline.http"]
 async fn projection_commit_is_atomic_concurrent_and_corruption_is_visible() -> Result<()> {
     let mut f = Fixture::open().await?;
-    f.get("/api/v3/audit-events").await?;
+    f.get("/api/v1/audit-events").await?;
     let before = pg(&format!(
         "SELECT position FROM mdm_timeline.checkpoints WHERE tenant_id='{}'",
         case_tenant()
@@ -402,7 +402,7 @@ async fn projection_commit_is_atomic_concurrent_and_corruption_is_visible() -> R
     ))?;
     ensure!(
         f.admin
-            .call(&f.router, Method::GET, "/api/v3/audit-events", None)
+            .call(&f.router, Method::GET, "/api/v1/audit-events", None)
             .await?
             .0
             .is_server_error()
@@ -467,7 +467,7 @@ async fn source_recording_time_orders_facts_and_unknown_execution_remains_unknow
     f.catch_up().await?;
     let page = f
         .get(&format!(
-            "/api/v3/audit-events?operationId={operation}&limit=2"
+            "/api/v1/audit-events?operationId={operation}&limit=2"
         ))
         .await?;
     let items = page["items"].as_array().unwrap();
@@ -481,14 +481,14 @@ async fn source_recording_time_orders_facts_and_unknown_execution_remains_unknow
     ensure!(items[0]["position"].as_u64() > items[1]["position"].as_u64());
     let next = f
         .get(&format!(
-            "/api/v3/audit-events?operationId={operation}&cursor={}",
+            "/api/v1/audit-events?operationId={operation}&cursor={}",
             page["nextCursor"].as_str().unwrap()
         ))
         .await?;
     ensure!(next["items"][0]["recordedAt"] == 100 && next["nextCursor"].is_null());
     let filtered = f
         .get(&format!(
-            "/api/v3/audit-events?operationId={operation}&from=150&until=201"
+            "/api/v1/audit-events?operationId={operation}&from=150&until=201"
         ))
         .await?;
     ensure!(filtered["items"].as_array().unwrap().len() == 2);
@@ -500,7 +500,7 @@ async fn source_recording_time_orders_facts_and_unknown_execution_remains_unknow
 async fn managed_projection_restarts_without_duplicate_facts_and_drains_on_shutdown() -> Result<()>
 {
     let mut f = Fixture::open().await?;
-    f.get("/api/v3/audit-events").await?;
+    f.get("/api/v1/audit-events").await?;
     let mut stack = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
@@ -510,7 +510,7 @@ async fn managed_projection_restarts_without_duplicate_facts_and_drains_on_shutd
     launch.finish();
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {
-            let page = f.get("/api/v3/audit-events?action=audit_search").await?;
+            let page = f.get("/api/v1/audit-events?action=audit_search").await?;
             if !page["items"].as_array().unwrap().is_empty() {
                 break;
             }

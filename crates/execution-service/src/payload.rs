@@ -50,7 +50,7 @@ impl FrozenAction {
         }
         arguments.extend(positional.into_values());
         wire::TaskSpec {
-            wire_version: wire::PAYLOAD_VERSION,
+            wire_version: wire::WIRE_VERSION,
             tenant_id: tenant,
             device_id: target.device.clone(),
             platform: match self.input.platform {

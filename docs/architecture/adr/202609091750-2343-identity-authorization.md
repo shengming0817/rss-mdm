@@ -3,7 +3,7 @@
 静态 MDM 角色、binding 与 allow_* 授权部分已由 [#2363](202609200002-2363-persistent-authorization.md) 替代；下文相关段落保留为历史决策。
 状态：已决定；#2437 修订并替代 #2343 的中央认证和产品会话设计。对应 PRD §06.13；验证以产品交付记录为准，不代表生产 T3。
 
-MDM 直接消费 Identity 的 core/postgres/http-axum/oidc 四个公开包，使用同一完整 Git revision。组件拥有本地账户、凭据、权威会话、账户管理与可选 OIDC 联合；MDM 拥有实例、租户、数据库角色、秘密、生命周期、管理策略和资源授权。原生组件 Router 直接挂载，OIDC callback 为产品 `/api/v2/oidc/callback`。未配置 OIDC 时，本地启动、登录、刷新及退出只需 MDM 自有 PostgreSQL。
+MDM 直接消费 Identity 的 core/postgres/http-axum/oidc 四个公开包，使用同一完整 Git revision。组件拥有本地账户、凭据、权威会话、账户管理与可选 OIDC 联合；MDM 拥有实例、租户、数据库角色、秘密、生命周期、管理策略和资源授权。原生组件 Router 直接挂载，HTTP 入口已按 #2661 统一 V1，OIDC callback 为产品 `/api/v1/identity/oidc/callback`。未配置 OIDC 时，本地启动、登录、刷新及退出只需 MDM 自有 PostgreSQL。
 
 每个受保护业务请求从组件权威验证获得 `AuthenticatedSession`，再形成唯一私有请求级 `Principal`；主体坐标固定为 `(instance, tenant, principal)`。不缓存认证成功证明、不接受浏览器构造身份、不提供 SessionId 二次认证入口。Policy 检查证明仍有效、实例/租户一致，再检查角色、设备范围及显式许可。HTTP 请求统一使用组件 `authenticate_request`，严格 cookie、同源、CSRF 与 active/passive 语义由组件持有；被动查询不延长 idle。
 
