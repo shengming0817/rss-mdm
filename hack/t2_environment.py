@@ -398,16 +398,19 @@ class Environment:
             self.compose('--profile','product','stop','server','gateway')
             self.compose('--profile','product','run','--rm','inputs')
             self.compose('--profile','product','up','-d','--force-recreate','server','gateway')
-        external=json.loads((self.root/'container-gateway.json').read_text())['origin'] if (self.root/'container-gateway.json').exists() else None
-        context=ssl.create_default_context(cafile=None if external else str(self.root/'ca.crt'))
-        deadline=time.monotonic()+60
-        while True:
-            try:
-                self.probe_product(expected,actual,context)
-                break
-            except OSError:pass
-            if time.monotonic()>deadline:raise RuntimeError('product HTTPS readiness deadline; inspect this environment logs')
-            time.sleep(.2)
+            external=json.loads((self.root/'container-gateway.json').read_text())['origin'] if (self.root/'container-gateway.json').exists() else None
+            context=ssl.create_default_context(cafile=None if external else str(self.root/'ca.crt'))
+            deadline=time.monotonic()+60
+            while True:
+                try:
+                    if self.probe_product(expected,actual,context):break
+                    failure='http-not-ready'
+                except ssl.SSLCertVerificationError as error:failure=f'tls-certificate-verification (code={error.verify_code})'
+                except ssl.SSLError:failure='tls-handshake'
+                except http.client.HTTPException:failure='http-response'
+                except OSError:failure='transport'
+                if time.monotonic()>deadline:raise RuntimeError(f'product HTTPS readiness deadline: {failure}; inspect this environment logs')
+                time.sleep(.2)
 
     @staticmethod
     def probe_product(origin, port, context):
@@ -418,7 +421,7 @@ class Environment:
             connection.sock=context.wrap_socket(socket.create_connection(('127.0.0.1',port),timeout=3),server_hostname=endpoint.hostname)
             connection.request('GET','/readyz')
             response=connection.getresponse()
-            if response.status!=200:raise OSError('product is not ready')
+            return response.status==200
         finally:connection.close()
 
 if __name__ == '__main__':

@@ -118,7 +118,7 @@ make dev ACTION=init MODE=container DEV_ARGS="--server-image <产品镜像> --we
 make dev ACTION=up MODE=container
 ```
 
-产品构建仍使用 release.py 正式入口，`CARGO_BUILD_JOBS` 控制镜像编译并发，BuildKit 缓存按 worktree 命名。网关与应用共享容器网络命名空间，管理端口保持 loopback-only，PG 经 bridge DNS 访问；外部端口只绑定 127.0.0.1。容器重建导致端口变化时重新 init。运行容器不挂载操作员秘密。
+产品构建仍使用 release.py 正式入口，`CARGO_BUILD_JOBS` 控制镜像编译并发，BuildKit 缓存按 worktree 命名。网关与应用共享容器网络命名空间，管理端口保持 loopback-only，PG 经 bridge DNS 访问；默认 localhost 模式的外部端口只绑定 127.0.0.1。容器重建导致端口变化时重新 init。运行容器不挂载操作员秘密。
 
 容器初始化发现 `deployment/certs/mdm.jiangshengming.com_bundle.crt` 和
 `deployment/certs/mdm.jiangshengming.com.key` 时，自动使用外部证书，统一前后端 origin 为

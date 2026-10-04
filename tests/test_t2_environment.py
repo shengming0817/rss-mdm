@@ -242,6 +242,22 @@ class ExternalGatewayTests(unittest.TestCase):
         self.assertEqual(sni,['mdm.jiangshengming.com']*2)
         self.assertIn(b'Host: mdm.jiangshengming.com\r\n',requests[0])
 
+    def test_tls_failure_reports_safe_category_and_failed_phase(self):
+        import io,contextlib
+        self.env.root.mkdir(parents=True)
+        (self.env.root/'container-initialized.json').write_text(json.dumps(dict(origin='https://mdm.jiangshengming.com',https_port=443)))
+        (self.env.root/'container-gateway.json').write_text(json.dumps(dict(origin='https://mdm.jiangshengming.com')))
+        error=ssl.SSLCertVerificationError('untrusted private input');error.verify_code=20
+        output=io.StringIO()
+        with patch.object(self.env,'verify_ownership'), \
+             patch.object(self.env,'compose',side_effect=lambda *args:'0.0.0.0:443' if args[0]=='port' else ''), \
+             patch.object(self.env,'probe_product',side_effect=error), \
+             patch('t2_environment.time.monotonic',side_effect=[0,0,61,62]),contextlib.redirect_stdout(output):
+            with self.assertRaisesRegex(RuntimeError,'tls-certificate-verification \\(code=20\\)'):
+                self.env.start_product()
+        self.assertEqual(json.loads(output.getvalue())['status'],'failed')
+        self.assertNotIn('untrusted private input',output.getvalue())
+
 class ComposeDiagnostics(unittest.TestCase):
     def test_binary_native_key_does_not_block_compose_and_is_redacted(self):
         import base64, io, contextlib, subprocess
