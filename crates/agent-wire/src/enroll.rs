@@ -9,7 +9,7 @@ use uuid::Uuid;
 pub const API_VERSION: u8 = 1;
 /// Canonical enrollment schema manifest.
 pub const SCHEMA_FINGERPRINT: &str =
-    "6b82bd014d4baab0a1683bb55b72adb90e288483dd4b0d789a7a90e7c198ce77";
+    "0d012e096967f4dd7cd3893492717218adc421cdf7efa463d9f187f713d149e0";
 /// Canonical enrollment schema manifest.
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/enroll/manifest.json");
 /// A bounded runtime profile, frozen when a grant is consumed.

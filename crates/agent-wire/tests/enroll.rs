@@ -57,6 +57,8 @@ fn renewal_lookup_requires_only_the_original_operation_and_secret() {
         ("wireVersion", json!(2)),
         ("operationId", json!(Uuid::nil())),
         ("secret", json!("invalid")),
+        // 32-byte base64url secrets have two zero trailing bits.
+        ("secret", json!(format!("{}B", "A".repeat(42)))),
         ("grantId", json!(Uuid::new_v4())),
         ("registrationId", json!(Uuid::new_v4())),
     ] {
