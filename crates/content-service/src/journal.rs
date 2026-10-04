@@ -193,14 +193,14 @@ impl Store {
     }
     pub(super) async fn put_piece(
         &self,
-        owner: Uuid,
-        epoch: Uuid,
+        lease: (Uuid, Uuid),
         offset: u64,
         length: u64,
         bytes: Vec<u8>,
         expires: i64,
         deadline: Deadline,
     ) -> Result<Piece, Error> {
+        let (owner, epoch) = lease;
         self.check_deadline(deadline)?;
         let id = Uuid::new_v4();
         let content = Content {

@@ -12,7 +12,7 @@ pub mod diagnostic;
 mod protected;
 mod reader;
 mod upload;
-pub use backend::Storage;
+pub use backend::{S3Storage, Storage};
 pub use reader::Verified;
 use rss_mdm_resource::Artifact;
 use rss_request_context::{Clock, Deadline};

@@ -55,17 +55,12 @@ pub(crate) async fn open_content(
     let bad = || Error::Configuration(crate::ConfigIssue::Execution);
     let secrets: Option<Arc<dyn rss_mdm_content_s3::Secrets>> = match &c.storage {
         rss_mdm_content_service::Storage::Volume { .. } => None,
-        rss_mdm_content_service::Storage::S3 {
-            credentials_reference,
-            access_key_file,
-            secret_key_file,
-            session_token_file,
-            ..
-        } => Some(Arc::new(ContentSecrets {
-            reference: credentials_reference.clone(),
-            access: crate::config::secret(access_key_file)?,
-            secret: crate::config::secret(secret_key_file)?,
-            token: session_token_file
+        rss_mdm_content_service::Storage::S3(s3) => Some(Arc::new(ContentSecrets {
+            reference: s3.credentials_reference.clone(),
+            access: crate::config::secret(&s3.access_key_file)?,
+            secret: crate::config::secret(&s3.secret_key_file)?,
+            token: s3
+                .session_token_file
                 .as_ref()
                 .map(|p| crate::config::secret(p))
                 .transpose()?,

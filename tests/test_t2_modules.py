@@ -214,9 +214,17 @@ class ModuleImpactTests(unittest.TestCase):
             selection=select_inputs([path])
             self.assertEqual(set(selection.modules),modules,path)
 
+    def test_storage_selects_its_frontier_encryption_provider_and_fixture_inputs(self):
+        for path in ('crates/content-service/src/upload.rs',
+                     'crates/content-service/src/protected.rs',
+                     'crates/content-s3/src/lib.rs',
+                     'crates/app/tests/support/software.rs'):
+            self.assertIn('content.storage', self.selected(path), path)
+        self.assertTrue(MODULES['content.storage'].dependency_inputs)
+
     def test_app_helpers_select_all_actual_consumers(self):
         self.assertEqual(self.selected('crates/app/tests/support/software.rs'), {
-            'software.http','content.http','content.mirror','content.gc',
+            'software.http','content.http','content.mirror','content.gc','content.storage',
             'planning.software','planning.policy','planning.http','apple.policy','execution.software.offer','execution.software.content','execution.software.recovery'})
         self.assertEqual(self.selected('crates/app/tests/support/process.rs'),
                          {'inventory.runtime','execution.commands.recovery'})

@@ -257,8 +257,7 @@ impl Store {
                 let offset = saved.pieces.last().map_or(0, |p| p.offset + p.length);
                 saved.pieces.push(
                     self.put_piece(
-                        key,
-                        epoch,
+                        (key, epoch),
                         offset,
                         journal::CHUNK,
                         bytes,
@@ -286,8 +285,7 @@ impl Store {
             };
             saved.pieces.push(
                 self.put_piece(
-                    key,
-                    epoch,
+                    (key, epoch),
                     offset,
                     length,
                     bytes,

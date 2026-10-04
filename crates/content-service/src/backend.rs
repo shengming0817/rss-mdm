@@ -7,22 +7,23 @@ use uuid::Uuid;
 #[derive(Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Storage {
-    Volume {
-        directory: PathBuf,
-    },
-    S3 {
-        endpoint: String,
-        region: String,
-        bucket: String,
-        namespace: String,
-        credentials_reference: String,
-        access_key_file: PathBuf,
-        secret_key_file: PathBuf,
-        session_token_file: Option<PathBuf>,
-        private_ca_file: Option<PathBuf>,
-        max_concurrent: usize,
-        connect_seconds: u64,
-    },
+    Volume { directory: PathBuf },
+    S3(Box<S3Storage>),
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct S3Storage {
+    pub endpoint: String,
+    pub region: String,
+    pub bucket: String,
+    pub namespace: String,
+    pub credentials_reference: String,
+    pub access_key_file: PathBuf,
+    pub secret_key_file: PathBuf,
+    pub session_token_file: Option<PathBuf>,
+    pub private_ca_file: Option<PathBuf>,
+    pub max_concurrent: usize,
+    pub connect_seconds: u64,
 }
 impl Storage {
     pub fn volume_directory(&self) -> Option<&Path> {
@@ -74,7 +75,6 @@ fn volume_lock(
     timer: &dyn Clock,
     deadline: Deadline,
 ) -> Result<File, Error> {
-    use std::os::fd::AsRawFd;
     let file = options()
         .create(true)
         .truncate(false)
@@ -87,14 +87,12 @@ fn volume_lock(
         if timer.now() >= deadline.instant() {
             return Err(Error::Deadline);
         }
-        // SAFETY: file owns a live descriptor throughout acquisition and the critical section.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-            return Ok(file);
-        }
-        let e = std::io::Error::last_os_error();
-        if e.kind() != std::io::ErrorKind::WouldBlock && e.kind() != std::io::ErrorKind::Interrupted
-        {
-            return Err(storage());
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) => {}
+            Err(std::fs::TryLockError::Error(e)) if e.kind() == std::io::ErrorKind::Interrupted => {
+            }
+            Err(_) => return Err(storage()),
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
@@ -154,17 +152,18 @@ impl Backend {
                     timer,
                 })
             }
-            Storage::S3 {
-                endpoint,
-                region,
-                bucket,
-                namespace,
-                credentials_reference,
-                private_ca_file,
-                max_concurrent,
-                connect_seconds,
-                ..
-            } => {
+            Storage::S3(config) => {
+                let S3Storage {
+                    endpoint,
+                    region,
+                    bucket,
+                    namespace,
+                    credentials_reference,
+                    private_ca_file,
+                    max_concurrent,
+                    connect_seconds,
+                    ..
+                } = config.as_ref();
                 let private_ca_pem = private_ca_file
                     .as_ref()
                     .map(|p| {
@@ -350,7 +349,7 @@ impl Backend {
     async fn recover_inner(
         &self,
         intent: &Intent,
-        content: s3::Content,
+        _content: s3::Content,
         deadline: Deadline,
     ) -> Result<Option<Coordinate>, Error> {
         match (self, intent) {
