@@ -250,9 +250,22 @@ async fn unsent_predecessor_software_blocks_conflicts_until_current_offer_binds_
         .bind(case_tenant()).bind(run).execute(&mut conn).await?;
     let conflicting = Uuid::new_v4();
     write(&mut f.author, &f.router, &format!("/api/v1/policies/{conflicting}"), 0, json!({"action":"put","enabled":true,"definition":authored(f.resource,f.scope,"explicit_uninstall",&f.first_operation)})).await?;
-    assert_no_software_run(&f.router, conflicting).await?;
+    // The shared relay may already have accepted the original Run. A probe must
+    // permit that legal Offer while still proving the conflicting policy queues nothing.
+    let probe = agent(&f.router, "/api/v1/agent/runtime/tasks/claim", Some(json!({"wireVersion":1,"executionContext":context(Platform::MacOs),"profiles":["posix_sh"],"operationId":Uuid::new_v4()}))).await?;
+    ensure!(probe.0 == StatusCode::OK);
+    let conflicting_runs: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2")
+        .bind(case_tenant()).bind(conflicting).fetch_one(&mut conn).await?;
+    ensure!(
+        conflicting_runs == 0,
+        "a predecessor queued effect must exclude the conflicting policy"
+    );
     let stack = worker(&f.base, f.content.clone()).await?;
-    let offered = claim(&f.router).await?;
+    let offered = if probe.1["task"].is_null() {
+        claim(&f.router).await?
+    } else {
+        probe.1["task"].clone()
+    };
     ensure!(offered["payload"]["taskId"] == run.to_string());
     let (current_occurrence, effect): (String, Value) = sqlx::query_as("SELECT occurrence,software_effect FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
         .bind(case_tenant()).bind(run).fetch_one(&mut conn).await?;
