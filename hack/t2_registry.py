@@ -971,6 +971,8 @@ TOOL_INPUTS = {
     'hack/t2_execution.py': ('test_t2_execution', 'test_t2_runner'),
     'hack/t2_processes.py': ('test_t2_execution', 'test_t2_fixtures', 'test_t2_runner'),
     'hack/source_fixtures.py': ('test_source_t2',),
+    'hack/s3_fixtures.py': ('test_s3_fixtures',),
+    'fixtures/s3-provider.lock.json': ('test_s3_fixtures',),
     'hack/t2_environment.py': ('test_t2_environment', 'test_t2_runner'),
     'hack/t2_fixtures.py': ('test_t2_fixtures', 'test_t2_environment', 'test_t2_runner'),
     'hack/verification_result.py': ('test_t2_runner', 'test_t2_modules', 'test_ci_selection', 'test_ci'),
@@ -985,7 +987,7 @@ TOOL_INPUTS = {
     'hack/candidate_runtime.py': ('test_candidate_smoke',),
     'hack/candidate_smoke.py': ('test_candidate_smoke',),
 }
-T1_INPUTS = ('crates/app/tests/agent_pki/health.rs','crates/certificate/tests/agent.rs','crates/certificate-archive-service/tests/behavior.rs','crates/authorization-service/tests/unit.rs','crates/inventory-service/tests/runtime.rs','crates/software-service/tests/management/*') + tuple(f'crates/{name}/tests/*' for name in (
+T1_INPUTS = ('crates/content-s3/tests/unit.rs',) + ('crates/app/tests/agent_pki/health.rs','crates/certificate/tests/agent.rs','crates/certificate-archive-service/tests/behavior.rs','crates/authorization-service/tests/unit.rs','crates/inventory-service/tests/runtime.rs','crates/software-service/tests/management/*') + tuple(f'crates/{name}/tests/*' for name in (
     'inventory', 'group', 'scope', 'policy', 'resource', 'software-release',
     'compliance', 'agent-wire', 'windows-mdm', 'apple-mdm', 'content-service')) + (
     'crates/app/tests/agent/unit.rs',
@@ -1417,6 +1419,23 @@ consume_dependencies(
     normal='plist cms',
 )
 
+# Embedded unit tests have Cargo carriers and no external T2 inputs.
+for owner, dependencies in {
+    'audit-integration': 'tokio',
+    'flow-service': 'jsonschema tempfile',
+    'timeline-service': 'rss-contract',
+    'apple-channel': 'anyhow',
+    'windows-channel': 'anyhow',
+}.items():
+    DEPENDENCY_POLICIES[f'crates/{owner}/Cargo.toml'] = {
+        'dev:' + dependency: {'cargoOnly': True} for dependency in dependencies.split()
+    }
+# Offline schema dependencies are checked by the native-schema Cargo gate.
+DEPENDENCY_POLICIES['crates/native-schema/Cargo.toml'] = {
+    'normal:' + dependency: {'cargoOnly': True}
+    for dependency in 'cab msi quick-xml regex serde serde_json sha2 yaml-rust2'.split()
+}
+
 DEPENDENCY_POLICIES['crates/app/Cargo.toml'] = {
     'normal:jiff': {'cargoOnly': True},
     'normal:subtle': {'cargoOnly': True},
@@ -1488,3 +1507,7 @@ consume(('crates/windows-mdm/src/native/diagnostic.rs', 'crates/execution-servic
 MODULES['execution.commands.windows'] = replace(MODULES['execution.commands.windows'],
     selectors=(*MODULES['execution.commands.windows'].selectors, 'execution::t2::commands::diagnostics::'),
     test_inputs=(*MODULES['execution.commands.windows'].test_inputs, 'crates/app/tests/execution/commands/diagnostics.rs'))
+
+add('content.s3', build=Build('rss-mdm-content-s3'), selectors=('s3_tests::',), profile='none', fixtures=('s3',),
+    sources=('crates/content-s3/src/*',), tests=('crates/content-s3/tests/s3.rs',),
+    support=('hack/s3_fixtures.py','fixtures/s3-provider.lock.json'))

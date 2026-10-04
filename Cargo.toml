@@ -1,8 +1,8 @@
 # 与 RSS 一致的扁平 workspace；产品实现按职责放在 crates/ 下。
 [workspace]
 resolver = "3"
-members = ["crates/certificate-archive-service", "crates/native-protection", "crates/native-schema", "crates/timeline-service", "crates/management-http", "crates/apple-channel", "crates/windows-channel", "crates/agent-channel", "crates/flow-service", "crates/execution-service", "crates/inventory-service", "crates/registration-service", "crates/authorization-service", "crates/content-service", "crates/certificate", "crates/apple-mdm", "crates/software-service", "crates/compliance", "crates/compliance-postgres", "crates/audit-integration", "crates/agent-wire", "crates/backend-postgres-support", "crates/resource", "crates/winget-source", "crates/brew-source", "crates/app", "crates/windows-mdm", "crates/inventory", "crates/inventory-postgres", "crates/examples", "crates/group", "crates/group-postgres", "crates/scope", "crates/policy", "crates/software-release", "crates/policy-postgres", "crates/resource-postgres", "crates/software-release-postgres"]
-default-members = ["crates/certificate-archive-service", "crates/native-protection", "crates/timeline-service", "crates/management-http", "crates/apple-channel", "crates/windows-channel", "crates/agent-channel", "crates/flow-service", "crates/execution-service", "crates/inventory-service", "crates/registration-service", "crates/authorization-service", "crates/content-service", "crates/certificate", "crates/apple-mdm", "crates/software-service", "crates/compliance", "crates/compliance-postgres", "crates/audit-integration", "crates/agent-wire", "crates/backend-postgres-support", "crates/resource", "crates/winget-source", "crates/brew-source", "crates/app", "crates/windows-mdm", "crates/inventory", "crates/inventory-postgres", "crates/examples", "crates/group", "crates/group-postgres", "crates/scope", "crates/policy", "crates/software-release", "crates/policy-postgres", "crates/resource-postgres", "crates/software-release-postgres"]
+members = ["crates/content-s3", "crates/certificate-archive-service", "crates/native-protection", "crates/native-schema", "crates/timeline-service", "crates/management-http", "crates/apple-channel", "crates/windows-channel", "crates/agent-channel", "crates/flow-service", "crates/execution-service", "crates/inventory-service", "crates/registration-service", "crates/authorization-service", "crates/content-service", "crates/certificate", "crates/apple-mdm", "crates/software-service", "crates/compliance", "crates/compliance-postgres", "crates/audit-integration", "crates/agent-wire", "crates/backend-postgres-support", "crates/resource", "crates/winget-source", "crates/brew-source", "crates/app", "crates/windows-mdm", "crates/inventory", "crates/inventory-postgres", "crates/examples", "crates/group", "crates/group-postgres", "crates/scope", "crates/policy", "crates/software-release", "crates/policy-postgres", "crates/resource-postgres", "crates/software-release-postgres"]
+default-members = ["crates/content-s3", "crates/certificate-archive-service", "crates/native-protection", "crates/timeline-service", "crates/management-http", "crates/apple-channel", "crates/windows-channel", "crates/agent-channel", "crates/flow-service", "crates/execution-service", "crates/inventory-service", "crates/registration-service", "crates/authorization-service", "crates/content-service", "crates/certificate", "crates/apple-mdm", "crates/software-service", "crates/compliance", "crates/compliance-postgres", "crates/audit-integration", "crates/agent-wire", "crates/backend-postgres-support", "crates/resource", "crates/winget-source", "crates/brew-source", "crates/app", "crates/windows-mdm", "crates/inventory", "crates/inventory-postgres", "crates/examples", "crates/group", "crates/group-postgres", "crates/scope", "crates/policy", "crates/software-release", "crates/policy-postgres", "crates/resource-postgres", "crates/software-release-postgres"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,6 +11,11 @@ rust-version = "1.96"
 publish = false
 
 [workspace.dependencies]
+rss-mdm-content-s3 = { path = "crates/content-s3" }
+aws-sdk-s3 = { version = "=1.142.0", default-features = false, features = ["rt-tokio"] }
+aws-smithy-http-client = { version = "=1.4.0", default-features = false, features = ["rustls-ring"] }
+aws-credential-types = "=1.3.0"
+http-body = "1"
 rss-mdm-certificate-archive-service = { path = "crates/certificate-archive-service" }
 argon2 = "=0.5.3"
 openssl = { version = "=0.10.81", features = ["vendored"] }

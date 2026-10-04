@@ -738,6 +738,15 @@ class DependencyOwnership(unittest.TestCase):
             unrelated = Registry({'dev': baseline_modules['dev']}, (), {}, {}, {}, (), {})
             with self.assertRaisesRegex(SelectionError, 'unowned-dependency'):
                 dependency_consumers(graph, unrelated, 'app', dependency, 'normal', (registered,))
+            cargo = Registry({}, (), {}, {'crates/app/Cargo.toml': {'dev:db_driver': {'cargoOnly': True}}}, {}, (), {})
+            empty = Registry({}, (), {}, {}, {}, (), {})
+            self.assertEqual(dependency_consumers(graph, empty, 'app', dependency, 'dev', (cargo,)), (set(), set()))
+            with self.assertRaisesRegex(SelectionError, 'unowned-dependency'):
+                dependency_consumers(graph, empty, 'app', dependency, 'normal', (cargo,))
+            t1 = Registry({}, ('crates/app/tests/unit.rs',), {}, {}, {}, (), {})
+            self.assertEqual(dependency_consumers(graph, t1, 'app', dependency, 'dev'), (set(), set()))
+            with self.assertRaisesRegex(SelectionError, 'unowned-dependency'):
+                dependency_consumers(graph, t1, 'app', dependency, 'normal')
             registry = Registry({}, (), {}, {}, {}, (), {})
             with self.assertRaisesRegex(SelectionError, 'unowned-dependency'):
                 dependency_consumers(graph, registry, 'app', dependency, 'normal')
@@ -765,6 +774,21 @@ class DependencyOwnership(unittest.TestCase):
                 dependency_consumers(graph, registry, 'app', dependency, 'normal'),
                 (set(), {'test_registry'}),
             )
+
+    def test_lock_qualification_preserves_identity_and_rejects_ambiguity(self):
+        from ci_impact import lock_entries, SelectionError
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lock = root / 'Cargo.lock'
+            base = 'version=4\n[[package]]\nname="consumer"\nversion="1.0.0"\ndependencies=["driver"]\n[[package]]\nname="driver"\nversion="1.0.0"\nsource="registry+test"\nchecksum="a"\n'
+            lock.write_text(base)
+            original = lock_entries(root)[('consumer', '1.0.0', None)]
+            duplicate = '\n[[package]]\nname="driver"\nversion="2.0.0"\nsource="registry+test"\nchecksum="b"\n'
+            lock.write_text(base.replace('["driver"]', '["driver 1.0.0 (registry+test)"]') + duplicate)
+            self.assertEqual(lock_entries(root)[('consumer', '1.0.0', None)], original)
+            lock.write_text(base + duplicate)
+            with self.assertRaisesRegex(SelectionError, 'lock-invalid'):
+                lock_entries(root)
 
     def test_lock_identity_and_checksum_changes_use_old_and_new_consumers(self):
         from ci_impact import Graph, Registry, Change, analyze_dependencies

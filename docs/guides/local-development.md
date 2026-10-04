@@ -155,3 +155,15 @@ T2 的模块职责、选择边界、并发与结果格式见[测试模块](test-
 ADMX 更新先运行 `python3 hack/native_sources.py prepare` 还原现有机器来源，再导入到新的 `artifacts/` 暂存目录；核对暂存清单、字节和许可证后替换展开的 ADMX 来源目录，运行 `python3 hack/native_sources.py pack` 更新确定性 ZIP/lock，最后运行生成器 `--write`。生成和检查会用固定 ZIP 重建缓存，不能把未经打包的缓存改动当成新来源。来源更新提交包含 ZIP、lock 和实际生成结果。
 
 选择范围与故障诊断见[测试模块](test-modules.md#选择失败与结果)。affected 的未登记输入、坏基线或分析失败会非零退出；先修复登记或分析问题，不以隐式全量或专项 MODULE 绕过。显式全量入口用于正式全量需求。
+
+## S3 内容适配
+
+`rss-mdm-content-s3` 是 #2665 的独立产品适配。`Config` 由可信宿主提供 HTTPS endpoint、region、固定 bucket、namespace、凭据引用、CA 与并发/连接预算；`Secrets` 根据引用返回凭据，支持宿主刷新，不读取环境默认凭据链。秘密只从可信的只读挂载/秘密 owner 获取，不进入配置示例、URL、日志、Debug 或公开错误。私有 CA 走同一 SDK/TLS 构造入口，不能关闭证书校验。
+
+目标 bucket 必须已开启版本控制，并支持 PUT/分片完成的条件创建、精确版本 GET/HEAD/DELETE、Range、分片上传 SHA-256 以及上传/分片分页查询。生产权限按 bucket/prefix 限定：查询版本控制；读取和写入选定 prefix；删除精确版本；查询/中止分片上传。恢复创建响应丢失还需要按 prefix 限制的 multipart listing。不给 adapter 账号建桶、变更配置、身份管理或任意删除权限。实际权限表达以部署 provider 为准，RustFS 测试不证明 AWS IAM/KMS 已验收。
+
+调用方先持久保存 `Write`，收到 upload ID 后保存 `Upload` 和分片回执；取消 future、超时或断连不证明写入未发生。`Mutation::Unknown` 用原目标/操作标识核实；创建响应丢失时，精确 key 候选查询不自动选择 ID，也不把空结果当作失败。分片状态不存在可能意味着完成或中止。确认写入但回读失败返回 `Written::Unverified`，使用其中精确版本继续 `verify`，不重新上传。
+
+ListParts 的 SHA-256 是可选的分片提示；缺省明确为未知，不能由 ETag 推导。完成前核对原上传、分片号、长度和 ETag；双方有摘要时也核对摘要。写入、恢复共用完整长度/SHA-256 流式回读，只有 `Verified` 可进入内容读取；持久化坐标恢复后重新校验，不反序列化“已验证”标记。Range 绑定同一版本，只验证该响应范围，不能独立证明整文件摘要。读流持有并发许可直到完成或丢弃。预算约束一次调用的字节、页数、并发与截止时间，不代替跨实例上传配额。
+
+删除和中止只针对调用方选定的对象版本/upload ID，不决定保留与引用资格。对象已验证不代表资源绑定、批准或数据库提交成功。未完成上传的生产生命周期、持久恢复关联与最终业务接线归 #2664。

@@ -1,8 +1,10 @@
 """Database and observation lifetimes are independent from case scheduling."""
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 from pathlib import Path
 import sys
+import json
+from types import SimpleNamespace
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -83,6 +85,7 @@ class PreparationTests(unittest.TestCase):
         fixture.fault.owner.project = 'fault'
         fixture.gateway_owner = Mock()
         fixture.gateway_owner.project = 'gateway'
+        fixture.builds.processes.cleanup.return_value = nullcontext()
         return fixture
 
     def test_jobs_budget_sets_connection_capacity_without_allocating_more_databases(self):
@@ -96,21 +99,64 @@ class PreparationTests(unittest.TestCase):
                 fixture.cert_directory.cleanup()
 
     def test_cleanup_attempts_every_owner_after_a_failure(self):
+        for failing in ('normal', 's3'):
+            with self.subTest(failing=failing), tempfile.TemporaryDirectory() as tmp:
+                fixture = self.fixture(Path(tmp))
+                fixture.s3 = Mock()
+                try:
+                    owners = {'normal': fixture.normal.owner, 'fault': fixture.fault.owner,
+                              'gateway': fixture.gateway_owner, 's3': fixture.s3}
+                    owners[failing].reset.side_effect = RuntimeError('cleanup failed')
+                    with self.assertRaisesRegex(RuntimeError, 'clean owned'):
+                        fixture.cleanup_environments()
+                    for owner in owners.values():
+                        owner.reset.assert_called_once()
+                finally:
+                    fixture.cert_directory.cleanup()
+
+    def test_non_s3_run_recovers_prior_owned_provider_without_starting_it(self):
         with tempfile.TemporaryDirectory() as tmp:
             fixture = self.fixture(Path(tmp))
-            try:
-                fixture.normal.owner.reset.side_effect = RuntimeError('normal cleanup')
+            fixture.certificates = Mock()
+            self.assertFalse(fixture.s3.ready)
+            info = {'Name': '/' + fixture.s3.name, 'Config': {'Labels': {
+                'rss.mdm.worktree': fixture.s3.owner.identity, 'rss.mdm.fixture': 'content-s3'}}}
+            module = MODULES['publication.artifact']
+            job = Invocation(module, Case(module.build, 'test', '/test', 'artifact'))
+            with patch('s3_fixtures.run') as run, \
+                 patch('t2_fixtures.owned_by', return_value=nullcontext()), \
+                 patch.object(fixture.s3, 'prepare') as prepare:
+                run.side_effect = [SimpleNamespace(stdout='prior'), SimpleNamespace(stdout=json.dumps([info])),
+                                   None, SimpleNamespace(stdout='')]
+                with fixture:
+                    fixture.prepare([job])
+                run.assert_any_call(['docker', 'rm', '-f', '-v', 'prior'], capture_output=True, timeout=30)
+                self.assertEqual(run.call_count, 4)
+                prepare.assert_not_called()
+                fixture.normal.database.assert_not_called()
+                fixture.normal.owner.reset.assert_called_with()
+                self.assertEqual(fixture.normal.owner.reset.call_count, 2)
+
+    def test_startup_recovery_refuses_foreign_s3_and_still_cleans_other_owners(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = self.fixture(Path(tmp))
+            info = {'Name': '/' + fixture.s3.name, 'Config': {'Labels': {
+                'rss.mdm.worktree': 'foreign', 'rss.mdm.fixture': 'content-s3'}}}
+            with patch('s3_fixtures.run') as run, \
+                 patch('t2_fixtures.owned_by', return_value=nullcontext()):
+                run.side_effect = [SimpleNamespace(stdout='foreign'), SimpleNamespace(stdout=json.dumps([info]))]
                 with self.assertRaisesRegex(RuntimeError, 'clean owned'):
-                    fixture.cleanup_environments()
-                fixture.fault.owner.reset.assert_called_once()
-                fixture.gateway_owner.reset.assert_called_once()
-            finally:
-                fixture.cert_directory.cleanup()
+                    with fixture:
+                        self.fail('foreign ownership must reject startup')
+                self.assertEqual(run.call_count, 2)
+                for owner in (fixture.normal.owner, fixture.fault.owner, fixture.gateway_owner):
+                    owner.reset.assert_called_once()
 
     def test_cleanup_recovers_compose_resources_when_local_directories_are_missing(self):
         from t2_environment import Environment
         with tempfile.TemporaryDirectory() as tmp:
             fixture = self.fixture(Path(tmp))
+            fixture.s3 = Mock()
             try:
                 for owner in (fixture.normal.owner, fixture.fault.owner, fixture.gateway_owner):
                     owner.root = Path(tmp) / owner.project

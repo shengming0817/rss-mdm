@@ -90,3 +90,11 @@ T2 PG 的连接容量按 `JOBS` 预算准备：每个活动 case 预留 128 个�
 选择器成功返回 `status=selected`、独立 Cargo/T2 模式和唯一执行集合；原因记录包含输入与业务／工具／代表／显式全量归属。失败返回 `status=failed` 与错误类别、阶段、相关输入，并非零退出，正式 CI/T2 在准备依赖与执行前终止，撤销本入口旧通过结果。内部结果格式整体迁移，不接受旧 full 布尔格式。
 
 `ci-plan` 只预览。`make ci` 执行选中工具测试并推荐 T2；独立 `make t2` 的 `toolVerification` 如实记录工具测试未运行，空模块结果为 skipped。`MODULE=all`、指定模块及 `ci-full` 不需要 affected 基线；`CI_FULL=1` 单独使用时仍只扩大快速检查。
+
+## S3 内容适配验证
+
+`make t2 MODULE=content.s3` 执行独立适配的真实 provider 测试；无需 PostgreSQL、Identity 或产品 App。唯一 fixture 由 T2 runner 管理，使用[固定 RustFS artifact](../../fixtures/s3-provider.lock.json)、私有 CA、版本化 bucket 和限定 prefix 的工作负载凭据。两个客户端直接消费正式 Store；创建、写入、分片及完成的响应丢失由 TLS 代理在读取 provider 成功响应后注入，不以 mock 的成功替代实际写入。原始秘密、管理 client 与代理只用于 fixture。
+
+执行结果进入已有 local-t2 artifact；缺 Docker、TLS 工具或零测试发现必须失败。环境按 worktree 隔离，case 使用各自 prefix；结束后验证归属并删除本轮容器，下一轮可恢复清理遗留的同属容器。#2664 消费同一 fixture，不另建 S3 环境。
+
+本项只验证锁定 RustFS 版本的对象/分片/错误恢复语义，不宣称所有 S3 provider、AWS IAM/KMS、生产部署、容量或性能已经验收。实际结果及未覆盖范围保留在 PR，不由文档宣布通过。
