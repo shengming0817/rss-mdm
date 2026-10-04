@@ -208,7 +208,7 @@ class CandidateInputs(unittest.TestCase):
             archive = root / 'server.oci.tar'; archive.write_bytes(b'oci')
             deployment = {}
             for name in release.DEPLOYMENT_FILES:
-                path = root / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes((release.ROOT/name).read_bytes())
+                path = root / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes((release.ROOT/('fixtures/'+name if name == 'mdm-config.example.json' else 'crates/app/schema/'+Path(name).name if name.endswith('-roles.sql') else name)).read_bytes())
                 deployment[name] = release.sha(path)
             manifest = {'format_version':4, 'archive':{'file':archive.name,'sha256':release.sha(archive),'manifest_digest':'sha256:fixture'}, 'platform':'linux/arm64', 'deployment':deployment,'providers':json.loads((root/'deployment/providers.lock.json').read_text())}
             (root / 'candidate.json').write_text(json.dumps(manifest))

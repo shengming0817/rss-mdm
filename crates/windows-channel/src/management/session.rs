@@ -320,8 +320,7 @@ impl WindowsSession for Session {
                         key,
                         &self.windows,
                         p,
-                        input,
-                        history.ok_or(Error::Conflict)?,
+                        (input, history.ok_or(Error::Conflict)?),
                         &self.audit,
                         &mut self.facts,
                     )

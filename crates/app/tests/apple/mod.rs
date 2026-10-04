@@ -67,7 +67,7 @@ impl Fixture {
         )
         .await?;
         if std::env::var_os("MDM_STEP_CA_URL").is_some() {
-            publish_webhooks(&root, webhook.local_addr()?).await?;
+            publish_webhooks(webhook.local_addr()?).await?;
         }
         let mut config = crate::test_support::identity::config(case_tenant())?;
         config.native_protocols.windows = None;
@@ -78,6 +78,14 @@ impl Fixture {
             serde_json::from_slice(&std::fs::read(root.join("apple.json"))?)?;
         apple.management.listen = manage.local_addr()?;
         apple.management.origin = format!("https://localhost:{}", manage.local_addr()?.port());
+        let mut trust: rss_mdm_agent_wire::pki::Trust =
+            serde_json::from_slice(&std::fs::read(&apple.trust_file)?)?;
+        trust.origin = apple.management.origin.clone();
+        let trust_path = root.join(format!("host-trust-{}.json", manage.local_addr()?.port()));
+        std::fs::write(&trust_path, serde_json::to_vec(&trust)?)?;
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&trust_path, std::fs::Permissions::from_mode(0o600))?;
+        apple.trust_file = trust_path;
         config.native_protocols.apple = Some(apple);
         let compiled = config.compile()?;
         let config = &compiled.config;
@@ -783,7 +791,8 @@ fn profile_manifest(id: Uuid, kind: &str) -> plist::Value {
 
 // The listener remains owned throughout the control-plane update and TLS startup.
 // ref: smallstep/cli v0.30.2 command/ca/provisioner/webhook/update.go.
-async fn publish_webhooks(root: &std::path::Path, address: std::net::SocketAddr) -> Result<()> {
+async fn publish_webhooks(address: std::net::SocketAddr) -> Result<()> {
+    let root = std::path::PathBuf::from(std::env::var("MDM_APPLE_PKI_FIXTURES")?);
     use std::io::Write;
     use tokio::io::AsyncReadExt;
     let mut diagnostics = std::fs::OpenOptions::new()
@@ -822,10 +831,7 @@ async fn publish_webhooks(root: &std::path::Path, address: std::net::SocketAddr)
                 "--admin-password-file",
             ])
             .arg(root.join("step-password"))
-            .env(
-                "STEPPATH",
-                std::path::PathBuf::from(std::env::var("MDM_APPLE_PKI_FIXTURES")?).join("step"),
-            )
+            .env("STEPPATH", root.join("step"))
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())

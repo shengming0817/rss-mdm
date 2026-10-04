@@ -45,6 +45,16 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     );
     let proof = admin(case_tenant(), "admin-a").await?;
     let store = Database::connect(options("mdm_access")?).await?;
+    rss_mdm_pki_service::registry::Registry::new(
+        store.archive_pool(),
+        store
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?,
+        vec![w.channel.ca.trust.clone()],
+        fixture_providers()?,
+    )
+    .admit(rss_request_context::TenantId::parse(case_tenant())?, now())
+    .await?;
     let mut pg = PgConnection::connect_with(&options("postgres")?).await?;
     let password = Password::new(crate::enrollment::random())?;
     let key = Uuid::new_v4();
@@ -585,8 +595,8 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     a.finalize(None);
     for (grant, revoke) in [
         (
-            "GRANT UPDATE(tbs) ON mdm_access.enrollment_intents TO mdm_access",
-            "REVOKE UPDATE(tbs) ON mdm_access.enrollment_intents FROM mdm_access",
+            "GRANT UPDATE(profile) ON mdm_access.enrollment_intents TO mdm_access",
+            "REVOKE UPDATE(profile) ON mdm_access.enrollment_intents FROM mdm_access",
         ),
         (
             "GRANT UPDATE(state) ON mdm_access.grants TO mdm_access",
@@ -712,7 +722,7 @@ async fn native_renewal_preserves_registration_and_activates_only_after_new_tls_
     host.listen().await?;
     let peer = host.peer().await?;
     let ca = &host.app.windows()?.channel.ca;
-    let certificate = sign_certificate(&ca, &peer.intent).await?;
+    let certificate = sign_certificate(ca, &peer.intent).await?;
     let temporary = tempfile::tempdir()?;
     let signer = temporary.path().join("signer.pem");
     std::fs::write(

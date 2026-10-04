@@ -33,7 +33,7 @@ pub enum Error {
     Forbidden,
     #[error("PKI persistence unavailable")]
     Storage,
-    #[error("PKI audit failure: {0}")]
+    #[error("PKI audit failure")]
     Audit(#[from] rss_mdm_audit_integration::Error),
     #[error("PKI operation result unknown")]
     Unknown { attempt: Uuid },
@@ -127,9 +127,10 @@ impl StepCa {
         subject: &str,
         sans: &[String],
         csr_digest: Option<&[u8; 32]>,
-        now: i64,
-        deadline: i64,
+        validity: std::ops::Range<i64>,
     ) -> Result<Zeroizing<String>, Error> {
+        let now = validity.start;
+        let deadline = validity.end;
         let unknown = || Error::Unknown { attempt };
         let header = serde_json::json!({"alg":"RS256","typ":"JWT","kid":self.kid});
         let mut payload = serde_json::json!({"iss":self.provisioner,"aud":[self.url(path).as_str()],
@@ -265,14 +266,24 @@ impl StepCa {
         let unknown = || Error::Unknown {
             attempt: intent.attempt,
         };
+        // Windows templates emit only the lifecycle owner's subject and no SANs. JWK's
+        // pre-template CSR validator still requires its input names in the signed token.
+        // They remain bound to the frozen CSR fingerprint; they do not authorize leaf identity.
+        // ref: smallstep/certificates v0.30.2 authority/provisioner/jwk.go AuthorizeSign.
+        let csr_names;
+        let token_names = if intent.sans.is_empty() {
+            csr_names = csr_input_names(intent.csr_pem)?;
+            csr_names.as_slice()
+        } else {
+            intent.sans
+        };
         let token = self.token(
             "/sign",
             intent.attempt,
             intent.subject,
-            intent.sans,
+            token_names,
             Some(intent.csr_digest),
-            now,
-            intent.deadline,
+            now..intent.deadline,
         )?;
         let timestamp = |value| {
             time::OffsetDateTime::from_unix_timestamp(value)
@@ -334,7 +345,7 @@ impl StepCa {
         {
             return Err(Error::Request);
         }
-        let token = self.token("/revoke", attempt, serial, &[], None, now, now + 60)?;
+        let token = self.token("/revoke", attempt, serial, &[], None, now..now + 60)?;
         let body = Zeroizing::new(
             serde_json::to_vec(&serde_json::json!({"serial":serial,
             "ott":token.as_str(),"passive":true,"reasonCode":0,"reason":"device identity revoked"}))
@@ -342,4 +353,71 @@ impl StepCa {
         );
         self.post("/revoke", attempt, body).await.map(|_| ())
     }
+}
+
+/// Names admitted to the CA's input validator, never copied by the Windows leaf template.
+fn csr_input_names(pem: &str) -> Result<Vec<String>, Error> {
+    use x509_cert::{
+        der::Decode,
+        ext::pkix::{SubjectAltName, name::GeneralName},
+        request::CertReq,
+    };
+    let request = CertReq::from_pem(pem).map_err(|_| Error::Request)?;
+    let mut names = Vec::new();
+    for rdn in &request.info.subject.0 {
+        for attribute in rdn.0.iter() {
+            if attribute.oid.to_string() == "2.5.4.3" {
+                names.push(
+                    std::str::from_utf8(attribute.value.value())
+                        .map_err(|_| Error::Request)?
+                        .to_owned(),
+                );
+            }
+        }
+    }
+    for attribute in request.info.attributes.iter() {
+        if attribute.oid.to_string() != "1.2.840.113549.1.9.14" {
+            continue;
+        }
+        for value in attribute.values.iter() {
+            let extensions: Vec<x509_cert::ext::Extension> =
+                value.decode_as().map_err(|_| Error::Request)?;
+            for extension in extensions {
+                if extension.extn_id.to_string() != "2.5.29.17" {
+                    continue;
+                }
+                let sans = SubjectAltName::from_der(extension.extn_value.as_bytes())
+                    .map_err(|_| Error::Request)?;
+                for name in sans.0 {
+                    names.push(match name {
+                        GeneralName::DnsName(v)
+                        | GeneralName::Rfc822Name(v)
+                        | GeneralName::UniformResourceIdentifier(v) => v.as_str().to_owned(),
+                        GeneralName::IpAddress(v) => match v.as_bytes() {
+                            bytes if bytes.len() == 4 => std::net::Ipv4Addr::from(
+                                <[u8; 4]>::try_from(bytes).map_err(|_| Error::Request)?,
+                            )
+                            .to_string(),
+                            bytes if bytes.len() == 16 => std::net::Ipv6Addr::from(
+                                <[u8; 16]>::try_from(bytes).map_err(|_| Error::Request)?,
+                            )
+                            .to_string(),
+                            _ => return Err(Error::Request),
+                        },
+                        _ => return Err(Error::Request),
+                    });
+                }
+            }
+        }
+    }
+    names.sort();
+    names.dedup();
+    if names.len() > 16
+        || names
+            .iter()
+            .any(|s| s.len() > 256 || s.chars().any(char::is_control))
+    {
+        return Err(Error::Request);
+    }
+    Ok(names)
 }

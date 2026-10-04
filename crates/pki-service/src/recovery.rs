@@ -120,7 +120,7 @@ impl Registry {
                     rss_mdm_authorization_service::snapshot_on(c, p.tenant_id(), p.instance_id())
                         .await
                         .map_err(|_| Error::Storage)?
-                        .require(p, Permission::Credentials, None)
+                        .require_all_devices(p, Permission::Credentials)
                         .map_err(|_| Error::Forbidden)?;
                     let phase = "signing_recover";
                     let old = replay(
@@ -144,9 +144,7 @@ impl Registry {
                     adopt_in(c, p.tenant_id(), input.attempt, binding, bytes).await?;
                     save(
                         c,
-                        p.tenant_id(),
-                        p.principal_id(),
-                        p.instance_id(),
+                        (p.tenant_id(), p.principal_id(), p.instance_id()),
                         input.operation,
                         phase,
                         hash,

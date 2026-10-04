@@ -1,6 +1,8 @@
 """Disposable fixed NanoMDM oracle: private loopback/file storage, no product database or hooks."""
 from contextlib import contextmanager
 import os
+import base64
+import ssl
 import json
 from pathlib import Path
 import secrets
@@ -24,8 +26,15 @@ def running(root, env):
     binary = nano_binary()
     address = '127.0.0.1:'+str(port())
     api_key = secrets.token_urlsafe(32)
+    config=json.loads((root/'apple.json').read_text())
+    trust=json.loads(Path(config['trust_file']).read_text())
+    active=[issuer for issuer in trust['issuers'] if issuer['mode']=='active']
+    if trust['purpose']!='apple' or len(active)!=1:
+        raise RuntimeError('NanoMDM oracle requires the active Apple issuer')
+    issuer_file=root/'nano-issuer.pem'
+    issuer_file.write_text(ssl.DER_cert_to_PEM_cert(base64.b64decode(active[0]['certificate'],validate=True)))
     with (root/'nano.log').open('w') as log:
-        process = subprocess.Popen([str(binary),'-listen',address,'-ca',json.loads((root/'apple.json').read_text())['issuer_certificate_file'],
+        process = subprocess.Popen([str(binary),'-listen',address,'-ca',str(issuer_file),
                                     '-storage','filekv','-storage-dsn',str(root/'nano-data'),
                                     '-cert-header','X-Fixture-Certificate','-checkin','-ua-zl-dc',
                                     '-push-url','http://127.0.0.1:1'],

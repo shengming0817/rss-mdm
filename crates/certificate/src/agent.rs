@@ -343,7 +343,7 @@ impl AgentTrust {
         end: i64,
         now: i64,
     ) -> Result<IssuedAgentCertificate, Error> {
-        self.validate_issued_for(self.issuer_digest(), chain, csr, identity, start, end, now)
+        self.validate_issued_for(self.issuer_digest(), chain, csr, identity, start..end, now)
     }
     pub fn validate_issued_for(
         &self,
@@ -351,8 +351,7 @@ impl AgentTrust {
         chain: Vec<Vec<u8>>,
         csr: &VerifiedAgentCsr,
         identity: &str,
-        start: i64,
-        end: i64,
+        validity: std::ops::Range<i64>,
         now: i64,
     ) -> Result<IssuedAgentCertificate, Error> {
         let refs = chain
@@ -363,8 +362,8 @@ impl AgentTrust {
         if metadata.issuer != expected_issuer
             || metadata.identity != identity
             || metadata.spki != csr.spki()
-            || metadata.not_before != start
-            || metadata.not_after != end
+            || metadata.not_before != validity.start
+            || metadata.not_after != validity.end
         {
             return Err(Error::Conflict);
         }

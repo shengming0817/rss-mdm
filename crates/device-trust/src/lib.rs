@@ -177,6 +177,7 @@ struct Generation {
     root: Certificate,
     crl: Crl,
     root_crl: Crl,
+    verifier: Arc<dyn ClientCertVerifier>,
 }
 impl Generation {
     fn issuer_revoked(&self) -> bool {
@@ -259,8 +260,6 @@ impl DeviceTrust {
         {
             return Err(Error::Malformed);
         }
-        let mut roots = rustls::RootCertStore::empty();
-        let mut crls = Vec::new();
         let mut generations = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
         let mut root_lists = std::collections::BTreeMap::new();
@@ -310,35 +309,47 @@ impl DeviceTrust {
             )?;
             let issuer_crl = crl(&decode(&public.crl, 16 * 1024 * 1024)?, &certificate, now)?;
             let root_crl = crl(&decode(&public.root_crl, 16 * 1024 * 1024)?, &root, now)?;
-            if let Some(previous) = root_lists.insert(digest(&root_der), root_crl.der.clone()) {
-                if previous != root_crl.der {
-                    return Err(Error::Conflict);
-                }
+            if root_lists
+                .insert(digest(&root_der), root_crl.der.clone())
+                .is_some_and(|previous| previous != root_crl.der)
+            {
+                return Err(Error::Conflict);
             }
             if certificate == root && issuer_crl.der != root_crl.der {
                 return Err(Error::Conflict);
             }
+            // WebPKI chooses a CRL by issuer DN before checking its signing key.
+            // ref: rustls/webpki v0.103.15 src/crl/mod.rs RevocationOptions::check.
+            // Keep each approved issuer/root pair and its CRLs in one verifier.
+            let mut roots = rustls::RootCertStore::empty();
             roots.add(CertificateDer::from(root_der)).map_err(invalid)?;
+            let mut crls = Vec::new();
             crls.push(CertificateRevocationListDer::from(issuer_crl.der.clone()));
             if certificate != root {
                 crls.push(CertificateRevocationListDer::from(root_crl.der.clone()));
             }
+            let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
+                Arc::new(roots),
+                Arc::new(rustls::crypto::ring::default_provider()),
+            )
+            .with_crls(crls)
+            .enforce_revocation_expiration()
+            .build()
+            .map_err(invalid)?;
             generations.push(Generation {
                 public: public.clone(),
                 certificate,
                 root,
                 crl: issuer_crl,
                 root_crl,
+                verifier,
             });
         }
-        let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
-            Arc::new(roots),
-            Arc::new(rustls::crypto::ring::default_provider()),
-        )
-        .with_crls(crls)
-        .enforce_revocation_expiration()
-        .build()
-        .map_err(invalid)?;
+        let verifier = generations
+            .first()
+            .ok_or(Error::Malformed)?
+            .verifier
+            .clone();
         Ok(Snapshot {
             trust,
             generations,
@@ -577,8 +588,7 @@ impl DeviceTrust {
                 return Err(Error::Revoked);
             }
             let issuer = CertificateDer::from(g.certificate.to_der().map_err(invalid)?);
-            snapshot
-                .verifier
+            g.verifier
                 .verify_client_cert(
                     &chain[0],
                     &[issuer],

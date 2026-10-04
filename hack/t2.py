@@ -192,15 +192,18 @@ def execute_case(job, builds, fixtures, case_dir, output, rendezvous=None):
     return result
 
 
-def run_modules(names, output, *, jobs=2, selected_case='', listing=False, reuse_plan=None):
+def run_modules(names, output, *, jobs=2, selected_case='', listing=False, reuse_plan=None, selected_cases=()):
     require_lease(ROOT)
     require(type(jobs) is int and jobs > 0, 'JOBS must be a positive integer')
     require(not output.is_symlink(), 'T2 output directory cannot be a symlink')
     output = output.resolve()
     output.mkdir(parents=True, exist_ok=True)
+    require(not (selected_case and selected_cases), 'select CASE or a case collection')
+    selected_cases = tuple(selected_cases) or ((selected_case,) if selected_case else ())
+    require(len(selected_cases) == len(set(selected_cases)), 'duplicate selected cases')
     results = {name: stage_result('skipped', reason='not-selected') for name in MODULES}
     if not names:
-        require(not selected_case and reuse_plan is None, 'CASE or reuse plan does not belong to any selected module')
+        require(not selected_cases and reuse_plan is None, 'CASE or reuse plan does not belong to any selected module')
         prune_runs(output)
         return results
     run_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-' + uuid.uuid4().hex[:8]
@@ -237,7 +240,7 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False, reuse
             invocations.extend(Invocation(policy, case) for policy, case in zip(policies, cases))
         phases = [invocations]
         if reuse_plan is not None:
-            require(not selected_case and not listing, 'reuse plan cannot be combined with CASE or LIST')
+            require(not selected_cases and not listing, 'reuse plan cannot be combined with CASE or LIST')
             require(jobs >= 2, 'reuse qualification needs JOBS >= 2')
             phases = reuse_phases(invocations, reuse_plan)
             invocations = [job for phase in phases for job in phase]
@@ -246,9 +249,9 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False, reuse
                                  for module in modules},
                      'policies': {job.id: job.policy for job in invocations}}
         publish(directory / 'discovery.json', inventory)
-        if selected_case:
-            require(selected_case in inventory['policies'], 'unknown CASE in selected modules: ' + selected_case)
-            invocations = [job for job in invocations if job.id == selected_case]
+        if selected_cases:
+            require(all(case in inventory['policies'] for case in selected_cases), 'unknown CASE in selected modules')
+            invocations = [job for job in invocations if job.id in selected_cases]
             phases = [invocations]
         if listing:
             print(json.dumps(inventory, indent=2), flush=True)

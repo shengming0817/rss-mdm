@@ -45,21 +45,24 @@ pub(crate) async fn run<C: Send, R: Send>(
                     .with_connection_context(context, |ctx, c| f(ctx, c))
                     .await?;
                 if change.key.is_empty() {
-                    return Ok(change.value);
+                    return Ok((change.value, false));
                 }
                 let fact =
                     Fact::business(a, &change.key, &change.fingerprint, 200, "success", None)
                         .map_err(|e| Error::Audit(e.into()))?;
                 store.append(tx, &fact, change.replay).await?;
                 a.mark_commit_started();
-                Ok(change.value)
+                Ok((change.value, true))
             })
         })
         .await;
     let result = outcome.fold(
         |r| {
-            a.mark_committed();
-            Ok(r.into_value())
+            let (value, committed) = r.into_value();
+            if committed {
+                a.mark_committed();
+            }
+            Ok(value)
         },
         |e| Err(error(e)),
         |e| {
@@ -132,14 +135,13 @@ pub async fn replay(
 }
 pub async fn save(
     c: &mut PgConnection,
-    tenant: &str,
-    actor: &str,
-    instance: &str,
+    identity: (&str, &str, &str),
     operation: Uuid,
     phase: &str,
     digest: &[u8],
     receipt: &[u8],
 ) -> Result<(), Error> {
+    let (tenant, actor, instance) = identity;
     sqlx::query("INSERT INTO mdm_pki.operations(tenant_id,actor,instance,operation,phase,digest,receipt) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)")
         .bind(tenant).bind(actor).bind(instance).bind(operation).bind(phase).bind(digest).bind(receipt).execute(c).await.map_err(|_|Error::Storage)?;
     Ok(())

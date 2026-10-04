@@ -122,7 +122,7 @@ impl AgentIssuer {
                 csr_pem: &pem,
                 csr_digest: &csr.digest(),
                 subject: SUBJECT,
-                sans: &[spec.identity.clone()],
+                sans: std::slice::from_ref(&spec.identity),
                 start: spec.start,
                 end: spec.end,
                 deadline: spec.deadline,
@@ -204,8 +204,7 @@ impl AgentIssuer {
         let chain = store
             .issue(
                 tenant,
-                "agent",
-                &issuer,
+                ("agent", &issuer),
                 provider,
                 Sign {
                     attempt: intent.attempt,
@@ -225,8 +224,7 @@ impl AgentIssuer {
                             chain.to_vec(),
                             &intent.csr,
                             &intent.identity,
-                            intent.start,
-                            intent.end,
+                            intent.start..intent.end,
                             now,
                         )
                         .is_ok()
@@ -240,8 +238,7 @@ impl AgentIssuer {
                 chain,
                 &intent.csr,
                 &intent.identity,
-                intent.start,
-                intent.end,
+                intent.start..intent.end,
                 self.clock.unix_seconds().map_err(|_| unknown())?,
             )
             .map_err(|_| unknown())

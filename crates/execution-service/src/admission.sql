@@ -1,6 +1,9 @@
 WITH tables AS (
  SELECT c.* FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_commands' AND c.relkind='r'
 ), update_columns(relation, col) AS (VALUES
+ ('mdm_pki.installations','revision'),('mdm_pki.installations','digest'),('mdm_pki.installations','body'),('mdm_pki.installations','confirmed_at'),
+ ('mdm_pki.acknowledgements','revision'),('mdm_pki.acknowledgements','digest'),('mdm_pki.acknowledgements','confirmed_at'),
+ ('mdm_windows.trust_deliveries','results'),('mdm_windows.trust_deliveries','confirmed'),
  ('mdm_windows.collections','channel_state'),
  ('mdm_windows.push_channels','generation'),('mdm_windows.push_channels','revision'),('mdm_windows.push_channels','configuration'),('mdm_windows.push_channels','uri'),('mdm_windows.push_channels','digest'),('mdm_windows.push_channels','expires_at'),('mdm_windows.push_channels','next_push'),('mdm_windows.push_channels','lease_id'),('mdm_windows.push_channels','lease_until'),('mdm_windows.push_channels','settled_id'),('mdm_windows.push_channels','failures'),('mdm_windows.push_channels','status'),('mdm_windows.push_channels','outcome'),
  ('mdm_windows.push_queries','results'),
@@ -34,6 +37,8 @@ WITH tables AS (
 ), read_columns(relation,col) AS (VALUES
  ('mdm_access.agent_issuances','tenant_id'),('mdm_access.agent_issuances','credential'),('mdm_access.agent_issuances','not_after')
 ), allowed(relation,sel,ins,del) AS (VALUES
+ ('mdm_pki.rotations',true,false,false),('mdm_pki.installations',true,true,false),('mdm_pki.acknowledgements',true,true,false),
+ ('mdm_windows.trust_deliveries',true,true,false),('mdm_apple.trust_deliveries',true,true,false),
  ('mdm_content.manifests',true,false,false),('mdm_content.diagnostic_artifacts',true,true,false),('mdm_flow.native_protection',true,true,false),('mdm_access.agent_grants',true,true,false),
  ('mdm.inventory',true,false,false),
  ('mdm.field_versions',true,false,false),('mdm.collection_definitions',true,true,false),('mdm.collection_results',true,true,false),

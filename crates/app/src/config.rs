@@ -215,14 +215,16 @@ impl Config {
                 .map_err(|_| Error::Configuration(ConfigIssue::AgentPki))?;
             if origin.origin().ascii_serialization() != endpoint.origin
                 || endpoint.origin == self.product_origin
-                || endpoint.listen == self.listen
+                || (endpoint.listen.port() != 0 && endpoint.listen == self.listen)
                 || self.native_protocols.windows.as_ref().is_some_and(|w| {
-                    [&w.enrollment, &w.management]
-                        .into_iter()
-                        .any(|e| e.listen == endpoint.listen || e.origin == endpoint.origin)
+                    [&w.enrollment, &w.management].into_iter().any(|e| {
+                        (endpoint.listen.port() != 0 && e.listen == endpoint.listen)
+                            || e.origin == endpoint.origin
+                    })
                 })
                 || self.native_protocols.apple.as_ref().is_some_and(|a| {
-                    a.management.listen == endpoint.listen || a.management.origin == endpoint.origin
+                    (endpoint.listen.port() != 0 && a.management.listen == endpoint.listen)
+                        || a.management.origin == endpoint.origin
                 })
             {
                 return Err(Error::Configuration(ConfigIssue::AgentPki));

@@ -187,9 +187,10 @@ impl WindowsDeviceTrust {
         let checked = self.verify(chain, now)?;
         let leaf = Certificate::from_der(&chain[0]).map_err(invalid)?;
         let tbs = &leaf.tbs_certificate;
-        let subject: x509_cert::name::Name = format!("CN={}", profile.registration)
-            .parse()
-            .map_err(invalid)?;
+        // Go's CA encodes an ASCII UUID CN as PrintableString; Rust's Name parser
+        // uses UTF8String. The strict Windows leaf profile already rejects extra RDNs.
+        // Compare the canonical authorized value rather than a string encoding tag.
+        let subject = format!("CN={}", profile.registration);
         if profile.version != 1
             || profile.issuer
                 != Sha256::digest(rss_mdm_device_trust::decode(
@@ -197,7 +198,7 @@ impl WindowsDeviceTrust {
                     32768,
                 )?)
                 .as_slice()
-            || tbs.subject != subject
+            || tbs.subject.to_string() != subject
             || tbs.subject_public_key_info != csr.info.public_key
             || profile.spki
                 != <[u8; 32]>::from(Sha256::digest(

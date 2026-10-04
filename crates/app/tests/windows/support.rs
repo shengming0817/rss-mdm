@@ -237,6 +237,7 @@ impl Host {
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
         value["content"] = original["content"].clone();
         value["agent_pki"] = original["agent_pki"].clone();
+        value["device_pki"] = original["device_pki"].clone();
         value["native_protection_key_file"] = original["native_protection_key_file"].clone();
         if let Some(agent) = agent {
             value["agent_installation"] = agent;
@@ -893,7 +894,7 @@ pub(crate) async fn absolute_form_post(
         },
     };
     let ca = &host.app.windows()?.channel.ca;
-    let cert = sign_certificate(&ca, &peer.intent).await?;
+    let cert = sign_certificate(ca, &peer.intent).await?;
     let mut roots = rustls::RootCertStore::empty();
     roots.add(CertificateDer::from_pem_slice(&std::fs::read(
         host.root.join("ca.crt"),
@@ -1009,8 +1010,7 @@ pub(crate) async fn sign_certificate(
     let chain = rss_mdm_pki_service::signing::SigningStore::new(audit)
         .issue(
             Uuid::parse_str(case_tenant())?,
-            "windows",
-            &issuer,
+            ("windows", &issuer),
             providers.get(rss_mdm_agent_wire::pki::Purpose::Windows, &issuer)?,
             rss_mdm_pki_service::Sign {
                 attempt: intent.credential,
@@ -1024,7 +1024,7 @@ pub(crate) async fn sign_certificate(
             },
             now(),
             |chain| {
-                ca.validate_issued(
+                let result = ca.validate_issued(
                     &profile,
                     &csr,
                     &chain
@@ -1032,8 +1032,11 @@ pub(crate) async fn sign_certificate(
                         .map(|b| b.as_slice().into())
                         .collect::<Vec<_>>(),
                     now(),
-                )
-                .is_ok()
+                );
+                if let Err(error) = &result {
+                    eprintln!("Windows fixture CA candidate rejected: {error:?}");
+                }
+                result.is_ok()
             },
         )
         .await?;

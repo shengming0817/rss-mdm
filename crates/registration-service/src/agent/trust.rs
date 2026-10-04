@@ -72,9 +72,7 @@ impl Service {
                 })?;
                 rss_mdm_pki_service::mutation::save(
                     c,
-                    &tenant,
-                    &actor,
-                    "",
+                    (&tenant, &actor, ""),
                     input.operation,
                     "trust_acknowledge",
                     &hash,

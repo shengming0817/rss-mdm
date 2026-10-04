@@ -509,8 +509,7 @@ pub(crate) async fn sign_profile(
     let chain = rss_mdm_pki_service::signing::SigningStore::new(app.audit_store.clone())
         .issue(
             Uuid::parse_str(tenant).map_err(|_| Error::Malformed)?,
-            "windows",
-            &issuer,
+            ("windows", &issuer),
             provider,
             rss_mdm_pki_service::Sign {
                 attempt,
@@ -528,7 +527,7 @@ pub(crate) async fn sign_profile(
                     .iter()
                     .map(|bytes| CertificateDer::from(bytes.as_slice()))
                     .collect();
-                w.ca.validate_issued(&profile, &csr, &chain, now).is_ok()
+                w.ca.validate_issued(profile, &csr, &chain, now).is_ok()
             },
         )
         .await

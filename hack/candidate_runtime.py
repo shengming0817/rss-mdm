@@ -332,7 +332,7 @@ class Candidate:
         private(self.root/'windows.json',windows)
         private(self.root/'case.json',dict(tenant=self.tenant))
         env={**os.environ}
-        windows_provider=self.pki_stack.enter_context(running(self.root,env,case=self.name,windows=True, compose_file=self.directory/'deployment/compose.yaml', providers=self.providers))
+        windows_provider=self.pki_stack.enter_context(running(self.root,env,case=self.name,windows=True, windows_template=self.directory/'deployment/windows-leaf.tpl', compose_file=self.directory/'deployment/compose.yaml', providers=self.providers))
         agent_origin='https://localhost:'+self.compose('port','runtime-netns','9445',stage=Stage.PORT).rsplit(':',1)[1]
         self.agent_provider=self.pki_stack.enter_context(running(self.root,env,case=self.name,agent=True,agent_origin=agent_origin,
                                             agent_template=self.directory/'deployment/agent-leaf.tpl', compose_file=self.directory/'deployment/compose.yaml', providers=self.providers))

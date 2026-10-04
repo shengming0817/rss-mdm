@@ -69,7 +69,7 @@ def trust(root, purpose, origin, tenant, provisioner, kid, ca_origin):
 
 
 @contextmanager
-def running(root, env, *, case, windows=False, agent=False, agent_origin=None, agent_template=None, compose_file=None, providers=None, generation=None):
+def running(root, env, *, case, windows=False, agent=False, agent_origin=None, agent_template=None, windows_template=None, compose_file=None, providers=None, generation=None):
     import shutil
     case_root=Path(root).resolve()
     purpose='agent' if agent else 'windows'
@@ -79,8 +79,8 @@ def running(root, env, *, case, windows=False, agent=False, agent_origin=None, a
         shutil.copyfile(case_root/name,root/name);(root/name).chmod(0o600)
     provider=Provider(root,hashlib.sha256((case+':'+purpose+(':'+generation if generation else '')).encode()).hexdigest()[:20], compose_file=compose_file, providers=providers);step=binary('step')
     subprocess.run(['openssl','pkcs8','-topk8','-nocrypt','-in',str(case_root/'server.key'),'-outform','DER',
-                    '-out',str(case_root/'agent-tls.pk8')],check=True,capture_output=True,timeout=30)
-    (case_root/'agent-tls.pk8').chmod(0o600)
+                    '-out',str(root/'agent-tls.pk8')],check=True,capture_output=True,timeout=30)
+    (root/'agent-tls.pk8').chmod(0o600)
     password=private(root/'step-password',secrets.token_urlsafe(32))
     child={**env,'STEPPATH':str(root/'step')}
     def cli(*args):
@@ -89,6 +89,7 @@ def running(root, env, *, case, windows=False, agent=False, agent_origin=None, a
         '--dns','localhost,step-ca,host.docker.internal,'+provider.internal_host,'--address',f"0.0.0.0:{PKI_CA['port']}",
         '--provisioner','rss-admin','--admin-subject','rss-admin','--password-file',password,'--remote-management')
     configuration=root/'step/config/ca.json';config=json.loads(configuration.read_text())
+    config['root']=[config['root']]
     config['kms']=dict(type='softkms')
     config['crl']=dict(enabled=True,generateOnRevoke=True,cacheDuration='10m',renewPeriod='1m')
     config['authority']['backdate']='0s'
@@ -128,7 +129,8 @@ def running(root, env, *, case, windows=False, agent=False, agent_origin=None, a
                 '--alg','RS256','--use','sig','--kid','windows-t2-key','--no-password','--insecure')
             (root/'windows.private.json').unlink()
             (root/'step/templates').mkdir(mode=0o700,exist_ok=True)
-            template=private(root/'step/templates/windows-leaf.tpl','{"subject":{"commonName":{{ toJson .Token.sub }}},"keyUsage":["digitalSignature"],"extKeyUsage":["clientAuth"],"basicConstraints":{"isCA":false}}')
+            source=Path(windows_template) if windows_template else Path(__file__).resolve().parents[1]/'deployment/windows-leaf.tpl'
+            template=private(root/'step/templates/windows-leaf.tpl',source.read_text())
             cli('ca','provisioner','add','rss-windows','--type','JWK','--public-key',root/'windows.pub.json',
                 '--x509-template',template,'--disable-renewal','--ssh=false','--x509-default-dur','2160h','--x509-max-dur','2160h',*admin)
         env.update(MDM_STEP_CLI=str(step),MDM_STEP_CA_URL=origin,MDM_STEP_CA_ROOT=str(root_certificate),MDM_PKI_FIXTURES=str(root))
@@ -137,7 +139,7 @@ def running(root, env, *, case, windows=False, agent=False, agent_origin=None, a
             value=json.loads((root/'agent-pki.json').read_text())
             value.pop('issuer_certificate_file',None)
             value['endpoint']['certificate_file']=str(case_root/'server.crt')
-            value['endpoint']['private_key_file']=str(case_root/'agent-tls.pk8')
+            value['endpoint']['private_key_file']=str(root/'agent-tls.pk8')
             if agent_origin:value['endpoint']['origin']=agent_origin
             value['trust_file']=str(trust(root,'agent',value['endpoint']['origin'],tenant,'rss-agent','agent-t2-key',origin))
             private(case_root/('agent-pki'+('-'+generation if generation else '')+'.json'),value)
@@ -147,12 +149,12 @@ def running(root, env, *, case, windows=False, agent=False, agent_origin=None, a
             value['trust_file']=str(trust(root,'windows',value['management']['origin'],tenant,'rss-windows','windows-t2-key',origin))
             private(case_root/('windows'+('-'+generation if generation else '')+'.json'),value)
         providers_file=case_root/'device-pki.json'
-        providers=json.loads(providers_file.read_text()) if providers_file.exists() else []
+        authority_entries=json.loads(providers_file.read_text()) if providers_file.exists() else []
         trust_value=json.loads(Path(value['trust_file']).read_text())
-        providers.append(dict(purpose=purpose,issuer=trust_value['issuers'][0]['digest'],origin=origin,
+        authority_entries.append(dict(purpose=purpose,issuer=trust_value['issuers'][0]['digest'],origin=origin,
             tls_root_file=str(root_certificate),provisioner='rss-'+purpose,kid=purpose+'-t2-key',
             provisioner_key_file=str(root/(purpose+'-provisioner.pk8'))))
-        private(providers_file,providers)
+        private(providers_file,authority_entries)
         env['MDM_'+purpose.upper()+'_PKI'+('_CANDIDATE' if generation else '')+'_FIXTURES']=str(root)
         if agent:
             # The same DB and frozen origin survive actual cold standby promotion.

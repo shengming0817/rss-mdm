@@ -264,6 +264,100 @@ async fn on(conn: &mut PgConnection, input: &Upgrade) -> Result<()> {
         ));
     }
     migrate_units(conn, &input.installation, &baseline).await?;
+    let checked = checked_trusts(input)?;
+    let mut tx = conn.begin().await.map_err(|_| invalid())?;
+    // The operator must stop old writers first. Locks fence any mistakenly still-running writer.
+    sqlx::raw_sql("LOCK TABLE mdm_access.agent_grants,mdm_access.agent_issuances,mdm_access.enrollment_intents,mdm_access.enrollment_certificates,mdm_apple.scep_attempts,mdm_windows.renewals IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *tx).await.map_err(|_|invalid())?;
+    let LegacyRecords {
+        windows,
+        renewals,
+        agents,
+        apple,
+    } = read_legacy(&mut tx, input).await?;
+    apply_legacy(
+        &mut tx,
+        input,
+        &checked,
+        LegacyRecords {
+            windows,
+            renewals,
+            agents,
+            apple,
+        },
+    )
+    .await?;
+    tx.commit()
+        .await
+        .map_err(|_| MigrationError::at("device-pki-v1", "commit acknowledgement unknown"))
+}
+async fn apply_legacy(
+    tx: &mut PgConnection,
+    input: &Upgrade,
+    checked: &[rss_mdm_device_trust::DeviceTrust],
+    records: LegacyRecords,
+) -> Result<()> {
+    let invalid = || {
+        MigrationError::at(
+            "device-pki-v1",
+            "old signing work must be resolved and activated by the old executable",
+        )
+    };
+    let LegacyRecords {
+        windows,
+        renewals,
+        agents,
+        apple,
+    } = records;
+    let sql = rss_mdm_pki_service::INSTALL_SQL
+        .strip_prefix(
+            "-- Product device PKI; immutable original owner migrations stay unchanged.\nBEGIN;\n",
+        )
+        .and_then(|sql| sql.strip_suffix("COMMIT;\n"))
+        .ok_or_else(invalid)?;
+    sqlx::raw_sql(sql)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| MigrationError::at("device-pki-v1", "PKI schema upgrade"))?;
+    remap_profiles(&mut *tx, input).await?;
+    verify_profile_coverage(&mut *tx, input).await?;
+    for trust in &input.trusts {
+        scope(&mut *tx, &trust.tenant.to_string()).await?;
+        rss_mdm_pki_service::registry::persist(&mut *tx, trust)
+            .await
+            .map_err(|_| invalid())?;
+    }
+    import_windows(&mut *tx, checked, windows).await?;
+    import_renewals(&mut *tx, checked, renewals).await?;
+    import_agents(&mut *tx, checked, agents).await?;
+    import_apple(&mut *tx, checked, apple).await?;
+    preserve_revocations(&mut *tx, input).await?;
+    sqlx::query(
+        "INSERT INTO public.mdm_migrations(name,digest,complete) VALUES('device-pki-v1',$1,true)",
+    )
+    .bind(format!(
+        "{:x}",
+        Sha256::digest(rss_mdm_pki_service::INSTALL_SQL)
+    ))
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| invalid())?;
+    Ok(())
+}
+type LegacyWindows = (String, uuid::Uuid, uuid::Uuid, Vec<u8>, Vec<u8>, Vec<u8>);
+struct LegacyRecords {
+    windows: Vec<LegacyWindows>,
+    renewals: Vec<(String, sqlx::postgres::PgRow)>,
+    agents: Vec<(String, sqlx::postgres::PgRow)>,
+    apple: Vec<(String, sqlx::postgres::PgRow)>,
+}
+fn checked_trusts(input: &Upgrade) -> Result<Vec<rss_mdm_device_trust::DeviceTrust>> {
+    let invalid = || {
+        MigrationError::at(
+            "device-pki-v1",
+            "old signing work must be resolved and activated by the old executable",
+        )
+    };
     let now =
         crate::clock::Clock::unix_seconds(&crate::clock::SystemClock).map_err(|_| invalid())?;
     let mut checked = Vec::new();
@@ -292,10 +386,16 @@ async fn on(conn: &mut PgConnection, input: &Upgrade) -> Result<()> {
             return Err(invalid());
         }
     }
-    let mut tx = conn.begin().await.map_err(|_| invalid())?;
-    // The operator must stop old writers first. Locks fence any mistakenly still-running writer.
-    sqlx::raw_sql("LOCK TABLE mdm_access.agent_grants,mdm_access.agent_issuances,mdm_access.enrollment_intents,mdm_access.enrollment_certificates,mdm_apple.scep_attempts,mdm_windows.renewals IN ACCESS EXCLUSIVE MODE")
-        .execute(&mut *tx).await.map_err(|_|invalid())?;
+    Ok(checked)
+}
+
+async fn read_legacy(tx: &mut PgConnection, input: &Upgrade) -> Result<LegacyRecords> {
+    let invalid = || {
+        MigrationError::at(
+            "device-pki-v1",
+            "old signing work must be resolved and activated by the old executable",
+        )
+    };
     let mut windows = Vec::new();
     let mut renewals = Vec::new();
     let mut agents = Vec::new();
@@ -372,16 +472,21 @@ async fn on(conn: &mut PgConnection, input: &Upgrade) -> Result<()> {
         apple.extend(sqlx::query("SELECT registration,issuer,certificate FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND certificate IS NOT NULL AND registration IS NOT NULL")
             .bind(tenant).fetch_all(&mut *tx).await.map_err(|_|invalid())?.into_iter().map(|row|(tenant.clone(),row)));
     }
-    let sql = rss_mdm_pki_service::INSTALL_SQL
-        .strip_prefix(
-            "-- Product device PKI; immutable original owner migrations stay unchanged.\nBEGIN;\n",
+    Ok(LegacyRecords {
+        windows,
+        renewals,
+        agents,
+        apple,
+    })
+}
+
+async fn remap_profiles(tx: &mut PgConnection, input: &Upgrade) -> Result<()> {
+    let invalid = || {
+        MigrationError::at(
+            "device-pki-v1",
+            "old signing work must be resolved and activated by the old executable",
         )
-        .and_then(|sql| sql.strip_suffix("COMMIT;\n"))
-        .ok_or_else(invalid)?;
-    sqlx::raw_sql(sql)
-        .execute(&mut *tx)
-        .await
-        .map_err(|_| MigrationError::at("device-pki-v1", "PKI schema upgrade"))?;
+    };
     for tenant in &input.installation.tenants {
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
             .bind(tenant)
@@ -415,8 +520,18 @@ async fn on(conn: &mut PgConnection, input: &Upgrade) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+async fn verify_profile_coverage(tx: &mut PgConnection, input: &Upgrade) -> Result<()> {
+    let invalid = || {
+        MigrationError::at(
+            "device-pki-v1",
+            "old signing work must be resolved and activated by the old executable",
+        )
+    };
     for tenant in &input.installation.tenants {
-        scope(&mut tx, tenant).await?;
+        scope(tx, tenant).await?;
         for purpose in [Purpose::Windows, Purpose::Apple] {
             let targets = input
                 .profiles
@@ -446,25 +561,33 @@ async fn on(conn: &mut PgConnection, input: &Upgrade) -> Result<()> {
             }
         }
     }
-    for trust in &input.trusts {
-        scope(&mut tx, &trust.tenant.to_string()).await?;
-        rss_mdm_pki_service::registry::persist(&mut tx, trust)
-            .await
-            .map_err(|_| invalid())?;
-    }
+    Ok(())
+}
+
+async fn import_windows(
+    tx: &mut PgConnection,
+    checked: &[rss_mdm_device_trust::DeviceTrust],
+    windows: Vec<LegacyWindows>,
+) -> Result<()> {
+    let invalid = || {
+        MigrationError::at(
+            "device-pki-v1",
+            "old signing work must be resolved and activated by the old executable",
+        )
+    };
     for (tenant, id, registration, profile, issuer, leaf) in windows {
         history(
-            &checked,
+            checked,
             &tenant,
             Purpose::Windows,
             &leaf,
             Some(&rss_mdm_device_trust::digest(&issuer)),
         )?;
-        scope(&mut tx, &tenant).await?;
+        scope(tx, &tenant).await?;
         sqlx::query("UPDATE mdm_access.enrollment_intents SET profile=$3 WHERE tenant_id=$1::uuid AND request_id=$2")
             .bind(&tenant).bind(id).bind(profile).execute(&mut *tx).await.map_err(|_|invalid())?;
         rss_mdm_pki_service::certificates::record_in(
-            &mut tx,
+            &mut *tx,
             &tenant,
             "windows",
             registration,
@@ -474,10 +597,24 @@ async fn on(conn: &mut PgConnection, input: &Upgrade) -> Result<()> {
         .await
         .map_err(|_| invalid())?;
     }
+    Ok(())
+}
+
+async fn import_renewals(
+    tx: &mut PgConnection,
+    checked: &[rss_mdm_device_trust::DeviceTrust],
+    renewals: Vec<(String, sqlx::postgres::PgRow)>,
+) -> Result<()> {
+    let invalid = || {
+        MigrationError::at(
+            "device-pki-v1",
+            "old signing work must be resolved and activated by the old executable",
+        )
+    };
     for (tenant, row) in renewals {
-        scope(&mut tx, &tenant).await?;
+        scope(tx, &tenant).await?;
         let leaf: Vec<u8> = row.try_get("certificate").map_err(|_| invalid())?;
-        let issuer = history(&checked, &tenant, Purpose::Windows, &leaf, None)?;
+        let issuer = history(checked, &tenant, Purpose::Windows, &leaf, None)?;
         let registration: uuid::Uuid = row.try_get("registration").map_err(|_| invalid())?;
         if Certificate::from_der(&leaf)
             .map_err(|_| invalid())?
@@ -489,7 +626,7 @@ async fn on(conn: &mut PgConnection, input: &Upgrade) -> Result<()> {
             return Err(invalid());
         }
         rss_mdm_pki_service::certificates::record_in(
-            &mut tx,
+            &mut *tx,
             &tenant,
             "windows",
             registration,
@@ -499,8 +636,22 @@ async fn on(conn: &mut PgConnection, input: &Upgrade) -> Result<()> {
         .await
         .map_err(|_| invalid())?;
     }
+    Ok(())
+}
+
+async fn import_agents(
+    tx: &mut PgConnection,
+    checked: &[rss_mdm_device_trust::DeviceTrust],
+    agents: Vec<(String, sqlx::postgres::PgRow)>,
+) -> Result<()> {
+    let invalid = || {
+        MigrationError::at(
+            "device-pki-v1",
+            "old signing work must be resolved and activated by the old executable",
+        )
+    };
     for (tenant, row) in agents {
-        scope(&mut tx, &tenant).await?;
+        scope(tx, &tenant).await?;
         let metadata: LegacyAgentMetadata =
             serde_json::from_value(row.try_get("metadata").map_err(|_| invalid())?)
                 .map_err(|_| invalid())?;
@@ -542,7 +693,7 @@ async fn on(conn: &mut PgConnection, input: &Upgrade) -> Result<()> {
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect::<String>();
-        let generation = history(&checked, &tenant, Purpose::Agent, &leaf, Some(&issuer))?;
+        let generation = history(checked, &tenant, Purpose::Agent, &leaf, Some(&issuer))?;
         if rss_mdm_device_trust::agent_identity(&certificate, &generation).map_err(|_| invalid())?
             != metadata.identity
         {
@@ -568,7 +719,7 @@ async fn on(conn: &mut PgConnection, input: &Upgrade) -> Result<()> {
         sqlx::query("UPDATE mdm_access.agent_issuances SET signing_issuer=$3 WHERE tenant_id=$1::uuid AND credential=$2")
             .bind(&tenant).bind(row.try_get::<uuid::Uuid,_>("credential").map_err(|_|invalid())?).bind(&issuer).execute(&mut *tx).await.map_err(|_|invalid())?;
         rss_mdm_pki_service::certificates::record_in(
-            &mut tx,
+            &mut *tx,
             &tenant,
             "agent",
             registration,
@@ -578,15 +729,29 @@ async fn on(conn: &mut PgConnection, input: &Upgrade) -> Result<()> {
         .await
         .map_err(|_| invalid())?;
     }
+    Ok(())
+}
+
+async fn import_apple(
+    tx: &mut PgConnection,
+    checked: &[rss_mdm_device_trust::DeviceTrust],
+    apple: Vec<(String, sqlx::postgres::PgRow)>,
+) -> Result<()> {
+    let invalid = || {
+        MigrationError::at(
+            "device-pki-v1",
+            "old signing work must be resolved and activated by the old executable",
+        )
+    };
     for (tenant, row) in apple {
-        scope(&mut tx, &tenant).await?;
+        scope(tx, &tenant).await?;
         let issuer: Vec<u8> = row.try_get("issuer").map_err(|_| invalid())?;
         let hash = issuer
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect::<String>();
         history(
-            &checked,
+            checked,
             &tenant,
             Purpose::Apple,
             &row.try_get::<Vec<u8>, _>("certificate")
@@ -594,7 +759,7 @@ async fn on(conn: &mut PgConnection, input: &Upgrade) -> Result<()> {
             Some(&hash),
         )?;
         rss_mdm_pki_service::certificates::record_in(
-            &mut tx,
+            &mut *tx,
             &tenant,
             "apple",
             row.try_get("registration").map_err(|_| invalid())?,
@@ -605,9 +770,19 @@ async fn on(conn: &mut PgConnection, input: &Upgrade) -> Result<()> {
         .await
         .map_err(|_| invalid())?;
     }
+    Ok(())
+}
+
+async fn preserve_revocations(tx: &mut PgConnection, input: &Upgrade) -> Result<()> {
+    let invalid = || {
+        MigrationError::at(
+            "device-pki-v1",
+            "old signing work must be resolved and activated by the old executable",
+        )
+    };
     // Previously revoked credentials remain physically revoked after the owner upgrade.
     for tenant in &input.installation.tenants {
-        scope(&mut tx, tenant).await?;
+        scope(tx, tenant).await?;
         let revoked: Vec<uuid::Uuid> = sqlx::query_scalar(
             "SELECT id FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND state<>'active'",
         )
@@ -616,24 +791,12 @@ async fn on(conn: &mut PgConnection, input: &Upgrade) -> Result<()> {
         .await
         .map_err(|_| invalid())?;
         for credential in revoked {
-            rss_mdm_pki_service::certificates::revoke_credential_in(&mut tx, tenant, credential)
+            rss_mdm_pki_service::certificates::revoke_credential_in(&mut *tx, tenant, credential)
                 .await
                 .map_err(|_| invalid())?;
         }
     }
-    sqlx::query(
-        "INSERT INTO public.mdm_migrations(name,digest,complete) VALUES('device-pki-v1',$1,true)",
-    )
-    .bind(format!(
-        "{:x}",
-        Sha256::digest(rss_mdm_pki_service::INSTALL_SQL)
-    ))
-    .execute(&mut *tx)
-    .await
-    .map_err(|_| invalid())?;
-    tx.commit()
-        .await
-        .map_err(|_| MigrationError::at("device-pki-v1", "commit acknowledgement unknown"))
+    Ok(())
 }
 async fn scope(c: &mut PgConnection, tenant: &str) -> Result<()> {
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
@@ -688,7 +851,7 @@ fn history(
     if matches.len() != 1 {
         return Err(invalid());
     }
-    Ok(matches.into_iter().next().ok_or_else(invalid)?)
+    matches.into_iter().next().ok_or_else(invalid)
 }
 
 #[cfg(test)]

@@ -97,8 +97,7 @@ impl SigningStore {
     pub async fn issue<F>(
         &self,
         tenant: Uuid,
-        purpose: &str,
-        issuer: &str,
+        generation: (&str, &str),
         provider: &StepCa,
         intent: Sign<'_>,
         now: i64,
@@ -107,6 +106,7 @@ impl SigningStore {
     where
         F: FnOnce(&[Vec<u8>]) -> bool,
     {
+        let (purpose, issuer) = generation;
         if !matches!(purpose, "windows" | "agent") || issuer.len() != 64 || intent.attempt.is_nil()
         {
             return Err(Error::Request);
@@ -163,10 +163,8 @@ impl SigningStore {
         let chain = match provider.sign(intent, now).await {
             Ok(chain) if validate(&chain) => chain,
             _ => {
-                if let Err(error) = self.settle(tenant, intent.attempt, &hash, None).await {
-                    // The original dispatch remains unknown; retain the canonical audit diagnosis.
-                    return Err(error);
-                }
+                // The original dispatch remains unknown; retain the canonical audit diagnosis.
+                self.settle(tenant, intent.attempt, &hash, None).await?;
                 return Err(unknown());
             }
         };

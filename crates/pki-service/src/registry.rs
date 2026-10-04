@@ -144,13 +144,11 @@ impl Registry {
                                     .map_err(|_| Error::Configuration)?,
                                 &root,
                                 now,
-                            ) {
-                                if replacement.number > previous.number
-                                    || (replacement.number == previous.number
-                                        && replacement.der == previous.der)
-                                {
-                                    g.root_crl = c.root_crl.clone();
-                                }
+                            ) && (replacement.number > previous.number
+                                || (replacement.number == previous.number
+                                    && replacement.der == previous.der))
+                            {
+                                g.root_crl = c.root_crl.clone();
                             }
                         }
                     }
@@ -197,7 +195,7 @@ impl Registry {
                 if current!=*observed {return Err(Error::Conflict);}
                 let replay=crate::mutation::replay(c,&next.tenant.to_string(),"service:device-pki","",*id,"admit",hash).await?.is_some();
                 persist(c,next).await?;
-                if !replay {crate::mutation::save(c,&next.tenant.to_string(),"service:device-pki","",*id,"admit",hash,b"null").await?;}
+                if !replay {crate::mutation::save(c,(&next.tenant.to_string(),"service:device-pki",""),*id,"admit",hash,b"null").await?;}
                 Ok(crate::mutation::Change{value:(),replay,key:format!("pki:{id}:admit"),fingerprint:hash.clone()})
             })).await;
             a.finalize(
@@ -324,11 +322,8 @@ impl Registry {
             .write(
                 p,
                 a,
-                input.id,
-                input.expected_revision,
-                &candidate_trust,
-                state,
-                Some((&previous, &candidate)),
+                (input.id, input.expected_revision),
+                (&candidate_trust, state, Some((&previous, &candidate))),
                 now,
                 &request,
             )
@@ -403,11 +398,8 @@ impl Registry {
             .write(
                 p,
                 a,
-                input.id,
-                input.expected_revision,
-                &trust,
-                state,
-                None,
+                (input.id, input.expected_revision),
+                (&trust, state, None),
                 now,
                 &request,
             )
@@ -501,14 +493,13 @@ impl Registry {
         &self,
         p: &AuthorizedPrincipal,
         a: &RequestAudit,
-        id: Uuid,
-        expected: u64,
-        trust: &Trust,
-        state: &str,
-        added: Option<(&str, &str)>,
+        request: (Uuid, u64),
+        change: (&Trust, &str, Option<(&str, &str)>),
         now: i64,
         hash: &[u8],
     ) -> Result<Receipt, Error> {
+        let (id, expected) = request;
+        let (trust, state, added) = change;
         p.bind_audit(a).map_err(|_| Error::Forbidden)?;
         a.operation(id, "device_pki_rotation");
         self.mutation(TenantId::parse(p.tenant_id()).map_err(|_|Error::Request)?,a,
@@ -553,7 +544,7 @@ impl Registry {
                     }
                     persist(c,trust).await?;
                     let receipt=Receipt{operation:*id,revision:trust.revision,state:state.to_string()};
-                    crate::mutation::save(c,p.tenant_id(),p.principal_id(),p.instance_id(),*id,state,hash,
+                    crate::mutation::save(c,(p.tenant_id(),p.principal_id(),p.instance_id()),*id,state,hash,
                         &serde_json::to_vec(&receipt).map_err(|_|Error::Storage)?).await?;
 
                 Ok(crate::mutation::Change{value:receipt,replay:false,key:format!("pki:{id}:{state}"),fingerprint:hash.to_vec()})
@@ -568,7 +559,7 @@ async fn live(c: &mut sqlx::PgConnection, p: &AuthorizedPrincipal) -> Result<(),
     rss_mdm_authorization_service::snapshot_on(c, p.tenant_id(), p.instance_id())
         .await
         .map_err(|_| Error::Storage)?
-        .require(p, Permission::Credentials, None)
+        .require_all_devices(p, Permission::Credentials)
         .map_err(|_| Error::Forbidden)
 }
 

@@ -244,11 +244,11 @@ pub(crate) async fn receive(
     key: &Protector,
     w: &Windows,
     p: &DevicePrincipal,
-    raw: &s::Message,
-    expected: &s::Expected,
+    message: (&s::Message, &s::Expected),
     a: &crate::RequestAudit,
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
 ) -> Result<s::Message, Error> {
+    let (raw, expected) = message;
     let rows=sqlx::query("SELECT * FROM mdm_windows.trust_deliveries WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND credential=$4 AND session=$5 ORDER BY first_command FOR UPDATE")
         .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(i64::from(raw.header.session_id)).fetch_all(&mut *c).await.map_err(db)?;
     let mut consumed = std::collections::BTreeSet::new();

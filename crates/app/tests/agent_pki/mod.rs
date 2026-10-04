@@ -220,7 +220,7 @@ async fn explicit_development_limit_and_unknown_result_remain_auditable() -> any
     );
     value["lifetime"]["days"] = 3651.into();
     assert!(service(value).await.is_err());
-    let mut value = deployment();
+    let value = deployment();
     let unknown = service_with_provider(value, Some("absent-agent-key")).await?;
     let g = grant()?;
     let r = unknown.create(&p, &g, &audit()).await?;
@@ -292,9 +292,12 @@ async fn explicit_development_limit_and_unknown_result_remain_auditable() -> any
         .unwrap();
     assert_eq!(
         recovered.code,
-        wire::ErrorCode::PermissionDenied,
-        "a new provisioner cannot replace the original unknown issuer"
+        wire::ErrorCode::MalformedRequest,
+        "empty recovery chains fail before adopting any signing result"
     );
+    let still_unknown = restarted.issue(&input, &audit()).await.unwrap_err();
+    assert_eq!(still_unknown.code, wire::ErrorCode::IssuanceUnknown);
+    assert_eq!(still_unknown.issuance_id, first.issuance_id);
     let mut changed = input.clone();
     changed.operation_id = Uuid::new_v4();
     assert_eq!(
@@ -310,8 +313,7 @@ async fn provisioner_rejects_substituted_csr_and_consumed_token() -> anyhow::Res
     use ring::{rand::SystemRandom, signature};
     use sha2::{Digest, Sha256};
     let csr = VerifiedAgentCsr::verify(&std::fs::read(root().join("agent.der"))?)?;
-    let value = deployment();
-    let url = format!("{}/sign", value["ca_url"].as_str().unwrap());
+    let url = format!("{}/sign", std::env::var("MDM_STEP_CA_URL")?);
     let key =
         signature::RsaKeyPair::from_pkcs8(&std::fs::read(root().join("agent-provisioner.pk8"))?)
             .unwrap();
@@ -654,7 +656,7 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
 }
 
 fn fixture_providers() -> anyhow::Result<Arc<rss_mdm_pki_service::providers::Providers>> {
-    let config = serde_json::from_slice(&std::fs::read(
+    let config: Vec<crate::device_pki::Provider> = serde_json::from_slice(&std::fs::read(
         root()
             .parent()
             .unwrap()
@@ -797,22 +799,23 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
             .is_err(),
         "revoke submission is not publication"
     );
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
-    loop {
-        registry.sweep(now()).await?;
-        if registry
-            .transition(&p, Purpose::Agent, &retire, &audit(), now())
-            .await
-            .is_ok()
-        {
-            break;
+    tokio::time::timeout(Duration::from_secs(90), async {
+        loop {
+            registry.sweep(now()).await?;
+            if registry
+                .transition(&p, Purpose::Agent, &retire, &audit(), now())
+                .await
+                .is_ok()
+            {
+                return anyhow::Ok(());
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
         }
-        anyhow::ensure!(
-            tokio::time::Instant::now() < deadline,
-            "actual signed revoke publication did not unblock retirement"
-        );
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    }
+    })
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!("actual signed revoke publication did not unblock retirement")
+    })??;
     let final_trust = registry.trust(Purpose::Agent)?;
     assert_eq!(final_trust.issuers.len(), 1);
     assert_eq!(final_trust.issuers[0].digest, new_digest);

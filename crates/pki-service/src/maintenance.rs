@@ -193,7 +193,7 @@ impl Registry {
                     p.check_live().map_err(|_|Error::Forbidden)?;
                     rss_mdm_authorization_service::lock_on(c,p.tenant_id(),p.instance_id()).await.map_err(|_|Error::Storage)?;
                     rss_mdm_authorization_service::snapshot_on(c,p.tenant_id(),p.instance_id()).await.map_err(|_|Error::Storage)?
-                        .require(p,rss_mdm_authorization_service::Permission::Credentials,None).map_err(|_|Error::Forbidden)?;
+                        .require_all_devices(p,rss_mdm_authorization_service::Permission::Credentials).map_err(|_|Error::Forbidden)?;
                 }
                 sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2639))").bind(next.tenant.to_string()).execute(&mut *c).await.map_err(|_|Error::Storage)?;
                 let bytes:Vec<u8>=sqlx::query_scalar("SELECT body FROM mdm_pki.trust WHERE tenant_id=$1 AND purpose=$2 FOR UPDATE")
@@ -211,7 +211,7 @@ impl Registry {
                         .bind(next.tenant).bind(purpose(next.purpose)).bind(issuer.as_str()).bind(number).bind(&published.revoked).execute(&mut *c).await.map_err(|_|Error::Storage)?;
                 }
                 crate::registry::persist(c,next).await?;
-                if !replay {crate::mutation::save(c,&next.tenant.to_string(),actor,instance,*operation,"crl_publish",fingerprint,b"null").await?;}
+                if !replay {crate::mutation::save(c,(&next.tenant.to_string(),actor,instance),*operation,"crl_publish",fingerprint,b"null").await?;}
                 Ok(Change{value:(),replay,key:format!("pki:{operation}:crl_publish"),fingerprint:fingerprint.clone()})
             })).await;
         if result.is_ok() {

@@ -1,7 +1,6 @@
 //! Real TLS/PG proof for the certificate-only independent WinDC channel.
 use crate::device::test_support::options;
 use crate::windows::test_support::*;
-use crate::windows::*;
 #[cfg(feature = "integration")]
 use anyhow::Context;
 use anyhow::ensure;
@@ -237,6 +236,11 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
         soap::decode_response(&issue, &unknown.bytes().await?, &CodecLimits::default())?.body,
         Body::Fault(soap::FaultKind::EnrollmentServer)
     ));
+    // The acknowledged signing claim has an unknown dispatch outcome. Retrying
+    // that operation must fail closed rather than submit the frozen CSR again.
+    ensure!(post(wire.clone()).send().await?.status() == StatusCode::INTERNAL_SERVER_ERROR);
+    issue.header.message_id = Some(format!("urn:uuid:{}", Uuid::new_v4()));
+    let wire = signed(&issue, &key).await?;
     let response = post(wire.clone()).send().await?;
     ensure!(
         response.status() == StatusCode::OK,
@@ -1043,7 +1047,7 @@ async fn linked_renewal_and_parent_child_supersession() -> anyhow::Result<()> {
     host.listen().await?;
     let parent = host.peer().await?;
     let ca = &host.app.windows()?.channel.ca;
-    let certificate = sign_certificate(&ca, &parent.intent).await?;
+    let certificate = sign_certificate(ca, &parent.intent).await?;
     let child = linked_peer(&host, &parent, &certificate, &host.root.join("device.key")).await?;
     authenticate_child(&child.mutual, &child.url, &child.message, &parent.ack).await?;
     let renewed_child = renew(
@@ -1320,7 +1324,7 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
     host.listen().await?;
     let parent = host.peer().await?;
     let ca = &host.app.windows()?.channel.ca;
-    let certificate = sign_certificate(&ca, &parent.intent).await?;
+    let certificate = sign_certificate(ca, &parent.intent).await?;
     let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
     let mut grants = [
         "resource_read",
@@ -1695,7 +1699,7 @@ async fn declared_readiness_has_closed_http_diagnosis_and_primary_remains_availa
         "Primary depended on child: {primary:?}"
     );
     let ca = &host.app.windows()?.channel.ca;
-    let certificate = sign_certificate(&ca, &parent.intent).await?;
+    let certificate = sign_certificate(ca, &parent.intent).await?;
     let child = linked_peer(&host, &parent, &certificate, &host.root.join("device.key")).await?;
     let unready = client.call(Method::POST, "", Some(input())).await?;
     ensure!(

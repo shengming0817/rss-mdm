@@ -139,6 +139,16 @@ Agent 注册与运行共用独立 Rust TLS 监听器，匿名 bootstrap 可无�
 
 Windows/Apple 的 `native_protocols.<purpose>.trust_file`、Agent 的 `agent_pki.trust_file` 是可信部署渠道提供的公开 JSON。格式来自 `rss-mdm-agent-wire::pki::Trust`：version=1，绑定精确 HTTPS origin、tenant、purpose、单调 revision，包含完整 issuer 集合与 active/prepared/verify_only 状态；每个 issuer 包含确切 DER digest、base64 DER certificate/root/issuer CRL/root CRL、provisioner/kid。恰好一个 active，最多 16 代。不能把 HTTPS/APNs/Profile 签名证书当作设备 CA。公共材料可读，但初始部署来源必须受保护；私钥文件只归对应 owner。
 
+Windows 使用独立 `rss-windows` JWK provisioner 和随候选交付的 `deployment/windows-leaf.tpl`：
+
+```sh
+step ca provisioner add rss-windows --type JWK --public-key windows-provisioner.pub.json \
+  --x509-template deployment/windows-leaf.tpl --disable-renewal --ssh=false \
+  --x509-default-dur 2160h --x509-max-dur 2160h
+```
+
+其私钥按同一受保护 PKCS#8 流程配置到 Windows provider。模板只从已验签令牌的 `.Token.sub` 生成登记 CN，不复制 CSR 的主体、SAN 或扩展；服务端冻结原 CSR/SPKI 和授权登记，并校验签发结果。令牌中的 CSR 输入名称仅供 step-ca 的前置校验，原 CSR 指纹绑定仍必须验证。不要替换为默认模板或 `.Insecure.CR`。生产叶证书完整 90 天；开发时同步配置明确的有效期和 CA max/default。Docker 候选将 Windows 与 Agent 模板一并哈希交付，运行夹具也消费这份模板。
+
 ## 设备 PKI 升级
 
 旧部署不能直接运行新 `migrate` 或继续使用旧配置。停止旧签发入口，先用旧可执行文件处理 Agent、Windows 与 Apple 的未知签发、待激活结果及续期；确认这些工作已完成，再停止所有旧写入实例。保存原 CA 公共链和仍需验证的 legacy issuer，并在 CA 运维侧用原密钥产生可验签的当前 CRL；旧 Windows 私钥退出宿主，只在受控离线 CRL 操作中保管。准备新的 active step-ca 代次及公开 trust，旧代次为 verify_only。
