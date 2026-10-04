@@ -187,3 +187,57 @@ async fn volume_fences_a_stale_writer_and_keeps_failed_body_frontier() -> Result
     second.close().await;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "MODULE=content.storage: physical S3 snapshot survives failed PG frontier commit"]
+async fn s3_failed_frontier_commit_preserves_acknowledged_native_prefix() -> Result<()> {
+    let (_secrets, storage) = s3_storage()?;
+    let fixture = Fixture::with_storage(storage.clone()).await?;
+    let store = fixture.content.as_ref().unwrap();
+    let mut config: Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    config["content"]["storage"] = storage;
+    config["content"]["max_artifact_bytes"] = json!(160 * 1024 * 1024);
+    config["content"]["max_temporary_bytes"] = json!(512 * 1024 * 1024);
+    let config: crate::config::Config = serde_json::from_value(config)?;
+    let second = crate::execution_assembly::open_content(&config, config.native_protector()?)
+        .await?
+        .unwrap();
+    let bytes = b"confirmed-prefix-and-retry";
+    let b = binding(bytes, StorageClass::NativeConfiguration);
+    let id = Uuid::new_v4();
+    let now = crate::windows::test_support::now();
+    store.begin(id, b.clone(), now).await?;
+    store.append(&b.actor, id, 0, now, &bytes[..3]).await?;
+    // A deferred constraint trigger rejects COMMIT, after the provider object and
+    // ready coordinate have committed. Claim/release do not change the document.
+    pg(&format!(
+        r#"
+CREATE FUNCTION public.content_frontier_fault() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN IF NEW.tenant_id='{}'::uuid THEN RAISE EXCEPTION 'fixture frontier commit failure'; END IF; RETURN NEW; END $$;
+CREATE CONSTRAINT TRIGGER content_frontier_fault AFTER UPDATE ON mdm_content.uploads
+DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (OLD.document IS DISTINCT FROM NEW.document)
+EXECUTE FUNCTION public.content_frontier_fault();"#,
+        case_tenant()
+    ))?;
+    ensure!(matches!(
+        store.append(&b.actor, id, 3, now, &bytes[3..]).await,
+        Err(rss_mdm_content_service::Error::CommitUnknown)
+    ));
+    ensure!(second.status(&b.actor, id, now).await?.offset == 3);
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_content.objects o JOIN mdm_content.uploads u ON u.id=o.owner AND u.tenant_id=o.tenant_id WHERE u.tenant_id='{}' AND u.document->'value'->'upload'->>'id'='{}' AND o.state='ready' AND o.coordinate IS NOT NULL",case_tenant(),id))?.trim()=="2");
+    pg(
+        "DROP TRIGGER content_frontier_fault ON mdm_content.uploads; DROP FUNCTION public.content_frontier_fault()",
+    )?;
+    second.append(&b.actor, id, 3, now, &bytes[3..]).await?;
+    second.finish(&b.actor, id, now).await?;
+    ensure!(
+        &*store
+            .verify_class(&b.artifact()?, StorageClass::NativeConfiguration)
+            .await?
+            .read_plaintext(bytes.len())?
+            == bytes
+    );
+    second.close().await;
+    Ok(())
+}

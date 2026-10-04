@@ -442,3 +442,38 @@ fn piece_and_native_limits_are_arithmetic_boundaries() {
     b.length += 1;
     assert!(protected::reservation(&b).is_err());
 }
+
+#[tokio::test]
+async fn volume_reclaims_interrupted_intents_and_fences_late_publication() {
+    let (dir, store) = test_store();
+    let deadline = store.deadline().unwrap();
+    let content = rss_mdm_content_s3::Content {
+        length: 3,
+        sha256: Sha256::digest(b"abc").into(),
+    };
+    for interrupted in [false, true] {
+        let id = uuid::Uuid::new_v4();
+        let intent = store.backend.intent(id, content).unwrap();
+        let temporary = dir.path().join(format!(".{id}.tmp"));
+        if interrupted {
+            fs::write(&temporary, b"a").unwrap();
+        }
+        let coordinate = store
+            .backend
+            .recover(&intent, content, deadline)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(store.backend.delete(&coordinate, deadline).await.unwrap());
+        assert!(!temporary.exists());
+        assert!(matches!(
+            store
+                .backend
+                .write(&intent, content, b"abc".to_vec(), deadline)
+                .await,
+            Err(Error::Conflict)
+        ));
+        assert!(!dir.path().join(id.to_string()).exists());
+        assert!(store.backend.delete(&coordinate, deadline).await.unwrap());
+    }
+}

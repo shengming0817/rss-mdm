@@ -13,7 +13,7 @@ pub struct Garbage {
     length: u64,
 }
 impl Garbage {
-    pub async fn lock_in(&self, tx: &mut PgTransaction<'_>) -> Result<bool, Error> {
+    pub(crate) async fn lock_in(&self, tx: &mut PgTransaction<'_>) -> Result<bool, Error> {
         let tenant = tx.tenant_id().to_string();
         let digest = self.digest;
         let c = journal::class(self.class);
@@ -37,7 +37,7 @@ impl Garbage {
    Ok(!busy)
   })).await.map_err(|_|storage())
     }
-    pub async fn deleting_in(&self, tx: &mut PgTransaction<'_>) -> Result<(), Error> {
+    pub(crate) async fn deleting_in(&self, tx: &mut PgTransaction<'_>) -> Result<(), Error> {
         let tenant = tx.tenant_id().to_string();
         let digest = self.digest;
         let c = journal::class(self.class);

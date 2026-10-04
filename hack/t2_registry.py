@@ -328,6 +328,11 @@ add('software.catalog', build=Build('rss-mdm-software-service', 'test', 'catalog
     support=())
 app_family('software', namespace='software_catalog::t2')
 app_family('content')
+add('content.storage', selectors=('content::t2::storage::',), fixtures=('identity','s3'),
+    sources=('crates/content-service/src/backend.rs','crates/content-service/src/journal.rs','crates/content-service/src/reader.rs','crates/content-service/src/upload.rs','crates/content-service/src/protected.rs','crates/content-service/src/cleanup.rs','crates/content-s3/src/*'),
+    tests=('crates/app/tests/content/storage.rs',), support=('hack/s3_fixtures.py','fixtures/s3-provider.lock.json','crates/app/tests/content/http.rs','fixtures/mdm-content-s3.example.json'))
+MODULES['content.storage']=replace(MODULES['content.storage'],db_mode='fresh')
+
 for name in ('content.http', 'content.mirror', 'content.gc', 'software.http'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs +
         ('tests/support/software/*',))
@@ -738,7 +743,7 @@ consume(('crates/windows-channel/src/collection.rs', 'crates/windows-channel/src
 consume(('crates/app/src/assembly/windows/*',), 'windows.enrollment windows.issuance windows.management windows.retention windows.limits native.tls')
 consume(('crates/inventory-service/src/collection*',), 'agent.reports windows.management windows.retention apple.collection apple.renewal inventory.runtime')
 consume(('crates/inventory-service/src/groups/*',), 'planning.http planning.group_scope assets.group_input compliance.group_input')
-consume(('crates/content-service/src/lib.rs', 'crates/content-service/src/bindings.rs', 'crates/content-service/src/service*', 'crates/content-service/src/transaction.rs', 'crates/content-service/src/admission.sql'), 'content.http content.mirror content.gc execution.agent.content execution.software.content software.http')
+consume(('crates/content-service/src/lib.rs', 'crates/content-service/src/bindings.rs', 'crates/content-service/src/service*', 'crates/content-service/src/transaction.rs', 'crates/content-service/src/admission.sql'), 'content.storage content.http content.mirror content.gc execution.agent.content execution.software.content software.http')
 consume(('crates/content-service/src/catalog.sql', 'crates/content-service/src/catalog.json'),
         'catalog.contract content.http content.mirror content.gc execution.agent.content execution.software.content software.http')
 consume(('crates/flow-service/src/storage*',), 'planning.recovery assets.http compliance.http planning.http software.http content.http')
@@ -899,7 +904,7 @@ MODULES['assets.group_input'] = replace(MODULES['assets.group_input'], support_i
 APP_HELPER_CONSUMERS = {
     'support/software_execution.rs': ('software.http','planning.software','execution.software.offer','execution.software.content','execution.software.recovery'),
     'support/software.rs': (
-        'software.http','content.http','content.mirror','content.gc','planning.software',
+        'software.http','content.http','content.mirror','content.gc','content.storage','planning.software',
         'execution.software.offer','execution.software.content','execution.software.recovery'),
     'support/process.rs': ('inventory.runtime','execution.commands.recovery'),
     'execution/support.rs': (
@@ -1512,9 +1517,7 @@ add('content.s3', build=Build('rss-mdm-content-s3'), selectors=('s3_tests::',), 
     sources=('crates/content-s3/src/*',), tests=('crates/content-s3/tests/s3.rs',),
     support=('hack/s3_fixtures.py','fixtures/s3-provider.lock.json'))
 
-add('content.storage', selectors=('content::t2::storage::',), fixtures=('identity','s3'),
-    sources=('crates/content-service/src/backend.rs','crates/content-service/src/journal.rs','crates/content-service/src/reader.rs'),
-    tests=('crates/app/tests/content/storage.rs',), support=('hack/s3_fixtures.py','fixtures/s3-provider.lock.json','crates/app/tests/content/http.rs','fixtures/mdm-content-s3.example.json'))
-MODULES['content.storage']=replace(MODULES['content.storage'],db_mode='fresh')
 consume(('crates/content-service/src/backend.rs','crates/content-service/src/journal.rs','crates/content-service/src/reader.rs','crates/content-service/schema/*.sql'),
         'content.storage content.http content.mirror content.gc catalog.contract software.http execution.agent.content execution.software.content execution.commands.configuration execution.commands.windows planning.agent_policy')
+
+consume_dependencies('content.storage', normal='rss-mdm-content-s3 tokio-util', dev='tempfile')

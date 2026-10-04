@@ -66,6 +66,45 @@ fn error(e: s3::Error) -> Error {
         s3::Error::Transient | s3::Error::Missing => Error::Storage,
     }
 }
+// Keep the lock inode after deletion: its durable marker fences even a cancelled,
+// queued spawn_blocking writer. Removing it would allow a new lock inode and resurrection.
+fn volume_lock(
+    directory: &Path,
+    id: Uuid,
+    timer: &dyn Clock,
+    deadline: Deadline,
+) -> Result<File, Error> {
+    use std::os::fd::AsRawFd;
+    let file = options()
+        .create(true)
+        .truncate(false)
+        .open(directory.join(format!(".{id}.lock")))
+        .map_err(|_| storage())?;
+    if !file.metadata().map_err(|_| storage())?.is_file() {
+        return Err(invariant());
+    }
+    loop {
+        if timer.now() >= deadline.instant() {
+            return Err(Error::Deadline);
+        }
+        // SAFETY: file owns a live descriptor throughout acquisition and the critical section.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(file);
+        }
+        let e = std::io::Error::last_os_error();
+        if e.kind() != std::io::ErrorKind::WouldBlock && e.kind() != std::io::ErrorKind::Interrupted
+        {
+            return Err(storage());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+struct TemporaryPiece(PathBuf);
+impl Drop for TemporaryPiece {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
 impl Backend {
     fn timer(&self) -> &dyn Clock {
         match self {
@@ -247,6 +286,10 @@ impl Backend {
                 };
                 tokio::task::spawn_blocking(move || {
                     use std::io::Write;
+                    let lock = volume_lock(&directory, id, timer.as_ref(), deadline)?;
+                    if lock.metadata().map_err(|_| storage())?.len() != 0 {
+                        return Err(Error::Conflict);
+                    }
                     let target = directory.join(id.to_string());
                     if !target.exists() {
                         let temporary = directory.join(format!(".{id}.tmp"));
@@ -254,13 +297,14 @@ impl Backend {
                             .create_new(true)
                             .open(&temporary)
                             .map_err(|_| storage())?;
+                        let temporary = TemporaryPiece(temporary);
                         file.write_all(&bytes).map_err(|_| storage())?;
                         file.sync_all().map_err(|_| storage())?;
                         if timer.now() >= deadline.instant() {
                             return Err(Error::Deadline);
                         }
-                        fs::hard_link(&temporary, &target).map_err(|_| storage())?;
-                        fs::remove_file(temporary).map_err(|_| storage())?;
+                        fs::hard_link(&temporary.0, &target).map_err(|_| storage())?;
+                        fs::remove_file(&temporary.0).map_err(|_| storage())?;
                         sync_dir(&directory)?;
                     }
                     verify_volume(&target, content, timer.as_ref(), deadline)?;
@@ -311,30 +355,22 @@ impl Backend {
     ) -> Result<Option<Coordinate>, Error> {
         match (self, intent) {
             (
-                Self::Volume {
-                    directory, scope, ..
-                },
+                Self::Volume { scope, .. },
                 Intent::Volume {
                     scope: expected,
                     id,
                 },
             ) if scope == expected => {
-                let path = directory.join(id.to_string());
-                if !path.exists() {
-                    return Ok(None);
+                // The volume coordinate is determined by the intent before I/O. GC can
+                // fence and delete this exact ID even if only a partial tmp (or no file)
+                // exists; content verification remains mandatory for reads/publication.
+                if self.timer().now() >= deadline.instant() {
+                    return Err(Error::Deadline);
                 }
-                let scope = *scope;
-                let id = *id;
-                let timer = match self {
-                    Self::Volume { timer, .. } => timer.clone(),
-                    _ => unreachable!(),
-                };
-                tokio::task::spawn_blocking(move || {
-                    verify_volume(&path, content, timer.as_ref(), deadline)?;
-                    Ok(Some(Coordinate::Volume { scope, id }))
-                })
-                .await
-                .map_err(|_| storage())?
+                Ok(Some(Coordinate::Volume {
+                    scope: *scope,
+                    id: *id,
+                }))
             }
             (Self::S3 { store, .. }, Intent::S3 { write }) => match store
                 .recover(write, self.budget(store, deadline)?)
@@ -439,13 +475,34 @@ impl Backend {
                     id,
                 },
             ) if scope == expected => {
-                let path = directory.join(id.to_string());
-                match fs::remove_file(path) {
-                    Ok(()) => sync_dir(directory)?,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(_) => return Err(Error::Cleanup),
+                let directory = directory.clone();
+                let id = *id;
+                let timer = match self {
+                    Self::Volume { timer, .. } => timer.clone(),
+                    _ => unreachable!(),
                 };
-                Ok(true)
+                tokio::task::spawn_blocking(move || {
+                    use std::io::Write;
+                    let mut lock = volume_lock(&directory, id, timer.as_ref(), deadline)?;
+                    lock.rewind().map_err(|_| storage())?;
+                    lock.write_all(b"D").map_err(|_| storage())?;
+                    lock.sync_all().map_err(|_| storage())?;
+                    sync_dir(&directory)?;
+                    for path in [
+                        directory.join(id.to_string()),
+                        directory.join(format!(".{id}.tmp")),
+                    ] {
+                        match fs::remove_file(path) {
+                            Ok(()) => {}
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(_) => return Err(Error::Cleanup),
+                        }
+                    }
+                    sync_dir(&directory)?;
+                    Ok(true)
+                })
+                .await
+                .map_err(|_| storage())?
             }
             (Self::S3 { store, .. }, Coordinate::S3 { object }) => Ok(matches!(
                 store
