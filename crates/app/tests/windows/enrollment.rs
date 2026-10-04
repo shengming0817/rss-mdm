@@ -301,7 +301,8 @@ async fn discover_and_policy(
         fault.body,
         Body::Fault(soap::FaultKind::Authentication)
     ));
-    let mut pg = PgConnection::connect_with(&options("postgres")?).await?;
+    let mut pg =
+        PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
     for (request, action) in [
         (discovery_audit, "windows_discovery"),
         (policy_audit, "windows_policy"),
@@ -453,27 +454,32 @@ async fn self_enrollment_preserves_server_identity_and_terminal_protocol_id() ->
     sqlx::query("UPDATE mdm_access.report_sources SET enabled=true WHERE tenant_id=$1::uuid AND registration=$2")
         .bind(case_tenant()).bind(peer.intent.registration).execute(&mut *tx).await?;
     tx.commit().await?;
-    // Remove temporary sessions: the owner's first authenticated fact must survive retention.
-    let mut tx = host.store.begin(case_tenant()).await?;
-    sqlx::query(
-        "DELETE FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND registration=$2",
-    )
-    .bind(case_tenant())
-    .bind(peer.intent.registration)
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(
-        "DELETE FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2",
-    )
-    .bind(case_tenant())
-    .bind(peer.intent.registration)
-    .execute(&mut *tx)
-    .await?;
-    tx.commit().await?;
+    // Expire the fixture through the test administrator, then use the actual owner pruner.
+    let mut pg =
+        PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+    ensure!(sqlx::query("UPDATE mdm_access.management_sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND registration=$2")
+        .bind(case_tenant()).bind(peer.intent.registration).execute(&mut pg).await?.rows_affected() == 1);
+    ensure!(
+        rss_mdm_windows_channel::retention::prune_management(
+            &host.store.windows_store(),
+            host.app.audit_store.as_ref(),
+            case_tenant()
+        )
+        .await?
+            == 1
+    );
+    let sessions: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2")
+        .bind(case_tenant()).bind(peer.intent.registration).fetch_one(&mut pg).await?;
+    let messages: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND registration=$2")
+        .bind(case_tenant()).bind(peer.intent.registration).fetch_one(&mut pg).await?;
+    ensure!(sessions == 0 && messages == 0);
     let (_, retained) = browser
         .call(&host.browser, axum::http::Method::GET, &path, None)
         .await?;
-    ensure!(retained["progress"]["managementReady"] == true);
+    ensure!(
+        retained["progress"]["managementReady"] == true
+            && retained["progress"]["firstAuthenticatedCheckIn"] == true
+    );
     let proof = crate::device::test_support::admin(case_tenant(), "other-a").await?;
     let quotas = rss_mdm_registration_service::quotas::Quotas::new(
         host.store.registration(),
@@ -512,34 +518,11 @@ async fn self_enrollment_preserves_server_identity_and_terminal_protocol_id() ->
 }
 
 async fn authenticate_self_peer(peer: &Peer) -> anyhow::Result<()> {
-    use rss_mdm_windows_mdm::syncml::{self, Command, CommandName};
-    let post = |message: &syncml::Message| -> anyhow::Result<_> {
-        Ok(peer
-            .mutual
-            .post(&peer.url)
-            .header("content-type", "application/vnd.syncml.dm+xml")
-            .body(syncml::encode(message, &CodecLimits::default())?))
-    };
-    let followup = syncml::Message {
-        header: syncml::Header {
-            message_id: 2,
-            credential: None,
-            ..peer.message.header.clone()
-        },
-        commands: vec![Command::Status(syncml::Status {
-            id: 1,
-            message_ref: 1,
-            command_ref: 0,
-            command: CommandName::SyncHdr,
-            target_refs: vec![],
-            source_refs: vec![],
-            code: 212,
-            items: vec![],
-            challenge: None,
-            credential: None,
-        })],
-        final_message: true,
-    };
-    ensure!(post(&followup)?.send().await?.status() == StatusCode::OK);
+    ensure!(
+        crate::execution::test_support::native::post(&peer.mutual, &peer.url, &peer.ack)
+            .await?
+            .status()
+            == StatusCode::OK
+    );
     Ok(())
 }

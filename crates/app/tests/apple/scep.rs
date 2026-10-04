@@ -206,31 +206,7 @@ async fn self_enrollment_uses_current_user_and_one_macos_allocation() -> Result<
             && issued["progress"]["managementReady"] == false
     );
     ensure!(issued["progress"]["systemConfirmation"] == "unknown");
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(40))
-        .identity(device.identity(&der)?)
-        .add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(
-            f.root.join("ca.crt"),
-        )?)?)
-        .build()?;
-    let body = protocol::xml(protocol::dictionary([
-        ("MessageType", "Authenticate".into()),
-        (
-            "UDID",
-            crate::test_support::case::name("rss-self-mac").into(),
-        ),
-        ("Topic", apple.config.apns_topic.clone().into()),
-    ]))?;
-    ensure!(
-        client
-            .put(format!("{}/checkin", apple.config.management.origin))
-            .body(body)
-            .send()
-            .await?
-            .status()
-            == StatusCode::OK
-    );
+    let peer = f.authenticate_peer(&device, &der).await?;
     let authenticated = f.self_progress(enrollment).await?;
     ensure!(
         authenticated["progress"]["firstAuthenticatedCheckIn"] == true
@@ -240,13 +216,6 @@ async fn self_enrollment_uses_current_user_and_one_macos_allocation() -> Result<
         authenticated["progress"]["diagnostic"] == "awaiting_device_token",
         "{authenticated}"
     );
-    let peer = lifecycle::Peer {
-        installed_trust: Default::default(),
-        oracle: oracle::Oracle::new(&der)?,
-        client,
-        origin: apple.config.management.origin.clone(),
-        topic: apple.config.apns_topic.clone(),
-    };
     peer.token().await?;
     let ready = f.self_progress(enrollment).await?;
     ensure!(ready["progress"]["managementReady"] == true, "{ready}");

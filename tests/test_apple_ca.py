@@ -43,6 +43,31 @@ class ProviderTests(unittest.TestCase):
                 with patch.object(pki_ca, 'run', side_effect=[SimpleNamespace(stdout='[{"Image":"fixed-image"}]'), SimpleNamespace(stdout='fixed-image')]):
                     provider.start()
 
+    def test_failed_standby_logs_before_cleanup_and_preserves_primary_error(self):
+        for diagnostics_fail in (False, True):
+            previous, standby = self.provider(), self.provider()
+            previous.owner.project, standby.owner.project = 'previous', 'standby'
+            previous.owner.compose_file = standby.owner.compose_file = 'fixed-compose'
+            standby.owner.extra = {}
+            previous.fence = Mock()
+            events = []
+            primary = RuntimeError('startup failed')
+            standby.start = Mock(side_effect=primary)
+            def logs():
+                events.append('logs')
+                if diagnostics_fail:
+                    raise ValueError('private diagnostic')
+            def reset():
+                events.append('reset')
+                if diagnostics_fail:
+                    raise OSError('private cleanup')
+            standby.logs, standby.reset = logs, reset
+            with self.subTest(diagnostics_fail=diagnostics_fail), self.assertRaises(RuntimeError) as caught:
+                standby.promote_from(previous, 'https://localhost:54321')
+            self.assertIs(caught.exception, primary)
+            self.assertEqual(events, ['logs', 'reset'])
+            self.assertNotIn('private', str(getattr(primary, '__notes__', [])))
+
     def test_native_linux_binds_only_its_private_network_gateway(self):
         provider = self.provider()
         provider.owner.project = 'owned-project'

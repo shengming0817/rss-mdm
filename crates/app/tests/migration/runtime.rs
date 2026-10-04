@@ -29,7 +29,7 @@ async fn upgrade(conn: &mut PgConnection) -> Result<()> {
             .fetch_one(&mut *conn)
             .await?;
     let installation: super::Installation = serde_json::from_value(configuration)?;
-    conn.execute("ALTER TABLE mdm_commands.action_attempts DROP COLUMN execution_material; ALTER TABLE mdm_commands.action_runs DROP COLUMN software_effect,DROP COLUMN invocation_archive; DELETE FROM public.mdm_migrations WHERE name='self-service-access-v1'").await?;
+    conn.execute("ALTER TABLE mdm_commands.action_attempts DROP COLUMN execution_material; ALTER TABLE mdm_commands.action_runs DROP COLUMN software_effect,DROP COLUMN invocation_archive; ALTER TABLE mdm_access.registrations DROP COLUMN first_authenticated_at; DELETE FROM public.mdm_migrations WHERE name IN ('self-service-access-v1','enrollment-progress-v1')").await?;
     let actual: Vec<(String, String, bool)> =
         sqlx::query_as("SELECT name,digest,complete FROM public.mdm_migrations")
             .fetch_all(&mut *conn)
