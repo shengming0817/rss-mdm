@@ -243,3 +243,165 @@ EXECUTE FUNCTION public.content_frontier_fault();"#,
     second.close().await;
     Ok(())
 }
+
+// A dedicated workload identity keeps this permission fault isolated from parallel S3 cases.
+async fn s3_admin(provider: &Value, path: &str, body: Value) -> Result<()> {
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+    let mut child = tokio::process::Command::new("curl")
+        .args([
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--max-time",
+            "10",
+            "--cacert",
+        ])
+        .arg(provider["ca"].as_str().unwrap())
+        .args(["--aws-sigv4", "aws:amz:us-east-1:s3", "--user"])
+        .arg(format!(
+            "{}:{}",
+            provider["rootAccessKey"].as_str().unwrap(),
+            provider["rootSecretKey"].as_str().unwrap()
+        ))
+        .args([
+            "--request",
+            "PUT",
+            "--header",
+            "Content-Type: application/json",
+            "--data-binary",
+            "@-",
+        ])
+        .arg(format!(
+            "{}/rustfs/admin/v3/{path}",
+            provider["endpoint"].as_str().unwrap()
+        ))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&serde_json::to_vec(&body)?)
+        .await?;
+    ensure!(
+        child.wait().await?.success(),
+        "isolated S3 permission fixture setup failed"
+    );
+    Ok(())
+}
+async fn s3_workload_policy(provider: &Value, access: &str, write: bool) -> Result<()> {
+    let mut actions = vec![
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:DeleteObjectVersion",
+    ];
+    if write {
+        actions.push("s3:PutObject");
+    }
+    let policy = json!({"Version":"2012-10-17","Statement":[
+        {"Effect":"Allow","Action":["s3:GetBucketVersioning"],"Resource":["arn:aws:s3:::content"]},
+        {"Effect":"Allow","Action":actions,"Resource":[format!("arn:aws:s3:::content/content/{}/*",case_tenant())]}
+    ]});
+    s3_admin(
+        provider,
+        &format!("add-canned-policy?name={access}"),
+        policy,
+    )
+    .await
+}
+#[tokio::test]
+#[ignore = "MODULE=content.storage: actual S3 PUT rejection releases only known non-writes"]
+async fn s3_rejected_writes_release_quota_after_permission_recovery_and_expiry() -> Result<()> {
+    let provider: Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("MDM_S3_FIXTURE")?)?)?;
+    let (secrets, storage) = s3_storage()?;
+    let access = format!("quota-{}", case_tenant());
+    let secret = Uuid::new_v4().to_string();
+    s3_workload_policy(&provider, &access, false).await?;
+    s3_admin(
+        &provider,
+        &format!("add-user?accessKey={access}"),
+        json!({"secretKey":secret,"status":"enabled"}),
+    )
+    .await?;
+    s3_admin(
+        &provider,
+        &format!("set-user-or-group-policy?policyName={access}&userOrGroup={access}&isGroup=false"),
+        json!({}),
+    )
+    .await?;
+    // Replace private file contents before host construction; no runtime secret mutation.
+    std::fs::write(secrets.path().join("access"), access.as_bytes())?;
+    std::fs::write(secrets.path().join("secret"), secret.as_bytes())?;
+    let fixture = Fixture::with_storage(storage.clone()).await?;
+    let mut cfg: Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    cfg["content"]["storage"] = storage;
+    cfg["content"]["max_artifact_bytes"] = json!(4096);
+    cfg["content"]["max_temporary_bytes"] = json!(8192);
+    cfg["content"]["max_bundle_bytes"] = json!(4096);
+    let cfg: crate::config::Config = serde_json::from_value(cfg)?;
+    let store = crate::execution_assembly::open_content(&cfg, cfg.native_protector()?)
+        .await?
+        .unwrap();
+    let bytes = vec![0x67; 4096];
+    let b = binding(&bytes, StorageClass::Artifact);
+    let now = crate::windows::test_support::now();
+    let id = Uuid::new_v4();
+    store.begin(id, b.clone(), now).await?;
+    for _ in 0..4 {
+        ensure!(
+            matches!(
+                store.append(&b.actor, id, 0, now, bytes.as_slice()).await,
+                Err(rss_mdm_content_service::Error::Configuration)
+            ),
+            "provider must clearly reject PUT rather than exhaust quota"
+        );
+        ensure!(store.status(&b.actor, id, now).await?.offset == 0);
+    }
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_content.objects WHERE tenant_id='{}' AND state<>'deleted'",
+            case_tenant()
+        ))?
+        .trim()
+            == "0"
+    );
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_content.objects WHERE tenant_id='{}' AND state='deleted' AND coordinate IS NULL",case_tenant()))?.trim()=="4");
+    s3_workload_policy(&provider, &access, true).await?;
+    // Expire the original reservation and prove ordinary GC can remove it without
+    // inventing physical absence from a recovery HEAD response.
+    pg(&format!(
+        "UPDATE mdm_content.uploads SET expires=0,held_until=0 WHERE tenant_id='{}'",
+        case_tenant()
+    ))?;
+    ensure!(store.garbage(now).await?.is_empty());
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_content.uploads WHERE tenant_id='{}'",
+            case_tenant()
+        ))?
+        .trim()
+            == "0"
+    );
+    let recovered = Uuid::new_v4();
+    store.begin(recovered, b.clone(), now).await?;
+    store
+        .append(&b.actor, recovered, 0, now, bytes.as_slice())
+        .await?;
+    store.finish(&b.actor, recovered, now).await?;
+    ensure!(
+        &*store
+            .verify(&b.artifact()?)
+            .await?
+            .read_plaintext(bytes.len())?
+            == &bytes
+    );
+    store.close().await;
+    drop(fixture);
+    Ok(())
+}

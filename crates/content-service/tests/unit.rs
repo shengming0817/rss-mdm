@@ -471,9 +471,142 @@ async fn volume_reclaims_interrupted_intents_and_fences_late_publication() {
                 .backend
                 .write(&intent, content, b"abc".to_vec(), deadline)
                 .await,
-            Err(Error::Conflict)
+            Err(backend::WriteFailure::Unresolved(Error::Conflict))
         ));
         assert!(!dir.path().join(id.to_string()).exists());
         assert!(store.backend.delete(&coordinate, deadline).await.unwrap());
+    }
+}
+
+#[tokio::test]
+async fn volume_range_validates_consumed_bytes_during_replacement_and_in_place_write() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    struct MutationClock {
+        path: PathBuf,
+        replace: bool,
+        armed: AtomicBool,
+    }
+    impl Clock for MutationClock {
+        fn now(&self) -> std::time::Instant {
+            if self.armed.swap(false, Ordering::SeqCst) {
+                if self.replace {
+                    let replacement = self.path.with_extension("replacement");
+                    fs::write(&replacement, b"bad").unwrap();
+                    fs::rename(replacement, &self.path).unwrap();
+                } else {
+                    fs::write(&self.path, b"bad").unwrap();
+                }
+            }
+            RuntimeTimer.now()
+        }
+    }
+    for replace in [true, false] {
+        let (dir, store) = test_store();
+        let deadline = store.deadline().unwrap();
+        let id = uuid::Uuid::new_v4();
+        let content = rss_mdm_content_s3::Content {
+            length: 3,
+            sha256: Sha256::digest(b"abc").into(),
+        };
+        let intent = store.backend.intent(id, content).unwrap();
+        let coordinate = store
+            .backend
+            .write(&intent, content, b"abc".to_vec(), deadline)
+            .await
+            .unwrap();
+        let timer = Arc::new(MutationClock {
+            path: dir.path().join(id.to_string()),
+            replace,
+            armed: AtomicBool::new(true),
+        });
+        let backend = backend::Backend::Volume {
+            directory: dir.path().to_owned(),
+            scope: [8; 32],
+            timer,
+        };
+        // Clock cutoff is checked after opening the exact file, before consuming it.
+        let result = backend.read(&coordinate, content, 1, 3, deadline).await;
+        if replace {
+            assert_eq!(result.unwrap(), b"bc");
+        } else {
+            assert!(matches!(result, Err(Error::Invariant)));
+        }
+    }
+}
+
+#[test]
+fn msix_bundle_rejects_undeclared_application_and_resource_members() {
+    use rss_mdm_resource as r;
+    use std::io::{Cursor, Write};
+    fn archive(files: Vec<(&str, Vec<u8>)>) -> Vec<u8> {
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for (path, bytes) in files {
+            zip.start_file(
+                path,
+                zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored),
+            )
+            .unwrap();
+            zip.write_all(&bytes).unwrap();
+        }
+        zip.finish().unwrap().into_inner()
+    }
+    let package=archive(vec![("AppxManifest.xml",br#"<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"><Identity Name="Acme.App" Publisher="CN=Acme" Version="1.0.0.0" ProcessorArchitecture="x64"/><Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0"/></Dependencies></Package>"#.to_vec())]);
+    let bundle_xml = format!(
+        r#"<Bundle xmlns="http://schemas.microsoft.com/appx/2013/bundle"><Identity Name="Acme.App" Publisher="CN=Acme" Version="1.0.0.0"/><Packages><Package FileName="Acme.msix" Type="application" Architecture="x64" Version="1.0.0.0" Size="{}"/></Packages></Bundle>"#,
+        package.len()
+    );
+    let bytes = archive(vec![
+        (
+            "AppxMetadata/AppxBundleManifest.xml",
+            bundle_xml.into_bytes(),
+        ),
+        ("Acme.msix", package.clone()),
+    ]);
+    let identity = serde_json::json!({"name":"Acme.App","publisher":"CN=Acme","version":[1,0,0,0],"architecture":"x86_64","resourceId":""});
+    let definition:r::SoftwareDefinition=serde_json::from_value(serde_json::json!({"source":{"id":"private","revision":"1","sha256":vec![1;32]},"package":"Acme.App","version":"1.0.0.0","provenance":{"kind":"private"},"artifacts":{"installer":{"reference":"installer","length":bytes.len(),"sha256":r::Digest::of(&bytes).bytes()}},"behavior":{"kind":"msix","container":{"kind":"bundle","installer":"installer","members":[{"path":"Acme.msix","identity":identity,"length":package.len(),"sha256":r::Digest::of(&package).bytes()}]},"identity":identity,"dependencies":[],"deployment":{"kind":"device_provisioning"},"minimumOs":[10,0,19041,0],"requireSideload":true,"allowUnsigned":false,"uninstall":true,"invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place"},"signatures":[],"reboot":"report","downgrade":"deny","dependencies":[],"export":{"kind":"disabled"}})).unwrap();
+    let r::SoftwareBehavior::Msix(expected) = &definition.spec().behavior else {
+        panic!("msix");
+    };
+    let mut file = tempfile::tempfile().unwrap();
+    file.write_all(&bytes).unwrap();
+    file.rewind().unwrap();
+    let deadline =
+        Deadline::from_timeout(&RuntimeTimer, std::time::Duration::from_secs(60)).unwrap();
+    super::native::msix(
+        &mut file,
+        expected,
+        &config(PathBuf::new()),
+        &RuntimeTimer,
+        deadline,
+    )
+    .unwrap();
+    for kind in ["application", "resource"] {
+        let xml = format!(
+            r#"<Bundle xmlns="http://schemas.microsoft.com/appx/2013/bundle"><Identity Name="Acme.App" Publisher="CN=Acme" Version="1.0.0.0"/><Packages><Package FileName="Acme.msix" Type="application" Architecture="x64" Version="1.0.0.0" Size="{}"/><Package FileName="Extra.msix" Type="{kind}" Architecture="x64" Version="1.0.0.0" Size="{}"/></Packages></Bundle>"#,
+            package.len(),
+            package.len()
+        );
+        let extra = archive(vec![
+            ("AppxMetadata/AppxBundleManifest.xml", xml.into_bytes()),
+            ("Acme.msix", package.clone()),
+            ("Extra.msix", package.clone()),
+        ]);
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(&extra).unwrap();
+        file.rewind().unwrap();
+        let deadline =
+            Deadline::from_timeout(&RuntimeTimer, std::time::Duration::from_secs(60)).unwrap();
+        assert!(
+            super::native::msix(
+                &mut file,
+                expected,
+                &config(PathBuf::new()),
+                &RuntimeTimer,
+                deadline
+            )
+            .is_err(),
+            "accepted undeclared {kind}"
+        );
     }
 }

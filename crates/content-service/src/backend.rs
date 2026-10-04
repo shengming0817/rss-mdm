@@ -45,6 +45,12 @@ pub(super) enum Intent {
     Volume { scope: [u8; 32], id: Uuid },
     S3 { write: s3::Write },
 }
+/// Settlement evidence from the write boundary; dropping a polled write stays unresolved.
+#[derive(Debug)]
+pub(super) enum WriteFailure {
+    NotWritten(Error),
+    Unresolved(Error),
+}
 #[derive(Clone)]
 pub(super) enum Backend {
     Volume {
@@ -256,7 +262,7 @@ impl Backend {
         content: s3::Content,
         bytes: Vec<u8>,
         deadline: Deadline,
-    ) -> futures::future::BoxFuture<'a, Result<Coordinate, Error>> {
+    ) -> futures::future::BoxFuture<'a, Result<Coordinate, WriteFailure>> {
         Box::pin(self.write_inner(intent, content, bytes, deadline))
     }
     async fn write_inner(
@@ -265,7 +271,7 @@ impl Backend {
         content: s3::Content,
         bytes: Vec<u8>,
         deadline: Deadline,
-    ) -> Result<Coordinate, Error> {
+    ) -> Result<Coordinate, WriteFailure> {
         match (self, intent) {
             (
                 Self::Volume {
@@ -313,15 +319,21 @@ impl Backend {
                     })
                 })
                 .await
-                .map_err(|_| storage())?
+                .map_err(|_| WriteFailure::Unresolved(storage()))?
+                .map_err(WriteFailure::Unresolved)
             }
             (Self::S3 { store, .. }, Intent::S3 { write }) => {
                 let source =
                     futures::stream::once(async move { Ok(bytes::Bytes::from(bytes)) }).boxed();
                 let result = store
-                    .put(write, source, self.budget(store, deadline)?)
+                    .put(
+                        write,
+                        source,
+                        self.budget(store, deadline)
+                            .map_err(WriteFailure::NotWritten)?,
+                    )
                     .await
-                    .map_err(error)?;
+                    .map_err(|e| WriteFailure::NotWritten(error(e)))?;
                 match result {
                     s3::Mutation::Confirmed(s3::Written::Verified(v)) => Ok(Coordinate::S3 {
                         object: v.object().clone(),
@@ -331,11 +343,12 @@ impl Backend {
                     }
                     s3::Mutation::Unknown(_) => self
                         .recover(intent, content, deadline)
-                        .await?
-                        .ok_or(Error::CommitUnknown),
+                        .await
+                        .map_err(WriteFailure::Unresolved)?
+                        .ok_or(WriteFailure::Unresolved(Error::CommitUnknown)),
                 }
             }
-            _ => Err(Error::Configuration),
+            _ => Err(WriteFailure::NotWritten(Error::Configuration)),
         }
     }
     pub fn recover<'a>(
@@ -424,12 +437,8 @@ impl Backend {
                     _ => unreachable!(),
                 };
                 tokio::task::spawn_blocking(move || {
-                    verify_volume(&path, content, timer.as_ref(), deadline)?;
-                    let mut file = options().open(path).map_err(|_| storage())?;
-                    file.seek(SeekFrom::Start(start)).map_err(|_| storage())?;
-                    let mut out = vec![0; (end - start) as usize];
-                    file.read_exact(&mut out).map_err(|_| storage())?;
-                    Ok(out)
+                    let bytes = read_volume(&path, content, timer.as_ref(), deadline)?;
+                    Ok(bytes[start as usize..end as usize].to_vec())
                 })
                 .await
                 .map_err(|_| storage())?
@@ -541,4 +550,42 @@ fn verify_volume(
         return Err(invariant());
     }
     Ok(())
+}
+
+// Validate the exact buffer consumed by Range/materialize. An open handle prevents
+// path replacement races; hashing this buffer also rejects concurrent in-place edits.
+// ref: rust std/src/fs.rs@1.90.0, TOCTOU and File concurrent modification contract.
+fn read_volume(
+    path: &Path,
+    content: s3::Content,
+    timer: &dyn Clock,
+    deadline: Deadline,
+) -> Result<Vec<u8>, Error> {
+    if content.length > journal::CHUNK {
+        return Err(invariant());
+    }
+    regular(path)?;
+    let mut file = options().open(path).map_err(|_| storage())?;
+    if !file.metadata().map_err(|_| storage())?.is_file()
+        || file.metadata().map_err(|_| storage())?.len() != content.length
+    {
+        return Err(invariant());
+    }
+    let mut bytes = vec![0; content.length as usize];
+    for part in bytes.chunks_mut(65536) {
+        if timer.now() >= deadline.instant() {
+            return Err(Error::Deadline);
+        }
+        file.read_exact(part).map_err(|_| storage())?;
+    }
+    if timer.now() >= deadline.instant() {
+        return Err(Error::Deadline);
+    }
+    let mut extra = [0; 1];
+    if file.read(&mut extra).map_err(|_| storage())? != 0
+        || Sha256::digest(&bytes).as_slice() != content.sha256
+    {
+        return Err(invariant());
+    }
+    Ok(bytes)
 }

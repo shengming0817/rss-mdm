@@ -264,10 +264,20 @@ impl Store {
         sqlx::query("INSERT INTO mdm_content.objects(tenant_id,id,owner,content,intent,expires,state) VALUES($1::uuid,$2,$3,$4,$5,$6,'pending')")
    .bind(self.tenant.to_string()).bind(id).bind(owner).bind(encode(&content)?).bind(encode(&intent)?).bind(expires).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         commit(tx).await?;
-        let coordinate = self
-            .backend
-            .write(&intent, content, bytes, deadline)
-            .await?;
+        let coordinate = match self.backend.write(&intent, content, bytes, deadline).await {
+            Ok(coordinate) => coordinate,
+            Err(backend::WriteFailure::Unresolved(error)) => return Err(error),
+            Err(backend::WriteFailure::NotWritten(error)) => {
+                // Only the completed provider call can prove non-publication. Missing
+                // recovery or a dropped future never reaches this settlement path.
+                let mut tx = self.tx().await?;
+                sqlx::query("UPDATE mdm_content.objects SET state='deleted' WHERE tenant_id=$1::uuid AND id=$2 AND coordinate IS NULL AND state IN ('pending','deleting')")
+                    .bind(self.tenant.to_string()).bind(id).execute(&mut *tx).await
+                    .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?;
+                commit(tx).await?;
+                return Err(error);
+            }
+        };
         // Preserve the exact version even if subsequent verification fails.
         let mut tx = self.tx().await?;
         sqlx::query(
