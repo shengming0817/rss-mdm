@@ -40,6 +40,8 @@ pub struct Services {
     >,
     pub content: Arc<rss_mdm_content_service::service::Access>,
     pub enrollment: Arc<rss_mdm_registration_service::enrollment::EnrollmentService>,
+    pub enrollment_progress:
+        Arc<dyn rss_mdm_registration_service::enrollment::read::NativeProgress>,
     pub devices: Arc<rss_mdm_registration_service::device::DeviceService>,
     pub collection: Arc<rss_mdm_inventory_service::collection_service::CollectionService>,
     pub collection_intake: rss_mdm_inventory_service::apple_collection::Service,
@@ -86,6 +88,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
     });
     let enrollment = Arc::new(crate::enrollment::http::HttpState {
         service: state.enrollment,
+        native: state.enrollment_progress,
         devices: state.devices,
         apple: state.apple,
         windows: state.windows,

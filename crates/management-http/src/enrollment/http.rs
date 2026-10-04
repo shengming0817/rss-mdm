@@ -40,7 +40,7 @@ async fn enrollment_status(
 ) -> Result<Json<crate::enrollment::read::Status>, Error> {
     let Path(id) = path.map_err(|_| Error::Malformed)?;
     app.service
-        .status(&auth.proof, id, &audit)
+        .status(&auth.proof, id, &audit, app.native.as_ref())
         .await
         .map(Json)
         .map_err(Error::from)
@@ -125,6 +125,7 @@ async fn revoke_registration(
 }
 pub struct HttpState {
     pub service: Arc<super::EnrollmentService>,
+    pub native: Arc<dyn super::read::NativeProgress>,
     pub devices: Arc<crate::device::DeviceService>,
     pub apple: bool,
     pub windows: bool,

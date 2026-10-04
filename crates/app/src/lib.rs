@@ -42,6 +42,7 @@ mod execution;
 #[cfg(test)]
 #[path = "../tests/fixtures/content.rs"]
 mod content;
+mod enrollment_progress;
 mod execution_assembly;
 mod flow;
 #[cfg(not(test))]

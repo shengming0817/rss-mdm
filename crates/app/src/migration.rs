@@ -299,6 +299,10 @@ fn units() -> Vec<(&'static str, &'static str)> {
         "self-service-access-v1",
         include_str!("../schema/self-service-access.sql"),
     ));
+    units.push((
+        "enrollment-progress-v1",
+        rss_mdm_registration_service::ENROLLMENT_PROGRESS_SQL,
+    ));
     units
 }
 /// Exact immutable migration units embedded in this executable, without database access.
@@ -482,7 +486,7 @@ fn accepted_ledger(
     if matches(&candidate) {
         return true;
     }
-    // Only the complete, explicitly named predecessor may upgrade; arbitrary prefixes fail.
+    // Only complete, explicitly released predecessors may upgrade; arbitrary prefixes fail.
     if current != units() {
         return false;
     }
@@ -490,7 +494,12 @@ fn accepted_ledger(
         .into_iter()
         .map(|(name, sql)| (name, format!("{:x}", Sha256::digest(sql))))
         .collect::<BTreeMap<_, _>>();
-    matches(&predecessor)
+    let previous = current
+        .iter()
+        .filter(|(name, _)| *name != "enrollment-progress-v1")
+        .map(|(name, sql)| (*name, format!("{:x}", Sha256::digest(sql))))
+        .collect::<BTreeMap<_, _>>();
+    matches(&predecessor) || matches(&previous)
 }
 
 async fn install_identity(

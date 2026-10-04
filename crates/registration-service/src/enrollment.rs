@@ -314,11 +314,12 @@ impl EnrollmentService {
         proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
         id: Uuid,
         audit: &rss_mdm_audit_integration::RequestAudit,
+        native: &dyn read::NativeProgress,
     ) -> Result<read::Status, Error> {
         let permission = store::owned_permission(&self.access, proof, id).await?;
         let device = permission.device().to_owned();
         audit.target(&device);
-        read::enrollment_status(&self.access, permission, id).await
+        read::enrollment_status(&self.access, permission, id, native, &self.credentials).await
     }
     pub async fn registrations(
         &self,

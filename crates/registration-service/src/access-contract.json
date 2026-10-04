@@ -44,7 +44,8 @@
       "updates": [
         "state",
         "next_command",
-        "ready"
+        "ready",
+        "first_authenticated_at"
       ],
       "delete_policy": null
     },

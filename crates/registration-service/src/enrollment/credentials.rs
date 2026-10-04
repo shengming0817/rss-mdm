@@ -59,6 +59,13 @@ impl Credentials {
         }
         result
     }
+    /// A missing or expired process-local continuation requires explicit owner resume.
+    pub fn available(&self, reference: Uuid) -> Result<bool, Error> {
+        let now = self.clock.now();
+        let mut entries = self.entries.lock().map_err(|_| Error::Runtime)?;
+        entries.retain(|_, entry| entry.expires > now);
+        Ok(entries.contains_key(&reference))
+    }
     pub fn get(&self, reference: Uuid) -> Result<SessionSecret, Error> {
         let now = self.clock.now();
         let mut entries = self.entries.lock().map_err(|_| Error::Runtime)?;

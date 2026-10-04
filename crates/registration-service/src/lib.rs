@@ -26,3 +26,6 @@ pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 
 /// Current quota schema; installation remains fresh-only.
 pub const QUOTAS_SQL: &str = include_str!("../schema/quotas.sql");
+
+/// Adds durable native management contact without guessing historical evidence.
+pub const ENROLLMENT_PROGRESS_SQL: &str = include_str!("../schema/enrollment-progress.sql");
