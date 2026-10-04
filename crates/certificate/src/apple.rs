@@ -1,6 +1,8 @@
 //! Typed CMS encoding and rustls/ring verification; no runtime shell or home-grown crypto.
 //! ref: RustCrypto/formats cms-0.2.3 src/signed_data.rs; ring-0.17.14 src/rsa/keypair.rs
+mod account;
 use crate::Error;
+pub use account::{EnrollmentRequest, ManagedAccountTokenSigner, enrollment_request};
 use cms::{
     cert::{CertificateChoices, IssuerAndSerialNumber},
     content_info::{CmsVersion, ContentInfo},

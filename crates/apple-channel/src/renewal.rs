@@ -211,6 +211,7 @@ async fn prepare_on(
     let signed = apple.signer.sign(
         &profile::enrollment(
             &profile::EnrollmentProfile {
+                mode: profile::EnrollmentMode::Profile,
                 access_rights: apple.access_rights() as u16,
                 scep_url: &scep_url,
                 scep_provisioner: &scep_provisioner,
@@ -233,7 +234,7 @@ async fn prepare_on(
     )?;
     let registration: String = old.try_get("registration").map_err(db)?;
     let deadline = after.min(now + 3600);
-    sqlx::query("INSERT INTO mdm_apple.scep_attempts(tenant_id,id,enrollment,password_version,configuration,state,issuer,expires_at,registration,renewal_of,generation,challenge_hash,access_rights,scep_url,scep_provisioner) SELECT $1::uuid,$2::uuid,$3::uuid,coalesce(max(password_version),0)+1,$4,'prepared',$5,to_timestamp($6),$7::uuid,$8::uuid,$9,$10,$11,$12,$13 FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND enrollment=$3::uuid")
+    sqlx::query("INSERT INTO mdm_apple.scep_attempts(tenant_id,id,enrollment,authorization_version,configuration,state,issuer,expires_at,registration,renewal_of,generation,challenge_hash,access_rights,scep_url,scep_provisioner) SELECT $1::uuid,$2::uuid,$3::uuid,coalesce(max(authorization_version),0)+1,$4,'prepared',$5,to_timestamp($6),$7::uuid,$8::uuid,$9,$10,$11,$12,$13 FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND enrollment=$3::uuid")
         .bind(tenant).bind(id.to_string()).bind(enrollment.to_string()).bind(apple.configuration.as_slice()).bind(issuer).bind(deadline as f64).bind(&registration).bind(&old_id).bind(generation).bind(Sha256::digest(secret.as_bytes()).as_slice()).bind(apple.access_rights()).bind(scep_url).bind(scep_provisioner).execute(&mut *c).await.map_err(db)?;
     let request = crate::protection::seal(
         &apple.protection,

@@ -6,6 +6,9 @@ rust-version.workspace=true
 publish.workspace=true
 autotests=false
 [dependencies]
+rss-identity-core.workspace=true
+rss-identity-postgres.workspace=true
+rss-identity-http-axum.workspace=true
 rss-mdm-device-trust.workspace = true
 rss-mdm-pki-service.workspace = true
 rss-mdm-software-service.workspace = true

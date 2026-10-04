@@ -303,6 +303,14 @@ fn units() -> Vec<(&'static str, &'static str)> {
         "enrollment-progress-v1",
         rss_mdm_registration_service::ENROLLMENT_PROGRESS_SQL,
     ));
+    units.push((
+        "apple-account-authority-v1",
+        rss_mdm_registration_service::APPLE_ACCOUNT_SQL,
+    ));
+    units.push((
+        "apple-account-channel-v1",
+        rss_mdm_apple_channel::ACCOUNT_ENROLLMENT_SQL,
+    ));
     units
 }
 /// Exact immutable migration units embedded in this executable, without database access.

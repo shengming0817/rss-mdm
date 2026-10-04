@@ -4,10 +4,10 @@ use crate::Failure;
 use crate::HttpState;
 use crate::{
     Error,
-    authorization::context::AuthorizedPrincipal,
     database::db,
     registration_enrollment::{
-        Authorization, Password, Resume,
+        Password, Resume,
+        native::{Admission, Coordinates},
         store::{request, uuid},
     },
 };
@@ -22,51 +22,61 @@ use sqlx::{Row, postgres::PgRow};
 use std::sync::Arc;
 use uuid::Uuid;
 
-fn current(row: &PgRow, auth: &Authorization, proof: &AuthorizedPrincipal) -> Result<(), Error> {
-    auth.authorize(proof)?;
-    if auth.source != rss_mdm_inventory::ReportSource::MdmApple
-        || auth.actor != proof.principal_id()
-        || auth.instance != proof.instance_id()
-        || row.try_get::<String, _>("state").map_err(db)? != "pending"
-        || !row.try_get::<bool, _>("live").map_err(db)?
-        || row.try_get::<bool, _>("self_service").map_err(db)? != auth.self_service
-        || row.try_get::<i64, _>("password_version").map_err(db)? != auth.version
-        || uuid(row, "credential_ref")? != auth.credential_ref
-    {
-        return Err(Error::Unauthorized);
+async fn admitted(c: &mut sqlx::PgConnection, proof: &Admission) -> Result<PgRow, Error> {
+    let row = proof.current(c).await?;
+    if proof.is_account() {
+        crate::account_enrollment::require_binding_in(c, &proof.data.tenant, proof.data.id).await?;
     }
-    Ok(())
+    Ok(row)
 }
 async fn authorized(
     app: &HttpState,
     id: Uuid,
-    password: &Password,
+    secret: Option<&str>,
     audit: &RequestAudit,
-) -> Result<(Authorization, AuthorizedPrincipal), Error> {
-    let auth = rss_mdm_registration_service::enrollment::store::enrollment_authorization(
-        &app.access.registration(),
-        &app.identity.tenant().to_string(),
-        id,
-        password,
-    )
-    .await?;
-    let proof = app
-        .identity
-        .authenticate(
-            &app.access.authorization,
-            app.credentials.get(auth.credential_ref)?,
+) -> Result<(Coordinates, Admission), Error> {
+    let tenant = app.identity.tenant().to_string();
+    let mut tx = app.access.begin(&tenant).await?;
+    let row = request(&mut tx, &tenant, id).await?;
+    let kind: String = row.try_get("authority_kind").map_err(db)?;
+    tx.rollback().await.map_err(db)?;
+    let proof = if kind == "apple_account" {
+        crate::account_enrollment::require_binding(app, id).await?;
+        rss_mdm_registration_service::enrollment::native::account(
+            &app.access.registration(),
+            &app.identity,
+            id,
+            secret,
         )
-        .await?;
-    if auth.source != rss_mdm_inventory::ReportSource::MdmApple
-        || auth.actor != proof.principal_id()
-        || auth.instance != proof.instance_id()
-    {
+        .await?
+    } else {
+        let auth = if let Some(secret) = secret {
+            let password = Password::new(secret.to_owned())?;
+            rss_mdm_registration_service::enrollment::store::enrollment_authorization(
+                &app.access.registration(),
+                &tenant,
+                id,
+                &password,
+            )
+            .await?
+        } else {
+            rss_mdm_registration_service::enrollment::store::authorization(row)?
+        };
+        let identity = app
+            .identity
+            .authenticate(
+                &app.access.authorization,
+                app.credentials.get(auth.credential_ref)?,
+            )
+            .await?;
+        Admission::password(tenant, auth, identity)?
+    };
+    if proof.data.source != rss_mdm_inventory::ReportSource::MdmApple {
         return Err(Error::Unauthorized);
     }
-    auth.authorize(&proof)?;
     proof.bind_audit(audit)?;
-    audit.target(&auth.device);
-    Ok((auth, proof))
+    audit.target(&proof.data.device);
+    Ok((proof.data.clone(), proof))
 }
 pub async fn download(
     State(app): State<Arc<HttpState>>,
@@ -76,7 +86,10 @@ pub async fn download(
 ) -> Result<Response, Error> {
     let input = input.map_err(|_| Error::Malformed)?.0;
     let apple = app.apple()?;
-    let (auth, proof) = authorized(&app, id, &input.password, &audit).await?;
+    let (auth, proof) = authorized(&app, id, Some(input.password.expose()), &audit).await?;
+    if proof.is_account() {
+        return Err(Error::Unauthorized);
+    }
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
     let control = budget.control();
@@ -86,15 +99,15 @@ pub async fn download(
             let (attempt, replayed, bytes) = tx.with_connection_context(&mut (*app, *apple, *auth, *proof, *input, *id),
                 |(app, apple, auth, proof, input, id), c| Box::pin(async move {
                     let app = *app; let apple = *apple; let auth = *auth; let proof = *proof; let input = *input; let id = *id;
-    let enrollment=request(c,proof.tenant_id(),id).await?;
-    current(&enrollment,auth,proof)?;
+    let enrollment=admitted(c,proof).await?;
     let deadline:String=enrollment.try_get("deadline").map_err(db)?;
     // Password rotation can prepare a new attempt; any previous issuance is permanently fenced.
-    sqlx::query("UPDATE mdm_apple.scep_attempts SET state='superseded' WHERE tenant_id=$1::uuid AND enrollment=$2::uuid AND password_version<>$3 AND state<>'superseded'")
-        .bind(proof.tenant_id()).bind(id.to_string()).bind(auth.version).execute(&mut *c).await.map_err(db)?;
-    let (attempt, replayed, scep_url, scep_provisioner) = prepared(c, apple, auth, proof.tenant_id(), &deadline).await?;
+    sqlx::query("UPDATE mdm_apple.scep_attempts SET state='superseded' WHERE tenant_id=$1::uuid AND enrollment=$2::uuid AND authorization_version<>$3 AND state<>'superseded'")
+        .bind(proof.data.tenant.as_str()).bind(id.to_string()).bind(auth.version).execute(&mut *c).await.map_err(db)?;
+    let (attempt, replayed, scep_url, scep_provisioner) = prepared(c, apple, auth, proof.data.tenant.as_str(), &deadline).await?;
     let bytes = apple.signer.sign(
         &profile::enrollment(&profile::EnrollmentProfile {
+            mode: profile::EnrollmentMode::Profile,
                 access_rights: apple.access_rights() as u16,
             scep_url: &scep_url,
             scep_provisioner: &scep_provisioner,
@@ -130,14 +143,14 @@ pub async fn download(
     )
         .into_response())
 }
-async fn prepared(
+pub(crate) async fn prepared(
     tx: &mut sqlx::PgConnection,
     apple: &Apple,
-    auth: &Authorization,
+    auth: &Coordinates,
     tenant: &str,
     deadline: &str,
 ) -> Result<(Uuid, bool, String, String), Error> {
-    let old=sqlx::query("SELECT id::text,state,configuration,access_rights,scep_url,scep_provisioner FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND enrollment=$2::uuid AND password_version=$3 FOR UPDATE")
+    let old=sqlx::query("SELECT id::text,state,configuration,access_rights,scep_url,scep_provisioner FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND enrollment=$2::uuid AND authorization_version=$3 FOR UPDATE")
         .bind(tenant).bind(auth.id.to_string()).bind(auth.version).fetch_optional(&mut *tx).await.map_err(db)?;
     if let Some(row) = old {
         if row.try_get::<String, _>("state").map_err(db)? != "prepared"
@@ -159,7 +172,7 @@ async fn prepared(
     }
     let id = Uuid::new_v4();
     let (issuer, scep_url, scep_provisioner) = apple.active_scep(tx, tenant).await?;
-    sqlx::query("INSERT INTO mdm_apple.scep_attempts(tenant_id,id,enrollment,password_version,configuration,state,issuer,expires_at,access_rights,scep_url,scep_provisioner) VALUES($1::uuid,$3::uuid,$2::uuid,$6,$4,'prepared',$5,$7::timestamptz,$8,$9,$10)")
+    sqlx::query("INSERT INTO mdm_apple.scep_attempts(tenant_id,id,enrollment,authorization_version,configuration,state,issuer,expires_at,access_rights,scep_url,scep_provisioner) VALUES($1::uuid,$3::uuid,$2::uuid,$6,$4,'prepared',$5,$7::timestamptz,$8,$9,$10)")
         .bind(tenant).bind(auth.id.to_string()).bind(id.to_string()).bind(apple.configuration.as_slice()).bind(issuer).bind(auth.version).bind(deadline).bind(apple.access_rights()).bind(&scep_url).bind(&scep_provisioner).execute(&mut *tx).await.map_err(db)?;
     Ok((id, false, scep_url, scep_provisioner))
 }
@@ -193,11 +206,11 @@ pub async fn challenge(
         .as_deref()
         .ok_or(Error::Unauthorized)?;
     let csr = certificate::csr(&input.x509_certificate_request.der()?)?;
-    let password = Password::new(input.scep_challenge.ok_or(Error::Unauthorized)?)?;
+    let challenge = input.scep_challenge.ok_or(Error::Unauthorized)?;
     if super::renewal::challenge(
         &app,
         &csr,
-        password.expose(),
+        &challenge,
         &input.transaction,
         provisioner,
         &audit,
@@ -208,23 +221,19 @@ pub async fn challenge(
             serde_json::json!({"allow":true,"data":{"subject":certificate::subject(csr.enrollment(),csr.attempt())}}),
         ));
     }
-    let (auth, proof) = authorized(&app, csr.enrollment(), &password, &audit).await?;
+    let (auth, proof) = authorized(&app, csr.enrollment(), Some(&challenge), &audit).await?;
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
     let control = budget.control();
     let outcome = app.audit_store.write(app.identity.tenant(), &control,
-        (&app.audit_store, apple, &auth, &proof, &csr, input.transaction.as_str(), provisioner, &audit),
-        |(store, apple, auth, proof, csr, transaction, provisioner, audit), tx| Box::pin(async move {
-            tx.with_connection_context(&mut (*apple, *auth, *proof, *csr, *transaction, *provisioner),
-                |(apple, auth, proof, csr, transaction, provisioner), c| Box::pin(async move {
+        (&app, apple, &auth, &proof, &csr, input.transaction.as_str(), provisioner, &audit),
+        |(app, apple, auth, proof, csr, transaction, provisioner, audit), tx| Box::pin(async move {
+            tx.with_connection_context(&mut (*app, *apple, *auth, *proof, *csr, *transaction, *provisioner),
+                |(_app, apple, auth, proof, csr, transaction, provisioner), c| Box::pin(async move {
                     let apple = *apple; let auth = *auth; let proof = *proof; let csr = *csr; let transaction = *transaction; let provisioner=*provisioner;
-    current(
-        &request(c, proof.tenant_id(), auth.id).await?,
-        auth,
-        proof,
-    )?;
-    let consumed=sqlx::query("UPDATE mdm_apple.scep_attempts SET state='consumed',transaction_id=$4,csr_digest=$5,spki=$6 WHERE tenant_id=$1::uuid AND id=$2::uuid AND enrollment=$3::uuid AND state='prepared' AND configuration=$7 AND password_version=$8 AND scep_provisioner=$9 AND expires_at>clock_timestamp()")
-        .bind(proof.tenant_id()).bind(csr.attempt().to_string()).bind(csr.enrollment().to_string()).bind(transaction).bind(csr.digest().as_slice()).bind(csr.spki().as_slice()).bind(apple.configuration.as_slice()).bind(auth.version).bind(provisioner).execute(&mut *c).await.map_err(db)?;
+    admitted(c,proof).await?;
+    let consumed=sqlx::query("UPDATE mdm_apple.scep_attempts SET state='consumed',transaction_id=$4,csr_digest=$5,spki=$6 WHERE tenant_id=$1::uuid AND id=$2::uuid AND enrollment=$3::uuid AND state='prepared' AND configuration=$7 AND authorization_version=$8 AND scep_provisioner=$9 AND expires_at>clock_timestamp()")
+        .bind(proof.data.tenant.as_str()).bind(csr.attempt().to_string()).bind(csr.enrollment().to_string()).bind(transaction).bind(csr.digest().as_slice()).bind(csr.spki().as_slice()).bind(apple.configuration.as_slice()).bind(auth.version).bind(provisioner).execute(&mut *c).await.map_err(db)?;
     if consumed.rows_affected() != 1 {
         return Err(Error::Unauthorized);
     }
@@ -234,7 +243,7 @@ pub async fn challenge(
             let fingerprint = rss_mdm_registration_service::enrollment::digest(&(auth.id, auth.version, transaction, csr.digest(), csr.spki()));
             let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("apple-scep:{}:consume", csr.attempt()),
                 fingerprint.as_bytes(), 200, "success", Some(auth.id)).map_err(Error::from)?;
-            store.append(tx, &fact, false).await.map_err(Error::from)?;
+            app.audit_store.append(tx, &fact, false).await.map_err(Error::from)?;
             audit.mark_commit_started();
             Ok(())
         }),
@@ -319,10 +328,10 @@ pub async fn notify(
                                             .map_err(db)?
                                             != csr.digest()
                                         || attempt
-                                            .try_get::<i64, _>("password_version")
+                                            .try_get::<i64, _>("authorization_version")
                                             .map_err(db)?
                                             != row
-                                                .try_get::<i64, _>("password_version")
+                                                .try_get::<i64, _>("native_version")
                                                 .map_err(db)?
                                     {
                                         return Err(Error::Unauthorized);
@@ -378,7 +387,7 @@ pub async fn attempt(
     apple: &Apple,
     leaf: &certificate::CheckedLeaf,
 ) -> Result<PgRow, Error> {
-    let row=sqlx::query("SELECT state,configuration,spki,fingerprint,password_version,transaction_id,csr_digest,registration::text FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND id=$2::uuid AND enrollment=$3::uuid AND issuer=$4 FOR UPDATE")
+    let row=sqlx::query("SELECT state,configuration,spki,fingerprint,authorization_version,transaction_id,csr_digest,registration::text FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND id=$2::uuid AND enrollment=$3::uuid AND issuer=$4 FOR UPDATE")
         .bind(tenant).bind(leaf.attempt().to_string()).bind(leaf.enrollment().to_string()).bind(leaf.issuer().as_slice()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
     if !matches!(
         row.try_get::<String, _>("state").map_err(db)?.as_str(),
@@ -433,19 +442,7 @@ pub async fn bind(
     udid: &str,
     audit: &RequestAudit,
 ) -> Result<(), Error> {
-    let tenant = app.identity.tenant().to_string();
-    // Never keep a PG lock while refreshing the frozen browser authorization.
-    let mut tx = app.access.begin(&tenant).await?;
-    let row = request(&mut tx, &tenant, leaf.enrollment()).await?;
-    let auth = rss_mdm_registration_service::enrollment::store::authorization(row)?;
-    tx.rollback().await.map_err(db)?;
-    let proof = app
-        .identity
-        .authenticate(
-            &app.access.authorization,
-            app.credentials.get(auth.credential_ref)?,
-        )
-        .await?;
+    let (auth, proof) = authorized(app, leaf.enrollment(), None, audit).await?;
     let fingerprint = rss_mdm_registration_service::enrollment::digest(&(
         leaf.attempt(),
         leaf.fingerprint(),
@@ -507,8 +504,8 @@ struct BindInputs<'a> {
     app: &'a HttpState,
     leaf: &'a certificate::CheckedLeaf,
     udid: &'a str,
-    auth: &'a rss_mdm_registration_service::enrollment::Authorization,
-    proof: &'a crate::authorization::context::AuthorizedPrincipal,
+    auth: &'a Coordinates,
+    proof: &'a Admission,
     audit: &'a RequestAudit,
     facts: Vec<rss_mdm_audit_integration::Fact>,
 }
@@ -529,27 +526,23 @@ async fn bind_on(tx: &mut sqlx::PgConnection, inputs: &mut BindInputs<'_>) -> Re
     let proof = *proof;
     let audit = *audit;
     let tenant = app.identity.tenant().to_string();
-    current(&request(tx, &tenant, auth.id).await?, auth, proof)?;
+    admitted(tx, proof).await?;
     let attempt = attempt(tx, &tenant, app.apple()?, leaf).await?;
     if attempt.try_get::<String, _>("state").map_err(db)? != "consumed"
-        || attempt.try_get::<i64, _>("password_version").map_err(db)? != auth.version
+        || attempt
+            .try_get::<i64, _>("authorization_version")
+            .map_err(db)?
+            != auth.version
     {
         return Err(Error::Unauthorized);
     }
     let credential = app.mount.credential(leaf.fingerprint())?;
     let receipt = app
         .devices
-        .bind_in(
+        .bind_native_in(
             tx,
             proof,
             &credential,
-            &crate::device::BindRegistration {
-                operation_id: auth.operation,
-                request_id: auth.id,
-                expected_generation: auth.expected_generation,
-                source: rss_mdm_inventory::ReportSource::MdmApple,
-            },
-            auth.device.clone(),
             [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()],
             facts,
         )
@@ -575,7 +568,7 @@ async fn bind_on(tx: &mut sqlx::PgConnection, inputs: &mut BindInputs<'_>) -> Re
     sqlx::query("INSERT INTO mdm_apple.devices(tenant_id,registration,udid,state,access_rights) SELECT $1::uuid,$2::uuid,$3,'pending_token',access_rights FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND id=$4")
         .bind(&tenant).bind(receipt.registration.to_string()).bind(udid).bind(leaf.attempt()).execute(&mut *tx).await.map_err(db)?;
     crate::notify(tx, "apple").await.map_err(db)?;
-    rss_mdm_registration_service::enrollment::store::mark_bound_in(tx, &tenant, auth).await?;
+    proof.mark_bound_in(tx).await?;
     proof.bind_audit(audit)?;
     audit.target(&auth.device);
     audit.registration(receipt.registration);
@@ -601,8 +594,8 @@ pub async fn progress_in(
             .fetch_one(&mut *c).await.map_err(db)?;
         (issued, issued)
     } else {
-        let attempt: (bool, bool) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND enrollment=$2 AND password_version=$3 AND state<>'superseded'),EXISTS(SELECT 1 FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND enrollment=$2 AND password_version=$3 AND state<>'superseded' AND certificate IS NOT NULL)")
-        .bind(&context.tenant).bind(context.enrollment).bind(context.password_version)
+        let attempt: (bool, bool) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND enrollment=$2 AND authorization_version=$3 AND state<>'superseded'),EXISTS(SELECT 1 FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND enrollment=$2 AND authorization_version=$3 AND state<>'superseded' AND certificate IS NOT NULL)")
+        .bind(&context.tenant).bind(context.enrollment).bind(context.authorization_version)
         .fetch_one(&mut *c).await.map_err(db)?;
         attempt
     };

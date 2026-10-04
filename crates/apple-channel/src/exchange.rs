@@ -11,11 +11,13 @@ struct Exchange {
     user: String,
     command: Option<uuid::Uuid>,
     status: protocol::Status,
+    user_access: Option<crate::account_enrollment::UserAccess>,
 }
 pub fn prepare(
     apple: Arc<Apple>,
     dictionary: plist::Dictionary,
     bytes: Vec<u8>,
+    user_access: Option<crate::account_enrollment::UserAccess>,
 ) -> Result<Box<dyn ports::AppleExchange>, Error> {
     let message = protocol::management(&dictionary)?;
     let udid = message.udid.to_owned();
@@ -30,6 +32,7 @@ pub fn prepare(
         user,
         command,
         status,
+        user_access,
     }))
 }
 impl ports::AppleExchange for Exchange {
@@ -42,9 +45,11 @@ impl ports::AppleExchange for Exchange {
         p: &'a DevicePrincipal,
     ) -> ports::Pending<'a, ()> {
         Box::pin(async move {
-            crate::flow_store::current(c, p, &self.udid, &self.user)
-                .await
-                .map_err(Into::into)
+            crate::flow_store::current(c, p, &self.udid, &self.user).await?;
+            if let Some(access) = &self.user_access {
+                access.current_in(c).await?;
+            }
+            Ok(())
         })
     }
     fn reception<'a>(

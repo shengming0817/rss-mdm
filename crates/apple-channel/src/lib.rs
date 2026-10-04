@@ -1,4 +1,5 @@
 //! Apple MDM protocol, SCEP lifecycle and APNs transport.
+pub mod account_enrollment;
 mod agent_collection;
 pub mod attempt;
 mod checkin;
@@ -22,7 +23,6 @@ mod webhook;
 pub use database::Store;
 pub use error::Error;
 use rss_mdm_apple_mdm::{profile, protocol};
-use rss_mdm_authorization_service as authorization;
 use rss_mdm_certificate::apple as certificate;
 use rss_mdm_execution_service as execution;
 mod diagnostic;
@@ -54,6 +54,8 @@ pub struct Apple {
     pub(crate) notify_key: ring::hmac::Key,
     configuration: [u8; 32],
     providers: Arc<rss_mdm_pki_service::providers::Providers>,
+    pub(crate) account_keys:
+        std::collections::BTreeMap<String, certificate::ManagedAccountTokenSigner>,
 }
 pub struct Health {
     pub push_available: bool,
@@ -143,7 +145,15 @@ impl Apple {
             notify_key,
             configuration,
             providers,
+            account_keys: Default::default(),
         }
+    }
+    pub fn with_account_keys(
+        mut self,
+        keys: std::collections::BTreeMap<String, certificate::ManagedAccountTokenSigner>,
+    ) -> Self {
+        self.account_keys = keys;
+        self
     }
     pub(crate) async fn active_scep(
         &self,
@@ -195,6 +205,7 @@ pub fn browser_routes(app: Arc<HttpState>, envelope: boundary::Envelope) -> axum
             )
             .route("/api/v1/apple/scep/challenge", post(enrollment::challenge))
             .route("/api/v1/apple/scep/notify", post(enrollment::notify))
+            .merge(account_enrollment::routes())
             .with_state(app)
             .layer(axum::extract::DefaultBodyLimit::max(128 * 1024)),
         envelope,
@@ -284,6 +295,7 @@ impl Apple {
 }
 
 pub struct HttpState {
+    pub authentication: account_enrollment::Authentication,
     pub agent_policy: Option<rss_mdm_registration_service::agent::Policy>,
     pub mount: crate::device::ChannelMount,
     pub audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
@@ -310,6 +322,8 @@ pub async fn retire_in(
     registration: uuid::Uuid,
 ) -> Result<(), Error> {
     use crate::database::db;
+    sqlx::query("UPDATE mdm_apple.account_flows SET revoked=true,material=NULL,profile=NULL WHERE tenant_id=$1::uuid AND enrollment=(SELECT request_id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2)")
+        .bind(tenant).bind(registration).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("UPDATE mdm_apple.devices SET state='retired',bootstrap=NULL WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("UPDATE mdm_apple.channels SET state='retired',material=NULL,material_digest=NULL,push_lease_until=NULL WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("UPDATE mdm_apple.scep_attempts SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut *tx).await.map_err(db)?;
@@ -370,3 +384,6 @@ impl Apple {
 
 /// This capability's closed privileges in the shared access connection.
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
+
+/// Forward migration for account-driven protocol state and general SCEP authority revision.
+pub const ACCOUNT_ENROLLMENT_SQL: &str = include_str!("../schema/account-enrollment.sql");

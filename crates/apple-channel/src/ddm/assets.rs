@@ -38,6 +38,7 @@ pub async fn asset(
     axum::extract::State(app): axum::extract::State<std::sync::Arc<crate::HttpState>>,
     axum::Extension(peer): axum::Extension<rss_mdm_certificate::HandshakePeer>,
     axum::Extension(audit): axum::Extension<rss_mdm_audit_integration::RequestAudit>,
+    headers: axum::http::HeaderMap,
     axum::extract::Path((operation, identifier)): axum::extract::Path<(Uuid, String)>,
 ) -> Result<axum::response::Response, Error> {
     use axum::response::IntoResponse;
@@ -55,7 +56,28 @@ pub async fn asset(
     audit.identify_device(p.registration());
     audit.target(p.device());
     audit.registration(p.registration());
+    let mut tx = app.access.begin_read(&p.tenant().to_string()).await?;
+    let user:Option<String>=sqlx::query_scalar("SELECT user_key FROM mdm_apple.declarations WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3 AND generation=$4 AND retired_at IS NULL")
+        .bind(p.tenant().to_string()).bind(operation).bind(p.registration()).bind(p.generation()).fetch_optional(&mut *tx).await.map_err(db)?;
+    tx.rollback().await.map_err(db)?;
+    let user_access = if user.as_deref().is_some_and(|u| !u.is_empty()) {
+        match crate::account_enrollment::authorize_user(&app, leaf.enrollment(), &headers).await {
+            Ok(access) => access,
+            Err(Error::Unauthorized) => {
+                return crate::account_enrollment::reauthentication(
+                    &app,
+                    leaf.enrollment(),
+                    &audit,
+                )
+                .await;
+            }
+            Err(error) => return Err(error),
+        }
+    } else {
+        None
+    };
     let reader = Box::new(AssetRead {
+        user_access,
         key: apple.protection.clone(),
         operation,
         identifier,
@@ -80,6 +102,7 @@ pub async fn asset(
 }
 
 struct AssetRead {
+    user_access: Option<crate::account_enrollment::UserAccess>,
     key: std::sync::Arc<Protector>,
     operation: Uuid,
     identifier: String,
@@ -91,6 +114,9 @@ impl channels::AppleAssetRead for AssetRead {
         p: &'a DevicePrincipal,
     ) -> channels::Pending<'a, Option<native::ddm::AssetBinding>> {
         Box::pin(async move {
+            if let Some(access) = &self.user_access {
+                access.current_in(c).await?;
+            }
             asset_binding(c, &self.key, p, self.operation, &self.identifier)
                 .await
                 .map_err(Into::into)

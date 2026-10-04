@@ -1,13 +1,16 @@
 WITH tables AS (
  SELECT c.* FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_apple'
 ), updates(relation,col) AS (VALUES
+ ('account_organizations','operation'),('account_bindings','operation'),('account_organizations','domain'),('account_organizations','server_uuid'),('account_organizations','signing_key'),('account_organizations','enabled'),('account_organizations','revision'),
+ ('account_bindings','principal'),('account_bindings','instance'),('account_bindings','enabled'),('account_bindings','revision'),
+ ('account_flows','account'),('account_flows','binding_revision'),('account_flows','cookie_hash'),('account_flows','enrollment'),('account_flows','authorization_version'),('account_flows','token_hash'),('account_flows','material'),('account_flows','profile'),('account_flows','revoked'),
  ('scep_attempts','state'),('scep_attempts','transaction_id'),('scep_attempts','csr_digest'),('scep_attempts','spki'),('scep_attempts','serial'),('scep_attempts','fingerprint'),('scep_attempts','certificate'),('scep_attempts','registration'),('scep_attempts','not_before'),('scep_attempts','not_after'),
  ('devices','state'),('devices','identity_health'),('devices','bootstrap'),('devices','bootstrap_revision'),
  ('channels','state'),('channels','material'),('channels','material_digest'),('channels','token_revision'),('channels','next_push'),('channels','push_id'),('channels','push_lease_until'),('channels','push_status'),('channels','push_outcome'),('channels','push_failures'),
  ('declarations','retired_at'),('profiles','retired_at'),('attempts','native_outcome'),('attempts','accepted'),('attempts','state'),('attempts','response'),('attempts','response_digest'),('attempts','received_at'),('attempts','next_attempt')
 )
 SELECT has_schema_privilege(current_user,'mdm_apple','USAGE')
- AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['attempts','channels','declarations','devices','profiles','scep_attempts','status_reports','trust_deliveries'] FROM tables WHERE relkind='r')
+ AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['account_bindings','account_flows','account_organizations','attempts','channels','declarations','devices','profiles','scep_attempts','status_reports','trust_deliveries'] FROM tables WHERE relkind='r')
  AND NOT EXISTS(SELECT 1 FROM tables WHERE relkind NOT IN ('r','i'))
  AND NOT EXISTS(SELECT 1 FROM tables t WHERE relkind='r' AND (
   NOT relrowsecurity OR NOT relforcerowsecurity OR relpersistence<>'p' OR relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)
