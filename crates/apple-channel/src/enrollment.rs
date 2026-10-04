@@ -590,14 +590,22 @@ pub struct ProgressEvidence {
     pub first_authenticated_check_in: bool,
     pub channel_ready: bool,
 }
-/// Current attempt facts; stale password versions cannot appear in the new handoff's progress.
+/// Unbound handoffs use the current password version; bound facts follow the active credential.
 pub async fn progress_in(
     c: &mut sqlx::PgConnection,
     context: &rss_mdm_registration_service::enrollment::read::Context,
 ) -> Result<ProgressEvidence, Error> {
-    let attempt: (bool, bool) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND enrollment=$2 AND password_version=$3 AND state<>'superseded'),EXISTS(SELECT 1 FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND enrollment=$2 AND password_version=$3 AND state<>'superseded' AND certificate IS NOT NULL)")
+    let attempt = if let Some(registration) = &context.registration {
+        let issued: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.scep_attempts s JOIN mdm_access.credentials k ON k.tenant_id=s.tenant_id AND k.registration=s.registration AND k.locator=encode(s.fingerprint,'hex') WHERE s.tenant_id=$1::uuid AND s.enrollment=$2 AND s.registration=$3 AND s.state='bound' AND s.certificate IS NOT NULL AND k.channel='mdm' AND k.state='active')")
+            .bind(&context.tenant).bind(context.enrollment).bind(registration.id)
+            .fetch_one(&mut *c).await.map_err(db)?;
+        (issued, issued)
+    } else {
+        let attempt: (bool, bool) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND enrollment=$2 AND password_version=$3 AND state<>'superseded'),EXISTS(SELECT 1 FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND enrollment=$2 AND password_version=$3 AND state<>'superseded' AND certificate IS NOT NULL)")
         .bind(&context.tenant).bind(context.enrollment).bind(context.password_version)
         .fetch_one(&mut *c).await.map_err(db)?;
+        attempt
+    };
     let state = if let Some(registration) = &context.registration {
         sqlx::query_scalar::<_, String>(
             "SELECT state FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2",

@@ -58,7 +58,7 @@ Agent 使用独立的持久授权与 mTLS 生命周期，见 [Agent 集成指南
 
 唯一详情入口 `GET /api/v1/enrollments/{id}` 同时返回生命周期、`instructions` 和 `progress`。Windows 引导包含注册服务器、Discovery 地址、唯一规范用户名和固定的 Full／Device 选择；macOS 引导提供现有 `/api/v1/enrollments/{id}/profile` 地址，以创建时的口令 POST 下载签名 `.mobileconfig`。macOS 用户需在系统设置中确认安装，采用 profile-based device enrollment；用户身份授权不等于 Apple User Enrollment。没有管理员业务权限的员工只能查询／续接／取消自己在当前租户创建的注册。
 
-`profilePrepared` 的 observed 表示服务器准备过当前密码版本的 profile；Windows 返回 not_applicable。`certificateIssued` 是服务器观察到的签发事实，丢失的 SCEP notify 在首次 Authenticate 补齐前仍为 false。下载 profile 或证书签发均不代表完成。`firstAuthenticatedCheckIn` 表示 Windows 双向 SyncML 认证完成，或 Apple Authenticate 已绑定设备；Apple 还必须收到 TokenUpdate。系统弹窗没有服务端观察来源，`systemConfirmation` 始终为 unknown。
+`profilePrepared` 的 observed 表示服务器准备过当前交接的 profile；未绑定时按当前密码版本隔离，绑定后跟随当前注册及活动凭据对应的 profile／证书，合法续证或 resume 不会把已可管理设备回退为未注册。Windows 返回 not_applicable。`certificateIssued` 是服务器观察到的签发事实，丢失的 SCEP notify 在首次 Authenticate 补齐前仍为 false。下载 profile 或证书签发均不代表完成。`firstAuthenticatedCheckIn` 表示 Windows 双向 SyncML 认证完成，或 Apple Authenticate 已绑定设备；Apple 还必须收到 TokenUpdate。系统弹窗没有服务端观察来源，`systemConfirmation` 始终为 unknown。
 
 `managementReady` 同时检查当前活动注册、当前可用凭据／PKI 信任、首次认证和通道准入。撤销、替代、证书或 CRL 失效后可回退为 false。Windows 首次认证事实保存在注册记录中，临时会话清理不会抹掉它；旧数据迁移后该事实为空，需下一次真实认证才能建立。
 
