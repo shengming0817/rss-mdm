@@ -102,6 +102,23 @@
       "read_write": true,
       "updates": [],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_windows",
+      "table": "renewal_intents",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_windows",
+      "table": "trust_deliveries",
+      "read_write": true,
+      "updates": [
+        "results",
+        "confirmed"
+      ],
+      "delete_policy": "existsselect1frommdm_access.management_sessionsswheres.tenant_id=trust_deliveries.tenant_idands.registration=trust_deliveries.registrationands.session_id=trust_deliveries.session::textands.expires_at<clock_timestamp"
     }
   ],
   "functions": [],

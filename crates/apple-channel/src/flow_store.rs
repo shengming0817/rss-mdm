@@ -231,14 +231,14 @@ impl channels::ApplePush for Store {
             Ok(Some(changed))
         })
     }
-    fn renewal_due<'a>(
+    fn maintenance_due<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
         registration: Uuid,
     ) -> Pending<'a, bool> {
         Box::pin(async move {
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND registration=$2::uuid AND phase='renew' AND state IN ('pending','sent','not_now') AND next_attempt<=clock_timestamp() AND deadline>clock_timestamp())").bind(tenant).bind(registration).fetch_one(c).await.map_err(storage)
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND registration=$2::uuid AND phase='renew' AND state IN ('pending','sent','not_now') AND next_attempt<=clock_timestamp() AND deadline>clock_timestamp()) OR EXISTS(SELECT 1 FROM mdm_pki.trust t WHERE t.tenant_id=$1::uuid AND t.purpose='apple' AND NOT EXISTS(SELECT 1 FROM mdm_pki.installations i WHERE i.tenant_id=t.tenant_id AND i.purpose=t.purpose AND i.registration=$2::uuid AND i.revision=t.revision) AND NOT EXISTS(SELECT 1 FROM mdm_apple.attempts a JOIN mdm_apple.trust_deliveries d ON (d.tenant_id,d.id)=(a.tenant_id,a.trust) WHERE d.tenant_id=t.tenant_id AND d.registration=$2::uuid AND d.revision=t.revision AND (a.ordinal=32 OR a.next_attempt>clock_timestamp()) AND a.ordinal=(SELECT max(b.ordinal) FROM mdm_apple.attempts b WHERE b.tenant_id=a.tenant_id AND b.trust=a.trust)))").bind(tenant).bind(registration).fetch_one(c).await.map_err(storage)
         })
     }
 }
@@ -378,6 +378,19 @@ impl channels::Apple for super::Apple {
             crate::native::resolve(c, &self.protection, p, command)
                 .await
                 .map_err(Into::into)
+        })
+    }
+    fn trust<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        p: &'a DevicePrincipal,
+        audit: &'a rss_mdm_audit_integration::RequestAudit,
+    ) -> Pending<'a, channels::Reply> {
+        Box::pin(async move {
+            let (bytes, facts) = crate::trust_installation::send(c, self, p, audit)
+                .await
+                .map_err(channels::Rejection::from)?;
+            Ok(channels::Reply { bytes, facts })
         })
     }
     fn collection<'a>(

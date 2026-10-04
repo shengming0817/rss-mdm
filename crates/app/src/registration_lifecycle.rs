@@ -17,6 +17,9 @@ impl rss_mdm_registration_service::Retirement for Bridge {
         >,
     > {
         Box::pin(async move {
+            rss_mdm_pki_service::certificates::revoke_registration_in(tx, tenant, registration)
+                .await
+                .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;
             rss_mdm_execution_service::retire_in(tx, facts, tenant, registration)
                 .await
                 .map_err(|_| rss_mdm_registration_service::Error::Retirement)?;

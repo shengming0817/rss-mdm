@@ -1,4 +1,5 @@
 //! Pinned CA, durable grant/issuance state and real TLS possession.
+mod maintenance;
 use crate::device::test_support::{admin, case_a, case_b, options};
 use crate::test_support::agent_tls::peer;
 use crate::{
@@ -14,13 +15,24 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use uuid::Uuid;
 use x509_cert::der::Decode;
 fn root() -> PathBuf {
-    PathBuf::from(std::env::var("MDM_APPLE_FIXTURES").unwrap())
+    PathBuf::from(std::env::var("MDM_AGENT_PKI_FIXTURES").unwrap())
 }
 fn now() -> i64 {
     SystemClock.unix_seconds().unwrap()
 }
 fn deployment() -> serde_json::Value {
-    serde_json::from_slice(&std::fs::read(root().join("agent-pki.json")).unwrap()).unwrap()
+    serde_json::from_slice(
+        &std::fs::read(
+            root()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("agent-pki.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap()
 }
 struct NoNative;
 impl NativeAdmission for NoNative {
@@ -33,10 +45,45 @@ impl NativeAdmission for NoNative {
     }
 }
 async fn service(value: serde_json::Value) -> anyhow::Result<Arc<Service>> {
+    service_with_provider(value, None).await
+}
+async fn service_with_provider(
+    value: serde_json::Value,
+    kid: Option<&str>,
+) -> anyhow::Result<Arc<Service>> {
     let db = Database::connect(options("mdm_access")?).await?;
     let audit = db.audit_store(&crate::config::AuditConfig::Plain).await?;
+    let providers = if let Some(kid) = kid {
+        let mut config: Vec<crate::device_pki::Provider> = serde_json::from_slice(&std::fs::read(
+            root()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("device-pki.json"),
+        )?)?;
+        for p in &mut config {
+            if p.purpose == rss_mdm_agent_wire::pki::Purpose::Agent {
+                p.kid = kid.into();
+            }
+        }
+        crate::device_pki::providers(&config)?
+    } else {
+        fixture_providers()?
+    };
     let config: crate::agent_pki::Config = serde_json::from_value(value)?;
-    let pki = config.load(audit.clone(), Arc::new(SystemClock))?.unwrap();
+    let pki = config
+        .load(audit.clone(), Arc::new(SystemClock), providers.clone())?
+        .unwrap();
+    let registry = rss_mdm_pki_service::registry::Registry::new(
+        db.archive_pool(),
+        audit.clone(),
+        vec![pki.issuer.trust().trust.clone()],
+        fixture_providers()?,
+    );
+    registry
+        .admit(rss_request_context::TenantId::parse(case_a())?, now())
+        .await?;
     Ok(Arc::new(Service::new(Assembly {
         tenant: rss_request_context::TenantId::parse(case_a())?,
         store: db.registration(),
@@ -174,9 +221,8 @@ async fn explicit_development_limit_and_unknown_result_remain_auditable() -> any
     );
     value["lifetime"]["days"] = 3651.into();
     assert!(service(value).await.is_err());
-    let mut value = deployment();
-    value["kid"] = "absent-agent-key".into();
-    let unknown = service(value).await?;
+    let value = deployment();
+    let unknown = service_with_provider(value, Some("absent-agent-key")).await?;
     let g = grant()?;
     let r = unknown.create(&p, &g, &audit()).await?;
     let input = signing(&g, r.grant_id)?;
@@ -247,9 +293,12 @@ async fn explicit_development_limit_and_unknown_result_remain_auditable() -> any
         .unwrap();
     assert_eq!(
         recovered.code,
-        wire::ErrorCode::PermissionDenied,
-        "a new provisioner cannot replace the original unknown issuer"
+        wire::ErrorCode::MalformedRequest,
+        "empty recovery chains fail before adopting any signing result"
     );
+    let still_unknown = restarted.issue(&input, &audit()).await.unwrap_err();
+    assert_eq!(still_unknown.code, wire::ErrorCode::IssuanceUnknown);
+    assert_eq!(still_unknown.issuance_id, first.issuance_id);
     let mut changed = input.clone();
     changed.operation_id = Uuid::new_v4();
     assert_eq!(
@@ -265,8 +314,7 @@ async fn provisioner_rejects_substituted_csr_and_consumed_token() -> anyhow::Res
     use ring::{rand::SystemRandom, signature};
     use sha2::{Digest, Sha256};
     let csr = VerifiedAgentCsr::verify(&std::fs::read(root().join("agent.der"))?)?;
-    let value = deployment();
-    let url = format!("{}/sign", value["ca_url"].as_str().unwrap());
+    let url = format!("{}/sign", std::env::var("MDM_STEP_CA_URL")?);
     let key =
         signature::RsaKeyPair::from_pkcs8(&std::fs::read(root().join("agent-provisioner.pk8"))?)
             .unwrap();
@@ -605,5 +653,516 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
     drop(anonymous);
     assert!(owner.shutdown().join().await?.is_clean());
     host.close().await?;
+    Ok(())
+}
+
+fn fixture_providers() -> anyhow::Result<Arc<rss_mdm_pki_service::providers::Providers>> {
+    let config: Vec<crate::device_pki::Provider> = serde_json::from_slice(&std::fs::read(
+        root()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("device-pki.json"),
+    )?)?;
+    Ok(crate::device_pki::providers(&config)?)
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=agent.pki: actual second CA, TLS ACK and durable rotation"]
+async fn rotation_requires_installed_trust_and_published_revocation_before_retirement()
+-> anyhow::Result<()> {
+    use rss_mdm_agent_wire::pki::{Acknowledgement, Mode, Purpose, Trust};
+    use rss_mdm_pki_service::registry::{Action, Registry, Rotation, Transition};
+    let s = service(deployment()).await?;
+    let p = admin(case_a(), "admin-a").await?;
+    let g = grant()?;
+    let r = s.create(&p, &g, &audit()).await?;
+    let request = signing(&g, r.grant_id)?;
+    let candidate = s.issue(&request, &audit()).await?;
+    let evidence = peer(s.trust(), &chain(&candidate)?, &root()).await?;
+    let activation = wire::ActivationRequest {
+        wire_version: 1,
+        issuance_id: candidate.issuance_id,
+        operation_id: Uuid::new_v4(),
+    };
+    let receipt = s.activate(&evidence, &activation, &audit()).await?;
+    let db = Database::connect(options("mdm_access")?).await?;
+    let audit_store = db.audit_store(&crate::config::AuditConfig::Plain).await?;
+    let binding = s.trust().trust.clone();
+    let registry = Registry::new(
+        db.archive_pool(),
+        audit_store.clone(),
+        vec![binding.clone()],
+        fixture_providers()?,
+    );
+    let previous = registry.trust(Purpose::Agent)?;
+    let next_root = PathBuf::from(std::env::var("MDM_AGENT_PKI_CANDIDATE_FIXTURES")?);
+    let next: Trust = serde_json::from_slice(&std::fs::read(next_root.join("agent-trust.json"))?)?;
+    let new_digest = next.issuers[0].digest.clone();
+    assert_ne!(new_digest, previous.issuers[0].digest);
+    let mut proposal = previous.clone();
+    proposal.revision += 1;
+    let mut added = next.issuers[0].clone();
+    added.mode = Mode::Prepared;
+    proposal.issuers.push(added);
+    let rotation = Rotation {
+        id: Uuid::new_v4(),
+        purpose: Purpose::Agent,
+        expected_revision: previous.revision,
+        candidate: proposal,
+    };
+    registry.prepare(&p, &rotation, &audit(), now()).await?;
+    let mut approve = Transition {
+        id: rotation.id,
+        expected_revision: registry.trust(Purpose::Agent)?.revision,
+        action: Action::Approve,
+    };
+    assert!(
+        registry
+            .transition(&p, Purpose::Agent, &approve, &audit(), now())
+            .await
+            .is_err()
+    );
+    let trust = registry.trust(Purpose::Agent)?;
+    s.acknowledge_trust(
+        &evidence,
+        &Acknowledgement {
+            operation: Uuid::new_v4(),
+            version: 1,
+            revision: trust.revision,
+            digest: trust.installation_digest(),
+        },
+        &audit(),
+    )
+    .await?;
+    registry
+        .transition(&p, Purpose::Agent, &approve, &audit(), now())
+        .await?;
+    let trust = registry.trust(Purpose::Agent)?;
+    s.acknowledge_trust(
+        &evidence,
+        &Acknowledgement {
+            operation: Uuid::new_v4(),
+            version: 1,
+            revision: trust.revision,
+            digest: trust.installation_digest(),
+        },
+        &audit(),
+    )
+    .await?;
+    approve.expected_revision = trust.revision;
+    approve.action = Action::Activate;
+    registry
+        .transition(&p, Purpose::Agent, &approve, &audit(), now())
+        .await?;
+    assert_eq!(binding.active()?.digest, new_digest);
+    // An actual CA request follows the newly active generation.
+    let newer = grant()?;
+    let grant_receipt = s.create(&p, &newer, &audit()).await?;
+    let issued = s
+        .issue(&signing(&newer, grant_receipt.grant_id)?, &audit())
+        .await?;
+    let verified = binding.verify(
+        &chain(&issued)?
+            .into_iter()
+            .map(tokio_rustls::rustls::pki_types::CertificateDer::from)
+            .collect::<Vec<_>>(),
+        now(),
+    )?;
+    assert_eq!(verified.digest, new_digest);
+    let retire = Transition {
+        id: rotation.id,
+        expected_revision: registry.trust(Purpose::Agent)?.revision,
+        action: Action::Retire,
+    };
+    assert!(
+        registry
+            .transition(&p, Purpose::Agent, &retire, &audit(), now())
+            .await
+            .is_err(),
+        "live old certificate cannot retire"
+    );
+    let devices =
+        crate::device::DeviceService::new(db.registration(), case_a().into(), audit_store.clone());
+    devices
+        .revoke(
+            &p,
+            &receipt.runtime.device_id,
+            receipt.runtime.registration_id,
+            Uuid::new_v4(),
+        )
+        .await?;
+    assert!(
+        registry
+            .transition(&p, Purpose::Agent, &retire, &audit(), now())
+            .await
+            .is_err(),
+        "revoke submission is not publication"
+    );
+    tokio::time::timeout(Duration::from_secs(90), async {
+        loop {
+            registry.sweep(|| Ok(now())).await?;
+            if registry
+                .transition(&p, Purpose::Agent, &retire, &audit(), now())
+                .await
+                .is_ok()
+            {
+                return anyhow::Ok(());
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!("actual signed revoke publication did not unblock retirement")
+    })??;
+    let final_trust = registry.trust(Purpose::Agent)?;
+    assert_eq!(final_trust.issuers.len(), 1);
+    assert_eq!(final_trust.issuers[0].digest, new_digest);
+    let restarted = service(deployment()).await?;
+    assert_eq!(restarted.trust().trust.public()?, final_trust);
+
+    // A management replay returns the original receipt after restart, never a new rotation.
+    let restored = Registry::new(
+        db.archive_pool(),
+        audit_store,
+        vec![restarted.trust().trust.clone()],
+        fixture_providers()?,
+    );
+    assert_eq!(
+        restored
+            .prepare(&p, &rotation, &audit(), now())
+            .await?
+            .revision,
+        previous.revision + 1
+    );
+    db.close().await;
+    Ok(())
+}
+
+// Only signed publication fixtures use the disposable CA keys; positive issuance uses step-ca.
+async fn publication_fixture(
+    root: &std::path::Path,
+    encoded: &str,
+    offline: bool,
+    at: i64,
+    revoked: Option<Vec<u8>>,
+) -> anyhow::Result<String> {
+    use x509_cert::{
+        crl::{CertificateList, RevokedCert},
+        der::{Encode, asn1::OctetString},
+        ext::pkix::crl::CrlNumber,
+        serial_number::SerialNumber,
+        time::Time,
+    };
+    let mut list = CertificateList::from_der(&STANDARD.decode(encoded)?)?;
+    let time = |n: i64| Time::try_from(std::time::UNIX_EPOCH + Duration::from_secs(n as u64));
+    list.tbs_cert_list.this_update = time(at)?;
+    list.tbs_cert_list.next_update = Some(time(at + 86400)?);
+    for extension in list.tbs_cert_list.crl_extensions.as_mut().unwrap() {
+        if extension.extn_id.to_string() == "2.5.29.20" {
+            let number = CrlNumber::from_der(extension.extn_value.as_bytes())?;
+            let old = number
+                .0
+                .as_bytes()
+                .iter()
+                .fold(0_u64, |n, b| n * 256 + u64::from(*b));
+            extension.extn_value = OctetString::new(
+                CrlNumber(x509_cert::der::asn1::Uint::new(&(old + 1).to_be_bytes())?).to_der()?,
+            )?;
+        }
+    }
+    list.tbs_cert_list.revoked_certificates = revoked.map(|serial| {
+        vec![RevokedCert {
+            serial_number: SerialNumber::new(&serial).unwrap(),
+            revocation_date: time(at).unwrap(),
+            crl_entry_extensions: None,
+        }]
+    });
+    let scratch = tempfile::tempdir()?;
+    let input = scratch.path().join("publication-tbs.der");
+    let output = scratch.path().join("signature.der");
+    std::fs::write(&input, list.tbs_cert_list.to_der()?)?;
+    let owner = if offline {
+        root.parent().unwrap().join(format!(
+            "{}-offline",
+            root.file_name().unwrap().to_str().unwrap()
+        ))
+    } else {
+        root.to_owned()
+    };
+    let key = if offline {
+        owner.join("root_ca_key")
+    } else {
+        owner.join("step/secrets/intermediate_ca_key")
+    };
+    let password = owner.join(if offline {
+        "root-password"
+    } else {
+        "step-password"
+    });
+    let status = tokio::time::timeout(
+        Duration::from_secs(15),
+        tokio::process::Command::new("openssl")
+            .arg("dgst")
+            .arg("-sha256")
+            .arg("-sign")
+            .arg(key)
+            .arg("-passin")
+            .arg(format!("file:{}", password.display()))
+            .arg("-out")
+            .arg(&output)
+            .arg(&input)
+            .kill_on_drop(true)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status(),
+    )
+    .await??;
+    anyhow::ensure!(status.success(), "fixture CRL signing failed");
+    list.signature = x509_cert::der::asn1::BitString::from_bytes(&std::fs::read(output)?)?;
+    Ok(STANDARD.encode(list.to_der()?))
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=agent.pki: actual offline root signature and durable CRL"]
+async fn root_revocation_is_accepted_durably_and_denies_live_issuer_without_erasing_history()
+-> anyhow::Result<()> {
+    use rss_mdm_agent_wire::pki::Purpose;
+    use rss_mdm_pki_service::{
+        maintenance::{Publication, PublicationSet},
+        registry::Registry,
+    };
+    let s = service(deployment()).await?;
+    let p = admin(case_a(), "admin-a").await?;
+    let g = grant()?;
+    let r = s.create(&p, &g, &audit()).await?;
+    let candidate = s.issue(&signing(&g, r.grant_id)?, &audit()).await?;
+    let bytes = chain(&candidate)?;
+    let db = Database::connect(options("mdm_access")?).await?;
+    let registry = Registry::new(
+        db.archive_pool(),
+        db.audit_store(&crate::config::AuditConfig::Plain).await?,
+        vec![s.trust().trust.clone()],
+        fixture_providers()?,
+    );
+    let trust = registry.trust(Purpose::Agent)?;
+    let issuer = &trust.issuers[0];
+    let certificate = x509_cert::Certificate::from_der(&STANDARD.decode(&issuer.certificate)?)?;
+    let crl = publication_fixture(
+        &root(),
+        &issuer.root_crl,
+        true,
+        now(),
+        Some(
+            certificate
+                .tbs_certificate
+                .serial_number
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await?;
+    registry
+        .publish(
+            &p,
+            &PublicationSet {
+                operation: Uuid::new_v4(),
+                purpose: Purpose::Agent,
+                publications: vec![Publication {
+                    issuer: issuer.digest.clone(),
+                    crl: issuer.crl.clone(),
+                    root_crl: crl.clone(),
+                }],
+            },
+            &audit(),
+            now(),
+        )
+        .await?;
+    assert_eq!(registry.trust(Purpose::Agent)?.issuers[0].root_crl, crl);
+    assert!(matches!(
+        s.trust().trust.active(),
+        Err(rss_mdm_device_trust::Error::Revoked)
+    ));
+    assert!(matches!(
+        s.trust().trust.verify(
+            &bytes
+                .iter()
+                .cloned()
+                .map(tokio_rustls::rustls::pki_types::CertificateDer::from)
+                .collect::<Vec<_>>(),
+            now()
+        ),
+        Err(rss_mdm_device_trust::Error::Revoked)
+    ));
+    s.trust().trust.verify_history(&bytes[0], &issuer.digest)?;
+    let restart = service(deployment()).await?;
+    assert_eq!(restart.trust().trust.public()?.issuers[0].root_crl, crl);
+    assert!(restart.trust().trust.active().is_err());
+    db.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=agent.pki: multiple expired offline publications recover atomically"]
+async fn multiple_expired_publications_require_one_atomic_set_and_replay_exactly()
+-> anyhow::Result<()> {
+    use rss_mdm_agent_wire::pki::{Mode, Purpose, Trust};
+    use rss_mdm_pki_service::{
+        maintenance::{Publication, PublicationSet},
+        registry::{Registry, Rotation},
+    };
+    let s = service(deployment()).await?;
+    let p = admin(case_a(), "admin-a").await?;
+    let db = Database::connect(options("mdm_access")?).await?;
+    let registry = Registry::new(
+        db.archive_pool(),
+        db.audit_store(&crate::config::AuditConfig::Plain).await?,
+        vec![s.trust().trust.clone()],
+        fixture_providers()?,
+    );
+    let next_root = PathBuf::from(std::env::var("MDM_AGENT_PKI_CANDIDATE_FIXTURES")?);
+    let second: Trust =
+        serde_json::from_slice(&std::fs::read(next_root.join("agent-trust.json"))?)?;
+    let mut trust = registry.trust(Purpose::Agent)?;
+    let expected = trust.revision;
+    trust.revision += 1;
+    let mut added = second.issuers[0].clone();
+    added.mode = Mode::Prepared;
+    trust.issuers.push(added);
+    registry
+        .prepare(
+            &p,
+            &Rotation {
+                id: Uuid::new_v4(),
+                purpose: Purpose::Agent,
+                expected_revision: expected,
+                candidate: trust.clone(),
+            },
+            &audit(),
+            now(),
+        )
+        .await?;
+    let later = now() + 31 * 86400;
+    assert!(rss_mdm_device_trust::DeviceTrust::new(trust.clone(), Purpose::Agent, later).is_err());
+    let mut publications = Vec::new();
+    for (issuer, owner) in trust.issuers.iter().zip([root(), next_root]) {
+        publications.push(Publication {
+            issuer: issuer.digest.clone(),
+            crl: publication_fixture(&owner, &issuer.crl, false, later, None).await?,
+            root_crl: publication_fixture(&owner, &issuer.root_crl, true, later, None).await?,
+        });
+    }
+    let partial = PublicationSet {
+        operation: Uuid::new_v4(),
+        purpose: Purpose::Agent,
+        publications: vec![Publication {
+            issuer: publications[0].issuer.clone(),
+            crl: publications[0].crl.clone(),
+            root_crl: publications[0].root_crl.clone(),
+        }],
+    };
+    assert!(
+        registry
+            .publish(&p, &partial, &audit(), later)
+            .await
+            .is_err()
+    );
+    assert_eq!(registry.trust(Purpose::Agent)?, trust);
+    let mut input = PublicationSet {
+        operation: Uuid::new_v4(),
+        purpose: Purpose::Agent,
+        publications,
+    };
+    registry.publish(&p, &input, &audit(), later).await?;
+    let accepted = registry.trust(Purpose::Agent)?;
+    rss_mdm_device_trust::DeviceTrust::new(accepted.clone(), Purpose::Agent, later)?;
+    input.publications.reverse();
+    registry.publish(&p, &input, &audit(), later).await?;
+    assert_eq!(registry.trust(Purpose::Agent)?, accepted);
+    db.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=agent.pki: real rejected CA dispatch retains unknown retirement fence"]
+async fn unknown_original_ca_result_blocks_retirement_after_rotation() -> anyhow::Result<()> {
+    use rss_mdm_agent_wire::pki::{Mode, Purpose, Trust};
+    use rss_mdm_pki_service::registry::{Action, Registry, Rotation, Transition};
+    let s = service_with_provider(deployment(), Some("unapproved-token-key")).await?;
+    let p = admin(case_a(), "admin-a").await?;
+    let g = grant()?;
+    let receipt = s.create(&p, &g, &audit()).await?;
+    assert_eq!(
+        s.issue(&signing(&g, receipt.grant_id)?, &audit())
+            .await
+            .err()
+            .unwrap()
+            .code,
+        wire::ErrorCode::IssuanceUnknown
+    );
+    let db = Database::connect(options("mdm_access")?).await?;
+    let registry = Registry::new(
+        db.archive_pool(),
+        db.audit_store(&crate::config::AuditConfig::Plain).await?,
+        vec![s.trust().trust.clone()],
+        fixture_providers()?,
+    );
+    let next_root = PathBuf::from(std::env::var("MDM_AGENT_PKI_CANDIDATE_FIXTURES")?);
+    let second: Trust =
+        serde_json::from_slice(&std::fs::read(next_root.join("agent-trust.json"))?)?;
+    let mut trust = registry.trust(Purpose::Agent)?;
+    let expected = trust.revision;
+    trust.revision += 1;
+    let mut added = second.issuers[0].clone();
+    added.mode = Mode::Prepared;
+    trust.issuers.push(added);
+    let id = Uuid::new_v4();
+    registry
+        .prepare(
+            &p,
+            &Rotation {
+                id,
+                purpose: Purpose::Agent,
+                expected_revision: expected,
+                candidate: trust,
+            },
+            &audit(),
+            now(),
+        )
+        .await?;
+    for action in [Action::Approve, Action::Activate] {
+        registry
+            .transition(
+                &p,
+                Purpose::Agent,
+                &Transition {
+                    id,
+                    expected_revision: registry.trust(Purpose::Agent)?.revision,
+                    action,
+                },
+                &audit(),
+                now(),
+            )
+            .await?;
+    }
+    assert!(
+        registry
+            .transition(
+                &p,
+                Purpose::Agent,
+                &Transition {
+                    id,
+                    expected_revision: registry.trust(Purpose::Agent)?.revision,
+                    action: Action::Retire
+                },
+                &audit(),
+                now()
+            )
+            .await
+            .is_err()
+    );
+    db.close().await;
     Ok(())
 }

@@ -119,6 +119,20 @@ impl RequestAudit {
             }),
         }))
     }
+    /// Project fact coordinates for a caller-owned transaction. This projection
+    /// owns no commit/finalization guard; the original request remains responsible.
+    pub fn fact_copy(&self, action: &'static str) -> Self {
+        let mut snapshot = self.snapshot();
+        snapshot.action = action;
+        Self(Arc::new(Context {
+            request_id: self.0.request_id,
+            tenant: self.0.tenant.clone(),
+            state: Mutex::new(State {
+                snapshot,
+                finalized: true,
+            }),
+        }))
+    }
     /// Return the unique request event coordinate, distinct from a business operation identity.
     pub fn request_id(&self) -> Uuid {
         self.0.request_id

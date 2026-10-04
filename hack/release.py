@@ -76,7 +76,7 @@ def build(out, header, web_image=None):
     print("candidate: " + str(out / "candidate.json"))
 
 ROLE_NAMES = ("software-publication", "flow", "identity", "commands", "audit")
-DEPLOYMENT_FILES = ('deployment/agent-leaf.tpl', "mdm-config.example.json", "deployment/nginx.conf", *(
+DEPLOYMENT_FILES = ('deployment/compose.yaml', 'deployment/providers.lock.json', 'fixtures/pki-tools.lock.json', 'deployment/agent-leaf.tpl', 'deployment/windows-leaf.tpl', "mdm-config.example.json", "deployment/nginx.conf", *(
     f"deployment/{name}-roles.sql" for name in ROLE_NAMES))
 
 
@@ -179,7 +179,7 @@ def build_staged(out, header, web_image=None):
         for name in ("Cargo.lock", "rust-toolchain.toml"):
             shutil.copy(source / name, build / name)
         manifest = {
-            "format_version": 3,
+            "format_version": 4,
             "source": {"inputs_sha256": inputs_sha256},
             "version": version, "platform": platform(config), "migrations": migrations,
             "image": image + "@" + digest,

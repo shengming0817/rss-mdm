@@ -143,6 +143,13 @@ SELECT profile FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND cred
                         {
                             return Err(Error::Conflict);
                         }
+                        rss_mdm_pki_service::certificates::revoke_credential_in(
+                            c,
+                            &tenant,
+                            predecessor,
+                        )
+                        .await
+                        .map_err(|_| Error::Storage)?;
                         sqlx::query(
                             r#"
 UPDATE mdm_access.credentials SET state='superseded' WHERE tenant_id=$1::uuid AND id=$2 AND
@@ -235,6 +242,23 @@ VALUES($1::uuid,$2,$3,'agent',$4,'active')
                     .execute(&mut *c)
                     .await
                     .map_err(db)?;
+                    let chain: Vec<String> =
+                        serde_json::from_value(row.try_get("certificate_chain").map_err(db)?)
+                            .map_err(|_| Error::Corrupt)?;
+                    let leaf = STANDARD
+                        .decode(chain.first().ok_or(Error::Corrupt)?)
+                        .map_err(|_| Error::Corrupt)?;
+                    let issuer: String = row.try_get("signing_issuer").map_err(db)?;
+                    rss_mdm_pki_service::certificates::record_in(
+                        c,
+                        &tenant,
+                        "agent",
+                        registration,
+                        &issuer,
+                        &leaf,
+                    )
+                    .await
+                    .map_err(|_| Error::Storage)?;
                     let out = wire::ActivationReceipt {
                         wire_version: wire::API_VERSION,
                         issuance_id: input.issuance_id,

@@ -12,12 +12,16 @@ services:
       rss.mdm.worktree: ${MDM_WORKTREE_ID:?}
     environment:
       POSTGRES_PASSWORD_FILE: /inputs/pg-password
+      POSTGRES_DB: ${MDM_PG_DATABASE:-postgres}
     ports: ["127.0.0.1::5432"]
     volumes:
       - pg:/var/lib/postgresql/data
       - ${MDM_ENV_ROOT:?}/pg/server.crt:/inputs/server.crt:ro
       - ${MDM_ENV_ROOT:?}/pg/server.key:/inputs/server.key:ro
       - ${MDM_ENV_ROOT:?}/pg/pg-password:/inputs/pg-password:ro
+    networks:
+      default:
+        aliases: ["${MDM_PG_HOST:-postgres}"]
     command: [sh, -ec, 'cp /inputs/server.key /tmp/server.key; cp /inputs/server.crt /tmp/server.crt; chown postgres:postgres /tmp/server.*; chmod 600 /tmp/server.key; exec docker-entrypoint.sh postgres -c max_connections=${MDM_PG_MAX_CONNECTIONS:-100} -c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key']
     healthcheck:
       test: [CMD, pg_isready, -h, 127.0.0.1, -U, postgres]
@@ -34,21 +38,30 @@ services:
     volumes: ["${MDM_ENV_ROOT:?}/probe/nginx.conf:/tmp/input.conf:ro"]
     command: [nginx, -e, stderr, -c, /tmp/input.conf, -g, 'daemon off;']
   step-ca:
-    profiles: [apple]
+    networks:
+      default:
+        aliases: ["${MDM_PKI_INTERNAL_HOST:-step-ca}"]
+    profiles: [pki]
     image: ${MDM_STEP_CA_IMAGE:?}
     labels: *owner
-    user: ${MDM_APPLE_CA_USER:?}
+    user: ${MDM_PKI_USER:?}
     restart: "no"
     entrypoint: [/usr/local/bin/step-ca]
-    command: ["${MDM_APPLE_CA_ROOT:?}/step/config/ca.json", --password-file, "${MDM_APPLE_CA_ROOT}/step-password"]
+    command: ["${MDM_PKI_ROOT:?}/step/config/ca.json", --password-file, "${MDM_PKI_ROOT}/step-password"]
     environment:
-      STEPPATH: ${MDM_APPLE_CA_ROOT}/step
-    extra_hosts: ["mdm.example.test:${MDM_APPLE_HOST_ADDRESS:?}"]
-    ports: ["127.0.0.1::${MDM_STEP_CA_INTERNAL_PORT:?}"]
+      STEPPATH: ${MDM_PKI_ROOT}/step
+    extra_hosts: ["mdm.example.test:${MDM_PKI_HOST_ADDRESS:?}"]
+    ports: ["${MDM_PKI_PUBLISH:-127.0.0.1::${MDM_STEP_CA_INTERNAL_PORT:?}}"]
     volumes:
       - type: bind
-        source: ${MDM_APPLE_CA_ROOT}
-        target: ${MDM_APPLE_CA_ROOT}
+        source: ${MDM_PKI_ROOT}/step
+        target: ${MDM_PKI_ROOT}/step
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${MDM_PKI_ROOT}/step-password
+        target: ${MDM_PKI_ROOT}/step-password
+        read_only: true
         bind:
           create_host_path: false
     healthcheck:
@@ -83,7 +96,15 @@ services:
     image: ${MDM_RUNTIME_IMAGE:?}
     labels: *owner
     command: [sh, -c, 'exec sleep infinity']
-    ports: ["${MDM_GATEWAY_PUBLISH:-127.0.0.1::8445}"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    networks:
+      default:
+        aliases: ["${MDM_PRODUCT_HOST:-mdm.example.test}"]
+    ports:
+      - "${MDM_GATEWAY_PUBLISH:-127.0.0.1::8445}"
+      - "${MDM_WINDOWS_ENROLLMENT_PUBLISH:-127.0.0.1::8443}"
+      - "${MDM_WINDOWS_MANAGEMENT_PUBLISH:-127.0.0.1::8444}"
+      - "${MDM_AGENT_PUBLISH:-127.0.0.1::9445}"
   inputs:
     profiles: [product]
     image: ${MDM_RUNTIME_IMAGE:?}
@@ -132,11 +153,12 @@ services:
     labels: *owner
     network_mode: service:runtime-netns
     volumes: ["runtime:/run/mdm:ro", "content:/var/lib/mdm/content"]
-    command: [serve, --config, /run/mdm/runtime.json]
+    command: [serve, --config, "/run/mdm/${MDM_SERVER_CONFIG:-runtime.json}"]
     depends_on: [runtime-netns]
   gateway:
     profiles: [product]
     image: ${MDM_WEB_IMAGE:-rss-mdm-web:unavailable}
+    user: "10001:10001"
     labels: *owner
     network_mode: service:runtime-netns
     volumes: ["gateway:/certs:ro"]
@@ -158,4 +180,5 @@ volumes:
     labels: *owner
 networks:
   default:
+    name: ${MDM_NETWORK_NAME:-${COMPOSE_PROJECT_NAME}_default}
     labels: *owner

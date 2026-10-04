@@ -180,7 +180,7 @@ async fn registration_binding_and_replay() -> Result<()> {
 #[ignore = "MODULE=agent.registration"]
 async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
     let fixture = authority::Authority::open().await?;
-    let service = crate::test_support::agent::service(&fixture)?;
+    let service = crate::test_support::agent::service(&fixture).await?;
     let router = crate::test_support::agent::router(&fixture).await?;
     let mut browser = fixture.browser("other")?;
     let agent = crate::test_support::agent::register(&router, &mut browser).await?;
@@ -224,7 +224,7 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
     let peer = crate::test_support::agent_tls::peer(
         service.trust(),
         &chain,
-        &std::path::PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?),
+        &std::path::PathBuf::from(std::env::var("MDM_AGENT_PKI_FIXTURES")?),
     )
     .await?;
     let input = wire::ActivationRequest {
@@ -270,7 +270,7 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
 #[ignore = "MODULE=agent.registration"]
 async fn browser_approval_quota_expiry_and_restart_are_durable() -> Result<()> {
     let fixture = authority::Authority::open().await?;
-    let service = crate::test_support::agent::service(&fixture)?;
+    let service = crate::test_support::agent::service(&fixture).await?;
     let user = crate::device::test_support::admin(case_tenant(), "other-a").await?;
     let mut quota_tx = fixture.access.begin(case_tenant()).await?;
     sqlx::query("INSERT INTO mdm_access.registration_quota_settings(tenant_id,subject,revision,agent) VALUES($1::uuid,$2,1,1)")
@@ -326,7 +326,7 @@ async fn browser_approval_quota_expiry_and_restart_are_durable() -> Result<()> {
     );
     ensure!(service.issue(&sign, &a()).await.err().unwrap().code == wire::ErrorCode::GrantRevoked);
     let created = service.create(&user, &second, &a()).await?;
-    let restart = crate::test_support::agent::service(&fixture)?;
+    let restart = crate::test_support::agent::service(&fixture).await?;
     ensure!(restart.create(&user, &second, &a()).await? == created);
     let mut invalid = second.clone();
     invalid.lifetime_seconds = Some(604801);

@@ -34,24 +34,27 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     let mut absent = x509_cert::request::CertReq::from_der(&csr)?;
     absent.algorithm.parameters = None;
     certificate::Csr::verify(&absent.to_der()?)?;
+    let trust = w.channel.ca.trust.public()?;
     ensure!(
-        certificate::WindowsEnrollmentAuthority::from_bytes(
-            &std::fs::read(root()?.join("device-ca.pem"))?,
-            &std::fs::read(root()?.join("device.pk8"))?,
-            now()
-        )
-        .is_err()
-    );
-    ensure!(
-        certificate::WindowsEnrollmentAuthority::from_bytes(
-            &std::fs::read(root()?.join("device-ca.pem"))?,
-            &std::fs::read(root()?.join("device-ca.pk8"))?,
+        rss_mdm_device_trust::DeviceTrust::new(
+            trust,
+            rss_mdm_agent_wire::pki::Purpose::Windows,
             now() + 181 * 86400
         )
         .is_err()
     );
     let proof = admin(case_tenant(), "admin-a").await?;
     let store = Database::connect(options("mdm_access")?).await?;
+    rss_mdm_pki_service::registry::Registry::new(
+        store.archive_pool(),
+        store
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?,
+        vec![w.channel.ca.trust.clone()],
+        fixture_providers()?,
+    )
+    .admit(rss_request_context::TenantId::parse(case_tenant())?, now())
+    .await?;
     let mut pg = PgConnection::connect_with(&options("postgres")?).await?;
     let password = Password::new(crate::enrollment::random())?;
     let key = Uuid::new_v4();
@@ -83,18 +86,8 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         now(),
     )
     .await?;
-    let cert = w.channel.ca.sign(&w.channel.ca.restore_intent(
-        &intent.tbs,
-        &certificate::Csr::verify(&intent.csr)?,
-        intent.registration,
-    )?)?;
-    ensure!(
-        cert == w.channel.ca.sign(&w.channel.ca.restore_intent(
-            &intent.tbs,
-            &certificate::Csr::verify(&intent.csr)?,
-            intent.registration
-        )?)?
-    );
+    let cert = sign_certificate(&w.channel.ca, &intent).await?;
+    ensure!(cert == sign_certificate(&w.channel.ca, &intent).await?);
     // CSR, enrollment context and protocol protection identity are immutable on retry.
     ensure!(
         rss_mdm_windows_channel::issuance::issuance_intent(
@@ -144,7 +137,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
             .verify(&[CertificateDer::from(cert.as_slice())], now() + 91 * 86400)
             .is_err()
     );
-    let mut wrong_usage = x509_cert::TbsCertificate::from_der(&intent.tbs)?;
+    let mut wrong_usage = x509_cert::Certificate::from_der(&cert)?.tbs_certificate;
     wrong_usage
         .extensions
         .as_mut()
@@ -183,8 +176,8 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         service.management_principal(&credential).await.is_err(),
         "unbound signed certificate admitted"
     );
-    let mut unrelated = x509_cert::TbsCertificate::from_der(&intent.tbs)?;
-    unrelated.subject = "CN=another-intent".parse()?;
+    let mut unrelated = x509_cert::Certificate::from_der(&cert)?.tbs_certificate;
+    unrelated.subject = format!("CN={}", Uuid::new_v4()).parse()?;
     let unrelated = sign_fixture(&unrelated)?;
     w.channel
         .ca
@@ -217,17 +210,9 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     )
     .await?;
     ensure!(
-        saved.tbs == intent.tbs
+        saved.profile == intent.profile
             && saved.registration == intent.registration
-            && restarted_ca
-                .channel
-                .ca
-                .sign(&restarted_ca.channel.ca.restore_intent(
-                    &saved.tbs,
-                    &certificate::Csr::verify(&saved.csr)?,
-                    saved.registration
-                )?)?
-                == cert
+            && sign_certificate(&restarted_ca.channel.ca, &saved).await? == cert
     );
     audit_store.inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
     ensure!(matches!(
@@ -296,11 +281,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
             now(),
         )
         .await?;
-        let c = w.channel.ca.sign(&w.channel.ca.restore_intent(
-            &i.tbs,
-            &certificate::Csr::verify(&i.csr)?,
-            i.registration,
-        )?)?;
+        let c = sign_certificate(&w.channel.ca, &i).await?;
         audit_store.inject_next_fault(if fault == 3 {
             rss_audit_postgres::PgFault::BeforeCommitPending
         } else {
@@ -445,11 +426,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
             &auth,
             current.as_ref().unwrap_or(&proof),
             &intent,
-            &w.channel.ca.sign(&w.channel.ca.restore_intent(
-                &intent.tbs,
-                &certificate::Csr::verify(&intent.csr)?,
-                intent.registration,
-            )?)?,
+            &sign_certificate(&w.channel.ca, &intent).await?,
         )
         .await;
         if cause == "permission" {
@@ -497,11 +474,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         now(),
     )
     .await?;
-    let c = w.channel.ca.sign(&w.channel.ca.restore_intent(
-        &i.tbs,
-        &certificate::Csr::verify(&i.csr)?,
-        i.registration,
-    )?)?;
+    let c = sign_certificate(&w.channel.ca, &i).await?;
     pg.execute("REVOKE INSERT ON mdm_audit.receipts FROM mdm_access")
         .await?;
     let failed = complete(&audit_store, &w, &a, &proof, &i, &c).await;
@@ -579,16 +552,8 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     )
     .await?;
     let (c1, c2) = (
-        w.channel.ca.sign(&w.channel.ca.restore_intent(
-            &i1.tbs,
-            &certificate::Csr::verify(&i1.csr)?,
-            i1.registration,
-        )?)?,
-        w.channel.ca.sign(&w.channel.ca.restore_intent(
-            &i2.tbs,
-            &certificate::Csr::verify(&i2.csr)?,
-            i2.registration,
-        )?)?,
+        sign_certificate(&w.channel.ca, &i1).await?,
+        sign_certificate(&w.channel.ca, &i2).await?,
     );
     let (r1, r2) = tokio::join!(
         complete(&audit_store, &w, &a1, &proof, &i1, &c1),
@@ -630,8 +595,8 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     a.finalize(None);
     for (grant, revoke) in [
         (
-            "GRANT UPDATE(tbs) ON mdm_access.enrollment_intents TO mdm_access",
-            "REVOKE UPDATE(tbs) ON mdm_access.enrollment_intents FROM mdm_access",
+            "GRANT UPDATE(profile) ON mdm_access.enrollment_intents TO mdm_access",
+            "REVOKE UPDATE(profile) ON mdm_access.enrollment_intents FROM mdm_access",
         ),
         (
             "GRANT UPDATE(state) ON mdm_access.grants TO mdm_access",
@@ -665,21 +630,22 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
 
 // Deliberately bypass the product issuer to exercise rejection of validly signed bad leaves.
 fn sign_fixture(tbs: &x509_cert::TbsCertificate) -> anyhow::Result<Vec<u8>> {
-    let key =
-        ring::signature::RsaKeyPair::from_pkcs8(&std::fs::read(root()?.join("device-ca.pk8"))?)
-            .map_err(|_| anyhow::anyhow!("fixture key"))?;
-    let mut signature = vec![0; key.public().modulus_len()];
-    key.sign(
-        &ring::signature::RSA_PKCS1_SHA256,
+    let key = ring::signature::EcdsaKeyPair::from_pkcs8(
+        &ring::signature::ECDSA_P256_SHA256_ASN1_SIGNING,
+        &std::fs::read(
+            PathBuf::from(std::env::var("MDM_WINDOWS_PKI_FIXTURES")?)
+                .join("windows-issuer-test.pk8"),
+        )?,
         &ring::rand::SystemRandom::new(),
-        &tbs.to_der()?,
-        &mut signature,
     )
-    .map_err(|_| anyhow::anyhow!("fixture signature"))?;
+    .map_err(|_| anyhow::anyhow!("fixture issuer key"))?;
+    let signature = key
+        .sign(&ring::rand::SystemRandom::new(), &tbs.to_der()?)
+        .map_err(|_| anyhow::anyhow!("fixture issuer signature"))?;
     Ok(x509_cert::Certificate {
         tbs_certificate: tbs.clone(),
         signature_algorithm: tbs.signature.clone(),
-        signature: x509_cert::der::asn1::BitString::from_bytes(&signature)?,
+        signature: x509_cert::der::asn1::BitString::from_bytes(signature.as_ref())?,
     }
     .to_der()?)
 }
@@ -692,16 +658,7 @@ async fn startup_failures_keep_windows_input_categories() -> anyhow::Result<()> 
         serde_json::from_slice(&std::fs::read(root()?.join("windows.json"))?)?;
     let scratch = tempfile::tempdir()?;
     for (field, issue, private) in [
-        (
-            "ca_certificate_file",
-            crate::ConfigIssue::EnrollmentCa,
-            false,
-        ),
-        (
-            "ca_private_key_file",
-            crate::ConfigIssue::EnrollmentCa,
-            true,
-        ),
+        ("trust_file", crate::ConfigIssue::EnrollmentCa, false),
         ("protocol_key_file", crate::ConfigIssue::ProtocolKey, true),
     ] {
         for fault in ["absent", "invalid", "unsafe", "oversized"] {
@@ -718,7 +675,7 @@ async fn startup_failures_keep_windows_input_categories() -> anyhow::Result<()> 
                         if field == "protocol_key_file" {
                             33
                         } else {
-                            32769
+                            64 * 1024 * 1024 + 1
                         }
                     ]
                 } else {
@@ -732,7 +689,12 @@ async fn startup_failures_keep_windows_input_categories() -> anyhow::Result<()> 
             }
             let mut input = original.clone();
             input[field] = serde_json::json!(path);
-            let error = match Windows::load(serde_json::from_value(input)?, now(), None) {
+            let error = match Windows::load(
+                serde_json::from_value(input)?,
+                now(),
+                fixture_providers()?,
+                None,
+            ) {
                 Ok(_) => anyhow::bail!("accepted {field} {fault}"),
                 Err(error) => error,
             };
@@ -760,11 +722,7 @@ async fn native_renewal_preserves_registration_and_activates_only_after_new_tls_
     host.listen().await?;
     let peer = host.peer().await?;
     let ca = &host.app.windows()?.channel.ca;
-    let certificate = ca.sign(&ca.restore_intent(
-        &peer.intent.tbs,
-        &certificate::Csr::verify(&peer.intent.csr)?,
-        peer.intent.registration,
-    )?)?;
+    let certificate = sign_certificate(ca, &peer.intent).await?;
     let temporary = tempfile::tempdir()?;
     let signer = temporary.path().join("signer.pem");
     std::fs::write(

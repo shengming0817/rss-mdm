@@ -29,4 +29,4 @@ t2:
 dev:
 	python3 hack/build_run.py -- python3 hack/t2_environment.py "$(ACTION)" --mode "$(MODE)" $(DEV_ARGS)
 t3-auth:
-	python3 hack/auth_t3.py $(T3_ARGS)
+	python3 hack/build_run.py -- python3 hack/auth_t3.py $(T3_ARGS)

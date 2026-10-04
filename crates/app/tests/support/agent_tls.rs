@@ -20,7 +20,7 @@ pub(crate) async fn peer(
     let certificates = CertificateDer::pem_slice_iter(&std::fs::read(root.join("server.crt"))?)
         .collect::<Result<Vec<_>, _>>()?;
     let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(std::fs::read(
-        root.join("apple-tls.pk8"),
+        root.join("agent-tls.pk8"),
     )?));
     let server = rustls::ServerConfig::builder_with_provider(provider.clone())
         .with_safe_default_protocol_versions()?

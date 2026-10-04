@@ -143,6 +143,29 @@ S3 使用只读挂载的 access/secret/session token 文件；宿主在启动时
 
 每次签发先持久提交 grant 消费和 `agent_issuances` signing 意图，审计业务身份为 `agent-enroll:agent_certificate_authorize:<operation>`；离开事务请求 CA，严格验证返回证书后保存候选并提交 `agent-enroll:agent_certificate_result:<operation>`。网络、CA、返回校验或结果审计不确定均保留同一 issuanceId，返回 issuance_unknown；status 查询不得触发二次签发。step-ca 的 `/sign` 不提供幂等回执，token 单次消耗不能证明未签发。
 
-管理员从原 CA 持久记录找回原证书链，通过 `POST /api/v1/agent-issuances/{id}/recover` 提交稳定 operationId 与 certificateChain；服务端核对原 CSR/SPKI/SAN/签发窗口，以及签发前冻结的 issuer、provisioner/kid 和公钥摘要。当前部署与原签发者不一致时拒绝恢复，须先恢复原 CA/provisioner 配置；不能自动换 jti、重签或把另一 CA 的结果当作原结果。激活 ACK 丢失后使用原 activation operation 重试或查询状态，同一注册的恢复只替换凭据。日志及支持导出仅含分类和摘要，不含秘密、CSR 私钥或 JWT；step-ca 原生日志可能含 ott，必须作为受限秘密日志保存，禁止直接纳入通用日志聚合。
+管理员从原 CA 持久记录找回原证书链，通过 `POST /api/v1/agent-issuances/{id}/recover` 提交稳定 operationId 与 certificateChain；服务端核对原 CSR/SPKI/SAN/签发窗口，以及签发前冻结的 issuer、provisioner/kid 和公钥摘要。恢复根据冻结的原 issuer 路由，须保留该代次的 CA/provisioner 配置；不能自动换 jti、重签或把另一 CA 的结果当作原结果。激活 ACK 丢失后使用原 activation operation 重试或查询状态，同一注册的恢复只替换凭据。日志及支持导出仅含分类和摘要，不含秘密、CSR 私钥或 JWT；step-ca 原生日志可能含 ott，必须作为受限秘密日志保存，禁止直接纳入通用日志聚合。
 
 备份前停止 MDM 的签发调用及全部 CA 写入实例。作为同一恢复集备份 CA 数据库、root/intermediate 证书及加密私钥、CA 配置与模板、受控 CA 解密秘密、Agent provisioner 私钥/kid、MDM 配置及 Audit/Ledger 数据库；CA 配置中的绝对路径和数据库路径须按原位置恢复。秘密进入受控秘密备份，定期验证可取回。恢复时先恢复原 CA 身份与数据库，再用原 provisioner 私钥和匹配的 MDM 审计数据启动；核对 issuer/SPKI/kid 摘要、已有 serial 和 token 使用记录，并在隔离环境签发新授权、校验证书链及双阶段审计。不得删除 CA token 表、重置 Audit head、重新生成 CA 或用新密钥覆盖原文件来处理结果未知。可再生 T2 `agent.pki` 会停止 CA、备份并恢复原目录与数据库，再执行真实受控签发；生产恢复还须执行上述一致性核对。
+
+## 设备 PKI 轮换与撤销
+
+管理接口要求全设备 Credentials 权限，使用当前会话授权并在原 Audit 事务内复核。`GET /api/v1/pki/{purpose}/trust` 取得当前完整公开 revision；`POST /api/v1/pki/rotations` 提交 id、purpose、expected_revision 和包含一个 prepared issuer 的完整 candidate（revision+1），旧代次的公开身份与状态保持一致。先部署 prepared provider，再分发重叠信任。Windows 关联 CSP Get、Apple 关联 ManagedOnly ProfileList、Agent 认证信道的安装 ACK 形成对应设备回执；活跃登记仍缺回执时 approve/activate 返回 conflict。
+
+`POST /api/v1/pki/{purpose}/rotations` 的 id 为原 rotation id，expected_revision 为当前 revision，action 依次为 approve、activate、retire。每个阶段保留稳定回执，未知提交沿原 id/phase 重试。每个 purpose 同时最多一个未完成轮换。激活后旧代次仅验证，新授权使用新代次；已冻结的签发/恢复沿原 CA。旧 issuer 仍有未知签发，或仍有未过期且未取得撤销发布证明的已签发证书时，不能 retire。重叠期由实际迁移/过期/撤销事实决定，不用固定等待时间绕过门禁。
+
+Windows 未知签发通过 `POST /api/v1/pki/signing/recover` 提交原 attempt 与原 certificate chain；Agent 仅通过原 `agent-issuances/{id}/recover` 在原 owner 事务中一并恢复候选和公共签发记录。SCEP 沿原 attempt/notify 路径处理，不重新授权 consumed challenge。任何恢复均核对原 CSR/SPKI、CN/SAN、purpose、issuer、签发窗口和链，不换 CA、不换 jti、不创建替代证书。
+
+在线撤销先在原登记/凭据 Audit 事务中立即生效，并写入实际 serial 的持久撤销队列。维护任务每 60 秒从各代次 CA 拉取 signed CRL，离开业务锁后调用 `/revoke`，失败保留 bounded backoff 任务。CA 接受 passive revoke 只表示 submitted；只有 serial 出现在经批准 issuer 签名的新鲜 CRL 中才记为 published。issuer CRL 的 nextUpdate 默认为 10 分钟，根 CRL 30 天并在到期前 7 天由离线 owner 更新；缺失、过期、号码/时间回滚或同号异内容均拒绝认证。保留连接及 TLS 恢复仍逐次检查当前凭据映射。
+
+离线根或 legacy issuer 的 CRL 使用 `POST /api/v1/pki/crls` 发布单一 operation、purpose 和 publications 数组（1–16 项，每项 issuer、crl、root_crl，base64 DER）。同 root 的所有代次共同采用同一 root CRL，集合内冲突拒绝；不把根私钥带入在线宿主。刷新按同 purpose 完整集合校验、原子发布；停机造成多个 issuer CRL 过期后可整组恢复。备份/恢复必须保留 CA 数据库、原密钥身份、serial/token 使用记录、MDM 数据库和 Audit/Ledger；成功签发与撤销发布的未知结果仍沿原记录恢复。
+
+
+设备 CA 使用 `deployment/compose.yaml` 的 `pki` profile。每个 purpose/issuer 独立 project、数据库目录和 provisioner；在线 `MDM_PKI_ROOT` 只含中间 CA 加密密钥、公开根、配置、模板及 CA 数据库，根私钥和独立解密秘密放在未挂载的离线目录。step-ca 原生 `kms` 配置选择加密文件 SoftKMS 基线，`key` 可替换为受支持 KMS/HSM URI，由 CA 部署 owner 提供对应访问凭据与验收；MDM 不读取 KMS 或根私钥。非 step-ca 企业 CA 路线登记为 #2680。
+
+每份 CA 数据库同一时间只允许一个写入者。冷备接管先停止并移除旧 `step-ca` 容器，核对 `compose ps --all --quiet step-ca` 为空并确认旧主机被隔离，再以同一绝对存储路径和 `MDM_PKI_PUBLISH` 原端口启动独立 standby project。持久 provider origin、issuer、kid、数据库和 token 记录保持原身份；无法证明旧主隔离时不能启动新写入者。候选验证复用这份 Compose，产品 profile 暴露原生 enrollment/management/Agent 的独立 TLS 端口，网关仍只承载控制台流量。
+
+Apple 的 challenge/notify webhook ID 和 HMAC 秘密属于稳定协议配置。新 CA 代次须沿用该 purpose 的受控 webhook 身份、回调地址和签名模板，先验证原生回调再准备/激活；不能直接采用新建 provisioner 随机产生的 webhook 身份替换已有部署配置。HTTPS、SCEP 解密、Profile 签名及 APNs 密钥仍各归原 owner。
+
+`device_pki_attention` 每分钟输出公开 issuer 摘要、证书到期、CRL nextUpdate 与 unpublished 数量：issuer 剩余 30 天、根剩余 90 天、issuer CRL 剩余 120 秒、根 CRL 剩余 7 天或撤销尚未发布均触发。`device_pki_maintenance_failure` 按累计失败次数的幂次记录依赖故障；CA 运行或 `/revoke` 成功不代表 CRL 已发布。告警接入使用这些结构化事件并核对签名发布及原队列；密钥取回失败同时由 step-ca 的受限日志定位。所有服务实例保存历史 CRL 水位，退休后再引入同一 CA 也不能回滚已接受的号码或内容。
+
+Agent 在固定 HTTPS origin 上匿名取得公开 `/api/v1/agent/enroll/trust`，不从它取得授权。更新先校验并持久保存 revision/CRL 水位，再通过系统机器 Root/CA 存储写入和读取确认；安装 ACK 仍须当前登记的真实 mTLS 与原幂等操作。仅删除该服务有持久 ownership 记录、且已退出完整批准集合的证书。首次 HTTPS 根通过受控部署渠道提供；新部署公开 JSON 也必须受保护，不能用本地测试占位材料。

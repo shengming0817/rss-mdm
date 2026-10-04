@@ -38,18 +38,38 @@ impl NativeAdmission for NoNative {
         Box::pin(async { Err(rss_mdm_registration_service::Error::Forbidden) })
     }
 }
-pub(crate) fn service(fixture: &authority::Authority) -> Result<Arc<Service>> {
-    service_with_policy(fixture, None)
+pub(crate) async fn service(fixture: &authority::Authority) -> Result<Arc<Service>> {
+    service_with_policy(fixture, None).await
 }
-pub(crate) fn service_with_policy(
+pub(crate) async fn service_with_policy(
     fixture: &authority::Authority,
     policy: Option<rss_mdm_registration_service::agent::Policy>,
 ) -> Result<Arc<Service>> {
     let config: crate::agent_pki::Config =
         serde_json::from_value(fixture.base["agent_pki"].clone())?;
+    let providers = crate::device_pki::providers(&serde_json::from_value::<
+        Vec<crate::device_pki::Provider>,
+    >(fixture.base["device_pki"].clone())?)?;
     let pki = config
-        .load(fixture.audit.clone(), Arc::new(crate::clock::SystemClock))?
+        .load(
+            fixture.audit.clone(),
+            Arc::new(crate::clock::SystemClock),
+            providers.clone(),
+        )?
         .ok_or_else(|| anyhow::anyhow!("Agent PKI fixture missing"))?;
+    let registry = rss_mdm_pki_service::registry::Registry::new(
+        fixture.access.archive_pool(),
+        fixture.audit.clone(),
+        vec![pki.issuer.trust().trust.clone()],
+        providers,
+    );
+    use crate::clock::Clock;
+    registry
+        .admit(
+            fixture.identity.tenant,
+            crate::clock::SystemClock.unix_seconds()?,
+        )
+        .await?;
     Ok(Arc::new(Service::new(Assembly {
         tenant: fixture.identity.tenant,
         store: fixture.access.registration(),
@@ -86,7 +106,7 @@ pub(crate) async fn complete_grant(
     let peer = crate::test_support::agent_tls::peer(
         service.trust(),
         &chain,
-        &std::path::PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?),
+        &std::path::PathBuf::from(std::env::var("MDM_AGENT_PKI_FIXTURES")?),
     )
     .await?;
     let receipt = service
@@ -130,7 +150,7 @@ pub(crate) struct Agent {
 }
 pub(crate) fn csr() -> Result<String> {
     Ok(STANDARD.encode(std::fs::read(
-        std::path::PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?).join("agent.der"),
+        std::path::PathBuf::from(std::env::var("MDM_AGENT_PKI_FIXTURES")?).join("agent.der"),
     )?))
 }
 pub(crate) async fn enroll_profile(
@@ -160,6 +180,9 @@ pub(crate) async fn enroll_profile(
         .load(
             db.audit_store(&crate::config::AuditConfig::Plain).await?,
             Arc::new(crate::clock::SystemClock),
+            crate::device_pki::providers(&serde_json::from_value::<
+                Vec<crate::device_pki::Provider>,
+            >(base["device_pki"].clone())?)?,
         )?
         .unwrap();
     let chain = candidate["certificateChain"]
@@ -171,7 +194,7 @@ pub(crate) async fn enroll_profile(
     let peer = crate::test_support::agent_tls::peer(
         pki.issuer.trust(),
         &chain,
-        &std::path::PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?),
+        &std::path::PathBuf::from(std::env::var("MDM_AGENT_PKI_FIXTURES")?),
     )
     .await?;
     remember(label, peer, "candidate".into());
@@ -207,7 +230,7 @@ pub(crate) async fn register(router: &Router, browser: &mut Browser) -> Result<A
     })
 }
 pub(crate) async fn router(fixture: &authority::Authority) -> Result<Router> {
-    let service = service(fixture)?;
+    let service = service(fixture).await?;
     let runtime = agent_runtime(&fixture.base).await?;
     let devices = Arc::new(crate::device::DeviceService::new(
         fixture.access.registration(),

@@ -34,6 +34,19 @@ async fn begin(
     }
     Ok((initial, post(peer, &ack).await?))
 }
+// Device trust maintenance has its own correlated CSP commands. The business
+// no-reinstallation guard continues to reject every Exec and every other Add.
+fn installation_write(command: &s::Command) -> bool {
+    match command {
+        s::Command::Exec { .. } => true,
+        s::Command::Add { items, .. } => items.iter().any(|item| {
+            !item.target.as_deref().is_some_and(|uri| {
+                uri.starts_with("./Device/Vendor/MSFT/RootCATrustedCertificates/")
+            })
+        }),
+        _ => false,
+    }
+}
 fn reply(initial: &s::Message, response: &s::Message, installed: bool) -> s::Message {
     let message = response.header.message_id;
     let mut output = s::Message {
@@ -79,7 +92,21 @@ fn reply(initial: &s::Message, response: &s::Message, installed: bool) -> s::Mes
                     credential: None,
                 }));
                 if code == 200 {
-                    let value = if uri.ends_with("/Mod") {
+                    let value = if uri
+                        .starts_with("./Device/Vendor/MSFT/RootCATrustedCertificates/")
+                    {
+                        response
+                            .commands
+                            .iter()
+                            .find_map(|command| match command {
+                                s::Command::Add { items, .. } => items.iter().find_map(|item| {
+                                    (item.target.as_deref() == Some(uri))
+                                        .then(|| item.data.as_ref().unwrap().0.as_str())
+                                }),
+                                _ => None,
+                            })
+                            .expect("CA CSP readback requires the delivered certificate")
+                    } else if uri.ends_with("/Mod") {
                         "MDM-only"
                     } else if uri.ends_with("/Edition") {
                         "48"
@@ -291,12 +318,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id='{}' AND channel='agent'",case_tenant()))?.trim()=="1");
     post(&peer, &reply(&initial, &execute, false)).await?;
     let (initial, observe) = begin(&peer, 903).await?;
-    ensure!(
-        !observe
-            .commands
-            .iter()
-            .any(|c| matches!(c, s::Command::Add { .. } | s::Command::Exec { .. }))
-    );
+    ensure!(!observe.commands.iter().any(installation_write));
     post(&peer, &reply(&initial, &observe, true)).await?;
     let mut installed = client
         .call(Method::GET, &format!("/{operation}"), None)
@@ -465,7 +487,7 @@ async fn start_fixture_until(
         response
             .commands
             .iter()
-            .filter(|c| matches!(c, s::Command::Get { .. }))
+            .filter(|c| matches!(c, s::Command::Get { items, .. } if !items[0].target.as_deref().unwrap().starts_with("./Device/Vendor/MSFT/RootCATrustedCertificates/")))
             .count()
             == 8
     );
@@ -541,12 +563,7 @@ async fn failed_prepare_rejects_without_dispatching_installation() -> Result<()>
         }
     }
     let next = post(&peer, &response).await?;
-    ensure!(
-        !next
-            .commands
-            .iter()
-            .any(|c| matches!(c, s::Command::Add { .. } | s::Command::Exec { .. }))
-    );
+    ensure!(!next.commands.iter().any(installation_write));
     let state = client
         .call(Method::GET, &format!("/{operation}"), None)
         .await?;
@@ -614,12 +631,7 @@ async fn native_enforcement_failure_is_separate_from_delivery_and_never_reinstal
         "{state:?}"
     );
     let (_, query) = begin(&peer, 904).await?;
-    ensure!(
-        !query
-            .commands
-            .iter()
-            .any(|c| matches!(c, s::Command::Add { .. } | s::Command::Exec { .. }))
-    );
+    ensure!(!query.commands.iter().any(installation_write));
     ensure!(
         client
             .call(Method::GET, &format!("/{operation}"), None)
@@ -736,12 +748,7 @@ async fn replacement_rejects_old_installation_and_requires_current_epoch_absence
         "old epoch drove admission: {state}"
     );
     let (initial, query) = begin(&current, 940).await?;
-    ensure!(
-        !query
-            .commands
-            .iter()
-            .any(|c| matches!(c, s::Command::Add { .. } | s::Command::Exec { .. }))
-    );
+    ensure!(!query.commands.iter().any(installation_write));
     let count = || {
         pg(&format!(
             "SELECT count(*) FROM mdm_commands.operations WHERE tenant_id='{}' AND approval->>'kind'='agent_install'",

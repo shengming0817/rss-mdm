@@ -85,6 +85,28 @@ pub(crate) async fn issue(
             )?,
         )
         .map_err(|_| Error::Unavailable(Failure::Protocol))?;
+    let pending = prepare(app, &principal, &proof, &digest).await?;
+    let profile = certificate::IssuanceProfile::decode(&pending.profile)?;
+    let certificate = crate::issuance::sign_profile(
+        app,
+        &principal.tenant().to_string(),
+        pending.id,
+        proof.csr(),
+        &profile,
+        now,
+    )
+    .await?;
+    let leaf = app.windows()?.ca.validate_issued(
+        &profile,
+        &certificate::Csr::verify(proof.csr())?,
+        &[certificate.clone().into()],
+        now,
+    )?;
+    let issued = PendingCertificate {
+        id: pending.id,
+        certificate,
+        fingerprint: leaf.fingerprint(),
+    };
     let budget = app.devices.retirement_budget();
     let control = budget.control();
     let outcome = app
@@ -92,14 +114,14 @@ pub(crate) async fn issue(
         .write(
             principal.tenant(),
             &control,
-            (app, &principal, &proof, &digest, audit),
-            |(app, p, proof, digest, audit), tx| {
+            (app, &principal, &proof, &digest, audit, &issued),
+            |(app, p, proof, digest, audit, issued), tx| {
                 Box::pin(async move {
                     let (id, certificate, kind, replayed) = tx
                         .with_connection_context(
-                            &mut (*app, *p, *proof, *digest),
-                            |(app, p, proof, digest), c| {
-                                Box::pin(issue_on(c, app, p, proof, digest.as_slice()))
+                            &mut (*app, *p, *proof, *digest, *issued),
+                            |(app, p, proof, digest, issued), c| {
+                                Box::pin(issue_on(c, app, p, proof, digest.as_slice(), issued))
                             },
                         )
                         .await?;
@@ -137,6 +159,7 @@ async fn issue_on(
     p: &DevicePrincipal,
     proof: &certificate::RenewalProof,
     digest: &[u8],
+    issued: &PendingCertificate,
 ) -> Result<(Uuid, Vec<u8>, String, bool), Error> {
     let tenant = p.tenant().to_string();
     crate::device::store::lock_channel(c, &tenant, p.device(), p.channel()).await?;
@@ -153,7 +176,6 @@ async fn issue_on(
         return Err(Error::Conflict);
     }
     let kind: String = original.try_get("enrollment_type").map_err(db)?;
-    let csr = certificate::Csr::verify(proof.csr())?;
     let now = app
         .clock
         .unix_seconds()
@@ -161,14 +183,100 @@ async fn issue_on(
     if now >= proof.expires() {
         return Err(Error::Unauthorized);
     }
-    let certificate = windows
-        .ca
-        .sign(&windows.ca.intent(&csr, p.registration(), now)?)?;
-    let leaf = windows.ca.verify(&[certificate.clone().into()], now)?;
-    let id = Uuid::new_v4();
+    let certificate = &issued.certificate;
+    let id = issued.id;
     sqlx::query("INSERT INTO mdm_windows.renewals(tenant_id,id,registration,generation,previous_credential,proof_digest,certificate,fingerprint,configuration) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)")
-        .bind(&tenant).bind(id).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(digest).bind(&certificate).bind(leaf.fingerprint().as_slice()).bind(&windows.configuration).execute(c).await.map_err(db)?;
-    Ok((id, certificate, kind, false))
+        .bind(&tenant).bind(id).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(digest).bind(certificate).bind(issued.fingerprint.as_slice()).bind(&windows.configuration).execute(&mut *c).await.map_err(db)?;
+    let profile: Vec<u8> = sqlx::query_scalar(
+        "SELECT profile FROM mdm_windows.renewal_intents WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(&tenant)
+    .bind(id)
+    .fetch_one(&mut *c)
+    .await
+    .map_err(db)?;
+    let issuer = certificate::IssuanceProfile::decode(&profile)?
+        .issuer
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    rss_mdm_pki_service::certificates::record_in(
+        c,
+        &tenant,
+        "windows",
+        p.registration(),
+        &issuer,
+        certificate,
+    )
+    .await
+    .map_err(|_| Error::Unavailable(Failure::Database))?;
+    Ok((id, certificate.clone(), kind, false))
+}
+
+struct Pending {
+    id: Uuid,
+    profile: Vec<u8>,
+}
+struct PendingCertificate {
+    id: Uuid,
+    certificate: Vec<u8>,
+    fingerprint: [u8; 32],
+}
+async fn prepare(
+    app: &HttpState,
+    p: &DevicePrincipal,
+    proof: &certificate::RenewalProof,
+    digest: &[u8],
+) -> Result<Pending, Error> {
+    let tenant = p.tenant().to_string();
+    let mut tx = app.access.begin(&tenant).await?;
+    crate::device::store::lock_channel(&mut tx, &tenant, p.device(), p.channel()).await?;
+    crate::device::store::revalidate_management(&mut tx, p).await?;
+    let windows = app.windows()?;
+    if let Some(row) = sqlx::query("SELECT id,proof_digest,profile,configuration FROM mdm_windows.renewal_intents WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND previous_credential=$4")
+        .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(p.credential())
+        .fetch_optional(&mut *tx).await.map_err(db)? {
+        if row.try_get::<Vec<u8>,_>("proof_digest").map_err(db)? != digest
+            || row.try_get::<String,_>("configuration").map_err(db)? != windows.configuration {
+            return Err(Error::Conflict);
+        }
+        return Ok(Pending { id: row.try_get("id").map_err(db)?, profile: row.try_get("profile").map_err(db)? });
+    }
+    let now = app
+        .clock
+        .unix_seconds()
+        .ok_or(Error::Unavailable(Failure::Clock))?;
+    if now >= proof.expires() {
+        return Err(Error::Unauthorized);
+    }
+    let original: String = sqlx::query_scalar("SELECT configuration FROM mdm_access.enrollment_intents WHERE tenant_id=$1::uuid AND registration=$2")
+        .bind(&tenant).bind(p.registration()).fetch_one(&mut *tx).await.map_err(db)?;
+    if original != windows.configuration {
+        return Err(Error::Conflict);
+    }
+    let profile = windows
+        .ca
+        .profile(
+            &certificate::Csr::verify(proof.csr())?,
+            p.registration(),
+            now,
+        )?
+        .encode()?;
+    let id = Uuid::new_v4();
+    crate::issuance::authorize_profile(
+        &mut tx,
+        windows,
+        &tenant,
+        id,
+        proof.csr(),
+        &certificate::IssuanceProfile::decode(&profile)?,
+    )
+    .await?;
+    sqlx::query("INSERT INTO mdm_windows.renewal_intents(tenant_id,id,registration,generation,previous_credential,proof_digest,profile,configuration) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8)")
+        .bind(&tenant).bind(id).bind(p.registration()).bind(p.generation()).bind(p.credential())
+        .bind(digest).bind(&profile).bind(&windows.configuration).execute(&mut *tx).await.map_err(db)?;
+    tx.commit().await.map_err(|_| Error::CommitUnknown)?;
+    Ok(Pending { id, profile })
 }
 
 pub(crate) async fn activate(

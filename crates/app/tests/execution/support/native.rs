@@ -48,7 +48,15 @@ pub(crate) async fn begin(
         .commands
         .iter()
         .filter_map(|c| match c {
-            s::Command::Get { id, items, .. } => Some((*id, items[0].target.clone().unwrap())),
+            s::Command::Get { id, items, .. }
+                if !items[0]
+                    .target
+                    .as_deref()
+                    .unwrap()
+                    .starts_with("./Device/Vendor/MSFT/RootCATrustedCertificates/") =>
+            {
+                Some((*id, items[0].target.clone().unwrap()))
+            }
             _ => None,
         })
         .collect::<Vec<_>>();

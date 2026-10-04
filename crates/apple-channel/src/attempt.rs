@@ -8,6 +8,7 @@ pub enum Owner {
     Collection,
     Command,
     Certificate,
+    Trust,
 }
 pub enum Reception {
     Replay,
@@ -37,8 +38,8 @@ pub async fn lock(
     let scope = crate::protocol::user(&crate::protocol::decode(bytes)?)?
         .map(|id| id.to_string())
         .unwrap_or_default();
-    let row = sqlx::query("SELECT operation::text,phase,state,response_digest,request,context,declaration_guards,(operation IS NULL OR ordinal=(SELECT max(b.ordinal) FROM mdm_apple.attempts b WHERE b.tenant_id=a.tenant_id AND b.operation=a.operation AND b.phase=a.phase)) AS latest FROM mdm_apple.attempts a WHERE tenant_id=$1::uuid AND id=$2::uuid AND registration=$3::uuid AND generation=$4 AND user_key=$6 AND CASE $5 WHEN 0 THEN collection IS NOT NULL WHEN 1 THEN operation IS NOT NULL ELSE certificate IS NOT NULL END FOR UPDATE")
-        .bind(&tenant).bind(id.to_string()).bind(p.registration().to_string()).bind(p.generation()).bind(match owner { Owner::Collection=>0i32, Owner::Command=>1, Owner::Certificate=>2 }).bind(scope).fetch_optional(&mut *c).await.map_err(db)?;
+    let row = sqlx::query("SELECT operation::text,phase,state,response_digest,request,context,declaration_guards,(operation IS NULL OR ordinal=(SELECT max(b.ordinal) FROM mdm_apple.attempts b WHERE b.tenant_id=a.tenant_id AND b.operation=a.operation AND b.phase=a.phase)) AS latest FROM mdm_apple.attempts a WHERE tenant_id=$1::uuid AND id=$2::uuid AND registration=$3::uuid AND generation=$4 AND user_key=$6 AND CASE $5 WHEN 0 THEN collection IS NOT NULL WHEN 1 THEN operation IS NOT NULL WHEN 2 THEN certificate IS NOT NULL ELSE trust IS NOT NULL END FOR UPDATE")
+        .bind(&tenant).bind(id.to_string()).bind(p.registration().to_string()).bind(p.generation()).bind(match owner { Owner::Collection=>0i32, Owner::Command=>1, Owner::Certificate=>2,Owner::Trust=>3 }).bind(scope).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else { return Ok(None) };
     let state: String = row.try_get("state").map_err(db)?;
     let digest = protection

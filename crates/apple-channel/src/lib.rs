@@ -17,6 +17,7 @@ mod profiles;
 mod protection;
 pub mod push;
 pub mod renewal;
+mod trust_installation;
 mod webhook;
 pub use database::Store;
 pub use error::Error;
@@ -31,8 +32,6 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 pub struct Config {
     pub management: Origin,
-    pub scep_url: String,
-    pub scep_provisioner: String,
     pub apns_topic: String,
     pub challenge_webhook: Webhook,
     pub notify_webhook: Webhook,
@@ -54,6 +53,7 @@ pub struct Apple {
     pub(crate) challenge_key: ring::hmac::Key,
     pub(crate) notify_key: ring::hmac::Key,
     configuration: [u8; 32],
+    providers: Arc<rss_mdm_pki_service::providers::Providers>,
 }
 pub struct Health {
     pub push_available: bool,
@@ -69,7 +69,52 @@ impl Health {
         self.push_available && !self.certificates_expired()
     }
 }
+/// Canonical stable protocol identity, independent of issuer rotation.
+pub fn protocol_identity(config: &Config) -> [u8; 32] {
+    Sha256::digest(
+        serde_json::to_vec(&(
+            "mdm.apple.enrollment/v3",
+            &config.management.origin,
+            &config.apns_topic,
+            &config.challenge_webhook.id,
+            &config.notify_webhook.id,
+        ))
+        .expect("closed configuration"),
+    )
+    .into()
+}
 impl Apple {
+    pub fn trust_certificates(
+        &self,
+    ) -> Result<Vec<rss_mdm_apple_mdm::profile::CertificatePayload>, Error> {
+        use x509_cert::der::{Decode, EncodePem};
+        self.authority
+            .trust
+            .certificates()
+            .map_err(|_| Error::Conflict)?
+            .into_iter()
+            .map(|(root, der)| {
+                let fingerprint = rss_mdm_device_trust::digest(&der);
+                let content = if root {
+                    der
+                } else {
+                    x509_cert::Certificate::from_der(&der)
+                        .map_err(|_| Error::Malformed)?
+                        .to_pem(x509_cert::der::pem::LineEnding::LF)
+                        .map_err(|_| Error::Malformed)?
+                        .into_bytes()
+                };
+                Ok(rss_mdm_apple_mdm::profile::CertificatePayload {
+                    root,
+                    fingerprint,
+                    content,
+                })
+            })
+            .collect()
+    }
+    pub fn device_trust(&self) -> &rss_mdm_device_trust::DeviceTrust {
+        &self.authority.trust
+    }
     #[allow(
         clippy::too_many_arguments,
         reason = "explicit independent native, CA, signer and webhook key owners"
@@ -83,21 +128,9 @@ impl Apple {
         challenge_key: ring::hmac::Key,
         notify_key: ring::hmac::Key,
         agent_identity: Option<rss_mdm_execution_service::agent_install::Identity>,
+        providers: Arc<rss_mdm_pki_service::providers::Providers>,
     ) -> Self {
-        let configuration = Sha256::digest(
-            serde_json::to_vec(&(
-                "mdm.apple.enrollment/v1",
-                &config.management.origin,
-                &config.scep_url,
-                &config.scep_provisioner,
-                &config.apns_topic,
-                &config.challenge_webhook.id,
-                &config.notify_webhook.id,
-                authority.issuer_fingerprint(),
-            ))
-            .expect("closed configuration"),
-        )
-        .into();
+        let configuration = protocol_identity(&config);
         Self {
             protection,
             agent_identity,
@@ -109,7 +142,44 @@ impl Apple {
             challenge_key,
             notify_key,
             configuration,
+            providers,
         }
+    }
+    pub(crate) async fn active_scep(
+        &self,
+        c: &mut sqlx::PgConnection,
+        tenant: &str,
+    ) -> Result<(Vec<u8>, String, String), Error> {
+        let trust = self.authority.trust.public().map_err(|_| Error::Conflict)?;
+        let generation = trust
+            .issuers
+            .iter()
+            .find(|g| g.mode == rss_mdm_agent_wire::pki::Mode::Active)
+            .ok_or(Error::Conflict)?;
+        rss_mdm_pki_service::signing::require_active_in(
+            c,
+            uuid::Uuid::parse_str(tenant).map_err(|_| Error::Malformed)?,
+            "apple",
+            &generation.digest,
+        )
+        .await
+        .map_err(|error| match error {
+            rss_mdm_pki_service::Error::Conflict => Error::Conflict,
+            _ => Error::Unavailable(crate::Failure::Database),
+        })?;
+        let url = self
+            .providers
+            .scep(&generation.digest)
+            .map_err(|_| Error::Conflict)?
+            .to_owned();
+        let issuer = rss_mdm_device_trust::decode(&generation.certificate, 32768)
+            .map_err(|_| Error::Conflict)?;
+        use sha2::Digest;
+        Ok((
+            Sha256::digest(issuer).to_vec(),
+            url,
+            generation.provisioner.clone(),
+        ))
     }
     pub(crate) fn access_rights(&self) -> i32 {
         8191
@@ -276,6 +346,14 @@ pub const ACCESS_ADMISSION_SQL: &str = include_str!("access-admission.sql");
 
 #[cfg(feature = "integration")]
 impl Apple {
+    pub fn scep_fixture(&self) -> Result<(String, String), Error> {
+        let generation = self.authority.trust.active().map_err(|_| Error::Conflict)?;
+        let url = self
+            .providers
+            .scep(&generation.digest)
+            .map_err(|_| Error::Conflict)?;
+        Ok((url.to_owned(), generation.provisioner))
+    }
     pub fn trust_fixture(&self) -> &certificate::AppleDeviceTrust {
         &self.authority
     }

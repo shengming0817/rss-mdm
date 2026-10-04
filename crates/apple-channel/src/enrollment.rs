@@ -92,12 +92,12 @@ pub async fn download(
     // Password rotation can prepare a new attempt; any previous issuance is permanently fenced.
     sqlx::query("UPDATE mdm_apple.scep_attempts SET state='superseded' WHERE tenant_id=$1::uuid AND enrollment=$2::uuid AND password_version<>$3 AND state<>'superseded'")
         .bind(proof.tenant_id()).bind(id.to_string()).bind(auth.version).execute(&mut *c).await.map_err(db)?;
-    let (attempt, replayed) = prepared(c, apple, auth, proof.tenant_id(), &deadline).await?;
+    let (attempt, replayed, scep_url, scep_provisioner) = prepared(c, apple, auth, proof.tenant_id(), &deadline).await?;
     let bytes = apple.signer.sign(
         &profile::enrollment(&profile::EnrollmentProfile {
                 access_rights: apple.access_rights() as u16,
-            scep_url: &apple.config.scep_url,
-            scep_provisioner: &apple.config.scep_provisioner,
+            scep_url: &scep_url,
+            scep_provisioner: &scep_provisioner,
             apns_topic: &apple.config.apns_topic,
             management_origin: &apple.config.management.origin,
             subject: &certificate::subject(id, attempt),
@@ -136,8 +136,8 @@ async fn prepared(
     auth: &Authorization,
     tenant: &str,
     deadline: &str,
-) -> Result<(Uuid, bool), Error> {
-    let old=sqlx::query("SELECT id::text,state,configuration,access_rights FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND enrollment=$2::uuid AND password_version=$3 FOR UPDATE")
+) -> Result<(Uuid, bool, String, String), Error> {
+    let old=sqlx::query("SELECT id::text,state,configuration,access_rights,scep_url,scep_provisioner FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND enrollment=$2::uuid AND password_version=$3 FOR UPDATE")
         .bind(tenant).bind(auth.id.to_string()).bind(auth.version).fetch_optional(&mut *tx).await.map_err(db)?;
     if let Some(row) = old {
         if row.try_get::<String, _>("state").map_err(db)? != "prepared"
@@ -146,12 +146,22 @@ async fn prepared(
         {
             return Err(Error::Conflict);
         }
-        return uuid(&row, "id").map(|id| (id, true)).map_err(Error::from);
+        return Ok((
+            uuid(&row, "id")?,
+            true,
+            row.try_get::<Option<String>, _>("scep_url")
+                .map_err(db)?
+                .ok_or(Error::Conflict)?,
+            row.try_get::<Option<String>, _>("scep_provisioner")
+                .map_err(db)?
+                .ok_or(Error::Conflict)?,
+        ));
     }
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO mdm_apple.scep_attempts(tenant_id,id,enrollment,password_version,configuration,state,issuer,expires_at,access_rights) VALUES($1::uuid,$3::uuid,$2::uuid,$6,$4,'prepared',$5,$7::timestamptz,$8)")
-        .bind(tenant).bind(auth.id.to_string()).bind(id.to_string()).bind(apple.configuration.as_slice()).bind(apple.authority.issuer_fingerprint().as_slice()).bind(auth.version).bind(deadline).bind(apple.access_rights()).execute(&mut *tx).await.map_err(db)?;
-    Ok((id, false))
+    let (issuer, scep_url, scep_provisioner) = apple.active_scep(tx, tenant).await?;
+    sqlx::query("INSERT INTO mdm_apple.scep_attempts(tenant_id,id,enrollment,password_version,configuration,state,issuer,expires_at,access_rights,scep_url,scep_provisioner) VALUES($1::uuid,$3::uuid,$2::uuid,$6,$4,'prepared',$5,$7::timestamptz,$8,$9,$10)")
+        .bind(tenant).bind(auth.id.to_string()).bind(id.to_string()).bind(apple.configuration.as_slice()).bind(issuer).bind(auth.version).bind(deadline).bind(apple.access_rights()).bind(&scep_url).bind(&scep_provisioner).execute(&mut *tx).await.map_err(db)?;
+    Ok((id, false, scep_url, scep_provisioner))
 }
 pub async fn challenge(
     State(app): State<Arc<HttpState>>,
@@ -169,15 +179,31 @@ pub async fn challenge(
             .unix_seconds()
             .ok_or(Error::Unavailable(Failure::Clock))?,
     )?;
-    if input.provisioner_name.as_deref() != Some(apple.config.scep_provisioner.as_str())
+    if input
+        .provisioner_name
+        .as_deref()
+        .is_none_or(|p| p.is_empty() || p.len() > 128)
         || input.x509_certificate.is_some()
         || input.scep_error_code.is_some()
     {
         return Err(Error::Unauthorized);
     }
+    let provisioner = input
+        .provisioner_name
+        .as_deref()
+        .ok_or(Error::Unauthorized)?;
     let csr = certificate::csr(&input.x509_certificate_request.der()?)?;
     let password = Password::new(input.scep_challenge.ok_or(Error::Unauthorized)?)?;
-    if super::renewal::challenge(&app, &csr, password.expose(), &input.transaction, &audit).await? {
+    if super::renewal::challenge(
+        &app,
+        &csr,
+        password.expose(),
+        &input.transaction,
+        provisioner,
+        &audit,
+    )
+    .await?
+    {
         return Ok(Json(
             serde_json::json!({"allow":true,"data":{"subject":certificate::subject(csr.enrollment(),csr.attempt())}}),
         ));
@@ -187,18 +213,18 @@ pub async fn challenge(
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
     let control = budget.control();
     let outcome = app.audit_store.write(app.identity.tenant(), &control,
-        (&app.audit_store, apple, &auth, &proof, &csr, input.transaction.as_str(), &audit),
-        |(store, apple, auth, proof, csr, transaction, audit), tx| Box::pin(async move {
-            tx.with_connection_context(&mut (*apple, *auth, *proof, *csr, *transaction),
-                |(apple, auth, proof, csr, transaction), c| Box::pin(async move {
-                    let apple = *apple; let auth = *auth; let proof = *proof; let csr = *csr; let transaction = *transaction;
+        (&app.audit_store, apple, &auth, &proof, &csr, input.transaction.as_str(), provisioner, &audit),
+        |(store, apple, auth, proof, csr, transaction, provisioner, audit), tx| Box::pin(async move {
+            tx.with_connection_context(&mut (*apple, *auth, *proof, *csr, *transaction, *provisioner),
+                |(apple, auth, proof, csr, transaction, provisioner), c| Box::pin(async move {
+                    let apple = *apple; let auth = *auth; let proof = *proof; let csr = *csr; let transaction = *transaction; let provisioner=*provisioner;
     current(
         &request(c, proof.tenant_id(), auth.id).await?,
         auth,
         proof,
     )?;
-    let consumed=sqlx::query("UPDATE mdm_apple.scep_attempts SET state='consumed',transaction_id=$4,csr_digest=$5,spki=$6 WHERE tenant_id=$1::uuid AND id=$2::uuid AND enrollment=$3::uuid AND state='prepared' AND configuration=$7 AND password_version=$8 AND expires_at>clock_timestamp()")
-        .bind(proof.tenant_id()).bind(csr.attempt().to_string()).bind(csr.enrollment().to_string()).bind(transaction).bind(csr.digest().as_slice()).bind(csr.spki().as_slice()).bind(apple.configuration.as_slice()).bind(auth.version).execute(&mut *c).await.map_err(db)?;
+    let consumed=sqlx::query("UPDATE mdm_apple.scep_attempts SET state='consumed',transaction_id=$4,csr_digest=$5,spki=$6 WHERE tenant_id=$1::uuid AND id=$2::uuid AND enrollment=$3::uuid AND state='prepared' AND configuration=$7 AND password_version=$8 AND scep_provisioner=$9 AND expires_at>clock_timestamp()")
+        .bind(proof.tenant_id()).bind(csr.attempt().to_string()).bind(csr.enrollment().to_string()).bind(transaction).bind(csr.digest().as_slice()).bind(csr.spki().as_slice()).bind(apple.configuration.as_slice()).bind(auth.version).bind(provisioner).execute(&mut *c).await.map_err(db)?;
     if consumed.rows_affected() != 1 {
         return Err(Error::Unauthorized);
     }
@@ -353,7 +379,7 @@ pub async fn attempt(
     leaf: &certificate::CheckedLeaf,
 ) -> Result<PgRow, Error> {
     let row=sqlx::query("SELECT state,configuration,spki,fingerprint,password_version,transaction_id,csr_digest,registration::text FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND id=$2::uuid AND enrollment=$3::uuid AND issuer=$4 FOR UPDATE")
-        .bind(tenant).bind(leaf.attempt().to_string()).bind(leaf.enrollment().to_string()).bind(apple.authority.issuer_fingerprint().as_slice()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+        .bind(tenant).bind(leaf.attempt().to_string()).bind(leaf.enrollment().to_string()).bind(leaf.issuer().as_slice()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
     if !matches!(
         row.try_get::<String, _>("state").map_err(db)?.as_str(),
         "consumed" | "bound"
@@ -375,6 +401,29 @@ pub async fn persist_leaf(
 ) -> Result<(), Error> {
     sqlx::query("UPDATE mdm_apple.scep_attempts SET fingerprint=$3,serial=$4,certificate=$5,not_before=$6,not_after=$7 WHERE tenant_id=$1::uuid AND id=$2::uuid")
         .bind(tenant).bind(leaf.attempt().to_string()).bind(leaf.fingerprint().as_slice()).bind(leaf.serial()).bind(leaf.certificate()).bind(leaf.not_before()).bind(leaf.not_after()).execute(&mut *tx).await.map_err(db)?;
+    let registration: Option<Uuid> = sqlx::query_scalar(
+        "SELECT registration FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(tenant)
+    .bind(leaf.attempt())
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(db)?;
+    let issuer = leaf
+        .issuer()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    rss_mdm_pki_service::certificates::record_candidate_in(
+        tx,
+        tenant,
+        "apple",
+        registration,
+        &issuer,
+        leaf.certificate(),
+    )
+    .await
+    .map_err(|_| Error::Unavailable(Failure::Database))?;
     Ok(())
 }
 
@@ -508,6 +557,21 @@ async fn bind_on(tx: &mut sqlx::PgConnection, inputs: &mut BindInputs<'_>) -> Re
     persist_leaf(tx, &tenant, leaf).await?;
     sqlx::query("UPDATE mdm_apple.scep_attempts SET state='bound',registration=$3::uuid WHERE tenant_id=$1::uuid AND id=$2::uuid")
         .bind(&tenant).bind(leaf.attempt().to_string()).bind(receipt.registration.to_string()).execute(&mut *tx).await.map_err(db)?;
+    let issuer = leaf
+        .issuer()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    rss_mdm_pki_service::certificates::record_in(
+        tx,
+        &tenant,
+        "apple",
+        receipt.registration,
+        &issuer,
+        leaf.certificate(),
+    )
+    .await
+    .map_err(|_| Error::Unavailable(Failure::Database))?;
     sqlx::query("INSERT INTO mdm_apple.devices(tenant_id,registration,udid,state,access_rights) SELECT $1::uuid,$2::uuid,$3,'pending_token',access_rights FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND id=$4")
         .bind(&tenant).bind(receipt.registration.to_string()).bind(udid).bind(leaf.attempt()).execute(&mut *tx).await.map_err(db)?;
     crate::notify(tx, "apple").await.map_err(db)?;

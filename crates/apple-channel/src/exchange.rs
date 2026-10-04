@@ -51,12 +51,27 @@ impl ports::AppleExchange for Exchange {
         self: Box<Self>,
         c: &'a mut PgConnection,
         p: &'a DevicePrincipal,
+        audit: &'a rss_mdm_audit_integration::RequestAudit,
     ) -> ports::Pending<'a, ports::AppleReception> {
         Box::pin(async move {
             let Some(id) = self.command else {
                 return Ok(ports::AppleReception::Idle);
             };
             if self.user.is_empty() {
+                if let Some(facts) = crate::trust_installation::receive(
+                    c,
+                    &self.apple,
+                    p,
+                    id,
+                    self.status,
+                    &self.dictionary,
+                    (&self.bytes, audit),
+                )
+                .await
+                .map_err(ports::Rejection::from)?
+                {
+                    return Ok(ports::AppleReception::Collection(facts));
+                }
                 if let Some(facts) = crate::agent_collection::receive(
                     c,
                     &self.apple.protection,

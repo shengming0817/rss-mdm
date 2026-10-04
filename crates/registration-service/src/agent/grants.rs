@@ -321,6 +321,9 @@ UPDATE mdm_access.agent_grants SET state='revoked' WHERE tenant_id=$1::uuid AND 
                 .execute(&mut *c)
                 .await
                 .map_err(db)?;
+                let attempts:Vec<Uuid>=sqlx::query_scalar("SELECT id FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND grant_id=$2")
+                    .bind(&tenant).bind(*id).fetch_all(&mut *c).await.map_err(db)?;
+                for attempt in attempts {rss_mdm_pki_service::certificates::revoke_attempt_in(c,&tenant,attempt).await.map_err(|_|Error::Storage)?;}
                 let value = receipt(&grant_row(c, &tenant, *id).await?)?;
                 crate::operations::save(
                     c,

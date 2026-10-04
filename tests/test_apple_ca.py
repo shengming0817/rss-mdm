@@ -11,21 +11,24 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'hack'))
 import apple_ca
+import pki_ca
 from t2_environment import Environment
 
 
 class ProviderTests(unittest.TestCase):
     def provider(self, root='/unused'):
-        provider = apple_ca.Provider(root, 'a'*20)
+        provider = pki_ca.Provider(root, 'a'*20)
         provider.owner = Mock()
+        provider.owner.providers = {'step-ca': 'fixed-provider'}
         return provider
 
     def test_address_only_comes_from_live_service_mapping(self):
         provider = self.provider()
         provider.owner.compose.side_effect = ['', 'owned-id', '127.0.0.1:54321']
-        self.assertEqual(provider.start(), 'https://localhost:54321')
+        with patch.object(pki_ca, 'run', side_effect=[SimpleNamespace(stdout='[{"Image":"fixed-image"}]'), SimpleNamespace(stdout='fixed-image')]):
+            self.assertEqual(provider.start(), 'https://localhost:54321')
         provider.owner.verify_ownership.assert_called_once()
-        provider.owner.compose.assert_any_call('--profile','apple','port','step-ca',str(apple_ca.APPLE_CA['port']),timeout=15)
+        provider.owner.compose.assert_any_call('--profile','pki','port','step-ca',str(pki_ca.PKI_CA['port']),timeout=15)
 
     def test_foreign_owner_and_non_loopback_or_ambiguous_mapping_fail(self):
         provider = self.provider()
@@ -37,21 +40,22 @@ class ProviderTests(unittest.TestCase):
             provider = self.provider()
             provider.owner.compose.side_effect = ['', 'owned-id', mapping]
             with self.subTest(mapping=mapping), self.assertRaises((RuntimeError, ValueError)):
-                provider.start()
+                with patch.object(pki_ca, 'run', side_effect=[SimpleNamespace(stdout='[{"Image":"fixed-image"}]'), SimpleNamespace(stdout='fixed-image')]):
+                    provider.start()
 
     def test_native_linux_binds_only_its_private_network_gateway(self):
         provider = self.provider()
         provider.owner.project = 'owned-project'
         provider.owner.extra = {}
         replies = [SimpleNamespace(stdout='Debian GNU/Linux'),SimpleNamespace(stdout=json.dumps([{'IPAM':{'Config':[{'Gateway':'172.29.0.1'}]}}]))]
-        with patch.object(apple_ca,'run',side_effect=replies) as run:
+        with patch.object(pki_ca,'run',side_effect=replies) as run:
             self.assertEqual(provider.webhook_listen(),'172.29.0.1:0')
             run.assert_any_call(['docker','network','inspect','owned-project_default'],capture_output=True,timeout=15)
-        self.assertEqual(provider.owner.extra['MDM_APPLE_HOST_ADDRESS'],'172.29.0.1')
+        self.assertEqual(provider.owner.extra['MDM_PKI_HOST_ADDRESS'],'172.29.0.1')
 
     def test_desktop_webhook_stays_on_loopback(self):
         provider = self.provider()
-        with patch.object(apple_ca,'run',return_value=SimpleNamespace(stdout='Docker Desktop')) as run:
+        with patch.object(pki_ca,'run',return_value=SimpleNamespace(stdout='Docker Desktop')) as run:
             self.assertEqual(provider.webhook_listen(),'127.0.0.1:0')
             self.assertEqual(run.call_count,1)
 
@@ -77,11 +81,11 @@ class ProviderTests(unittest.TestCase):
             live = SimpleNamespace(stdout='[{"State":{"Running":true}}]')
             origin = 'https://localhost:'+str(server.server_port)
             try:
-                with patch.object(apple_ca,'run',return_value=live):
+                with patch.object(pki_ca,'run',return_value=live):
                     provider.wait(origin,'/health',trusted.root/'ca.crt')
                     with self.assertRaisesRegex(RuntimeError,'TLS trust'):
                         provider.wait(origin,'/health',foreign.root/'ca.crt')
-                    with patch.object(apple_ca.ssl,'create_default_context',side_effect=lambda **_: ssl_context(trusted.root/'ca.crt')):
+                    with patch.object(pki_ca.ssl,'create_default_context',side_effect=lambda **_: ssl_context(trusted.root/'ca.crt')):
                         with self.assertRaisesRegex(RuntimeError,'TLS trust'):
                             provider.wait(origin,'/health',trusted.root/'ca.crt')
             finally:
@@ -91,13 +95,13 @@ class ProviderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             owner = Environment(root)
-            project = owner.identity+'-t2-apple-'+'b'*20
+            project = owner.identity+'-t2-pki-'+'b'*20
             replies = [SimpleNamespace(stdout=project+'\nother-project'),SimpleNamespace(stdout='')]
-            with patch.object(apple_ca,'ROOT',root),patch.object(apple_ca,'Environment') as factory,patch.object(apple_ca,'run',side_effect=replies):
+            with patch.object(pki_ca,'ROOT',root),patch.object(pki_ca,'Environment') as factory,patch.object(pki_ca,'run',side_effect=replies):
                 factory.return_value.identity = owner.identity
                 factory.return_value.project = project
-                apple_ca.recover()
-                factory.assert_any_call(group='t2-apple-'+'b'*20)
+                pki_ca.recover()
+                factory.assert_any_call(group='t2-pki-'+'b'*20)
                 factory.return_value.reset.assert_called_once()
 
     def test_provider_and_webhook_diagnostics_survive_private_fixture_removal(self):
@@ -134,7 +138,12 @@ class RunningTests(unittest.TestCase):
         stack = ExitStack();self.addCleanup(stack.close)
         temporary = stack.enter_context(tempfile.TemporaryDirectory())
         root = Path(temporary)
-        (root/'apple.json').write_text('{}')
+        (root/'apple.json').write_text(json.dumps({'management': {'origin': 'https://mdm.example.test'}}))
+        (root/'case.json').write_text(json.dumps({'tenant': '00000000-0000-0000-0000-000000000001'}))
+        for name in ('ca.crt', 'apple-issuer.pem', 'apple-issuer.key'):
+            (root/name).write_text('fixture')
+        (root/'agent-pki.json').write_text('{"kid":"unchanged"}')
+        apple_root=root/'pki/apple'
         env = {'MDM_AGENT_PKI_FIXTURE':'1'} if agent else {}
         provider = Mock()
         provider.start.side_effect = ['https://localhost:50101','https://localhost:50102']
@@ -145,15 +154,26 @@ class RunningTests(unittest.TestCase):
         cli = stack.enter_context(patch.object(apple_ca.subprocess,'run'))
         def invoke(command, **kwargs):
             if command[1:3] == ['ca','init']:
-                (root/'step/config').mkdir(parents=True)
-                (root/'step/config/ca.json').write_text('{}')
+                (apple_root/'step/config').mkdir(parents=True)
+                (apple_root/'step/secrets').mkdir()
+                (apple_root/'step/certs').mkdir()
+                (apple_root/'step/config/ca.json').write_text('{"authority":{}}')
             elif fail_at == 'cli':
                 raise RuntimeError('injected CLI failure')
+            if '-out' in command:
+                Path(command[command.index('-out')+1]).write_text('fixture')
+            if command[1:4] == ['crypto','jwk','create']:
+                Path(command[5]).write_text('fixture')
             return SimpleNamespace(stdout='Webhook ID: fixed-id\nSecret: c2VjcmV0\n')
         cli.side_effect = invoke
-        stack.enter_context(patch('agent_pki_fixtures.prepare'))
-        install = stack.enter_context(patch('agent_pki_fixtures.install',side_effect=lambda *args:(root/'agent-pki.json').write_text('{"ca_url":"old","kid":"unchanged"}')))
-        restore = stack.enter_context(patch('agent_pki_fixtures.restore'))
+        offline=root/'pki/apple-offline';offline.mkdir(parents=True)
+        stack.enter_context(patch('pki_fixtures.root_crl',return_value=offline))
+        stack.enter_context(patch('pki_fixtures.isolate_root'))
+        def install_trust(*args):
+            path=apple_root/'trust.json';path.write_text('{"issuers":[{"digest":"fixture"}]}')
+            return path
+        install=stack.enter_context(patch('pki_fixtures.trust',side_effect=install_trust))
+        restore=Mock()
         if fail_at == 'second-start':
             provider.start.side_effect = ['https://localhost:50101',RuntimeError('injected startup failure')]
         return root,env,provider,install,restore
@@ -161,11 +181,11 @@ class RunningTests(unittest.TestCase):
     def test_recreation_publishes_final_origin_without_replacing_provisioner_identity(self):
         root,env,provider,install,restore = self.scenario()
         with apple_ca.running(root,env,case='a'*20):
-            self.assertEqual(json.loads((root/'apple.json').read_text())['scep_url'],'https://localhost:50102/scep/rss')
-            self.assertEqual(json.loads((root/'agent-pki.json').read_text()),{'ca_url':'https://localhost:50102','kid':'unchanged'})
+            self.assertEqual(json.loads((root/'device-pki.json').read_text())[0]['scep_url'],'https://localhost:50102/scep/rss')
+            self.assertEqual(json.loads((root/'agent-pki.json').read_text()),{'kid':'unchanged'})
             self.assertEqual(env['MDM_STEP_CA_URL'],'https://localhost:50102')
             self.assertEqual(env['MDM_APPLE_WEBHOOK_LISTEN'],'127.0.0.1:0')
-            install.assert_called_once();restore.assert_called_once()
+            install.assert_called_once()
             provider.compose.assert_called_once_with('rm','--stop','--force','--volumes','step-ca',timeout=30)
         provider.reset.assert_called_once()
         provider.check.assert_called_once()

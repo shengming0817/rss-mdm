@@ -11,6 +11,8 @@ use rss_mdm_registration_service::device::coordinates::Coordinates;
 use serde::Deserialize;
 use std::sync::Arc;
 pub struct Services {
+    pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
+    pub pki_clock: Arc<dyn rss_mdm_registration_service::agent_pki::Clock>,
     pub agent_enrollment: Option<Arc<rss_mdm_registration_service::agent::Service>>,
     pub certificate_archive: Arc<rss_mdm_certificate_archive_service::Archive>,
     pub timeline: Arc<rss_mdm_timeline_service::Timeline>,
@@ -89,6 +91,12 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         windows: state.windows,
     });
     let core = Router::new()
+        .merge(
+            crate::pki::routes().with_state(Arc::new(crate::pki::HttpState {
+                registry: state.pki,
+                clock: state.pki_clock,
+            })),
+        )
         .merge(crate::certificate_archive::routes().with_state(state.certificate_archive))
         .merge(
             crate::software_publication::http::routes().with_state(Arc::new(

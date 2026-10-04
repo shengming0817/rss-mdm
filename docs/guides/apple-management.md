@@ -82,8 +82,7 @@ operation observation 分别返回 expected、synchronization、nativeStatus、e
 ```json
 {"apple":{
   "management":{"listen":"0.0.0.0:8445","origin":"https://apple.example.test:8445","certificate_file":"/run/mdm/apple-tls.pem","private_key_file":"/run/mdm/apple-tls.pk8"},
-  "scep_url":"https://ca.example.test/scep/rss","scep_provisioner":"rss",
-  "issuer_certificate_file":"/run/mdm/apple-issuer.pem",
+  "trust_file":"/run/mdm/apple-trust.json",
   "profile_certificate_file":"/run/mdm/profile-signer-chain.pem","profile_private_key_file":"/run/mdm/profile-signer.pk8",
   "apns_certificate_file":"/run/mdm/apns.pem","apns_private_key_file":"/run/mdm/apns.key",
   "apns_topic":"com.apple.mgmt.External.REPLACE",
@@ -94,10 +93,10 @@ operation observation 分别返回 expected、synchronization、nativeStatus、e
 
 TLS 与 Profile RSA 私钥为无加密 PKCS8 DER；APNs 私钥为 PEM。秘密文件权限必须限制为 owner，webhook secret 文件保存 CA 发放的 base64 字符串，解码至少 32 字节。两个 webhook ID/secret 分开配置。APNs certificate UID 必须等于 topic，且证书在有效期内。产品管理监听直接完成 mTLS，不接受代理头作为设备身份。
 
-管理 origin、SCEP URL/provisioner、issuer 指纹、APNs topic 与两个 webhook ID 组成注册配置身份。改变这些身份会拒绝旧注册继续准入，须安排重新注册；仅更换同 ID 的 HMAC secret 不改变配置身份，但两端必须同步更新。不得把配置漂移当作证书恢复。
+稳定注册配置身份只包含管理 origin、APNs topic 与两个 webhook ID。SCEP URL/provisioner 与 issuer 指纹由签发代次持有，轮换不会改变稳定注册配置。改变稳定配置会拒绝旧注册继续准入，须安排重新注册；仅更换同 ID 的 HMAC secret 不改变配置身份，但两端必须同步更新。不得把配置漂移当作证书恢复。
 ## 外部 CA 配置
 
-部署专用 Apple issuer 与独立 CA 数据库，保护 CA signer/decrypter、管理员和 webhook 秘密。使用固定版本 step CLI 的管理员 API 创建 SCEP provisioner 与 webhook；静态 JSON 的 `secret` 不会建立有效 webhook 密钥。固定二进制摘要由 [tools lock](../../fixtures/apple-tools.lock.json) 持有，测试安装代码可参考 [apple_ca.py](../../hack/apple_ca.py)。
+部署专用 Apple issuer 与独立 CA 数据库，保护 CA signer/decrypter、管理员和 webhook 秘密。使用固定版本 step CLI 的管理员 API 创建 SCEP provisioner 与 webhook；静态 JSON 的 `secret` 不会建立有效 webhook 密钥。固定 step CLI 与 CA 摘要由 [PKI tools lock](../../fixtures/pki-tools.lock.json) 持有，测试安装代码可参考 [apple_ca.py](../../hack/apple_ca.py)。
 
 SCEP provisioner 名为 rss，最小 RSA 公钥 2048、禁用 renewal，默认签发 24h，最大时长应小于 90 日以包含 backdate。配置 SCEP RSA decrypter 证书与密钥。签名模板只使用经 HMAC 回调授权返回的主题：
 
@@ -112,7 +111,7 @@ SCEP provisioner 名为 rss，最小 RSA 公钥 2048、禁用 renewal，默认�
 challenge 是一次性事务，先消费提交再 allow；CA 的重复传输不能再次授权。签发完成通知不是唯一绑定通道，真实 mTLS 叶证书可恢复丢失通知；签发响应本身丢失须新口令、新 attempt、新密钥，不能静默重签。
 ## 健康、告警与排障
 
-启用 Apple 后，`/readyz` 同时检查 SCEP issuer、Profile signer 和 APNs 证书有效期；任一过期即返回 503。后台输出 `apple_certificate_health`：用途为 `scep_issuer`、`profile_signer`、`apns`，剩余 30 日进入 `renew_soon`、7 日进入 `critical`、到期为 `expired`。每次进程运行仅在等级变化时输出；应由部署日志告警系统接收。替换材料后重启以装载新证书；issuer 变化仍须按注册配置身份规则重新注册，APNs/签名证书同一用途轮换不改变注册身份。
+启用 Apple 后，`/readyz` 同时检查 SCEP issuer、Profile signer 和 APNs 证书有效期；任一过期即返回 503。后台输出 `apple_certificate_health`：用途为 `scep_issuer`、`profile_signer`、`apns`，剩余 30 日进入 `renew_soon`、7 日进入 `critical`、到期为 `expired`。每次进程运行仅在等级变化时输出；应由部署日志告警系统接收。Profile signer 与 APNs 材料替换后重启以装载新证书，同一用途轮换不改变注册身份。SCEP issuer 按[设备 PKI 运维](../deployment/operations.md#设备-pki-轮换与撤销)完成受控 CA 轮换，无须重新注册；管理 origin、APNs topic 或 webhook ID 等稳定注册配置变化才要求重新注册。
 
 启动失败按闭合类别定位：`AppleListeners`、`AppleScep`、`AppleProfileSigner`、`AppleApns`、`AppleChallengeWebhook`、`AppleNotifyWebhook`；不会输出路径、密钥、口令或 provider 原文。
 
@@ -126,3 +125,11 @@ APNs 响应体最多读取 4096 字节，仅记录闭合原因类别和可选时
 后台 `apple_push_health` 记录连续内部失败数和配置故障。连续三次内部失败使 readiness 返回 503；数据库恢复后自动解除。配置拒绝保持不健康直到有效发送恢复或更换配置并重启。临时 APNs 网络错误使用设备级持久退避，不伪造命令进度。
 
 Mac 的 Legacy 接管以关联的 `ProfileList(ManagedOnly=true)` 证明 MDM 所有权，不依赖 iOS 的 IsManaged 字段。资源读取权限按租户作用域冻结，与设备配置权限分别验证。
+
+## CA 代次与安装确认
+
+顶层 `device_pki` 的 Apple 项配置该代次的 `issuer`、`origin`、`tls_root_file`、JWK 撤销 provisioner/kid/密钥，以及 `scep_url`。SCEP URL 必须位于对应固定 HTTPS CA origin；公开 trust 中的 provisioner 是 SCEP 名称，撤销凭据使用独立 JWK provisioner。旧代次的 provider 保留到未知签发已处理、旧证书已迁移/过期或撤销发布确认。每次 SCEP attempt 冻结原 issuer、URL/provisioner；重试不自动改用当前代次。challenge/notify 沿原 HMAC 接口校验，未知结果不能重新授权 challenge。
+
+CA 公共证书由单独的受管理 `com.rss-mdm.pki.<registration>` Profile 持有，不放进 SCEP 身份 Profile，避免两份独立 CA 安装 owner。根载荷是 `com.apple.security.root` DER，中间载荷是 `com.apple.security.pem` PEM。InstallProfile 后发出原通道的 `ProfileList(ManagedOnly=true)`，逐项核对 Profile 与所有证书载荷的 identifier、UUID、类型和有序结构，再记录安装回执；InstallProfile ACK 不代替该证明。退役后的完整信任集合通过替换这个 Profile 移除旧 CA。
+
+服务 HTTPS/SCEP HTTPS 的证书信任独立于设备 CA，设备须预先信任这些服务证书；生产可使用受信任的服务 TLS 入口。当前协议验证不等于真实 macOS 安装/移除行为已验证，真机 T3 仍独立。轮换、撤销和 CRL 发布操作见[设备 PKI 运维](../deployment/operations.md#设备-pki-轮换与撤销)。

@@ -141,6 +141,7 @@ async fn admission(pool: &PgPool) -> Result<(), Error> {
         rss_mdm_inventory_service::ACCESS_CONTRACT,
         rss_mdm_agent_channel::ACCESS_CONTRACT,
         rss_mdm_windows_channel::ACCESS_CONTRACT,
+        rss_mdm_pki_service::ACCESS_CONTRACT,
         rss_mdm_apple_channel::ACCESS_CONTRACT,
         rss_mdm_audit_integration::ACCESS_CONTRACT,
         rss_mdm_flow_service::ACCESS_CONTRACT,

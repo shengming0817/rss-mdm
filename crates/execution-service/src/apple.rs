@@ -171,12 +171,13 @@ impl ExecutionService {
                     let exchange = exchange.take().ok_or(Error::Conflict)?;
                     let user_key = exchange.user_key().to_owned();
                     let principal = p.clone();
+                    let reception_audit = (*audit).clone();
                     let reception = tx
                         .with_connection(move |c| {
                             Box::pin(async move {
                                 Ok(async {
                                     exchange.current(c, &principal).await?;
-                                    exchange.reception(c, &principal).await
+                                    exchange.reception(c, &principal, &reception_audit).await
                                 }
                                 .await)
                             })
@@ -199,7 +200,7 @@ impl ExecutionService {
                         .reconcile_agent_install_in(tx, p.device(), audit)
                         .await?;
                     actions::native_collection::settle_device(service, tx, p.device()).await?;
-                    let response = send(service, tx, (*apple).clone(), p, &user_key).await?;
+                    let response = send(service, tx, (*apple).clone(), p, &user_key, audit).await?;
                     super::protocol::settle_dispatch_failures(service, tx, p, audit).await?;
                     service
                         .audit_store
@@ -319,7 +320,25 @@ async fn send(
     apple: Arc<dyn super::channels::Apple>,
     p: &DevicePrincipal,
     user_key: &str,
+    audit: &RequestAudit,
 ) -> Result<Vec<u8>> {
+    if user_key.is_empty() {
+        let principal = p.clone();
+        let trust_audit = audit.clone();
+        let channel = apple.clone();
+        let reply = tx
+            .with_connection(move |c| {
+                Box::pin(async move { Ok(channel.trust(c, &principal, &trust_audit).await) })
+            })
+            .await?
+            .map_err(Error::from)?;
+        for fact in &reply.facts {
+            service.audit_store.append_in(tx, fact, false).await?;
+        }
+        if !reply.bytes.is_empty() {
+            return Ok(reply.bytes);
+        }
+    }
     let mut after = Uuid::nil();
     loop {
         let tenant = tx.tenant_id().to_string();

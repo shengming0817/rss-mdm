@@ -7,6 +7,7 @@ pub(super) struct Peer {
     pub origin: String,
     pub topic: String,
     pub oracle: oracle::Oracle,
+    pub installed_trust: tokio::sync::Mutex<Option<plist::Dictionary>>,
 }
 impl Peer {
     pub async fn send(&self, path: &str, d: plist::Dictionary) -> Result<(StatusCode, Vec<u8>)> {
@@ -47,7 +48,7 @@ impl Peer {
         ensure!(reply.0 == StatusCode::OK, "TokenUpdate: {}", reply.0);
         Ok(())
     }
-    pub async fn manage(
+    async fn manage_raw(
         &self,
         status: &str,
         id: Option<Uuid>,
@@ -74,6 +75,87 @@ impl Peer {
             String::from_utf8_lossy(&reply.1)
         );
         Ok(reply.1)
+    }
+    /// Simulated native storage installs the exact independent trust Profile and
+    /// returns its complete ProfileList before exposing business commands.
+    pub async fn manage(
+        &self,
+        status: &str,
+        id: Option<Uuid>,
+        mut extra: Option<(&str, plist::Value)>,
+    ) -> Result<Vec<u8>> {
+        if let Some(("ProfileList", plist::Value::Array(profiles))) = extra.as_mut()
+            && let Some(installed) = self.installed_trust.lock().await.as_ref()
+        {
+            profiles.push(plist::Value::Dictionary(installed.clone()));
+        }
+        use x509_cert::der::{Decode, asn1::OctetString};
+        let mut bytes = self.manage_raw(status, id, extra).await?;
+        for _ in 0..4 {
+            if bytes.is_empty() {
+                return Ok(bytes);
+            }
+            let message = protocol::decode(&bytes)?;
+            let payload = message["Command"].as_dictionary().unwrap();
+            if payload.get("RequestType").and_then(plist::Value::as_string)
+                != Some("InstallProfile")
+            {
+                return Ok(bytes);
+            }
+            let data = payload["Payload"]
+                .as_data()
+                .ok_or_else(|| anyhow::anyhow!("signed Profile required"))?;
+            let cms = cms::content_info::ContentInfo::from_der(data)?
+                .content
+                .decode_as::<cms::signed_data::SignedData>()?;
+            let content = cms
+                .encap_content_info
+                .econtent
+                .ok_or_else(|| anyhow::anyhow!("Profile content required"))?
+                .decode_as::<OctetString>()?;
+            let installed = protocol::decode(content.as_bytes())?;
+            if !protocol::text(&installed, "PayloadIdentifier")?.starts_with("com.rss-mdm.pki.") {
+                return Ok(bytes);
+            }
+            // ProfileList reports installed identities, not the configuration
+            // payload's DER certificate data or installation-only fields.
+            let mut summary = plist::Dictionary::new();
+            for key in ["PayloadIdentifier", "PayloadUUID", "PayloadVersion"] {
+                summary.insert(key.into(), installed[key].clone());
+            }
+            let children = installed["PayloadContent"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|child| {
+                    let child = child.as_dictionary().unwrap();
+                    let mut item = plist::Dictionary::new();
+                    for key in [
+                        "PayloadIdentifier",
+                        "PayloadUUID",
+                        "PayloadType",
+                        "PayloadVersion",
+                    ] {
+                        item.insert(key.into(), child[key].clone());
+                    }
+                    plist::Value::Dictionary(item)
+                })
+                .collect();
+            summary.insert("PayloadContent".into(), plist::Value::Array(children));
+            *self.installed_trust.lock().await = Some(summary.clone());
+            let id = Uuid::parse_str(protocol::text(&message, "CommandUUID")?)?;
+            let query = self.manage_raw("Acknowledged", Some(id), None).await?;
+            let (read_id, _) = command(&query, "ProfileList")?;
+            let manifest = plist::Value::Array(vec![plist::Value::Dictionary(summary)]);
+            bytes = self
+                .manage_raw(
+                    "Acknowledged",
+                    Some(read_id),
+                    Some(("ProfileList", manifest)),
+                )
+                .await?;
+        }
+        anyhow::bail!("trust Profile exchange exceeded the fixture bound")
     }
     pub async fn next(&self, kind: &str) -> Result<(Uuid, plist::Dictionary)> {
         command(&self.next_bytes(kind).await?, kind)

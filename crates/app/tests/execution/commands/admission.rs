@@ -373,6 +373,10 @@ impl Client {
                 "ALTER TABLE mdm_commands.operations ADD CONSTRAINT unexpected_command_check CHECK(revision<100000)",
                 "ALTER TABLE mdm_commands.operations DROP CONSTRAINT unexpected_command_check",
             ),
+            (
+                "ALTER TABLE mdm_access.agent_grants DROP CONSTRAINT agent_grants_device_check; ALTER TABLE mdm_access.agent_grants ADD CONSTRAINT agent_grants_device_check CHECK(octet_length(device) BETWEEN 1 AND 257 AND device !~ '[[:cntrl:]]')",
+                "ALTER TABLE mdm_access.agent_grants DROP CONSTRAINT agent_grants_device_check; ALTER TABLE mdm_access.agent_grants ADD CONSTRAINT agent_grants_device_check CHECK(octet_length(device) BETWEEN 1 AND 256 AND device !~ '[[:cntrl:]]')",
+            ),
         ] {
             sqlx::raw_sql(damage).execute(&mut pg).await?;
             let response = self

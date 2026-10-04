@@ -64,22 +64,21 @@ def prepare(root, configuration, password):
     (root/'agent-subordinate.pk8').chmod(0o600)
 
 
-def install(root, cli, admin, origin):
+def install(root, cli, admin, origin, *, template_source=None):
     cli('crypto', 'jwk', 'create', root/'agent.pub.json', root/'agent.private.json',
         '--from-pem', root/'agent-provisioner.pem', '--alg', 'RS256', '--use', 'sig',
         '--kid', 'agent-t2-key', '--no-password', '--insecure')
     (root/'agent.private.json').unlink()
-    template = root/'agent-leaf.tpl'
-    shutil.copyfile(Path(__file__).resolve().parents[1]/'deployment/agent-leaf.tpl', template)
+    template = root/'step/templates/agent-leaf.tpl'
+    template.parent.mkdir(mode=0o700,exist_ok=True)
+    shutil.copyfile(template_source or Path(__file__).resolve().parents[1]/'deployment/agent-leaf.tpl', template)
     template.chmod(0o600)
     cli('ca', 'provisioner', 'add', 'rss-agent', '--type', 'JWK', '--public-key', root/'agent.pub.json',
         '--x509-template', template, '--disable-renewal', '--ssh=false',
         '--x509-default-dur', '8760h', '--x509-max-dur', '87600h', *admin)
-    value = dict(mode='step_ca', ca_url=origin, kid='agent-t2-key',
-                 endpoint=dict(listen='127.0.0.1:0',origin='https://mdm.example.test:9445',certificate_file=str(root/'server.crt'),private_key_file=str(root/'apple-tls.pk8')),
-                 tls_root_file=str(root/'step/certs/root_ca.crt'),
-                 issuer_certificate_file=str(root/'step/certs/intermediate_ca.crt'),
-                 provisioner_key_file=str(root/'agent-provisioner.pk8'), lifetime=dict(mode='standard'))
+    value = dict(mode='step_ca',
+                 endpoint=dict(listen='127.0.0.1:0',origin='https://mdm.example.test:9445',certificate_file=str(root/'server.crt'),private_key_file=str(root/'agent-tls.pk8')),
+                 lifetime=dict(mode='standard'))
     (root/'agent-pki.json').write_text(json.dumps(value))
 
 

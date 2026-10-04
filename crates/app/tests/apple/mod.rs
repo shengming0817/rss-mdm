@@ -67,7 +67,7 @@ impl Fixture {
         )
         .await?;
         if std::env::var_os("MDM_STEP_CA_URL").is_some() {
-            publish_webhooks(&root, webhook.local_addr()?).await?;
+            publish_webhooks(webhook.local_addr()?).await?;
         }
         let mut config = crate::test_support::identity::config(case_tenant())?;
         config.native_protocols.windows = None;
@@ -78,6 +78,14 @@ impl Fixture {
             serde_json::from_slice(&std::fs::read(root.join("apple.json"))?)?;
         apple.management.listen = manage.local_addr()?;
         apple.management.origin = format!("https://localhost:{}", manage.local_addr()?.port());
+        let mut trust: rss_mdm_agent_wire::pki::Trust =
+            serde_json::from_slice(&std::fs::read(&apple.trust_file)?)?;
+        trust.origin = apple.management.origin.clone();
+        let trust_path = root.join(format!("host-trust-{}.json", manage.local_addr()?.port()));
+        std::fs::write(&trust_path, serde_json::to_vec(&trust)?)?;
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&trust_path, std::fs::Permissions::from_mode(0o600))?;
+        apple.trust_file = trust_path;
         config.native_protocols.apple = Some(apple);
         let compiled = config.compile()?;
         let config = &compiled.config;
@@ -152,7 +160,11 @@ impl Fixture {
         let agent_audit = access
             .audit_store(&crate::config::AuditConfig::Plain)
             .await?;
-        let agent_pki = config.agent_pki.load(agent_audit.clone(), clock.clone())?;
+        let agent_pki = config.agent_pki.load(
+            agent_audit.clone(),
+            clock.clone(),
+            crate::device_pki::providers(&config.device_pki)?,
+        )?;
         let agent_enrollment = agent_pki
             .as_ref()
             .map(|pki| {
@@ -164,7 +176,33 @@ impl Fixture {
                 )
             })
             .transpose()?;
+        let apple = Arc::new(Apple::load(
+            execution.protection.clone(),
+            config.native_protocols.apple.unwrap(),
+            crate::clock::SystemClock.unix_seconds()?,
+            crate::device_pki::providers(&config.device_pki)?,
+            config
+                .agent_installation
+                .identity(rss_mdm_policy::Platform::Macos)
+                .cloned(),
+        )?);
+        let mut trusts = vec![apple.channel.device_trust().clone()];
+        if let Some(a) = &agent_pki {
+            trusts.push(a.issuer.trust().trust.clone());
+        }
+        let pki = Arc::new(rss_mdm_pki_service::registry::Registry::new(
+            access.archive_pool(),
+            agent_audit.clone(),
+            trusts,
+            crate::device_pki::providers(&config.device_pki)?,
+        ));
+        pki.admit(
+            rss_request_context::TenantId::parse(case_tenant())?,
+            crate::clock::SystemClock.unix_seconds()?,
+        )
+        .await?;
         let app = Arc::new(Assembly {
+            pki,
             agent_enrollment,
             agent_pki,
             certificate_archive: crate::certificate_archive::assemble(
@@ -200,15 +238,7 @@ impl Fixture {
             inventory: runtime.clone(),
             devices,
             windows: None,
-            apple: Some(Arc::new(Apple::load(
-                execution.protection.clone(),
-                config.native_protocols.apple.unwrap(),
-                crate::clock::SystemClock.unix_seconds()?,
-                config
-                    .agent_installation
-                    .identity(rss_mdm_policy::Platform::Macos)
-                    .cloned(),
-            )?)),
+            apple: Some(apple),
             access: access.clone(),
             requests: Arc::new(tokio::sync::Semaphore::new(4)),
         });
@@ -478,7 +508,7 @@ fn startup_diagnostics(root: &std::path::Path) -> Result<()> {
     let original: serde_json::Value =
         serde_json::from_slice(&std::fs::read(root.join("apple.json"))?)?;
     for (pointer, category) in [
-        ("/issuer_certificate_file", "AppleScep"),
+        ("/trust_file", "AgentPki"),
         ("/profile_certificate_file", "AppleProfileSigner"),
         ("/apns_certificate_file", "AppleApns"),
         ("/challenge_webhook/secret_file", "AppleChallengeWebhook"),
@@ -491,6 +521,7 @@ fn startup_diagnostics(root: &std::path::Path) -> Result<()> {
             crate::test_support::identity::config(case_tenant())?.native_protector()?,
             config,
             crate::clock::SystemClock.unix_seconds()?,
+            fixture_providers(root)?,
             None,
         ) {
             Err(crate::Error::Configuration(issue)) => ensure!(
@@ -504,6 +535,7 @@ fn startup_diagnostics(root: &std::path::Path) -> Result<()> {
         crate::test_support::identity::config(case_tenant())?.native_protector()?,
         serde_json::from_value(original)?,
         crate::clock::SystemClock.unix_seconds()?,
+        fixture_providers(root)?,
         None,
     )?;
     ensure!(
@@ -573,80 +605,10 @@ impl Fixture {
         let der = device
             .enroll(
                 &self.client()?,
-                &self.app.apple()?.config.scep_url,
+                &self.app.apple()?.channel.scep_fixture()?.0,
                 &request,
             )
             .await?;
-        Ok((device, der))
-    }
-    async fn local_leaf(&mut self) -> Result<(scep_client::Device, Vec<u8>)> {
-        use base64::{Engine, engine::general_purpose::STANDARD};
-        let (enrollment, attempt, password) = self.enrollment().await?;
-        let device = scep_client::Device::new(enrollment, attempt, &password)?;
-        let apple = self.app.apple()?;
-        let timestamp = time::OffsetDateTime::from_unix_timestamp(self.app.clock.unix_seconds()?)?
-            .format(&time::format_description::well_known::Rfc3339)?;
-        let body = serde_json::to_vec(
-            &json!({"timestamp":timestamp,"provisionerName":apple.config.scep_provisioner,
-            "x509CertificateRequest":{"raw":STANDARD.encode(&device.csr)},"scepChallenge":password,"scepTransactionID":Uuid::new_v4().to_string()}),
-        )?;
-        let signature = apple
-            .channel
-            .challenge_signature_fixture(&body)
-            .as_ref()
-            .iter()
-            .map(|v| format!("{v:02x}"))
-            .collect::<String>();
-        let response = self
-            .router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method(Method::POST)
-                    .uri("/api/v1/apple/scep/challenge")
-                    .header("host", "mdm.example.test")
-                    .header("content-type", "application/json")
-                    .header("x-smallstep-webhook-id", &apple.config.challenge_webhook.id)
-                    .header("x-smallstep-signature", signature)
-                    .body(Body::from(body))?,
-            )
-            .await?;
-        ensure!(
-            response.status() == StatusCode::OK,
-            "fixture challenge: {}",
-            response.status()
-        );
-        let extensions = device.root.path().join("leaf.ext");
-        std::fs::write(
-            &extensions,
-            "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n",
-        )?;
-        let leaf = device.root.path().join("leaf.der");
-        let serial = Uuid::new_v4().as_u128().to_string();
-        scep_client::openssl(&[
-            "x509".as_ref(),
-            "-req".as_ref(),
-            "-inform".as_ref(),
-            "DER".as_ref(),
-            "-in".as_ref(),
-            device.root.path().join("device.csr").as_os_str(),
-            "-CA".as_ref(),
-            self.root.join("apple-issuer.pem").as_os_str(),
-            "-CAkey".as_ref(),
-            self.root.join("apple-issuer.key").as_os_str(),
-            "-set_serial".as_ref(),
-            serial.as_ref(),
-            "-days".as_ref(),
-            "1".as_ref(),
-            "-sha256".as_ref(),
-            "-extfile".as_ref(),
-            extensions.as_os_str(),
-            "-outform".as_ref(),
-            "DER".as_ref(),
-            "-out".as_ref(),
-            leaf.as_os_str(),
-        ])?;
-        let der = std::fs::read(leaf)?;
         Ok((device, der))
     }
     async fn authenticate_peer(
@@ -664,6 +626,7 @@ impl Fixture {
                     self.root.join("ca.crt"),
                 )?)?)
                 .build()?,
+            installed_trust: Default::default(),
             oracle: oracle::Oracle::new(der)?,
             origin: apple.config.management.origin.clone(),
             topic: apple.config.apns_topic.clone(),
@@ -689,7 +652,7 @@ impl Fixture {
         Ok(peer)
     }
     async fn ready_local_peer(&mut self) -> Result<(lifecycle::Peer, scep_client::Device)> {
-        let (device, der) = self.local_leaf().await?;
+        let (device, der) = self.scep_leaf().await?;
         let peer = self.authenticate_peer(&device, &der).await?;
         peer.token().await?;
         Ok((peer, device))
@@ -760,7 +723,8 @@ fn profile_manifest(id: Uuid, kind: &str) -> plist::Value {
 
 // The listener remains owned throughout the control-plane update and TLS startup.
 // ref: smallstep/cli v0.30.2 command/ca/provisioner/webhook/update.go.
-async fn publish_webhooks(root: &std::path::Path, address: std::net::SocketAddr) -> Result<()> {
+async fn publish_webhooks(address: std::net::SocketAddr) -> Result<()> {
+    let root = std::path::PathBuf::from(std::env::var("MDM_APPLE_PKI_FIXTURES")?);
     use std::io::Write;
     use tokio::io::AsyncReadExt;
     let mut diagnostics = std::fs::OpenOptions::new()
@@ -831,4 +795,12 @@ async fn publish_webhooks(root: &std::path::Path, address: std::net::SocketAddr)
         );
     }
     Ok(())
+}
+
+fn fixture_providers(
+    root: &std::path::Path,
+) -> Result<Arc<rss_mdm_pki_service::providers::Providers>> {
+    let providers: Vec<crate::device_pki::Provider> =
+        serde_json::from_slice(&std::fs::read(root.join("device-pki.json"))?)?;
+    Ok(crate::device_pki::providers(&providers)?)
 }

@@ -317,7 +317,14 @@ async fn native_partial_receipts_late_results_read_recovery_and_generation_fence
 #[ignore = "make t2 MODULE=execution.commands.windows"]
 async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()> {
     use crate::test_support::{agent_execution as agent, identity};
-    let mut fixture = agent::Fixture::new().await?;
+    let mut base: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    // The real Windows Host below owns this case's Windows endpoint and trust.
+    base["native_protocols"]
+        .as_object_mut()
+        .unwrap()
+        .remove("windows");
+    let mut fixture = agent::Fixture::from_config(base).await?;
     fixture.register().await?;
     let (resource, _, _) = fixture.resource().await?;
     fixture
@@ -1767,20 +1774,17 @@ async fn full_user_context_is_exact_and_login_availability_is_session_local() ->
     host.listen().await?;
     let peer = host.peer_profile(WindowsProfile::Full).await?;
     let user = peer.intent.registration.to_string();
-    let credential = host.app.windows()?.channel.ca.verify(
-        &[host
-            .app
-            .windows()?
-            .channel
-            .ca
-            .sign(&host.app.windows()?.channel.ca.restore_intent(
-                &peer.intent.tbs,
-                &rss_mdm_certificate::windows::Csr::verify(&peer.intent.csr)?,
-                peer.intent.registration,
-            )?)?
-            .into()],
-        crate::windows::test_support::now(),
-    )?;
+    let certificate = crate::windows::test_support::sign_certificate(
+        &host.app.windows()?.channel.ca,
+        &peer.intent,
+    )
+    .await?;
+    let credential = host
+        .app
+        .windows()?
+        .channel
+        .ca
+        .verify(&[certificate.into()], crate::windows::test_support::now())?;
     let principal = host
         .app
         .devices

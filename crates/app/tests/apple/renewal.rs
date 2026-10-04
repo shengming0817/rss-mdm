@@ -37,6 +37,25 @@ impl Fixture {
         ensure!(!rss_mdm_apple_channel::renewal::due(before, after, after));
         // Move only the scheduling clock into the renewal window. Certificates and TLS remain real.
         let due = after - ((after - before) / 3).min(7 * 86400) + 1;
+        super::scep::issuer_state(&mut pg, "verify_only").await?;
+        ensure!(
+            matches!(
+                rss_mdm_apple_channel::renewal::maintain(
+                    &self.app.apple()?.channel,
+                    &self.app.access.apple_store(),
+                    &self.app.audit_store,
+                    case_tenant(),
+                    due,
+                )
+                .await,
+                Err(rss_mdm_apple_channel::Error::Conflict)
+            ),
+            "stale issuer authorized renewal"
+        );
+        let stale: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND renewal_of IS NOT NULL")
+            .bind(case_tenant()).fetch_one(&mut pg).await?;
+        ensure!(stale == 0, "stale renewal escaped rollback");
+        super::scep::issuer_state(&mut pg, "active").await?;
         for _ in 0..2 {
             rss_mdm_apple_channel::renewal::maintain(
                 &self.app.apple()?.channel,
@@ -107,7 +126,7 @@ impl Fixture {
             reused
                 .enroll(
                     &self.client()?,
-                    &self.app.apple()?.config.scep_url,
+                    &self.app.apple()?.channel.scep_fixture()?.0,
                     &request
                 )
                 .await
@@ -125,7 +144,7 @@ impl Fixture {
         let der = device
             .enroll(
                 &self.client()?,
-                &self.app.apple()?.config.scep_url,
+                &self.app.apple()?.channel.scep_fixture()?.0,
                 &request,
             )
             .await?;
@@ -135,7 +154,7 @@ impl Fixture {
             device
                 .enroll(
                     &self.client()?,
-                    &self.app.apple()?.config.scep_url,
+                    &self.app.apple()?.channel.scep_fixture()?.0,
                     &request
                 )
                 .await
@@ -153,6 +172,7 @@ impl Fixture {
                 .build()?,
             origin: old.origin.clone(),
             topic: old.topic.clone(),
+            installed_trust: Default::default(),
             oracle: oracle::Oracle::new(&der)?,
         };
         let wrong = peer

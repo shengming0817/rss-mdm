@@ -108,7 +108,7 @@ class RunFixtures:
             root = self.root / job.key
             root.mkdir()
             private(root / 'case.json', self.case_contexts[job.key])
-        if any(set(job.module.fixtures) & {'tls', 'windows', 'apple', 'apns'} for job in jobs):
+        if any(set(job.module.fixtures) & {'tls', 'windows', 'apple', 'apns','agent_pki'} for job in jobs):
             self.certificates.prepare_inputs()
         # A compatible profile owns one writable database for the complete run.
         for profile in sorted({job.module.profile for job in jobs if job.module.db_mode == 'reuse'}):
@@ -133,6 +133,7 @@ class RunFixtures:
         config['flow']['publication']['database'] = db(root, database, 'mdm_software_driver', 'runtime-fixture')
         config['identity']['tenant_id'] = tenant
         config['native_protocols'] = {}
+        config['device_pki'] = []
         config['native_protection_key_file'] = str(self.native_key)
         config['identity_management'] = [dict(tenant_id=tenant, instance_id=INSTANCE, principal_id=ADMIN,
                                                permissions=['accounts', 'providers'])]
@@ -258,7 +259,7 @@ class RunFixtures:
             if module.postgres:
                 database = stack.enter_context(pool.database(module.profile, module.db_mode))
                 receipt['environment'].update(database=database, pgGeneration=pool.generation)
-            if module.postgres or set(module.fixtures) & {'tls', 'windows', 'apple', 'apns'}:
+            if module.postgres or set(module.fixtures) & {'tls', 'windows', 'apple', 'apns','agent_pki'}:
                 certificates = owner if module.postgres else self.certificates
                 with self.lock:
                     certificates.prepare_inputs()
@@ -300,22 +301,31 @@ class RunFixtures:
                         value['native_protocols']['windows'] = json.loads((root / 'windows.json').read_text())
                     env['MDM_TEST_CONFIG'] = str(private(root / 'runtime.json', value))
             host = None
+            if 'examples' in module.fixtures:
+                env['MDM_FIXTURE_BIN'] = self.builds.executables['rss-mdm-fixture']
+            if 'windows' in module.fixtures:
+                from pki_fixtures import running as pki
+                stack.enter_context(pki(root,env,case=job.key,windows=True))
+            if 'agent_pki' in module.fixtures:
+                from pki_fixtures import running as pki
+                stack.enter_context(pki(root,env,case=job.key,agent=True))
+            if 'pki_rotation' in module.fixtures:
+                stack.enter_context(pki(root,env,case=job.key,agent=True,generation='next'))
+            if 'scep' in module.fixtures:
+                from apple_ca import running
+                stack.enter_context(running(root, env, case=job.key))
+            if 'MDM_TEST_CONFIG' in env:
+                value=json.loads(Path(env['MDM_TEST_CONFIG']).read_text())
+                if (root/'device-pki.json').exists():value['device_pki']=json.loads((root/'device-pki.json').read_text())
+                if (root/'agent-pki.json').exists():value['agent_pki']=json.loads((root/'agent-pki.json').read_text())
+                for channel in ('windows','apple'):
+                    if (root/(channel+'.json')).exists():value['native_protocols'][channel]=json.loads((root/(channel+'.json')).read_text())
+                private(Path(env['MDM_TEST_CONFIG']),value)
             if 'shared_worker' in module.fixtures:
                 receipt['environment']['hostLog'] = str((self.output / 'hosts' / database /
                     self.case_contexts[job.key]['tenant'] / 'host.log').relative_to(self.output))
                 host = stack.enter_context(self.workers(job, database, env['MDM_TEST_CONFIG']))
                 receipt['environment']['host'] = host.address
-            if 'examples' in module.fixtures:
-                env['MDM_FIXTURE_BIN'] = self.builds.executables['rss-mdm-fixture']
-            if 'agent_pki' in module.fixtures:
-                env['MDM_AGENT_PKI_FIXTURE'] = '1'
-            if 'scep' in module.fixtures:
-                from apple_ca import running
-                stack.enter_context(running(root, env, case=job.key))
-                if 'agent_pki' in module.fixtures:
-                    value = json.loads(Path(env['MDM_TEST_CONFIG']).read_text())
-                    value['agent_pki'] = json.loads((root / 'agent-pki.json').read_text())
-                    private(Path(env['MDM_TEST_CONFIG']), value)
             if 'oracle' in module.fixtures:
                 from apple_oracle import running as oracle
                 stack.enter_context(oracle(root, env))

@@ -9,9 +9,7 @@ pub struct Config {
     #[serde(skip)]
     pub test_push_transport: Option<(String, PathBuf)>,
     pub management: TlsEndpoint,
-    pub scep_url: String,
-    pub scep_provisioner: String,
-    pub issuer_certificate_file: PathBuf,
+    pub trust_file: PathBuf,
     pub profile_certificate_file: PathBuf,
     pub profile_private_key_file: PathBuf,
     pub apns_certificate_file: PathBuf,
@@ -46,10 +44,6 @@ impl Config {
             || self.management.listen.port() == 0
         {
             return Err(bad(ConfigIssue::AppleListeners));
-        }
-        crate::config::https_url(&self.scep_url).map_err(|_| bad(ConfigIssue::AppleScep))?;
-        if self.scep_provisioner.is_empty() || self.scep_provisioner.len() > 128 {
-            return Err(bad(ConfigIssue::AppleScep));
         }
         if !self.apns_topic.starts_with("com.apple.mgmt.") || self.apns_topic.len() > 255 {
             return Err(bad(ConfigIssue::AppleApns));

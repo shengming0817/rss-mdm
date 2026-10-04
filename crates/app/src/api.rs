@@ -18,6 +18,7 @@ use serde_json::Value;
 use serde_json::json;
 use std::sync::Arc;
 pub(crate) struct Assembly {
+    pub(crate) pki: Arc<rss_mdm_pki_service::registry::Registry>,
     pub(crate) agent_enrollment: Option<Arc<rss_mdm_registration_service::agent::Service>>,
     pub(crate) agent_pki: Option<Arc<crate::agent_pki::AgentPki>>,
     pub(crate) certificate_archive: Arc<rss_mdm_certificate_archive_service::Archive>,
@@ -146,7 +147,8 @@ pub(crate) async fn application_fixture(
             flow: planning,
             identity,
         },
-    )?;
+    )
+    .await?;
     // Test carrier projects real, completed TLS evidence; the production browser router stays separate.
     for (kind, tls) in fixture_routers.listeners {
         if kind == crate::native::NativeListenerKind::Agent {
@@ -167,7 +169,7 @@ pub(crate) struct AssemblyDependencies {
     pub(crate) flow: Arc<crate::flow::Flow>,
     pub(crate) identity: Identity,
 }
-pub(crate) fn from_compiled(
+pub(crate) async fn from_compiled(
     compiled: crate::config::Compiled,
     dependencies: AssemblyDependencies,
 ) -> Result<crate::native::Routers, Error> {
@@ -206,6 +208,7 @@ pub(crate) fn from_compiled(
         .ok_or(Error::Configuration(ConfigIssue::ProductOrigin))?
         .to_owned();
     let native_agent = config.agent_installation.clone();
+    let providers = crate::device_pki::providers(&config.device_pki)?;
     let windows = config
         .native_protocols
         .windows
@@ -213,6 +216,7 @@ pub(crate) fn from_compiled(
             crate::windows::Windows::load(
                 config,
                 clock.unix_seconds()?,
+                providers.clone(),
                 native_agent
                     .identity(rss_mdm_policy::Platform::Windows)
                     .cloned(),
@@ -228,6 +232,7 @@ pub(crate) fn from_compiled(
                 protection.clone(),
                 config,
                 clock.unix_seconds()?,
+                providers.clone(),
                 native_agent
                     .identity(rss_mdm_policy::Platform::Macos)
                     .cloned(),
@@ -235,7 +240,28 @@ pub(crate) fn from_compiled(
             .map(Arc::new)
         })
         .transpose()?;
-    let agent_pki = config.agent_pki.load(audit_store.clone(), clock.clone())?;
+    let agent_pki = config
+        .agent_pki
+        .load(audit_store.clone(), clock.clone(), providers.clone())?;
+    let mut trusts = Vec::new();
+    if let Some(w) = &windows {
+        trusts.push(w.channel.ca.trust.clone());
+    }
+    if let Some(a) = &apple {
+        trusts.push(a.channel.device_trust().clone());
+    }
+    if let Some(a) = &agent_pki {
+        trusts.push(a.issuer.trust().trust.clone());
+    }
+    let pki = Arc::new(rss_mdm_pki_service::registry::Registry::new(
+        access.archive_pool(),
+        audit_store.clone(),
+        trusts,
+        providers,
+    ));
+    pki.admit(identity.tenant, clock.unix_seconds()?)
+        .await
+        .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
     let agent_enrollment = agent_pki
         .as_ref()
         .map(|pki| {
@@ -256,6 +282,7 @@ pub(crate) fn from_compiled(
         })
         .transpose()?;
     let state = Arc::new(Assembly {
+        pki,
         agent_enrollment,
         agent_pki,
         certificate_archive,
@@ -380,6 +407,8 @@ pub(crate) fn from_state(
     let management = rss_mdm_management_http::router(
         rss_mdm_management_http::Services {
             agent_enrollment: state.agent_enrollment.clone(),
+            pki: state.pki.clone(),
+            pki_clock: Arc::new(crate::agent_pki::PkiClock(state.clock.clone())),
             certificate_archive: state.certificate_archive.clone(),
             timeline: state.timeline.clone(),
             diagnostics: diagnostics.clone(),
@@ -565,6 +594,7 @@ pub(crate) fn from_state(
         )
         .layer(DefaultBodyLimit::max(16384));
     crate::native::Routers {
+        pki: state.pki.clone(),
         agent_pki: state.agent_pki.clone(),
         windows: state.windows.clone(),
         apple,

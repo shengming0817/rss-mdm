@@ -1,4 +1,5 @@
 //! The product owns one bounded installer; immutable SQL units retain their component owners.
+pub mod pki;
 use sha2::{Digest, Sha256};
 use sqlx::{Connection, PgConnection, Row, postgres::PgConnectOptions};
 use std::time::Duration;
@@ -289,6 +290,7 @@ fn baseline_units() -> Vec<(&'static str, &'static str)> {
             "certificate-archive-schema-v1",
             rss_mdm_certificate_archive_service::INSTALL_SQL,
         ),
+        ("device-pki-v1", rss_mdm_pki_service::INSTALL_SQL),
     ]
 }
 fn units() -> Vec<(&'static str, &'static str)> {

@@ -2,6 +2,7 @@ use super::*;
 use rss_mdm_certificate::agent::IssuedAgentCertificate;
 pub(crate) struct Signing {
     pub attempt: Uuid,
+    pub issuer: [u8; 32],
     pub grant: Uuid,
     pub csr: Vec<u8>,
     pub identity: String,
@@ -97,6 +98,25 @@ SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND grant_id=$
                     )
                     .map_err(|_| Error::Configuration)?;
                     let attempt = Uuid::new_v4();
+                    let issuer = service.trust().issuer_digest();
+                    let signing = Signing {
+                        attempt,
+                        issuer,
+                        grant: input.grant_id,
+                        csr: csr.clone(),
+                        identity: identity.clone(),
+                        deadline: grant.try_get("expiry").map_err(db)?,
+                        start,
+                        end,
+                    };
+                    service
+                        .issuer
+                        .authorize_in(
+                            c,
+                            Uuid::parse_str(&tenant).map_err(|_| Error::Configuration)?,
+                            &signing,
+                        )
+                        .await?;
                     sqlx::query(
                         r#"
 INSERT INTO
@@ -112,8 +132,9 @@ profile,
 not_before,
 not_after,
 authority_digest,
+signing_issuer,
 state)
-VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'signing')
+VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'signing')
 "#,
                     )
                     .bind(&tenant)
@@ -127,7 +148,8 @@ VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'signing')
                     .bind(serde_json::to_value(&input.runtime).map_err(|_| Error::Malformed)?)
                     .bind(start)
                     .bind(end)
-                    .bind(service.issuer.authority_digest())
+                    .bind(service.issuer.authority_digest(issuer)?)
+                    .bind(hex(issuer))
                     .execute(&mut *c)
                     .await
                     .map_err(db)?;
@@ -142,15 +164,7 @@ UPDATE mdm_access.agent_grants SET state='consumed' WHERE tenant_id=$1::uuid AND
                     .await
                     .map_err(db)?;
                     Ok(Change {
-                        value: Claim::New(Signing {
-                            attempt,
-                            grant: input.grant_id,
-                            csr: csr.clone(),
-                            identity,
-                            deadline: grant.try_get("expiry").map_err(db)?,
-                            start,
-                            end,
-                        }),
+                        value: Claim::New(signing),
                         replay: false,
                         digest: digest.clone(),
                     })
@@ -164,7 +178,15 @@ UPDATE mdm_access.agent_grants SET state='consumed' WHERE tenant_id=$1::uuid AND
         };
         let attempt = signing.attempt;
         let intent = self.issuer.persisted_intent(signing)?;
-        let issued = match self.issuer.issue(intent).await {
+        let issued = match self
+            .issuer
+            .issue(
+                intent,
+                &rss_mdm_pki_service::signing::SigningStore::new(self.audit.clone()),
+                Uuid::parse_str(&self.tenant.to_string()).map_err(|_| Error::Configuration)?,
+            )
+            .await
+        {
             Ok(v) => v.certificate,
             Err(_) => {
                 // The signing row already fences retries. Best-effort diagnostic transition cannot authorize a retry.
@@ -172,9 +194,16 @@ UPDATE mdm_access.agent_grants SET state='consumed' WHERE tenant_id=$1::uuid AND
                 return Err(unknown(attempt));
             }
         };
-        self.save_certificate(input.grant_id, attempt, &issued, input.operation_id, a)
-            .await
-            .map_err(|_| unknown(attempt))
+        self.save_certificate(
+            input.grant_id,
+            attempt,
+            &issued,
+            input.operation_id,
+            a,
+            None,
+        )
+        .await
+        .map_err(|_| unknown(attempt))
     }
     async fn record_unknown(
         &self,
@@ -214,14 +243,23 @@ state='signing'
         certificate: &IssuedAgentCertificate,
         operation: Uuid,
         a: &RequestAudit,
+        principal: Option<&AuthorizedPrincipal>,
     ) -> Result<wire::Candidate, Error> {
         a.operation(operation, "agent_certificate_result");
         let digest = hex(certificate.csr_digest);
-        self.write(a, (self, grant, id, certificate, digest), |ctx, c| {
+        self.write(a, (self, grant, id, certificate, digest, principal), |ctx, c| {
             Box::pin(async move {
-                let (service, grant, id, certificate, digest) = ctx;
+                let (service, grant, id, certificate, digest, principal) = ctx;
                 let tenant = service.tenant.to_string();
+                if let Some(p)=principal {
+                    p.check_live()?;
+                    rss_mdm_authorization_service::lock_on(c,&tenant,p.instance_id()).await?;
+                }
                 let g = grant_row(c, &tenant, *grant).await?;
+                if let Some(p)=principal {
+                    rss_mdm_authorization_service::snapshot_on(c,&tenant,p.instance_id()).await?
+                        .require(p,rss_mdm_authorization_service::Permission::Credentials,Some(&g.try_get::<String,_>("device").map_err(db)?)).map_err(|_|Error::Forbidden)?;
+                }
                 let old = sqlx::query(
                     r#"
 SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2 AND grant_id=$3 FOR
@@ -234,10 +272,21 @@ UPDATE
                 .fetch_one(&mut *c)
                 .await
                 .map_err(db)?;
-                if old.try_get::<String, _>("authority_digest").map_err(db)?
-                    != service.issuer.authority_digest()
+                if old.try_get::<String, _>("signing_issuer").map_err(db)?
+                    != hex(certificate.metadata.issuer)
                 {
                     return Err(Error::Forbidden);
+                }
+                if let Some(binding)=sqlx::query_scalar::<_,Vec<u8>>("SELECT binding FROM mdm_pki.signing WHERE tenant_id=$1::uuid AND attempt=$2")
+                    .bind(&tenant).bind(*id).fetch_optional(&mut *c).await.map_err(db)? {
+                    rss_mdm_pki_service::recovery::adopt_in(c,&tenant,*id,&binding,
+                        &serde_json::to_vec(&certificate.chain).map_err(|_|Error::Corrupt)?).await.map_err(|_|Error::Conflict)?;
+                }
+                rss_mdm_pki_service::certificates::record_candidate_in(c,&tenant,"agent",g.try_get::<Option<Uuid>,_>("target_registration").map_err(db)?,
+                    &hex(certificate.metadata.issuer),certificate.chain.first().ok_or(Error::Corrupt)?).await.map_err(|_|Error::Storage)?;
+                if g.try_get::<String,_>("state").map_err(db)?=="revoked" {
+                    rss_mdm_pki_service::certificates::enqueue_in(c,&tenant,"agent",&hex(certificate.metadata.issuer),
+                        &rss_mdm_device_trust::serial(&certificate.metadata.serial)).await.map_err(|_|Error::Storage)?;
                 }
                 let replay = old.try_get::<String, _>("state").map_err(db)? == "issued";
                 if replay
@@ -312,10 +361,14 @@ SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2
         .fetch_one(&mut *tx)
         .await
         .map_err(db)?;
-        if i.try_get::<String, _>("authority_digest").map_err(db)? != self.issuer.authority_digest()
-        {
-            return Err(Error::Forbidden.into());
-        }
+        let expected: String = i.try_get("signing_issuer").map_err(db)?;
+        let bytes = (0..32)
+            .map(|i| {
+                u8::from_str_radix(expected.get(i * 2..i * 2 + 2).ok_or(Error::Corrupt)?, 16)
+                    .map_err(|_| Error::Corrupt)
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        let expected: [u8; 32] = bytes.try_into().map_err(|_| Error::Corrupt)?;
         let grant = i.try_get::<Uuid, _>("grant_id").map_err(db)?;
         let g = grant_row(&mut tx, &tenant, grant).await?;
         p.credentials(&g.try_get::<String, _>("device").map_err(db)?)?;
@@ -337,17 +390,17 @@ SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2
             .collect::<Result<Vec<_>, _>>()?;
         let issued = self
             .trust()
-            .validate_issued(
+            .recover_issued_for(
+                expected,
                 chain,
                 &verified,
                 &i.try_get::<String, _>("identity").map_err(db)?,
                 i.try_get("not_before").map_err(db)?,
                 i.try_get("not_after").map_err(db)?,
-                self.now()?,
             )
             .map_err(|_| Error::Forbidden)?;
         tx.commit().await.map_err(db)?;
-        self.save_certificate(grant, id, &issued, input.operation_id, a)
+        self.save_certificate(grant, id, &issued, input.operation_id, a, Some(p))
             .await
             .map_err(Into::into)
     }

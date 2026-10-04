@@ -4,7 +4,7 @@ use crate::apple::push;
 use sqlx::{Connection, Row};
 impl Fixture {
     pub async fn production(mut self) -> Result<()> {
-        let (device, der) = self.local_leaf().await?;
+        let (device, der) = self.scep_leaf().await?;
         let peer = lifecycle::Peer {
             client: reqwest::Client::builder()
                 .no_proxy()
@@ -16,6 +16,7 @@ impl Fixture {
                 .build()?,
             origin: self.app.apple()?.config.management.origin.clone(),
             topic: self.app.apple()?.config.apns_topic.clone(),
+            installed_trust: Default::default(),
             oracle: oracle::Oracle::new(&der)?,
         };
         let reply = peer
@@ -44,6 +45,7 @@ impl Fixture {
             serde_json::from_slice(&std::fs::read(self.root.join("apple.json"))?)?;
         apple.management.listen = self.app.apple()?.config.management.listen;
         apple.management.origin = peer.origin.clone();
+        apple.trust_file = self.app.apple()?.config.trust_file.clone();
         apple.test_push_transport = Some((participant.origin(), self.root.join("ca.crt")));
         config.native_protocols.apple = Some(apple);
         let address = config.listen;

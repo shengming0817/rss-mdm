@@ -25,6 +25,7 @@ mod collection;
 mod large_object;
 mod notifications;
 mod transcript;
+mod trust_installation;
 use axum::{
     Extension, Router,
     body::Bytes,
@@ -50,30 +51,49 @@ pub struct Windows {
     pub enrollment_origin: String,
     pub management_origin: String,
     pub provider_id: String,
-    pub ca: certificate::WindowsEnrollmentAuthority,
+    pub ca: certificate::WindowsDeviceTrust,
+    pub providers: Arc<rss_mdm_pki_service::providers::Providers>,
     protection: protection::Protection,
     configuration: String,
+}
+/// Canonical stable protocol identity, shared by runtime construction and controlled upgrade.
+pub fn protocol_identity(
+    enrollment_origin: &str,
+    management_origin: &str,
+    provider_id: &str,
+    protocol_key: &[u8],
+    poll: &rss_mdm_windows_mdm::provisioning::Poll,
+) -> Result<String, Error> {
+    poll.validate().map_err(|_| Error::Malformed)?;
+    let protection = protection::Protection::from_bytes(protocol_key)?;
+    Ok(enrollment::digest(&(
+        "mdm.windows.profile.v3",
+        poll,
+        enrollment_origin,
+        management_origin,
+        provider_id,
+        &protection.id,
+    )))
 }
 impl Windows {
     pub fn new(
         enrollment_origin: String,
         management_origin: String,
         provider_id: String,
-        ca: certificate::WindowsEnrollmentAuthority,
+        ca: certificate::WindowsDeviceTrust,
+        providers: Arc<rss_mdm_pki_service::providers::Providers>,
         protocol_key: &[u8],
         poll: rss_mdm_windows_mdm::provisioning::Poll,
     ) -> Result<Self, Error> {
         poll.validate().map_err(|_| Error::Malformed)?;
         let protection = protection::Protection::from_bytes(protocol_key)?;
-        let configuration = enrollment::digest(&(
-            "mdm.windows.profile.v2",
-            &poll,
+        let configuration = protocol_identity(
             &enrollment_origin,
             &management_origin,
             &provider_id,
-            ca.der(),
-            &protection.id,
-        ));
+            protocol_key,
+            &poll,
+        )?;
         Ok(Self {
             poll,
             push: None,
@@ -83,9 +103,34 @@ impl Windows {
             management_origin,
             provider_id,
             ca,
+            providers,
             protection,
             configuration,
         })
+    }
+    pub fn trust_certificates(
+        &self,
+    ) -> Result<Vec<rss_mdm_windows_mdm::provisioning::AuthorityCertificate>, Error> {
+        use rss_mdm_windows_mdm::provisioning::{AuthorityCertificate, AuthorityStore};
+        let mut certificates = Vec::new();
+        for (root, certificate) in self.ca.trust.certificates().map_err(|_| Error::Conflict)? {
+            let thumbprint =
+                ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, &certificate)
+                    .as_ref()
+                    .iter()
+                    .map(|b| format!("{b:02X}"))
+                    .collect();
+            certificates.push(AuthorityCertificate {
+                store: if root {
+                    AuthorityStore::Root
+                } else {
+                    AuthorityStore::Intermediate
+                },
+                certificate,
+                thumbprint,
+            });
+        }
+        Ok(certificates)
     }
     pub fn provider(&self, purpose: rss_mdm_registration_service::Purpose) -> String {
         match purpose {
@@ -455,17 +500,7 @@ async fn enrollment(
             now,
         )
         .await?;
-        let certificate =
-            match crate::issuance::issued_certificate(&app.access, proof.tenant_id(), auth.id)
-                .await?
-            {
-                Some(certificate) => certificate,
-                None => app.windows()?.ca.sign(&app.windows()?.ca.restore_intent(
-                    &intent.tbs,
-                    &certificate::Csr::verify(&intent.csr)?,
-                    intent.registration,
-                )?)?,
-            };
+        let certificate = issuance::sign(&app, proof.tenant_id(), &intent, now).await?;
         let provisioning = issuance::provision(
             app.windows()?,
             &intent,

@@ -4,6 +4,7 @@ mod activation;
 mod grants;
 pub(crate) mod issuance;
 pub mod native;
+mod trust;
 use crate::agent_pki::{AgentIssuer, Clock};
 use crate::{Error, Store, database::db};
 use base64::{Engine, engine::general_purpose::STANDARD};

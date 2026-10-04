@@ -18,7 +18,7 @@ from build_run import lease_fds, lock_file, require_lease
 from t2_processes import check_cancelled
 
 ROOT = Path(__file__).resolve().parents[1]
-LOCK = json.loads((ROOT/'fixtures/apple-tools.lock.json').read_text())
+LOCK = {**json.loads((ROOT/'fixtures/apple-tools.lock.json').read_text()), **json.loads((ROOT/'fixtures/pki-tools.lock.json').read_text())}
 
 
 @contextmanager
@@ -75,7 +75,7 @@ def binary(name):
     system = platform.system().lower()
     machine = {'aarch64': 'arm64', 'arm64': 'arm64', 'x86_64': 'amd64'}[platform.machine()]
     expected = item['artifacts'][system+'-'+machine]
-    cache = Path(os.environ.get('CARGO_TARGET_DIR', ROOT/'target'))/'apple-tools'/expected
+    cache = Path(os.environ.get('CARGO_TARGET_DIR', ROOT/'target'))/'fixture-tools'/expected
     with publication(cache):
         filename = f"{name}_{system}_{item['version']}_{machine}.tar.gz"
         url = f"https://github.com/{item['repository']}/releases/download/v{item['version']}/{filename}"

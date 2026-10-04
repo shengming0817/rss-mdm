@@ -197,7 +197,7 @@ async fn pending(
     let store = participant.clone();
     let renewal = tx
         .with_connection(move |c| {
-            Box::pin(async move { Ok(store.renewal_due(c, tenant, registration).await) })
+            Box::pin(async move { Ok(store.maintenance_due(c, tenant, registration).await) })
         })
         .await?
         .map_err(Error::from)?;

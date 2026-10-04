@@ -527,7 +527,7 @@ async fn unknown_effect_survives_credential_recovery() -> Result<()> {
     ensure!(grant.0 == StatusCode::OK, "{grant:?}");
     let mut signing = input;
     signing["runtime"] = json!({"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v1","software.pkg.system.v1"],"executionContext":context(Platform::MacOs)});
-    let service = crate::test_support::agent::service(&authority::Authority::open().await?)?;
+    let service = crate::test_support::agent::service(&authority::Authority::open().await?).await?;
     let next_credential = &credential("replacement");
     let next_registration =
         crate::test_support::agent::complete_grant(&service, &grant.1, &signing, next_credential)

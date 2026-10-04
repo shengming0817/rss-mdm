@@ -18,14 +18,24 @@ impl Apple {
         protection: Arc<rss_mdm_native_protection::Protector>,
         config: config::Config,
         now: i64,
+        providers: Arc<rss_mdm_pki_service::providers::Providers>,
         agent_identity: Option<rss_mdm_execution_service::agent_install::Identity>,
     ) -> Result<Self, Error> {
-        let authority = certificate::AppleDeviceTrust::from_bytes(
-            &crate::config::read(&config.issuer_certificate_file, 32768, false)
-                .map_err(|_| Error::Configuration(ConfigIssue::AppleScep))?,
+        let trust = crate::device_pki::load(
+            &config.trust_file,
+            rss_mdm_agent_wire::pki::Purpose::Apple,
             now,
-        )
-        .map_err(|_| Error::Configuration(ConfigIssue::AppleScep))?;
+        )?;
+        if trust
+            .public()
+            .map_err(|_| Error::Configuration(ConfigIssue::AppleScep))?
+            .origin
+            != config.management.origin
+        {
+            return Err(Error::Configuration(ConfigIssue::AppleScep));
+        }
+        let authority = certificate::AppleDeviceTrust::from_trust(trust)
+            .map_err(|_| Error::Configuration(ConfigIssue::AppleScep))?;
         let signer = certificate::ProfileSigner::from_bytes(
             &crate::config::read(&config.profile_certificate_file, 128 * 1024, false)
                 .map_err(|_| Error::Configuration(ConfigIssue::AppleProfileSigner))?,
@@ -45,8 +55,6 @@ impl Apple {
             management: rss_mdm_apple_channel::Origin {
                 origin: config.management.origin.clone(),
             },
-            scep_url: config.scep_url.clone(),
-            scep_provisioner: config.scep_provisioner.clone(),
             apns_topic: config.apns_topic.clone(),
             challenge_webhook: rss_mdm_apple_channel::Webhook {
                 id: config.challenge_webhook.id.clone(),
@@ -64,6 +72,7 @@ impl Apple {
             challenge_key,
             notify_key,
             agent_identity,
+            providers,
         ));
         Ok(Self {
             config,

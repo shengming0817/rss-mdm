@@ -4,11 +4,11 @@
 
 ## 证书与会话
 
-产品 CA、TLS 私钥和协议保护密钥分别管理；协议密钥不复用 CA/TLS 密钥，并与数据库一起保护和备份。issuer、保护密钥或注册配置身份变化时，按明确恢复/重新注册流程处理，不能把旧注册隐式映射到新配置。
+Windows 使用固定版本 step-ca，宿主只加载公开 `trust_file` 与受保护的 JWK provisioner 凭据，不加载 CA 根或中间签名私钥。CA 代次由 `device_pki` 显式配置；TLS 与协议保护密钥分别管理，并与数据库一起保护和备份。issuer 通过受控信任轮换切换；改变协议保护密钥或稳定注册配置须走明确恢复/重新注册流程。
 
 Windows UsernameToken 使用 enrollmentId 与一次性口令。签发期间持续核对原管理员授权，最终绑定提交后证书才可准入。响应丢失沿原意图恢复；重启后由原管理员重新登录、resume。证书安装位置及 Full/Device 注册须在对应 Windows 版本上单独验收，EntDMID 不能替代 mTLS 身份。
 
-管理会话同时校验证书链、用途、当前凭据映射与 SyncML 认证。采用 APPSRV BASIC / CLIENT DIGEST；会话绑定注册世代、证书与消息关联，精确重传返回原响应，异内容冲突。被替代会话不能继续推进。撤销后新准入立即拒绝。Full 用户任务的 `NativeTarget.User.userId` 必须等于当前注册的 `userContextId`，创建、投递和回执都重新核对。会话初始 LoginStatus.User 只表示该已认证会话的用户可用；None、Others 或缺失时用户任务等待，设备任务仍可执行。续期保持注册与用户上下文，重新注册生成新的上下文，旧标识不能沿用。
+管理会话同时校验证书链、用途、当前凭据映射与 SyncML 认证。采用 APPSRV BASIC / CLIENT DIGEST；会话绑定注册世代、证书与消息关联，精确重传返回原响应，异内容冲突。被替代会话不能继续推进。撤销后，每次请求立即通过当前凭据映射拒绝，包括保留连接上的后续请求。缺少、回滚或过期的签名 CRL 同样拒绝认证。Full 用户任务的 `NativeTarget.User.userId` 必须等于当前注册的 `userContextId`，创建、投递和回执都重新核对。会话初始 LoginStatus.User 只表示该已认证会话的用户可用；None、Others 或缺失时用户任务等待，设备任务仍可执行。续期保持注册与用户上下文，重新注册生成新的上下文，旧标识不能沿用。
 
 会话以加密的原始请求和实际响应记录为唯一关联来源，重启后按 MsgID 连续重建；没有另存的关联缓存。当前预算为最多 128 条消息、每条 XML 512 KiB、编码对象 16 MiB、解码对象 12 MiB；响应还受设备声明的 MaxMsgSize / MaxObjSize 限制。非 Final 包仅积累回执，完整 Final 与当前授权共同决定成功结算。
 
@@ -70,3 +70,9 @@ CollectionRun 拥有命令关联、完整性与报告封存。Status 或 Final �
 配置与升级见 [安装](../deployment/installation.md) 和 [运维](../deployment/operations.md)。受控 TLS/SyncML 测试仅证明服务端接缝；真实设备支持矩阵与证书安装、首次签入和采集闭环须由产品 T3 给出。
 
 协议依据：[DMClient CSP](https://learn.microsoft.com/en-us/windows/client-management/mdm/dmclient-csp)、[Microsoft OMA DM](https://learn.microsoft.com/en-us/windows/client-management/oma-dm-protocol-support)、[w7 APPLICATION CSP](https://learn.microsoft.com/en-us/windows/client-management/mdm/w7-application-csp)、[RFC 4055](https://www.rfc-editor.org/rfc/rfc4055.html#section-5)。
+
+## 设备信任轮换
+
+服务端在已有认证 SyncML 会话中通过 RootCATrustedCertificates CSP 安装完整重叠集合：根进入 Device/Root，中间证书进入 Device/CA。SHA1 只用作 Windows CSP 节点定位；代次、安装回执与证书身份使用 SHA256。每条证书均以关联的 Get 回读 exact DER 确认，分条投递遵守设备消息预算；Add 的成功状态不能代替安装证明。安装完成后才记录对应 trust revision 的回执，允许管理员批准并激活新 issuer。旧 CA 退役后删除其 CSP 节点，并用关联 Get 的 404 确认移除。注册、代际、证书、会话与消息关联继续由原 owner 校验。
+
+签发默认完整 90 天，冻结 CSR/SPKI、注册 CN、issuer 与绝对有效期后才调用 CA；初始、关联注册与续期共用该路径。未知结果只能找回原 CA 的原证书，不重复签发。迁移与管理接口见[安装](../deployment/installation.md#设备-pki-升级)和[运维](../deployment/operations.md#设备-pki-轮换与撤销)。真实 Windows 的 Root/CA 安装、续期和退役需要独立 T3 证据。

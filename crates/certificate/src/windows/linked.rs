@@ -63,7 +63,7 @@ fn decode(node: &Node) -> Result<Vec<u8>, Error> {
         .decode(node.get_content().split_whitespace().collect::<String>())
         .map_err(|_| Error::Unauthorized)
 }
-impl WindowsEnrollmentAuthority {
+impl WindowsDeviceTrust {
     /// Verify the original DOM, never a reconstructed SOAP fragment or a KeyInfo-selected key.
     pub fn linked_proof(&self, xml: &[u8], now: i64) -> Result<LinkedProof, Error> {
         // Preflight before libxml: forbid DTD/entity loading, alternate encodings and bound depth.

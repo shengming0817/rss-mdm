@@ -7,7 +7,7 @@ WITH tables AS (
  ('declarations','retired_at'),('profiles','retired_at'),('attempts','native_outcome'),('attempts','accepted'),('attempts','state'),('attempts','response'),('attempts','response_digest'),('attempts','received_at'),('attempts','next_attempt')
 )
 SELECT has_schema_privilege(current_user,'mdm_apple','USAGE')
- AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['attempts','channels','declarations','devices','profiles','scep_attempts','status_reports'] FROM tables WHERE relkind='r')
+ AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['attempts','channels','declarations','devices','profiles','scep_attempts','status_reports','trust_deliveries'] FROM tables WHERE relkind='r')
  AND NOT EXISTS(SELECT 1 FROM tables WHERE relkind NOT IN ('r','i'))
  AND NOT EXISTS(SELECT 1 FROM tables t WHERE relkind='r' AND (
   NOT relrowsecurity OR NOT relforcerowsecurity OR relpersistence<>'p' OR relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)

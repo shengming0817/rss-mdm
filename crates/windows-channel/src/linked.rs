@@ -201,17 +201,7 @@ async fn issue_message(
         return Err(Error::Malformed);
     };
     let (id, intent) = intent(app, &parent, operation, proof.replay(), &csr.0, input).await?;
-    let certificate = if let Some(certificate) =
-        issuance::issued_certificate(&app.access, &parent.tenant().to_string(), id).await?
-    {
-        certificate
-    } else {
-        app.windows()?.ca.sign(&app.windows()?.ca.restore_intent(
-            &intent.tbs,
-            &certificate::Csr::verify(&intent.csr)?,
-            intent.registration,
-        )?)?
-    };
+    let certificate = issuance::sign(app, &parent.tenant().to_string(), &intent, now(app)?).await?;
     complete(
         app,
         &parent,
@@ -233,11 +223,7 @@ async fn issue_message(
             .map(|b| format!("{b:02X}"))
             .collect::<String>()
     };
-    use x509_cert::der::Decode;
-    let subject = x509_cert::TbsCertificate::from_der(&intent.tbs)
-        .map_err(|_| Error::Conflict)?
-        .subject
-        .to_string();
+    let subject = format!("CN={}", intent.registration);
     let w = app.windows()?;
     let provision = rss_mdm_windows_mdm::provisioning::encode(
         &rss_mdm_windows_mdm::provisioning::Provisioning {
@@ -245,9 +231,8 @@ async fn issue_message(
             push_pfn: None,
             enrollment_type: intent.enrollment_type,
             enterprise_device_id: &protocol_device,
-            issuer: &intent.issuer,
+            authorities: &w.trust_certificates()?,
             certificate: &certificate,
-            issuer_thumbprint: &thumbprint(&intent.issuer),
             certificate_thumbprint: &thumbprint(&certificate),
             certificate_subject: &subject,
             management_url: &w.management_url(Purpose::WindowsDeclared),
@@ -290,7 +275,7 @@ async fn intent(
         let id: Uuid = row.try_get("request_id").map_err(db)?;
         let row = enrollment_store::intent(&mut c,&tenant,id.to_string()).await.map_err(db)?.ok_or(Error::Conflict)?;
         let intent = issuance::intent(row)?;
-        if intent.csr!=csr || intent.issuer!=w.ca.der() || intent.configuration!=w.configuration { return Err(Error::Conflict); }
+        if intent.csr!=csr || intent.configuration!=w.configuration { return Err(Error::Conflict); }
         return Ok((id,intent));
     }
     let id = Uuid::new_v4();
@@ -323,12 +308,8 @@ async fn intent(
         protocol_device: Some(protocol_device),
         enrollment_type,
         csr: csr.to_vec(),
-        tbs: w
-            .ca
-            .intent(&verified, registration, now(app)?)?
-            .as_der()
-            .to_vec(),
-        issuer: w.ca.der().to_vec(),
+        profile: w.ca.profile(&verified, registration, now(app)?)?.encode()?,
+        issuer: w.ca.der()?,
         configuration: w.configuration.clone(),
         registration,
         credential: Uuid::new_v4(),
@@ -337,6 +318,15 @@ async fn intent(
             .protection
             .seal(&tenant, id, &protection::Secrets::generate()?)?,
     };
+    issuance::authorize_profile(
+        &mut c,
+        w,
+        &tenant,
+        intent.credential,
+        &intent.csr,
+        &certificate::IssuanceProfile::decode(&intent.profile)?,
+    )
+    .await?;
     enrollment_store::insert_intent(
         &mut c,
         &tenant,
@@ -344,7 +334,7 @@ async fn intent(
             protocol_device: intent.protocol_device.as_deref(),
             request: id.to_string(),
             csr: &intent.csr,
-            tbs: &intent.tbs,
+            profile: &intent.profile,
             issuer: &intent.issuer,
             configuration: &intent.configuration,
             registration: intent.registration.to_string(),
@@ -369,17 +359,13 @@ async fn complete(
     audit: &RequestAudit,
     digest: [u8; 32],
 ) -> Result<(), Error> {
-    use x509_cert::der::{Decode, Encode};
-    if x509_cert::Certificate::from_der(certificate)
-        .map_err(|_| Error::Conflict)?
-        .tbs_certificate
-        .to_der()
-        .map_err(|_| Error::Conflict)?
-        != intent.tbs
-    {
-        return Err(Error::Conflict);
-    }
-    let leaf = app.windows()?.ca.verify(&[certificate.into()], now(app)?)?;
+    let profile = certificate::IssuanceProfile::decode(&intent.profile)?;
+    let leaf = app.windows()?.ca.validate_issued(
+        &profile,
+        &certificate::Csr::verify(&intent.csr)?,
+        &[certificate.into()],
+        now(app)?,
+    )?;
     let credential = crate::device::ChannelMount::new(
         parent.tenant(),
         rss_mdm_inventory::ReportSource::MdmWindows,
@@ -399,6 +385,8 @@ async fn complete(
             }
             crate::device::linked::bind_in(c,parent,credential,id,[intent.registration,intent.credential,intent.epoch],facts,app.devices.retirement()).await?;
             let secrets = app.windows()?.protection.open(&parent.tenant().to_string(),id,&intent.sealed)?;
+            rss_mdm_pki_service::certificates::record_in(c,&parent.tenant().to_string(),"windows",intent.registration,
+                &rss_mdm_device_trust::digest(&intent.issuer),certificate).await.map_err(|_|Error::Unavailable(Failure::Database))?;
             enrollment_store::insert_certificate(c,&parent.tenant().to_string(),id.to_string(),certificate,&secrets.server_nonce).await.map_err(db)?;
             Ok(false)
         })).await?;

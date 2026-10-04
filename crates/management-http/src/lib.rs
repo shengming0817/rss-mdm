@@ -44,3 +44,5 @@ pub mod software_native;
 pub mod remote_operations;
 
 pub mod agent_enrollment;
+
+mod pki;

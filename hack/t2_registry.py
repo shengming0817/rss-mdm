@@ -185,26 +185,30 @@ def app_family(owner, *, namespace=None, identity=True,
             support=(f'crates/app/tests/{test_root}/mod.rs',))
 
 
-add('agent.pki', selectors=('agent_pki_tests::',), fixtures=('identity','apple','scep','windows','agent_pki'),
+add('agent.pki', selectors=('agent_pki_tests::',), fixtures=('identity','agent_pki'),
     sources=('crates/certificate/src/agent.rs','crates/registration-service/src/agent_pki.rs',
              'crates/app/src/agent_pki.rs','deployment/agent-leaf.tpl',
-             'crates/registration-service/src/operations.rs'),
-    tests=('crates/app/tests/agent_pki/mod.rs',),
+             'crates/registration-service/src/operations.rs','crates/pki-service/src/*','crates/pki-service/schema/*',
+             'crates/device-trust/src/*','crates/app/src/device_pki.rs','crates/management-http/src/pki.rs'),
+    tests=('crates/app/tests/agent_pki/mod.rs','crates/app/tests/agent_pki/maintenance.rs'),
     support=('hack/agent_pki_fixtures.py','crates/app/tests/support/agent_tls.rs','crates/app/tests/device/support.rs',
              'crates/app/tests/enrollment/support.rs','crates/app/tests/support/audit.rs',
              'crates/app/tests/windows/support.rs'))
-MODULES['agent.pki'] = replace(MODULES['agent.pki'], policies=(
+MODULES['agent.pki'] = replace(MODULES['agent.pki'], scope='tenant', policies=(
     CasePolicy('agent_pki_tests::restored_ca_signs_only_live_authorized_agent_csrs_and_tls_preserves_purpose',
                'reuse', 'pair'),
     CasePolicy('agent_pki_tests::agent_ingress_holds_one_global_permit_per_request', 'reuse', 'tenant'),
-    CasePolicy('agent_pki_tests::production_agent_listener_bootstraps_activates_and_rechecks_revocation', 'reuse', 'tenant'),
+    CasePolicy('agent_pki_tests::production_agent_listener_bootstraps_activates_and_rechecks_revocation', 'reuse', 'tenant',('identity','windows','agent_pki')),
+    CasePolicy('agent_pki_tests::rotation_requires_installed_trust_and_published_revocation_before_retirement', 'reuse', 'tenant',('identity','agent_pki','pki_rotation')),
+    CasePolicy('agent_pki_tests::multiple_expired_publications_require_one_atomic_set_and_replay_exactly', 'reuse', 'tenant',('identity','agent_pki','pki_rotation')),
+    CasePolicy('agent_pki_tests::unknown_original_ca_result_blocks_retirement_after_rotation', 'reuse', 'tenant',('identity','agent_pki','pki_rotation')),
 ))
 
-add('installation.migration', selectors=('migration::tests::complete_predecessor_withdraws_old_authority_and_preserves_started_evidence',
-                                        'migration::tests::fresh_installation_replay_and_mismatch_rejection'), profile='empty',
-    sources=('crates/app/src/migration.rs',),
-    tests=('crates/app/tests/migration/mod.rs',),
+add('installation.migration', selectors=('migration::tests::complete_predecessor_withdraws_old_authority_and_preserves_started_evidence','migration::tests::fresh_installation_replay_and_mismatch_rejection','migration::pki::tests::'), profile='empty',
+    sources=('crates/app/src/migration.rs','crates/app/src/migration/pki.rs'),
+    tests=('crates/app/tests/migration/mod.rs','crates/app/tests/migration/pki.rs'),
     python='installation', support=('hack/t2_modules/installation.py',))
+MODULES['installation.migration'] = replace(MODULES['installation.migration'], policies=(CasePolicy('migration::pki::tests::explicit_upgrade_prepares_from_old_manifest_and_rejects_wrong_target_before_writes','fresh','objects',('windows',)),))
 add('installation.upgrade_runtime', selectors=('migration::tests::runtime::',),
     fixtures=('identity','local_worker','apple','scep','windows','agent_pki'),
     sources=('crates/app/src/migration.rs','crates/app/schema/self-service-access.sql'),
@@ -389,7 +393,7 @@ for name in ('enrollment.recovery','windows.issuance','windows.enrollment','wind
 for part in ('cms', 'apns', 'scep', 'collection', 'profile', 'policy', 'onboarding', 'renewal', 'identity', 'push', 'fairness', 'host', 'commands', 'users', 'ddm', 'status'):
     no_pg = part in ('cms', 'apns')
     fixtures = ('apple',) + (() if no_pg else ('identity', 'oracle'))
-    if part in ('scep', 'renewal', 'identity'):
+    if not no_pg:
         fixtures += ('scep',)
     if part in ('apns', 'push', 'host'):
         fixtures += ('apns',)
@@ -840,7 +844,7 @@ for name, path in (('apple.push','push_cycle'), ('apple.host','production')):
 # Runtime fixture consumers sign durable candidates and use completed TLS peers.
 AGENT_FIXTURE_CONSUMERS = tuple(('planning.self_service agent.registration agent.reports execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.recovery execution.agent.history execution.software.offer execution.software.content execution.software.recovery planning.onboarding execution.commands.onboarding apple.onboarding planning.agent_policy planning.frequency planning.remote planning.http assets.http planning.software').split())
 AGENT_FIXTURES = ('identity','apple','scep','windows','agent_pki')
-AGENT_FIXTURE_INPUTS = ('crates/app/tests/support/agent.rs','crates/app/tests/support/agent_tls.rs','hack/agent_pki_fixtures.py')
+AGENT_FIXTURE_INPUTS = ('crates/app/tests/support/agent.rs','crates/app/tests/support/agent_tls.rs','hack/agent_pki_fixtures.py','hack/pki_fixtures.py','hack/pki_ca.py')
 for name in AGENT_FIXTURE_CONSUMERS:
     module=MODULES[name]
     policies=tuple(replace(policy, fixtures=tuple(dict.fromkeys((*policy.fixtures,*AGENT_FIXTURES)))) if policy.fixtures is not None else policy for policy in module.policies)
@@ -877,7 +881,7 @@ for name, module in tuple(MODULES.items()):
     if 'apple' in fixtures:
         support += ('hack/apple_fixtures.py',)
     if fixtures & {'scep','oracle'}:
-        support += ('hack/apple_tools.py','fixtures/apple-tools.lock.json')
+        support += ('hack/fixture_tools.py','fixtures/apple-tools.lock.json')
     if 'scep' in fixtures:
         support += ('hack/apple_ca.py','deployment/compose.yaml')
     if 'idp' in fixtures:
@@ -1006,8 +1010,9 @@ TOOL_INPUTS = {
     'hack/build_run.py': ('test_build_run', 'test_build_environment'),
     'hack/ci.py': ('test_ci', 'test_ci_selection'),
     'hack/agent_wire_artifact.py': ('test_agent_wire_artifact',),
-    'hack/apple_tools.py': ('test_apple_tools',),
+    'hack/fixture_tools.py': ('test_apple_tools',),
     'hack/apple_ca.py': ('test_apple_ca',),
+    'hack/pki_ca.py': ('test_apple_ca',),
     'hack/agent_pki_fixtures.py': ('test_agent_pki_fixtures',),
     'fixtures/apple-tools.lock.json': ('test_apple_tools', 'test_apple_ca', 'test_t2_environment'),
     'hack/auth_t3.py': ('test_auth_t3',),
@@ -1016,7 +1021,7 @@ TOOL_INPUTS = {
     'hack/candidate_runtime.py': ('test_candidate_smoke',),
     'hack/candidate_smoke.py': ('test_candidate_smoke',),
 }
-T1_INPUTS = ('crates/content-s3/tests/unit.rs',) + ('crates/app/tests/agent_pki/health.rs','crates/certificate/tests/agent.rs','crates/certificate-archive-service/tests/behavior.rs','crates/authorization-service/tests/unit.rs','crates/inventory-service/tests/runtime.rs','crates/software-service/tests/management/*') + tuple(f'crates/{name}/tests/*' for name in (
+T1_INPUTS = ('crates/content-s3/tests/unit.rs',) + ('crates/app/tests/agent_pki/health.rs','crates/certificate/tests/agent.rs','crates/certificate/tests/apple.rs','crates/certificate-archive-service/tests/behavior.rs','crates/authorization-service/tests/unit.rs','crates/inventory-service/tests/runtime.rs','crates/software-service/tests/management/*') + tuple(f'crates/{name}/tests/*' for name in (
     'inventory', 'group', 'scope', 'policy', 'resource', 'software-release',
     'compliance', 'agent-wire', 'windows-mdm', 'apple-mdm', 'content-service')) + (
     'crates/app/tests/agent/unit.rs',
@@ -1566,3 +1571,25 @@ consume(('crates/management-http/src/enrollment/mod.rs',), 'enrollment.http enro
 
 T1_INPUTS += ('crates/registration-service/tests/credentials.rs',)
 consume(('crates/windows-channel/src/enrollment_store.rs',), 'windows.issuance windows.enrollment windows.declared')
+
+# PKI trust is consumed by native authentication, distribution and issuance owners.
+PKI_CONSUMERS = tuple(name for name in MODULES if name.startswith(('windows.', 'apple.')) or name in AGENT_FIXTURE_CONSUMERS or name == 'agent.pki')
+consume(('crates/agent-wire/src/pki.rs','crates/device-trust/src/*','crates/pki-service/src/*','crates/pki-service/schema/*'), ' '.join(PKI_CONSUMERS))
+consume(('crates/windows-channel/src/trust_installation.rs',), ' '.join(name for name in MODULES if name.startswith('windows.')))
+consume(('crates/apple-channel/src/trust_installation.rs','crates/apple-channel/src/access-admission.sql'), ' '.join(name for name in MODULES if name.startswith('apple.')))
+consume(('fixtures/mdm-config.example.json',), ' '.join((*PKI_CONSUMERS, 'host.lifecycle', 'installation.migration')))
+consume(('deployment/providers.lock.json','fixtures/pki-tools.lock.json'), ' '.join((*PKI_CONSUMERS, 'host.lifecycle','gateway.admission')))
+for name in PKI_CONSUMERS:
+    module = MODULES[name]
+    MODULES[name] = replace(module, support_inputs=tuple(dict.fromkeys((*module.support_inputs,'hack/pki_fixtures.py','hack/pki_ca.py'))))
+
+# Case-owned CA identities mutate the tenant/purpose registry, beyond object scope.
+for name, module in tuple(MODULES.items()):
+    authorities = {'windows', 'agent_pki', 'scep'}
+    scope = 'tenant' if module.scope == 'objects' and authorities.intersection(module.fixtures) else module.scope
+    policies = tuple(replace(policy, scope='tenant')
+        if policy.scope == 'objects' and authorities.intersection(policy.fixtures or module.fixtures)
+        else policy for policy in module.policies)
+    MODULES[name] = replace(module, scope=scope, policies=policies)
+
+consume(('deployment/windows-leaf.tpl',), ' '.join(name for name, module in MODULES.items() if 'windows' in module.fixtures))

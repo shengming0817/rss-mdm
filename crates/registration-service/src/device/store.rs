@@ -427,6 +427,13 @@ pub async fn replace_mdm_credential_in(
     registration: &str,
     locator: &str,
 ) -> Result<(), Error> {
+    let old:Vec<Uuid>=sqlx::query_scalar("SELECT id FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state='active' FOR UPDATE")
+        .bind(tenant).bind(registration).fetch_all(&mut *tx).await.map_err(db)?;
+    for credential in old {
+        rss_mdm_pki_service::certificates::revoke_credential_in(tx, tenant, credential)
+            .await
+            .map_err(|_| Error::Storage)?;
+    }
     sqlx::query("UPDATE mdm_access.credentials SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2::uuid AND state='active'").bind(tenant).bind(registration).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state) VALUES($1::uuid,$2::uuid,$3::uuid,'mdm',$4,'active')").bind(tenant).bind(Uuid::new_v4().to_string()).bind(registration).bind(locator).execute(&mut *tx).await.map_err(db)?;
     Ok(())
