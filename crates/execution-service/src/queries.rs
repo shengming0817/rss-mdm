@@ -1,5 +1,7 @@
 //! Independently assembled execution reads. No writer, outbox, recovery store or signing key.
 use crate::*;
+#[cfg(feature = "integration")]
+type DownloadGate = (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>);
 #[derive(Clone)]
 pub struct Admission {
     pub(crate) source: Arc<dyn source_authority::SourceAuthority>,
@@ -20,6 +22,9 @@ pub struct Queries {
     pub(crate) admission: Admission,
     pub(crate) signed: bool,
     pub(crate) content_available: bool,
+    pub(crate) diagnostic_reader: Option<rss_mdm_content_service::diagnostic::Reader>,
+    #[cfg(feature = "integration")]
+    pub(crate) diagnostic_download_gate: Mutex<Option<DownloadGate>>,
 }
 pub struct Dependencies {
     pub source: Arc<dyn source_authority::SourceAuthority>,
@@ -33,6 +38,7 @@ pub struct Dependencies {
     pub inputs: Arc<Inputs>,
     pub signed: bool,
     pub content_available: bool,
+    pub diagnostic_reader: Option<rss_mdm_content_service::diagnostic::Reader>,
 }
 impl Queries {
     pub fn new(dependencies: Dependencies) -> Self {
@@ -55,6 +61,9 @@ impl Queries {
             inputs: dependencies.inputs,
             signed: dependencies.signed,
             content_available: dependencies.content_available,
+            diagnostic_reader: dependencies.diagnostic_reader,
+            #[cfg(feature = "integration")]
+            diagnostic_download_gate: Mutex::new(None),
         }
     }
 }
@@ -73,6 +82,7 @@ impl Queries {
     }
 }
 pub mod assignments;
+pub mod diagnostics;
 pub mod preview;
 
 impl Queries {

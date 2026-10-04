@@ -57,15 +57,17 @@ fn msix_content_identity_must_match_the_approved_definition() {
 }
 fn binding(bytes: &[u8]) -> Binding {
     Binding {
-        storage_class: StorageClass::Artifact,
-        resource: "app".into(),
-        version: "1".into(),
-        variant: "default".into(),
-        platform: rss_mdm_resource::Platform::Windows,
-        architecture: rss_mdm_resource::Architecture::X86_64,
-        resource_digest: [1; 32],
-        source: None,
-        origin: None,
+        purpose: crate::Purpose::Resource(crate::ResourceBinding {
+            storage_class: StorageClass::Artifact,
+            resource: "app".into(),
+            version: "1".into(),
+            variant: "default".into(),
+            platform: rss_mdm_resource::Platform::Windows,
+            architecture: rss_mdm_resource::Architecture::X86_64,
+            resource_digest: [1; 32],
+            source: None,
+            origin: None,
+        }),
         reference: "package".into(),
         length: bytes.len() as u64,
         sha256: rss_mdm_resource::Digest::of(bytes).bytes(),
@@ -727,7 +729,9 @@ async fn native_configuration_keeps_acknowledged_tail_encrypted_and_ranges_plain
     let store = Store::open(key.clone(), &cfg, tenant, Arc::new(RuntimeTimer)).unwrap();
     let bytes = b"native-secret-canary-0123456789".repeat(6000);
     let mut input = binding(&bytes);
-    input.storage_class = StorageClass::NativeConfiguration;
+    if let crate::Purpose::Resource(resource) = &mut input.purpose {
+        resource.storage_class = StorageClass::NativeConfiguration;
+    }
     let artifact = input.artifact().unwrap();
     let id = Uuid::new_v4();
     store.begin(id, input.clone(), 100).await.unwrap();
@@ -772,6 +776,28 @@ async fn native_configuration_keeps_acknowledged_tail_encrypted_and_ranges_plain
     }
     store.finish("user", id, 102).await.unwrap();
     store.finish("user", id, 102).await.unwrap();
+    // The configuration encryption identity predates diagnostic storage and stays fixed.
+    // Authenticate the actual first file record with its independently specified domain.
+    let owner =
+        serde_json::to_string(&(artifact.digest().bytes(), artifact.length(), 0u64, 65536u64))
+            .unwrap();
+    let aad = rss_mdm_native_protection::ProtectionContext::new(
+        rss_request_context::TenantId::parse(tenant).unwrap(),
+        &owner,
+        "content.native-configuration.chunk/v1",
+        1,
+    )
+    .unwrap()
+    .derive();
+    let physical =
+        fs::read(store.path_class(&artifact, StorageClass::NativeConfiguration)).unwrap();
+    assert_eq!(
+        key.open_bytes(&physical[..65536 + 68], &aad)
+            .unwrap()
+            .expose(),
+        &bytes[..65536]
+    );
+
     let checkpoint_path = store.upload_path(upload::storage_key("user", id), "json");
     let checkpoint: serde_json::Value =
         serde_json::from_slice(&fs::read(&checkpoint_path).unwrap()).unwrap();
@@ -828,7 +854,9 @@ async fn native_finish_recovers_a_published_hard_link_without_truncating_it() {
     let store = Store::open(protection(), &cfg, tenant, Arc::new(RuntimeTimer)).unwrap();
     let bytes = b"durable-native-content".repeat(5000);
     let mut input = binding(&bytes);
-    input.storage_class = StorageClass::NativeConfiguration;
+    if let crate::Purpose::Resource(resource) = &mut input.purpose {
+        resource.storage_class = StorageClass::NativeConfiguration;
+    }
     let artifact = input.artifact().unwrap();
     let id = Uuid::new_v4();
     store.begin(id, input, 100).await.unwrap();
@@ -870,7 +898,9 @@ async fn native_metadata_and_records_reject_tamper_and_budget_includes_encryptio
     let tenant = "10000000-0000-0000-0000-000000000001";
     let bytes = vec![17; 70000];
     let mut input = binding(&bytes);
-    input.storage_class = StorageClass::NativeConfiguration;
+    if let crate::Purpose::Resource(resource) = &mut input.purpose {
+        resource.storage_class = StorageClass::NativeConfiguration;
+    }
     let reserved = protected::reservation(&input).unwrap();
     cfg.max_artifact_bytes = bytes.len() as u64;
     cfg.max_temporary_bytes = reserved - 1;
@@ -932,7 +962,9 @@ async fn native_failed_body_and_uncommitted_checkpoint_keep_the_acknowledged_fro
     let mut store = Store::open(protection(), &cfg, tenant, Arc::new(RuntimeTimer)).unwrap();
     let bytes = b"checkpoint-native-canary".repeat(8000);
     let mut input = binding(&bytes);
-    input.storage_class = StorageClass::NativeConfiguration;
+    if let crate::Purpose::Resource(resource) = &mut input.purpose {
+        resource.storage_class = StorageClass::NativeConfiguration;
+    }
     let artifact = input.artifact().unwrap();
     let id = Uuid::new_v4();
     store.begin(id, input.clone(), 100).await.unwrap();
@@ -1017,5 +1049,89 @@ async fn native_failed_body_and_uncommitted_checkpoint_keep_the_acknowledged_fro
             .await
             .is_err(),
         "native blob lost tenant binding"
+    );
+}
+
+#[tokio::test]
+async fn diagnostic_identity_restart_class_isolation_retention_and_gc_pin() {
+    use crate::diagnostic::Identity;
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = config(dir.path().to_owned());
+    let tenant = "10000000-0000-0000-0000-000000000001";
+    let identity = Identity {
+        operation: Uuid::new_v4(),
+        registration: Uuid::new_v4(),
+        generation: 1,
+        input_version: "logs-1".into(),
+        input_digest: [1; 32],
+        sources_digest: [2; 32],
+        accepted_at: 100,
+        expires_at: 3700,
+    };
+    let bytes = vec![b'k'; 100_003];
+    let store = Store::open(protection(), &cfg, tenant, Arc::new(RuntimeTimer)).unwrap();
+    let verified = store
+        .promote_diagnostic(&identity, &bytes, 110)
+        .await
+        .unwrap();
+    let artifact = verified.artifact.clone();
+    let path = store.path_class(&artifact, StorageClass::NativeDiagnostic);
+    for entry in fs::read_dir(&store.directory).unwrap() {
+        let data = fs::read(entry.unwrap().path()).unwrap();
+        assert!(
+            !data.windows(32).any(|v| v == &bytes[..32]),
+            "diagnostic plaintext on disk"
+        );
+    }
+    assert_eq!(&*verified.read_plaintext(200_000).unwrap(), &bytes);
+    assert!(
+        store
+            .verify_class(&artifact, StorageClass::NativeConfiguration)
+            .await
+            .is_err()
+    );
+    let other = store.path_class(&artifact, StorageClass::NativeConfiguration);
+    fs::copy(&path, &other).unwrap();
+    assert!(
+        store
+            .verify_class(&artifact, StorageClass::NativeConfiguration)
+            .await
+            .is_err(),
+        "class AAD did not isolate identical bytes"
+    );
+    fs::remove_file(other).unwrap();
+    drop(verified);
+    drop(store);
+    // A configuration change cannot refresh the original diagnostic retention window.
+    cfg.retention_seconds = 60;
+    let store = Store::open(protection(), &cfg, tenant, Arc::new(RuntimeTimer)).unwrap();
+    let pin = store
+        .promote_diagnostic(&identity, &bytes, 3699)
+        .await
+        .unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+        .unwrap();
+    assert!(
+        store.garbage(3701).await.unwrap().is_empty(),
+        "GC removed association pin"
+    );
+    drop(pin);
+    assert_eq!(store.garbage(3701).await.unwrap().len(), 1);
+    assert!(
+        store
+            .promote_diagnostic(&identity, &bytes, 3701)
+            .await
+            .is_err()
+    );
+    let mut corrupt = fs::read(&path).unwrap();
+    corrupt[70] ^= 1;
+    fs::write(&path, corrupt).unwrap();
+    assert!(
+        store.diagnostic_reader().verify(&artifact).await.is_err(),
+        "tampered diagnostic remained downloadable"
     );
 }

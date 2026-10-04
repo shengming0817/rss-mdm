@@ -28,7 +28,6 @@ impl Checkpoint {
 #[serde(deny_unknown_fields)]
 pub(super) struct Saved {
     upload: Upload,
-    storage_class: StorageClass,
     native: Option<Checkpoint>,
 }
 impl Saved {
@@ -46,15 +45,16 @@ impl Saved {
         }
         Ok(Self {
             upload: upload.clone(),
-            storage_class: upload.binding.storage_class,
             native,
         })
     }
     pub(super) fn open(mut self, store: &Store) -> Result<Upload, Error> {
-        self.upload.binding.storage_class = self.storage_class;
-        match (self.storage_class, &self.native) {
+        match (self.upload.binding.class(), &self.native) {
             (StorageClass::Artifact, None) => {}
-            (StorageClass::NativeConfiguration, Some(checkpoint)) => {
+            (
+                StorageClass::NativeConfiguration | StorageClass::NativeDiagnostic,
+                Some(checkpoint),
+            ) => {
                 reservation(&self.upload.binding)?;
                 let expected = store.checkpoint_mac(&self.upload, checkpoint)?;
                 if !bool::from(expected.as_slice().ct_eq(&checkpoint.mac))
@@ -78,7 +78,7 @@ impl Saved {
     }
 }
 pub(super) fn reservation(binding: &Binding) -> Result<u64, Error> {
-    if binding.storage_class == StorageClass::Artifact {
+    if binding.class() == StorageClass::Artifact {
         return Ok(binding.length);
     }
     if binding.length > NATIVE_LIMIT {
@@ -108,21 +108,27 @@ fn encoded_length(length: u64) -> Result<u64, Error> {
 fn chunk_aad(
     tenant: rss_request_context::TenantId,
     artifact: &Artifact,
+    class: StorageClass,
     offset: u64,
     count: u64,
 ) -> Result<DerivedAad, Error> {
     let owner =
         serde_json::to_string(&(artifact.digest().bytes(), artifact.length(), offset, count))
             .map_err(|_| invariant())?;
-    ProtectionContext::new(tenant, &owner, "content.native-configuration.chunk/v1", 1)
-        .map(|v| v.derive())
-        .map_err(|_| invariant())
+    ProtectionContext::new(
+        tenant,
+        &owner,
+        &format!("{}.chunk/v1", class.protection_domain()),
+        1,
+    )
+    .map(|v| v.derive())
+    .map_err(|_| invariant())
 }
 fn read_records(
     file: &mut File,
     protection: &Protector,
     tenant: rss_request_context::TenantId,
-    artifact: &Artifact,
+    (artifact, class): (&Artifact, StorageClass),
     count: u64,
     timer: &dyn Clock,
     deadline: Deadline,
@@ -141,7 +147,10 @@ fn read_records(
         let mut sealed = vec![0; (length + OVERHEAD) as usize];
         file.read_exact(&mut sealed).map_err(|_| invariant())?;
         let plain = protection
-            .open_bytes(&sealed, &chunk_aad(tenant, artifact, offset, length)?)
+            .open_bytes(
+                &sealed,
+                &chunk_aad(tenant, artifact, class, offset, length)?,
+            )
             .map_err(|_| invariant())?;
         if plain.expose().len() as u64 != length {
             return Err(invariant());
@@ -164,13 +173,16 @@ impl Store {
         let aad = ProtectionContext::new(
             self.tenant,
             &upload.storage_key().to_string(),
-            "content.native-configuration.checkpoint/v1",
+            &format!(
+                "{}.checkpoint/v1",
+                upload.binding.class().protection_domain()
+            ),
             1,
         )
         .map_err(|_| invariant())?
         .derive();
         let bytes = serde_json::to_vec(&(
-            StorageClass::NativeConfiguration,
+            upload.binding.class(),
             upload,
             checkpoint.physical_end,
             &checkpoint.tail,
@@ -186,6 +198,9 @@ impl Store {
             StorageClass::NativeConfiguration => self
                 .directory
                 .join(format!("native-{}", hex(artifact.digest().bytes()))),
+            StorageClass::NativeDiagnostic => self
+                .directory
+                .join(format!("diagnostic-{}", hex(artifact.digest().bytes()))),
         }
     }
     pub(super) fn class_lock(&self, digest: [u8; 32], class: StorageClass) -> PathBuf {
@@ -194,6 +209,9 @@ impl Store {
             StorageClass::NativeConfiguration => self
                 .directory
                 .join(format!(".native-lock-{:02x}", digest[0])),
+            StorageClass::NativeDiagnostic => self
+                .directory
+                .join(format!(".diagnostic-lock-{:02x}", digest[0])),
         }
     }
     fn tail(&self, upload: &Upload) -> Result<Zeroizing<Vec<u8>>, Error> {
@@ -217,6 +235,7 @@ impl Store {
                 &chunk_aad(
                     self.tenant,
                     &upload.binding.artifact()?,
+                    upload.binding.class(),
                     upload.offset - length,
                     length,
                 )?,
@@ -275,7 +294,13 @@ impl Store {
                             .protection
                             .seal_bytes(
                                 &buffer,
-                                &chunk_aad(self.tenant, &artifact, upload.offset - BLOCK, BLOCK)?,
+                                &chunk_aad(
+                                    self.tenant,
+                                    &artifact,
+                                    upload.binding.class(),
+                                    upload.offset - BLOCK,
+                                    BLOCK,
+                                )?,
                             )
                             .map_err(|_| storage())?;
                         file.write_all(&sealed).await.map_err(|_| storage())?;
@@ -297,6 +322,7 @@ impl Store {
                                     &chunk_aad(
                                         self.tenant,
                                         &artifact,
+                                        upload.binding.class(),
                                         upload.offset - filled as u64,
                                         filled as u64,
                                     )?,
@@ -335,7 +361,7 @@ impl Store {
     ) -> Result<Upload, Error> {
         use std::io::Write;
         let artifact = upload.binding.artifact()?;
-        let class = StorageClass::NativeConfiguration;
+        let class = upload.binding.class();
         let _blob = lock(&self.class_lock(artifact.digest().bytes(), class))?;
         if upload.offset != artifact.length() {
             return Err(Error::Conflict);
@@ -349,7 +375,7 @@ impl Store {
             &mut file,
             &self.protection,
             self.tenant,
-            &artifact,
+            (&artifact, class),
             full_length,
             self.timer.as_ref(),
             deadline,
@@ -371,7 +397,7 @@ impl Store {
                 &mut existing,
                 &self.protection,
                 self.tenant,
-                &artifact,
+                (&artifact, class),
                 artifact.length(),
                 self.timer.as_ref(),
                 deadline,
@@ -449,7 +475,7 @@ impl Store {
         let file = options().open(path).map_err(|_| storage())?;
         let verified = Verified {
             file,
-            native: Some((self.protection.clone(), self.tenant)),
+            native: Some((self.protection.clone(), self.tenant, class)),
             timer: self.timer.clone(),
             artifact: artifact.clone(),
             _guard: guard,
@@ -467,7 +493,7 @@ impl Verified {
             return Err(Error::Malformed);
         }
         let mut file = self.file.try_clone().map_err(|_| storage())?;
-        if let Some((protection, tenant)) = &self.native {
+        if let Some((protection, tenant, class)) = &self.native {
             if file.metadata().map_err(|_| storage())?.len()
                 != encoded_length(self.artifact.length())?
             {
@@ -477,7 +503,7 @@ impl Verified {
                 &mut file,
                 protection,
                 *tenant,
-                &self.artifact,
+                (&self.artifact, *class),
                 self.artifact.length(),
                 self.timer.as_ref(),
                 self.deadline,

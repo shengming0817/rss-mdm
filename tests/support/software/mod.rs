@@ -503,15 +503,19 @@ pub async fn seed(
             let upload = uuid::Uuid::new_v4();
             let actor = "publication-fixture";
             let binding = rss_mdm_content_service::Binding {
-                storage_class: rss_mdm_content_service::StorageClass::Artifact,
-                resource: key.as_str().into(),
-                version: version.label().as_str().into(),
-                variant: v.key().as_str().into(),
-                platform: v.platform(),
-                architecture: v.architecture(),
-                resource_digest: version.digest().bytes(),
-                source: Some(definition.spec().source.clone()),
-                origin: artifact.origin.clone(),
+                purpose: rss_mdm_content_service::Purpose::Resource(
+                    rss_mdm_content_service::ResourceBinding {
+                        storage_class: rss_mdm_content_service::StorageClass::Artifact,
+                        resource: key.as_str().into(),
+                        version: version.label().as_str().into(),
+                        variant: v.key().as_str().into(),
+                        platform: v.platform(),
+                        architecture: v.architecture(),
+                        resource_digest: version.digest().bytes(),
+                        source: Some(definition.spec().source.clone()),
+                        origin: artifact.origin.clone(),
+                    },
+                ),
                 reference: artifact.reference.clone(),
                 length: artifact.length,
                 sha256: artifact.sha256,

@@ -70,10 +70,19 @@ pub fn remote_directory(facts: RemoteDirectory) -> Value {
 }
 
 /// The HTTP owner renders native facts after Execution's common authorization and state composition.
-pub fn command(facts: CommandDetail) -> Value {
+pub fn command(facts: CommandDetail, device: &str) -> Value {
     let native = observation(&facts.observation);
     let mut value = serde_json::to_value(facts).expect("command facts serialize");
     value["observation"] = native;
+    if value["observation"]["diagnostic"]["artifact"].is_object() {
+        let encoded = url::form_urlencoded::byte_serialize(device.as_bytes())
+            .collect::<String>()
+            .replace('+', "%20");
+        value["observation"]["diagnostic"]["artifact"]["downloadUrl"] = json!(format!(
+            "/api/v3/devices/{encoded}/operations/{}/diagnostic-artifact",
+            value["operationId"].as_str().expect("operation id")
+        ));
+    }
     value
 }
 fn optional<T: serde::Serialize>(value: &mut Value, name: &str, field: Option<&T>) {
@@ -97,12 +106,14 @@ fn observation(facts: &NativeObservation) -> Value {
     match facts {
         NativeObservation::Windows {
             receipts,
+            diagnostic,
             progress,
             effect,
             reason,
         } => {
             let mut value = json!({"protocol":"syncml","observationScope":"native_objects","receipts":receipts,"progress":progress,"effect":effect});
             optional(&mut value, "effectReason", reason.as_ref());
+            optional(&mut value, "diagnostic", diagnostic.as_ref());
             value
         }
         NativeObservation::Declarations { facts, progress } => {

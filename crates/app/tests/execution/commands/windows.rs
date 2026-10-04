@@ -60,7 +60,7 @@ fn task_packet(
     }
     packet
 }
-async fn operation(client: &mut Client) -> anyhow::Result<Value> {
+pub(super) async fn operation(client: &mut Client) -> anyhow::Result<Value> {
     let (status, body) = client
         .call(Method::GET, &format!("/{}", client.operation), None)
         .await?;

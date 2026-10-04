@@ -17,6 +17,7 @@ pub mod transaction;
 pub mod worker_wake;
 pub use error::Error;
 mod diagnostic;
+mod diagnostic_artifacts;
 pub use diagnostic::{ConfigIssue, Failure};
 pub use model::{AttemptPhase, Change, Create, DispatchV3, NativeTarget, Task};
 use rss_mdm_authorization_service as authorization;
@@ -73,6 +74,8 @@ pub fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
     rss_reconcile::Scope::new(tenant, DOMAIN).expect("fixed scope")
 }
 
+#[cfg(feature = "integration")]
+type DiagnosticAssociationGate = (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>);
 pub struct ExecutionService {
     pub(crate) inputs: Arc<Inputs>,
     pub(crate) source: Arc<dyn source_authority::SourceAuthority>,
@@ -93,6 +96,11 @@ pub struct ExecutionService {
     pub(crate) instance: String,
     pub(crate) content: Option<Arc<rss_mdm_content_service::Store>>,
     pub(crate) readiness: health::Readiness,
+    #[cfg(feature = "integration")]
+    pub(crate) diagnostic_commit_fault:
+        Mutex<Option<rss_transactional_messaging_postgres::PgTransactionFault>>,
+    #[cfg(feature = "integration")]
+    pub(crate) diagnostic_association_gate: Mutex<Option<DiagnosticAssociationGate>>,
 }
 pub struct Dependencies {
     pub inputs: Arc<Inputs>,
@@ -118,6 +126,10 @@ impl ExecutionService {
     pub fn new(dependencies: Dependencies) -> Self {
         Self {
             readiness: Default::default(),
+            #[cfg(feature = "integration")]
+            diagnostic_commit_fault: Mutex::new(None),
+            #[cfg(feature = "integration")]
+            diagnostic_association_gate: Mutex::new(None),
             inputs: dependencies.inputs,
             source: dependencies.source,
             protection: dependencies.protection,
@@ -167,6 +179,27 @@ impl ExecutionService {
 
 #[cfg(feature = "integration")]
 impl ExecutionService {
+    /// Pause after real file work and before the fenced association transaction.
+    pub fn pause_diagnostic_association_after_file_work(
+        &self,
+        ready: Arc<tokio::sync::Notify>,
+        resume: Arc<tokio::sync::Notify>,
+    ) {
+        *self
+            .diagnostic_association_gate
+            .lock()
+            .expect("diagnostic association gate") = Some((ready, resume));
+    }
+    /// Inject only the association transaction after real diagnostic content publication.
+    pub fn inject_diagnostic_association_fault(
+        &self,
+        fault: rss_transactional_messaging_postgres::PgTransactionFault,
+    ) {
+        *self
+            .diagnostic_commit_fault
+            .lock()
+            .expect("diagnostic fault") = Some(fault);
+    }
     pub fn inject_fault(&self, fault: rss_transactional_messaging_postgres::PgTransactionFault) {
         self.runtime.inject_next_transaction_fault(fault);
     }

@@ -338,6 +338,11 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                 if ids.is_empty(){return Ok(false);}
                 for id in ids {
                     after=stored(Uuid::parse_str(&id))?;let op=storage::load(tx,&service.protection,after).await?;
+                    if crate::native::diagnostic::input(&op.request.task).is_some() {
+                        let tenant=service.tenant;let id=op.id;
+                        let pending=tx.with_connection(move|c|Box::pin(async move {Ok(crate::native::diagnostic::load(c,tenant,id).await)})).await??;
+                        if pending.pending() {return Ok(true);}
+                    }
                     if service.required_command(tx,&op).await?.status().is_terminal(){continue;}
                     return Ok(true);
                 }
@@ -424,7 +429,10 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                     .err()
                     .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
             );
-            result.map_err(failure)
+            result.map_err(failure)?;
+            self.materialize_diagnostics(claim, control)
+                .await
+                .map_err(failure)
         })
     }
 }

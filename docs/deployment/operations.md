@@ -128,6 +128,8 @@ Compose 中 PostgreSQL 启动期每秒检查，稳定运行后每十秒检查。
 
 当前准确迁移集合由二进制 --describe 与 [迁移源码](../../crates/app/src/migration.rs) 持有。升级须停旧写入口；回退恢复匹配数据库、制品、密钥与旧服务，不能仅降级二进制。数据库角色与首次安装见 [安装指南](installation.md)。Apple 证书、APNs 与 CA 排障见 [Apple 管理](../guides/apple-management.md)。
 
+内容存储的 Resource/Diagnostic purpose、上传 Saved JSON 与 checkpoint 使用当前唯一格式。旧的平铺 Binding、Saved.storage_class 和对应 checkpoint MAC 不接受，也不自动转换或跳过。新安装须使用与当前 schema 匹配的新内容目录；不得把旧目录混入新安装。保留旧部署状态时恢复匹配的数据库、内容目录、密钥及二进制，不以重新初始化账本替代升级迁移。配置文件的固定加密域仍为 `content.native-configuration`，诊断有独立保护域。
+
 ## Agent CA 与签发恢复
 
 `agent_certificate_health` 在直接签发者状态变化时报告 healthy、renew_soon（完整签发窗口余量 30 天）、critical（余量 7 天）、issuance_unavailable（仍有效但不足一个完整叶证书窗口）、expired 或 clock_unavailable；过期及剩余期限不足均拒绝新签发。按公开 issuer 摘要核对信任锚，不在故障时另建 CA 或静默缩短叶证书期限。Agent 证书元数据包含 purpose/profile、服务端 tenant/device URI、issuer/SPKI/证书/CSR 摘要、serial 和绝对有效期。颁发输出只表示候选证书；只有实际完成的 TLS 握手可产生 peer evidence，且业务 owner 仍须逐次检查当前注册和撤销状态。

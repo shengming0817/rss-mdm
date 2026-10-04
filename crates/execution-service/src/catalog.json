@@ -605,6 +605,15 @@
     ],
     [
       "attempts",
+      "diagnostic_step",
+      "jsonb",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "attempts",
       "declared_versions",
       "jsonb",
       false,
@@ -850,6 +859,15 @@
       "devices",
       "recovery_after",
       "text",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "operations",
+      "diagnostic_progress",
+      "jsonb",
       false,
       null,
       "",
@@ -1471,6 +1489,13 @@
     ],
     [
       "attempts",
+      "attempts_diagnostic_step_check",
+      "c",
+      "CHECK (((diagnostic_step IS NULL) OR (octet_length((diagnostic_step)::text) <= 256)))",
+      true
+    ],
+    [
+      "attempts",
       "attempts_ordinal_check",
       "c",
       "CHECK ((ordinal > 0))",
@@ -1614,6 +1639,13 @@
       "operations_approval_check",
       "c",
       "CHECK ((octet_length((approval)::text) <= 1048576))",
+      true
+    ],
+    [
+      "operations",
+      "operations_diagnostic_progress_check",
+      "c",
+      "CHECK (((diagnostic_progress IS NULL) OR (octet_length((diagnostic_progress)::text) <= 4096)))",
       true
     ],
     [
