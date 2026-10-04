@@ -50,14 +50,14 @@ snapshot、partial、failed 分别表达完整快照、部分结果和失败。�
 
 ## 无兼容退出
 
-旧 `/api/agent/v1`–`/api/agent/v6`、`/api/agent/enroll/v1` 和 `/api/agent/runtime/v1` 路由、Agent Bearer 凭据、Agent Enrollment 口令及原生直接注册入口全部退出，不提供别名或认证降级。只支持新部署/重新注册；数据库安装准入仍只接受空库或完整当前账本，没有旧库升级。原生 Windows/Apple 的五分钟 Enrollment 口令及 credential_ref 保留。真实 Agent、安装器、网页消费与真机验收在各自后续任务完成，受控服务端测试不代替这些证据。
+旧 `/api/agent/v1`–`/api/agent/v6`、`/api/agent/enroll/v1` 和 `/api/agent/runtime/v1` 路由、Agent Bearer 凭据、Agent Enrollment 口令及原生直接注册入口全部退出，不提供别名或认证降级。数据库准入接受空库、完整当前账本及[自助访问前驱升级](../deployment/installation.md#自助访问前驱升级)限定的唯一完整前驱；该例外保留有效注册，不恢复历史协议或任意旧库升级。旧后台未启动 Offer 退休后在原 Run 下重新领取当前协议；已启动任务按原 attempt 与不可变材料收尾，不以旧 signed DTO 重新授予 Start。原生 Windows/Apple 的五分钟 Enrollment 口令及 credential_ref 保留。真实 Agent、安装器、网页消费与真机验收在各自后续任务完成，受控服务端测试不代替这些证据。
 
 ## 当前 V1 软件执行上下文与结果
 
-全部 Agent 注册（包括仅库存注册、托管安装注册）以及软件任务请求都必须包含完整 executionContext：递增 revision、OS 数字版本、systemBroker、明确 interactiveUser（没有会话时为 null）、来源范围只读凭据引用，以及 MSIX sideload/unsigned 能力。用户绑定包括精确 SID/UID 与 sessionId；上下文变化须使用更高 revision，旧 Offer 不能启动。每个依赖步骤分别检查 profile、执行上下文和材料；没有通用软件能力兜底。
+全部 Agent 注册（包括仅库存注册、托管安装注册）以及软件任务请求都必须包含完整 executionContext：递增 revision、OS 数字版本、systemBroker、绑定当前交互会话的 userHelper、明确 interactiveUser（没有会话时为 null）、来源范围只读凭据引用，以及 MSIX sideload/unsigned 能力。用户绑定包括精确 SID/UID 与 sessionId；上下文变化须使用更高 revision，旧 Offer 不能启动。每个依赖步骤分别检查 profile、执行上下文和材料；没有通用软件能力兜底。前驱转换补入的 userHelper=false 阻止新的用户 Start，但不因该能力缺失而取消已启动任务的原 attempt 收尾。
 
 软件结果是绑定 definitionDigest 的逐步骤证据：index/stepDigest、target、package、native identity、独立 before/after 检测、process、重启及诊断。MSIX 注册与 provisioning 使用不同 identity 变体，错误步骤、用户会话、包身份或作用域拒绝投影。退出码不能代替独立检测；Unknown 保留原任务恢复身份。当前 wire 为新 V1，只维护当前软件 shape 与指纹，消费方须更新精确依赖。
 
-新 V1 继续拒绝软件 ownership 和 AppCopy 的 materialSha256，旧字段即使为 null 也拒绝；AppCopy 仍绑定完整 DMG 摘要、明确的包路径和目标名、bundle ID、版本、执行身份与独立前后检测。软件 Resource 继续沿用既有 V4 摘要域和持久化标记，其它 Resource 格式不变。服务端只支持新部署；独立 Agent #2663 须更新到本项交付的完整 Git rev 和两个 V1 指纹，当前服务端测试不代表 Agent 或真机已完成。
+新 V1 继续拒绝软件 ownership 和 AppCopy 的 materialSha256，旧字段即使为 null 也拒绝；AppCopy 仍绑定完整 DMG 摘要、明确的包路径和目标名、bundle ID、版本、执行身份与独立前后检测。软件 Resource 继续沿用既有 V4 摘要域和持久化标记，其它 Resource 格式不变。前驱升级仅转换自助访问及任务恢复所需材料，不重新编码 Resource 或重算摘要。独立 Agent #2663 须更新到本项交付的完整 Git rev 和两个 V1 指纹，当前服务端测试不代表 Agent 或真机已完成。
 
 原生安装命令生成的固定包 URL 为 `/api/v1/agent/enroll/installations/{operation}/package`，`agent_installation.content_origin` 必须与 Agent TLS origin 相同。引导下载每次验证固定安装 operation、有效期、原生注册、投递记录和业务授权。所有 runtime 入口要求 Agent mTLS。
