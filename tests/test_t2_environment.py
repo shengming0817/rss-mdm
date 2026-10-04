@@ -4,6 +4,13 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'hack'))
 from t2_environment import Environment, project_name
+import json
+import shutil
+import socket
+import ssl
+import threading
+from types import SimpleNamespace
+from unittest.mock import patch
 
 class EnvironmentTests(unittest.TestCase):
     def test_worktree_identity_is_stable_and_distinct(self):
@@ -130,6 +137,110 @@ class EnvironmentTests(unittest.TestCase):
             with patch.object(env,'verify_ownership'),patch.object(env,'compose'):env.reset()
             allocations=json.loads((Path(tmp)/'.cache/rss-mdm-dev-ports/allocations.json').read_text())
             self.assertNotIn(env.project,allocations)
+
+class ExternalGatewayTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.env=Environment(Path(self.tmp.name),group='development')
+
+    def certificates(self, hostname='mdm.jiangshengming.com'):
+        self.env.prepare_inputs()
+        directory=self.env.worktree/'deployment/certs'
+        self.env.issue_leaf(directory,[hostname])
+        shutil.copyfile(directory/'server.crt',directory/'mdm.jiangshengming.com_bundle.crt')
+        shutil.copyfile(directory/'server.key',directory/'mdm.jiangshengming.com.key')
+        return directory
+
+    def test_no_external_files_retains_local_mode_but_explicit_missing_directory_fails(self):
+        self.assertIsNone(self.env.gateway_settings()['origin'])
+        self.assertEqual(self.env.variables()['MDM_GATEWAY_PUBLISH'],'127.0.0.1::8445')
+        with self.assertRaisesRegex(RuntimeError,'requires both'):
+            self.env.gateway_settings(self.env.worktree/'missing')
+
+    def test_incomplete_mismatched_and_symlinked_inputs_do_not_fall_back(self):
+        directory=self.certificates()
+        key=directory/'mdm.jiangshengming.com.key'
+        key.unlink()
+        with self.assertRaisesRegex(RuntimeError,'requires both'):self.env.gateway_settings()
+        key.symlink_to(directory/'missing.key')
+        with self.assertRaisesRegex(RuntimeError,'regular files'):self.env.gateway_settings()
+        key.unlink()
+        key.write_text('not a private key')
+        with self.assertRaisesRegex(RuntimeError,'invalid'):self.env.gateway_settings()
+
+    def test_wrong_hostname_is_rejected(self):
+        self.certificates('wrong.example.test')
+        with self.assertRaisesRegex(RuntimeError,'does not match'):self.env.gateway_settings()
+
+    def test_external_initialize_updates_all_consumers_and_persists_source(self):
+        directory=self.certificates()
+        def compose(*args):
+            return '0.0.0.0:443' if args[0]=='port' else ''
+        with patch.object(self.env,'up'),patch.object(self.env,'roles'),patch.object(self.env,'sql',return_value='1'), \
+             patch.object(self.env,'compose',side_effect=compose), \
+             patch('t2_environment.run',return_value=SimpleNamespace(stdout='[{"Id":"sha256:reviewed"}]')):
+            self.env.initialize('container','server','web')
+        container=self.env.root/'container'
+        origin='https://mdm.jiangshengming.com'
+        self.assertEqual(json.loads((container/'runtime/runtime.json').read_text())['product_origin'],origin)
+        for name in ('ui.json','mdm.json'):
+            self.assertEqual(json.loads((container/'gateway'/name).read_text())['canonicalOrigin'],origin)
+        nginx=(container/'gateway/nginx.conf').read_text()
+        self.assertIn('listen 8445 ssl;',nginx)
+        self.assertIn('server_name mdm.jiangshengming.com;',nginx)
+        self.assertIn('ssl_certificate /certs/server.crt;',nginx)
+        self.assertNotIn('localhost',nginx)
+        variables=Environment(self.env.worktree,group='development').variables()
+        self.assertEqual(variables['MDM_GATEWAY_PUBLISH'],'0.0.0.0:443:8445')
+        self.assertEqual(variables['MDM_GATEWAY_TLS_DIR'],str(directory))
+        self.assertEqual(variables['MDM_GATEWAY_TLS_KEY'],'mdm.jiangshengming.com.key')
+
+    def test_restart_refreshes_inputs_and_uses_system_trust(self):
+        self.env.root.mkdir(parents=True)
+        (self.env.root/'container-initialized.json').write_text(json.dumps(dict(origin='https://mdm.jiangshengming.com',https_port=443)))
+        (self.env.root/'container-gateway.json').write_text(json.dumps(dict(origin='https://mdm.jiangshengming.com')))
+        with patch.object(self.env,'verify_ownership'), \
+             patch.object(self.env,'compose',side_effect=lambda *args:'0.0.0.0:443' if args[0]=='port' else '') as compose, \
+             patch('t2_environment.ssl.create_default_context') as context,patch.object(self.env,'probe_product') as probe:
+            self.env.start_product()
+        context.assert_called_once_with(cafile=None)
+        commands=[call.args for call in compose.call_args_list]
+        stop=commands.index(('--profile','product','stop','server','gateway'))
+        copy=commands.index(('--profile','product','run','--rm','inputs'))
+        start=commands.index(('--profile','product','up','-d','--force-recreate','server','gateway'))
+        self.assertLess(stop,copy);self.assertLess(copy,start)
+        self.assertEqual(probe.call_args.args[:2],('https://mdm.jiangshengming.com',443))
+
+    def test_local_probe_preserves_sni_host_and_rejects_untrusted_certificate(self):
+        directory=self.certificates()
+        server_context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        server_context.load_cert_chain(directory/'server.crt',directory/'server.key')
+        sni=[];requests=[]
+        server_context.set_servername_callback(lambda sock,name,ctx:sni.append(name))
+        with socket.socket() as listener:
+            listener.bind(('127.0.0.1',0));listener.listen(2);listener.settimeout(5)
+            port=listener.getsockname()[1]
+            def serve():
+                for _ in range(2):
+                    raw,_=listener.accept()
+                    try:
+                        with server_context.wrap_socket(raw,server_side=True) as stream:
+                            request=b''
+                            while b'\r\n\r\n' not in request:request+=stream.recv(4096)
+                            requests.append(request)
+                            stream.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n')
+                    except ssl.SSLError:raw.close()
+            thread=threading.Thread(target=serve,daemon=True);thread.start()
+            origin='https://mdm.jiangshengming.com'
+            with self.assertRaises(ssl.SSLCertVerificationError):
+                Environment.probe_product(origin,port,ssl.create_default_context())
+            trusted=ssl.create_default_context(cafile=str(self.env.root/'ca.crt'))
+            Environment.probe_product(origin,port,trusted)
+            thread.join(timeout=5)
+            self.assertFalse(thread.is_alive())
+        self.assertEqual(sni,['mdm.jiangshengming.com']*2)
+        self.assertIn(b'Host: mdm.jiangshengming.com\r\n',requests[0])
 
 class ComposeDiagnostics(unittest.TestCase):
     def test_binary_native_key_does_not_block_compose_and_is_redacted(self):

@@ -120,6 +120,24 @@ make dev ACTION=up MODE=container
 
 产品构建仍使用 release.py 正式入口，`CARGO_BUILD_JOBS` 控制镜像编译并发，BuildKit 缓存按 worktree 命名。网关与应用共享容器网络命名空间，管理端口保持 loopback-only，PG 经 bridge DNS 访问；外部端口只绑定 127.0.0.1。容器重建导致端口变化时重新 init。运行容器不挂载操作员秘密。
 
+容器初始化发现 `deployment/certs/mdm.jiangshengming.com_bundle.crt` 和
+`deployment/certs/mdm.jiangshengming.com.key` 时，自动使用外部证书，统一前后端 origin 为
+`https://mdm.jiangshengming.com`，发布宿主机 `443` 到网关 `8445`（所有接口）。DNS 指向宿主机。
+证书目录只读挂入 `inputs`，由它将证书链与私钥复制到网关卷并设置 UID/GID 10001、目录 0700、文件 0600；
+CSR 不参与加载，私钥不挂入产品服务或镜像。没有这两个文件时仍使用 localhost 开发证书；
+只存在其中一个、域名不匹配或材料无效时初始化失败。证书目录被 Git 忽略。
+
+worktree 可引用主 checkout 的证书目录，不必复制私钥：
+
+```sh
+make dev ACTION=init MODE=container DEV_ARGS="--server-image <产品镜像> --web-image <UI镜像> --gateway-certs-dir /Users/shengming/Documents/code/rss/rss-mdm/deployment/certs"
+make dev ACTION=up MODE=container
+```
+
+初始化保存证书来源，后续 `up` 自动重新复制并重建产品/网关以加载续期材料。
+外部证书健康检查连接宿主机回环地址，保持真实域名的 TLS SNI 与 HTTP Host，验证系统信任、证书链和主机名；
+无需依赖公网 DNS 回流，也不使用开发 CA 或跳过 TLS 校验。仅自签名模式使用该环境的开发 CA。
+
 每个阶段报告耗时与环境标识。`reuse` 用例在兼容 profile 内共享可写库，并以对象、主体或专用观察租户隔离；每次调用有独立命名空间。`fresh` 为 DDL、库内权限及损坏材料分配一次性库，安装使用空库。`instance` 在故障 PG 内串行，恢复核查成功后复用，失败或不确定则隔离并为后续用例替换环境。原失败不重试；实例角色或停库故障不作用于普通 PG。生命周期与复用资格见[测试模块](test-modules.md)。Windows、Apple 和 IdP 按专项准备。NanoMDM 以校验源码、实际 Go 工具链、平台和参数识别缓存，损坏时只恢复该项。
 
 ## 浏览器正常与故障验证

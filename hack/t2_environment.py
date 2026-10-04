@@ -16,6 +16,10 @@ import sys
 from t2_processes import private_value, subprocess
 import time
 import uuid
+import ssl
+import socket
+import http.client
+from urllib.parse import urlsplit
 from build_run import lease_fds, require_lease
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,14 +64,41 @@ class Environment:
 
     def variables(self):
         images=json.loads((self.root/'images.json').read_text()) if (self.root/'images.json').exists() else {}
+        gateway=self.root/'container-gateway.json'
+        tls=json.loads(gateway.read_text()) if gateway.exists() else self.local_gateway()
         return {**{k:v for k,v in os.environ.items() if not k.startswith('COMPOSE_') and k not in ('MDM_SERVER_IMAGE','MDM_WEB_IMAGE')}, **images,
                 'MDM_ENV_ROOT': str(self.root), 'MDM_WORKTREE_ID': self.identity,
                 'MDM_POSTGRES_IMAGE': PROVIDERS['postgres'], 'MDM_RUNTIME_IMAGE': PROVIDERS['runtime'],
-                'MDM_KEYCLOAK_IMAGE':PROVIDERS['keycloak'],'MDM_NGINX_IMAGE':PROVIDERS['nginx'], **getattr(self,'extra',{})}
+                'MDM_KEYCLOAK_IMAGE':PROVIDERS['keycloak'],'MDM_NGINX_IMAGE':PROVIDERS['nginx'],
+                'MDM_GATEWAY_PUBLISH':tls['publish'], 'MDM_GATEWAY_TLS_DIR':tls['directory'],
+                'MDM_GATEWAY_TLS_CERT':tls['certificate'], 'MDM_GATEWAY_TLS_KEY':tls['key'], **getattr(self,'extra',{})}
+
+    def local_gateway(self):
+        return dict(origin=None,publish='127.0.0.1::8445',directory=str(self.root/'container/gateway'),
+                    certificate='server.crt',key='server.key')
+
+    def gateway_settings(self, certs_dir=None):
+        directory=Path(certs_dir).absolute() if certs_dir else self.worktree/'deployment/certs'
+        certificate=directory/'mdm.jiangshengming.com_bundle.crt'
+        key=directory/'mdm.jiangshengming.com.key'
+        if not certs_dir and not any(path.exists() or path.is_symlink() for path in (certificate,key)):return self.local_gateway()
+        if any(path.is_symlink() or not path.is_file() for path in (certificate,key)):
+            raise RuntimeError('external gateway requires both certificate bundle and private key as regular files')
+        try:
+            ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(certificate,key,password=lambda:'')
+            run(['openssl','verify','-CAfile',certificate,'-partial_chain','-verify_hostname',
+                 'mdm.jiangshengming.com','-purpose','sslserver',certificate],capture_output=True)
+        except (OSError,ssl.SSLError,subprocess.CalledProcessError):
+            raise RuntimeError('external gateway certificate/key is invalid, expired or does not match its domain') from None
+        return dict(origin='https://mdm.jiangshengming.com',publish='0.0.0.0:443:8445',directory=str(directory),
+                    certificate=certificate.name,key=key.name)
 
     def compose(self, *args, **kwargs):
         private_values=[]
-        for path in self.root.rglob('*'):
+        paths=list(self.root.rglob('*'))
+        tls=self.variables()
+        paths.append(Path(tls['MDM_GATEWAY_TLS_DIR'])/tls['MDM_GATEWAY_TLS_KEY'])
+        for path in paths:
             if path.is_file() and not path.is_symlink() and ('password' in path.name or 'secret' in path.name or path.suffix=='.key'):
                 raw = path.read_bytes()
                 values = [raw.hex(), base64.b64encode(raw).decode()]
@@ -256,10 +287,15 @@ class Environment:
                     return candidate
             raise RuntimeError('no host development port pair available')
 
-    def initialize(self, mode='host', server_image=None, web_image=None):
+    def initialize(self, mode='host', server_image=None, web_image=None, certs_dir=None):
         from candidate_fixture import installation, INSTANCE, TENANTS, ADMIN
         import secrets
-        import socket
+        if certs_dir and mode!='container':raise ValueError('external gateway certificates require container mode')
+        if mode=='container':
+            if not server_image or not web_image:raise ValueError('container mode requires --server-image and --web-image')
+            tls=self.gateway_settings(certs_dir)
+            self.prepare_inputs(certificates=False)
+            private(self.root/'container-gateway.json',tls)
         self.up()
         with self.phase('roles',reused=self.sql("SELECT count(*) FROM pg_roles WHERE rolname='mdm_owner'")=='1'):self.roles()
         if mode=='container':
@@ -268,6 +304,7 @@ class Environment:
             for key,value in [('MDM_SERVER_IMAGE',server_image),('MDM_WEB_IMAGE',web_image)]:
                 images[key]=json.loads(run(['docker','image','inspect',value],capture_output=True).stdout)[0]['Id']
             private(self.root/'images.json',images)
+            self.compose('--profile','product','stop','server','gateway')
             self.compose('--profile','product','up','-d','runtime-netns')
             https_port=int(self.compose('port','runtime-netns','8445').rsplit(':',1)[1])
             backend_port=8081
@@ -275,7 +312,7 @@ class Environment:
             ports=self.host_ports()
             private(self.root/'host-ports.json',ports)
             https_port=ports['https'];backend_port=ports['backend']
-        origin=f'https://localhost:{https_port}'
+        origin=tls['origin'] if mode=='container' and tls['origin'] else f'https://localhost:{https_port}'
         runtime=self.root/mode/'runtime';operator=self.root/mode/'operator';gateway=self.root/mode/'gateway'
         for directory in (runtime,operator,gateway):
             directory.mkdir(parents=True,exist_ok=True,mode=0o700)
@@ -315,10 +352,12 @@ class Environment:
                          user=dict(instanceId=INSTANCE,tenantId=TENANTS[0],principalId=ADMIN)))
         if self.sql("SELECT count(*) FROM pg_database WHERE datname='mdm_dev'")=='0':self.sql('CREATE DATABASE mdm_dev OWNER mdm_owner')
         self.sql('GRANT CREATE ON DATABASE mdm_dev TO mdm_owner,mdm_audit_owner,mdm_ledger_owner; GRANT CREATE ON SCHEMA public TO mdm_owner','mdm_dev')
-        self.issue_leaf(self.root/'gateway-cert'/mode,['localhost','mdm.example.test'])
-        for name in ('server.crt','server.key'):private(gateway/name,(self.root/'gateway-cert'/mode/name).read_text())
+        if mode!='container' or not tls['origin']:
+            self.issue_leaf(self.root/'gateway-cert'/mode,['localhost','mdm.example.test'])
+            for name in ('server.crt','server.key'):private(gateway/name,(self.root/'gateway-cert'/mode/name).read_text())
         nginx=(ROOT/'deployment/nginx.conf').read_text().replace('listen 443 ssl;',f'listen {8445 if mode=="container" else https_port} ssl;')
         nginx=nginx.replace('server 127.0.0.1:8081;',f'server 127.0.0.1:{backend_port};').replace('server_name mdm.example.test;','server_name localhost;').replace('proxy_set_header Host mdm.example.test;','proxy_set_header Host $http_host;')
+        nginx=nginx.replace('server_name localhost;',f'server_name {urlsplit(origin).hostname};')
         prefix='/certs' if mode=='container' else str(gateway)
         nginx=nginx.replace('/private/mdm-tls.crt',prefix+'/server.crt').replace('/private/mdm-tls.key',prefix+'/server.key').replace('/run/config/ui.json',prefix+'/ui.json').replace('/run/config/mdm.json',prefix+'/mdm.json')
         if mode=='host':
@@ -342,30 +381,45 @@ class Environment:
             with self.phase(verb):
                 if mode=='container':self.compose('--profile','product','run','--rm','operator',verb,'--config','/run/mdm/'+file)
                 else:run([binaries[0],verb,'--config',operator/file],capture_output=True)
-        private(self.root/(mode+'-initialized.json'),dict(origin=origin,configuration=str(runtime/'runtime.json')))
+        private(self.root/(mode+'-initialized.json'),dict(origin=origin,configuration=str(runtime/'runtime.json'),https_port=https_port))
         return dict(origin=origin,configuration=str(runtime/'runtime.json'),gateway=str(gateway/'nginx.conf'))
 
     def start_product(self):
         if not (self.root/'container-initialized.json').exists():raise RuntimeError('run init --mode container first')
         self.verify_ownership()
+        self.compose('--profile','product','up','-d','runtime-netns')
         # A recreated namespace gets new ports; require init to regenerate bound origins.
         actual=int(self.compose('port','runtime-netns','8445').rsplit(':',1)[1])
-        expected=json.loads((self.root/'container-initialized.json').read_text())['origin']
-        if expected!=f'https://localhost:{actual}':raise RuntimeError('product port changed; run init --mode container again')
+        initialized=json.loads((self.root/'container-initialized.json').read_text())
+        expected=initialized['origin']
+        if actual!=initialized.get('https_port',urlsplit(expected).port):raise RuntimeError('product port changed; run init --mode container again')
         running=self.compose('ps','-q','server','gateway').splitlines()
         with self.phase('start-product',reused=len(running)==2):
-            self.compose('--profile','product','up','-d','server','gateway')
-        import ssl
-        import urllib.request
-        context=ssl.create_default_context(cafile=str(self.root/'ca.crt'))
+            self.compose('--profile','product','stop','server','gateway')
+            self.compose('--profile','product','run','--rm','inputs')
+            self.compose('--profile','product','up','-d','--force-recreate','server','gateway')
+        external=json.loads((self.root/'container-gateway.json').read_text())['origin'] if (self.root/'container-gateway.json').exists() else None
+        context=ssl.create_default_context(cafile=None if external else str(self.root/'ca.crt'))
         deadline=time.monotonic()+60
         while True:
             try:
-                with urllib.request.urlopen(expected+'/readyz',context=context,timeout=3) as response:
-                    if response.status==200:break
+                self.probe_product(expected,actual,context)
+                break
             except OSError:pass
             if time.monotonic()>deadline:raise RuntimeError('product HTTPS readiness deadline; inspect this environment logs')
             time.sleep(.2)
+
+    @staticmethod
+    def probe_product(origin, port, context):
+        # Connect locally while preserving the public SNI and HTTP Host. No DNS hairpin or proxy.
+        endpoint=urlsplit(origin)
+        connection=http.client.HTTPSConnection(endpoint.hostname,endpoint.port or 443,context=context,timeout=3)
+        try:
+            connection.sock=context.wrap_socket(socket.create_connection(('127.0.0.1',port),timeout=3),server_hostname=endpoint.hostname)
+            connection.request('GET','/readyz')
+            response=connection.getresponse()
+            if response.status!=200:raise OSError('product is not ready')
+        finally:connection.close()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -374,11 +428,12 @@ if __name__ == '__main__':
     parser.add_argument('--group',default='development')
     parser.add_argument('--server-image')
     parser.add_argument('--web-image')
+    parser.add_argument('--gateway-certs-dir',type=Path)
     args = parser.parse_args()
     require_lease(ROOT)
     environment = Environment(group=args.group)
     if args.action == 'init':
-        print(json.dumps(environment.initialize(args.mode,args.server_image,args.web_image)))
+        print(json.dumps(environment.initialize(args.mode,args.server_image,args.web_image,args.gateway_certs_dir)))
     else:
         result = getattr(environment,args.action)()
         if args.action=='up' and args.mode=='container':environment.start_product()
