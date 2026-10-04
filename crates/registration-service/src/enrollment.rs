@@ -1,6 +1,7 @@
 //! Enrollment is the single lifecycle owner; the grant retains immutable authorization origin.
 pub mod credentials;
 pub mod managed;
+pub mod native;
 pub mod read;
 pub mod store;
 use crate::Error;

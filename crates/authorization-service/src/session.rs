@@ -59,3 +59,19 @@ fn authority_error(error: AuthorityError) -> Error {
         _ => Error::Storage,
     }
 }
+
+/// A retained identity remains a proof owned by Identity; audit fields never grant authority.
+pub fn bind_revalidated_audit(
+    facts: &RevalidatedSession,
+    audit: &rss_mdm_audit_integration::RequestAudit,
+) -> Result<(), Error> {
+    facts.check_live().map_err(|_| Error::Unauthorized)?;
+    if audit.tenant() != facts.account().tenant.to_string() {
+        return Err(Error::Forbidden);
+    }
+    audit.set_principal(
+        &facts.account().principal.as_uuid().to_string(),
+        &facts.instance().to_string(),
+    );
+    Ok(())
+}
