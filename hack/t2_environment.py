@@ -25,6 +25,7 @@ from build_run import lease_fds, require_lease
 
 ROOT = Path(__file__).resolve().parents[1]
 PROVIDERS = json.loads((ROOT / 'deployment/providers.lock.json').read_text())
+APPLE_CA = json.loads((ROOT / 'fixtures/apple-tools.lock.json').read_text())['step-ca']
 
 def project_name(worktree):
     return 'mdm-' + hashlib.sha256(os.fsencode(Path(worktree).resolve())).hexdigest()[:16]
@@ -73,6 +74,9 @@ class Environment:
                 'MDM_ENV_ROOT': str(self.root), 'MDM_WORKTREE_ID': self.identity,
                 'MDM_POSTGRES_IMAGE': PROVIDERS['postgres'], 'MDM_RUNTIME_IMAGE': PROVIDERS['runtime'],
                 'MDM_KEYCLOAK_IMAGE':PROVIDERS['keycloak'],'MDM_NGINX_IMAGE':PROVIDERS['nginx'],
+                'MDM_STEP_CA_IMAGE':APPLE_CA['image'], 'MDM_STEP_CA_INTERNAL_PORT':str(APPLE_CA['port']),
+                'MDM_APPLE_CA_ROOT':str(self.root/'apple'), 'MDM_APPLE_CA_USER':f'{os.getuid()}:{os.getgid()}',
+                'MDM_APPLE_HOST_ADDRESS':'host-gateway',
                 **settings, **getattr(self,'extra',{})}
 
     def local_gateway(self):
@@ -198,18 +202,18 @@ class Environment:
         return int(self.compose('port','postgres','5432').rsplit(':',1)[1])
 
     def verify_ownership(self):
-        config=json.loads(self.compose('--profile','*','config','--format','json'))
+        config=json.loads(self.compose('--profile','*','config','--format','json',timeout=30))
         expected={
             'container':{service.get('container_name',self.project+'-'+name+'-1') for name,service in config.get('services',{}).items()},
             'volume':{value['name'] for value in config.get('volumes',{}).values()},
             'network':{value['name'] for value in config.get('networks',{}).values()},
         }
         for kind,listing,field in [('container',['ps','-a'],'Names'),('volume',['volume','ls'],'Name'),('network',['network','ls'],'Name')]:
-            ids=set(run(['docker',*listing,'-q','--filter',f'label=com.docker.compose.project={self.project}'],capture_output=True).stdout.split())
-            names=set(run(['docker',*listing,'--format','{{.'+field+'}}'],capture_output=True).stdout.split())
+            ids=set(run(['docker',*listing,'-q','--filter',f'label=com.docker.compose.project={self.project}'],capture_output=True,timeout=30).stdout.split())
+            names=set(run(['docker',*listing,'--format','{{.'+field+'}}'],capture_output=True,timeout=30).stdout.split())
             ids.update(names & expected[kind])
             if not ids:continue
-            for value in json.loads(run(['docker',kind,'inspect',*sorted(ids)],capture_output=True).stdout):
+            for value in json.loads(run(['docker',kind,'inspect',*sorted(ids)],capture_output=True,timeout=30).stdout):
                 labels=value.get('Config',{}).get('Labels',{}) if kind=='container' else value.get('Labels',{})
                 if (labels or {}).get('rss.mdm.worktree')!=self.identity or (labels or {}).get('com.docker.compose.project')!=self.project:
                     raise RuntimeError('refusing foreign environment resource')
@@ -278,7 +282,7 @@ class Environment:
             if self.root.is_symlink() or not marker.exists() or json.loads(marker.read_text())!={'worktree':str(self.worktree),'project':self.project}:
                 raise RuntimeError('refusing foreign or damaged environment owner record')
         self.verify_ownership()
-        self.compose('--profile','*','down','--volumes','--remove-orphans')
+        self.compose('--profile','*','down','--volumes','--remove-orphans',timeout=30)
         self.host_ports(release=True)
         if self.root.exists(): shutil.rmtree(self.root)
 

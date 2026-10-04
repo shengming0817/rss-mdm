@@ -77,6 +77,11 @@ class RunFixtures:
             self.s3.reset()
         except Exception as error:
             errors.append(error)
+        try:
+            from apple_ca import recover
+            recover()
+        except Exception as error:
+            errors.append(error)
         if errors:
             raise RuntimeError('failed to clean owned T2 environments') from errors[0]
 
@@ -306,7 +311,7 @@ class RunFixtures:
                 env['MDM_AGENT_PKI_FIXTURE'] = '1'
             if 'scep' in module.fixtures:
                 from apple_ca import running
-                stack.enter_context(running(root, env))
+                stack.enter_context(running(root, env, case=job.key))
                 if 'agent_pki' in module.fixtures:
                     value = json.loads(Path(env['MDM_TEST_CONFIG']).read_text())
                     value['agent_pki'] = json.loads((root / 'agent-pki.json').read_text())

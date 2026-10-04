@@ -62,11 +62,13 @@ impl Fixture {
         let root = PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?);
         let manage =
             tokio::net::TcpListener::bind(address.unwrap_or("127.0.0.1:0".parse()?)).await?;
-        let webhook = tokio::net::TcpListener::bind(format!(
-            "127.0.0.1:{}",
-            std::env::var("MDM_APPLE_WEBHOOK_PORT").unwrap_or_else(|_| "0".into())
-        ))
+        let webhook = tokio::net::TcpListener::bind(
+            std::env::var("MDM_APPLE_WEBHOOK_LISTEN").unwrap_or_else(|_| "127.0.0.1:0".into()),
+        )
         .await?;
+        if std::env::var_os("MDM_STEP_CA_URL").is_some() {
+            publish_webhooks(&root, webhook.local_addr()?).await?;
+        }
         let mut config = crate::test_support::identity::config(case_tenant())?;
         config.native_protocols.windows = None;
         if let Some(agent) = agent {
@@ -222,7 +224,7 @@ impl Fixture {
         }
         ensure!(listeners.len() == 1, "Apple-only assembly loaded Windows");
         let (_, native) = listeners.pop().unwrap();
-        let hook_origin = format!("https://localhost:{}", webhook.local_addr()?.port());
+        let hook_origin = format!("https://mdm.example.test:{}", webhook.local_addr()?.port());
         let endpoint = native::TlsEndpoint {
             listen: webhook.local_addr()?,
             origin: hook_origin.clone(),
@@ -724,4 +726,79 @@ fn profile_manifest(id: Uuid, kind: &str) -> plist::Value {
             ]))]),
         ),
     ]))])
+}
+
+// The listener remains owned throughout the control-plane update and TLS startup.
+// ref: smallstep/cli v0.30.2 command/ca/provisioner/webhook/update.go.
+async fn publish_webhooks(root: &std::path::Path, address: std::net::SocketAddr) -> Result<()> {
+    use std::io::Write;
+    use tokio::io::AsyncReadExt;
+    let mut diagnostics = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(root.join("step-webhooks.log"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        diagnostics.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    for (name, phase) in [("rss", "challenge"), ("rss_notify", "notify")] {
+        let mut child = tokio::process::Command::new(std::env::var("MDM_STEP_CLI")?)
+            .args([
+                "ca",
+                "provisioner",
+                "webhook",
+                "update",
+                "rss",
+                name,
+                "--url",
+            ])
+            .arg(format!(
+                "https://mdm.example.test:{}/api/v1/apple/scep/{phase}",
+                address.port()
+            ))
+            .arg("--ca-url")
+            .arg(std::env::var("MDM_STEP_CA_URL")?)
+            .arg("--root")
+            .arg(std::env::var("MDM_STEP_CA_ROOT")?)
+            .args([
+                "--admin-subject",
+                "rss-admin",
+                "--admin-provisioner",
+                "rss-admin",
+                "--admin-password-file",
+            ])
+            .arg(root.join("step-password"))
+            .env("STEPPATH", root.join("step"))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()?;
+        let stderr = child.stderr.take().unwrap();
+        let mut evidence = Vec::new();
+        let completion = tokio::time::timeout(Duration::from_secs(30), async {
+            stderr.take(64 * 1024).read_to_end(&mut evidence).await?;
+            child.wait().await
+        })
+        .await;
+        let status: Result<_> = match completion {
+            Ok(result) => result.map_err(Into::into),
+            Err(_) => {
+                child.kill().await?;
+                child.wait().await?;
+                Err(anyhow::anyhow!(
+                    "Apple {phase} webhook publication deadline"
+                ))
+            }
+        };
+        writeln!(diagnostics, "[{phase}]")?;
+        diagnostics.write_all(&evidence)?;
+        let status = status?;
+        ensure!(
+            status.success(),
+            "Apple {phase} webhook publication failed: {status}"
+        );
+    }
+    Ok(())
 }

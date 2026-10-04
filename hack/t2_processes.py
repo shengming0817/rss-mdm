@@ -1,5 +1,5 @@
 """Fixture subprocesses share the current T2 run's process-group ownership."""
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 import json
 import os
@@ -8,6 +8,19 @@ import subprocess as standard
 
 _owner = None
 _diagnostic = ContextVar('t2_fixture_diagnostic', default=None)
+
+
+def check_cancelled():
+    """Check the existing run owner during fixture waits without spawning a child."""
+    if _owner is not None:
+        _owner.check()
+
+
+@contextmanager
+def cleanup():
+    """Allow bounded daemon cleanup through the existing owner after cancellation."""
+    with (_owner.cleanup() if _owner is not None else nullcontext()):
+        yield
 
 
 @contextmanager
@@ -59,6 +72,27 @@ def private_value(value):
     elif isinstance(value, list):
         for item in value:
             private_value(item)
+
+
+def record_output(name, value):
+    """Retain sanitized provider evidence in the current case's durable fixture log."""
+    state = _diagnostic.get()
+    if state is None:
+        return
+    from candidate_runtime import safe_evidence
+    for secret in sorted(state['secrets'], key=len, reverse=True):
+        if secret:
+            value = value.replace(secret, '[redacted]').replace(json.dumps(secret)[1:-1], '[redacted]')
+    # CA-generated one-time tokens aren't among the supplied fixture secrets.
+    # ref: smallstep/certificates v0.30.2 api/sign.go logOtt.
+    value = re.sub(r'\bott=(?:"[^"\n]*"|\S+)', 'ott=[redacted]', value)
+    value = re.sub(r'\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+', '[redacted]', value)
+    try:
+        value = safe_evidence(value, state['secrets'])
+    except RuntimeError:
+        value = 'diagnostic-withheld'
+    with state['path'].open('a') as log:
+        log.write(f'[{state["phase"]}] {name}:\n{value or "(no captured output)"}\n')
 
 
 def command_failure(error, kwargs):

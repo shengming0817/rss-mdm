@@ -1,4 +1,8 @@
-"""Fetch fixed upstream test/operator binaries; verify archive bytes before extracting."""
+"""Verify fixed fixture tools and serialize complete cache publication.
+
+ref: CPython Lib/tempfile.py; build_run.lock_file (separate open-file lock owners).
+"""
+from contextlib import contextmanager
 import hashlib
 import io
 import json
@@ -7,12 +11,63 @@ from pathlib import Path
 import platform
 import tarfile
 import tempfile
+import time
 import urllib.request
 
-from build_run import lease_fds, require_lease
+from build_run import lease_fds, lock_file, require_lease
+from t2_processes import check_cancelled
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCK = json.loads((ROOT/'fixtures/apple-tools.lock.json').read_text())
+
+
+@contextmanager
+def publication(directory):
+    directory.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + 300
+    held = None
+    try:
+        while held is None:
+            check_cancelled()
+            held = lock_file(directory/'.publish.lock')
+            if held is None:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('fixture tool publication lock deadline')
+                time.sleep(.05)
+        check_cancelled()
+        yield
+    finally:
+        if held is not None:
+            os.close(held)
+
+
+def publish(path, content, mode=0o600):
+    """Replace only verified bytes; cleanup never touches another caller's stage."""
+    fd, temporary = tempfile.mkstemp(prefix='.'+path.name+'-', dir=path.parent)
+    staged = Path(temporary)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(content)
+            os.fchmod(stream.fileno(), mode)
+        staged.replace(path)
+    finally:
+        staged.unlink(missing_ok=True)
+
+
+def verified_archive(path, url, expected, *, timeout, limit):
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        data = b''
+    if hashlib.sha256(data).hexdigest() == expected:
+        return data
+    with urllib.request.urlopen(url, timeout=timeout) as response:
+        data = response.read(limit)
+    if hashlib.sha256(data).hexdigest() != expected:
+        raise RuntimeError('fixed fixture source/artifact checksum mismatch')
+    check_cancelled()
+    publish(path, data)
+    return data
 
 
 def binary(name):
@@ -21,33 +76,24 @@ def binary(name):
     machine = {'aarch64': 'arm64', 'arm64': 'arm64', 'x86_64': 'amd64'}[platform.machine()]
     expected = item['artifacts'][system+'-'+machine]
     cache = Path(os.environ.get('CARGO_TARGET_DIR', ROOT/'target'))/'apple-tools'/expected
-    archive = cache/'archive.tar.gz'
-    cache.mkdir(parents=True, exist_ok=True)
-    if not archive.exists():
+    with publication(cache):
         filename = f"{name}_{system}_{item['version']}_{machine}.tar.gz"
         url = f"https://github.com/{item['repository']}/releases/download/v{item['version']}/{filename}"
-        data = urllib.request.urlopen(url, timeout=120).read(160*1024*1024)
-    else:
-        data = archive.read_bytes()
-    if hashlib.sha256(data).hexdigest() != expected:
-        raise RuntimeError(f'{name}: fixed artifact checksum mismatch')
-    archive.write_bytes(data)
-    destination = cache/name
-    with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as tar:
-        candidates = [member for member in tar.getmembers() if member.isfile() and (member.name == name or member.name.endswith('/bin/'+name))]
-        if len(candidates) != 1:
-            raise RuntimeError(f'{name}: fixed archive has an unexpected shape')
-        content = tar.extractfile(candidates[0]).read()
-    if not destination.exists() or destination.read_bytes() != content:
-        destination.write_bytes(content)
-        destination.chmod(0o700)
-    return destination
+        data = verified_archive(cache/'archive.tar.gz', url, expected, timeout=120, limit=160*1024*1024)
+        with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as tar:
+            candidates = [member for member in tar.getmembers() if member.isfile() and (member.name == name or member.name.endswith('/bin/'+name))]
+            if len(candidates) != 1:
+                raise RuntimeError(f'{name}: fixed archive has an unexpected shape')
+            content = tar.extractfile(candidates[0]).read()
+        destination = cache/name
+        if not destination.exists() or destination.read_bytes() != content or not os.access(destination, os.X_OK):
+            publish(destination, content, 0o700)
+        return destination
 
 
 if __name__ == '__main__':
     require_lease(ROOT)
-    for name in ['step', 'step-ca']:
-        print(name, binary(name), flush=True)
+    print('step', binary('step'), flush=True)
 
 
 def nano_identity():
@@ -63,32 +109,31 @@ def nano_binary():
     from t2_processes import subprocess
     item = LOCK['nanomdm']
     cache = Path(os.environ.get('CARGO_TARGET_DIR', ROOT/'target'))/'apple-tools'/item['sourceArchiveSha256']
-    cache.mkdir(parents=True, exist_ok=True)
-    identity=nano_identity()
-    key=hashlib.sha256(json.dumps(identity,sort_keys=True).encode()).hexdigest()
-    output=cache/key
-    output.mkdir(exist_ok=True)
-    archive=cache/'archive.tar.gz'
-    for attempt in range(2):
-        data=archive.read_bytes() if archive.exists() else urllib.request.urlopen(
-            'https://codeload.github.com/micromdm/nanomdm/tar.gz/'+item['revision'],timeout=60).read(16*1024*1024)
-        if hashlib.sha256(data).hexdigest()==item['sourceArchiveSha256']:break
-        archive.unlink(missing_ok=True)
-    else:raise RuntimeError('NanoMDM oracle source checksum mismatch')
-    archive.write_bytes(data)
-    destination=output/'nanomdm';manifest=output/'manifest.json'
-    try:
-        proof=json.loads(manifest.read_text())
-        if proof['identity']==identity and proof['sha256']==hashlib.sha256(destination.read_bytes()).hexdigest() and os.access(destination,os.X_OK):
-            return destination
-    except (OSError,ValueError,KeyError):pass
-    with tempfile.TemporaryDirectory(prefix='build-',dir=cache) as temporary:
-        with tarfile.open(fileobj=io.BytesIO(data),mode='r:gz') as tar:tar.extractall(temporary,filter='data')
-        source=Path(temporary)/('nanomdm-'+item['revision']);built=Path(temporary)/'nanomdm'
-        env={**os.environ,'GOWORK':'off','GOCACHE':str(cache/'go-build'),'GOMODCACHE':str(cache/'go-mod')}
-        subprocess.run(['go','build','-mod=readonly','-trimpath','-o',str(built),'./cmd/nanomdm'],
-                       pass_fds=lease_fds(),cwd=source,env=env,check=True,timeout=180)
-        built.chmod(0o700);built.replace(destination)
-        proof=dict(identity=identity,sha256=hashlib.sha256(destination.read_bytes()).hexdigest())
-        staged=output/'manifest.tmp';staged.write_text(json.dumps(proof));staged.replace(manifest)
-    return destination
+    identity = nano_identity()
+    key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+    output = cache/key
+    with publication(output):
+        # Different effective builds share only an atomically published, verified archive.
+        data = verified_archive(cache/'archive.tar.gz',
+            'https://codeload.github.com/micromdm/nanomdm/tar.gz/'+item['revision'],
+            item['sourceArchiveSha256'], timeout=60, limit=16*1024*1024)
+        destination, manifest = output/'nanomdm', output/'manifest.json'
+        try:
+            proof = json.loads(manifest.read_text())
+            if proof['identity'] == identity and proof['sha256'] == hashlib.sha256(destination.read_bytes()).hexdigest() and os.access(destination, os.X_OK):
+                return destination
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        with tempfile.TemporaryDirectory(prefix='build-', dir=cache) as temporary:
+            with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as tar:
+                tar.extractall(temporary, filter='data')
+            source, built = Path(temporary)/('nanomdm-'+item['revision']), Path(temporary)/'nanomdm'
+            env = {**os.environ, 'GOWORK':'off', 'GOCACHE':str(cache/'go-build'), 'GOMODCACHE':str(cache/'go-mod')}
+            subprocess.run(['go','build','-mod=readonly','-trimpath','-o',str(built),'./cmd/nanomdm'],
+                           pass_fds=lease_fds(), cwd=source, env=env, check=True, timeout=180)
+            check_cancelled()
+            content = built.read_bytes()
+            proof = dict(identity=identity, sha256=hashlib.sha256(content).hexdigest())
+            publish(destination, content, 0o700)
+            publish(manifest, json.dumps(proof).encode())
+        return destination

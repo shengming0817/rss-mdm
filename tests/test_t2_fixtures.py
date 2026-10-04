@@ -78,7 +78,11 @@ class PoolTests(unittest.TestCase):
 
 class PreparationTests(unittest.TestCase):
     def fixture(self, output):
+        recovery_patch = patch('apple_ca.recover')
+        recovery = recovery_patch.start()
+        self.addCleanup(recovery_patch.stop)
         fixture = RunFixtures(Mock(), output, 2)
+        fixture.apple_recovery_test = recovery
         fixture.normal = Mock()
         fixture.normal.owner.project = 'normal'
         fixture.fault = Mock()
@@ -170,7 +174,7 @@ class PreparationTests(unittest.TestCase):
                      patch.object(environment, 'host_ports'):
                     environment.reset()
                     verify.assert_called_once()
-                    compose.assert_called_once_with('--profile', '*', 'down', '--volumes', '--remove-orphans')
+                    compose.assert_called_once_with('--profile', '*', 'down', '--volumes', '--remove-orphans', timeout=30)
             finally:
                 fixture.cert_directory.cleanup()
 

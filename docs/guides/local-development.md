@@ -155,6 +155,10 @@ make dev ACTION=up MODE=container
 
 每个阶段报告耗时与环境标识。`reuse` 用例在兼容 profile 内共享可写库，并以对象、主体或专用观察租户隔离；每次调用有独立命名空间。`fresh` 为 DDL、库内权限及损坏材料分配一次性库，安装使用空库。`instance` 在故障 PG 内串行，恢复核查成功后复用，失败或不确定则隔离并为后续用例替换环境。原失败不重试；实例角色或停库故障不作用于普通 PG。生命周期与复用资格见[测试模块](test-modules.md)。Windows、Apple 和 IdP 按专项准备。NanoMDM 以校验源码、实际 Go 工具链、平台和参数识别缓存，损坏时只恢复该项。
 
+SCEP T2 需要 Docker Compose，每个 case 使用独立 step-ca 容器与网络，镜像摘要和容器端口由 [Apple 工具锁](../../fixtures/apple-tools.lock.json) 固定。宿主测试程序连接 Docker 实际分配的回环端口；重建后重新读取地址。webhook listener 直接绑定并持有系统分配的端口，再通过 step CLI 更新回调。Docker Desktop 使用回环 listener，原生 Linux 使用该 case 的私有 bridge gateway。两侧显式信任本次 fixture 的根证书并校验域名；容器重建保留 CA 密钥、数据库和 provisioner 身份。异常或取消回收 case 容器、卷和网络，下次运行也会清理本 worktree 遗留的 Apple 环境。
+
+NanoMDM 同一构建身份的校验和发布持有跨进程锁；二进制、归档和 manifest 通过同目录独立临时文件原子发布。并发调用在锁内重新校验既有证明，失败只清理当前调用的临时文件。
+
 ## 浏览器正常与故障验证
 
 正常模式消费已准备好的测试账号、数据及两个 HTTPS 地址，不要求 Docker 权限：
