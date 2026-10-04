@@ -113,7 +113,7 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
     );
     let task = claim_response.1["task"].clone();
     let signed: rss_mdm_agent_wire::runtime::SignedTask = serde_json::from_value(task.clone())?;
-    let context = rss_mdm_agent_wire::runtime::TaskVerification {
+    let context = crate::test_support::task_signature::TaskVerification {
         key_id: "t2",
         public_key: key.public_key().as_ref(),
         tenant_id: Uuid::parse_str(case_tenant())?,
@@ -127,7 +127,7 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
         permit: rss_mdm_agent_wire::runtime::TaskPermit::Offer,
         now,
     };
-    signed.verify(&context)?;
+    crate::test_support::task_signature::verify(&signed, &context)?;
     let attempt = signed.payload.attempt_id();
     let reserved = pg(&format!(
         "SELECT sequence FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{attempt}' AND result='pending' AND sealed_at IS NULL",
@@ -158,12 +158,13 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
     task_event(&router, &task, json!({"kind":"received"})).await?;
     let permit = task_event(&router, &task, json!({"kind":"start"})).await?;
     let ack: rss_mdm_agent_wire::runtime::TaskEventAck = serde_json::from_value(permit)?;
-    ack.into_permit()
-        .unwrap()
-        .verify(&rss_mdm_agent_wire::runtime::TaskVerification {
+    crate::test_support::task_signature::verify(
+        &ack.into_permit().unwrap(),
+        &crate::test_support::task_signature::TaskVerification {
             permit: rss_mdm_agent_wire::runtime::TaskPermit::Start,
             ..context
-        })?;
+        },
+    )?;
     let result_operation = Uuid::new_v4();
     let mut result = json!({"kind":"result","exitCode":0,"quality":"complete","output":{"version":"1.2","healthy":true}});
     execution.inject_fault(

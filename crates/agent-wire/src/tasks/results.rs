@@ -1,6 +1,7 @@
 //! Evidence bound to every frozen software step, with independent native detection.
 use super::*;
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 
 /// Exact native detector identity. Registration and provisioning cannot share an identity variant.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -124,23 +125,6 @@ impl SoftwareDetectionObservation {
         }
         Ok(())
     }
-    /// Independent postcondition matches an exact requested version or exact absence.
-    pub fn satisfies(&self, intent: SoftwareTaskIntent, version: &str) -> bool {
-        match (self, intent) {
-            (
-                Self::Present {
-                    version: observed, ..
-                },
-                SoftwareTaskIntent::Install | SoftwareTaskIntent::Detect,
-            ) => observed == version,
-            (Self::Absent { .. }, SoftwareTaskIntent::Uninstall) => true,
-            _ => false,
-        }
-    }
-    /// Whether detection remains unresolved.
-    pub fn is_unknown(&self) -> bool {
-        matches!(self, Self::Unknown { .. })
-    }
 }
 /// Process evidence is kept separate from effect detection and its exit-code classification.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -200,18 +184,6 @@ pub struct SoftwareTaskResult {
     /// One result for every signed step, in execution order; skipped steps remain explicit.
     pub steps: Vec<SoftwareStepResult>,
 }
-/// Pure evidence assessment. This grants neither execution trust nor inventory/ownership facts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SoftwareEvidenceAssessment {
-    /// Every independently detected postcondition satisfies the signed task.
-    Satisfied,
-    /// Detection contradicts the task or reports a forbidden reboot.
-    Unsatisfied,
-    /// At least one independent observation remains unresolved.
-    Unknown,
-    /// Reboot is permitted and requires a later independent detection.
-    RebootPending,
-}
 impl SoftwareTaskResult {
     /// Reject malformed or incoherent observations before product projection.
     pub fn validate(&self) -> Result<(), WireError> {
@@ -254,184 +226,13 @@ impl SoftwareTaskResult {
         }
         Ok(())
     }
-    /// Validate exact task association, then assess all independently detected postconditions.
-    /// Current authorization, cancellation, deadlines and late-result eligibility belong to Execution.
-    pub fn assess_for(
-        &self,
-        task: &SoftwareTaskSpec,
-    ) -> Result<SoftwareEvidenceAssessment, WireError> {
-        self.assess_execution(task.intent, task.definition_digest, &task.steps)
-    }
-    /// Assess server-retained immutable execution evidence without creating Start authority.
-    pub fn assess_execution(
-        &self,
-        intent: SoftwareTaskIntent,
-        definition_digest: [u8; 32],
-        steps: &[SoftwareTaskStep],
-    ) -> Result<SoftwareEvidenceAssessment, WireError> {
-        use SoftwareEvidenceAssessment as A;
-        self.validate_association(intent, definition_digest, steps)?;
-        if self.steps.iter().any(|step| step.after.is_unknown()) {
-            return Ok(A::Unknown);
-        }
-        let reboot = self.steps.iter().any(|step| step.reboot_required);
-        let reboot_allowed = self.steps.iter().zip(steps).all(|(result, step)| {
-            !result.reboot_required || step.action.reboot == SoftwareTaskReboot::Report
-        });
-        if reboot {
-            return Ok(if reboot_allowed {
-                A::RebootPending
-            } else {
-                A::Unsatisfied
-            });
-        }
-        let matches = self
-            .steps
-            .iter()
-            .zip(steps)
-            .enumerate()
-            .all(|(index, (result, step))| {
-                let intent = if index + 1 == steps.len() {
-                    intent
-                } else {
-                    SoftwareTaskIntent::Install
-                };
-                result
-                    .after
-                    .satisfies(intent, &step.action.detected_version())
-            });
-        Ok(if matches {
-            A::Satisfied
-        } else {
-            A::Unsatisfied
-        })
-    }
-    /// Evidence from another step, target, package or native scope cannot satisfy this task.
-    fn validate_association(
-        &self,
-        intent: SoftwareTaskIntent,
-        definition_digest: [u8; 32],
-        steps: &[SoftwareTaskStep],
-    ) -> Result<(), WireError> {
-        self.validate()?;
-        if self.definition_digest != definition_digest
-            || self.intent != intent
-            || self.steps.len() != steps.len()
-        {
-            return Err(WireError::InvalidValue);
-        }
-        for (result, step) in self.steps.iter().zip(steps) {
-            if result.step_digest != step.digest()?
-                || result.target != step.target
-                || result.package != step.action.package
-                || result.identity != step.action.observed_identity()
-            {
-                return Err(WireError::InvalidValue);
-            }
-        }
-        Ok(())
-    }
 }
 impl SoftwareTaskStep {
     /// Exact evidence coordinate for this self-contained step.
     pub fn digest(&self) -> Result<[u8; 32], WireError> {
-        ring::digest::digest(
-            &ring::digest::SHA256,
-            &serde_json::to_vec(self).map_err(|_| WireError::InvalidValue)?,
+        Ok(
+            sha2::Sha256::digest(serde_json::to_vec(self).map_err(|_| WireError::InvalidValue)?)
+                .into(),
         )
-        .as_ref()
-        .try_into()
-        .map_err(|_| WireError::InvalidValue)
-    }
-}
-impl SoftwareTaskAction {
-    /// The sole native identity mapping for independent result checks.
-    pub fn observed_identity(&self) -> SoftwareObservedIdentity {
-        use SoftwareTaskBehavior as B;
-        let detection = |v: &SoftwareTaskDetection| match v {
-            SoftwareTaskDetection::MsiProduct { product_code, .. } => {
-                SoftwareObservedIdentity::MsiProduct {
-                    product_code: product_code.clone(),
-                }
-            }
-            SoftwareTaskDetection::PkgReceipt { receipt, .. } => {
-                SoftwareObservedIdentity::PkgReceipt {
-                    receipt: receipt.clone(),
-                }
-            }
-            SoftwareTaskDetection::Registry {
-                scope, key, value, ..
-            } => SoftwareObservedIdentity::Registry {
-                scope: *scope,
-                key: key.clone(),
-                value: value.clone(),
-            },
-            SoftwareTaskDetection::File { scope, path, .. } => SoftwareObservedIdentity::File {
-                scope: *scope,
-                path: path.clone(),
-            },
-            SoftwareTaskDetection::Script { command } => {
-                SoftwareObservedIdentity::ControlledDetector {
-                    entry: command.entry.clone(),
-                }
-            }
-        };
-        match &self.behavior {
-            B::Msi(n) | B::Pkg(n) | B::Winget(n) | B::Brew(n) => detection(&n.detect),
-            B::Exe(n) => detection(&n.detect),
-            B::Bundle(n) => detection(&n.detect),
-            B::Dmg(n) => match &n.payload {
-                SoftwareTaskDmgPayload::AppCopy { application, .. } => {
-                    SoftwareObservedIdentity::MacApplication {
-                        bundle_id: application.bundle_id.clone(),
-                        target_name: application.target_name.clone(),
-                    }
-                }
-                SoftwareTaskDmgPayload::ContainedPkg { receipt, .. } => {
-                    SoftwareObservedIdentity::PkgReceipt {
-                        receipt: receipt.clone(),
-                    }
-                }
-            },
-            B::Msix(n) => match n.deployment {
-                SoftwareTaskMsixDeployment::TargetUserRegistration { .. } => {
-                    SoftwareObservedIdentity::MsixRegistration {
-                        identity: n.identity.clone(),
-                    }
-                }
-                SoftwareTaskMsixDeployment::DeviceProvisioning => {
-                    SoftwareObservedIdentity::MsixProvisioning {
-                        identity: n.identity.clone(),
-                    }
-                }
-            },
-        }
-    }
-    /// Exact expected version queried by the approved detector.
-    pub fn detected_version(&self) -> String {
-        use SoftwareTaskBehavior as B;
-        let detection = |d: &SoftwareTaskDetection| match d {
-            SoftwareTaskDetection::MsiProduct { version, .. }
-            | SoftwareTaskDetection::PkgReceipt { version, .. }
-            | SoftwareTaskDetection::Registry { version, .. }
-            | SoftwareTaskDetection::File { version, .. } => version.clone(),
-            SoftwareTaskDetection::Script { .. } => self.version.clone(),
-        };
-        match &self.behavior {
-            B::Msi(n) | B::Pkg(n) | B::Winget(n) | B::Brew(n) => detection(&n.detect),
-            B::Exe(n) => detection(&n.detect),
-            B::Bundle(n) => detection(&n.detect),
-            B::Dmg(n) => match &n.payload {
-                SoftwareTaskDmgPayload::AppCopy { application, .. } => application.version.clone(),
-                _ => self.version.clone(),
-            },
-            B::Msix(n) => n
-                .identity
-                .version
-                .iter()
-                .map(u16::to_string)
-                .collect::<Vec<_>>()
-                .join("."),
-        }
     }
 }

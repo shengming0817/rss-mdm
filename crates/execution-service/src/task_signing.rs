@@ -54,6 +54,10 @@ impl Signer {
         })
     }
     pub fn sign(&self, payload: TaskPayload) -> Result<SignedTask, Error> {
+        if let TaskPayload::Software(task) = &payload {
+            rss_mdm_software_service::preparation::execution::validate_task_admission(task)
+                .map_err(|_| Error::Forbidden)?;
+        }
         let bytes = payload
             .signing_bytes(&self.key_id)
             .map_err(|_| Error::Malformed)?;

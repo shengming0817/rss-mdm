@@ -90,10 +90,12 @@ pub async fn require_in(
         Platform::Windows => wire::TaskPlatform::Windows,
         Platform::Macos => wire::TaskPlatform::Macos,
     };
-    if frozen
-        .execution_identity()
-        .execution_target(platform, &binding.execution_context)
-        .is_err()
+    if rss_mdm_software_service::preparation::execution::identity_target(
+        frozen.execution_identity(),
+        platform,
+        &binding.execution_context,
+    )
+    .is_err()
     {
         return Ok(false);
     }

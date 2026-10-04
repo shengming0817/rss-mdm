@@ -1,3 +1,4 @@
+mod support;
 use rss_mdm_agent_wire::runtime::{TaskEvent, TaskEventRequest};
 use serde_json::json;
 use uuid::Uuid;
@@ -81,22 +82,8 @@ fn signatures_bind_attempt_artifact_and_permission_and_fail_closed() {
         key_id: "test-key".into(),
         signature: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature.as_ref()),
     };
-    let context = TaskVerification {
-        key_id: "test-key",
-        public_key: key.public_key().as_ref(),
-        tenant_id: id,
-        device_id: "device",
-        platform: TaskPlatform::Macos,
-        architecture: TaskArchitecture::Aarch64,
-        registration_id: id,
-        generation: 1,
-        task_id: id,
-        attempt_id: id,
-        permit: TaskPermit::Offer,
-        now: 99,
-    };
-    signed.verify(&context).unwrap();
-    let current_bytes = signed.payload.signing_bytes(context.key_id).unwrap();
+    support::verify_signature(&signed, key.public_key().as_ref()).unwrap();
+    let current_bytes = signed.payload.signing_bytes(&signed.key_id).unwrap();
     let separator = current_bytes.iter().position(|byte| *byte == 0).unwrap();
     let domain = std::str::from_utf8(&current_bytes[..separator]).unwrap();
     assert!(domain.ends_with("-v1-ed25519"));
@@ -106,53 +93,9 @@ fn signatures_bind_attempt_artifact_and_permission_and_fail_closed() {
     old.signature =
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.sign(&old_bytes).as_ref());
     assert!(
-        old.verify(&context).is_err(),
+        support::verify_signature(&old, key.public_key().as_ref()).is_err(),
         "retired V6 signature domain accepted"
     );
-    for bad in [
-        TaskVerification {
-            platform: TaskPlatform::Windows,
-            ..context
-        },
-        TaskVerification {
-            architecture: TaskArchitecture::X86_64,
-            ..context
-        },
-        TaskVerification {
-            tenant_id: Uuid::new_v4(),
-            ..context
-        },
-        TaskVerification {
-            registration_id: Uuid::new_v4(),
-            ..context
-        },
-        TaskVerification {
-            task_id: Uuid::new_v4(),
-            ..context
-        },
-        TaskVerification {
-            permit: TaskPermit::Start,
-            ..context
-        },
-        TaskVerification {
-            now: 100,
-            ..context
-        },
-        TaskVerification {
-            key_id: "wrong-key",
-            ..context
-        },
-        TaskVerification {
-            device_id: "foreign",
-            ..context
-        },
-        TaskVerification {
-            generation: 2,
-            ..context
-        },
-    ] {
-        assert!(signed.verify(&bad).is_err());
-    }
     for mutate in [
         |s: &mut TaskSpec| {
             s.resource.variant = "other".into();
@@ -186,7 +129,7 @@ fn signatures_bind_attempt_artifact_and_permission_and_fail_closed() {
         mutate(&mut badspec);
         let mut bad = signed.clone();
         bad.payload = badspec.try_into().unwrap();
-        assert!(bad.verify(&context).is_err());
+        assert!(support::verify_signature(&bad, key.public_key().as_ref()).is_err());
     }
     let mut bad = serde_json::to_value(signed.payload).unwrap();
     bad["outputBytes"] = json!(0);
@@ -307,22 +250,8 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
         key_id: "key".into(),
         payload,
     };
-    let context = TaskVerification {
-        key_id: "key",
-        public_key: key.public_key().as_ref(),
-        tenant_id: id,
-        device_id: "device",
-        platform: TaskPlatform::Windows,
-        architecture: TaskArchitecture::X86_64,
-        registration_id: id,
-        generation: 1,
-        task_id: id,
-        attempt_id: id,
-        permit: TaskPermit::Offer,
-        now: 100,
-    };
-    signed.verify(&context).unwrap();
-    let current_bytes = signed.payload.signing_bytes(context.key_id).unwrap();
+    support::verify_signature(&signed, key.public_key().as_ref()).unwrap();
+    let current_bytes = signed.payload.signing_bytes(&signed.key_id).unwrap();
     let separator = current_bytes.iter().position(|byte| *byte == 0).unwrap();
     let domain = std::str::from_utf8(&current_bytes[..separator]).unwrap();
     assert!(domain.ends_with("-v1-ed25519"));
@@ -332,7 +261,7 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
     old.signature =
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.sign(&old_bytes).as_ref());
     assert!(
-        old.verify(&context).is_err(),
+        support::verify_signature(&old, key.public_key().as_ref()).is_err(),
         "retired V6 signature domain accepted"
     );
     let mut altered = spec;
@@ -346,7 +275,7 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
     .unwrap();
     let mut forged = signed;
     forged.payload = altered.try_into().unwrap();
-    assert!(forged.verify(&context).is_err());
+    assert!(support::verify_signature(&forged, key.public_key().as_ref()).is_err());
 }
 
 #[test]

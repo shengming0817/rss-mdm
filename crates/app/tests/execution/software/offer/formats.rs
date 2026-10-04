@@ -217,7 +217,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
     let key_file = f.base["task_signing"]["private_key_file"].as_str().unwrap();
     let key = ring::signature::Ed25519KeyPair::from_pkcs8(&std::fs::read(key_file)?).unwrap();
     let signed: rss_mdm_agent_wire::runtime::SignedTask = serde_json::from_value(task.clone())?;
-    let verification = rss_mdm_agent_wire::runtime::TaskVerification {
+    let verification = crate::test_support::task_signature::TaskVerification {
         key_id: "t2",
         public_key: key.public_key().as_ref(),
         tenant_id: Uuid::parse_str(case_tenant())?,
@@ -235,7 +235,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
         permit: rss_mdm_agent_wire::runtime::TaskPermit::Offer,
         now: crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?,
     };
-    signed.verify(&verification)?;
+    crate::test_support::task_signature::verify(&signed, &verification)?;
     ensure!(spec.steps.len() == if format == "msix" { 1 } else { 2 });
     let root = spec.steps.last().unwrap();
     ensure!(
@@ -283,12 +283,13 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
         ensure!(r.0 == StatusCode::OK, "{kind}: {r:?}");
         if kind == "start" {
             let ack: rss_mdm_agent_wire::runtime::TaskEventAck = serde_json::from_value(r.1)?;
-            ack.into_permit()
-                .unwrap()
-                .verify(&rss_mdm_agent_wire::runtime::TaskVerification {
+            crate::test_support::task_signature::verify(
+                &ack.into_permit().unwrap(),
+                &crate::test_support::task_signature::TaskVerification {
                     permit: rss_mdm_agent_wire::runtime::TaskPermit::Start,
                     ..verification
-                })?;
+                },
+            )?;
         }
     }
     let mut result = result_event(&task, "install", Some(0), "present", false)?;

@@ -2,13 +2,13 @@
 #[path = "tasks/context.rs"]
 mod context;
 use super::{WIRE_VERSION, WireError, strict_uuid};
-use base64::Engine;
 pub use context::{
     SoftwareExecutionContext, SoftwareExecutionTarget, SoftwareInteractiveUser,
     SoftwareReadCredential,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::Digest;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
@@ -1040,25 +1040,27 @@ impl SoftwareTaskSpec {
         self.execution_context.validate_for(self.platform)?;
         let encoded = serde_json::to_vec(&self.steps).map_err(|_| WireError::InvalidValue)?;
         if encoded.len() > 4_194_304
-            || ring::digest::digest(&ring::digest::SHA256, &encoded).as_ref()
-                != self.definition_digest
+            || sha2::Sha256::digest(&encoded).as_slice() != self.definition_digest
         {
             return Err(WireError::InvalidValue);
         }
         let mut keys = std::collections::BTreeSet::new();
         for (index, step) in self.steps.iter().enumerate() {
             step.action.validate()?;
-            if step
-                .action
-                .execution_target(self.platform, &self.execution_context)?
-                != step.target
-                || matches!(&step.action.behavior,SoftwareTaskBehavior::Msix(n) if matches!(n.deployment,SoftwareTaskMsixDeployment::TargetUserRegistration{target:SoftwareTaskUser::ActiveInteractive}))
+            step.target.validate_for(self.platform)?;
+            if !matches!(
+                (step.action.behavior.invocation().run_as, &step.target),
+                (ExecutionIdentity::System, SoftwareExecutionTarget::Device)
+                    | (
+                        ExecutionIdentity::LoggedInUser,
+                        SoftwareExecutionTarget::User { .. }
+                    )
+            ) || matches!(&step.action.behavior,SoftwareTaskBehavior::Msix(n) if matches!(n.deployment,SoftwareTaskMsixDeployment::TargetUserRegistration{target:SoftwareTaskUser::ActiveInteractive}))
             {
                 return Err(WireError::InvalidValue);
             }
             software::validate_step(step, index, self.platform, self.architecture)?;
-            step.export
-                .validate_for(step, self.tenant_id, &self.execution_context)?;
+            step.export.validate_for(step, self.tenant_id)?;
             if step.artifacts.is_empty() || keys.len() + step.artifacts.len() > 64 {
                 return Err(WireError::InvalidValue);
             }
@@ -1248,88 +1250,4 @@ pub struct SignedTask {
     pub key_id: String,
     /// Unpadded base64url 64-byte Ed25519 signature.
     pub signature: String,
-}
-/// Trusted local identity and key selection, never populated from the received message.
-pub struct TaskVerification<'a> {
-    /// Expected key identifier from the configured trust set.
-    pub key_id: &'a str,
-    /// Trusted Ed25519 public key.
-    pub public_key: &'a [u8],
-    /// Locally enrolled tenant.
-    pub tenant_id: Uuid,
-    /// Locally enrolled device identity.
-    pub device_id: &'a str,
-    /// Actual local operating system.
-    pub platform: TaskPlatform,
-    /// Actual local processor architecture.
-    pub architecture: TaskArchitecture,
-    /// Locally enrolled current registration.
-    pub registration_id: Uuid,
-    /// Locally enrolled generation.
-    pub generation: u64,
-    /// Task identity being accepted.
-    pub task_id: Uuid,
-    /// Attempt identity being accepted.
-    pub attempt_id: Uuid,
-    /// Required permission; an offer cannot authorize start.
-    pub permit: TaskPermit,
-    /// Trusted current Unix time.
-    pub now: i64,
-}
-/// Authenticated payload for the exact local context. Only verification constructs this value.
-pub struct VerifiedTask<'a>(&'a TaskPayload);
-impl VerifiedTask<'_> {
-    /// Borrow the verified immutable executor inputs.
-    pub fn payload(&self) -> &TaskPayload {
-        self.0
-    }
-}
-impl SignedTask {
-    /// Authenticate exact bytes, signing key identity, expiry and all local authority coordinates.
-    pub fn verify(&self, context: &TaskVerification<'_>) -> Result<VerifiedTask<'_>, WireError> {
-        let p = &self.payload;
-        let (tenant, device, registration, generation) = match p {
-            TaskPayload::Script(v) => (
-                v.tenant_id,
-                v.device_id.as_str(),
-                v.registration_id,
-                v.generation,
-            ),
-            TaskPayload::Enrollment(v) => (
-                v.tenant_id,
-                v.device_id.as_str(),
-                v.registration_id,
-                v.generation,
-            ),
-            TaskPayload::Software(v) => (
-                v.tenant_id,
-                v.device_id.as_str(),
-                v.registration_id,
-                v.generation,
-            ),
-        };
-        if self.key_id != context.key_id
-            || context.now < 0
-            || context.now >= p.expires_at()
-            || p.permit() != context.permit
-            || tenant != context.tenant_id
-            || device != context.device_id
-            || p.platform() != context.platform
-            || p.architecture() != context.architecture
-            || registration != context.registration_id
-            || generation != context.generation
-            || p.task_id() != context.task_id
-            || p.attempt_id() != context.attempt_id
-            || self.signature.len() != 86
-        {
-            return Err(WireError::InvalidValue);
-        }
-        let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(&self.signature)
-            .map_err(|_| WireError::InvalidValue)?;
-        ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, context.public_key)
-            .verify(&p.signing_bytes(&self.key_id)?, &signature)
-            .map_err(|_| WireError::InvalidValue)?;
-        Ok(VerifiedTask(p))
-    }
 }

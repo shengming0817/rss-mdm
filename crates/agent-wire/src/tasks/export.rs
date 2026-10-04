@@ -120,12 +120,7 @@ fn https(value: &str) -> Result<(), WireError> {
 }
 impl SoftwareTaskExport {
     /// Validate the exact source and all retained material against this signed local step.
-    pub fn validate_for(
-        &self,
-        step: &SoftwareTaskStep,
-        tenant: Uuid,
-        context: &SoftwareExecutionContext,
-    ) -> Result<(), WireError> {
+    pub fn validate_for(&self, step: &SoftwareTaskStep, tenant: Uuid) -> Result<(), WireError> {
         use SoftwareTaskBehavior as B;
         let (binding, uri) = match (self, &step.action.behavior) {
             (Self::Direct, B::Winget(_) | B::Brew(_)) => return Err(WireError::InvalidValue),
@@ -164,13 +159,6 @@ impl SoftwareTaskExport {
                 }
                 text(tap, 128)?;
                 text(credential_reference, 128)?;
-                if !context
-                    .source_credentials
-                    .iter()
-                    .any(|c| c.source == binding.source && c.reference == *credential_reference)
-                {
-                    return Err(WireError::InvalidValue);
-                }
                 (binding, uri)
             }
             _ => return Err(WireError::InvalidValue),

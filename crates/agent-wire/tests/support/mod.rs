@@ -16,3 +16,23 @@ pub fn enrollment_collection() -> CollectionDefinition {
 fn field(key: &str) -> serde_json::Value {
     serde_json::json!({"key":key,"version":1,"valueType":{"kind":"string","maxLength":256,"allowEmpty":false},"nullable":false,"manual":false,"sources":{"agent.builtin":0},"platforms":["windows","macos"],"sensitivity":"standard","unit":null,"searchable":true,"itemKey":null})
 }
+
+#[allow(
+    dead_code,
+    reason = "shared crypto assertion used by signature targets"
+)]
+pub fn verify_signature(
+    signed: &rss_mdm_agent_wire::runtime::SignedTask,
+    public_key: &[u8],
+) -> Result<(), ring::error::Unspecified> {
+    use base64::Engine;
+    let bytes = signed
+        .payload
+        .signing_bytes(&signed.key_id)
+        .map_err(|_| ring::error::Unspecified)?;
+    let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&signed.signature)
+        .map_err(|_| ring::error::Unspecified)?;
+    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, public_key)
+        .verify(&bytes, &signature)
+}
