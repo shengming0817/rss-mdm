@@ -52,6 +52,20 @@ Agent 使用独立的持久授权与 mTLS 生命周期，见 [Agent 集成指南
 
 占用包括有效设备注册和已授权、未过期的待完成注册；授权重试、续证与凭据恢复不产生第二份占用。取消、过期或撤销后释放相应占用。降低额度保留已有设备与有效待完成注册，超过新额度时禁止新增。额度不足返回 registration_limit；不要将其当作短暂限流自动重试。
 
+## 自助注册引导与当前进度
+
+`GET /api/v1/self-enrollments` 返回当前身份的租户、个人额度和实际配置的原生渠道。渠道的 `requiresLocalAdministrator` 表示本机权限前提，不代表服务端业务授权；没有配置的渠道不会出现在选项中。邀请入口与前端引导页面由后续任务实施。
+
+唯一详情入口 `GET /api/v1/enrollments/{id}` 同时返回生命周期、`instructions` 和 `progress`。Windows 引导包含注册服务器、Discovery 地址、唯一规范用户名和固定的 Full／Device 选择；macOS 引导提供现有 `/api/v1/enrollments/{id}/profile` 地址，以创建时的口令 POST 下载签名 `.mobileconfig`。macOS 用户需在系统设置中确认安装，采用 profile-based device enrollment；用户身份授权不等于 Apple User Enrollment。没有管理员业务权限的员工只能查询／续接／取消自己在当前租户创建的注册。
+
+`profilePrepared` 的 observed 表示服务器准备过当前交接的 profile；未绑定时按当前密码版本隔离，绑定后跟随当前注册及活动凭据对应的 profile／证书，合法续证或 resume 不会把已可管理设备回退为未注册。Windows 返回 not_applicable。`certificateIssued` 是服务器观察到的签发事实，丢失的 SCEP notify 在首次 Authenticate 补齐前仍为 false。下载 profile 或证书签发均不代表完成。`firstAuthenticatedCheckIn` 表示 Windows 双向 SyncML 认证完成，或 Apple Authenticate 已绑定设备；Apple 还必须收到 TokenUpdate。系统弹窗没有服务端观察来源，`systemConfirmation` 始终为 unknown。
+
+`managementReady` 同时检查当前活动注册、当前可用凭据／PKI 信任、首次认证和通道准入。撤销、替代、证书或 CRL 失效后可回退为 false。Windows 首次认证事实保存在注册记录中，临时会话清理不会抹掉它；旧数据迁移后该事实为空，需下一次真实认证才能建立。
+
+`diagnostic` 提供闭合状态：awaiting_system_confirmation、awaiting_certificate、awaiting_first_check_in、awaiting_device_token、reauthentication_required、expired、cancelled、revoked、superseded、credential_unavailable、channel_unavailable、ready。进程重启丢失未绑定授权的会话续接引用时，需要原用户重新登录并 resume；不要自动重发或复活授权。详情响应不包含口令、challenge、token、证书或私钥。
+
+详情契约已直接替换为带引导／进度的响应，Windows 旧用户名不再兼容。现有前端严格解码器需在后续前端任务同步；本次后端实现及协议 T2 不声明真实 Windows／macOS 系统安装已验收。
+
 ## 组织设备责任人
 
 组织注册始终免个人额度。具有目标设备 enrollment 权限的管理员可以在“注册用户／设备责任人”页面为组织设备选择用户、修改或清空；用户列表复用 Identity 账号查询及其既有权限。设置可以在组织注册待完成时进行。原注册授权人是不可修改的身份／审计来源，设备责任人是独立、可空的归属信息。修改责任人不改变设备、凭据、注册来源或个人额度，也不授予用户设备管理权。更新使用稳定操作键和 expectedRevision，发生版本冲突时重新读取后提交新操作。

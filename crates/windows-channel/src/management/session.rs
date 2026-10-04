@@ -492,6 +492,9 @@ async fn save(
         )
         .await?;
     }
+    if session.authenticated {
+        rss_mdm_registration_service::enrollment::read::record_authenticated_in(c, p).await?;
+    }
     let state = if package == PackageState::Aborted {
         "complete"
     } else if session.authenticated {

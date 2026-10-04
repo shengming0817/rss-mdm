@@ -436,6 +436,7 @@ impl Fixture {
         } else {
             self.browser.clone()
         };
+        browser.network = self.browser.network.clone();
         browser.operation = Some(Uuid::new_v4());
         let mut input = json!({"source":"mdm.apple","password":password});
         if !self_service {
@@ -462,13 +463,28 @@ impl Fixture {
             .header("host", "mdm.example.test")
             .header("content-type", "application/json")
             .body(Body::from(json!({"password":password}).to_string()))?;
-        let response = self.router.clone().oneshot(request).await?;
-        ensure!(
-            response.status() == StatusCode::OK,
-            "Apple profile download {}",
-            response.status()
-        );
-        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024).await?;
+        let body = if let Some((client, origin)) = &browser.network {
+            let response = client
+                .post(format!("{origin}/api/v1/enrollments/{enrollment}/profile"))
+                .header("host", "mdm.example.test")
+                .json(&json!({"password":password}))
+                .send()
+                .await?;
+            ensure!(
+                response.status() == StatusCode::OK,
+                "HTTPS profile {}",
+                response.status()
+            );
+            response.bytes().await?
+        } else {
+            let response = self.router.clone().oneshot(request).await?;
+            ensure!(
+                response.status() == StatusCode::OK,
+                "Apple profile download {}",
+                response.status()
+            );
+            axum::body::to_bytes(response.into_body(), 1024 * 1024).await?
+        };
         use x509_cert::der::{Decode, asn1::OctetString};
         let cms = cms::content_info::ContentInfo::from_der(&body)?
             .content
@@ -487,6 +503,71 @@ impl Fixture {
                 == Some(password.as_str())
         );
         Ok((enrollment, attempt, password))
+    }
+    async fn https_browser(&self) -> Result<(reqwest::Client, String, rss_runtime::ShutdownStack)> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = native::TlsEndpoint {
+            listen: listener.local_addr()?,
+            origin: "https://mdm.example.test".into(),
+            certificate_file: self.root.join("server.crt"),
+            private_key_file: self.root.join("apple-tls.pk8"),
+        };
+        let origin = format!("https://localhost:{}", endpoint.listen.port());
+        let router = native::TlsRouter {
+            listen: endpoint.listen,
+            tls: tls::configuration(&endpoint, None)?,
+            router: self.router.clone(),
+            admission: native::admission::Admission::new(
+                fixture_clock(),
+                self.app.requests.clone(),
+                "self-enrollment-browser",
+            ),
+        };
+        let mut owner = rss_runtime::ShutdownStack::try_new(
+            rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
+            Arc::new(crate::lifecycle::RuntimeTimer),
+        )?;
+        let mut startup = owner.startup()?.commit();
+        startup.stage_task_with_token(
+            tls::registration(
+                listener,
+                router,
+                self.app.audit_store.clone(),
+                case_tenant().into(),
+                native::NativeListenerKind::AppleWebhookFixture,
+            )
+            .critical(),
+        );
+        startup.finish();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(15))
+            .add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(
+                self.root.join("ca.crt"),
+            )?)?)
+            .build()?;
+        Ok((client, origin, owner))
+    }
+    async fn self_progress(&self, enrollment: Uuid) -> Result<serde_json::Value> {
+        let secret = crate::test_support::identity::credential(&self.app.identity, "other")?;
+        let mut browser = Browser {
+            network: self.browser.network.clone(),
+            cookies: std::collections::BTreeMap::from([(
+                "__Host-identity-session".into(),
+                secret.expose().into(),
+            )]),
+            ..Default::default()
+        };
+        let (status, value) = browser
+            .call(
+                &self.router,
+                Method::GET,
+                &format!("/api/v1/enrollments/{enrollment}"),
+                None,
+            )
+            .await?;
+        ensure!(status == StatusCode::OK, "progress {status} {value}");
+        Ok(value)
     }
     fn client(&self) -> Result<reqwest::Client> {
         Ok(reqwest::Client::builder()

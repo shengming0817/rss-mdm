@@ -74,13 +74,10 @@ def private_value(value):
             private_value(item)
 
 
-def record_output(name, value):
-    """Retain sanitized provider evidence in the current case's durable fixture log."""
-    state = _diagnostic.get()
-    if state is None:
-        return
+def sanitized(value, secrets):
+    """Replace known private inputs before applying the fail-closed evidence check."""
     from candidate_runtime import safe_evidence
-    for secret in sorted(state['secrets'], key=len, reverse=True):
+    for secret in sorted(secrets, key=len, reverse=True):
         if secret:
             value = value.replace(secret, '[redacted]').replace(json.dumps(secret)[1:-1], '[redacted]')
     # CA-generated one-time tokens aren't among the supplied fixture secrets.
@@ -88,9 +85,18 @@ def record_output(name, value):
     value = re.sub(r'\bott=(?:"[^"\n]*"|\S+)', 'ott=[redacted]', value)
     value = re.sub(r'\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+', '[redacted]', value)
     try:
-        value = safe_evidence(value, state['secrets'])
+        value = safe_evidence(value, secrets)
     except RuntimeError:
         value = 'diagnostic-withheld'
+    return value
+
+
+def record_output(name, value):
+    """Retain sanitized provider evidence in the current case's durable fixture log."""
+    state = _diagnostic.get()
+    if state is None:
+        return
+    value = sanitized(value, state['secrets'])
     with state['path'].open('a') as log:
         log.write(f'[{state["phase"]}] {name}:\n{value or "(no captured output)"}\n')
 
@@ -99,7 +105,6 @@ def command_failure(error, kwargs):
     state = _diagnostic.get()
     if state is None:
         return
-    from candidate_runtime import safe_evidence
     for key, value in (kwargs.get('env') or os.environ).items():
         if re.search(r'password|secret|token|credential|private.?key', key, re.I):
             private_value(value)
@@ -109,10 +114,7 @@ def command_failure(error, kwargs):
         value = getattr(error, name, None) or ''
         if isinstance(value, bytes):
             value = value.decode('utf-8', errors='replace')
-        try:
-            streams[name] = safe_evidence(value, state['secrets'])
-        except RuntimeError:
-            streams[name] = 'diagnostic-withheld'
+        streams[name] = sanitized(value, state['secrets'])
     # CalledProcessError/TimeoutExpired.__str__ echo argv, which may contain
     # credentials or inline configuration. Keep status and stack, never argv.
     executable = os.path.basename(str(error.cmd[0])) if isinstance(error.cmd, (list, tuple)) else 'command'

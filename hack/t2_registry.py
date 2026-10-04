@@ -204,7 +204,7 @@ MODULES['agent.pki'] = replace(MODULES['agent.pki'], scope='tenant', policies=(
     CasePolicy('agent_pki_tests::unknown_original_ca_result_blocks_retirement_after_rotation', 'reuse', 'tenant',('identity','agent_pki','pki_rotation')),
 ))
 
-add('installation.migration', selectors=('migration::tests::complete_predecessor_withdraws_old_authority_and_preserves_started_evidence','migration::tests::fresh_installation_replay_and_mismatch_rejection','migration::pki::tests::'), profile='empty',
+add('installation.migration', selectors=('migration::tests::previous_release_adds_enrollment_progress_without_rewriting_units','migration::tests::complete_predecessor_withdraws_old_authority_and_preserves_started_evidence','migration::tests::fresh_installation_replay_and_mismatch_rejection','migration::pki::tests::'), profile='empty',
     sources=('crates/app/src/migration.rs','crates/app/src/migration/pki.rs'),
     tests=('crates/app/tests/migration/mod.rs','crates/app/tests/migration/pki.rs'),
     python='installation', support=('hack/t2_modules/installation.py',))
@@ -1593,3 +1593,7 @@ for name, module in tuple(MODULES.items()):
     MODULES[name] = replace(module, scope=scope, policies=policies)
 
 consume(('deployment/windows-leaf.tpl',), ' '.join(name for name, module in MODULES.items() if 'windows' in module.fixtures))
+
+consume(('crates/app/src/enrollment_progress.rs',), 'enrollment.http windows.enrollment windows.management apple.scep apple.identity')
+consume(('crates/registration-service/schema/enrollment-progress.sql',), 'installation.migration installation.upgrade_runtime catalog.contract enrollment.http windows.enrollment windows.management')
+consume(('crates/registration-service/src/database.rs',), 'enrollment.http enrollment.recovery enrollment.quotas device.binding device.revocation device.recovery agent.registration agent.pki')

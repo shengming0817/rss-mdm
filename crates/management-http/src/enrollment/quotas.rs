@@ -5,7 +5,7 @@ use axum::{
     Extension, Json, Router,
     extract::{Path, State},
     http::HeaderMap,
-    routing::{get, post},
+    routing::get,
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::User;
@@ -42,7 +42,22 @@ pub fn routes() -> Router<App> {
             "/devices/{device}/registration-user",
             get(responsibility).put(assign),
         )
-        .route("/self-enrollments", post(create_self))
+        .route("/self-enrollments", get(options).post(create_self))
+}
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Options {
+    channels: Vec<super::read::ChannelOption>,
+    quotas: Usage,
+}
+async fn options(
+    State(app): State<App>,
+    Extension(auth): Extension<RequestAuth>,
+) -> Result<Json<Options>, Error> {
+    Ok(Json(Options {
+        channels: app.native.channels(),
+        quotas: app.service.quotas().usage(&auth.proof, None).await?,
+    }))
 }
 async fn me(
     State(app): State<App>,

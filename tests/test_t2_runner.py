@@ -199,7 +199,22 @@ class Execution(unittest.TestCase):
             case = next(iter(value['cases'].values()))
             for key in ('log', 'fixtureLog', 'failureLog'):
                 self.assertNotIn(secret, (root / case[key]).read_text())
-            self.assertIn('diagnostic-withheld', (root / case['fixtureLog']).read_text())
+            self.assertIn('[redacted]', (root / case['fixtureLog']).read_text())
+
+    def test_command_failure_redacts_secrets_but_preserves_startup_reason(self):
+        from t2_processes import diagnostics, private_value, command_failure
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / 'fixture.log'
+            secret = 'fixture-credential-value'
+            error = subprocess.CalledProcessError(1, ['docker', secret],
+                stderr='port is already allocated; credential='+secret)
+            with diagnostics(log):
+                private_value(secret)
+                command_failure(error, {})
+            self.assertIn('port is already allocated', error.stderr)
+            self.assertIn('[redacted]', error.stderr)
+            self.assertNotIn(secret, log.read_text()+str(error))
+            self.assertEqual(error.cmd, '[fixture command arguments withheld]')
 
     def test_owned_fixture_process_preserves_diagnostics_and_reaps_child(self):
         from t2_processes import diagnostics, owned_by, subprocess as fixture_process
@@ -235,7 +250,7 @@ class Execution(unittest.TestCase):
                  redirect_stderr(StringIO()), self.assertRaises(subprocess.CalledProcessError):
                 environment.compose('ps')
             self.assertNotIn(secret, log.read_text())
-            self.assertIn('diagnostic-withheld', log.read_text())
+            self.assertIn('[redacted]', log.read_text())
 
     def test_retention_bounds_owned_runs_and_preserves_current_formal_evidence(self):
         import json

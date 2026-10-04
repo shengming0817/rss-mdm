@@ -115,3 +115,12 @@ pub async fn active_windows_enrollment(
     )?;
     Ok(registration)
 }
+
+/// Read protocol-owned issuance evidence within the product's tenant snapshot.
+pub async fn certificate_issued(
+    c: &mut sqlx::PgConnection,
+    context: &rss_mdm_registration_service::enrollment::read::Context,
+) -> Result<bool, Error> {
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.enrollment_certificates WHERE tenant_id=$1::uuid AND request_id=$2)")
+        .bind(&context.tenant).bind(context.enrollment).fetch_one(c).await.map_err(db)
+}

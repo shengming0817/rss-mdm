@@ -81,8 +81,16 @@ class Provider:
             config=json.loads((self.root/'step/config/ca.json').read_text())
             self.wait(actual,'/health',Path(config['root'][0]))
             return actual
-        except BaseException:
-            with cleanup():self.reset()
+        except BaseException as primary:
+            with cleanup():
+                try:
+                    self.logs()
+                except BaseException as diagnostic:
+                    primary.add_note('standby diagnostics failed: '+type(diagnostic).__name__)
+                try:
+                    self.reset()
+                except BaseException as recovery:
+                    primary.add_note('standby cleanup failed: '+type(recovery).__name__)
             raise
 
     def backup(self, destination):

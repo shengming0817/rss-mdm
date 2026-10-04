@@ -639,7 +639,12 @@ impl Host {
             .username
             .as_mut()
             .unwrap();
-        token.username = Secret(receipt.enrollment_id.to_string());
+        token.username = Secret(
+            self.app
+                .windows()?
+                .channel
+                .enrollment_username(receipt.enrollment_id)?,
+        );
         token.password = Secret(plain);
         let Body::Issue(body) = &mut issue.body else {
             panic!()
@@ -831,7 +836,12 @@ impl Host {
             .username
             .as_mut()
             .unwrap();
-        token.username = Secret(next.enrollment_id.to_string());
+        token.username = Secret(
+            self.app
+                .windows()?
+                .channel
+                .enrollment_username(next.enrollment_id)?,
+        );
         token.password = Secret(plain);
         let issued = self
             .client

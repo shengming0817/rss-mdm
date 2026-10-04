@@ -111,3 +111,43 @@ pub async fn revoke_attempt_in(
     }
     Ok(())
 }
+
+/// Reads the current native credential and its persisted trust in one product snapshot.
+/// Retired credentials and queued revocations never advertise management availability.
+pub async fn current_native_credential_in(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    registration: Uuid,
+    purpose: rss_mdm_agent_wire::pki::Purpose,
+    now: i64,
+) -> Result<bool, Error> {
+    use sqlx::Row;
+    let row = sqlx::query("SELECT cert.certificate,trust.body,EXISTS(SELECT 1 FROM mdm_pki.revocations v WHERE v.tenant_id=cert.tenant_id AND v.purpose=cert.purpose AND v.issuer=cert.issuer AND v.serial=cert.serial) AS revoked FROM mdm_pki.certificates cert JOIN mdm_access.credentials k ON k.tenant_id=cert.tenant_id AND k.registration=cert.registration AND k.locator=encode(cert.fingerprint,'hex') JOIN mdm_pki.trust trust ON trust.tenant_id=cert.tenant_id AND trust.purpose=cert.purpose WHERE cert.tenant_id=$1::uuid AND cert.registration=$2 AND cert.purpose=$3 AND k.state='active' ORDER BY k.id LIMIT 2")
+        .bind(tenant).bind(registration).bind(crate::registry::purpose(purpose)).fetch_all(c).await.map_err(|_|Error::Storage)?;
+    if row.len() > 1 {
+        return Err(Error::Conflict);
+    }
+    let Some(row) = row.first() else {
+        return Ok(false);
+    };
+    if row
+        .try_get::<bool, _>("revoked")
+        .map_err(|_| Error::Storage)?
+    {
+        return Ok(false);
+    }
+    let body: Vec<u8> = row.try_get("body").map_err(|_| Error::Storage)?;
+    let trust: rss_mdm_agent_wire::pki::Trust =
+        serde_json::from_slice(&body).map_err(|_| Error::Storage)?;
+    if trust.tenant.to_string() != tenant || trust.purpose != purpose {
+        return Err(Error::Storage);
+    }
+    let certificate: Vec<u8> = row.try_get("certificate").map_err(|_| Error::Storage)?;
+    let trust = match rss_mdm_device_trust::DeviceTrust::restore(trust, purpose, now) {
+        Ok(trust) => trust,
+        Err(rss_mdm_device_trust::Error::Expired) => return Ok(false),
+        Err(_) => return Err(Error::Storage),
+    };
+    // verify() uses the same purpose/issuer/CRL/time checks as real native authentication.
+    Ok(trust.verify(&[certificate.into()], now).is_ok())
+}

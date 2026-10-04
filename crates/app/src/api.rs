@@ -471,6 +471,10 @@ pub(crate) fn from_state(
                 content: state.content_writer.clone(),
                 clock: Arc::new(crate::clock::ContentClock(state.clock.clone())),
             }),
+            enrollment_progress: Arc::new(crate::enrollment_progress::EnrollmentProgress {
+                windows: state.windows.as_ref().map(|w| w.channel.clone()),
+                apple: state.apple.as_ref().map(|a| a.channel.clone()),
+            }),
             enrollment: Arc::new(
                 rss_mdm_registration_service::enrollment::EnrollmentService::new(
                     state.access.registration(),

@@ -298,7 +298,54 @@ impl Fixture {
 async fn certificate_renewal_preserves_registration() -> Result<()> {
     let mut f = Fixture::start().await?;
     let (peer, device) = f.ready_scep_peer().await?;
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let enrollment: Uuid = sqlx::query_scalar("SELECT s.enrollment FROM mdm_apple.scep_attempts s JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(s.tenant_id,s.registration) WHERE s.tenant_id=$1::uuid AND r.device=$2 AND s.state='bound'")
+        .bind(case_tenant()).bind(case_device()).fetch_one(&mut pg).await?;
+    let path = format!("/api/v1/enrollments/{enrollment}");
+    let (status, before) = f.browser.call(&f.router, Method::GET, &path, None).await?;
+    ensure!(
+        status == StatusCode::OK
+            && before["progress"]["certificateIssued"] == true
+            && before["progress"]["managementReady"] == true,
+        "{before}"
+    );
     f.renewal_cycle(&peer, &device).await?;
+    let (status, renewed) = f.browser.call(&f.router, Method::GET, &path, None).await?;
+    ensure!(
+        status == StatusCode::OK
+            && renewed["registrationId"] == before["registrationId"]
+            && renewed["progress"]["certificateIssued"] == true
+            && renewed["progress"]["managementReady"] == true,
+        "{renewed}"
+    );
+    f.browser.operation = Some(Uuid::new_v4());
+    let (status, resumed) = f
+        .browser
+        .call(
+            &f.router,
+            Method::POST,
+            &format!("{path}/resume"),
+            Some(json!({"password":rss_mdm_registration_service::enrollment::random()})),
+        )
+        .await?;
+    ensure!(status == StatusCode::OK, "resume {status} {resumed}");
+    let distinct: bool = sqlx::query_scalar("SELECT q.password_version<>s.password_version FROM mdm_access.requests q JOIN mdm_apple.scep_attempts s ON(s.tenant_id,s.enrollment)=(q.tenant_id,q.id) WHERE q.tenant_id=$1::uuid AND q.id=$2 AND s.state='bound'")
+        .bind(case_tenant()).bind(enrollment).fetch_one(&mut pg).await?;
+    ensure!(
+        distinct,
+        "fixture must separate handoff and active certificate versions"
+    );
+    let (status, resumed) = f.browser.call(&f.router, Method::GET, &path, None).await?;
+    ensure!(
+        status == StatusCode::OK
+            && resumed["registrationId"] == before["registrationId"]
+            && resumed["progress"]["certificateIssued"] == true
+            && resumed["progress"]["managementReady"] == true,
+        "{resumed}"
+    );
+    pg.close().await?;
     drop(device);
     f.close().await
 }

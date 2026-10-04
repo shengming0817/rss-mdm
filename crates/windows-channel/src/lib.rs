@@ -76,6 +76,24 @@ pub fn protocol_identity(
     )))
 }
 impl Windows {
+    /// Canonical OnPremise username for the system enrollment instructions.
+    pub fn enrollment_username(&self, enrollment: Uuid) -> Result<String, Error> {
+        let origin: axum::http::Uri = self
+            .enrollment_origin
+            .parse()
+            .map_err(|_| Error::Malformed)?;
+        let host = origin.host().ok_or(Error::Malformed)?;
+        Ok(format!("{enrollment}@{host}"))
+    }
+    fn parse_enrollment_username(&self, username: &str) -> Result<Uuid, Error> {
+        let (local, _) = username.split_once('@').ok_or(Error::Unauthorized)?;
+        let id = Uuid::parse_str(local).map_err(|_| Error::Unauthorized)?;
+        if id.is_nil() || self.enrollment_username(id)? != username {
+            return Err(Error::Unauthorized);
+        }
+        Ok(id)
+    }
+
     pub fn new(
         enrollment_origin: String,
         management_origin: String,
@@ -168,7 +186,10 @@ pub fn routers(
     management_boundary: boundary::Envelope,
 ) -> (Router, Router) {
     let enrollment = Router::new()
-        .route("/EnrollmentServer/Discovery.svc", post(discover))
+        .route(
+            "/EnrollmentServer/Discovery.svc",
+            axum::routing::get(discovery_probe).post(discover),
+        )
         .route("/EnrollmentServer/Policy.svc", post(policy))
         .route("/EnrollmentServer/Enrollment.svc", post(issue))
         .route("/EnrollmentConfiguration", post(linked::discover))
@@ -288,6 +309,13 @@ pub fn fault(request: Option<&soap::Message>, error: Error) -> Response {
     r.extensions_mut().insert(error);
     r
 }
+async fn discovery_probe() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_LENGTH, "0")],
+        "",
+    )
+}
 async fn discover(State(app): State<Arc<HttpState>>, headers: HeaderMap, bytes: Bytes) -> Response {
     let windows = match app.windows() {
         Ok(windows) => windows,
@@ -397,7 +425,9 @@ async fn enrollment(
             .as_ref()
             .ok_or(Error::Unauthorized)?;
         let token = security.username.as_ref().ok_or(Error::Unauthorized)?;
-        let id = Uuid::parse_str(&token.username.0).map_err(|_| Error::Unauthorized)?;
+        let id = app
+            .windows()?
+            .parse_enrollment_username(&token.username.0)?;
         let password = Password::new(token.password.0.clone()).map_err(|_| Error::Unauthorized)?;
         let auth = crate::enrollment::store::enrollment_authorization(
             &app.access.registration(),

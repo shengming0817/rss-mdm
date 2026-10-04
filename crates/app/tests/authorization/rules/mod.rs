@@ -263,6 +263,10 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
         requests: requests.clone(),
     });
     let enrollment = Arc::new(crate::enrollment::http::HttpState {
+        native: Arc::new(crate::enrollment_progress::EnrollmentProgress {
+            windows: None,
+            apple: None,
+        }),
         service: Arc::new(EnrollmentService::new(
             access.registration(),
             Arc::new(Credentials::new(monotonic.clone(), 16)),

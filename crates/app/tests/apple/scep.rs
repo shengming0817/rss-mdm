@@ -1,5 +1,8 @@
-use super::{Fixture, StatusCode, lifecycle, oracle, protocol, scep_client};
+use super::{
+    Browser, Fixture, Method, StatusCode, case_tenant, lifecycle, oracle, protocol, scep_client,
+};
 use anyhow::{Result, ensure};
+use serde_json::json;
 use sqlx::Connection;
 use std::time::Duration;
 use uuid::Uuid;
@@ -181,9 +184,75 @@ async fn external_scep_issuance_and_lost_notify() -> Result<()> {
 #[ignore = "MODULE=apple.scep: ordinary user self enrollment and real native activation"]
 async fn self_enrollment_uses_current_user_and_one_macos_allocation() -> Result<()> {
     let mut f = Fixture::start().await?;
+    let (client, origin, control) = f.https_browser().await?;
+    f.browser.network = Some((client, origin));
     let (enrollment, attempt, password) = f.self_enrollment().await?;
+    let prepared = f.self_progress(enrollment).await?;
+    ensure!(
+        prepared["progress"]["profilePrepared"] == "observed"
+            && prepared["progress"]["managementReady"] == false
+    );
+    ensure!(prepared["progress"]["diagnostic"] == "awaiting_certificate");
     let device = scep_client::Device::new(enrollment, attempt, &password)?;
     let apple = f.app.apple()?;
+    let request = device.request(
+        &f.root.join("apple-issuer.pem"),
+        &Uuid::new_v4().to_string(),
+        f.app.clock.unix_seconds()?,
+    )?;
+    device
+        .enroll(&f.client()?, &apple.channel.scep_fixture()?.0, &request)
+        .await?;
+    let issued = f.self_progress(enrollment).await?;
+    ensure!(
+        issued["progress"]["certificateIssued"] == true
+            && issued["progress"]["managementReady"] == false
+    );
+    ensure!(issued["progress"]["systemConfirmation"] == "unknown");
+    // A signed old certificate must not advance a newly resumed, still-unbound handoff.
+    let password = rss_mdm_registration_service::enrollment::random();
+    let secret = crate::test_support::identity::credential(&f.app.identity, "other")?;
+    let mut browser = Browser {
+        network: f.browser.network.clone(),
+        cookies: std::collections::BTreeMap::from([(
+            "__Host-identity-session".into(),
+            secret.expose().into(),
+        )]),
+        csrf: Some(secret.csrf()),
+        operation: Some(Uuid::new_v4()),
+    };
+    let (status, resumed) = browser
+        .call(
+            &f.router,
+            Method::POST,
+            &format!("/api/v1/enrollments/{enrollment}/resume"),
+            Some(json!({"password":password})),
+        )
+        .await?;
+    ensure!(status == StatusCode::OK, "resume {status} {resumed}");
+    let pending = f.self_progress(enrollment).await?;
+    ensure!(
+        pending["progress"]["profilePrepared"] == "unknown"
+            && pending["progress"]["certificateIssued"] == false
+            && pending["progress"]["managementReady"] == false,
+        "{pending}"
+    );
+    let (client, origin) = f.browser.network.as_ref().unwrap();
+    let profile = client
+        .post(format!("{origin}/api/v1/enrollments/{enrollment}/profile"))
+        .header("host", "mdm.example.test")
+        .json(&json!({"password":password}))
+        .send()
+        .await?;
+    ensure!(profile.status() == StatusCode::OK);
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let current: Uuid = sqlx::query_scalar("SELECT s.id FROM mdm_apple.scep_attempts s JOIN mdm_access.requests q ON(q.tenant_id,q.id,q.password_version)=(s.tenant_id,s.enrollment,s.password_version) WHERE s.tenant_id=$1::uuid AND s.enrollment=$2 AND s.state='prepared'")
+        .bind(case_tenant()).bind(enrollment).fetch_one(&mut pg).await?;
+    ensure!(current != attempt);
+    pg.close().await?;
+    let device = scep_client::Device::new(enrollment, current, &password)?;
     let request = device.request(
         &f.root.join("apple-issuer.pem"),
         &Uuid::new_v4().to_string(),
@@ -192,31 +261,20 @@ async fn self_enrollment_uses_current_user_and_one_macos_allocation() -> Result<
     let der = device
         .enroll(&f.client()?, &apple.channel.scep_fixture()?.0, &request)
         .await?;
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(40))
-        .identity(device.identity(&der)?)
-        .add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(
-            f.root.join("ca.crt"),
-        )?)?)
-        .build()?;
-    let body = protocol::xml(protocol::dictionary([
-        ("MessageType", "Authenticate".into()),
-        (
-            "UDID",
-            crate::test_support::case::name("rss-self-mac").into(),
-        ),
-        ("Topic", apple.config.apns_topic.clone().into()),
-    ]))?;
+    ensure!(f.self_progress(enrollment).await?["progress"]["certificateIssued"] == true);
+    let peer = f.authenticate_peer(&device, &der).await?;
+    let authenticated = f.self_progress(enrollment).await?;
     ensure!(
-        client
-            .put(format!("{}/checkin", apple.config.management.origin))
-            .body(body)
-            .send()
-            .await?
-            .status()
-            == StatusCode::OK
+        authenticated["progress"]["firstAuthenticatedCheckIn"] == true
+            && authenticated["progress"]["managementReady"] == false
     );
+    ensure!(
+        authenticated["progress"]["diagnostic"] == "awaiting_device_token",
+        "{authenticated}"
+    );
+    peer.token().await?;
+    let ready = f.self_progress(enrollment).await?;
+    ensure!(ready["progress"]["managementReady"] == true, "{ready}");
     let proof = crate::device::test_support::admin(super::case_tenant(), "other-a").await?;
     let quotas = rss_mdm_registration_service::quotas::Quotas::new(
         f.app.access.registration(),
@@ -229,5 +287,6 @@ async fn self_enrollment_uses_current_user_and_one_macos_allocation() -> Result<
         .find(|c| c.channel == rss_mdm_registration_service::quotas::Channel::MacosMdm)
         .unwrap();
     ensure!(usage.active == 1 && usage.reserved == 0 && usage.used == 1);
+    ensure!(control.shutdown().join().await?.is_clean());
     f.close().await
 }
