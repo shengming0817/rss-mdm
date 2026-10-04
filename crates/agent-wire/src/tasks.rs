@@ -1056,7 +1056,7 @@ impl SoftwareTaskSpec {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 enum RawTaskPayload {
-    Script(TaskSpec),
+    Script(Box<TaskSpec>),
     Software(SoftwareTaskSpec),
     /// Standard MDM enrollment entry.
     Enrollment(crate::runtime::EnrollmentTaskSpec),
@@ -1066,7 +1066,7 @@ enum RawTaskPayload {
 #[serde(try_from = "RawTaskPayload", into = "RawTaskPayload")]
 pub enum TaskPayload {
     /// Existing script task, upgraded to the current wire major.
-    Script(TaskSpec),
+    Script(Box<TaskSpec>),
     /// Approved software task.
     Software(SoftwareTaskSpec),
     /// Standard MDM enrollment entry.
@@ -1104,7 +1104,7 @@ impl TryFrom<TaskSpec> for TaskPayload {
     type Error = WireError;
     fn try_from(value: TaskSpec) -> Result<Self, WireError> {
         value.signing_bytes("validation")?;
-        Ok(Self::Script(value))
+        Ok(Self::Script(Box::new(value)))
     }
 }
 impl TryFrom<SoftwareTaskSpec> for TaskPayload {

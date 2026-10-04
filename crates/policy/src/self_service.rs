@@ -45,12 +45,11 @@ impl ParameterSources {
             {
                 return Err(Error::Malformed);
             }
-            if let ParameterSource::Fixed { value } = source {
-                if !(value.is_string() || value.is_boolean() || value.as_i64().is_some())
-                    || value.as_str().is_some_and(|s| s.contains('\0'))
-                {
-                    return Err(Error::Malformed);
-                }
+            if let ParameterSource::Fixed { value } = source
+                && (!(value.is_string() || value.is_boolean() || value.as_i64().is_some())
+                    || value.as_str().is_some_and(|s| s.contains('\0')))
+            {
+                return Err(Error::Malformed);
             }
         }
         Ok(())

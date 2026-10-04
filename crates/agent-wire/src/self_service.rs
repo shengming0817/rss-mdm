@@ -60,6 +60,7 @@ pub enum ScriptAuthorization {
         /// Effective AI switch.
         allow_ai: bool,
         /// Closed risk level, one or two.
+        #[serde(deserialize_with = "deserialize_risk")]
         #[schemars(schema_with = "risk_schema")]
         risk_level: u8,
         /// Confirmation attested for this exact request by the service.
@@ -321,4 +322,13 @@ pub struct SelfServiceStatus {
 }
 fn scalar_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::json_schema!({"anyOf":[{"type":"string","pattern":"^[^\\u0000]*$"},{"type":"boolean"},{"type":"integer","minimum":-9223372036854775808i64,"maximum":9223372036854775807i64}]})
+}
+
+fn deserialize_risk<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u8, D::Error> {
+    let value = u8::deserialize(deserializer)?;
+    if matches!(value, 1 | 2) {
+        Ok(value)
+    } else {
+        Err(serde::de::Error::custom("invalid script risk level"))
+    }
 }

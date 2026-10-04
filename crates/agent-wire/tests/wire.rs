@@ -70,6 +70,9 @@ fn manifest_covers_and_fingerprints_every_public_shape() {
             "ScriptResource",
             "SelfServiceInvoke",
             "SelfServiceDirectory",
+            "SelfServiceDirectoryResponse",
+            "SelfServiceAccepted",
+            "SelfServiceStatus",
         ]
     );
     let schemas = [

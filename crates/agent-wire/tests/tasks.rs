@@ -700,6 +700,10 @@ fn self_service_schemas_follow_owned_dtos_and_reject_model_authority() {
     same::<SelfServiceStatus>(include_str!(
         "../schema/runtime/self-service-status-v1.schema.json"
     ));
+    for risk in [0, 3, 255] {
+        let metadata = json!({"published":true,"displayName":"Repair","description":"","prerequisites":"","sideEffects":"","category":"Support","keywords":[],"allowAi":true,"riskLevel":risk});
+        assert!(serde_json::from_value::<SelfServiceMetadata>(metadata).is_err());
+    }
     // Generated types must also be the definitions signed inside TaskSpec.
     let payload: serde_json::Value = serde_json::from_str(include_str!(
         "../schema/runtime/task-payload-v1.schema.json"
