@@ -65,6 +65,7 @@ impl Client {
             crate::execution_assembly::open_content(&config, config.native_protector()?).await?,
             std::collections::BTreeMap::new(),
             rss_device_command_postgres::CommandClock::Controlled(clock.clone()),
+            crate::test_support::identity::session_authority(&config).await?,
         ))
         .await?;
         eprintln!("command T2: restarted runtime admitted");

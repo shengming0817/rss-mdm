@@ -11,9 +11,9 @@ pub mod store;
 pub use authority::UserGrant;
 pub use database::Store;
 pub use error::Error;
-pub use evaluate::Snapshot;
 #[cfg(test)]
 use evaluate::department_matches;
+pub use evaluate::{Snapshot, SubjectFacts};
 pub use model::*;
 pub use store::{lock as lock_on, snapshot_on};
 #[cfg(test)]

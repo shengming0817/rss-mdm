@@ -1,6 +1,59 @@
 {
   "$defs": {
-    "ScriptActor": {
+    "SelfServiceCaller": {
+      "description": "Origin attested by the authenticated system service, never taken from model arguments.",
+      "oneOf": [
+        {
+          "const": "human",
+          "description": "Interactive employee action.",
+          "type": "string"
+        },
+        {
+          "const": "ai",
+          "description": "AI tool action forwarded by the system service.",
+          "type": "string"
+        }
+      ]
+    },
+    "SelfServiceSubject": {
+      "description": "Subject selected by the server's explicit Policy access basis.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Device credential plus effective device scope; no enterprise session.",
+          "properties": {
+            "kind": {
+              "const": "device",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A live enterprise session matched by product authorization.",
+          "properties": {
+            "kind": {
+              "const": "user",
+              "type": "string"
+            },
+            "user": {
+              "$ref": "#/$defs/SelfServiceUser",
+              "description": "Authenticated enterprise coordinates, without a credential."
+            }
+          },
+          "required": [
+            "kind",
+            "user"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SelfServiceUser": {
       "additionalProperties": false,
       "description": "Authenticated product user; contains no session credential.",
       "properties": {
@@ -26,21 +79,6 @@
         "principalId"
       ],
       "type": "object"
-    },
-    "ScriptCaller": {
-      "description": "Origin attested by the authenticated system service, never taken from model arguments.",
-      "oneOf": [
-        {
-          "const": "human",
-          "description": "Interactive employee action.",
-          "type": "string"
-        },
-        {
-          "const": "ai",
-          "description": "AI tool action forwarded by the system service.",
-          "type": "string"
-        }
-      ]
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -96,10 +134,6 @@
       "additionalProperties": false,
       "description": "Targeted Policy self-service invocation.",
       "properties": {
-        "actor": {
-          "$ref": "#/$defs/ScriptActor",
-          "description": "Real employee identity."
-        },
         "allowAi": {
           "description": "Effective AI switch.",
           "type": "boolean"
@@ -142,14 +176,18 @@
           "type": "integer"
         },
         "source": {
-          "$ref": "#/$defs/ScriptCaller",
+          "$ref": "#/$defs/SelfServiceCaller",
           "description": "Trusted service's caller classification."
+        },
+        "subject": {
+          "$ref": "#/$defs/SelfServiceSubject",
+          "description": "Real employee identity."
         }
       },
       "required": [
         "kind",
         "requestId",
-        "actor",
+        "subject",
         "source",
         "policyId",
         "policyRevision",
@@ -161,6 +199,6 @@
       "type": "object"
     }
   ],
-  "title": "ScriptAuthorization",
-  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/script-authorization.schema.json"
+  "title": "TaskAuthorization",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/task-authorization.schema.json"
 }

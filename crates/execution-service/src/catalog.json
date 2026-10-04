@@ -64,6 +64,15 @@
       ""
     ],
     [
+      "action_attempts",
+      "execution_material",
+      "jsonb",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
       "action_polls",
       "tenant_id",
       "uuid",
@@ -318,6 +327,24 @@
     [
       "action_runs",
       "invocation",
+      "jsonb",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "action_runs",
+      "software_effect",
+      "jsonb",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "action_runs",
+      "invocation_archive",
       "jsonb",
       false,
       null,
@@ -1199,6 +1226,13 @@
     ],
     [
       "action_attempts",
+      "action_attempts_execution_material_check",
+      "c",
+      "CHECK (((execution_material IS NULL) OR ((jsonb_typeof(execution_material) = 'object'::text) AND (octet_length((execution_material)::text) <= 6291456))))",
+      true
+    ],
+    [
+      "action_attempts",
       "action_attempts_offer_check",
       "c",
       "CHECK ((octet_length((offer)::text) <= 6291456))",
@@ -1325,6 +1359,13 @@
     ],
     [
       "action_runs",
+      "action_runs_invocation_archive_check",
+      "c",
+      "CHECK (((invocation_archive IS NULL) OR (octet_length((invocation_archive)::text) <= 196608)))",
+      true
+    ],
+    [
+      "action_runs",
       "action_runs_invocation_check",
       "c",
       "CHECK (((invocation IS NULL) OR ((jsonb_typeof(invocation) = 'object'::text) AND (octet_length((invocation)::text) <= 131072))))",
@@ -1349,6 +1390,13 @@
       "action_runs_result_check",
       "c",
       "CHECK ((octet_length((result)::text) <= 1114112))",
+      true
+    ],
+    [
+      "action_runs",
+      "action_runs_software_effect_check",
+      "c",
+      "CHECK (((software_effect IS NULL) OR ((jsonb_typeof(software_effect) = 'object'::text) AND (octet_length((software_effect)::text) <= 4096))))",
       true
     ],
     [
@@ -1917,6 +1965,14 @@
       "action_runs",
       "action_runs_tenant_id_remote_operation_device_key",
       "CREATE UNIQUE INDEX action_runs_tenant_id_remote_operation_device_key ON mdm_commands.action_runs USING btree (tenant_id, remote_operation, device)",
+      true,
+      true,
+      true
+    ],
+    [
+      "action_runs",
+      "action_software_effect",
+      "CREATE INDEX action_software_effect ON mdm_commands.action_runs USING btree (tenant_id, device) WHERE (software_effect IS NOT NULL)",
       true,
       true,
       true

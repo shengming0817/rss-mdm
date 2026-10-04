@@ -19,6 +19,8 @@ pub struct SoftwareExecutionContext {
     pub os_version: [u16; 4],
     /// Whether the native system broker is available in this Agent installation.
     pub system_broker: bool,
+    /// Whether a helper is bound to this exact live interactive session.
+    pub user_helper: bool,
     /// Exact live interactive session, when one exists.
     #[serde(deserialize_with = "super::required_option")]
     pub interactive_user: Option<SoftwareInteractiveUser>,
@@ -51,18 +53,7 @@ impl SoftwareExecutionContext {
     pub fn validate_for(&self, platform: TaskPlatform) -> Result<(), WireError> {
         self.validate()?;
         if let Some(u) = &self.interactive_user {
-            let valid = match platform {
-                TaskPlatform::Windows => u.identity.strip_prefix("S-1-").is_some_and(|tail| {
-                    tail.split('-').count() >= 2
-                        && tail
-                            .split('-')
-                            .all(|n| !n.is_empty() && n.parse::<u32>().is_ok())
-                }),
-                TaskPlatform::Macos => {
-                    u.identity.parse::<u32>().is_ok()
-                        && u.identity.bytes().all(|b| b.is_ascii_digit())
-                }
-            };
+            let valid = valid_os_identity(&u.identity, platform);
             if !valid {
                 return Err(WireError::InvalidValue);
             }
@@ -115,7 +106,7 @@ impl SoftwareExecutionContext {
 }
 
 /// Concrete effect target bound before an Offer is signed.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -131,9 +122,42 @@ pub enum SoftwareExecutionTarget {
         identity: String,
         /// Exact login generation.
         #[serde(with = "crate::runtime::strict_uuid")]
+        #[schemars(with = "Uuid")]
         session_id: Uuid,
     },
 }
+impl SoftwareExecutionTarget {
+    /// Validate the exact OS identity and login generation of a signed target.
+    pub fn validate_for(&self, platform: TaskPlatform) -> Result<(), WireError> {
+        match self {
+            Self::Device => Ok(()),
+            Self::User {
+                identity,
+                session_id,
+            } if !session_id.is_nil()
+                && identity.len() <= 184
+                && valid_os_identity(identity, platform) =>
+            {
+                Ok(())
+            }
+            _ => Err(WireError::InvalidValue),
+        }
+    }
+}
+fn valid_os_identity(identity: &str, platform: TaskPlatform) -> bool {
+    match platform {
+        TaskPlatform::Windows => identity.strip_prefix("S-1-").is_some_and(|tail| {
+            tail.split('-').count() >= 2
+                && tail
+                    .split('-')
+                    .all(|n| !n.is_empty() && n.parse::<u32>().is_ok())
+        }),
+        TaskPlatform::Macos => {
+            identity.parse::<u32>().is_ok() && identity.bytes().all(|b| b.is_ascii_digit())
+        }
+    }
+}
+
 impl SoftwareTaskAction {
     /// Shared prerequisites for every step at preview, queue, Offer and Start.
     pub fn execution_target(
@@ -165,6 +189,9 @@ impl SoftwareTaskAction {
             return Err(WireError::InvalidValue);
         }
         let needs_user = invocation.run_as == ExecutionIdentity::LoggedInUser;
+        if needs_user && !context.user_helper {
+            return Err(WireError::InvalidValue);
+        }
         let target = if needs_user {
             let user = context
                 .interactive_user
@@ -196,7 +223,9 @@ impl SoftwareTaskAction {
                 ExecutionIdentity::System if !context.system_broker => {
                     return Err(WireError::InvalidValue);
                 }
-                ExecutionIdentity::LoggedInUser if context.interactive_user.is_none() => {
+                ExecutionIdentity::LoggedInUser
+                    if context.interactive_user.is_none() || !context.user_helper =>
+                {
                     return Err(WireError::InvalidValue);
                 }
                 _ => (),
@@ -245,5 +274,43 @@ impl SoftwareTaskAction {
             };
         }
         Ok(target)
+    }
+}
+
+impl ExecutionIdentity {
+    /// Bind the exact OS effect target; enterprise login does not select an OS account.
+    pub fn execution_target(
+        self,
+        platform: TaskPlatform,
+        context: &SoftwareExecutionContext,
+    ) -> Result<SoftwareExecutionTarget, WireError> {
+        context.validate_for(platform)?;
+        match self {
+            Self::System if context.system_broker => Ok(SoftwareExecutionTarget::Device),
+            Self::LoggedInUser if context.user_helper => {
+                let user = context
+                    .interactive_user
+                    .as_ref()
+                    .ok_or(WireError::InvalidValue)?;
+                Ok(SoftwareExecutionTarget::User {
+                    identity: user.identity.clone(),
+                    session_id: user.session_id,
+                })
+            }
+            _ => Err(WireError::InvalidValue),
+        }
+    }
+}
+impl SoftwareTaskAction {
+    /// Required identity of the root native invocation, without changing the Resource contract.
+    pub fn execution_identity(&self) -> ExecutionIdentity {
+        use SoftwareTaskBehavior as B;
+        match &self.behavior {
+            B::Msi(n) | B::Pkg(n) | B::Winget(n) | B::Brew(n) => n.install.run_as,
+            B::Exe(n) => n.install.run_as,
+            B::Bundle(n) => n.install.invocation.run_as,
+            B::Dmg(n) => n.invocation.run_as,
+            B::Msix(n) => n.invocation.run_as,
+        }
     }
 }

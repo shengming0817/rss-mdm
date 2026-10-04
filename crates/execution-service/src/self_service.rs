@@ -1,8 +1,23 @@
-//! Targeted self-service calls use the existing Policy version, Run reducer and frequency.
+//! Targeted self-service calls share the existing Policy version, Run reducer and admission.
+mod access;
+/// Validate selector coordinates at Policy publication without manufacturing grants.
+pub fn validate_access(
+    config: &rss_mdm_policy::SelfService,
+    tenant: &str,
+    instance: &str,
+) -> std::result::Result<(), Error> {
+    access::selectors(config, tenant, instance)
+        .map(|_| ())
+        .map_err(|fault| match fault {
+            Fault::Request(error) => error,
+            _ => Error::Malformed,
+        })
+}
+
 use crate::{
     Error, ExecutionService, Result, Target,
     actions::{production, storage as db},
-    authorization::{Permission, UserGrant, context::AuthorizedPrincipal},
+    authorization::{Permission, context::AuthorizedPrincipal},
     storage,
     transaction::*,
 };
@@ -16,19 +31,22 @@ use uuid::Uuid;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Invocation {
-    pub authorization: wire::ScriptAuthorization,
+    pub authorization: wire::TaskAuthorization,
     pub parameters: std::collections::BTreeMap<String, Value>,
-    pub grant: UserGrant,
+    pub basis: access::Basis,
+    pub execution_target: wire::SoftwareExecutionTarget,
 }
 impl Invocation {
     pub async fn valid_in(
         &self,
+        service: &ExecutionService,
         tx: &mut PgTransaction<'_>,
-        script: &crate::sources::admission::ExecutionPolicy,
+        plan: &db::ScheduledPolicy,
+        target: &Target,
         now: i64,
     ) -> Result<bool> {
-        let wire::ScriptAuthorization::SelfService {
-            actor,
+        let wire::TaskAuthorization::SelfService {
+            subject,
             source,
             policy_id,
             policy_revision,
@@ -41,89 +59,337 @@ impl Invocation {
         else {
             return Ok(false);
         };
-        let Some(policy) = script.policy() else {
+        let Some(policy) =
+            crate::sources::storage::read_in(&service.policy_reader, tx, *policy_id).await?
+        else {
             return Ok(false);
         };
         let Some(config) = &policy.definition.self_service else {
             return Ok(false);
         };
-        let user = self.grant.user();
-        if policy.id != *policy_id
-            || policy.revision as u64 != *policy_revision
+        let risk = effective_risk(&policy);
+        if policy.id != plan.owner()
             || policy.version != *policy_version
+            || policy.revision as u64 != *policy_revision
             || !policy.enabled
             || !config.published
             || config.allow_ai != Some(*allow_ai)
-            || config.risk_level.map(|r| r.value()) != Some(*risk_level)
-            || (*source == wire::ScriptCaller::Ai
-                && (!*allow_ai || (*risk_level == 2 && !*confirmed)))
-            || user.tenant_id != actor.tenant_id.to_string()
-            || user.instance_id != actor.instance_id.to_string()
-            || user.principal_id != actor.principal_id.to_string()
+            || risk != *risk_level
+            || (*source == wire::SelfServiceCaller::Ai
+                && (!*allow_ai || (risk == 2 && !*confirmed)))
         {
             return Ok(false);
         }
-        let grant = self.grant.clone();
-        let valid = tx
-            .with_connection(move |c| {
-                Box::pin(async move { Ok(grant.valid(c, Permission::ScriptExecute, now).await) })
-            })
+        if access::qualify_in(service, tx, config, &self.basis)
             .await?
-            .map_err(Error::from)?;
-        Ok(valid)
+            .as_ref()
+            != Some(subject)
+        {
+            return Ok(false);
+        }
+        match plan {
+            db::ScheduledPolicy::Script(script)
+                if script.policy().is_some() && script.id == *policy_version =>
+            {
+                if script
+                    .frozen
+                    .definition
+                    .validate_parameters(&json!(self.parameters))
+                    .is_err()
+                {
+                    return Ok(false);
+                }
+            }
+            db::ScheduledPolicy::Software(software)
+                if software.id == *policy_version
+                    && software.assignment.intent()
+                        == rss_mdm_policy::SoftwareIntent::AvailableInstall
+                    && self.parameters.is_empty() => {}
+            _ => return Ok(false),
+        }
+        if execution_target_in(service, tx, plan, target)
+            .await?
+            .as_ref()
+            != Some(&self.execution_target)
+        {
+            return Ok(false);
+        }
+        plan.authorized_in(service, tx, target, now).await
+    }
+}
+fn effective_risk(policy: &rss_mdm_policy::Policy) -> u8 {
+    if matches!(
+        policy.definition.action,
+        rss_mdm_policy::Action::Software { .. }
+    ) {
+        2
+    } else {
+        policy
+            .definition
+            .self_service
+            .as_ref()
+            .and_then(|s| s.risk_level)
+            .map_or(2, |r| r.value())
+    }
+}
+struct Prepared {
+    task: wire::SelfServiceTask,
+    parameters: std::collections::BTreeMap<String, Value>,
+    slot: InvocationSlot,
+    effect: Option<Value>,
+    execution_target: wire::SoftwareExecutionTarget,
+}
+async fn prepare_in(
+    service: &ExecutionService,
+    tx: &mut PgTransaction<'_>,
+    plan: &db::ScheduledPolicy,
+    target: &Target,
+    request: Uuid,
+    input: Option<&std::collections::BTreeMap<String, Value>>,
+    now: i64,
+) -> Result<Option<Prepared>> {
+    if !plan.authorized_in(service, tx, target, now).await? {
+        return Ok(None);
+    }
+    match plan {
+        db::ScheduledPolicy::Script(script) if script.policy().is_some() => {
+            let Some(entry) = script
+                .entry_in(&service.source, tx, &target.device, now)
+                .await?
+            else {
+                return Ok(None);
+            };
+            let Some(slot) = invocation_slot_in(tx, script, target, entry, request, now).await?
+            else {
+                return Ok(None);
+            };
+            let parameters = match input {
+                Some(input) => {
+                    let values = script.frozen.parameters.resolve(&json!(input))?;
+                    script
+                        .frozen
+                        .definition
+                        .validate_parameters(&values)
+                        .map_err(|_| Error::Malformed)?;
+                    checked_input(serde_json::from_value(values))?
+                }
+                None => Default::default(),
+            };
+            let task = wire::SelfServiceTask::Script {
+                resource: script.frozen.resource.clone(),
+                run_as: script.frozen.execution_identity(),
+                parameter_sources: parameter_sources(&script.frozen.parameters),
+                parameter_schema: script.frozen.definition.spec().parameters.clone(),
+            };
+            Ok(Some(Prepared {
+                task,
+                parameters,
+                slot,
+                effect: None,
+                execution_target: execution_target_in(service, tx, plan, target)
+                    .await?
+                    .ok_or(Error::Forbidden)?,
+            }))
+        }
+        db::ScheduledPolicy::Software(software)
+            if software.assignment.intent() == rss_mdm_policy::SoftwareIntent::AvailableInstall =>
+        {
+            if input.is_some_and(|input| !input.is_empty()) {
+                return Err(Error::Malformed.into());
+            }
+            let Some(slot) = crate::actions::software::slot_in(
+                service,
+                tx,
+                software,
+                target,
+                Some(request),
+                now,
+            )
+            .await?
+            else {
+                return Ok(None);
+            };
+            let binding = crate::channels::agent_binding_in(
+                tx,
+                service.agent_store.clone(),
+                target.registration,
+            )
+            .await?
+            .ok_or(Error::Forbidden)?;
+            let (platform, architecture) = db::agent_profile_in(service, tx, target.registration)
+                .await?
+                .ok_or(Error::Forbidden)?;
+            let steps = software
+                .assignment
+                .prepared_in(
+                    &service.admission(),
+                    tx,
+                    platform,
+                    architecture,
+                    &binding.execution_context,
+                )
+                .await?
+                .ok_or(Error::Forbidden)?;
+            let root = steps.last().ok_or(Error::Malformed)?;
+            let task = wire::SelfServiceTask::Software {
+                resource: wire::TaskResource {
+                    id: software.assignment.frozen.resource.clone(),
+                    version: software.assignment.frozen.version.clone(),
+                    variant: software
+                        .assignment
+                        .variant(platform, architecture)
+                        .ok_or(Error::Forbidden)?
+                        .into(),
+                },
+                run_as: root.action.execution_identity(),
+                target: root.target.clone(),
+            };
+            Ok(Some(Prepared {
+                task,
+                parameters: Default::default(),
+                slot: InvocationSlot {
+                    occurrence: slot.occurrence,
+                    available: slot.available,
+                    deadline: slot.deadline,
+                },
+                effect: Some(slot.effect),
+                execution_target: root.target.clone(),
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+async fn execution_target_in(
+    service: &ExecutionService,
+    tx: &mut PgTransaction<'_>,
+    plan: &db::ScheduledPolicy,
+    target: &Target,
+) -> Result<Option<wire::SoftwareExecutionTarget>> {
+    let Some(binding) =
+        crate::channels::agent_binding_in(tx, service.agent_store.clone(), target.registration)
+            .await?
+    else {
+        return Ok(None);
+    };
+    let Some((platform, architecture)) =
+        db::agent_profile_in(service, tx, target.registration).await?
+    else {
+        return Ok(None);
+    };
+    match plan {
+        db::ScheduledPolicy::Script(script) => Ok(script
+            .frozen
+            .execution_identity()
+            .execution_target(
+                match platform {
+                    rss_mdm_policy::Platform::Windows => wire::TaskPlatform::Windows,
+                    rss_mdm_policy::Platform::Macos => wire::TaskPlatform::Macos,
+                },
+                &binding.execution_context,
+            )
+            .ok()),
+        db::ScheduledPolicy::Software(software) => Ok(software
+            .assignment
+            .prepared_in(
+                &service.admission(),
+                tx,
+                platform,
+                architecture,
+                &binding.execution_context,
+            )
+            .await?
+            .and_then(|steps| steps.last().map(|root| root.target.clone()))),
+        _ => Ok(None),
+    }
+}
+fn target(p: &DevicePrincipal) -> Target {
+    Target {
+        device: p.device().into(),
+        registration: p.registration(),
+        generation: p.generation(),
+    }
+}
+fn bind(
+    p: &DevicePrincipal,
+    proof: Option<&AuthorizedPrincipal>,
+    audit: &RequestAudit,
+) -> std::result::Result<(), Error> {
+    if let Some(proof) = proof {
+        if proof.tenant_id() != p.tenant().to_string() {
+            return Err(Error::Forbidden);
+        }
+        proof.check_live()?;
+        proof.bind_audit(audit)?;
+    }
+    Ok(())
+}
+fn actor(p: &DevicePrincipal, subject: &wire::SelfServiceSubject) -> String {
+    let subject = match subject {
+        wire::SelfServiceSubject::Device => "device".into(),
+        wire::SelfServiceSubject::User { user } => {
+            format!("{}:{}", user.instance_id, user.principal_id)
+        }
+    };
+    format!(
+        "self-service:{subject}:{}:{}",
+        p.registration(),
+        p.generation()
+    )
+}
+fn owns(subject: &wire::SelfServiceSubject, proof: Option<&AuthorizedPrincipal>) -> bool {
+    match subject {
+        wire::SelfServiceSubject::Device => true,
+        wire::SelfServiceSubject::User { user } => proof.is_some_and(|proof| {
+            proof.instance_id() == user.instance_id.to_string()
+                && proof.principal_id() == user.principal_id.to_string()
+                && proof.tenant_id() == user.tenant_id.to_string()
+        }),
     }
 }
 impl ExecutionService {
     pub async fn self_service_directory(
         &self,
         p: &DevicePrincipal,
-        proof: &AuthorizedPrincipal,
+        proof: Option<&AuthorizedPrincipal>,
         input: &wire::SelfServiceDirectory,
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
-        if proof.tenant_id() != p.tenant().to_string() {
-            return Err(Error::Forbidden);
-        }
-        proof.require(Permission::ScriptExecute, Some(p.device()))?;
-        proof.bind_audit(audit)?;
+        bind(p, proof, audit)?;
         if input.after.is_some_and(|id| id.is_nil()) {
             return Err(Error::Malformed);
         }
-        run(&self.audit_store,&self.runtime,self.tenant,audit,(self,p,proof,input,audit),|ctx,tx|Box::pin(async move {
-            let (service,p,proof,input,audit)=*ctx;
-            storage::lock(tx,p.device()).await?;
-            crate::actions::agent::principal(service,tx,p).await?;
-            crate::action_admission::authorized(tx,proof,p.device(),Permission::ScriptExecute).await?;
-            let tenant=tx.tenant_id().to_string();let after=input.after;
-            let mut ids=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Uuid>("SELECT id FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND enabled AND definition->'action'->>'kind'='execution' AND definition->'selfService'->>'published'='true' AND ($2::uuid IS NULL OR id>$2) ORDER BY id LIMIT 65").bind(tenant).bind(after).fetch_all(c).await})).await?;
-            let more=ids.len()>64;ids.truncate(64);let next=if more {ids.last().copied()} else {None};
-            let target=Target{device:p.device().into(),registration:p.registration(),generation:p.generation()};
-            let now=storage::now(tx).await?;let mut items=Vec::new();
+        run(&self.audit_store, &self.runtime, self.tenant, audit, (self, p, proof, input, audit), |ctx, tx| Box::pin(async move {
+            let (service, p, proof, input, audit) = *ctx;
+            storage::lock(tx, p.device()).await?;
+            crate::actions::agent::principal(service, tx, p).await?;
+            let tenant = tx.tenant_id().to_string(); let after = input.after;
+            let mut ids = tx.with_connection(move |c| Box::pin(async move { sqlx::query_scalar::<_, Uuid>("SELECT id FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND enabled AND definition->'selfService'->>'published'='true' AND ($2::uuid IS NULL OR id>$2) ORDER BY id LIMIT 65").bind(tenant).bind(after).fetch_all(c).await })).await?;
+            let more = ids.len() > 64; ids.truncate(64); let next = if more { ids.last().copied() } else { None };
+            let target = target(p); let now = storage::now(tx).await?; let mut items = Vec::new();
             for id in ids {
-                let Some(policy)=crate::sources::storage::read_in(&service.policy_reader,tx,id).await? else {continue};
-                let script=crate::sources::admission::read_in(&service.policy_reader,tx,policy.version).await?;
-                let Some(config)=policy.definition.self_service.as_ref() else {continue};
-                if !policy.enabled || !config.published || (input.source==wire::ScriptCaller::Ai && config.allow_ai!=Some(true)) || !crate::script_eligibility::require_in(tx,service.agent_store.clone(),&target,&script.frozen).await? {continue}
-                let Some(entry)=script.entry_in(&service.source,tx,p.device(),now).await? else {continue};
-                if invocation_slot_in(tx,&script,&target,entry,Uuid::new_v4(),now).await?.is_none() {continue}
-                items.push(wire::SelfServiceDirectoryItem{policy_id:id,policy_revision:policy.revision as u64,policy_version:policy.version,self_service:metadata(config)?,resource:script.frozen.resource.clone(),parameter_sources:parameter_sources(&script.frozen.parameters),parameter_schema:script.frozen.definition.spec().parameters.clone()});
+                let Some(policy) = crate::sources::storage::read_in(&service.policy_reader, tx, id).await? else { continue; };
+                let Some(config) = policy.definition.self_service.as_ref() else { continue; };
+                if !policy.enabled || !config.published || (input.source == wire::SelfServiceCaller::Ai && config.allow_ai != Some(true)) { continue; }
+                let Some(basis) = access::select(config, proof)? else { continue; };
+                if access::qualify_in(service, tx, config, &basis).await?.is_none() { continue; }
+                let plan = db::load_source(&service.policy_reader, tx, db::Source::Policy { version: policy.version }).await?;
+                let Some(prepared) = prepare_in(service, tx, &plan, &target, Uuid::new_v4(), None, now).await? else { continue; };
+                let mut metadata = metadata(config)?; metadata.risk_level = effective_risk(&policy);
+                items.push(wire::SelfServiceDirectoryItem { policy_id: id, policy_revision: policy.revision as u64, policy_version: policy.version, self_service: metadata, task: prepared.task });
             }
-            proof.check_live()?;service.audit_store.append_request_in(tx,audit,200,"success").await?;
-            json(&wire::SelfServiceDirectoryResponse{items,next_cursor:next,as_of:now})
+            if let Some(proof) = proof { proof.check_live()?; }
+            service.audit_store.append_request_in(tx, audit, 200, "success").await?;
+            json(&wire::SelfServiceDirectoryResponse { items, next_cursor: next, as_of: now })
         })).await
     }
     pub async fn invoke_self_service(
         &self,
         p: &DevicePrincipal,
-        proof: &AuthorizedPrincipal,
+        proof: Option<&AuthorizedPrincipal>,
         input: &wire::SelfServiceInvoke,
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
-        if proof.tenant_id() != p.tenant().to_string() {
-            return Err(Error::Forbidden);
-        }
-        proof.require(Permission::ScriptExecute, Some(p.device()))?;
-        proof.bind_audit(audit)?;
+        bind(p, proof, audit)?;
         if input.operation_id.is_nil()
             || input.policy_id.is_nil()
             || input.policy_version.is_nil()
@@ -138,74 +404,96 @@ impl ExecutionService {
             return Err(Error::Malformed);
         }
         audit.operation(input.operation_id, "command_accept");
-        run(&self.audit_store,&self.runtime,self.tenant,audit,(self,p,proof,input,audit),|ctx,tx|Box::pin(async move {
-            let (service,p,proof,input,audit)=*ctx;
-            storage::lock(tx,p.device()).await?;
-            crate::actions::agent::principal(service,tx,p).await?;
-            let auth=crate::action_admission::authorized(tx,proof,p.device(),Permission::ScriptExecute).await?;
-            let actor=format!("self-service:{}:{}:{}",proof.instance_id(),proof.principal_id(),p.registration());
-            let hash=fingerprint(input)?;
-            let event_key=format!("{actor}:{}",input.operation_id);
-            if let Some(response)=db::replay(tx,&actor,input.operation_id,&hash).await? {
-                proof.check_live()?;
-                let fact=Fact::business(audit,&event_key,&hash,202,"success",None)?;service.audit_store.append_in(tx,&fact,true).await?;
+        run(&self.audit_store, &self.runtime, self.tenant, audit, (self, p, proof, input, audit), |ctx, tx| Box::pin(async move {
+            let (service, p, proof, input, audit) = *ctx;
+            storage::lock(tx, p.device()).await?; crate::actions::agent::principal(service, tx, p).await?;
+            let policy = crate::sources::storage::read_in(&service.policy_reader, tx, input.policy_id).await?.ok_or(Error::NotFound)?;
+            if policy.version != input.policy_version || policy.revision as u64 != input.policy_revision { return Err(Error::Conflict.into()); }
+            let config = policy.definition.self_service.as_ref().ok_or(Error::Forbidden)?;
+            let allow_ai = config.allow_ai.ok_or(Error::Forbidden)?; let risk = effective_risk(&policy);
+            if !policy.enabled || !config.published || (input.source == wire::SelfServiceCaller::Ai && (!allow_ai || (risk == 2 && !input.confirmed))) { return Err(Error::Forbidden.into()); }
+            let basis = access::select(config, proof)?.ok_or(Error::Forbidden)?;
+            let subject = access::qualify_in(service, tx, config, &basis).await?.ok_or(Error::Forbidden)?;
+            let actor = actor(p, &subject); let hash = fingerprint(input)?; let event_key = format!("{actor}:{}", input.operation_id); let now = storage::now(tx).await?;
+            let plan = db::load_source(&service.policy_reader, tx, db::Source::Policy { version: policy.version }).await?;
+            if let Some(response) = db::replay(tx, &actor, input.operation_id, &hash).await? {
+                let run = db::load_run(tx, checked_input(Uuid::parse_str(response["runId"].as_str().ok_or(Error::Malformed)?))?).await?;
+                crate::actions::agent::belongs(&run, p)?;
+                if !plan.authorized_run_in(service, tx, &run, now).await? { return Err(Error::Forbidden.into()); }
+                let fact = Fact::business(audit, &event_key, &hash, 202, "success", None)?; service.audit_store.append_in(tx, &fact, true).await?;
                 return Ok(response);
             }
-            let policy=crate::sources::storage::read_in(&service.policy_reader,tx,input.policy_id).await?.ok_or(Error::NotFound)?;
-            if policy.version!=input.policy_version || policy.revision as u64!=input.policy_revision {return Err(Error::Conflict.into())}
-            let config=policy.definition.self_service.as_ref().ok_or(Error::Forbidden)?;
-            let allow_ai=config.allow_ai.ok_or(Error::Forbidden)?;let risk=config.risk_level.ok_or(Error::Forbidden)?.value();
-            if !policy.enabled || !config.published || (input.source==wire::ScriptCaller::Ai && (!allow_ai || (risk==2 && !input.confirmed))) {return Err(Error::Forbidden.into())}
-            let script=crate::sources::admission::read_in(&service.policy_reader,tx,policy.version).await?;
-            let now=storage::now(tx).await?;
-            let target=Target{device:p.device().into(),registration:p.registration(),generation:p.generation()};
-            let Some(entry)=script.entry_in(&service.source,tx,p.device(),now).await? else {return Err(Error::Forbidden.into())};
-            if !crate::script_eligibility::require_in(tx,service.agent_store.clone(),&target,&script.frozen).await? {return Err(Error::Forbidden.into())}
-            let parameters=script.frozen.parameters.resolve(&json!(input.parameters))?;
-            script.frozen.definition.validate_parameters(&parameters).map_err(|_|Error::Malformed)?;
-            let Some(InvocationSlot{occurrence,available,deadline})=invocation_slot_in(tx,&script,&target,entry,input.operation_id,now).await? else {return Err(Error::Conflict.into())};
-            let decision=wire::ScriptAuthorization::SelfService {request_id:input.operation_id,actor:wire::ScriptActor{tenant_id:checked_input(Uuid::parse_str(proof.tenant_id()))?,instance_id:checked_input(Uuid::parse_str(proof.instance_id()))?,principal_id:checked_input(Uuid::parse_str(proof.principal_id()))?},source:input.source,policy_id:policy.id,policy_revision:input.policy_revision,policy_version:policy.version,allow_ai,risk_level:risk,confirmed:input.confirmed};
-            checked_input(decision.validate(checked_input(Uuid::parse_str(proof.tenant_id()))?))?;
-            let invocation=Invocation{authorization:decision,parameters:checked_input(serde_json::from_value(parameters))?,grant:UserGrant::from_proof(&auth,proof,p.device(),Permission::ScriptExecute)?};
-            let id=Uuid::new_v4();
-            production::queue_run_in(service,tx,production::RunInput{source:db::Source::Policy{version:policy.version},target:&target,id,occurrence,available,deadline,now}).await?;
-            let tenant=tx.tenant_id().to_string();let document=json(&invocation)?;
-            tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_commands.action_runs SET invocation=$3 WHERE tenant_id=$1::uuid AND id=$2 AND invocation IS NULL").bind(tenant).bind(id).bind(document).execute(c).await?;Ok(())})).await?;
-            let response=json(&wire::SelfServiceAccepted{request_id:input.operation_id,run_id:id,policy_id:policy.id,policy_revision:policy.revision as u64,policy_version:policy.version})?;
-            db::receipt(tx,&actor,input.operation_id,hash.clone(),&response,None).await?;
-            proof.check_live()?;
-            let fact=Fact::business(audit,&event_key,&hash,202,"success",None)?;service.audit_store.append_in(tx,&fact,false).await?;
-            crate::sources::storage::wake_execution_in(tx,policy.id).await?;
+            let target = target(p);
+            if !plan.authorized_in(service, tx, &target, now).await? { return Err(Error::Forbidden.into()); }
+            let Some(prepared) = prepare_in(service, tx, &plan, &target, input.operation_id, Some(&input.parameters), now).await? else { return Err(Error::Conflict.into()); };
+            let decision = wire::TaskAuthorization::SelfService { request_id: input.operation_id, subject, source: input.source, policy_id: policy.id, policy_revision: input.policy_revision, policy_version: policy.version, allow_ai, risk_level: risk, confirmed: input.confirmed };
+            checked_input(decision.validate(checked_input(Uuid::parse_str(&p.tenant().to_string()))?))?;
+            let invocation = Invocation { authorization: decision, parameters: prepared.parameters, basis, execution_target: prepared.execution_target };
+            let id = Uuid::new_v4();
+            production::queue_run_in(service, tx, production::RunInput { source: db::Source::Policy { version: policy.version }, target: &target, id, occurrence: prepared.slot.occurrence, available: prepared.slot.available, deadline: prepared.slot.deadline, now }).await?;
+            if let Some(effect) = prepared.effect { crate::actions::software::persist_effect_in(tx, id, &effect).await?; }
+            let tenant = tx.tenant_id().to_string(); let document = json(&invocation)?;
+            tx.with_connection(move |c| Box::pin(async move { sqlx::query("UPDATE mdm_commands.action_runs SET invocation=$3 WHERE tenant_id=$1::uuid AND id=$2 AND invocation IS NULL").bind(tenant).bind(id).bind(document).execute(c).await?; Ok(()) })).await?;
+            let response = json(&wire::SelfServiceAccepted { request_id: input.operation_id, run_id: id, policy_id: policy.id, policy_revision: policy.revision as u64, policy_version: policy.version })?;
+            db::receipt(tx, &actor, input.operation_id, hash.clone(), &response, None).await?;
+            if let Some(proof) = proof { proof.check_live()?; }
+            let fact = Fact::business(audit, &event_key, &hash, 202, "success", None)?; service.audit_store.append_in(tx, &fact, false).await?;
+            crate::sources::storage::wake_execution_in(tx, policy.id).await?;
             Ok(response)
         })).await
     }
     pub async fn self_service_status(
         &self,
         p: &DevicePrincipal,
-        proof: &AuthorizedPrincipal,
+        proof: Option<&AuthorizedPrincipal>,
         request: Uuid,
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
-        if proof.tenant_id() != p.tenant().to_string() {
-            return Err(Error::Forbidden);
+        bind(p, proof, audit)?;
+        if request.is_nil() {
+            return Err(Error::Malformed);
         }
-        proof.require(Permission::ScriptExecute, Some(p.device()))?;
-        proof.bind_audit(audit)?;
-        run(&self.audit_store,&self.runtime,self.tenant,audit,(self,p,proof,request,audit),|ctx,tx|Box::pin(async move {
-            let (service,p,proof,request,audit)=*ctx;
-            storage::lock(tx,p.device()).await?;crate::actions::agent::principal(service,tx,p).await?;
-            let auth=crate::action_admission::authorized(tx,proof,p.device(),Permission::ScriptExecute).await?;
-            let actor=format!("self-service:{}:{}:{}",proof.instance_id(),proof.principal_id(),p.registration());let tenant=tx.tenant_id().to_string();
-            let response:Value=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT response FROM mdm_commands.action_receipts WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3").bind(tenant).bind(actor).bind(request).fetch_optional(c).await})).await?.ok_or(Error::NotFound)?;
-            let id=checked_input(Uuid::parse_str(response["runId"].as_str().ok_or(Error::Malformed)?))?;
-            let run=db::load_run(tx,id).await?;crate::actions::agent::belongs(&run,p)?;
-            let plan=db::load_source(&service.policy_reader,tx,run.source).await?;
-            if let db::ScheduledPolicy::Script(script)=&plan && let Some(collection)=&script.frozen.collection {
-                auth.require(proof,Permission::InventoryRead,Some(p.device()))?;
-                if collection.fields().iter().any(|f|f.sensitivity==rss_mdm_inventory::Sensitivity::Sensitive) {auth.require(proof,Permission::InventorySensitiveRead,None)?;}
+        run(&self.audit_store, &self.runtime, self.tenant, audit, (self, p, proof, request, audit), |ctx, tx| Box::pin(async move {
+            let (service, p, proof, request, audit) = *ctx;
+            storage::lock(tx, p.device()).await?; crate::actions::agent::principal(service, tx, p).await?;
+            let mut actors = vec![actor(p, &wire::SelfServiceSubject::Device)];
+            if let Some(proof) = proof { actors.insert(0, actor(p, &wire::SelfServiceSubject::User { user: wire::SelfServiceUser { tenant_id: checked_input(Uuid::parse_str(proof.tenant_id()))?, instance_id: checked_input(Uuid::parse_str(proof.instance_id()))?, principal_id: checked_input(Uuid::parse_str(proof.principal_id()))? } })); }
+            let tenant = tx.tenant_id().to_string();
+            let response: Value = tx.with_connection(move |c| Box::pin(async move { sqlx::query_scalar("SELECT response FROM mdm_commands.action_receipts WHERE tenant_id=$1::uuid AND actor=ANY($2) AND id=$3 ORDER BY array_position($2,actor) LIMIT 1").bind(tenant).bind(actors).bind(request).fetch_optional(c).await })).await?.ok_or(Error::NotFound)?;
+            let id = checked_input(Uuid::parse_str(response["runId"].as_str().ok_or(Error::Malformed)?))?;
+            let run = db::load_run(tx, id).await?; crate::actions::agent::belongs(&run, p)?;
+            let invocation = run.invocation.as_ref().ok_or(Error::Forbidden)?;
+            let wire::TaskAuthorization::SelfService { subject, .. } = &invocation.authorization else { return Err(Error::Forbidden.into()); };
+            if !owns(subject, proof) { return Err(Error::Forbidden.into()); }
+            let plan = db::load_source(&service.policy_reader, tx, run.source).await?;
+            // Reading an accepted request uses the current reader's qualification, not Start authority.
+            let policy = crate::sources::storage::read_in(&service.policy_reader, tx, plan.owner()).await?.ok_or(Error::NotFound)?;
+            let config = policy.definition.self_service.as_ref().ok_or(Error::Forbidden)?;
+            if !policy.enabled || !config.published { return Err(Error::Forbidden.into()); }
+            let basis = access::select(config, proof)?.ok_or(Error::Forbidden)?;
+            if access::qualify_in(service, tx, config, &basis).await?.is_none()
+                || crate::sources::storage::eligible_in(&service.source, tx, &policy, p.device()).await?.is_none() {
+                return Err(Error::Forbidden.into());
             }
-            proof.check_live()?;service.audit_store.append_request_in(tx,audit,200,"success").await?;
-            json(&wire::SelfServiceStatus{request_id:request,run_id:id,attempt_id:run.state.attempt(),state:public_state(&run.state),available_at:run.available_at,deadline:run.deadline,result:run.result.map(serde_json::from_value).transpose().map_err(|_|Error::Malformed)?})
+            let result = match (&plan, run.result.as_ref()) {
+                (db::ScheduledPolicy::Script(script), Some(result)) => {
+                    let can_read = match proof {
+                        Some(proof) => {
+                            let auth = crate::action_admission::current(tx, proof).await?;
+                            let basic = auth.require(proof, Permission::InventoryRead, Some(p.device())).is_ok();
+                            let sensitive = script.frozen.collection.as_ref().is_some_and(|c| c.fields().iter().any(|f| f.sensitivity == rss_mdm_inventory::Sensitivity::Sensitive));
+                            basic && (!sensitive || auth.require(proof, Permission::InventorySensitiveRead, None).is_ok())
+                        }
+                        None => false,
+                    };
+                    if can_read { Some(wire::SelfServiceResult::Script { evidence: stored(serde_json::from_value(result.clone()))? }) } else { None }
+                }
+                (db::ScheduledPolicy::Software(_), Some(result)) => Some(wire::SelfServiceResult::Software { effect: stored(serde_json::from_value(result["effect"].clone()))? }),
+                _ => None,
+            };
+            if let Some(proof) = proof { proof.check_live()?; }
+            service.audit_store.append_request_in(tx, audit, 200, "success").await?;
+            json(&wire::SelfServiceStatus { request_id: request, run_id: id, attempt_id: run.state.attempt(), state: public_state(&run.state), available_at: run.available_at, deadline: run.deadline, result })
         })).await
     }
 }
@@ -292,38 +580,38 @@ fn parameter_sources(
         })
         .collect()
 }
-fn public_state(state: &crate::actions::state::RunState) -> wire::ScriptRunState {
+fn public_state(state: &crate::actions::state::RunState) -> wire::TaskRunState {
     use crate::actions::state::{Cancellation, Delivery, Execution};
-    wire::ScriptRunState {
+    wire::TaskRunState {
         delivery: match state.delivery {
-            Delivery::Queued => wire::ScriptDelivery::Queued,
+            Delivery::Queued => wire::TaskDelivery::Queued,
             Delivery::Claimed {
                 attempt,
                 lease_until,
-            } => wire::ScriptDelivery::Claimed {
+            } => wire::TaskDelivery::Claimed {
                 attempt,
                 lease_until,
             },
             Delivery::Received {
                 attempt,
                 lease_until,
-            } => wire::ScriptDelivery::Received {
+            } => wire::TaskDelivery::Received {
                 attempt,
                 lease_until,
             },
         },
         execution: match state.execution {
-            Execution::NotStarted => wire::ScriptExecution::NotStarted,
-            Execution::Running => wire::ScriptExecution::Running,
-            Execution::Succeeded => wire::ScriptExecution::Succeeded,
-            Execution::Failed => wire::ScriptExecution::Failed,
-            Execution::WaitingReboot => wire::ScriptExecution::WaitingReboot,
-            Execution::Unknown => wire::ScriptExecution::Unknown,
+            Execution::NotStarted => wire::TaskExecution::NotStarted,
+            Execution::Running => wire::TaskExecution::Running,
+            Execution::Succeeded => wire::TaskExecution::Succeeded,
+            Execution::Failed => wire::TaskExecution::Failed,
+            Execution::WaitingReboot => wire::TaskExecution::WaitingReboot,
+            Execution::Unknown => wire::TaskExecution::Unknown,
         },
         cancellation: match state.cancellation {
-            Cancellation::None => wire::ScriptCancellation::None,
-            Cancellation::Requested => wire::ScriptCancellation::Requested,
-            Cancellation::Confirmed => wire::ScriptCancellation::Confirmed,
+            Cancellation::None => wire::RunCancellation::None,
+            Cancellation::Requested => wire::RunCancellation::Requested,
+            Cancellation::Confirmed => wire::RunCancellation::Confirmed,
         },
         deadline: state.deadline,
         started_at: state.started_at,

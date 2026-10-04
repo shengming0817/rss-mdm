@@ -173,6 +173,7 @@ async fn relay_crash_child() -> anyhow::Result<()> {
         crate::execution_assembly::open_content(&config, config.native_protector()?).await?,
         std::collections::BTreeMap::new(),
         rss_device_command_postgres::CommandClock::Postgres,
+        crate::test_support::identity::session_authority(&config).await?,
     ))
     .await?;
     let relay = PgOutboxStore::<()>::new(

@@ -15,6 +15,12 @@ impl FrozenAction {
             r::ScriptProfile::Osquery => wire::ExecutorProfile::Osquery,
         }
     }
+    pub fn execution_identity(&self) -> wire::ExecutionIdentity {
+        match self.definition.spec().run_as {
+            r::RunAs::System => wire::ExecutionIdentity::System,
+            r::RunAs::LoggedInUser => wire::ExecutionIdentity::LoggedInUser,
+        }
+    }
     #[allow(
         clippy::too_many_arguments,
         reason = "all signed execution coordinates are explicit"
@@ -27,9 +33,10 @@ impl FrozenAction {
         attempt: Uuid,
         permit: wire::TaskPermit,
         expiry: i64,
-        authorization: wire::ScriptAuthorization,
+        authorization: wire::TaskAuthorization,
         parameters: BTreeMap<String, Value>,
         deadline: i64,
+        context: &wire::SoftwareExecutionContext,
     ) -> Result<wire::TaskPayload, Error> {
         self.definition
             .validate_parameters(&serde_json::json!(parameters))
@@ -98,6 +105,16 @@ impl FrozenAction {
                 r::RunAs::System => wire::ExecutionIdentity::System,
                 r::RunAs::LoggedInUser => wire::ExecutionIdentity::LoggedInUser,
             },
+            execution_target: self
+                .execution_identity()
+                .execution_target(
+                    match self.input.platform {
+                        Platform::Windows => wire::TaskPlatform::Windows,
+                        Platform::Macos => wire::TaskPlatform::Macos,
+                    },
+                    context,
+                )
+                .map_err(|_| Error::Forbidden)?,
             arguments,
             environment,
             timeout_seconds: spec.timeout_seconds,

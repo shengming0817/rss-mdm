@@ -52,6 +52,13 @@ pub async fn write_in(
             return Err(Error::NotFound.into());
         }
     }
+    if let Some(config) = &p.definition.self_service {
+        rss_mdm_execution_service::self_service::validate_access(
+            config,
+            proof.tenant_id(),
+            proof.instance_id(),
+        )?;
+    }
     let publication = rss_mdm_policy_postgres::Publication {
         policy: p.clone(),
         frozen: frozen

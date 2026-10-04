@@ -297,6 +297,7 @@ impl Host {
             content,
             std::collections::BTreeMap::new(),
             command_clock,
+            crate::test_support::identity::session_authority(&config).await?,
         )
         .await
         .map_err(|e| anyhow::anyhow!("command startup: {e:?}"))?;

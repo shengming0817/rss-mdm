@@ -15,4 +15,6 @@ mod poll;
 
 pub mod history;
 
-mod software;
+pub(crate) mod software;
+
+pub(crate) mod evidence;

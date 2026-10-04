@@ -18,7 +18,7 @@ pub struct ExecutionInput {
 pub struct FrozenAction {
     pub input: ExecutionInput,
     pub parameters: rss_mdm_policy::ParameterSources,
-    pub resource: wire::ScriptResource,
+    pub resource: wire::TaskResource,
     pub definition: r::ScriptDefinition,
     pub collection: Option<rss_mdm_inventory::CollectionDefinition>,
     pub resource_digest: [u8; 32],

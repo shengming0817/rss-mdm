@@ -493,6 +493,7 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
         crate::execution_assembly::open_content(&config, config.native_protector()?).await?,
         std::collections::BTreeMap::new(),
         rss_device_command_postgres::CommandClock::Postgres,
+        crate::test_support::identity::session_authority(&config).await?,
     ))
     .await?;
     let timer = recovery::Timer::new();

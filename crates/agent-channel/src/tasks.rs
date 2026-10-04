@@ -18,15 +18,12 @@ fn body<T>(v: Body<T>) -> Result<T, Error> {
 pub(crate) fn routes() -> Router<Arc<TaskState>> {
     Router::new()
         .route("/tasks/claim", post(claim))
-        .route("/self-service/scripts", get(directory))
+        .route("/self-service", get(directory))
         .route(
-            "/self-service/scripts/invocations",
+            "/self-service/invocations",
             post(invoke).layer(DefaultBodyLimit::max(131072)),
         )
-        .route(
-            "/self-service/scripts/invocations/{id}",
-            get(invocation_status),
-        )
+        .route("/self-service/invocations/{id}", get(invocation_status))
         .route(
             "/tasks/{id}/events",
             post(event).layer(DefaultBodyLimit::max(wire::MAX_TASK_REQUEST_BYTES)),
@@ -175,11 +172,15 @@ async fn employee(
     app: &TaskState,
     headers: &HeaderMap,
     audit: &RequestAudit,
-) -> Result<rss_mdm_authorization_service::context::AuthorizedPrincipal, crate::AgentError> {
+) -> Result<Option<rss_mdm_authorization_service::context::AuthorizedPrincipal>, crate::AgentError>
+{
     let credentials = headers
         .get_all("x-rss-user-session")
         .iter()
         .collect::<Vec<_>>();
+    if credentials.is_empty() {
+        return Ok(None);
+    }
     if credentials.len() != 1 {
         return Err(Error::Unauthorized.into());
     }
@@ -196,7 +197,7 @@ async fn employee(
         .await
         .map_err(Error::from)?;
     proof.bind_audit(audit).map_err(Error::from)?;
-    Ok(proof)
+    Ok(Some(proof))
 }
 async fn directory(
     State(app): State<Arc<TaskState>>,
@@ -209,7 +210,7 @@ async fn directory(
         let p = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
         let proof = employee(&app, &headers, &audit).await?;
         app.execution
-            .self_service_directory(&p, &proof, &input, &audit)
+            .self_service_directory(&p, proof.as_ref(), &input, &audit)
             .await
             .map(Json)
             .map_err(task_error)
@@ -229,7 +230,7 @@ async fn invoke(
         let proof = employee(&app, &headers, &audit).await?;
         let response = app
             .execution
-            .invoke_self_service(&p, &proof, &input, &audit)
+            .invoke_self_service(&p, proof.as_ref(), &input, &audit)
             .await
             .map_err(task_error)?;
         Ok((axum::http::StatusCode::ACCEPTED, Json(response)))
@@ -247,7 +248,7 @@ async fn invocation_status(
         let p = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
         let proof = employee(&app, &headers, &audit).await?;
         app.execution
-            .self_service_status(&p, &proof, id, &audit)
+            .self_service_status(&p, proof.as_ref(), id, &audit)
             .await
             .map(Json)
             .map_err(task_error)

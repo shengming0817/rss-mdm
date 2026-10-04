@@ -408,3 +408,22 @@ async fn grant(
     }
     Ok(())
 }
+
+pub(crate) async fn session_authority(
+    config: &Config,
+) -> Result<std::sync::Arc<rss_mdm_authorization_service::session::SessionAuthority>> {
+    let policy = Arc::new(
+        crate::authorization::identity_management::IdentityManagementPolicy::new(
+            &config.identity.tenant_id,
+            &config.identity.instance_id,
+            config.identity_management.clone(),
+        )?,
+    );
+    let identity = Identity::connect(config, policy, |_| {}).await?;
+    Ok(std::sync::Arc::new(
+        rss_mdm_authorization_service::session::SessionAuthority::new(
+            identity.authority,
+            identity.tenant,
+        ),
+    ))
+}

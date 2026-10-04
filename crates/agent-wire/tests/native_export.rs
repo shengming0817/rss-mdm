@@ -11,6 +11,7 @@ fn frozen_source_binds_tenant_material_and_scoped_credentials_without_a_token_fi
     let context = SoftwareExecutionContext {
         revision: 1,
         os_version: [10, 0, 22621, 0],
+        user_helper: true,
         system_broker: true,
         interactive_user: None,
         source_credentials: vec![],
@@ -119,9 +120,14 @@ fn invocation_schema_matches_literal_argument_and_environment_validation() {
             attempt_id: id,
             permit: TaskPermit::Offer,
             expires_at: 100,
+            authorization: TaskAuthorization::Policy {
+                policy_id: uuid::Uuid::new_v4(),
+                policy_version: uuid::Uuid::new_v4(),
+            },
             execution_context: SoftwareExecutionContext {
                 revision: 1,
                 os_version: [10, 0, 22621, 0],
+                user_helper: true,
                 system_broker: true,
                 interactive_user: None,
                 source_credentials: vec![],

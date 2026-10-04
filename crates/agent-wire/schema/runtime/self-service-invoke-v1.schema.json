@@ -1,6 +1,6 @@
 {
   "$defs": {
-    "ScriptCaller": {
+    "SelfServiceCaller": {
       "description": "Origin attested by the authenticated system service, never taken from model arguments.",
       "oneOf": [
         {
@@ -51,7 +51,7 @@
       "type": "string"
     },
     "source": {
-      "$ref": "#/$defs/ScriptCaller",
+      "$ref": "#/$defs/SelfServiceCaller",
       "description": "Caller origin attested by the device service."
     }
   },
