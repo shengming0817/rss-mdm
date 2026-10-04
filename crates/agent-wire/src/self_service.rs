@@ -319,8 +319,49 @@ pub struct SelfServiceStatus {
     /// Final Run deadline in Unix seconds.
     pub deadline: i64,
     /// Authorized result with native collection time and server receipt time.
-    pub result: Option<serde_json::Value>,
+    #[schemars(required, schema_with = "nullable_schema::<ScriptRunResult>")]
+    #[serde(deserialize_with = "crate::runtime::required_option")]
+    pub result: Option<ScriptRunResult>,
 }
+/// Server-persisted script evidence; only Resource output has a dynamic shape.
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ScriptRunResult {
+    /// Agent's original collection timestamp in Unix seconds.
+    pub collected_at: i64,
+    /// Server receipt timestamp in Unix seconds.
+    pub received_at: i64,
+    /// Original process exit code, absent when unavailable.
+    #[schemars(required, schema_with = "nullable_schema::<i32>")]
+    #[serde(deserialize_with = "crate::runtime::required_option")]
+    pub exit_code: Option<i32>,
+    /// Original completeness classification.
+    pub quality: crate::runtime::OutputQuality,
+    /// Whether the output matches the Resource schema.
+    pub schema_valid: bool,
+    /// Whether the output satisfies Resource budgets.
+    pub budget_valid: bool,
+    /// Resource-defined output, or null when retained only by reference.
+    pub output: serde_json::Value,
+    /// Digest and size when output is retained by reference.
+    #[schemars(required, schema_with = "nullable_schema::<ScriptOutputReference>")]
+    #[serde(deserialize_with = "crate::runtime::required_option")]
+    pub output_reference: Option<ScriptOutputReference>,
+    /// Original bounded process diagnostics.
+    pub diagnostics: crate::runtime::TaskDiagnostics,
+    /// Whether this evidence may contribute current inventory facts.
+    pub trusted: bool,
+}
+/// Reference for output too large or outside its declared Resource budget.
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ScriptOutputReference {
+    /// Exact encoded JSON byte count.
+    pub bytes: u64,
+    /// SHA-256 of those exact bytes.
+    pub sha256: String,
+}
+
 fn scalar_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::json_schema!({"anyOf":[{"type":"string","pattern":"^[^\\u0000]*$"},{"type":"boolean"},{"type":"integer","minimum":-9223372036854775808i64,"maximum":9223372036854775807i64}]})
 }
@@ -332,4 +373,11 @@ fn deserialize_risk<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result
     } else {
         Err(serde::de::Error::custom("invalid script risk level"))
     }
+}
+
+// Required JSON keys may still carry an explicit null.
+pub(crate) fn nullable_schema<T: schemars::JsonSchema>(
+    generator: &mut schemars::SchemaGenerator,
+) -> schemars::Schema {
+    generator.subschema_for::<Option<T>>()
 }

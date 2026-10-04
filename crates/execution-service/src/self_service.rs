@@ -103,7 +103,9 @@ impl ExecutionService {
                 let Some(policy)=crate::sources::storage::read_in(&service.policy_reader,tx,id).await? else {continue};
                 let script=crate::sources::admission::read_in(&service.policy_reader,tx,policy.version).await?;
                 let Some(config)=policy.definition.self_service.as_ref() else {continue};
-                if !policy.enabled || !config.published || (input.source==wire::ScriptCaller::Ai && config.allow_ai!=Some(true)) || !script.authorized_in(&service.source,tx,p.device(),now).await? || !crate::script_eligibility::require_in(tx,service.agent_store.clone(),&target,&script.frozen).await? {continue}
+                if !policy.enabled || !config.published || (input.source==wire::ScriptCaller::Ai && config.allow_ai!=Some(true)) || !crate::script_eligibility::require_in(tx,service.agent_store.clone(),&target,&script.frozen).await? {continue}
+                let Some(entry)=script.entry_in(&service.source,tx,p.device(),now).await? else {continue};
+                if invocation_slot_in(tx,&script,&target,entry,Uuid::new_v4(),now).await?.is_none() {continue}
                 items.push(wire::SelfServiceDirectoryItem{policy_id:id,policy_revision:policy.revision as u64,policy_version:policy.version,self_service:metadata(config)?,resource:script.frozen.resource.clone(),parameter_sources:parameter_sources(&script.frozen.parameters),parameter_schema:script.frozen.definition.spec().parameters.clone()});
             }
             proof.check_live()?;service.audit_store.append_request_in(tx,audit,200,"success").await?;
@@ -143,7 +145,7 @@ impl ExecutionService {
             let auth=crate::action_admission::authorized(tx,proof,p.device(),Permission::ScriptExecute).await?;
             let actor=format!("self-service:{}:{}:{}",proof.instance_id(),proof.principal_id(),p.registration());
             let hash=fingerprint(input)?;
-            let event_key=format!("self-service:{}:{}",p.registration(),input.operation_id);
+            let event_key=format!("{actor}:{}",input.operation_id);
             if let Some(response)=db::replay(tx,&actor,input.operation_id,&hash).await? {
                 proof.check_live()?;
                 let fact=Fact::business(audit,&event_key,&hash,202,"success",None)?;service.audit_store.append_in(tx,&fact,true).await?;
@@ -161,15 +163,7 @@ impl ExecutionService {
             if !crate::script_eligibility::require_in(tx,service.agent_store.clone(),&target,&script.frozen).await? {return Err(Error::Forbidden.into())}
             let parameters=script.frozen.parameters.resolve(&json!(input.parameters))?;
             script.frozen.definition.validate_parameters(&parameters).map_err(|_|Error::Malformed)?;
-            let (pending,last)=production::policy_pending_in(tx,policy.id,policy.version,&target,now,false).await?;
-            if pending || !production::check_in_interval_elapsed(&script.frozen.input.schedule.trigger,last,now) {return Err(Error::Conflict.into())}
-            let occurrence=production::policy_occurrence(script.frequency,&target,&script.entry_source(),entry,&format!("self-service:{}",input.operation_id));
-            if !production::occurrence_available_in(tx,policy.version,&target,&occurrence,now).await? {return Err(Error::Conflict.into())}
-            let schedule=&script.frozen.input.schedule;
-            let Some(slot)=schedule.occurrence(now,p.device().as_bytes())? else {return Err(Error::Conflict.into())};
-            let available=slot.available_at.max(now);
-            let deadline=available.checked_add(i64::from(script.frozen.input.run_lifetime_seconds)).ok_or(Error::Malformed)?.min(schedule.ends_at()).min(slot.window_end.unwrap_or(i64::MAX));
-            if deadline<=available {return Err(Error::Conflict.into())}
+            let Some(InvocationSlot{occurrence,available,deadline})=invocation_slot_in(tx,&script,&target,entry,input.operation_id,now).await? else {return Err(Error::Conflict.into())};
             let decision=wire::ScriptAuthorization::SelfService {request_id:input.operation_id,actor:wire::ScriptActor{tenant_id:checked_input(Uuid::parse_str(proof.tenant_id()))?,instance_id:checked_input(Uuid::parse_str(proof.instance_id()))?,principal_id:checked_input(Uuid::parse_str(proof.principal_id()))?},source:input.source,policy_id:policy.id,policy_revision:input.policy_revision,policy_version:policy.version,allow_ai,risk_level:risk,confirmed:input.confirmed};
             checked_input(decision.validate(checked_input(Uuid::parse_str(proof.tenant_id()))?))?;
             let invocation=Invocation{authorization:decision,parameters:checked_input(serde_json::from_value(parameters))?,grant:UserGrant::from_proof(&auth,proof,p.device(),Permission::ScriptExecute)?};
@@ -211,9 +205,55 @@ impl ExecutionService {
                 if collection.fields().iter().any(|f|f.sensitivity==rss_mdm_inventory::Sensitivity::Sensitive) {auth.require(proof,Permission::InventorySensitiveRead,None)?;}
             }
             proof.check_live()?;service.audit_store.append_request_in(tx,audit,200,"success").await?;
-            json(&wire::SelfServiceStatus{request_id:request,run_id:id,attempt_id:run.state.attempt(),state:public_state(&run.state),available_at:run.available_at,deadline:run.deadline,result:run.result})
+            json(&wire::SelfServiceStatus{request_id:request,run_id:id,attempt_id:run.state.attempt(),state:public_state(&run.state),available_at:run.available_at,deadline:run.deadline,result:run.result.map(serde_json::from_value).transpose().map_err(|_|Error::Malformed)?})
         })).await
     }
+}
+
+struct InvocationSlot {
+    occurrence: String,
+    available: i64,
+    deadline: i64,
+}
+// A directory probe only reads the same facts rechecked atomically by invocation.
+async fn invocation_slot_in(
+    tx: &mut PgTransaction<'_>,
+    script: &crate::sources::admission::ExecutionPolicy,
+    target: &Target,
+    entry: i64,
+    request: Uuid,
+    now: i64,
+) -> Result<Option<InvocationSlot>> {
+    let (pending, last) =
+        production::policy_pending_in(tx, script.owner, script.id, target, now, false).await?;
+    let schedule = &script.frozen.input.schedule;
+    if pending || !production::check_in_interval_elapsed(&schedule.trigger, last, now) {
+        return Ok(None);
+    }
+    let occurrence = production::policy_occurrence(
+        script.frequency,
+        target,
+        &script.entry_source(),
+        entry,
+        &format!("self-service:{request}"),
+    );
+    if !production::occurrence_available_in(tx, script.id, target, &occurrence, now).await? {
+        return Ok(None);
+    }
+    let Some(slot) = schedule.occurrence(now, target.device.as_bytes())? else {
+        return Ok(None);
+    };
+    let available = slot.available_at.max(now);
+    let deadline = available
+        .checked_add(i64::from(script.frozen.input.run_lifetime_seconds))
+        .ok_or(Error::Malformed)?
+        .min(schedule.ends_at())
+        .min(slot.window_end.unwrap_or(i64::MAX));
+    Ok((deadline > available).then_some(InvocationSlot {
+        occurrence,
+        available,
+        deadline,
+    }))
 }
 
 fn metadata(config: &rss_mdm_policy::SelfService) -> Result<wire::SelfServiceMetadata> {

@@ -542,3 +542,134 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=planning.agent_policy"]
+async fn registered_script_eligibility_gates_preview_automatic_and_remote() -> Result<()> {
+    use crate::test_support::software_execution::{Platform, context};
+    let mut f = Fixture::new().await?;
+    f.register().await?;
+    f.scope(
+        case_task_scope(),
+        json!([{"kind":"device","id":case_device_id()}]),
+    )
+    .await?;
+    let (resource, _, _) = f.resource().await?;
+    let definition = policy_definition(resource, case_task_scope());
+    let policy = publish(&mut f.author, &f.router, resource).await?;
+    let stack = worker(&f.base).await?;
+    for (platform, architecture, profiles, state) in [
+        ("macos", "aarch64", None, "channel_unknown"),
+        (
+            "macos",
+            "aarch64",
+            Some(json!(["bash"])),
+            "unsupported_capability",
+        ),
+        (
+            "macos",
+            "x86_64",
+            Some(json!(["posix_sh"])),
+            "unsupported_capability",
+        ),
+        (
+            "windows",
+            "aarch64",
+            Some(json!(["posix_sh"])),
+            "unsupported_capability",
+        ),
+    ] {
+        let execution_context = context(if platform == "windows" {
+            Platform::Windows
+        } else {
+            Platform::MacOs
+        });
+        let profile_sql = profiles
+            .as_ref()
+            .map(|p| format!("'{p}'::jsonb"))
+            .unwrap_or_else(|| "NULL".into());
+        pg(&format!(
+            "UPDATE mdm_agent.bindings SET platform='{platform}',architecture='{architecture}',execution_context='{execution_context}'::jsonb WHERE tenant_id='{tenant}'; UPDATE mdm_commands.action_polls SET profiles={profile_sql} WHERE tenant_id='{tenant}'",
+            tenant = case_tenant()
+        ))?;
+        // Publication and valid content stay unchanged; only registration facts differ.
+        let before = script_effects()?;
+        let preview = post(
+            &mut f.author,
+            &f.router,
+            "/api/v1/policies/previews",
+            json!({"definition":definition}),
+        )
+        .await?;
+        ensure!(preview["items"][0]["eligibility"]["state"] == "eligible");
+        ensure!(
+            preview["items"][0]["taskAdmission"]["state"] == state,
+            "{platform}/{architecture}/{profiles:?}: {preview}"
+        );
+        ensure!(script_effects()? == before, "preview wrote execution facts");
+        let operation = Uuid::new_v4();
+        let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+        post(&mut f.author,&f.router,"/api/v1/remote-operations",json!({"operationId":operation,"resource":definition["action"]["resource"],"targets":{"kind":"devices","devices":[case_device_id()]},"action":{"kind":"execute","parameters":{}},"deadline":now+600})).await?;
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if pg(&format!(
+                    "SELECT staged FROM mdm_planning.remote_operations WHERE id='{operation}'"
+                ))?
+                .trim()
+                    == "t"
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .await??;
+        ensure!(pg(&format!("SELECT diagnosis FROM mdm_planning.remote_operation_targets WHERE operation='{operation}' AND status='blocked'"))?.trim()=="script_ineligible");
+        ensure!(
+            pg(&format!(
+                "SELECT count(*) FROM mdm_commands.action_runs WHERE remote_operation='{operation}'"
+            ))?
+            .trim()
+                == "0"
+        );
+        // A real check-in announces its current profiles; the absent-profile case
+        // announces a mismatched profile, so it still cannot admit an automatic Run.
+        let announced = profiles.unwrap_or_else(|| json!(["bash"]));
+        let poll=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(case_credential()),Some(json!({"wireVersion":1,"executionContext":execution_context,"profiles":announced,"operationId":Uuid::new_v4()}))).await?;
+        ensure!(
+            poll.0 == StatusCode::OK && poll.1["task"].is_null(),
+            "ineligible check-in: {poll:?}"
+        );
+        ensure!(
+            run_count(policy)?.trim() == "0",
+            "ineligible automatic Run was persisted"
+        );
+    }
+    let execution_context = context(Platform::MacOs);
+    pg(&format!(
+        "UPDATE mdm_agent.bindings SET platform='macos',architecture='aarch64',execution_context='{execution_context}'::jsonb WHERE tenant_id='{}'",
+        case_tenant()
+    ))?;
+    let task = claim(&f.router).await?;
+    ensure!(run_count(policy)?.trim() == "1");
+    complete(&f.router, &task).await?;
+    let before = script_effects()?;
+    let preview = post(
+        &mut f.author,
+        &f.router,
+        "/api/v1/policies/previews",
+        json!({"definition":definition}),
+    )
+    .await?;
+    ensure!(preview["items"][0]["taskAdmission"]["state"] == "eligible");
+    ensure!(script_effects()? == before);
+    let operation = Uuid::new_v4();
+    let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+    post(&mut f.author,&f.router,"/api/v1/remote-operations",json!({"operationId":operation,"resource":definition["action"]["resource"],"targets":{"kind":"devices","devices":[case_device_id()]},"action":{"kind":"execute","parameters":{}},"deadline":now+600})).await?;
+    let task = claim(&f.router).await?;
+    ensure!(task["payload"]["authorization"]["operationId"] == operation.to_string());
+    complete(&f.router, &task).await?;
+    crate::test_support::stop_worker(stack).await?;
+    Ok(())
+}

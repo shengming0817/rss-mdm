@@ -206,7 +206,7 @@ pub use export::*;
 mod results;
 pub use results::*;
 /// Output completeness controls whether collection facts may be accepted.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputQuality {
     /// Complete successful capture within all budgets.
@@ -219,7 +219,7 @@ pub enum OutputQuality {
     Failed,
 }
 /// Closed executor failure classification.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskFailure {
     /// The executor process could not be launched.
@@ -236,17 +236,25 @@ pub enum TaskFailure {
     CaptureFailed,
 }
 /// Private bounded process diagnostics.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "DiagnosticsInput", into = "DiagnosticsInput")]
 pub struct TaskDiagnostics(DiagnosticsInput);
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DiagnosticsInput {
+    #[schemars(length(max = MAX_TASK_DIAGNOSTIC_BYTES), regex(pattern = "^[^\\u0000]*$"))]
     stdout: String,
+    #[schemars(length(max = MAX_TASK_DIAGNOSTIC_BYTES), regex(pattern = "^[^\\u0000]*$"))]
     stderr: String,
+    #[schemars(range(max = MAX_TASK_DURATION_MS))]
     duration_ms: u64,
+    #[schemars(range(min = 1))]
     executed_at: i64,
     #[serde(deserialize_with = "required_option")]
+    #[schemars(
+        required,
+        schema_with = "crate::self_service::nullable_schema::<TaskFailure>"
+    )]
     failure: Option<TaskFailure>,
 }
 impl From<TaskDiagnostics> for DiagnosticsInput {

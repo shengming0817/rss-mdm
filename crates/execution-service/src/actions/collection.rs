@@ -224,14 +224,28 @@ pub async fn finish(
     let (output, reference) = if !budget_valid || bytes.len() > 1024 * 1024 {
         (
             Value::Null,
-            serde_json::json!({"bytes":bytes.len(),"sha256":format!("{:x}",Sha256::digest(&bytes))}),
+            Some(rss_mdm_agent_wire::runtime::ScriptOutputReference {
+                bytes: bytes.len() as u64,
+                sha256: format!("{:x}", Sha256::digest(&bytes)),
+            }),
         )
     } else {
-        (output.clone(), Value::Null)
+        (output.clone(), None)
     };
-    run.result = Some(
-        serde_json::json!({"collectedAt":result.collected_at(),"receivedAt":now,"exitCode":result.exit_code(),"quality":result.quality(),"schemaValid":schema_valid,"budgetValid":budget_valid,"output":output,"outputReference":reference,"diagnostics":result.diagnostics(),"trusted":trusted}),
-    );
+    run.result = Some(stored(serde_json::to_value(
+        rss_mdm_agent_wire::runtime::ScriptRunResult {
+            collected_at: result.collected_at(),
+            received_at: now,
+            exit_code: result.exit_code(),
+            quality: result.quality(),
+            schema_valid,
+            budget_valid,
+            output,
+            output_reference: reference,
+            diagnostics: result.diagnostics().clone(),
+            trusted,
+        },
+    ))?);
     Ok(())
 }
 

@@ -1,5 +1,30 @@
 {
   "$defs": {
+    "OutputQuality": {
+      "description": "Output completeness controls whether collection facts may be accepted.",
+      "oneOf": [
+        {
+          "const": "complete",
+          "description": "Complete successful capture within all budgets.",
+          "type": "string"
+        },
+        {
+          "const": "partial",
+          "description": "Only a subset was collected.",
+          "type": "string"
+        },
+        {
+          "const": "truncated",
+          "description": "A configured output or row limit was reached.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Execution or capture failed.",
+          "type": "string"
+        }
+      ]
+    },
     "ScriptCancellation": {
       "description": "Public cancellation observation.",
       "oneOf": [
@@ -126,6 +151,98 @@
         }
       ]
     },
+    "ScriptOutputReference": {
+      "additionalProperties": false,
+      "description": "Reference for output too large or outside its declared Resource budget.",
+      "properties": {
+        "bytes": {
+          "description": "Exact encoded JSON byte count.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sha256": {
+          "description": "SHA-256 of those exact bytes.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "bytes",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "ScriptRunResult": {
+      "additionalProperties": false,
+      "description": "Server-persisted script evidence; only Resource output has a dynamic shape.",
+      "properties": {
+        "budgetValid": {
+          "description": "Whether the output satisfies Resource budgets.",
+          "type": "boolean"
+        },
+        "collectedAt": {
+          "description": "Agent's original collection timestamp in Unix seconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "diagnostics": {
+          "$ref": "#/$defs/TaskDiagnostics",
+          "description": "Original bounded process diagnostics."
+        },
+        "exitCode": {
+          "description": "Original process exit code, absent when unavailable.",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "output": {
+          "description": "Resource-defined output, or null when retained only by reference."
+        },
+        "outputReference": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScriptOutputReference"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Digest and size when output is retained by reference."
+        },
+        "quality": {
+          "$ref": "#/$defs/OutputQuality",
+          "description": "Original completeness classification."
+        },
+        "receivedAt": {
+          "description": "Server receipt timestamp in Unix seconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "schemaValid": {
+          "description": "Whether the output matches the Resource schema.",
+          "type": "boolean"
+        },
+        "trusted": {
+          "description": "Whether this evidence may contribute current inventory facts.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "collectedAt",
+        "receivedAt",
+        "exitCode",
+        "quality",
+        "schemaValid",
+        "budgetValid",
+        "output",
+        "outputReference",
+        "diagnostics",
+        "trusted"
+      ],
+      "type": "object"
+    },
     "ScriptRunState": {
       "additionalProperties": false,
       "description": "Current durable Run observation, without server-side reducer methods.",
@@ -163,6 +280,86 @@
         "deadline"
       ],
       "type": "object"
+    },
+    "TaskDiagnostics": {
+      "additionalProperties": false,
+      "description": "Private bounded process diagnostics.",
+      "properties": {
+        "durationMs": {
+          "format": "uint64",
+          "maximum": 604800000,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "executedAt": {
+          "format": "int64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "failure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskFailure"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stderr": {
+          "maxLength": 16384,
+          "pattern": "^[^\\u0000]*$",
+          "type": "string"
+        },
+        "stdout": {
+          "maxLength": 16384,
+          "pattern": "^[^\\u0000]*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "stdout",
+        "stderr",
+        "durationMs",
+        "executedAt",
+        "failure"
+      ],
+      "type": "object"
+    },
+    "TaskFailure": {
+      "description": "Closed executor failure classification.",
+      "oneOf": [
+        {
+          "const": "launch_failed",
+          "description": "The executor process could not be launched.",
+          "type": "string"
+        },
+        {
+          "const": "timed_out",
+          "description": "The configured execution deadline elapsed.",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "Execution was cancelled before a complete result was produced.",
+          "type": "string"
+        },
+        {
+          "const": "non_zero_exit",
+          "description": "The process exited with a non-zero status.",
+          "type": "string"
+        },
+        {
+          "const": "output_limit",
+          "description": "A configured output or row limit was reached.",
+          "type": "string"
+        },
+        {
+          "const": "capture_failed",
+          "description": "The executor could not capture a complete result.",
+          "type": "string"
+        }
+      ]
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -193,6 +390,14 @@
       "type": "string"
     },
     "result": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ScriptRunResult"
+        },
+        {
+          "type": "null"
+        }
+      ],
       "description": "Authorized result with native collection time and server receipt time."
     },
     "runId": {
@@ -210,7 +415,8 @@
     "runId",
     "state",
     "availableAt",
-    "deadline"
+    "deadline",
+    "result"
   ],
   "title": "SelfServiceStatus",
   "type": "object",

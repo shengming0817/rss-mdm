@@ -144,4 +144,6 @@ Resource.Script 定义参数类型和范围，Policy 对每个参数选择来源
 
 软件检测仍归 Agent 本地的受批准软件定义/原生 detector，不新增软件检测 Policy、Run 或后端 API。Jamf 的脚本参数标签在 Script 定义、参数值在 Policy 配置；扩展属性脚本在终端运行并随 Inventory 回传，参考 [Scripts](https://learn.jamf.com/r/en-US/jamf-pro-documentation-current/Scripts) 与 [Extension Attributes](https://developer.jamf.com/jamf-pro/docs/extension-attributes)。RSS 的 Fixed/Input 在此职责划分上补齐同一 Resource 范围校验。
 
+目录只显示当前可调用项目：已消费频率、pending/Unknown、check-in 冷却、容量与窗口均复用调用准入判断。状态的 result 使用 agent-wire 的 ScriptRunResult 固定包装，明确原生 collectedAt、receivedAt、exitCode、quality、schemaValid、budgetValid、outputReference、diagnostics 与 trusted；仅 Resource 定义的 output 保留动态 JSON。无结果时 result 为显式 null。
+
 联调契约由拥有 DTO 的 crate 生成：管理写入/读取见 `crates/management-http/schema/{PolicyWrite,Policy}.json`，调用请求与目录/受理/结果响应统一见 `crates/agent-wire/schema/runtime/self-service-*.json`，签名字段以唯一 `task-payload-v1.schema.json` 为准。对应 Rust examples 为生成入口；Agent artifact 的生成/校验入口保持 `hack/agent_wire_artifact.py --write`。#2657/#2658 应固定本次 PR 的最终 Git SHA，并核对其 pm:ship 中的 schema SHA-256 与 runtime SCHEMA_FINGERPRINT；不使用浮动 develop 或旧 TaskSpec 兜底。本次交付只提供后端与契约，实际 Agent/员工 UI 分别由 #2657/#2658 实施。

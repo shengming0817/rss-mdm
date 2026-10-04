@@ -805,3 +805,50 @@ fn self_service_schemas_follow_owned_dtos_and_reject_model_authority() {
             .is_err()
     );
 }
+
+#[test]
+fn self_service_result_declares_the_persisted_evidence_envelope() {
+    use rss_mdm_agent_wire::runtime::ScriptRunResult;
+    let schema = serde_json::to_value(schemars::schema_for!(ScriptRunResult)).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    let value = json!({"collectedAt":2,"receivedAt":3,"exitCode":0,"quality":"complete","schemaValid":true,"budgetValid":true,"output":{"resourceDefined":[1,"dynamic",null]},"outputReference":null,"diagnostics":{"stdout":"ok","stderr":"","durationMs":1,"executedAt":1,"failure":null},"trusted":true});
+    let parsed: ScriptRunResult = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(serde_json::to_value(parsed).unwrap(), value);
+    assert!(validator.is_valid(&value));
+    for field in [
+        "collectedAt",
+        "receivedAt",
+        "exitCode",
+        "quality",
+        "schemaValid",
+        "budgetValid",
+        "output",
+        "outputReference",
+        "diagnostics",
+        "trusted",
+    ] {
+        let mut invalid = value.clone();
+        invalid.as_object_mut().unwrap().remove(field);
+        assert!(
+            serde_json::from_value::<ScriptRunResult>(invalid.clone()).is_err(),
+            "missing {field}"
+        );
+        assert!(!validator.is_valid(&invalid), "schema missing {field}");
+    }
+    for (field, bad) in [
+        ("quality", json!("unknown")),
+        ("receivedAt", json!("3")),
+        ("trusted", json!(1)),
+        ("authority", json!("model")),
+    ] {
+        let mut invalid = value.clone();
+        invalid[field] = bad;
+        assert!(serde_json::from_value::<ScriptRunResult>(invalid.clone()).is_err());
+        assert!(!validator.is_valid(&invalid));
+    }
+    let mut referenced = value;
+    referenced["output"] = serde_json::Value::Null;
+    referenced["outputReference"] = json!({"bytes":4097,"sha256":"a".repeat(64)});
+    assert!(validator.is_valid(&referenced));
+    assert!(serde_json::from_value::<ScriptRunResult>(referenced).is_ok());
+}

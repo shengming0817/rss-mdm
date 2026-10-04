@@ -109,6 +109,10 @@ async fn targeted_invocation_binds_parameters_identity_frequency_and_result() ->
     let accepted = call(&f, Method::POST, INVOKE, Some(input.clone()), true, true).await?;
     ensure!(accepted.0 == StatusCode::ACCEPTED, "invoke: {accepted:?}");
     ensure!(
+        call(&f, Method::GET, DIRECTORY, None, true, true).await?.1["items"] == json!([]),
+        "pending call remained in directory"
+    );
+    ensure!(
         call(&f, Method::POST, INVOKE, Some(input.clone()), true, true)
             .await?
             .1
@@ -177,6 +181,10 @@ async fn targeted_invocation_binds_parameters_identity_frequency_and_result() ->
         .await?
         .0 == StatusCode::CONFLICT,
         "self-service must consume once-per-version"
+    );
+    ensure!(
+        call(&f, Method::GET, DIRECTORY, None, true, true).await?.1["items"] == json!([]),
+        "consumed once-per-version remained in directory"
     );
     ensure!(run_count(id)?.trim() == "1");
     crate::test_support::stop_worker(stack).await?;
@@ -393,11 +401,23 @@ async fn check_in_interval_is_shared_by_automatic_and_targeted_calls() -> Result
         .0 == StatusCode::CONFLICT,
         "automatic run must consume the same minimum interval"
     );
+    ensure!(
+        call(&f, Method::GET, DIRECTORY, None, true, true).await?.1["items"] == json!([]),
+        "cooldown remained in directory"
+    );
     ensure!(run_count(id)?.trim() == "1");
     pg(&format!(
         "UPDATE mdm_commands.action_runs SET created_at=created_at-3601 WHERE id='{}'",
         automatic["payload"]["taskId"].as_str().unwrap()
     ))?;
+    ensure!(
+        call(&f, Method::GET, DIRECTORY, None, true, true).await?.1["items"]
+            .as_array()
+            .unwrap()
+            .len()
+            == 1,
+        "elapsed cooldown did not restore directory"
+    );
     let accepted = call(
         &f,
         Method::POST,
@@ -522,6 +542,155 @@ async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics(
     ensure!(
         denied.0 == StatusCode::FORBIDDEN && !denied.1.to_string().contains(canary),
         "withdrawal must suppress the full result"
+    );
+    crate::test_support::stop_worker(stack).await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=planning.self_service"]
+async fn employee_request_ids_are_independent_and_unknown_is_hidden() -> Result<()> {
+    let mut f = Fixture::new().await?;
+    f.register().await?;
+    claim_request(&f.router, Uuid::new_v4()).await?;
+    f.scope(
+        case_task_scope(),
+        json!([{"kind":"device","id":case_device_id()}]),
+    )
+    .await?;
+    let (resource, _, _) = f.resource().await?;
+    let (first, first_policy) = publish_definition(&mut f, definition(resource, false)).await?;
+    let (second, second_policy) = publish_definition(&mut f, definition(resource, false)).await?;
+    let shared = Uuid::new_v4();
+    let mut one = request(first, &first_policy, json!({}));
+    one["operationId"] = json!(shared);
+    let accepted_one = call(&f, Method::POST, INVOKE, Some(one.clone()), true, true).await?;
+    ensure!(accepted_one.0 == StatusCode::ACCEPTED);
+    let original = f.author.clone();
+    let mut employee = Browser::default();
+    ensure!(employee.login(&f.router, "admin").await? == StatusCode::OK);
+    let other = browser_subject(&employee, &f.router).await?;
+    ensure!(other != f.author_id);
+    crate::test_support::identity::set_grants(case_tenant(), &other, f.grants.clone()).await?;
+    f.author = employee;
+    let mut two = request(second, &second_policy, json!({}));
+    two["operationId"] = json!(shared);
+    let accepted_two = call(&f, Method::POST, INVOKE, Some(two.clone()), true, true).await?;
+    ensure!(
+        accepted_two.0 == StatusCode::ACCEPTED,
+        "second employee collision: {accepted_two:?}"
+    );
+    ensure!(accepted_one.1["runId"] != accepted_two.1["runId"]);
+    ensure!(
+        call(&f, Method::POST, INVOKE, Some(two), true, true)
+            .await?
+            .1
+            == accepted_two.1
+    );
+    let status_path = format!("{INVOKE}/{shared}");
+    ensure!(
+        call(&f, Method::GET, &status_path, None, true, true)
+            .await?
+            .1["runId"]
+            == accepted_two.1["runId"]
+    );
+    f.author = original;
+    ensure!(
+        call(&f, Method::POST, INVOKE, Some(one), true, true)
+            .await?
+            .1
+            == accepted_one.1
+    );
+    ensure!(
+        call(&f, Method::GET, &status_path, None, true, true)
+            .await?
+            .1["runId"]
+            == accepted_one.1["runId"]
+    );
+    let events = audit_records()?;
+    let matching: Vec<_> = events
+        .iter()
+        .filter(|record| {
+            record.source() == "mdm.business"
+                && record.operation() == Some(shared.to_string().as_str())
+        })
+        .collect();
+    ensure!(
+        matching.len() == 2,
+        "employees must retain independent original events"
+    );
+    ensure!(
+        matching[0].decoded.event().identity().event_id().as_str()
+            != matching[1].decoded.event().identity().event_id().as_str()
+    );
+    let (available, available_policy) =
+        publish_definition(&mut f, definition(resource, false)).await?;
+    ensure!(
+        call(&f, Method::GET, DIRECTORY, None, true, true).await?.1["items"]
+            .as_array()
+            .unwrap()
+            .len()
+            == 1
+    );
+    let first_run = accepted_one.1["runId"].as_str().unwrap();
+    pg(&format!(
+        "INSERT INTO mdm_commands.action_runs SELECT (jsonb_populate_record(NULL::mdm_commands.action_runs,to_jsonb(r)||jsonb_build_object('id',gen_random_uuid(),'occurrence','fixture-capacity:'||n))).* FROM mdm_commands.action_runs r CROSS JOIN generate_series(1,126) n WHERE r.id='{first_run}'"
+    ))?;
+    ensure!(
+        call(&f, Method::GET, DIRECTORY, None, true, true).await?.1["items"] == json!([]),
+        "capacity-exhausted script remained in directory"
+    );
+    ensure!(
+        call(
+            &f,
+            Method::POST,
+            INVOKE,
+            Some(request(available, &available_policy, json!({}))),
+            true,
+            true
+        )
+        .await?
+        .0 == StatusCode::CONFLICT
+    );
+    pg(&format!(
+        "DELETE FROM mdm_commands.action_runs WHERE tenant_id='{}' AND occurrence LIKE 'fixture-capacity:%'",
+        case_tenant()
+    ))?;
+    ensure!(
+        call(&f, Method::GET, DIRECTORY, None, true, true).await?.1["items"]
+            .as_array()
+            .unwrap()
+            .len()
+            == 1
+    );
+    post(&mut f.author,&f.router,&format!("/api/v1/policies/{available}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":available_policy["revision"],"input":{"action":"disable"}})).await?;
+    // Pending on the first Policy becomes a genuine Unknown through the existing reducer.
+    let stack = worker(&f.base).await?;
+    let task = claim(&f.router).await?;
+    task_event(&f.router, &task, json!({"kind":"received"})).await?;
+    task_event(&f.router, &task, json!({"kind":"start"})).await?;
+    let run = task["payload"]["taskId"].as_str().unwrap();
+    pg(&format!(
+        "UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{{startedAt}}',to_jsonb(floor(extract(epoch FROM clock_timestamp()))::bigint-61)) WHERE id='{run}'"
+    ))?;
+    let policy = task["payload"]["authorization"]["policyId"]
+        .as_str()
+        .unwrap();
+    for _ in 0..2 {
+        f.execution
+            .recover_action_fixture(Uuid::parse_str(policy)?)
+            .await?;
+    }
+    ensure!(
+        pg(&format!(
+            "SELECT state->>'execution' FROM mdm_commands.action_runs WHERE id='{run}'"
+        ))?
+        .trim()
+            == "unknown"
+    );
+    ensure!(
+        call(&f, Method::GET, DIRECTORY, None, true, true).await?.1["items"] == json!([]),
+        "Unknown or pending script remained in directory"
     );
     crate::test_support::stop_worker(stack).await?;
     Ok(())
