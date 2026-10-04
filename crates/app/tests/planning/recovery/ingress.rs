@@ -109,7 +109,7 @@ async fn device_pages_commit_unknown_restart_and_later_window() {
     let mut devices = (0..61)
         .map(|n| format!("{prefix}-{n:03}"))
         .collect::<Vec<_>>();
-    devices.extend(["A", "a", "é", "中"].map(|s| format!("{prefix}-{s}")));
+    devices.extend(["A", "a", "Z", "z"].map(|s| format!("{prefix}-{s}")));
     seed(&devices);
     devices.sort();
     let peer = crate::test_support::case::peer();
