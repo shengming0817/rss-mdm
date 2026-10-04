@@ -369,8 +369,7 @@ async fn account_enrollment_and_reauthentication_keep_one_registration() -> Resu
     .bind(enrollment)
     .execute(&mut pg)
     .await?;
-    let store = f.app.access.registration();
-    let mut tx = store.begin(case_tenant()).await?;
+    let mut tx = f.app.access.begin(case_tenant()).await?;
     ensure!(
         matches!(
             admission.current(&mut tx).await,
