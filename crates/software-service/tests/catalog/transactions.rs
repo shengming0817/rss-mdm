@@ -368,6 +368,7 @@ async fn dependency_admission_uses_exact_current_approval() -> Result<()> {
         msix_unsigned: false,
         os_version: [10, 0, 22621, 0],
         system_broker: true,
+        user_helper: false,
         interactive_user: None,
         source_credentials: vec![],
     };
