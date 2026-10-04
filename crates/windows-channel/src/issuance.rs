@@ -98,6 +98,15 @@ pub async fn issuance_intent(
             &protection::Secrets::generate()?,
         )?,
     };
+    authorize_profile(
+        &mut tx,
+        windows,
+        proof.tenant_id(),
+        intent.credential,
+        &intent.csr,
+        &certificate::IssuanceProfile::decode(&intent.profile)?,
+    )
+    .await?;
     crate::enrollment_store::insert_intent(
         &mut tx,
         proof.tenant_id(),
@@ -392,6 +401,47 @@ pub fn provision(
 }
 
 use rss_mdm_audit_integration::RequestAudit;
+
+pub(crate) async fn authorize_profile(
+    c: &mut sqlx::PgConnection,
+    w: &Windows,
+    tenant: &str,
+    attempt: Uuid,
+    bytes: &[u8],
+    profile: &certificate::IssuanceProfile,
+) -> Result<(), Error> {
+    let csr = Csr::verify(bytes)?;
+    let pem = csr.pem()?;
+    let issuer = profile
+        .issuer
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let subject = profile.registration.to_string();
+    let provider = w
+        .providers
+        .get(rss_mdm_agent_wire::pki::Purpose::Windows, &issuer)
+        .map_err(|_| Error::Conflict)?;
+    rss_mdm_pki_service::signing::authorize_in(
+        c,
+        Uuid::parse_str(tenant).map_err(|_| Error::Malformed)?,
+        "windows",
+        &issuer,
+        provider,
+        rss_mdm_pki_service::Sign {
+            attempt,
+            csr_pem: &pem,
+            csr_digest: &csr.digest(),
+            subject: &subject,
+            sans: &[],
+            start: profile.start,
+            end: profile.end,
+            deadline: profile.start + 60,
+        },
+    )
+    .await
+    .map_err(|_| Error::Conflict)
+}
 
 /// Dispatch once after the authorization owner has committed the immutable profile.
 pub async fn sign(

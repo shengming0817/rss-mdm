@@ -2,6 +2,7 @@ use super::*;
 use rss_mdm_certificate::agent::IssuedAgentCertificate;
 pub(crate) struct Signing {
     pub attempt: Uuid,
+    pub issuer: [u8; 32],
     pub grant: Uuid,
     pub csr: Vec<u8>,
     pub identity: String,
@@ -97,6 +98,25 @@ SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND grant_id=$
                     )
                     .map_err(|_| Error::Configuration)?;
                     let attempt = Uuid::new_v4();
+                    let issuer = service.trust().issuer_digest();
+                    let signing = Signing {
+                        attempt,
+                        issuer,
+                        grant: input.grant_id,
+                        csr: csr.clone(),
+                        identity: identity.clone(),
+                        deadline: grant.try_get("expiry").map_err(db)?,
+                        start,
+                        end,
+                    };
+                    service
+                        .issuer
+                        .authorize_in(
+                            c,
+                            Uuid::parse_str(&tenant).map_err(|_| Error::Configuration)?,
+                            &signing,
+                        )
+                        .await?;
                     sqlx::query(
                         r#"
 INSERT INTO
@@ -128,8 +148,8 @@ VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'signing')
                     .bind(serde_json::to_value(&input.runtime).map_err(|_| Error::Malformed)?)
                     .bind(start)
                     .bind(end)
-                    .bind(service.issuer.authority_digest()?)
-                    .bind(hex(service.trust().issuer_digest()))
+                    .bind(service.issuer.authority_digest(issuer)?)
+                    .bind(hex(issuer))
                     .execute(&mut *c)
                     .await
                     .map_err(db)?;
@@ -144,15 +164,7 @@ UPDATE mdm_access.agent_grants SET state='consumed' WHERE tenant_id=$1::uuid AND
                     .await
                     .map_err(db)?;
                     Ok(Change {
-                        value: Claim::New(Signing {
-                            attempt,
-                            grant: input.grant_id,
-                            csr: csr.clone(),
-                            identity,
-                            deadline: grant.try_get("expiry").map_err(db)?,
-                            start,
-                            end,
-                        }),
+                        value: Claim::New(signing),
                         replay: false,
                         digest: digest.clone(),
                     })

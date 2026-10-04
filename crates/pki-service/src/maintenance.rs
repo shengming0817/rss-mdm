@@ -23,12 +23,74 @@ pub struct Publication {
     pub crl: String,
     pub root_crl: String,
 }
+/// Public certificate/publication deadlines and durable CA work; contains no key or endpoint.
+#[derive(Serialize)]
+pub struct Health {
+    pub purpose: Purpose,
+    pub issuer: String,
+    pub issuer_not_after: i64,
+    pub root_not_after: i64,
+    pub crl_next_update: i64,
+    pub root_crl_next_update: i64,
+    pub unpublished_revocations: i64,
+}
 struct Job {
     attempt: Uuid,
     serial: String,
     failures: i32,
 }
 impl Registry {
+    pub async fn health(&self) -> Result<Vec<Health>, Error> {
+        let mut result = Vec::new();
+        for binding in self.bindings() {
+            let trust = binding.public().map_err(|_| Error::Storage)?;
+            let mut tx = self.begin(&trust.tenant.to_string()).await?;
+            for g in trust.issuers {
+                let certificate = Certificate::from_der(
+                    &decode(&g.certificate, 32768).map_err(|_| Error::Storage)?,
+                )
+                .map_err(|_| Error::Storage)?;
+                let root =
+                    Certificate::from_der(&decode(&g.root, 32768).map_err(|_| Error::Storage)?)
+                        .map_err(|_| Error::Storage)?;
+                let next = |encoded: &str| -> Result<i64, Error> {
+                    let list = x509_cert::crl::CertificateList::from_der(
+                        &decode(encoded, 16 * 1024 * 1024).map_err(|_| Error::Storage)?,
+                    )
+                    .map_err(|_| Error::Storage)?;
+                    Ok(list
+                        .tbs_cert_list
+                        .next_update
+                        .ok_or(Error::Storage)?
+                        .to_unix_duration()
+                        .as_secs() as i64)
+                };
+                let pending=sqlx::query_scalar("SELECT count(*) FROM mdm_pki.revocations WHERE tenant_id=$1 AND purpose=$2 AND issuer=$3 AND state<>'published'")
+                    .bind(trust.tenant).bind(purpose(trust.purpose)).bind(&g.digest).fetch_one(&mut *tx).await.map_err(|_|Error::Storage)?;
+                result.push(Health {
+                    purpose: trust.purpose,
+                    issuer: g.digest,
+                    issuer_not_after: certificate
+                        .tbs_certificate
+                        .validity
+                        .not_after
+                        .to_unix_duration()
+                        .as_secs() as i64,
+                    root_not_after: root
+                        .tbs_certificate
+                        .validity
+                        .not_after
+                        .to_unix_duration()
+                        .as_secs() as i64,
+                    crl_next_update: next(&g.crl)?,
+                    root_crl_next_update: next(&g.root_crl)?,
+                    unpublished_revocations: pending,
+                });
+            }
+            tx.rollback().await.map_err(|_| Error::Storage)?;
+        }
+        Ok(result)
+    }
     /// Authenticated offline-root/legacy-issuer CRL publication follows the same validation path.
     pub async fn publish(
         &self,
@@ -136,14 +198,10 @@ impl Registry {
                 let replay=crate::mutation::replay(c,&next.tenant.to_string(),actor,instance,*operation,"crl_publish",fingerprint).await?.is_some();
                 for (issuer,published) in publications {
                     let number=i64::try_from(published.number).map_err(|_|Error::Request)?;
-                    sqlx::query("INSERT INTO mdm_pki.crls(tenant_id,purpose,issuer,number,this_update,next_update,der) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(tenant_id,purpose,issuer) DO UPDATE SET number=excluded.number,this_update=excluded.this_update,next_update=excluded.next_update,der=excluded.der")
-                        .bind(next.tenant).bind(purpose(next.purpose)).bind(issuer.as_str()).bind(number)
-                        .bind(published.this_update).bind(published.next_update).bind(&published.der).execute(&mut *c).await.map_err(|_|Error::Storage)?;
                     sqlx::query("UPDATE mdm_pki.revocations SET state='published',crl_number=$4 WHERE tenant_id=$1 AND purpose=$2 AND issuer=$3 AND serial=ANY($5) AND state<>'published'")
                         .bind(next.tenant).bind(purpose(next.purpose)).bind(issuer.as_str()).bind(number).bind(&published.revoked).execute(&mut *c).await.map_err(|_|Error::Storage)?;
                 }
-                sqlx::query("UPDATE mdm_pki.trust SET body=$3 WHERE tenant_id=$1 AND purpose=$2")
-                    .bind(next.tenant).bind(purpose(next.purpose)).bind(serde_json::to_vec(next).map_err(|_|Error::Storage)?).execute(&mut *c).await.map_err(|_|Error::Storage)?;
+                crate::registry::persist(c,next).await?;
                 if !replay {crate::mutation::save(c,&next.tenant.to_string(),actor,instance,*operation,"crl_publish",fingerprint,b"null").await?;}
                 Ok(Change{value:(),replay,key:format!("pki:{operation}:crl_publish"),fingerprint:fingerprint.clone()})
             })).await;

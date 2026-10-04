@@ -91,6 +91,21 @@ impl Registry {
             .fetch_optional(&mut *read)
             .await
             .map_err(|_| Error::Storage)?;
+            let archived: Vec<Vec<u8>> = sqlx::query_scalar(
+                "SELECT chain FROM mdm_pki.issuers WHERE tenant_id=$1::uuid AND purpose=$2",
+            )
+            .bind(tenant.to_string())
+            .bind(purpose(configured.purpose))
+            .fetch_all(&mut *read)
+            .await
+            .map_err(|_| Error::Storage)?;
+            let archived = archived
+                .into_iter()
+                .map(|bytes| {
+                    serde_json::from_slice::<rss_mdm_agent_wire::pki::Issuer>(&bytes)
+                        .map_err(|_| Error::Storage)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             read.rollback().await.map_err(|_| Error::Storage)?;
             let mut next = match stored.as_ref() {
                 Some(bytes) => {
@@ -98,7 +113,7 @@ impl Registry {
                         serde_json::from_slice(bytes).map_err(|_| Error::Storage)?;
                     if configured.origin != stored.origin
                         || configured.issuers.iter().any(|g| {
-                            !stored.issuers.iter().any(|s| {
+                            !stored.issuers.iter().chain(archived.iter()).any(|s| {
                                 s.digest == g.digest
                                     && s.certificate == g.certificate
                                     && s.root == g.root
@@ -292,7 +307,10 @@ impl Registry {
         if added.len() != 1 || added[0].mode != Mode::Prepared {
             return Err(Error::Request);
         }
-        self.providers.get(input.purpose, &added[0].digest)?;
+        self.providers
+            .get(input.purpose, &added[0].digest)?
+            .verify_issuer(&added[0].digest)
+            .await?;
         let previous = old
             .issuers
             .iter()
@@ -364,7 +382,10 @@ impl Registry {
         };
         tx.rollback().await.map_err(|_| Error::Storage)?;
         if matches!(input.action, Action::Activate) {
-            self.providers.get(purpose_value, &candidate)?;
+            self.providers
+                .get(purpose_value, &candidate)?
+                .verify_issuer(&candidate)
+                .await?;
             for g in &mut trust.issuers {
                 if g.digest == previous {
                     g.mode = Mode::VerifyOnly;
@@ -494,6 +515,7 @@ impl Registry {
             (p,id,expected,trust,state,added,now,hash),|ctx,c|Box::pin(async move {
                 let (p,id,expected,trust,state,added,now,hash)=ctx;
                 live(c,p).await?;
+                sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2639))").bind(p.tenant_id()).execute(&mut *c).await.map_err(|_|Error::Storage)?;
                 if let Some(bytes)=crate::mutation::replay(c,p.tenant_id(),p.principal_id(),p.instance_id(),*id,state,hash).await? {
                     return Ok(crate::mutation::Change{value:serde_json::from_slice(&bytes).map_err(|_|Error::Storage)?,replay:true,
                         key:format!("pki:{id}:{state}"),fingerprint:hash.to_vec()});
@@ -508,8 +530,8 @@ impl Registry {
                         if missing {return Err(Error::Conflict);}
                     }
                     if *state=="retired" {
-                        let unknown:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_pki.signing s JOIN mdm_pki.rotations r ON r.tenant_id=s.tenant_id AND r.purpose=s.purpose AND r.previous=s.issuer WHERE r.tenant_id=$1::uuid AND r.id=$2 AND s.state<>'issued')")
-                            .bind(p.tenant_id()).bind(*id).fetch_one(&mut *c).await.map_err(|_|Error::Storage)?;
+                        let unknown:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_pki.signing s JOIN mdm_pki.rotations r ON r.tenant_id=s.tenant_id AND r.purpose=s.purpose AND r.previous=s.issuer WHERE r.tenant_id=$1::uuid AND r.id=$2 AND (s.state IN ('signing','unknown') OR (s.state='prepared' AND s.deadline>$3)))")
+                            .bind(p.tenant_id()).bind(*id).bind(*now).fetch_one(&mut *c).await.map_err(|_|Error::Storage)?;
                         if unknown {return Err(Error::Conflict);}
                         if trust.purpose==Purpose::Apple {
                             let unsettled:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.scep_attempts s JOIN mdm_pki.rotations r ON r.tenant_id=s.tenant_id AND r.previous=encode(s.issuer,'hex') WHERE r.tenant_id=$1::uuid AND r.id=$2 AND ((s.state='consumed' AND s.certificate IS NULL) OR (s.state='prepared' AND s.expires_at>clock_timestamp())))")
@@ -562,6 +584,32 @@ pub async fn persist(c: &mut sqlx::PgConnection, trust: &Trust) -> Result<(), Er
         .bind(trust.tenant).bind(purpose(trust.purpose)).bind(trust.issuers.iter().find(|g|g.mode==Mode::Active).ok_or(Error::Request)?.digest.as_str())
         .execute(&mut *c).await.map_err(|_|Error::Storage)?;
     for g in &trust.issuers {
+        for (encoded, list) in [(&g.certificate, &g.crl), (&g.root, &g.root_crl)] {
+            let cert_der = decode(encoded, 32768).map_err(|_| Error::Request)?;
+            let digest = rss_mdm_device_trust::digest(&cert_der);
+            let certificate =
+                x509_cert::Certificate::from_der(&cert_der).map_err(|_| Error::Request)?;
+            let der = decode(list, 16 * 1024 * 1024).map_err(|_| Error::Request)?;
+            let parsed =
+                x509_cert::crl::CertificateList::from_der(&der).map_err(|_| Error::Request)?;
+            let at = parsed
+                .tbs_cert_list
+                .this_update
+                .to_unix_duration()
+                .as_secs() as i64;
+            let checked =
+                rss_mdm_device_trust::crl(&der, &certificate, at).map_err(|_| Error::Request)?;
+            if let Some(old)=sqlx::query("SELECT number,this_update,der FROM mdm_pki.crls WHERE tenant_id=$1 AND purpose=$2 AND issuer=$3 FOR UPDATE")
+                .bind(trust.tenant).bind(purpose(trust.purpose)).bind(&digest).fetch_optional(&mut *c).await.map_err(|_|Error::Storage)? {
+                let number:i64=old.try_get("number").map_err(|_|Error::Storage)?;
+                let previous:i64=old.try_get("this_update").map_err(|_|Error::Storage)?;
+                if checked.number<number as u64 || checked.this_update<previous
+                    || (checked.number==number as u64 && checked.der!=old.try_get::<Vec<u8>,_>("der").map_err(|_|Error::Storage)?) {return Err(Error::Conflict);}
+            }
+            sqlx::query("INSERT INTO mdm_pki.crls(tenant_id,purpose,issuer,number,this_update,next_update,der) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(tenant_id,purpose,issuer) DO UPDATE SET number=excluded.number,this_update=excluded.this_update,next_update=excluded.next_update,der=excluded.der")
+                .bind(trust.tenant).bind(purpose(trust.purpose)).bind(&digest).bind(i64::try_from(checked.number).map_err(|_|Error::Request)?)
+                .bind(checked.this_update).bind(checked.next_update).bind(&checked.der).execute(&mut *c).await.map_err(|_|Error::Storage)?;
+        }
         let certificate = x509_cert::Certificate::from_der(
             &decode(&g.certificate, 32768).map_err(|_| Error::Request)?,
         )

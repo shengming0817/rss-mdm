@@ -133,6 +133,7 @@ class RunFixtures:
         config['flow']['publication']['database'] = db(root, database, 'mdm_software_driver', 'runtime-fixture')
         config['identity']['tenant_id'] = tenant
         config['native_protocols'] = {}
+        config['device_pki'] = []
         config['native_protection_key_file'] = str(self.native_key)
         config['identity_management'] = [dict(tenant_id=tenant, instance_id=INSTANCE, principal_id=ADMIN,
                                                permissions=['accounts', 'providers'])]
@@ -300,11 +301,6 @@ class RunFixtures:
                         value['native_protocols']['windows'] = json.loads((root / 'windows.json').read_text())
                     env['MDM_TEST_CONFIG'] = str(private(root / 'runtime.json', value))
             host = None
-            if 'shared_worker' in module.fixtures:
-                receipt['environment']['hostLog'] = str((self.output / 'hosts' / database /
-                    self.case_contexts[job.key]['tenant'] / 'host.log').relative_to(self.output))
-                host = stack.enter_context(self.workers(job, database, env['MDM_TEST_CONFIG']))
-                receipt['environment']['host'] = host.address
             if 'examples' in module.fixtures:
                 env['MDM_FIXTURE_BIN'] = self.builds.executables['rss-mdm-fixture']
             if 'windows' in module.fixtures:
@@ -323,6 +319,11 @@ class RunFixtures:
                 for channel in ('windows','apple'):
                     if (root/(channel+'.json')).exists():value['native_protocols'][channel]=json.loads((root/(channel+'.json')).read_text())
                 private(Path(env['MDM_TEST_CONFIG']),value)
+            if 'shared_worker' in module.fixtures:
+                receipt['environment']['hostLog'] = str((self.output / 'hosts' / database /
+                    self.case_contexts[job.key]['tenant'] / 'host.log').relative_to(self.output))
+                host = stack.enter_context(self.workers(job, database, env['MDM_TEST_CONFIG']))
+                receipt['environment']['host'] = host.address
             if 'oracle' in module.fixtures:
                 from apple_oracle import running as oracle
                 stack.enter_context(oracle(root, env))

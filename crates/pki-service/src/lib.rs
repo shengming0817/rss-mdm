@@ -156,6 +156,44 @@ impl StepCa {
             URL_SAFE_NO_PAD.encode(sig)
         )))
     }
+    /// ref: smallstep/certificates v0.30.2 api/api.go IntermediatesResponse.
+    /// Check the actual CA issuer before a generation can authorize new signing.
+    pub async fn verify_issuer(&self, expected: &str) -> Result<(), Error> {
+        #[derive(Deserialize)]
+        struct Intermediates {
+            crts: Vec<String>,
+        }
+        let mut response = self
+            .client
+            .get(self.url("/intermediates"))
+            .send()
+            .await
+            .map_err(|_| Error::Storage)?;
+        if !response.status().is_success() || response.content_length().is_some_and(|n| n > 131072)
+        {
+            return Err(Error::Storage);
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(|_| Error::Storage)? {
+            if bytes.len() + chunk.len() > 131072 {
+                return Err(Error::Storage);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let result: Intermediates =
+            serde_json::from_slice(&bytes).map_err(|_| Error::Configuration)?;
+        if result.crts.len() != 1 {
+            return Err(Error::Configuration);
+        }
+        let certificate =
+            x509_cert::Certificate::from_pem(&result.crts[0]).map_err(|_| Error::Configuration)?;
+        if rss_mdm_device_trust::digest(&certificate.to_der().map_err(|_| Error::Configuration)?)
+            != expected
+        {
+            return Err(Error::Configuration);
+        }
+        Ok(())
+    }
     /// Fixed configured origin only; no redirects, proxies or caller supplied URL.
     pub async fn published_crl(&self) -> Result<Vec<u8>, Error> {
         let mut response = self

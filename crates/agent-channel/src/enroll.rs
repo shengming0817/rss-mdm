@@ -133,9 +133,7 @@ async fn trust(
     headers: HeaderMap,
 ) -> Result<Json<rss_mdm_agent_wire::pki::Trust>, HttpFailure> {
     bootstrap(&headers)?;
-    let peer =
-        peer.ok_or_else(|| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
-    Ok(Json(s.device_trust(&peer.0).await?))
+    Ok(Json(s.device_trust(peer.as_ref().map(|v| &v.0)).await?))
 }
 async fn acknowledge(
     State(s): State<Arc<Service>>,

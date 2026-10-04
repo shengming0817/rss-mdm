@@ -1,10 +1,12 @@
-//! Trust distribution requires the current device credential on every HTTP request.
+//! Public bootstrap trust uses the fixed HTTPS authority; installation ACK requires a live device credential.
 use super::*;
 use rss_mdm_agent_wire::pki::{Acknowledgement, Trust};
 use rss_mdm_certificate::HandshakePeer;
 impl Service {
-    pub async fn device_trust(&self, peer: &HandshakePeer) -> Result<Trust, Failure> {
-        self.authenticate(peer).await?;
+    pub async fn device_trust(&self, peer: Option<&HandshakePeer>) -> Result<Trust, Failure> {
+        if let Some(peer) = peer {
+            self.authenticate(peer).await?;
+        }
         self.trust()
             .trust
             .public()

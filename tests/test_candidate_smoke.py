@@ -110,7 +110,7 @@ class RuntimeOwnership(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / 'candidate.json').write_text('{"format_version":2}')
-            with self.assertRaisesRegex(RuntimeError, 'V3 required'):
+            with self.assertRaisesRegex(RuntimeError, 'V4 required'):
                 smoke.smoke(root)
             record = json.loads((root / 'smoke-failure.json').read_text())
             self.assertEqual(record, {'status':'failed', 'error_class':'RuntimeError', 'containers':{}})
@@ -133,27 +133,16 @@ class RuntimeOwnership(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "UI archive mismatch"):
                 candidate.Candidate(Path("candidate"))
 
-    def test_gateway_uses_ui_when_delivered_and_nginx_for_backend_only(self):
-        for web in [None, {"id":"ui-id"}]:
-            with self.subTest(web=web):
-                owner = candidate.Candidate.__new__(candidate.Candidate)
-                owner.web, owner.providers = web, {"nginx":"pinned-nginx"}
-                owner.gateway, owner.pg, owner.gateway_inputs = "gateway", "pg", "inputs"
-                owner.created, owner.command = [], mock.Mock()
-                owner.start_gateway()
-                args = owner.command.call_args.args
-                self.assertIn("ui-id" if web else "pinned-nginx", args)
-                self.assertIn("10001:10001", args)
-                self.assertIn("daemon off;", args)
-                self.assertEqual(owner.created, ["gateway"])
-
-    def test_operator_preserves_exact_stage(self):
+    def test_gateway_and_operator_use_canonical_compose_services(self):
         owner=candidate.Candidate.__new__(candidate.Candidate)
-        owner.pg,owner.operator_volume,owner.image='pg','operator','image'
-        owner.run_once=mock.Mock(return_value='')
-        for stage in [candidate.Stage.MIGRATION,candidate.Stage.REPLAY,candidate.Stage.INITIALIZE]:
-            owner.operator('migrate','input.json',stage)
-            self.assertEqual(owner.run_once.call_args.kwargs['stage'],stage)
+        owner.gateway='gateway';owner.created=[]
+        owner.compose=mock.Mock(return_value='');owner.container=mock.Mock(return_value='owned-gateway')
+        owner.start_gateway()
+        owner.compose.assert_called_once_with('up','-d','--no-deps','gateway',stage=candidate.Stage.GATEWAY)
+        self.assertEqual(owner.created,['owned-gateway'])
+        owner.compose.reset_mock()
+        owner.operator('migrate','migrate.json',candidate.Stage.MIGRATION)
+        owner.compose.assert_called_once_with('run','--rm','--no-deps','operator','migrate','--config','/run/mdm/migrate.json',stage=candidate.Stage.MIGRATION)
 
     def test_network_cleanup_does_not_replace_primary(self):
         primary=RuntimeError('browser rejected')
@@ -212,16 +201,16 @@ class ExternalReviewRegressions(unittest.TestCase):
                 command.assert_not_called()
 
 class CandidateInputs(unittest.TestCase):
-    def test_v3_uses_only_delivered_files_and_rejects_missing_or_changed_inputs(self):
+    def test_v4_uses_only_delivered_files_and_rejects_missing_or_changed_inputs(self):
         import release
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             archive = root / 'server.oci.tar'; archive.write_bytes(b'oci')
             deployment = {}
             for name in release.DEPLOYMENT_FILES:
-                path = root / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_text(name)
+                path = root / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes((release.ROOT/name).read_bytes())
                 deployment[name] = release.sha(path)
-            manifest = {'format_version':3, 'archive':{'file':archive.name,'sha256':release.sha(archive),'manifest_digest':'sha256:fixture'}, 'platform':'linux/arm64', 'deployment':deployment}
+            manifest = {'format_version':4, 'archive':{'file':archive.name,'sha256':release.sha(archive),'manifest_digest':'sha256:fixture'}, 'platform':'linux/arm64', 'deployment':deployment,'providers':json.loads((root/'deployment/providers.lock.json').read_text())}
             (root / 'candidate.json').write_text(json.dumps(manifest))
             with mock.patch.object(candidate, 'oci_identity', return_value=('sha256:fixture', {'os':'linux','architecture':'arm64'})), mock.patch.object(candidate, 'docker') as docker:
                 candidate.verify_candidate(root)
@@ -242,7 +231,7 @@ class CandidateInputs(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, 'deployment inputs'): candidate.verify_candidate(root)
                 manifest['format_version'] = 2
                 (root / 'candidate.json').write_text(json.dumps(manifest))
-                with self.assertRaisesRegex(RuntimeError, 'V3 required'): candidate.verify_candidate(root)
+                with self.assertRaisesRegex(RuntimeError, 'V4 required'): candidate.verify_candidate(root)
                 docker.assert_not_called()
 
 if __name__ == "__main__":

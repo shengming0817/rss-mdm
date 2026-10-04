@@ -49,12 +49,13 @@ def running(root, env, *, case):
     ca_config = json.loads(configuration.read_text())
     ca_config['crl']=dict(enabled=True,generateOnRevoke=True,cacheDuration='10m',renewPeriod='1m')
     ca_config['authority']['backdate']='0s'
+    ca_config['kms']=dict(type='softkms')
     ca_config['root'] = [str(step_path/'certs/root_ca.crt'), str(root/'ca.crt')]
     private(configuration, ca_config)
     ca_root = step_path/'certs/root_ca.crt'
-    from pki_fixtures import root_crl, trust
+    from pki_fixtures import root_crl, trust, isolate_root
     offline=root_crl(root,ca_root,step_path/'secrets/root_ca_key',password)
-    (step_path/'secrets/root_ca_key').replace(offline/'root_ca_key')
+    isolate_root(step_path/'secrets/root_ca_key',password,offline)
     template = private(root/'apple-leaf.tpl', '{"subject":{"commonName":{{ toJson .Webhooks.rss.subject }}},"keyUsage":["digitalSignature"],"extKeyUsage":["clientAuth"],"basicConstraints":{"isCA":false}}')
     provider.owner.prepare_inputs(certificates=False)
     try:

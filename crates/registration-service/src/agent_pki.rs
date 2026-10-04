@@ -30,6 +30,7 @@ pub enum IssuanceError {
 /// ```
 pub struct AuthorizedAgentIssuanceIntent {
     attempt: Uuid,
+    issuer: [u8; 32],
     request: Uuid,
     csr: VerifiedAgentCsr,
     identity: String,
@@ -80,19 +81,55 @@ impl AgentIssuer {
     }
 
     /// Freeze the signing issuer and provider identity without retaining secrets.
-    pub(crate) fn authority_digest(&self) -> Result<String, Error> {
-        let active = self
-            .trust
-            .trust
-            .active()
-            .map_err(|_| Error::Configuration)?;
+    pub(crate) fn authority_digest(&self, issuer: [u8; 32]) -> Result<String, Error> {
+        let digest = issuer
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
         self.providers
-            .get(Purpose::Agent, &active.digest)
-            .map(|p| p.authority_digest(&active.digest))
+            .get(Purpose::Agent, &digest)
+            .map(|p| p.authority_digest(&digest))
             .map_err(|_| Error::Configuration)
     }
     pub fn trust(&self) -> &Arc<AgentTrust> {
         &self.trust
+    }
+    pub(crate) async fn authorize_in(
+        &self,
+        c: &mut sqlx::PgConnection,
+        tenant: Uuid,
+        spec: &crate::agent::issuance::Signing,
+    ) -> Result<(), Error> {
+        let csr = VerifiedAgentCsr::verify(&spec.csr).map_err(|_| Error::Corrupt)?;
+        let pem = csr.pem().map_err(|_| Error::Corrupt)?;
+        let issuer = spec
+            .issuer
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        let provider = self
+            .providers
+            .get(Purpose::Agent, &issuer)
+            .map_err(|_| Error::Configuration)?;
+        rss_mdm_pki_service::signing::authorize_in(
+            c,
+            tenant,
+            "agent",
+            &issuer,
+            provider,
+            Sign {
+                attempt: spec.attempt,
+                csr_pem: &pem,
+                csr_digest: &csr.digest(),
+                subject: SUBJECT,
+                sans: &[spec.identity.clone()],
+                start: spec.start,
+                end: spec.end,
+                deadline: spec.deadline,
+            },
+        )
+        .await
+        .map_err(|_| Error::Conflict)
     }
     /// Freeze a validated, already persisted signing intention. Only the lifecycle owner calls this.
     pub(crate) fn persisted_intent(
@@ -101,11 +138,9 @@ impl AgentIssuer {
     ) -> Result<AuthorizedAgentIssuanceIntent, Error> {
         let csr = VerifiedAgentCsr::verify(&spec.csr).map_err(|_| Error::Corrupt)?;
         let end = spec.end;
-        if !self.trust.permits_window(spec.start, end) {
-            return Err(Error::Configuration);
-        }
         Ok(AuthorizedAgentIssuanceIntent {
             attempt: spec.attempt,
+            issuer: spec.issuer,
             request: spec.grant,
             csr,
             identity: spec.identity,
@@ -134,11 +169,7 @@ impl AgentIssuer {
             .clock
             .unix_seconds()
             .map_err(IssuanceError::Authorization)?;
-        if now < intent.start
-            || now >= intent.deadline
-            || now - intent.start >= 60
-            || !self.trust.permits_window(intent.start, intent.end)
-        {
+        if now < intent.start || now >= intent.deadline || now - intent.start >= 60 {
             return Err(IssuanceError::Authorization(Error::Unauthorized));
         }
         self.sign(store, tenant, &intent, now)
@@ -161,9 +192,8 @@ impl AgentIssuer {
         };
         let pem = intent.csr.pem().map_err(|_| unknown())?;
         let sans = [intent.identity.clone()];
-        let issuer = self
-            .trust
-            .issuer_digest()
+        let issuer = intent
+            .issuer
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect::<String>();
@@ -190,7 +220,8 @@ impl AgentIssuer {
                 now,
                 |chain| {
                     self.trust
-                        .validate_issued(
+                        .validate_issued_for(
+                            intent.issuer,
                             chain.to_vec(),
                             &intent.csr,
                             &intent.identity,
@@ -204,7 +235,8 @@ impl AgentIssuer {
             .await
             .map_err(|_| unknown())?;
         self.trust
-            .validate_issued(
+            .validate_issued_for(
+                intent.issuer,
                 chain,
                 &intent.csr,
                 &intent.identity,

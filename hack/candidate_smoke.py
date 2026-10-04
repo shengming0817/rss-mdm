@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Run the fixed MDM OCI with only its own PostgreSQL and HTTPS ingress."""
 import argparse
+import base64
+import secrets
 from enum import StrEnum
 import hashlib
 import http.client
@@ -50,6 +52,67 @@ class Browser:
         finally:
             connection.close()
 
+def native_pki_journey(deployed,browser):
+    root=deployed.root;fixture=root/'pki/agent'
+    csr=base64.b64encode((fixture/'agent.der').read_bytes()).decode()
+    secret=secrets.token_urlsafe(32);deployed.private_values.append(secret)
+    operation=str(uuid.uuid4())
+    request=dict(wireVersion=1,operationId=operation,secret=secret,platform='macos',lifetimeSeconds=None,csr=csr)
+    status,grant=browser.call('POST','/api/v1/agent-grants',request)
+    require(status==200,'candidate Agent authorization failed')
+    context=ssl.create_default_context(cafile=str(root/'ca.crt'))
+    def connection():return http.client.HTTPSConnection('localhost',deployed.agent_port,context=context,timeout=15)
+    def call(client,method,path,body=None):
+        client.request(method,path,body=json.dumps(body) if body is not None else None,
+                       headers={'Content-Type':'application/json','Host':deployed.agent_origin.removeprefix('https://')})
+        response=client.getresponse();data=response.read(8*1024*1024+1)
+        require(len(data)<=8*1024*1024,'candidate native response limit')
+        return response.status,json.loads(data) if data else None
+    client=connection()
+    try:
+        status,trust=call(client,'GET','/api/v1/agent/enroll/trust')
+        require(status==200 and trust['origin']==deployed.agent_origin and trust['purpose']=='agent','candidate public trust authority mismatch')
+        profile=dict(capabilities=['inventory.collect.v1'],platform='macos',architecture='aarch64',
+                     executionContext=dict(revision=1,osVersion=[14,0,0,0],systemBroker=True,interactiveUser=None,sourceCredentials=[],msixSideload=False,msixUnsigned=False))
+        signing=dict(wireVersion=1,operationId=str(uuid.uuid4()),grantId=grant['grantId'],secret=secret,csr=csr,runtime=profile)
+        status,candidate=call(client,'POST','/api/v1/agent/enroll/certificates',signing)
+        require(status==200,'candidate real CA signing failed')
+        require(call(client,'POST','/api/v1/agent/enroll/certificates',signing)==(status,candidate),'candidate original signing replay changed result')
+        path='/api/v1/agent/runtime/reports/'+str(uuid.uuid4())
+        require(call(client,'GET',path)[0]==401,'candidate anonymous runtime accepted')
+    finally:client.close()
+    certificate=root/'candidate-agent.pem'
+    certificate.write_text(''.join(ssl.DER_cert_to_PEM_cert(base64.b64decode(der)) for der in candidate['certificateChain']));certificate.chmod(0o600)
+    context.load_cert_chain(certificate,fixture/'agent-csr-agent.key')
+    client=connection()
+    try:
+        require(call(client,'GET',path)[0]==401,'unactivated candidate acquired runtime identity')
+        activation=dict(wireVersion=1,operationId=str(uuid.uuid4()),issuanceId=candidate['issuanceId'])
+        status,active=call(client,'POST','/api/v1/agent/enroll/activate',activation)
+        require(status==200,'candidate actual mTLS activation failed')
+        require(call(client,'POST','/api/v1/agent/enroll/activate',activation)==(status,active),'candidate activation replay changed registration')
+        require(call(client,'GET',path)[0]==404,'candidate active identity did not reach business lookup')
+    finally:client.close()
+    deployed.restore_pki_bundle()
+    client=connection()
+    try:
+        require(call(client,'GET',path)[0]==404,'restored original Agent identity rejected')
+        binding=active['runtime']
+        require(browser.call('POST','/api/v1/devices/'+binding['deviceId']+'/registrations/'+binding['registrationId']+'/revoke',{},str(uuid.uuid4()))[0]==200,'candidate credential revoke failed')
+        require(call(client,'GET',path)[0]==401,'revoked credential remained valid on retained TLS connection')
+    finally:client.close()
+    wait(lambda:deployed.sql("SELECT count(*) FROM mdm_pki.revocations WHERE purpose='agent' AND state='published'")=='1',
+         'actual serial publication in signed CA CRL',seconds=150)
+    client=connection()
+    try:
+        try:
+            response=call(client,'GET',path)
+            require(response[0]==401,'published revoked certificate acquired a new identity')
+        except (ssl.SSLError,ConnectionResetError):pass
+    finally:client.close()
+    return ['native_public_trust','real_ca_signing','original_signing_replay','candidate_identity_denial','actual_mtls_activation',
+            'activation_replay','joint_ca_mdm_audit_restore','same_registration_after_restore','retained_tls_revocation','signed_crl_serial_publication','new_tls_revocation']
+
 def run_smoke(directory):
     with Candidate(directory, diagnostic_filename="smoke-failure.json") as deployed:
         manifest=deployed.manifest
@@ -79,6 +142,10 @@ def run_smoke(directory):
         require(sql("SELECT count(*) FROM rss_audit.records WHERE tenant_id='"+TENANT+"' AND source_id='mdm.request' AND event_id='"+event_id+"'")=="1","candidate denial audit missing")
         require(browser.call("POST","/api/v1/devices/device-1/actions",dict(action="wipe"),str(uuid.uuid4()))[0]==403,"wipe permission bypass")
         require(browser.call("GET","/api/v1/devices/outside/inventory")[0]==403,"inventory scope bypass")
+        rule=dict(subject=dict(kind='user',user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=ADMIN)),
+                  grants=[dict(operation=operation,scope=dict(kind='all_devices')) for operation in ['enrollment','credentials']])
+        require(browser.call('PUT','/api/v1/authorization/rules/'+str(uuid.uuid4()),dict(operationId=str(uuid.uuid4()),expectedRevision=0,value=rule))[0]==200,'candidate PKI authorization')
+        pki_checks=native_pki_journey(deployed,browser)
         old_cookie=browser.cookie
         require(browser.call("POST",tenant+"/session/refresh")[0]==200 and browser.cookie!=old_cookie,"candidate refresh failed")
         stale=Browser(deployed.port,deployed.root/"ca.crt");stale.cookie=old_cookie
@@ -91,7 +158,7 @@ def run_smoke(directory):
         require("mdm_request" in logs, "candidate request diagnostics missing")
         require(elapsed<45 and docker("inspect","--format","{{.State.ExitCode}}",server,stage=Stage.EXIT)=="0" and "mdm_shutdown_failure" not in logs,"candidate bounded shutdown failed")
         result=dict(source=manifest["source"],candidate_sha256=sha(directory/"candidate.json"),manifest_digest=digest,archive_sha256=sha(archive),platform=manifest["platform"],
-                    checks=["migrate","migration_replay","initialize","authorization_initialize","authorization_replay","livez","readyz","local_login","authoritative_subject","enrollment","idempotent_replay","device_scope_denial","denial_no_effect","denial_audit","wipe_denial","inventory_scope_denial","refresh_rotation","logout","bounded_stop"],
+                    checks=pki_checks+["migrate","migration_replay","initialize","authorization_initialize","authorization_replay","livez","readyz","local_login","authoritative_subject","enrollment","idempotent_replay","device_scope_denial","denial_no_effect","denial_audit","wipe_denial","inventory_scope_denial","refresh_rotation","logout","bounded_stop"],
                     shutdown_seconds=round(elapsed,3),limits=["disposable MDM PostgreSQL and TLS namespace","no real Windows or macOS device T3"])
         if deployed.web is not None:
             result["ui"] = deployed.web

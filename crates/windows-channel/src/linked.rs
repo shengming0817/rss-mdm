@@ -314,6 +314,15 @@ async fn intent(
             .protection
             .seal(&tenant, id, &protection::Secrets::generate()?)?,
     };
+    issuance::authorize_profile(
+        &mut c,
+        w,
+        &tenant,
+        intent.credential,
+        &intent.csr,
+        &certificate::IssuanceProfile::decode(&intent.profile)?,
+    )
+    .await?;
     enrollment_store::insert_intent(
         &mut c,
         &tenant,

@@ -193,7 +193,7 @@ impl std::fmt::Debug for DeviceTrust {
 }
 impl DeviceTrust {
     pub fn new(trust: Trust, purpose: Purpose, now: i64) -> Result<Self, Error> {
-        let snapshot = Self::snapshot(trust, purpose, now)?;
+        let snapshot = Self::snapshot(trust, purpose, now, false)?;
         Ok(Self {
             inner: Arc::new(RwLock::new(snapshot)),
         })
@@ -213,9 +213,17 @@ impl DeviceTrust {
         if checkpoint <= 0 || checkpoint > now {
             return Err(Error::Expired);
         }
-        Self::new(trust, purpose, checkpoint)
+        let snapshot = Self::snapshot(trust, purpose, checkpoint, true)?;
+        Ok(Self {
+            inner: Arc::new(RwLock::new(snapshot)),
+        })
     }
-    fn snapshot(trust: Trust, purpose: Purpose, now: i64) -> Result<Snapshot, Error> {
+    fn snapshot(
+        trust: Trust,
+        purpose: Purpose,
+        now: i64,
+        restoring: bool,
+    ) -> Result<Snapshot, Error> {
         if trust.version != 1
             || trust.purpose != purpose
             || trust.revision == 0
@@ -245,6 +253,7 @@ impl DeviceTrust {
         let mut crls = Vec::new();
         let mut generations = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
+        let mut root_lists = std::collections::BTreeMap::new();
         for public in &trust.issuers {
             if public.provisioner.len() > 128
                 || public.kid.len() > 128
@@ -263,7 +272,7 @@ impl DeviceTrust {
             let root = Certificate::from_der(&root_der).map_err(invalid)?;
             ca_shape(&certificate)?;
             ca_shape(&root)?;
-            if public.mode != Mode::VerifyOnly {
+            if !restoring && public.mode != Mode::VerifyOnly {
                 valid_ca(&certificate, now)?;
                 valid_ca(&root, now)?;
             }
@@ -291,6 +300,14 @@ impl DeviceTrust {
             )?;
             let issuer_crl = crl(&decode(&public.crl, 16 * 1024 * 1024)?, &certificate, now)?;
             let root_crl = crl(&decode(&public.root_crl, 16 * 1024 * 1024)?, &root, now)?;
+            if let Some(previous) = root_lists.insert(digest(&root_der), root_crl.der.clone()) {
+                if previous != root_crl.der {
+                    return Err(Error::Conflict);
+                }
+            }
+            if certificate == root && issuer_crl.der != root_crl.der {
+                return Err(Error::Conflict);
+            }
             if certificate != root
                 && root_crl.revoked.contains(&serial(
                     certificate.tbs_certificate.serial_number.as_bytes(),
@@ -359,7 +376,7 @@ impl DeviceTrust {
         {
             return Err(Error::Conflict);
         }
-        let next = Self::snapshot(trust, old.trust.purpose, now)?;
+        let next = Self::snapshot(trust, old.trust.purpose, now, false)?;
         if next.trust.revision == old.trust.revision
             && next
                 .trust

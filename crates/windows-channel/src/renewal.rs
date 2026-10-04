@@ -263,6 +263,15 @@ async fn prepare(
         )?
         .encode()?;
     let id = Uuid::new_v4();
+    crate::issuance::authorize_profile(
+        &mut tx,
+        windows,
+        &tenant,
+        id,
+        proof.csr(),
+        &certificate::IssuanceProfile::decode(&profile)?,
+    )
+    .await?;
     sqlx::query("INSERT INTO mdm_windows.renewal_intents(tenant_id,id,registration,generation,previous_credential,proof_digest,profile,configuration) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8)")
         .bind(&tenant).bind(id).bind(p.registration()).bind(p.generation()).bind(p.credential())
         .bind(digest).bind(&profile).bind(&windows.configuration).execute(&mut *tx).await.map_err(db)?;

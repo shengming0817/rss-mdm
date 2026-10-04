@@ -158,3 +158,14 @@ Windows 未知签发通过 `POST /api/v1/pki/signing/recover` 提交原 attempt 
 在线撤销先在原登记/凭据 Audit 事务中立即生效，并写入实际 serial 的持久撤销队列。维护任务每 60 秒从各代次 CA 拉取 signed CRL，离开业务锁后调用 `/revoke`，失败保留 bounded backoff 任务。CA 接受 passive revoke 只表示 submitted；只有 serial 出现在经批准 issuer 签名的新鲜 CRL 中才记为 published。issuer CRL 的 nextUpdate 默认为 10 分钟，根 CRL 30 天并在到期前 7 天由离线 owner 更新；缺失、过期、号码/时间回滚或同号异内容均拒绝认证。保留连接及 TLS 恢复仍逐次检查当前凭据映射。
 
 离线根或 legacy issuer 的 CRL 使用 `POST /api/v1/pki/crls` 发布 operation、purpose、issuer、crl、root_crl（base64 DER）。同 root 的所有代次共同采用该 root CRL；不把根私钥带入在线宿主。刷新按同 purpose 完整集合校验、原子发布；停机造成多个 issuer CRL 过期后可整组恢复。备份/恢复必须保留 CA 数据库、原密钥身份、serial/token 使用记录、MDM 数据库和 Audit/Ledger；成功签发与撤销发布的未知结果仍沿原记录恢复。
+
+
+设备 CA 使用 `deployment/compose.yaml` 的 `pki` profile。每个 purpose/issuer 独立 project、数据库目录和 provisioner；在线 `MDM_PKI_ROOT` 只含中间 CA 加密密钥、公开根、配置、模板及 CA 数据库，根私钥和独立解密秘密放在未挂载的离线目录。step-ca 原生 `kms` 配置选择加密文件 SoftKMS 基线，`key` 可替换为受支持 KMS/HSM URI，由 CA 部署 owner 提供对应访问凭据与验收；MDM 不读取 KMS 或根私钥。非 step-ca 企业 CA 路线登记为 #2680。
+
+每份 CA 数据库同一时间只允许一个写入者。冷备接管先停止并移除旧 `step-ca` 容器，核对 `compose ps --all --quiet step-ca` 为空并确认旧主机被隔离，再以同一绝对存储路径和 `MDM_PKI_PUBLISH` 原端口启动独立 standby project。持久 provider origin、issuer、kid、数据库和 token 记录保持原身份；无法证明旧主隔离时不能启动新写入者。候选验证复用这份 Compose，产品 profile 暴露原生 enrollment/management/Agent 的独立 TLS 端口，网关仍只承载控制台流量。
+
+Apple 的 challenge/notify webhook ID 和 HMAC 秘密属于稳定协议配置。新 CA 代次须沿用该 purpose 的受控 webhook 身份、回调地址和签名模板，先验证原生回调再准备/激活；不能直接采用新建 provisioner 随机产生的 webhook 身份替换已有部署配置。HTTPS、SCEP 解密、Profile 签名及 APNs 密钥仍各归原 owner。
+
+`device_pki_attention` 每分钟输出公开 issuer 摘要、证书到期、CRL nextUpdate 与 unpublished 数量：issuer 剩余 30 天、根剩余 90 天、issuer CRL 剩余 120 秒、根 CRL 剩余 7 天或撤销尚未发布均触发。`device_pki_maintenance_failure` 按累计失败次数的幂次记录依赖故障；CA 运行或 `/revoke` 成功不代表 CRL 已发布。告警接入使用这些结构化事件并核对签名发布及原队列；密钥取回失败同时由 step-ca 的受限日志定位。所有服务实例保存历史 CRL 水位，退休后再引入同一 CA 也不能回滚已接受的号码或内容。
+
+Agent 在固定 HTTPS origin 上匿名取得公开 `/api/v1/agent/enroll/trust`，不从它取得授权。更新先校验并持久保存 revision/CRL 水位，再通过系统机器 Root/CA 存储写入和读取确认；安装 ACK 仍须当前登记的真实 mTLS 与原幂等操作。仅删除该服务有持久 ownership 记录、且已退出完整批准集合的证书。首次 HTTPS 根通过受控部署渠道提供；新部署公开 JSON 也必须受保护，不能用本地测试占位材料。

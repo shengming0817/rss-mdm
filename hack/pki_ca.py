@@ -1,4 +1,4 @@
-"""Case-owned Compose SCEP provider; only real owners select listening addresses.
+"""Case-owned Compose device CA provider; only real owners select listening addresses.
 
 ref: smallstep/certificates v0.30.2 examples/docker/docker-compose.yml;
 smallstep/cli v0.30.2 command/ca/provisioner/webhook/update.go.
@@ -47,6 +47,87 @@ class Provider:
         if parsed.hostname != '127.0.0.1' or not parsed.port or address != f'127.0.0.1:{parsed.port}':
             raise RuntimeError('fixed step-ca omitted a unique loopback mapping')
         return f'https://localhost:{parsed.port}'
+
+    def fence(self):
+        """Remove the old writer before any replacement can open the same CA database."""
+        self.owner.verify_ownership()
+        self.compose('rm','--stop','--force','--volumes','step-ca',timeout=30)
+        if self.compose('ps','--all','--quiet','step-ca',timeout=10):
+            raise RuntimeError('CA writer isolation was not confirmed')
+        self.container=None
+
+    def promote_from(self, previous, origin):
+        """Cold standby preserves both the database path and the externally frozen CA origin."""
+        if self.root != previous.root or self.owner.project == previous.owner.project:
+            raise RuntimeError('cold standby must have a distinct owner and the same CA storage identity')
+        parsed=urlsplit(origin)
+        if parsed.scheme!='https' or parsed.hostname!='localhost' or not parsed.port:
+            raise RuntimeError('invalid stable CA fixture origin')
+        previous.fence()
+        self.owner.prepare_inputs(certificates=False)
+        self.owner.extra['MDM_PKI_PUBLISH']=f'127.0.0.1:{parsed.port}:{PKI_CA["port"]}'
+        try:
+            actual=self.start()
+            if actual!=origin:raise RuntimeError('CA failover changed frozen origin')
+            config=json.loads((self.root/'step/config/ca.json').read_text())
+            self.wait(actual,'/health',Path(config['root'][0]))
+            return actual
+        except BaseException:
+            with cleanup():self.reset()
+            raise
+
+    def backup(self, destination):
+        """A stopped, isolated CA snapshot; MDM/Audit backup coordination stays with deployment."""
+        import hashlib, shutil, tempfile
+        destination=Path(destination).absolute()
+        if destination.exists() or destination.is_relative_to(self.root):
+            raise RuntimeError('CA backup must use a new independent directory')
+        self.fence()
+        destination.parent.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix='.ca-backup-',dir=destination.parent) as temporary:
+            staged=Path(temporary)/'snapshot';staged.mkdir(mode=0o700)
+            if any(path.is_symlink() for path in self.root.rglob('*')):
+                raise RuntimeError('CA backup source cannot contain symbolic links')
+            shutil.copytree(self.root,staged/'online')
+            offline=self.root.parent/(self.root.name+'-offline')
+            if not offline.is_dir():raise RuntimeError('offline root backup inputs are missing')
+            if any(path.is_symlink() for path in offline.rglob('*')):
+                raise RuntimeError('offline root backup cannot contain symbolic links')
+            shutil.copytree(offline,staged/'offline')
+            files={str(path.relative_to(staged)):hashlib.sha256(path.read_bytes()).hexdigest()
+                   for path in staged.rglob('*') if path.is_file()}
+            if any(path.is_symlink() for path in staged.rglob('*')):
+                raise RuntimeError('CA snapshot cannot contain symbolic links')
+            private(staged/'manifest.json',dict(version=1,root=str(self.root),files=files))
+            staged.rename(destination)
+        return destination
+
+    def restore(self, snapshot):
+        """Restore original bytes under the same identity; never initialize replacement keys/CA."""
+        import hashlib, shutil
+        snapshot=Path(snapshot).resolve()
+        manifest=json.loads((snapshot/'manifest.json').read_text())
+        if manifest.get('version')!=1 or manifest.get('root')!=str(self.root):
+            raise RuntimeError('CA restore storage identity mismatch')
+        if any(path.is_symlink() for path in snapshot.rglob('*')):
+            raise RuntimeError('CA restore snapshot cannot contain symbolic links')
+        actual={str(path.relative_to(snapshot)):hashlib.sha256(path.read_bytes()).hexdigest()
+                for directory in ('online','offline') for path in (snapshot/directory).rglob('*') if path.is_file()}
+        if actual!=manifest['files'] or any(path.is_symlink() for path in snapshot.rglob('*')):
+            raise RuntimeError('CA restore snapshot integrity rejected')
+        self.fence()
+        for name,target in [('online',self.root),('offline',self.root.parent/(self.root.name+'-offline'))]:
+            source=snapshot/name
+            if target.exists():
+                for path in sorted(target.rglob('*'),reverse=True):
+                    if path.is_symlink():raise RuntimeError('CA restore target cannot contain symbolic links')
+                    if path.is_file() and not (source/path.relative_to(target)).exists():path.unlink()
+            shutil.copytree(source,target,dirs_exist_ok=True)
+        config=json.loads((self.root/'step/config/ca.json').read_text())
+        if (self.root/'step/secrets/root_ca_key').exists():
+            raise RuntimeError('offline root key entered online CA storage')
+        origin=self.start();self.wait(origin,'/health',Path(config['root'][0]))
+        return origin
 
     def check(self):
         check_cancelled()
@@ -97,7 +178,7 @@ class Provider:
 
 
 def recover():
-    """Recover only this leased worktree's registered Apple projects, even without local files."""
+    """Recover only this leased worktree's registered device CA projects, even without local files."""
     prefix = Environment().identity+'-t2-pki-'
     projects = set()
     for listing in (['ps','-a'], ['network','ls']):

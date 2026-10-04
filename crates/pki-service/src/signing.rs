@@ -33,6 +33,56 @@ impl Frozen {
             && self.deadline == i.deadline
     }
 }
+fn binding(
+    purpose: &str,
+    issuer: &str,
+    provider: &StepCa,
+    intent: Sign<'_>,
+) -> Result<Vec<u8>, Error> {
+    let binding = serde_json::to_vec(&Frozen {
+        version: 1,
+        purpose: purpose.into(),
+        issuer: issuer.into(),
+        provider: provider.authority_digest(issuer),
+        csr: intent.csr_pem.into(),
+        csr_digest: *intent.csr_digest,
+        subject: intent.subject.into(),
+        sans: intent.sans.to_vec(),
+        start: intent.start,
+        end: intent.end,
+        deadline: intent.deadline,
+    })
+    .map_err(|_| Error::Request)?;
+    Ok(binding)
+}
+/// Freeze external dispatch in the original lifecycle transaction, under the rotation fence.
+/// The later audited claim may use this exact old issuer after activation switches.
+pub async fn authorize_in(
+    c: &mut sqlx::PgConnection,
+    tenant: Uuid,
+    purpose: &str,
+    issuer: &str,
+    provider: &StepCa,
+    intent: Sign<'_>,
+) -> Result<(), Error> {
+    if !matches!(purpose, "windows" | "agent") || issuer.len() != 64 || intent.attempt.is_nil() {
+        return Err(Error::Request);
+    }
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2639))")
+        .bind(tenant.to_string())
+        .execute(&mut *c)
+        .await
+        .map_err(|_| Error::Storage)?;
+    let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_pki.issuers WHERE tenant_id=$1 AND purpose=$2 AND digest=$3 AND state='active')")
+        .bind(tenant).bind(purpose).bind(issuer).fetch_one(&mut *c).await.map_err(|_|Error::Storage)?;
+    if !active {
+        return Err(Error::Conflict);
+    }
+    let bytes = binding(purpose, issuer, provider, intent)?;
+    sqlx::query("INSERT INTO mdm_pki.signing(tenant_id,attempt,purpose,issuer,binding,deadline,digest,state) VALUES($1,$2,$3,$4,$5,$6,$7,'prepared')")
+        .bind(tenant).bind(intent.attempt).bind(purpose).bind(issuer).bind(&bytes).bind(intent.deadline).bind(Sha256::digest(&bytes).to_vec()).execute(c).await.map_err(|_|Error::Storage)?;
+    Ok(())
+}
 pub struct SigningStore {
     audit: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
 }
@@ -64,20 +114,7 @@ impl SigningStore {
         let unknown = || Error::Unknown {
             attempt: intent.attempt,
         };
-        let binding = serde_json::to_vec(&Frozen {
-            version: 1,
-            purpose: purpose.into(),
-            issuer: issuer.into(),
-            provider: provider.authority_digest(issuer),
-            csr: intent.csr_pem.into(),
-            csr_digest: *intent.csr_digest,
-            subject: intent.subject.into(),
-            sans: intent.sans.to_vec(),
-            start: intent.start,
-            end: intent.end,
-            deadline: intent.deadline,
-        })
-        .map_err(|_| Error::Request)?;
+        let binding = binding(purpose, issuer, provider, intent)?;
         let hash = Sha256::digest(&binding).to_vec();
         let a = rss_mdm_audit_integration::RequestAudit::new(
             tenant.to_string(),
@@ -93,15 +130,18 @@ impl SigningStore {
                     .bind(*tenant).bind(intent.attempt).fetch_optional(&mut *c).await.map_err(|_|Error::Storage)? {
                     let frozen:Frozen=serde_json::from_slice(&row.try_get::<Vec<u8>,_>("binding").map_err(|_|Error::Storage)?).map_err(|_|Error::Storage)?;
                     if !frozen.matches(purpose,issuer,*intent){return Err(Error::Conflict);}
-                    if row.try_get::<String,_>("state").map_err(|_|Error::Storage)?!="issued" {return Err(Error::Unknown{attempt:intent.attempt});}
-                    let chain=serde_json::from_slice(&row.try_get::<Vec<u8>,_>("chain").map_err(|_|Error::Storage)?).map_err(|_|Error::Storage)?;
-                    return Ok(crate::mutation::Change{value:Claim::Cached(chain),replay:false,key:String::new(),fingerprint:vec![]});
-                }
-                let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_pki.issuers WHERE tenant_id=$1 AND purpose=$2 AND digest=$3 AND state='active')")
-                    .bind(*tenant).bind(*purpose).bind(*issuer).fetch_one(&mut *c).await.map_err(|_|Error::Storage)?;
-                if !active || *now<intent.start || *now>=intent.deadline || *now-intent.start>=60 {return Err(Error::Request);}
-                sqlx::query("INSERT INTO mdm_pki.signing(tenant_id,attempt,purpose,issuer,binding,digest,state) VALUES($1,$2,$3,$4,$5,$6,'signing')")
-                    .bind(*tenant).bind(intent.attempt).bind(*purpose).bind(*issuer).bind(*binding).bind(*hash).execute(c).await.map_err(|_|Error::Storage)?;
+                    let state=row.try_get::<String,_>("state").map_err(|_|Error::Storage)?;
+                    if state=="prepared" {
+                        if row.try_get::<Vec<u8>,_>("binding").map_err(|_|Error::Storage)?!=**binding
+                            || *now<intent.start || *now>=intent.deadline || *now-intent.start>=60 {return Err(Error::Request);}
+                        sqlx::query("UPDATE mdm_pki.signing SET state='signing' WHERE tenant_id=$1 AND attempt=$2 AND state='prepared'")
+                            .bind(*tenant).bind(intent.attempt).execute(c).await.map_err(|_|Error::Storage)?;
+                    } else {
+                        if state!="issued" {return Err(Error::Unknown{attempt:intent.attempt});}
+                        let chain=serde_json::from_slice(&row.try_get::<Vec<u8>,_>("chain").map_err(|_|Error::Storage)?).map_err(|_|Error::Storage)?;
+                        return Ok(crate::mutation::Change{value:Claim::Cached(chain),replay:false,key:String::new(),fingerprint:vec![]});
+                    }
+                } else {return Err(Error::Request);}
                 Ok(crate::mutation::Change{value:Claim::New,replay:false,key:format!("pki:{}:claim",intent.attempt),fingerprint:hash.to_vec()})
             })).await;
         a.finalize(

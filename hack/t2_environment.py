@@ -75,7 +75,7 @@ class Environment:
                 'MDM_POSTGRES_IMAGE': PROVIDERS['postgres'], 'MDM_RUNTIME_IMAGE': PROVIDERS['runtime'],
                 'MDM_KEYCLOAK_IMAGE':PROVIDERS['keycloak'],'MDM_NGINX_IMAGE':PROVIDERS['nginx'],
                 'MDM_STEP_CA_IMAGE':PKI_CA['image'], 'MDM_STEP_CA_INTERNAL_PORT':str(PKI_CA['port']),
-                'MDM_PKI_ROOT':str(self.root/'apple'), 'MDM_PKI_USER':f'{os.getuid()}:{os.getgid()}',
+                'MDM_PKI_ROOT':str(self.root/'pki'), 'MDM_PKI_USER':f'{os.getuid()}:{os.getgid()}',
                 'MDM_PKI_HOST_ADDRESS':'host-gateway',
                 **settings, **getattr(self,'extra',{})}
 
@@ -370,7 +370,7 @@ class Environment:
             private(native_key,'').write_bytes(secrets.token_bytes(32))
         config=json.loads((ROOT/'fixtures/mdm-config.example.json').read_text())
         config['native_protection_key_file']=path(runtime,'native-data.key')
-        config.update(listen=f'127.0.0.1:{backend_port}',product_origin=origin,trusted_gateway='127.0.0.1',native_protocols={})
+        config.update(listen=f'127.0.0.1:{backend_port}',product_origin=origin,trusted_gateway='127.0.0.1',native_protocols={},device_pki=[])
         config['access_database']=database(runtime,'mdm_access');config['runtime_database']=database(runtime,'mdm_runtime')
         config['identity']['database']=database(runtime,'mdm_identity_runtime');config['identity']['audit_worker']=database(runtime,'mdm_identity_audit')
         config['execution']['database']=database(runtime,'mdm_command_runtime')
