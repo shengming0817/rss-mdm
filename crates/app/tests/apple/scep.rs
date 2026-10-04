@@ -47,8 +47,10 @@ async fn stale_issuer_rejects_new_profiles_but_preserves_frozen_attempts() -> Re
     .fetch_one(&mut pg)
     .await?;
     ensure!(old == attempt);
+    f.browser.operation = Some(Uuid::new_v4());
     let created = f.browser.call(&f.router, Method::POST, "/api/v1/enrollments",
         Some(json!({"source":"mdm.apple","password":password,"deviceId":crate::test_support::case::name("stale-issuer-device")}))).await?;
+    f.browser.operation = None;
     ensure!(created.0 == StatusCode::OK, "create enrollment {created:?}");
     let next = Uuid::parse_str(created.1["enrollmentId"].as_str().unwrap())?;
     let denied = f.router.clone().oneshot(profile(next)).await?;
