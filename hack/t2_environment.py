@@ -19,6 +19,7 @@ import uuid
 import ssl
 import socket
 import http.client
+import ipaddress
 from urllib.parse import urlsplit
 from build_run import lease_fds, require_lease
 
@@ -62,44 +63,72 @@ class Environment:
         finally:
             print(json.dumps(dict(phase=name, elapsed_seconds=round(time.monotonic()-start, 3), environment=self.project,status=status,**details)), flush=True)
 
-    def variables(self):
+    def variables(self, *, gateway=True):
         images=json.loads((self.root/'images.json').read_text()) if (self.root/'images.json').exists() else {}
-        gateway=self.root/'container-gateway.json'
-        tls=json.loads(gateway.read_text()) if gateway.exists() else self.local_gateway()
+        record=self.root/'container-gateway.json'
+        tls=json.loads(record.read_text()) if record.exists() else self.local_gateway()
+        settings={'MDM_PRODUCT_ORIGIN':tls['origin'] or '', 'MDM_GATEWAY_PUBLISH':tls['publish'],
+                  'MDM_GATEWAY_TLS_CERT_FILE':tls['certificate_file'], 'MDM_GATEWAY_TLS_KEY_FILE':tls['key_file']} if gateway else {}
         return {**{k:v for k,v in os.environ.items() if not k.startswith('COMPOSE_') and k not in ('MDM_SERVER_IMAGE','MDM_WEB_IMAGE')}, **images,
                 'MDM_ENV_ROOT': str(self.root), 'MDM_WORKTREE_ID': self.identity,
                 'MDM_POSTGRES_IMAGE': PROVIDERS['postgres'], 'MDM_RUNTIME_IMAGE': PROVIDERS['runtime'],
                 'MDM_KEYCLOAK_IMAGE':PROVIDERS['keycloak'],'MDM_NGINX_IMAGE':PROVIDERS['nginx'],
-                'MDM_GATEWAY_PUBLISH':tls['publish'], 'MDM_GATEWAY_TLS_DIR':tls['directory'],
-                'MDM_GATEWAY_TLS_CERT':tls['certificate'], 'MDM_GATEWAY_TLS_KEY':tls['key'], **getattr(self,'extra',{})}
+                **settings, **getattr(self,'extra',{})}
 
     def local_gateway(self):
-        return dict(origin=None,publish='127.0.0.1::8445',directory=str(self.root/'container/gateway'),
-                    certificate='server.crt',key='server.key')
+        directory=self.root/'container/gateway'
+        return dict(origin=None,publish='127.0.0.1::8445',
+                    certificate_file=str(directory/'server.crt'),key_file=str(directory/'server.key'))
 
-    def gateway_settings(self, certs_dir=None):
-        directory=Path(certs_dir).absolute() if certs_dir else self.worktree/'deployment/certs'
-        certificate=directory/'mdm.jiangshengming.com_bundle.crt'
-        key=directory/'mdm.jiangshengming.com.key'
-        if not certs_dir and not any(path.exists() or path.is_symlink() for path in (certificate,key)):return self.local_gateway()
+    def gateway_settings(self, env_file=None):
+        configured=Path(env_file).absolute() if env_file else self.worktree/'.env'
+        if env_file and not configured.is_file():raise ValueError('gateway env file does not exist')
+        names=('MDM_PRODUCT_ORIGIN','MDM_GATEWAY_PUBLISH','MDM_GATEWAY_TLS_CERT_FILE','MDM_GATEWAY_TLS_KEY_FILE')
+        if not configured.exists() and not any(os.environ.get(name) for name in names):return self.local_gateway()
+        # Compose owns dotenv parsing, interpolation, shell precedence and relative bind paths.
+        model=json.loads(run(['docker','compose','--env-file',configured if configured.exists() else os.devnull,
+            '--project-directory',self.worktree,'-p',self.project,'-f',ROOT/'deployment/compose.yaml',
+            '--profile','product','config','--format','json'],env=self.variables(gateway=False),capture_output=True).stdout)
+        settings=model['x-gateway']
+        origin=settings['origin']
+        external=(origin,settings['certificate_file'],settings['key_file'])
+        if not any(external):
+            tls=self.local_gateway();tls['publish']=settings['publish'];return tls
+        if not all(external):raise ValueError('external gateway requires origin, certificate file and private-key file together')
+        try:
+            endpoint=urlsplit(origin)
+            hostname=endpoint.hostname or ''
+            port=endpoint.port or 443
+            valid_host=bool(re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?',hostname))
+            try:ipaddress.ip_address(hostname);valid_host=True
+            except ValueError:pass
+            if any(character.isspace() for character in origin) or endpoint.scheme!='https' or not valid_host or endpoint.username is not None or endpoint.password is not None or endpoint.path or endpoint.query or endpoint.fragment or not 1<=port<=65535:
+                raise ValueError()
+        except ValueError:raise ValueError('MDM_PRODUCT_ORIGIN must be an HTTPS origin without credentials, path, query or fragment') from None
+        ports=model['services']['runtime-netns']['ports']
+        if len(ports)!=1 or ports[0]['target']!=8445 or str(ports[0].get('published',''))!=str(port) or ports[0].get('host_ip','0.0.0.0') not in ('0.0.0.0','127.0.0.1'):
+            raise ValueError('gateway publish must bind 127.0.0.1 or 0.0.0.0 and match the origin port, targeting 8445')
+        mounts={volume['target']:Path(volume['source']) for volume in model['services']['inputs']['volumes'] if volume['type']=='bind'}
+        certificate=mounts['/tls-input/server.crt'];key=mounts['/tls-input/server.key']
         if any(path.is_symlink() or not path.is_file() for path in (certificate,key)):
             raise RuntimeError('external gateway requires both certificate bundle and private key as regular files')
         try:
             ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(certificate,key,password=lambda:'')
-            run(['openssl','verify','-CAfile',certificate,'-partial_chain','-verify_hostname',
-                 'mdm.jiangshengming.com','-purpose','sslserver',certificate],capture_output=True)
+            try:ipaddress.ip_address(hostname);verify='-verify_ip'
+            except ValueError:verify='-verify_hostname'
+            run(['openssl','verify','-CAfile',certificate,'-partial_chain',verify,
+                 hostname,'-purpose','sslserver',certificate],capture_output=True)
         except (OSError,ssl.SSLError,subprocess.CalledProcessError):
             raise RuntimeError('external gateway certificate/key is invalid, expired or does not match its domain') from None
-        return dict(origin='https://mdm.jiangshengming.com',publish='0.0.0.0:443:8445',directory=str(directory),
-                    certificate=certificate.name,key=key.name)
+        return dict(origin=origin,publish=settings['publish'],certificate_file=str(certificate),key_file=str(key))
 
     def compose(self, *args, **kwargs):
         private_values=[]
         paths=list(self.root.rglob('*'))
         tls=self.variables()
-        paths.append(Path(tls['MDM_GATEWAY_TLS_DIR'])/tls['MDM_GATEWAY_TLS_KEY'])
+        paths.append(Path(tls['MDM_GATEWAY_TLS_KEY_FILE']))
         for path in paths:
-            if path.is_file() and not path.is_symlink() and ('password' in path.name or 'secret' in path.name or path.suffix=='.key'):
+            if path.is_file() and not path.is_symlink() and (path==Path(tls['MDM_GATEWAY_TLS_KEY_FILE']) or 'password' in path.name or 'secret' in path.name or path.suffix=='.key'):
                 raw = path.read_bytes()
                 values = [raw.hex(), base64.b64encode(raw).decode()]
                 try:
@@ -110,7 +139,7 @@ class Environment:
                     private_values.append(value)
                     private_value(value)
         try:
-            return run(['docker','compose','-p',self.project,'-f',ROOT/'deployment/compose.yaml',*args],
+            return run(['docker','compose','--env-file',os.devnull,'--project-directory',self.worktree,'-p',self.project,'-f',ROOT/'deployment/compose.yaml',*args],
                        env=self.variables(), capture_output=True, **kwargs).stdout.strip()
         except subprocess.CalledProcessError as error:
             from candidate_runtime import safe_evidence
@@ -287,13 +316,13 @@ class Environment:
                     return candidate
             raise RuntimeError('no host development port pair available')
 
-    def initialize(self, mode='host', server_image=None, web_image=None, certs_dir=None):
+    def initialize(self, mode='host', server_image=None, web_image=None, env_file=None):
         from candidate_fixture import installation, INSTANCE, TENANTS, ADMIN
         import secrets
-        if certs_dir and mode!='container':raise ValueError('external gateway certificates require container mode')
+        if env_file and mode!='container':raise ValueError('gateway env file requires container mode')
         if mode=='container':
             if not server_image or not web_image:raise ValueError('container mode requires --server-image and --web-image')
-            tls=self.gateway_settings(certs_dir)
+            tls=self.gateway_settings(env_file)
             self.prepare_inputs(certificates=False)
             private(self.root/'container-gateway.json',tls)
         self.up()
@@ -431,12 +460,12 @@ if __name__ == '__main__':
     parser.add_argument('--group',default='development')
     parser.add_argument('--server-image')
     parser.add_argument('--web-image')
-    parser.add_argument('--gateway-certs-dir',type=Path)
+    parser.add_argument('--env-file',type=Path)
     args = parser.parse_args()
     require_lease(ROOT)
     environment = Environment(group=args.group)
     if args.action == 'init':
-        print(json.dumps(environment.initialize(args.mode,args.server_image,args.web_image,args.gateway_certs_dir)))
+        print(json.dumps(environment.initialize(args.mode,args.server_image,args.web_image,args.env_file)))
     else:
         result = getattr(environment,args.action)()
         if args.action=='up' and args.mode=='container':environment.start_product()

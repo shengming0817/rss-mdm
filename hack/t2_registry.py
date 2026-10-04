@@ -977,6 +977,7 @@ TOOL_INPUTS = {
     'hack/s3_fixtures.py': ('test_s3_fixtures',),
     'fixtures/s3-provider.lock.json': ('test_s3_fixtures',),
     'hack/t2_environment.py': ('test_t2_environment', 'test_t2_runner'),
+    '.env.example': ('test_t2_environment', 'test_t2_runner'),
     'deployment/compose.yaml': ('test_t2_environment', 'test_t2_runner'),
     'hack/t2_fixtures.py': ('test_t2_fixtures', 'test_t2_environment', 'test_t2_runner'),
     'hack/verification_result.py': ('test_t2_runner', 'test_t2_modules', 'test_ci_selection', 'test_ci'),

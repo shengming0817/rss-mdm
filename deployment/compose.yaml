@@ -1,4 +1,10 @@
 # One resource definition for worktree development and T2.
+# Deployment-specific values are supplied by an ignored .env or explicit --env-file.
+x-gateway:
+  origin: ${MDM_PRODUCT_ORIGIN:-}
+  publish: ${MDM_GATEWAY_PUBLISH:-127.0.0.1::8445}
+  certificate_file: ${MDM_GATEWAY_TLS_CERT_FILE:-}
+  key_file: ${MDM_GATEWAY_TLS_KEY_FILE:-}
 services:
   postgres:
     image: ${MDM_POSTGRES_IMAGE:?}
@@ -67,8 +73,14 @@ services:
     volumes:
       - ${MDM_ENV_ROOT:?}/container:/inputs:ro
       - type: bind
-        source: ${MDM_GATEWAY_TLS_DIR:?}
-        target: /tls-input
+        source: ${MDM_GATEWAY_TLS_CERT_FILE:-${MDM_ENV_ROOT}/container/gateway/server.crt}
+        target: /tls-input/server.crt
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${MDM_GATEWAY_TLS_KEY_FILE:-${MDM_ENV_ROOT}/container/gateway/server.key}
+        target: /tls-input/server.key
         read_only: true
         bind:
           create_host_path: false
@@ -81,8 +93,8 @@ services:
       - -ec
       - |
         for group in runtime operator gateway; do cp /inputs/$$group/* /out/$$group/; done
-        cp /tls-input/${MDM_GATEWAY_TLS_CERT:-server.crt} /out/gateway/server.crt
-        cp /tls-input/${MDM_GATEWAY_TLS_KEY:-server.key} /out/gateway/server.key
+        cp /tls-input/server.crt /out/gateway/server.crt
+        cp /tls-input/server.key /out/gateway/server.key
         for group in runtime operator gateway; do
           chown -R 10001:10001 /out/$$group
           chmod 700 /out/$$group
