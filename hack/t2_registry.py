@@ -866,7 +866,7 @@ for name, module in tuple(MODULES.items()):
     if fixtures & {'scep','oracle'}:
         support += ('hack/apple_tools.py','fixtures/apple-tools.lock.json')
     if 'scep' in fixtures:
-        support += ('hack/apple_ca.py',)
+        support += ('hack/apple_ca.py','deployment/compose.yaml')
     if 'idp' in fixtures:
         support += ('hack/enterprise_idp.py',)
     if name in ('apple.cms','apple.apns','native.tls'):
@@ -981,20 +981,21 @@ TOOL_INPUTS = {
     'hack/t2_registry.py': ('test_app_test_layout', 'test_t2_policy', 'test_t2_modules', 'test_t2_runner', 'test_ci_selection', 'test_ci_impact'),
     'hack/t2.py': ('test_t2_modules', 'test_t2_runner', 'test_t2_guards'),
     'hack/t2_execution.py': ('test_t2_execution', 'test_t2_runner'),
-    'hack/t2_processes.py': ('test_t2_execution', 'test_t2_fixtures', 'test_t2_runner'),
+    'hack/t2_processes.py': ('test_t2_execution', 'test_t2_fixtures', 'test_t2_runner', 'test_apple_tools', 'test_apple_ca'),
     'hack/source_fixtures.py': ('test_source_t2',),
     'hack/s3_fixtures.py': ('test_s3_fixtures',),
     'fixtures/s3-provider.lock.json': ('test_s3_fixtures',),
-    'hack/t2_environment.py': ('test_t2_environment', 'test_t2_runner'),
+    'hack/t2_environment.py': ('test_t2_environment', 'test_t2_runner', 'test_apple_ca'),
     '.env.example': ('test_t2_environment', 'test_t2_runner'),
-    'deployment/compose.yaml': ('test_t2_environment', 'test_t2_runner'),
+    'deployment/compose.yaml': ('test_t2_environment', 'test_t2_runner', 'test_apple_ca'),
     'hack/t2_fixtures.py': ('test_t2_fixtures', 'test_t2_environment', 'test_t2_runner'),
     'hack/verification_result.py': ('test_t2_runner', 'test_t2_modules', 'test_ci_selection', 'test_ci'),
     'hack/build_run.py': ('test_build_run', 'test_build_environment'),
     'hack/ci.py': ('test_ci', 'test_ci_selection'),
     'hack/agent_wire_artifact.py': ('test_agent_wire_artifact',),
     'hack/apple_tools.py': ('test_apple_tools',),
-    'fixtures/apple-tools.lock.json': ('test_apple_tools',),
+    'hack/apple_ca.py': ('test_apple_ca',),
+    'fixtures/apple-tools.lock.json': ('test_apple_tools', 'test_apple_ca', 'test_t2_environment'),
     'hack/auth_t3.py': ('test_auth_t3',),
     'hack/auth_t3_browser.mjs': ('test_auth_t3',),
     'hack/release.py': ('test_release',),
