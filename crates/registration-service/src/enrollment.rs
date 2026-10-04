@@ -213,7 +213,7 @@ impl EnrollmentService {
             rss_identity_core::session::SessionSecret::parse(continuation.expose().into())
                 .map_err(|_| Error::Unauthorized)?,
         )?;
-        store::create_enrollment(
+        let result = store::create_enrollment(
             &self.audit_store,
             permission,
             &input.password,
@@ -223,7 +223,8 @@ impl EnrollmentService {
             key,
             audit,
         )
-        .await
+        .await;
+        self.settle_handoff(reference, result, audit)
     }
     pub async fn create_self(
         &self,
@@ -252,7 +253,7 @@ impl EnrollmentService {
             rss_identity_core::session::SessionSecret::parse(continuation.expose().into())
                 .map_err(|_| Error::Unauthorized)?,
         )?;
-        let receipt = store::create_enrollment(
+        let result = store::create_enrollment(
             &self.audit_store,
             permission,
             &input.password,
@@ -262,7 +263,8 @@ impl EnrollmentService {
             key,
             audit,
         )
-        .await?;
+        .await;
+        let receipt = self.settle_handoff(reference, result, audit)?;
         Ok(SelfReceipt { device_id, receipt })
     }
     pub async fn resume(
@@ -279,7 +281,7 @@ impl EnrollmentService {
             rss_identity_core::session::SessionSecret::parse(continuation.expose().into())
                 .map_err(|_| Error::Unauthorized)?,
         )?;
-        store::change_enrollment(
+        let result = store::change_enrollment(
             &self.audit_store,
             permission,
             command.id,
@@ -287,7 +289,22 @@ impl EnrollmentService {
             command.operation,
             audit,
         )
-        .await
+        .await;
+        self.settle_handoff(reference, result, audit)
+    }
+    fn settle_handoff<T>(
+        &self,
+        reference: Uuid,
+        result: Result<T, Error>,
+        audit: &rss_mdm_audit_integration::RequestAudit,
+    ) -> Result<T, Error> {
+        // The lifecycle producer sets Replayed only after returning the locked
+        // old receipt without using this attempt's reference.
+        let replayed = matches!(
+            audit.snapshot().management_result,
+            Some(rss_mdm_audit_integration::ManagementResult::Replayed)
+        );
+        self.credentials.settle(reference, result, replayed)
     }
 }
 

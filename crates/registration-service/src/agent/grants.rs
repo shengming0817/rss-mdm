@@ -98,8 +98,8 @@ operation_id=$3
                         crate::quotas::admit_on(
                             c,
                             &tenant,
-                            p.principal_id(),
                             p.instance_id(),
+                            p.principal_id(),
                             crate::quotas::Channel::Agent,
                         )
                         .await?;
@@ -239,8 +239,8 @@ VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,clock_timestamp()+make_inter
                     crate::quotas::admit_on(
                         c,
                         &tenant,
-                        p.principal_id(),
                         p.instance_id(),
+                        p.principal_id(),
                         crate::quotas::Channel::Agent,
                     )
                     .await?;

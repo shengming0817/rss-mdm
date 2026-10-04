@@ -1540,3 +1540,5 @@ consume(('crates/policy/src/self_service.rs','crates/execution-service/src/scrip
 consume(('crates/registration-service/src/enrollment.rs','crates/registration-service/src/enrollment/*','crates/registration-service/src/agent/grants.rs','crates/management-http/src/agent_enrollment.rs','crates/authorization-service/src/context.rs'), 'enrollment.quotas')
 
 consume(('crates/windows-channel/src/protocol_device.rs',), 'windows.issuance windows.enrollment windows.management windows.declared')
+
+consume(('crates/registration-service/src/quotas.rs', 'crates/registration-service/schema/quota-usage.sql'), 'agent.registration')

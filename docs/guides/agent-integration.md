@@ -6,7 +6,7 @@
 
 注册生命周期为 `/api/v1/agent/enroll`，运行请求为 `/api/v1/agent/runtime`，二者独立演进。本次运行 JSON 的 `wireVersion: 1`、capability `*.v1` 和三类任务签名域共同重建为新 V1。新 V1 继承当前 V6 的业务和安全语义，拒绝历史 V1 shape、V2–V6、旧 capability 与签名；未来由各族 owner 明确演进。[agent-wire](../../crates/agent-wire/README.md) 分别发布 `enroll`、`runtime` schema 清单与指纹。
 
-所有已认证用户可注册自己的设备，默认每用户最多 10 台，未过期的活跃授权预留也计入配额。租户配置可以关闭新用户注册（limit=0），不影响已注册设备。授权默认 24 小时，最多 7 天；数据库只保存租户隔离的秘密摘要。
+所有已认证租户用户可注册自己的设备，Agent 默认每用户 20 台，Windows 与 macOS 共用 Agent 额度；有效授权预留也计入占用。租户默认值与可空的个人覆盖见 [自助注册与个人额度](device-enrollment.md#自助注册与个人额度)，0 禁止新增并保留既有注册。授权默认 24 小时，最多 7 天；数据库只保存租户隔离的秘密摘要。
 
 三种来源统一进入独立 Agent 证书链路：
 

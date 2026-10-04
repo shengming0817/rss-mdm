@@ -92,7 +92,11 @@ async fn concurrent_self_enrollment_replays_and_preserves_live_reservations() ->
         (second, b.1, a)
     };
     ensure!(loser.0 == StatusCode::TOO_MANY_REQUESTS && loser.1["code"] == "registration_limit");
-    ensure!(call(&mut winner, &router, Method::POST, SELF, Some(native())).await? == receipt);
+    // More replays than the fixture's shared handoff capacity must retain only
+    // the original credential reference.
+    for _ in 0..20 {
+        ensure!(call(&mut winner, &router, Method::POST, SELF, Some(native())).await? == receipt);
+    }
     let before = call(&mut other, &router, Method::GET, ME, None).await?;
     ensure!(windows(&before)["active"] == 0 && windows(&before)["reserved"] == 1);
     ensure!(
@@ -111,6 +115,15 @@ async fn concurrent_self_enrollment_replays_and_preserves_live_reservations() ->
         json!({"expectedRevision":1,"limits":{"agent":20,"windows_mdm":0,"macos_mdm":20}}),
     )
     .await?;
+    for _ in 0..20 {
+        other.operation = Some(Uuid::new_v4());
+        let denied = other
+            .call(&router, Method::POST, SELF, Some(native()))
+            .await?;
+        ensure!(
+            denied.0 == StatusCode::TOO_MANY_REQUESTS && denied.1["code"] == "registration_limit"
+        );
+    }
     let low = call(&mut other, &router, Method::GET, ME, None).await?;
     ensure!(
         windows(&low)["used"] == 1
@@ -118,6 +131,19 @@ async fn concurrent_self_enrollment_replays_and_preserves_live_reservations() ->
             && windows(&low)["canEnroll"] == false
     );
     let id = receipt["enrollmentId"].as_str().unwrap();
+    // The public lifecycle read must reject a forged self-service target too,
+    // independently of HTTP's owned-permission lookup.
+    let outsider = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
+    let guessed = outsider.self_enrollment(receipt["deviceId"].as_str().unwrap())?;
+    ensure!(matches!(
+        rss_mdm_registration_service::enrollment::read::enrollment_status(
+            f.access.registration().as_ref(),
+            guessed,
+            Uuid::parse_str(id)?
+        )
+        .await,
+        Err(rss_mdm_registration_service::Error::Forbidden)
+    ));
     write(
         &mut winner,
         &router,
