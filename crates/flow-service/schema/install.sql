@@ -91,14 +91,14 @@ CREATE TABLE mdm_planning.asset_dispatch (
     tenant_id uuid NOT NULL,
     consumed bigint DEFAULT 0 NOT NULL,
     watermark bigint DEFAULT 0 NOT NULL,
-    cursor uuid,
+    cursor text COLLATE "C",
     failure text,
     failure_generation bigint DEFAULT 0 NOT NULL,
     phase text DEFAULT 'groups'::text NOT NULL,
     CONSTRAINT asset_dispatch_check CHECK (((consumed >= 0) AND (watermark >= consumed))),
     CONSTRAINT asset_dispatch_failure_check CHECK ((failure = 'automation_suspended'::text)),
     CONSTRAINT asset_dispatch_failure_generation_check CHECK ((failure_generation >= 0)),
-    CONSTRAINT asset_dispatch_phase_check CHECK ((phase = ANY (ARRAY['groups'::text, 'devices'::text, 'compliance'::text])))
+    CONSTRAINT asset_dispatch_phase_check CHECK ((phase = ANY (ARRAY['groups'::text, 'devices'::text, 'scopes'::text, 'compliance'::text])))
 );
 
 ALTER TABLE ONLY mdm_planning.asset_dispatch FORCE ROW LEVEL SECURITY;
