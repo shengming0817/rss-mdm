@@ -416,7 +416,7 @@ fn installation_accepts_empty_current_or_explicit_complete_predecessor_ledger() 
     for prefix in 1..ledger.len() {
         assert_eq!(
             accepted_ledger(&ledger[..prefix], &current),
-            prefix == baseline_units().len()
+            prefix == baseline_units().len() || prefix == current.len() - 1
         );
     }
     let mut altered = ledger.clone();
@@ -451,4 +451,43 @@ fn installation_validates_tenant_coordinates_within_the_declared_limit() {
     assert!(installation.validate().is_err());
     installation.tenants.clear();
     assert!(installation.validate().is_err());
+}
+
+#[tokio::test]
+#[ignore = "MODULE=installation.migration: previous released ledger adds enrollment evidence"]
+async fn previous_release_adds_enrollment_progress_without_rewriting_units() -> Result<()> {
+    let options = PgConnectOptions::from_str(&std::env::var("MDM_OWNER_URL")?)?
+        .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
+        .ssl_root_cert(std::env::var("PG_CA_FILE")?);
+    let installation = Installation {
+        audit_mode: AuditMode::Plain,
+        instance_id: crate::test_support::identity::INSTANCE.into(),
+        target: [1; 16],
+        lineage: [2; 16],
+        epoch: 1,
+        tenants: vec!["11111111-1111-4111-8111-111111111111".into()],
+    };
+    let mut owner = PgConnection::connect_with(&options).await?;
+    let current = units();
+    let previous = current
+        .iter()
+        .copied()
+        .filter(|(name, _)| *name != "enrollment-progress-v1")
+        .collect::<Vec<_>>();
+    migrate_units(&mut owner, &installation, &previous).await?;
+    let old: Vec<(String, String, bool)> =
+        sqlx::query_as("SELECT name,digest,complete FROM public.mdm_migrations ORDER BY name")
+            .fetch_all(&mut owner)
+            .await?;
+    migrate_on(&mut owner, &installation).await?;
+    let migrated: Vec<(String, String, bool)> =
+        sqlx::query_as("SELECT name,digest,complete FROM public.mdm_migrations ORDER BY name")
+            .fetch_all(&mut owner)
+            .await?;
+    ensure!(migrated.len() == old.len() + 1 && old.iter().all(|unit| migrated.contains(unit)));
+    let nullable:bool=sqlx::query_scalar("SELECT NOT attnotnull FROM pg_attribute WHERE attrelid='mdm_access.registrations'::regclass AND attname='first_authenticated_at'").fetch_one(&mut owner).await?;
+    ensure!(nullable);
+    migrate_on(&mut owner, &installation).await?;
+    owner.close().await?;
+    Ok(())
 }

@@ -181,7 +181,15 @@ async fn external_scep_issuance_and_lost_notify() -> Result<()> {
 #[ignore = "MODULE=apple.scep: ordinary user self enrollment and real native activation"]
 async fn self_enrollment_uses_current_user_and_one_macos_allocation() -> Result<()> {
     let mut f = Fixture::start().await?;
+    let (client, origin, control) = f.https_browser().await?;
+    f.browser.network = Some((client, origin));
     let (enrollment, attempt, password) = f.self_enrollment().await?;
+    let prepared = f.self_progress(enrollment).await?;
+    ensure!(
+        prepared["progress"]["profilePrepared"] == "observed"
+            && prepared["progress"]["managementReady"] == false
+    );
+    ensure!(prepared["progress"]["diagnostic"] == "awaiting_certificate");
     let device = scep_client::Device::new(enrollment, attempt, &password)?;
     let apple = f.app.apple()?;
     let request = device.request(
@@ -192,6 +200,12 @@ async fn self_enrollment_uses_current_user_and_one_macos_allocation() -> Result<
     let der = device
         .enroll(&f.client()?, &apple.channel.scep_fixture()?.0, &request)
         .await?;
+    let issued = f.self_progress(enrollment).await?;
+    ensure!(
+        issued["progress"]["certificateIssued"] == true
+            && issued["progress"]["managementReady"] == false
+    );
+    ensure!(issued["progress"]["systemConfirmation"] == "unknown");
     let client = reqwest::Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(40))
@@ -217,6 +231,25 @@ async fn self_enrollment_uses_current_user_and_one_macos_allocation() -> Result<
             .status()
             == StatusCode::OK
     );
+    let authenticated = f.self_progress(enrollment).await?;
+    ensure!(
+        authenticated["progress"]["firstAuthenticatedCheckIn"] == true
+            && authenticated["progress"]["managementReady"] == false
+    );
+    ensure!(
+        authenticated["progress"]["diagnostic"] == "awaiting_device_token",
+        "{authenticated}"
+    );
+    let peer = lifecycle::Peer {
+        installed_trust: Default::default(),
+        oracle: oracle::Oracle::new(&der)?,
+        client,
+        origin: apple.config.management.origin.clone(),
+        topic: apple.config.apns_topic.clone(),
+    };
+    peer.token().await?;
+    let ready = f.self_progress(enrollment).await?;
+    ensure!(ready["progress"]["managementReady"] == true, "{ready}");
     let proof = crate::device::test_support::admin(super::case_tenant(), "other-a").await?;
     let quotas = rss_mdm_registration_service::quotas::Quotas::new(
         f.app.access.registration(),
@@ -229,5 +262,6 @@ async fn self_enrollment_uses_current_user_and_one_macos_allocation() -> Result<
         .find(|c| c.channel == rss_mdm_registration_service::quotas::Channel::MacosMdm)
         .unwrap();
     ensure!(usage.active == 1 && usage.reserved == 0 && usage.used == 1);
+    ensure!(control.shutdown().join().await?.is_clean());
     f.close().await
 }

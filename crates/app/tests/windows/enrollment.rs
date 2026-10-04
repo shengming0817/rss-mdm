@@ -166,6 +166,10 @@ async fn discover_and_policy(
         &CodecLimits::default(),
     )?;
     let discovery_url = format!("{origin}/EnrollmentServer/Discovery.svc");
+    for method in [reqwest::Method::GET, reqwest::Method::HEAD] {
+        let probe = client.request(method, &discovery_url).send().await?;
+        ensure!(probe.status() == StatusCode::OK && probe.bytes().await?.is_empty());
+    }
     discovery.header.to = Some(discovery_url.clone());
     let response = client
         .post(&discovery_url)
@@ -200,7 +204,7 @@ async fn discover_and_policy(
         .username
         .as_mut()
         .unwrap();
-    token.username = Secret(enrollment.to_string());
+    token.username = Secret(app.windows()?.channel.enrollment_username(enrollment)?);
     token.password = Secret(password.to_owned());
     let response = client
         .post(&found.policy_url)
@@ -239,6 +243,38 @@ async fn discover_and_policy(
                 Body::Fault(soap::FaultKind::MessageFormat)
             ));
         }
+    }
+    for username in [
+        enrollment.to_string(),
+        format!("{enrollment}@wrong.invalid"),
+        format!("{}@localhost", enrollment.to_string().to_uppercase()),
+    ] {
+        let mut invalid = policy.clone();
+        invalid
+            .header
+            .security
+            .as_mut()
+            .unwrap()
+            .username
+            .as_mut()
+            .unwrap()
+            .username = Secret(username);
+        let denied = client
+            .post(&found.policy_url)
+            .header("content-type", "application/soap+xml")
+            .body(soap::encode(&invalid, &CodecLimits::default())?)
+            .send()
+            .await?;
+        ensure!(denied.status() == StatusCode::INTERNAL_SERVER_ERROR);
+        let fault = soap::decode(
+            &denied.bytes().await?,
+            Operation::Fault,
+            &CodecLimits::default(),
+        )?;
+        ensure!(matches!(
+            fault.body,
+            Body::Fault(soap::FaultKind::Authentication)
+        ));
     }
     policy
         .header
@@ -329,6 +365,100 @@ async fn self_enrollment_preserves_server_identity_and_terminal_protocol_id() ->
     let mut host = Host::open().await?;
     host.listen().await?;
     let peer = host.self_peer().await?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let origin = format!("http://{}", listener.local_addr()?);
+    let _server = crate::test_support::software::HttpServer::start(listener, host.browser.clone());
+    let secret = crate::test_support::identity::credential(&host.app.identity, "other")?;
+    let mut browser = crate::test_support::Browser {
+        network: Some((
+            reqwest::Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(12))
+                .build()?,
+            origin,
+        )),
+        cookies: std::collections::BTreeMap::from([(
+            "__Host-identity-session".into(),
+            secret.expose().into(),
+        )]),
+        csrf: Some(secret.csrf()),
+        ..Default::default()
+    };
+    let path = format!("/api/v1/enrollments/{}", peer.receipt.enrollment_id);
+    let (status, options) = browser
+        .call(
+            &host.browser,
+            axum::http::Method::GET,
+            "/api/v1/self-enrollments",
+            None,
+        )
+        .await?;
+    ensure!(status == StatusCode::OK && options["channels"].as_array().unwrap().len() == 1);
+    ensure!(options["channels"][0]["source"] == "mdm.windows");
+    let (status, before) = browser
+        .call(&host.browser, axum::http::Method::GET, &path, None)
+        .await?;
+    ensure!(status == StatusCode::OK && before["progress"]["certificateIssued"] == true);
+    ensure!(
+        before["progress"]["managementReady"] == false
+            && before["progress"]["diagnostic"] == "awaiting_first_check_in"
+    );
+    ensure!(
+        before["instructions"]["username"]
+            == host
+                .app
+                .windows()?
+                .channel
+                .enrollment_username(peer.receipt.enrollment_id)?
+    );
+    ensure!(before["progress"]["systemConfirmation"] == "unknown");
+    use rss_mdm_windows_mdm::syncml;
+    ensure!(
+        peer.mutual
+            .post(&peer.url)
+            .header("content-type", "application/vnd.syncml.dm+xml")
+            .body(syncml::encode(&peer.message, &CodecLimits::default())?)
+            .send()
+            .await?
+            .status()
+            == StatusCode::OK
+    );
+    let (_, challenged) = browser
+        .call(&host.browser, axum::http::Method::GET, &path, None)
+        .await?;
+    ensure!(
+        challenged["progress"]["managementReady"] == false
+            && challenged["progress"]["firstAuthenticatedCheckIn"] == false
+    );
+    authenticate_self_peer(&peer).await?;
+    let (status, ready) = browser
+        .call(&host.browser, axum::http::Method::GET, &path, None)
+        .await?;
+    ensure!(
+        status == StatusCode::OK && ready["progress"]["managementReady"] == true,
+        "{ready}"
+    );
+    // Remove temporary sessions: the owner's first authenticated fact must survive retention.
+    let mut tx = host.store.begin(case_tenant()).await?;
+    sqlx::query(
+        "DELETE FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND registration=$2",
+    )
+    .bind(case_tenant())
+    .bind(peer.intent.registration)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "DELETE FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid AND registration=$2",
+    )
+    .bind(case_tenant())
+    .bind(peer.intent.registration)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let (_, retained) = browser
+        .call(&host.browser, axum::http::Method::GET, &path, None)
+        .await?;
+    ensure!(retained["progress"]["managementReady"] == true);
     let proof = crate::device::test_support::admin(case_tenant(), "other-a").await?;
     let quotas = rss_mdm_registration_service::quotas::Quotas::new(
         host.store.registration(),
@@ -345,5 +475,56 @@ async fn self_enrollment_preserves_server_identity_and_terminal_protocol_id() ->
     let device:String=sqlx::query_scalar("SELECT g.device FROM mdm_access.requests q JOIN mdm_access.grants g ON(q.tenant_id,q.grant_id)=(g.tenant_id,g.id) WHERE q.tenant_id=$1::uuid AND q.id=$2 AND q.self_service").bind(case_tenant()).bind(peer.receipt.enrollment_id).fetch_one(&mut *tx).await?;
     ensure!(device.starts_with("self:") && device != crate::test_support::case::name("tls-device"));
     tx.rollback().await?;
+    crate::test_support::identity::set_grants(
+        case_tenant(),
+        crate::test_support::case::admin(),
+        crate::test_support::identity::device_grants(Some(&device), &["credentials"])?,
+    )
+    .await?;
+    let admin = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
+    host.app
+        .devices
+        .revoke(&admin, &device, peer.intent.registration, Uuid::new_v4())
+        .await?;
+    let (_, revoked) = browser
+        .call(&host.browser, axum::http::Method::GET, &path, None)
+        .await?;
+    ensure!(
+        revoked["progress"]["managementReady"] == false
+            && revoked["progress"]["diagnostic"] == "revoked"
+    );
     host.close().await
+}
+
+async fn authenticate_self_peer(peer: &Peer) -> anyhow::Result<()> {
+    use rss_mdm_windows_mdm::syncml::{self, Command, CommandName};
+    let post = |message: &syncml::Message| -> anyhow::Result<_> {
+        Ok(peer
+            .mutual
+            .post(&peer.url)
+            .header("content-type", "application/vnd.syncml.dm+xml")
+            .body(syncml::encode(message, &CodecLimits::default())?))
+    };
+    let followup = syncml::Message {
+        header: syncml::Header {
+            message_id: 2,
+            credential: None,
+            ..peer.message.header.clone()
+        },
+        commands: vec![Command::Status(syncml::Status {
+            id: 1,
+            message_ref: 1,
+            command_ref: 0,
+            command: CommandName::SyncHdr,
+            target_refs: vec![],
+            source_refs: vec![],
+            code: 212,
+            items: vec![],
+            challenge: None,
+            credential: None,
+        })],
+        final_message: true,
+    };
+    ensure!(post(&followup)?.send().await?.status() == StatusCode::OK);
+    Ok(())
 }

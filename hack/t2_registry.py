@@ -1593,3 +1593,7 @@ for name, module in tuple(MODULES.items()):
     MODULES[name] = replace(module, scope=scope, policies=policies)
 
 consume(('deployment/windows-leaf.tpl',), ' '.join(name for name, module in MODULES.items() if 'windows' in module.fixtures))
+
+consume(('crates/app/src/enrollment_progress.rs',), 'enrollment.http windows.enrollment windows.management apple.scep apple.identity')
+consume(('crates/registration-service/schema/enrollment-progress.sql',), 'installation.migration installation.upgrade_runtime catalog.contract enrollment.http windows.enrollment windows.management')
+consume(('crates/registration-service/src/database.rs',), 'enrollment.http enrollment.recovery enrollment.quotas device.binding device.revocation device.recovery agent.registration agent.pki')

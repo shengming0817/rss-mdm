@@ -61,6 +61,10 @@ impl Authority {
             "/api/v1",
             crate::enrollment::http::routes().with_state(Arc::new(
                 crate::enrollment::http::HttpState {
+                    native: Arc::new(crate::enrollment_progress::EnrollmentProgress {
+                        windows: None,
+                        apple: None,
+                    }),
                     service: Arc::new(crate::enrollment::EnrollmentService::new(
                         self.access.registration(),
                         self.credentials.clone(),

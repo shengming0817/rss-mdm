@@ -171,7 +171,12 @@ async fn concurrent_self_enrollment_replays_and_preserves_live_reservations() ->
         rss_mdm_registration_service::enrollment::read::enrollment_status(
             f.access.registration().as_ref(),
             guessed,
-            Uuid::parse_str(id)?
+            Uuid::parse_str(id)?,
+            &crate::enrollment_progress::EnrollmentProgress {
+                windows: None,
+                apple: None
+            },
+            f.credentials.as_ref()
         )
         .await,
         Err(rss_mdm_registration_service::Error::Forbidden)
