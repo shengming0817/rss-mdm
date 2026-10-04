@@ -325,7 +325,7 @@ async fn certificate_renewal_preserves_registration() -> Result<()> {
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
-    let enrollment: Uuid = sqlx::query_scalar("SELECT s.enrollment FROM mdm_apple.scep_attempts s JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(s.tenant_id,s.registration) WHERE s.tenant_id=$1::uuid AND s.enrollment=$2 AND s.state='bound'")
+    let enrollment: Uuid = sqlx::query_scalar("SELECT s.enrollment FROM mdm_apple.scep_attempts s JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(s.tenant_id,s.registration) WHERE s.tenant_id=$1::uuid AND r.device=$2 AND s.state='bound'")
         .bind(case_tenant()).bind(case_device()).fetch_one(&mut pg).await?;
     let path = format!("/api/v1/enrollments/{enrollment}");
     let (status, before) = f.browser.call(&f.router, Method::GET, &path, None).await?;
