@@ -100,6 +100,22 @@ class ProviderTests(unittest.TestCase):
                 factory.assert_any_call(group='t2-apple-'+'b'*20)
                 factory.return_value.reset.assert_called_once()
 
+    def test_provider_and_webhook_diagnostics_survive_private_fixture_removal(self):
+        from t2_processes import diagnostics, private_value
+        with tempfile.TemporaryDirectory() as temporary:
+            artifact = Path(temporary)/'fixture.log'
+            with tempfile.TemporaryDirectory() as case:
+                provider = self.provider(case)
+                (provider.root/'step-webhooks.log').write_text('TLS handshake failed; sensitive-hook-value')
+                provider.owner.compose.return_value = 'CA exited; sensitive-hook-value'
+                with diagnostics(artifact):
+                    private_value('sensitive-hook-value')
+                    provider.logs()
+            content = artifact.read_text()
+            self.assertIn('TLS handshake failed',content)
+            self.assertIn('CA exited',content)
+            self.assertNotIn('sensitive-hook-value',content)
+
 
 def ssl_context(root):
     # Force a wrong SNI while still routing to the actual local test listener.

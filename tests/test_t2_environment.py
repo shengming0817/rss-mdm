@@ -71,6 +71,23 @@ class EnvironmentTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError): env.reset()
                 compose.assert_not_called()
 
+    def test_docker_cleanup_timeout_retains_owner_for_later_recovery(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            env = Environment(Path(tmp))
+            env.prepare_inputs(certificates=False)
+            marker = env.root/'owner.json'
+            for phase in ('ownership','down'):
+                def compose(*args, **kwargs):
+                    self.assertEqual(kwargs['timeout'],30)
+                    if phase == 'ownership' or 'down' in args:
+                        raise subprocess.TimeoutExpired('docker',kwargs['timeout'])
+                    return '{"services":{},"volumes":{},"networks":{}}'
+                with self.subTest(phase=phase),patch.object(env,'compose',side_effect=compose),patch('t2_environment.run',return_value=SimpleNamespace(stdout='')):
+                    with self.assertRaises(subprocess.TimeoutExpired):
+                        env.reset()
+                    self.assertTrue(marker.exists())
+
     def test_runtime_volume_does_not_receive_operator_secrets(self):
         source=(Path(__file__).resolve().parents[1]/'deployment/compose.yaml').read_text()
         server=source.split('  server:',1)[1].split('  gateway:',1)[0]

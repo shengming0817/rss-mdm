@@ -731,6 +731,17 @@ fn profile_manifest(id: Uuid, kind: &str) -> plist::Value {
 // The listener remains owned throughout the control-plane update and TLS startup.
 // ref: smallstep/cli v0.30.2 command/ca/provisioner/webhook/update.go.
 async fn publish_webhooks(root: &std::path::Path, address: std::net::SocketAddr) -> Result<()> {
+    use std::io::Write;
+    use tokio::io::AsyncReadExt;
+    let mut diagnostics = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(root.join("step-webhooks.log"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        diagnostics.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
     for (name, phase) in [("rss", "challenge"), ("rss_notify", "notify")] {
         let mut child = tokio::process::Command::new(std::env::var("MDM_STEP_CLI")?)
             .args([
@@ -761,17 +772,29 @@ async fn publish_webhooks(root: &std::path::Path, address: std::net::SocketAddr)
             .env("STEPPATH", root.join("step"))
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
             .spawn()?;
-        let status = match tokio::time::timeout(Duration::from_secs(30), child.wait()).await {
-            Ok(result) => result?,
+        let stderr = child.stderr.take().unwrap();
+        let mut evidence = Vec::new();
+        let completion = tokio::time::timeout(Duration::from_secs(30), async {
+            stderr.take(64 * 1024).read_to_end(&mut evidence).await?;
+            child.wait().await
+        })
+        .await;
+        let status: Result<_> = match completion {
+            Ok(result) => result.map_err(Into::into),
             Err(_) => {
                 child.kill().await?;
                 child.wait().await?;
-                anyhow::bail!("Apple {phase} webhook publication deadline");
+                Err(anyhow::anyhow!(
+                    "Apple {phase} webhook publication deadline"
+                ))
             }
         };
+        writeln!(diagnostics, "[{phase}]")?;
+        diagnostics.write_all(&evidence)?;
+        let status = status?;
         ensure!(
             status.success(),
             "Apple {phase} webhook publication failed: {status}"

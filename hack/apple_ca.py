@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 
 from apple_tools import binary
 from t2_environment import APPLE_CA, Environment, ROOT, private, run
-from t2_processes import check_cancelled, cleanup, private_value, subprocess
+from t2_processes import check_cancelled, cleanup, private_value, record_output, subprocess
 
 
 class Provider:
@@ -90,7 +90,10 @@ class Provider:
         return gateway+':0'
 
     def logs(self):
-        private(self.root/'step-ca.log', self.compose('logs','--no-color','step-ca',timeout=15))
+        webhook_log = self.root/'step-webhooks.log'
+        if webhook_log.exists():
+            record_output('step webhook CLI', webhook_log.read_text(errors='replace'))
+        record_output('step-ca', self.compose('logs','--no-color','step-ca',timeout=15))
 
 
 def recover():

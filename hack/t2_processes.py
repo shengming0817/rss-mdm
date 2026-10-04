@@ -74,6 +74,23 @@ def private_value(value):
             private_value(item)
 
 
+def record_output(name, value):
+    """Retain sanitized provider evidence in the current case's durable fixture log."""
+    state = _diagnostic.get()
+    if state is None:
+        return
+    from candidate_runtime import safe_evidence
+    for secret in sorted(state['secrets'], key=len, reverse=True):
+        if secret:
+            value = value.replace(secret, '[redacted]').replace(json.dumps(secret)[1:-1], '[redacted]')
+    try:
+        value = safe_evidence(value, state['secrets'])
+    except RuntimeError:
+        value = 'diagnostic-withheld'
+    with state['path'].open('a') as log:
+        log.write(f'[{state["phase"]}] {name}:\n{value or "(no captured output)"}\n')
+
+
 def command_failure(error, kwargs):
     state = _diagnostic.get()
     if state is None:
