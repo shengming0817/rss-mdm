@@ -91,7 +91,8 @@ fn manifest_covers_and_fingerprints_every_public_shape() {
         include_bytes!("../schema/runtime/script-resource-v1.schema.json").as_slice(),
         include_bytes!("../schema/runtime/self-service-invoke-v1.schema.json").as_slice(),
         include_bytes!("../schema/runtime/self-service-directory-v1.schema.json").as_slice(),
-        include_bytes!("../schema/runtime/self-service-directory-response-v1.schema.json").as_slice(),
+        include_bytes!("../schema/runtime/self-service-directory-response-v1.schema.json")
+            .as_slice(),
         include_bytes!("../schema/runtime/self-service-accepted-v1.schema.json").as_slice(),
         include_bytes!("../schema/runtime/self-service-status-v1.schema.json").as_slice(),
     ];
