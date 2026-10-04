@@ -92,6 +92,7 @@ pub struct RegistrationContext {
     pub generation: i64,
     pub state: RegistrationState,
     pub first_authenticated_at: Option<i64>,
+    pub source_enabled: bool,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RegistrationState {
@@ -158,7 +159,7 @@ pub async fn enrollment_status(
 ) -> Result<Status, Error> {
     permission.check()?;
     let mut tx = database.snapshot(permission.proof().tenant_id()).await?;
-    let row = sqlx::query("SELECT q.state,q.source,q.password_version,q.windows_profile,q.credential_ref,floor(extract(epoch FROM q.expires_at))::bigint AS expires_at,floor(extract(epoch FROM statement_timestamp()))::bigint AS now,r.id AS registration,r.generation,r.state AS registration_state,floor(extract(epoch FROM r.first_authenticated_at))::bigint AS first_authenticated_at FROM mdm_access.requests q JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(q.tenant_id,q.grant_id) LEFT JOIN mdm_access.registrations r ON (r.tenant_id,r.request_id)=(q.tenant_id,q.id) WHERE q.tenant_id=$1::uuid AND q.id=$2 AND g.device=$3 AND q.issuance_operation IS NOT NULL AND (NOT $4 OR (q.self_service AND g.instance=$5 AND g.actor=$6))")
+    let row = sqlx::query("SELECT q.state,q.source,q.password_version,q.windows_profile,q.credential_ref,floor(extract(epoch FROM q.expires_at))::bigint AS expires_at,floor(extract(epoch FROM statement_timestamp()))::bigint AS now,r.id AS registration,r.generation,r.state AS registration_state,floor(extract(epoch FROM r.first_authenticated_at))::bigint AS first_authenticated_at,EXISTS(SELECT 1 FROM mdm_access.report_sources s WHERE s.tenant_id=r.tenant_id AND s.registration=r.id AND s.source=q.source AND s.enabled) AS source_enabled FROM mdm_access.requests q JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(q.tenant_id,q.grant_id) LEFT JOIN mdm_access.registrations r ON (r.tenant_id,r.request_id)=(q.tenant_id,q.id) WHERE q.tenant_id=$1::uuid AND q.id=$2 AND g.device=$3 AND q.issuance_operation IS NOT NULL AND (NOT $4 OR (q.self_service AND g.instance=$5 AND g.actor=$6))")
         .bind(permission.proof().tenant_id()).bind(id).bind(permission.device()).bind(permission.self_service()).bind(permission.proof().instance_id()).bind(permission.proof().principal_id()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
     let context = context(&row, permission.proof().tenant_id(), id)?;
     let expires_at: i64 = row.try_get("expires_at").map_err(db)?;
@@ -210,6 +211,7 @@ fn context(row: &sqlx::postgres::PgRow, tenant: &str, enrollment: Uuid) -> Resul
                 state,
                 generation: row.try_get("generation").map_err(db)?,
                 first_authenticated_at: row.try_get("first_authenticated_at").map_err(db)?,
+                source_enabled: row.try_get("source_enabled").map_err(db)?,
             })
         })
         .transpose()?;
@@ -260,6 +262,9 @@ fn diagnostic(
             RegistrationState::Revoked => return Diagnostic::Revoked,
             RegistrationState::Superseded => return Diagnostic::Superseded,
             RegistrationState::Active => {}
+        }
+        if !r.source_enabled {
+            return Diagnostic::ChannelUnavailable;
         }
     }
     if matches!(native.instructions, Instructions::Unavailable) {

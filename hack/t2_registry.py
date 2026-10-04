@@ -204,7 +204,7 @@ MODULES['agent.pki'] = replace(MODULES['agent.pki'], scope='tenant', policies=(
     CasePolicy('agent_pki_tests::unknown_original_ca_result_blocks_retirement_after_rotation', 'reuse', 'tenant',('identity','agent_pki','pki_rotation')),
 ))
 
-add('installation.migration', selectors=('migration::tests::complete_predecessor_withdraws_old_authority_and_preserves_started_evidence','migration::tests::fresh_installation_replay_and_mismatch_rejection','migration::pki::tests::'), profile='empty',
+add('installation.migration', selectors=('migration::tests::previous_release_adds_enrollment_progress_without_rewriting_units','migration::tests::complete_predecessor_withdraws_old_authority_and_preserves_started_evidence','migration::tests::fresh_installation_replay_and_mismatch_rejection','migration::pki::tests::'), profile='empty',
     sources=('crates/app/src/migration.rs','crates/app/src/migration/pki.rs'),
     tests=('crates/app/tests/migration/mod.rs','crates/app/tests/migration/pki.rs'),
     python='installation', support=('hack/t2_modules/installation.py',))

@@ -438,6 +438,21 @@ async fn self_enrollment_preserves_server_identity_and_terminal_protocol_id() ->
         status == StatusCode::OK && ready["progress"]["managementReady"] == true,
         "{ready}"
     );
+    let mut tx = host.store.begin(case_tenant()).await?;
+    sqlx::query("UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND registration=$2")
+        .bind(case_tenant()).bind(peer.intent.registration).execute(&mut *tx).await?;
+    tx.commit().await?;
+    let (_, disabled) = browser
+        .call(&host.browser, axum::http::Method::GET, &path, None)
+        .await?;
+    ensure!(
+        disabled["progress"]["managementReady"] == false
+            && disabled["progress"]["diagnostic"] == "channel_unavailable"
+    );
+    let mut tx = host.store.begin(case_tenant()).await?;
+    sqlx::query("UPDATE mdm_access.report_sources SET enabled=true WHERE tenant_id=$1::uuid AND registration=$2")
+        .bind(case_tenant()).bind(peer.intent.registration).execute(&mut *tx).await?;
+    tx.commit().await?;
     // Remove temporary sessions: the owner's first authenticated fact must survive retention.
     let mut tx = host.store.begin(case_tenant()).await?;
     sqlx::query(
