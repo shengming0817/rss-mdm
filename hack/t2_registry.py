@@ -1520,7 +1520,8 @@ consume(('crates/registration-service/src/agent*','crates/agent-wire/schema/enro
 
 consume(('crates/agent-channel/src/database.rs',), 'agent.registration agent.reports execution.agent.delivery execution.agent.poll execution.agent.content')
 consume(('crates/agent-wire/src/enroll.rs','crates/management-http/src/agent_enrollment.rs'), 'agent.registration agent.pki execution.commands.onboarding apple.onboarding')
-consume(('crates/agent-wire/src/chunks.rs','crates/agent-wire/src/tasks/context.rs','crates/agent-wire/src/tasks/export.rs'), TASK_CONSUMERS)
+consume(('crates/agent-wire/src/chunks.rs','crates/agent-wire/src/tasks/context.rs','crates/agent-wire/src/tasks/export.rs',
+         'crates/agent-wire/src/tasks/software.rs'), TASK_CONSUMERS)
 consume(('crates/registration-service/src/lib.rs','crates/registration-service/src/error.rs'), 'agent.registration agent.pki device.binding device.revocation enrollment.http')
 consume(('crates/windows-channel/src/error.rs',), 'windows.enrollment windows.management execution.commands.onboarding api.diagnostics')
 consume(('crates/apple-channel/src/error.rs',), 'apple.profile apple.onboarding apple.collection api.diagnostics')
@@ -1575,6 +1576,8 @@ consume(('crates/registration-service/src/quotas.rs', 'crates/registration-servi
 consume(('crates/management-http/src/enrollment/mod.rs',), 'enrollment.http enrollment.quotas')
 
 T1_INPUTS += ('crates/registration-service/tests/credentials.rs',)
+T1_INPUTS += ('crates/software-service/tests/execution_context.rs',
+              'crates/software-service/tests/execution_evidence.rs')
 consume(('crates/windows-channel/src/enrollment_store.rs',), 'windows.issuance windows.enrollment windows.declared')
 
 # PKI trust is consumed by native authentication, distribution and issuance owners.

@@ -14,7 +14,7 @@ pub struct SoftwareExecutionContext {
     /// Current native API support for explicitly approved unsigned packages.
     pub msix_unsigned: bool,
     /// Complete numeric OS version, not an inferred product/platform string.
-    #[schemars(schema_with = "crate::runtime::nonzero_digest_schema")]
+    #[schemars(extend("not" = serde_json::json!({"const": ([0u16; 4])})))]
     pub os_version: [u16; 4],
     /// Whether the native system broker is available in this Agent installation.
     pub system_broker: bool,
@@ -36,6 +36,7 @@ pub struct SoftwareExecutionContext {
 /// One concrete live OS session.
 pub struct SoftwareInteractiveUser {
     /// Windows SID or macOS numeric UID.
+    #[schemars(length(min = 1, max = 184), regex(pattern = "^[^\\x00-\\x1f\\x7f]+$"))]
     pub identity: String,
     /// Changes on logoff/login; identical account names cannot reuse a previous session.
     #[serde(with = "crate::runtime::strict_uuid")]
@@ -49,8 +50,10 @@ pub struct SoftwareInteractiveUser {
 /// Availability of a particular source read credential in the local Agent.
 pub struct SoftwareReadCredential {
     /// Exact source identity in the consuming tenant.
+    #[schemars(length(min = 1, max = 128), regex(pattern = "^[^\\x00-\\x1f\\x7f]+$"))]
     pub source: String,
     /// Host-provisioned opaque credential reference; never token bytes or a URL.
+    #[schemars(length(min = 1, max = 128), regex(pattern = "^[^\\x00-\\x1f\\x7f]+$"))]
     pub reference: String,
 }
 impl SoftwareExecutionContext {

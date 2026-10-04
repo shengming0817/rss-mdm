@@ -317,7 +317,9 @@
         "sources",
         "platforms",
         "sensitivity",
-        "searchable"
+        "unit",
+        "searchable",
+        "itemKey"
       ],
       "type": "object"
     },

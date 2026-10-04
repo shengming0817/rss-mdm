@@ -9,7 +9,7 @@ use uuid::Uuid;
 pub const API_VERSION: u8 = 1;
 /// Canonical enrollment schema manifest.
 pub const SCHEMA_FINGERPRINT: &str =
-    "f905d3c882064e715e5c68c73b8630ee8fe3c3e008710a5bc1406ee50999bcf7";
+    "416efdf42f462d9eac01e9e607c5f5a4e7d684b9add1f1b350cbe83b856f3b87";
 /// Canonical enrollment schema manifest.
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/enroll/manifest.json");
 /// A bounded runtime profile, frozen when a grant is consumed.
@@ -17,6 +17,7 @@ pub const SCHEMA_MANIFEST: &str = include_str!("../schema/enroll/manifest.json")
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeProfile {
     /// Runtime capability profile; independent of enrollment version.
+    #[schemars(length(min = 1, max = 20), extend("uniqueItems" = true))]
     pub capabilities: Vec<Capability>,
     /// Operating system asserted by the client.
     pub platform: TaskPlatform,

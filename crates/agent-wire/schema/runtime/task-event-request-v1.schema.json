@@ -105,11 +105,49 @@
               },
               "maxItems": 32,
               "minItems": 32,
+              "not": {
+                "const": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ]
+              },
               "type": "array"
             },
             "observedAt": {
               "description": "Native observation time, in Unix seconds.",
               "format": "int64",
+              "maximum": 9223372036854775807,
+              "minimum": 1,
               "type": "integer"
             },
             "state": {
@@ -118,6 +156,9 @@
             },
             "version": {
               "description": "Observed ecosystem version.",
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\x00-\\x1f\\x7f]+$",
               "type": "string"
             }
           },
@@ -143,11 +184,49 @@
               },
               "maxItems": 32,
               "minItems": 32,
+              "not": {
+                "const": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ]
+              },
               "type": "array"
             },
             "observedAt": {
               "description": "Native observation time, in Unix seconds.",
               "format": "int64",
+              "maximum": 9223372036854775807,
+              "minimum": 1,
               "type": "integer"
             },
             "state": {
@@ -168,6 +247,9 @@
           "properties": {
             "diagnostic": {
               "description": "Bounded reason for the failed native query.",
+              "maxLength": 4096,
+              "minLength": 1,
+              "pattern": "^[^\\x00-\\x1f\\x7f]+$",
               "type": "string"
             },
             "state": {
@@ -209,43 +291,15 @@
         "osVersion": {
           "description": "Complete numeric OS version, not an inferred product/platform string.",
           "items": {
-            "format": "uint8",
-            "maximum": 255,
+            "format": "uint16",
+            "maximum": 65535,
             "minimum": 0,
             "type": "integer"
           },
-          "maxItems": 32,
-          "minItems": 32,
+          "maxItems": 4,
+          "minItems": 4,
           "not": {
             "const": [
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
               0,
               0,
               0,
@@ -352,6 +406,9 @@
         },
         "identity": {
           "description": "Windows SID or macOS numeric UID.",
+          "maxLength": 184,
+          "minLength": 1,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$",
           "type": "string"
         },
         "sessionId": {
@@ -638,10 +695,16 @@
       "properties": {
         "reference": {
           "description": "Host-provisioned opaque credential reference; never token bytes or a URL.",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$",
           "type": "string"
         },
         "source": {
           "description": "Exact source identity in the consuming tenant.",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$",
           "type": "string"
         }
       },
@@ -1109,6 +1172,9 @@
           "description": "A bounded fragment of a collection output; never a terminal snapshot.",
           "properties": {
             "data": {
+              "maxLength": 349526,
+              "minLength": 2,
+              "pattern": "^[A-Za-z0-9_-]+$",
               "type": "string"
             },
             "index": {

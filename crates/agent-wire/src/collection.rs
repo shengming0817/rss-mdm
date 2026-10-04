@@ -308,11 +308,19 @@ pub struct FieldDefinition {
     /// Read/filter visibility classification.
     pub sensitivity: Sensitivity,
     /// Exact optional unit; no implicit conversion.
+    #[schemars(
+        required,
+        schema_with = "crate::self_service::nullable_schema::<String>"
+    )]
     #[schemars(extend("minLength" = 1, "maxLength" = 64))]
     pub unit: Option<String>,
     /// Whether this field participates in conditions/search.
     pub searchable: bool,
     /// Optional stable item-key property for a structured inventory list.
+    #[schemars(
+        required,
+        schema_with = "crate::self_service::nullable_schema::<String>"
+    )]
     #[schemars(extend("maxLength" = 64, "pattern" = "^[a-z][a-z0-9_]*$"))]
     pub item_key: Option<String>,
 }

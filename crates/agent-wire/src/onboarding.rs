@@ -34,11 +34,16 @@ pub enum EnrollmentEntry {
     /// Open Windows' standard device-enrollment UI for this HTTPS discovery authority.
     Windows {
         /// Organization's discovery server.
+        #[schemars(length(max = 2048), regex(pattern = r"^https://[^/@?#\s]+/?$"))]
         server: String,
     },
     /// Open the organization's HTTPS profile enrollment page; user/system approval remains required.
     Macos {
         /// Organization's managed enrollment entry.
+        #[schemars(
+            length(max = 2048),
+            regex(pattern = r"^https://[^/@?#\s]+(?:/[^#\s]*)?$")
+        )]
         url: String,
     },
 }

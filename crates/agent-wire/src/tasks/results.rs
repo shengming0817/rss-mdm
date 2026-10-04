@@ -81,22 +81,28 @@ pub enum SoftwareDetectionObservation {
     /// The exact identity is present, at the observed version.
     Present {
         /// Observed ecosystem version.
+        #[schemars(length(min = 1, max = 1024), regex(pattern = "^[^\\x00-\\x1f\\x7f]+$"))]
         version: String,
         /// Digest of retained local detection evidence.
+        #[schemars(schema_with = "crate::runtime::nonzero_digest_schema")]
         evidence_sha256: [u8; 32],
         /// Native observation time, in Unix seconds.
+        #[schemars(range(min = 1, max = i64::MAX))]
         observed_at: i64,
     },
     /// The exact identity is absent under the independently queried target.
     Absent {
         /// Digest of retained absence evidence.
+        #[schemars(schema_with = "crate::runtime::nonzero_digest_schema")]
         evidence_sha256: [u8; 32],
         /// Native observation time, in Unix seconds.
+        #[schemars(range(min = 1, max = i64::MAX))]
         observed_at: i64,
     },
     /// Detection did not establish a state; no version/absence claim is permitted.
     Unknown {
         /// Bounded reason for the failed native query.
+        #[schemars(length(min = 1, max = 4096), regex(pattern = "^[^\\x00-\\x1f\\x7f]+$"))]
         diagnostic: String,
     },
 }
@@ -248,5 +254,44 @@ impl SoftwareTaskStep {
             sha2::Sha256::digest(serde_json::to_vec(self).map_err(|_| WireError::InvalidValue)?)
                 .into(),
         )
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn detection_schema_preserves_native_evidence_boundaries() {
+        let schema =
+            serde_json::to_value(schemars::schema_for!(SoftwareDetectionObservation)).unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let present = serde_json::json!({"state":"present","version":"1","evidenceSha256":vec![1;32],"observedAt":1});
+        assert!(validator.is_valid(&present));
+        for (field, invalid) in [
+            ("version", serde_json::json!("")),
+            ("version", serde_json::json!("a".repeat(1025))),
+            ("version", serde_json::json!("bad\0version")),
+            ("evidenceSha256", serde_json::json!(vec![0; 32])),
+            ("observedAt", serde_json::json!(0)),
+        ] {
+            let mut value = present.clone();
+            value[field] = invalid;
+            assert!(!validator.is_valid(&value), "{value}");
+            assert!(
+                serde_json::from_value::<SoftwareDetectionObservation>(value)
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            );
+        }
+        for diagnostic in ["", "bad\0diagnostic"] {
+            let value = serde_json::json!({"state":"unknown","diagnostic":diagnostic});
+            assert!(!validator.is_valid(&value));
+            assert!(
+                serde_json::from_value::<SoftwareDetectionObservation>(value)
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            );
+        }
     }
 }

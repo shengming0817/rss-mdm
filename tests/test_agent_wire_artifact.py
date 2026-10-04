@@ -5,11 +5,13 @@ import json
 from pathlib import Path
 import re
 import shutil
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'hack'))
 SPEC = importlib.util.spec_from_file_location('wire_artifact', ROOT / 'hack/agent_wire_artifact.py')
 artifact = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(artifact)

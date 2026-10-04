@@ -60,6 +60,7 @@ struct ChunkInput {
     manifest: OutputManifest,
     #[schemars(extend("minimum" = 0, "maximum" = 63))]
     index: u16,
+    #[schemars(length(min = 2, max = 349526), regex(pattern = "^[A-Za-z0-9_-]+$"))]
     data: String,
 }
 impl From<OutputChunk> for ChunkInput {

@@ -3,10 +3,12 @@
 from functools import cache
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+from build_run import LEASE_ENV, lease_fds, require_lease
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMAS = ROOT / 'crates/agent-wire/schema/runtime'
@@ -18,10 +20,15 @@ ENROLL_LIB = ROOT / 'crates/agent-wire/src/enroll.rs'
 
 @cache
 def generated():
+    cargo = ['cargo', 'run', '--quiet', '--locked', '-p', 'rss-mdm-agent-wire',
+             '--example', 'protocol_schema']
+    if LEASE_ENV in os.environ:
+        require_lease(ROOT)
+        command, fds = cargo, lease_fds()
+    else:
+        command, fds = [sys.executable, str(ROOT / 'hack/build_run.py'), '--', *cargo], ()
     result = subprocess.run(
-        [sys.executable, str(ROOT / 'hack/build_run.py'), '--', 'cargo', 'run',
-         '--quiet', '--locked', '-p', 'rss-mdm-agent-wire', '--example', 'protocol_schema'],
-        cwd=ROOT, check=True, stdout=subprocess.PIPE, text=True,
+        command, pass_fds=fds, cwd=ROOT, check=True, stdout=subprocess.PIPE, text=True,
     )
     return json.loads(result.stdout)
 

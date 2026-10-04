@@ -13,6 +13,8 @@
             },
             "server": {
               "description": "Organization's discovery server.",
+              "maxLength": 2048,
+              "pattern": "^https://[^/@?#\\s]+/?$",
               "type": "string"
             }
           },
@@ -32,6 +34,8 @@
             },
             "url": {
               "description": "Organization's managed enrollment entry.",
+              "maxLength": 2048,
+              "pattern": "^https://[^/@?#\\s]+(?:/[^#\\s]*)?$",
               "type": "string"
             }
           },
@@ -297,43 +301,15 @@
         "osVersion": {
           "description": "Complete numeric OS version, not an inferred product/platform string.",
           "items": {
-            "format": "uint8",
-            "maximum": 255,
+            "format": "uint16",
+            "maximum": 65535,
             "minimum": 0,
             "type": "integer"
           },
-          "maxItems": 32,
-          "minItems": 32,
+          "maxItems": 4,
+          "minItems": 4,
           "not": {
             "const": [
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
               0,
               0,
               0,
@@ -919,6 +895,9 @@
         },
         "identity": {
           "description": "Windows SID or macOS numeric UID.",
+          "maxLength": 184,
+          "minLength": 1,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$",
           "type": "string"
         },
         "sessionId": {
@@ -944,10 +923,16 @@
       "properties": {
         "reference": {
           "description": "Host-provisioned opaque credential reference; never token bytes or a URL.",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$",
           "type": "string"
         },
         "source": {
           "description": "Exact source identity in the consuming tenant.",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$",
           "type": "string"
         }
       },
