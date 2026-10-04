@@ -5,20 +5,19 @@ use rss_mdm_policy::schedule::Schedule;
 pub use rss_mdm_policy::{Architecture, Platform};
 use rss_mdm_resource as r;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ExecutionInput {
     pub platform: Platform,
     pub architecture: Architecture,
-    pub parameters: Value,
     pub schedule: Schedule,
     pub run_lifetime_seconds: u32,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct FrozenAction {
     pub input: ExecutionInput,
+    pub parameters: rss_mdm_policy::ParameterSources,
     pub definition: r::ScriptDefinition,
     pub collection: Option<rss_mdm_inventory::CollectionDefinition>,
     pub resource_digest: [u8; 32],

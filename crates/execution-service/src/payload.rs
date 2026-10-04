@@ -24,12 +24,13 @@ impl FrozenAction {
         permit: wire::TaskPermit,
         expiry: i64,
     ) -> Result<wire::TaskPayload, Error> {
+        let parameters = self.parameters.resolve(&serde_json::json!({}))?;
         let spec = self.definition.spec();
         let mut positional = BTreeMap::new();
         let mut arguments = Vec::new();
         let mut environment = BTreeMap::new();
         for (name, binding) in &spec.bindings {
-            let value = self.input.parameters.get(name).ok_or(Error::Malformed)?;
+            let value = parameters.get(name).ok_or(Error::Malformed)?;
             let literal = match value {
                 Value::String(v) => v.clone(),
                 Value::Bool(_) | Value::Number(_) => value.to_string(),
@@ -72,8 +73,7 @@ impl FrozenAction {
             profile: self.executor_profile(),
             sql_parameters: if spec.sql.is_some() {
                 Some(
-                    self.input
-                        .parameters
+                    parameters
                         .as_object()
                         .ok_or(Error::Malformed)?
                         .iter()

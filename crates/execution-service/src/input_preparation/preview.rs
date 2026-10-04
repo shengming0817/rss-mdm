@@ -64,7 +64,7 @@ impl Inputs {
                 let prepared = script(
                     &version,
                     binding,
-                    parameters,
+                    *parameters,
                     verified.ok_or(Error::Conflict)?,
                 )?;
                 if let resource::ScriptPurpose::Collection { mappings } =

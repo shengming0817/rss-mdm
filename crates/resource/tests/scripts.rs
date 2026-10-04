@@ -273,3 +273,28 @@ fn sql_preparation_requires_canonical_digest_and_length() {
         }
     }
 }
+
+#[test]
+fn fixed_parameter_validation_keeps_resource_constraints() {
+    let definition = serde_json::from_value::<ScriptDefinition>(definition()).unwrap();
+    definition.validate_fixed_parameters(&json!({})).unwrap();
+    definition
+        .validate_fixed_parameters(&json!({"name":"hello"}))
+        .unwrap();
+    assert!(
+        definition
+            .validate_fixed_parameters(&json!({"unknown":"hello"}))
+            .is_err()
+    );
+    assert!(
+        definition
+            .validate_fixed_parameters(&json!({"name":true}))
+            .is_err()
+    );
+    assert!(
+        definition
+            .validate_fixed_parameters(&json!({"name":"x".repeat(33)}))
+            .is_err()
+    );
+    assert!(definition.validate_parameters(&json!({})).is_err());
+}

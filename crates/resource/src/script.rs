@@ -97,48 +97,66 @@ pub struct ScriptSpec {
 #[serde(try_from = "ScriptSpec", into = "ScriptSpec")]
 pub struct ScriptDefinition(ScriptSpec);
 
-/// One exact script selection whose arguments and immutable content metadata are checked.
-/// This pure result does not prove content availability, device eligibility or authorization.
-pub struct PreparedScript<'a> {
+/// Exact checked script and material selection, without claiming complete arguments.
+pub struct SelectedScript<'a> {
     version: &'a Version,
     variant: &'a Variant,
     definition: &'a ScriptDefinition,
     artifact: &'a Artifact,
-    parameters: &'a Value,
 }
-impl<'a> PreparedScript<'a> {
-    /// Borrow the immutable resource version.
+impl<'a> SelectedScript<'a> {
+    /// Immutable resource version.
     pub fn version(&self) -> &'a Version {
         self.version
     }
-    /// Borrow the exact selected variant.
+    /// Exact selected variant.
     pub fn variant(&self) -> &'a Variant {
         self.variant
     }
-    /// Borrow the checked execution interface.
+    /// Checked execution interface.
     pub fn definition(&self) -> &'a ScriptDefinition {
         self.definition
     }
-    /// Borrow content coordinates; a content owner must still verify the actual bytes.
+    /// Checked content coordinates; content availability is a separate proof.
     pub fn artifact(&self) -> &'a Artifact {
         self.artifact
     }
-    /// Borrow the checked literal arguments.
+}
+/// Exact checked script selection and complete execution arguments.
+pub struct PreparedScript<'a> {
+    selected: SelectedScript<'a>,
+    parameters: &'a Value,
+}
+impl<'a> PreparedScript<'a> {
+    /// Immutable resource version.
+    pub fn version(&self) -> &'a Version {
+        self.selected.version()
+    }
+    /// Exact selected variant.
+    pub fn variant(&self) -> &'a Variant {
+        self.selected.variant()
+    }
+    /// Checked execution interface.
+    pub fn definition(&self) -> &'a ScriptDefinition {
+        self.selected.definition()
+    }
+    /// Checked content coordinates.
+    pub fn artifact(&self) -> &'a Artifact {
+        self.selected.artifact()
+    }
+    /// Complete validated literal arguments.
     pub fn parameters(&self) -> &'a Value {
         self.parameters
     }
 }
 impl Version {
-    /// Prepare one exact script without storage, authorization or execution effects.
-    /// Parameters, profile/platform, the 16 MiB artifact budget and SQL content identity
-    /// are checked here. The consumer separately binds a live content proof.
-    pub fn prepare_script<'a>(
-        &'a self,
+    /// Select and check a script's platform, definition and material without placeholder arguments.
+    pub fn select_script(
+        &self,
         platform: Platform,
         architecture: Architecture,
         variant: &Id,
-        parameters: &'a Value,
-    ) -> Result<PreparedScript<'a>, Error> {
+    ) -> Result<SelectedScript<'_>, Error> {
         let variant = self.resolve(platform, architecture, variant)?;
         let Declaration::Script {
             artifact,
@@ -148,7 +166,6 @@ impl Version {
             return Err(Error::KindMismatch);
         };
         definition.validate_platform(platform)?;
-        definition.validate_parameters(parameters)?;
         if artifact.length() > 16_777_216 {
             return Err(Error::InvalidInput);
         }
@@ -158,11 +175,25 @@ impl Version {
         {
             return Err(Error::InvalidDigest);
         }
-        Ok(PreparedScript {
+        Ok(SelectedScript {
             version: self,
             variant,
             definition,
             artifact,
+        })
+    }
+    /// Prepare one exact script with complete arguments; this proves no device authority or effects.
+    pub fn prepare_script<'a>(
+        &'a self,
+        platform: Platform,
+        architecture: Architecture,
+        variant: &Id,
+        parameters: &'a Value,
+    ) -> Result<PreparedScript<'a>, Error> {
+        let selected = self.select_script(platform, architecture, variant)?;
+        selected.definition().validate_parameters(parameters)?;
+        Ok(PreparedScript {
+            selected,
             parameters,
         })
     }
@@ -214,6 +245,25 @@ impl ScriptDefinition {
     /// Validate bounded literal arguments against the frozen input schema.
     pub fn validate_parameters(&self, value: &Value) -> Result<(), Error> {
         validate(&self.0.parameters, value, 65_536)?;
+        if value.as_object().is_none_or(|object| {
+            object.values().any(|v| {
+                !(v.is_string() || v.is_boolean() || v.as_i64().is_some())
+                    || v.as_str().is_some_and(|s| s.contains('\0'))
+            })
+        }) {
+            return Err(Error::InvalidInput);
+        }
+        Ok(())
+    }
+    /// Validate only supplied fixed values using the same canonical parameter constraints.
+    /// Missing arguments remain explicitly unresolved until complete execution preparation.
+    pub fn validate_fixed_parameters(&self, value: &Value) -> Result<(), Error> {
+        let mut schema = self.0.parameters.clone();
+        schema
+            .as_object_mut()
+            .ok_or(Error::InvalidInput)?
+            .remove("required");
+        validate(&schema, value, 65_536)?;
         if value.as_object().is_none_or(|object| {
             object.values().any(|v| {
                 !(v.is_string() || v.is_boolean() || v.as_i64().is_some())

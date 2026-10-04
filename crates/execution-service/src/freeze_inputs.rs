@@ -8,7 +8,8 @@ use rss_transactional_messaging_postgres::PgTransaction;
 pub(crate) async fn freeze_script_in(
     tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
     tenant: rss_request_context::TenantId,
-    prepared: &r::PreparedScript<'_>,
+    prepared: &r::SelectedScript<'_>,
+    parameters: rss_mdm_policy::ParameterSources,
     schedule: Schedule,
     run_lifetime_seconds: u32,
 ) -> crate::transaction::Result<FrozenAction> {
@@ -36,6 +37,7 @@ pub(crate) async fn freeze_script_in(
     let artifact = prepared.artifact();
     Ok(FrozenAction {
         collection,
+        parameters,
         input: ExecutionInput {
             platform: match prepared.variant().platform() {
                 r::Platform::Windows => Platform::Windows,
@@ -45,7 +47,6 @@ pub(crate) async fn freeze_script_in(
                 r::Architecture::X86_64 => Architecture::X86_64,
                 r::Architecture::Aarch64 => Architecture::Aarch64,
             },
-            parameters: prepared.parameters().clone(),
             schedule,
             run_lifetime_seconds,
         },

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 /// Execution platform selected by the product resource resolver.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Platform {
     /// Windows execution.
@@ -12,7 +12,7 @@ pub enum Platform {
     Macos,
 }
 /// Machine architecture required by a resource variant.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Architecture {
     /// 64-bit x86.
@@ -21,7 +21,7 @@ pub enum Architecture {
     Aarch64,
 }
 /// Closed configuration mutations. Execution progress cannot mutate this CAS.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(
     tag = "action",
     rename_all = "snake_case",
@@ -42,7 +42,7 @@ pub enum Change {
     Disable,
 }
 /// The one persistent Policy aggregate.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 pub struct Policy {
     /// Stable Policy identity within its owning tenant.
     pub id: Uuid,
@@ -96,7 +96,7 @@ impl Policy {
             .checked_add(1)
             .filter(|v| *v <= i64::MAX as u64)
             .ok_or(Error::Conflict)? as i64;
-        let (definition, enabled) = match input {
+        let (mut definition, enabled) = match input {
             Change::Put {
                 definition,
                 enabled,
@@ -104,6 +104,9 @@ impl Policy {
             Change::Enable => (old.ok_or(Error::NotFound)?.definition.clone(), true),
             Change::Disable => (old.ok_or(Error::NotFound)?.definition.clone(), false),
         };
+        if let Some(config) = &mut definition.self_service {
+            config.normalize(old.and_then(|p| p.definition.self_service.as_ref()));
+        }
         definition.validate()?;
         let semantic = definition.semantic()?;
         let changed = old.map(|p| p.definition.semantic()).transpose()?.as_ref() != Some(&semantic);
