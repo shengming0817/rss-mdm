@@ -69,14 +69,13 @@ async fn failed_install_partial_manifest_keeps_ownership_until_proven_absent() -
         guarded,
         "partial manifest released failed install reservation"
     );
-    // Retain releases the logical claim without pretending the uncertain native effect is absent.
+    // A withdrawn Policy retains its uncertain claim until native evidence settles the attempt.
     f.policy_post(
         &format!("/api/v1/policies/{policy}"),
         1,
         json!({"action":"disable"}),
     )
     .await?;
-    f.policy_claims_released(policy).await?;
     let guarded: bool = sqlx::query_scalar("SELECT observed_at IS NULL AND retired_at IS NULL FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND operation=$2")
         .bind(case_tenant()).bind(failed).fetch_one(&mut pg).await?;
     ensure!(guarded, "Policy exit released uncertain native ownership");
@@ -90,6 +89,7 @@ async fn failed_install_partial_manifest_keeps_ownership_until_proven_absent() -
     )
     .await?;
     ensure!(f.operation(failed).await?["commandStatus"] == "rejected");
+    f.policy_claims_released(policy).await?;
     let replacement_profile = Uuid::new_v4();
     let (_, replacement) = f
         .configuration_policy(profile_task(replacement_profile, false), None, "retain")
