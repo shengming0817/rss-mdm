@@ -113,16 +113,17 @@ def execute(fixture):
     require(snapshot() == before, 'adding B changed A epoch or settings')
     command('migrate', dict(database=database, installation=installation()))
     require(sql('SELECT count(*) FROM identity_authority.accounts') == '0', 'registration seeded an account')
-    configs = []
+    configs, rules = [], []
     for tenant in (a,b):
         command('initialize', dict(database=pool.database_config(root,fixture.database,'mdm_identity_maintenance','identity-maintenance-fixture'),
                 installation=installation(), tenant_id=tenant, expected_epoch=1,
                 principal_id=ADMIN, login='admin', password_file=str(root/'account-password')))
-        command('initialize-authorization', dict(database=pool.database_config(root,fixture.database,'mdm_access','access-fixture'),
+        receipt = command('initialize-authorization', dict(database=pool.database_config(root,fixture.database,'mdm_access','access-fixture'),
                 identityDatabase=pool.database_config(root,fixture.database,'mdm_identity_runtime','identity-runtime-fixture'),
                 audit={'mode':'plain'}, installation=installation(), expectedEpoch=1,
                 login='admin', passwordFile=str(root/'account-password'), operationId=str(uuid.uuid4()),
                 user=dict(instanceId=INSTANCE,tenantId=tenant,principalId=ADMIN)))
+        rules.append(receipt['id'])
         config = RunFixtures.runtime_config(context,pool,root,fixture.database,tenant)
         config['agent_pki'] = {'mode':'disabled'}
         configs.append(private(root/('runtime-'+tenant+'.json'),config))
@@ -133,13 +134,15 @@ def execute(fixture):
             stack.callback(host.close)
             hosts.append(host)
         browsers=[Browser(host,'https://mdm.example.test') for host in hosts]
-        for tenant,browser in zip((a,b),browsers):
+        for tenant,browser,rule in zip((a,b),browsers,rules):
             require(browser.call('POST',f'/api/v1/identity/tenants/{tenant}/login',dict(login='admin',password=password))[0] == 200,
                     'registered tenant cannot log in')
             status,value=browser.call('GET',f'/api/v1/identity-host/tenants/{tenant}/context')
             require(status == 200 and value['tenantId'] == tenant and value['principalId'] == ADMIN,
                     'host context lost tenant binding')
-            require(browser.call('GET','/api/v1/groups')[0] == 200, 'initialized product authorization cannot serve groups')
+            status,value=browser.call('GET','/api/v1/authorization/rules')
+            require(status == 200 and [item['id'] for item in value['items']] == [rule],
+                    'host cannot consume its own initialized authorization rule')
         for source,target,tenant in [(browsers[0],hosts[1],b),(browsers[1],hosts[0],a)]:
             foreign=Browser(target,source.origin)
             foreign.cookie,foreign.csrf=source.cookie,source.csrf
@@ -149,6 +152,7 @@ def execute(fixture):
             config=json.loads(path.read_text())
             config['listen']='127.0.0.1:0'
             config['identity']['tenant_id']=str(uuid.uuid4())
+            config['identity_management'][0]['tenant_id']=config['identity']['tenant_id']
             command('serve',config,accepted=False)
             config=json.loads(path.read_text());config['listen']='127.0.0.1:0';config['flow']['storage']['epoch']=2
             command('serve',config,accepted=False)

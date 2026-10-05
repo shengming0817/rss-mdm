@@ -285,7 +285,7 @@ pub(crate) async fn verify_binding(
 /// These installation-owned read relations augment the closed access-role union.
 pub(crate) const ACCESS_CONTRACT: &str = r#"{"tables":[],"functions":[],"external_relations":["public.mdm_installation","public.mdm_tenants","rss_transactional_messaging.tenant_epoch"],"verified_schemas":[]}"#;
 pub(crate) async fn verify_read_profile(conn: &mut PgConnection) -> std::result::Result<(), Error> {
-    let valid: bool = sqlx::query_scalar("SELECT bool_and(has_table_privilege(current_user,r,'SELECT') AND NOT has_table_privilege(current_user,r,'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') AND NOT has_any_column_privilege(current_user,r,'INSERT,UPDATE,REFERENCES')) FROM unnest(ARRAY['public.mdm_installation','public.mdm_tenants','rss_transactional_messaging.tenant_epoch']) r")
+    let valid: bool = sqlx::query_scalar("SELECT has_schema_privilege(current_user,'public','USAGE') AND has_schema_privilege(current_user,'rss_transactional_messaging','USAGE') AND bool_and(has_table_privilege(current_user,r,'SELECT') AND NOT has_table_privilege(current_user,r,'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') AND NOT has_any_column_privilege(current_user,r,'INSERT,UPDATE,REFERENCES')) FROM unnest(ARRAY['public.mdm_installation','public.mdm_tenants','rss_transactional_messaging.tenant_epoch']) r")
         .fetch_one(conn).await.map_err(|_| Error::Unavailable(Failure::AccessAdmission))?;
     if !valid {
         return Err(Error::Unavailable(Failure::AccessAdmission));
