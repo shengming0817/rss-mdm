@@ -28,7 +28,7 @@ pub async fn read(
         let now=crate::action_admission::now(tx).await?;
         let phase=crate::remote_execution::remote_phase_in(tx,&remote,now).await?;
         s.audit_store.append_request_in(tx,audit,200,"success").await?;
-        crate::queries::records::decode(json!({"operationId":id,"deadline":remote.deadline,"snapshot":remote.snapshot,"phase":phase,"cancellationRequested":remote.cancelled,"deadlineElapsed":now>=remote.deadline,"items":items,"nextCursor":next}))
+        crate::queries::records::decode(json!({"operationId":id,"sourceRetired":true,"targetExpansionStopped":!remote.staged,"deadline":remote.deadline,"snapshot":remote.snapshot,"phase":phase,"cancellationRequested":remote.cancelled,"deadlineElapsed":now>=remote.deadline,"items":items,"nextCursor":next}))
     })).await.map_err(Into::into)
 }
 pub async fn cancel(
@@ -50,7 +50,7 @@ pub async fn cancel(
         let hash=fingerprint(&(id,input,a.user()))?;
         if let Some(value)=super::receipts::replay(tx,audit,input.operation_id,&hash).await? {return Ok(value);}
         let tenant=tx.tenant_id().to_string();tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_planning.remote_operations SET cancelled=true WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).execute(c).await?;Ok(())})).await?;
-        storage::wake_in(tx,id).await?;let value=json!({"operationId":id,"cancellationRequested":true});
+        storage::wake_in(tx,id).await?;let value=json!({"operationId":id,"sourceRetired":true,"targetExpansionStopped":!remote.staged,"cancellationRequested":true});
         super::receipts::receipt(tx,audit,input.operation_id,&hash,&value).await?;
         s.audit_store.append_in(tx,&Fact::business(audit,&format!("remote:{id}:cancel:{}",input.operation_id),&hash,200,"success",None)?,false).await?;
         a.check_live()?;Ok(value)

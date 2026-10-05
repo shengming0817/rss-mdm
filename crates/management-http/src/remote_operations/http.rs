@@ -11,9 +11,7 @@ use std::sync::Arc;
 struct Page {
     after: Option<String>,
 }
-// #2623: Remote scope is frozen pending retirement/scope analysis. Do not add actions, target
-// semantics, scheduling, authorization uses or execution branches, including software.
-// Existing fixes and required wire updates are permitted; no compatibility route is added.
+// Historical reads and cancellation cannot recreate the retired execution source.
 pub fn routes(
     queries: Arc<rss_mdm_execution_service::queries::Queries>,
 ) -> Router<Arc<ExecutionService>> {
@@ -25,7 +23,6 @@ pub fn routes(
                 .route("/remote-operations/{id}/runs/{run}", get(run_detail))
                 .with_state(queries),
         )
-        .route("/remote-operations", post(create))
         .route("/remote-operations/{id}/cancel", post(cancel))
 }
 
@@ -44,23 +41,6 @@ async fn directory(
         rss_mdm_execution_service::remote_operations::directory::list(&s, &auth.proof, &q, &audit)
             .await?,
     )))
-}
-async fn create(
-    State(s): State<Arc<ExecutionService>>,
-    Extension(a): Extension<RequestAuth>,
-    Extension(audit): Extension<RequestAudit>,
-    body: std::result::Result<Json<Input>, axum::extract::rejection::JsonRejection>,
-) -> std::result::Result<Json<Value>, Error> {
-    let Json(input) = body.map_err(|_| Error::Malformed)?;
-    if input.operation_id.is_nil() {
-        return Err(Error::Malformed);
-    }
-    audit.operation(input.operation_id, "management_write");
-    audit.target(&input.operation_id.to_string());
-    s.create_remote(&a.proof, &input, &audit)
-        .await
-        .map(Json)
-        .map_err(Error::from)
 }
 async fn read(
     State(s): State<Arc<rss_mdm_execution_service::queries::Queries>>,
