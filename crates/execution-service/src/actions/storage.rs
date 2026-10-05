@@ -214,6 +214,9 @@ impl ScheduledPolicy {
         run: &Run,
         now: i64,
     ) -> Result<bool> {
+        if matches!(run.source, Source::RemoteOperation { .. }) {
+            return Ok(false);
+        }
         match &run.invocation {
             Some(invocation) => {
                 invocation

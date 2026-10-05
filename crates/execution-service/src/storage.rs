@@ -50,6 +50,15 @@ pub async fn load(
     })
 }
 
+/// Existing execute evidence may settle after source retirement; it cannot authorize a new attempt.
+pub async fn execution_started(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool> {
+    let tenant = tx.tenant_id().to_string();
+    Ok(tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute' AND state <> 'pending')")
+            .bind(tenant).bind(id).fetch_one(c).await
+    })).await?)
+}
+
 pub async fn approval_valid(
     source: &Arc<dyn crate::source_authority::SourceAuthority>,
     key: &Arc<rss_mdm_native_protection::Protector>,
@@ -57,6 +66,15 @@ pub async fn approval_valid(
     operation: &Operation,
     now: i64,
 ) -> Result<bool> {
+    if matches!(operation.approval, ExecutionAuthority::DeviceControl { .. })
+        && !operation.approval.control_matches(
+            &operation.request,
+            operation.registration,
+            operation.registration_generation,
+        )?
+    {
+        return Ok(false);
+    }
     match current_registration(tx, &operation.device, operation.request.task.purpose()?).await {
         Ok(current) if current == (operation.registration, operation.registration_generation) => {}
         Ok(_) | Err(Fault::Request(Error::Conflict | Error::WindowsDeclaredEnrollmentNotReady)) => {

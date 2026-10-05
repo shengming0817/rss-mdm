@@ -220,6 +220,9 @@ pub async fn queue_run_in(
         deadline,
         now,
     } = input;
+    if !matches!(source, db::Source::Policy { .. }) {
+        return Err(Error::Unsupported.into());
+    }
     let message = dispatch(tx.tenant_id(), source, id, target, now)?;
     let fingerprint = message.fingerprint().as_bytes().to_vec();
     let writer = rss_transactional_messaging_postgres::PgOutboxWriter::new(

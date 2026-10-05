@@ -377,7 +377,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
             let (service,entity,audit,failure) = *ctx;
             let result:Result<()>=async {
                 storage::admit(tx).await?;
-                if let Some(id)=remote_execution::operation_id(entity){return service.advance_remote_in(tx,id,audit).await;}
+                if let Some(id)=remote_execution::operation_id(entity){return service.advance_remote_in(tx,id).await;}
                 if let Some(id)=actions::recovery::policy_id(entity){return actions::recovery::recover(service,tx,id).await;}
                 if let Some(device)=entity.strip_prefix("configuration:") {return service.reconcile_configuration(tx,device,audit).await;}
                 let Some(name)=device(tx,entity).await? else{return Ok(())};
@@ -398,7 +398,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                     if !command.status().is_terminal(){
                         let operation=storage::load(tx,&service.protection,stored(Uuid::parse_str(command.spec().id().as_str()))?).await?;
                         let now=storage::now(tx).await?;
-                        if !storage::approval_valid(&service.source, &service.protection,tx,&operation,now).await? && service.store.cancel(tx,scope,command.spec().id(),command.spec().coordinate()).await?.outcome==dc::Outcome::OutOfOrder {return Err(Error::Conflict.into());}
+                        if ((operation.approval.retired() && !storage::execution_started(tx, operation.id).await?) || !storage::approval_valid(&service.source, &service.protection,tx,&operation,now).await?) && service.store.cancel(tx,scope,command.spec().id(),command.spec().coordinate()).await?.outcome==dc::Outcome::OutOfOrder {return Err(Error::Conflict.into());}
 
                     }
                 }
