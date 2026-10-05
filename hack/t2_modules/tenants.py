@@ -28,7 +28,7 @@ class Browser:
 
     def call(self, method, path, body=None):
         headers = {'Host': urlsplit(self.origin).netloc, 'Origin': self.origin,
-                   'X-Identity-Request': '1'}
+                   'X-Identity-Request': '1', 'X-Forwarded-For': '203.0.113.7'}
         if self.cookie:
             headers['Cookie'] = self.cookie
         if self.csrf:
@@ -89,6 +89,8 @@ def execute(fixture):
                      pass_fds=lease_fds(), capture_output=True, text=True, timeout=75)
         require((result.returncode == 0) == accepted,
                 'tenant command failed: ' + verb + ': ' + result.stderr)
+        if not accepted:
+            require('startup.tenant_binding' in result.stderr, 'invalid binding rejected at another stage: ' + result.stderr)
         return json.loads(result.stdout) if result.stdout.strip() else None
     command('migrate', dict(database=database, installation=installation()))
     require(sql('SELECT count(*) FROM public.mdm_tenants') == '0', 'installer seeded a tenant')
