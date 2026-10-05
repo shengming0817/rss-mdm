@@ -205,9 +205,13 @@ MODULES['agent.pki'] = replace(MODULES['agent.pki'], scope='tenant', policies=(
     CasePolicy('agent_pki_tests::unknown_original_ca_result_blocks_retirement_after_rotation', 'reuse', 'tenant',('identity','agent_pki','pki_rotation')),
 ))
 
-add('installation.migration', selectors=('migration::tests::fresh_installation_replay_and_mismatch_rejection',), profile='empty',
-    sources=('crates/app/src/migration.rs',), tests=('crates/app/tests/migration/mod.rs',),
+add('installation.migration', selectors=('migration::tests::fresh_installation_replay_and_mismatch_rejection','tenant_registry::tests::'), profile='empty',
+    sources=('crates/app/src/migration.rs','crates/app/src/migration/*','crates/app/src/tenant_registry.rs'), tests=('crates/app/tests/migration/mod.rs','crates/app/tests/tenant_registry/mod.rs',),
     python='installation', support=('hack/t2_modules/installation.py',))
+add('installation.tenants', build=None, profile='empty', python='tenants',
+    sources=('crates/app/src/tenant_registry.rs','crates/app/src/migration.rs','crates/app/src/maintenance.rs','crates/app/src/authorization_bootstrap.rs','crates/app/src/lifecycle.rs'),
+    support=('hack/t2_modules/tenants.py',))
+MODULES['installation.tenants'] = replace(MODULES['installation.tenants'], db_mode='fresh', scope='objects', replaces=('installation.upgrade_runtime',))
 add('certificate-archive.http',fixtures=('identity',),selectors=('certificate_archive_tests::',),
     sources=('crates/certificate-archive-service/src/*','crates/certificate-archive-service/schema/*','crates/management-http/src/certificate_archive/*','crates/app/src/certificate_archive.rs'),
     tests=('crates/app/tests/certificate_archive/mod.rs',),support=('crates/app/tests/support/authority.rs','crates/app/tests/support/planning_http.rs','crates/app/tests/device/support.rs'))
@@ -1040,6 +1044,7 @@ TOOL_INPUTS = {
     'hack/auth_t3_browser.mjs': ('test_auth_t3',),
     'hack/release.py': ('test_release',),
     'hack/candidate_runtime.py': ('test_candidate_smoke',),
+    'hack/candidate_fixture.py': ('test_candidate_smoke', 'test_t2_context'),
     'hack/candidate_smoke.py': ('test_candidate_smoke',),
 }
 T1_INPUTS = ('crates/content-s3/tests/unit.rs',) + ('crates/app/tests/agent_pki/health.rs','crates/certificate/tests/agent.rs','crates/certificate/tests/apple.rs','crates/certificate-archive-service/tests/behavior.rs','crates/authorization-service/tests/unit.rs','crates/inventory-service/tests/runtime.rs','crates/software-service/tests/management/*') + tuple(f'crates/{name}/tests/*' for name in (
@@ -1515,6 +1520,7 @@ TOOL_ONLY_INPUTS = (
     'hack/t2_fixtures.py',
     'hack/t2_database.py',
     'hack/t2_context.py',
+    'hack/candidate_fixture.py',
     'hack/t2_hosts.py',
     'hack/verification_result.py',
 )
@@ -1531,6 +1537,7 @@ REPRESENTATIVE_INPUTS = {
     'hack/t2_fixtures.py': (*PG_REPRESENTATIVES, 'host.lifecycle', 'gateway.admission'),
     'hack/t2_database.py': PG_REPRESENTATIVES,
     'hack/t2_context.py': PG_REPRESENTATIVES,
+    'hack/candidate_fixture.py': (*PG_REPRESENTATIVES, 'installation.tenants'),
     'hack/t2_hosts.py': ('host.lifecycle',),
 }
 
@@ -1581,10 +1588,6 @@ consume(('crates/policy/src/self_service.rs','crates/execution-service/src/scrip
 
 consume(('crates/execution-service/src/self_service/*', 'crates/execution-service/src/actions/evidence.rs'), TASK_CONSUMERS)
 consume(('crates/app/schema/self-service-access.sql',), 'installation.migration catalog.contract planning.self_service execution.software.recovery')
-consume(('crates/execution-service/src/actions/agent.rs','crates/execution-service/src/actions/storage.rs',
-         'crates/execution-service/src/actions/recovery.rs','crates/execution-service/src/actions/software.rs',
-         'crates/execution-service/src/remote_operations/*','crates/execution-service/src/sources/software.rs',
-         'crates/authorization-service/src/*.rs','crates/registration-service/src/device/*'))
 consume(('crates/registration-service/src/enrollment.rs','crates/registration-service/src/enrollment/*','crates/registration-service/src/agent/grants.rs','crates/management-http/src/agent_enrollment.rs','crates/authorization-service/src/context.rs'), 'enrollment.quotas')
 
 consume(('crates/windows-channel/src/protocol_device.rs',), 'windows.issuance windows.enrollment windows.management windows.declared')

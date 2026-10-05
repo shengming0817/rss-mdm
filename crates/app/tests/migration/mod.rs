@@ -122,8 +122,13 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
 
 #[test]
 fn installation_validates_stable_coordinates() {
-    let mut installation = Installation { audit_mode: AuditMode::Plain, instance_id: crate::test_support::identity::INSTANCE.into(), target: [1;16], lineage: [2;16] };
+    let mut installation = Installation {
+        audit_mode: AuditMode::Plain,
+        instance_id: crate::test_support::identity::INSTANCE.into(),
+        target: [1; 16],
+        lineage: [2; 16],
+    };
     assert!(installation.validate().is_ok());
-    installation.target = [0;16];
+    installation.target = [0; 16];
     assert!(installation.validate().is_err());
 }

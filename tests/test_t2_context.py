@@ -6,7 +6,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'hack'))
 from t2_execution import Case, Invocation
 from t2_registry import MODULES
-from t2_context import contexts, installation
+from t2_context import contexts, registration_tenants
 import t2_context
 
 
@@ -50,11 +50,11 @@ class ContextTests(unittest.TestCase):
         self.assertNotEqual(values[1]['tenant'], values[1]['peer'])
         self.assertEqual(values[0]['identityTenants'], [values[0]['tenant']])
         self.assertEqual(values[1]['identityTenants'], [values[1]['tenant'], values[1]['peer']])
-        self.assertTrue({v[k] for v in values for k in ('tenant', 'peer')} <= set(installation(values)['tenants']))
+        self.assertTrue({v[k] for v in values for k in ('tenant', 'peer')} <= set(registration_tenants(values)))
 
-    def test_installation_accepts_1024_tenants_and_rejects_1025_before_services(self):
+    def test_registration_plan_accepts_1024_tenants_and_rejects_1025_before_services(self):
         jobs = [job(str(i), 'tenant') for i in range(1023)]
-        self.assertEqual(len(installation(contexts('run', jobs).values())['tenants']), 1024)
+        self.assertEqual(len(registration_tenants(contexts('run', jobs).values())), 1024)
         jobs.append(job('one-over', 'tenant'))
         with self.assertRaisesRegex(ValueError, '1024'):
-            installation(contexts('run', jobs).values())
+            registration_tenants(contexts('run', jobs).values())

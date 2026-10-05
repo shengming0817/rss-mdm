@@ -143,6 +143,6 @@ Resource.Script 持有参数 schema，Policy 使用 Fixed/Input 选择来源。�
 
 Run 保存服务端选择的访问依据，用户模式只保存 Identity 签发的非凭据 SessionReference。领取及 Start 服务端复核原会话、账户和成员有效性、可信来源与快照期限、静态用户组、Policy revision/version、自助配置、有效设备 Scope 和确切 OS/helper。企业身份与 OS 账号分别绑定。签名覆盖通用 TaskAuthorization、精确输入和执行目标；客户端不能伪装成自动 Policy 或 RemoteOperation。
 
-访问撤回阻止未启动任务。已启动执行按原 attempt 和不可变材料记录完成证据，企业退出登录不产生新的执行许可。执行状态与可信 Inventory 投影分别判断。升级只接受[自助访问前驱升级](../deployment/installation.md#自助访问前驱升级)限定的完整、摘要一致前驱安装：缺 access 的旧配置改为未发布且显式 null；旧自助授权永久撤回；后台 queued Run 保留，旧后台未启动 Offer 退休后在原 Run 下重新领取当前协议；已启动软件材料一次性规范化为结果校验依据。原 signed Offer/permit 保留原字节作为审计，不重签、不恢复旧运行 DTO 或兼容路由。
+访问撤回阻止未启动任务。已启动执行按原 attempt 和不可变材料记录完成证据，企业退出登录不产生新的执行许可。执行状态与可信 Inventory 投影分别判断。安装使用当前初始化 schema；当前版本内的任务恢复消费原 attempt 与不可变材料。
 
 契约由源码 owner 生成：管理 schema 见 `crates/management-http/schema/{PolicyWrite,Policy}.json`；调用 DTO 见 `crates/agent-wire/schema/runtime/self-service-*.json`；通用授权、资源坐标与签名任务以 task schema 为准。`agent-wire/examples/protocol_schema.rs` 从当前 Rust DTO 生成两族完整协议 schema；`hack/agent_wire_artifact.py --write` 物化 schema 并计算 fingerprint。协议包只提供规范签名字节；签名校验与本机执行条件由独立 Agent 持有，服务端执行资格和软件结果判定由产品 owner 持有。#2677/#2678 固定最终提交与契约指纹完成实际 Agent/员工 UI 集成；本 PR 的后端接缝结果不替代真机或浏览器闭环。软件本地检测及三 provider 产品验证继续归 #2657。
