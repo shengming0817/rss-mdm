@@ -424,6 +424,7 @@ add('apple.ade', selectors=('apple::tests::ade::',), profile='product',
              'crates/apple-mdm/src/profile.rs','crates/execution-service/src/dependencies.json'),
     support=('crates/app/tests/apple/mod.rs','crates/app/tests/apple/account_enrollment.rs','crates/app/tests/apple/support/scep.rs','crates/app/tests/apple/lifecycle.rs'),
     tests=('crates/app/tests/apple/ade.rs',))
+MODULES['apple.ade'] = replace(MODULES['apple.ade'], scope='tenant')
 add('apple.account_enrollment', selectors=('apple::tests::account_enrollment::',), profile='product',
     fixtures=('apple','identity','oracle','scep'),
     sources=('crates/apple-channel/src/account_enrollment/*', 'crates/apple-channel/schema/account-enrollment.sql','crates/apple-channel/schema/organizations.sql',
