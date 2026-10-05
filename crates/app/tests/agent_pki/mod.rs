@@ -211,8 +211,16 @@ async fn renewal_grant_lookup_survives_expired_identity_without_writing_authorit
         .metadata()
         .not_after;
     let renewal = grant()?;
+    time.0.store(now(), Ordering::Release);
     audit_store.inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
-    assert!(s.renew(&evidence, &renewal, &audit()).await.is_err());
+    let lost = s.renew(&evidence, &renewal, &audit()).await.unwrap_err();
+    assert!(
+        matches!(
+            &lost.source,
+            Some(rss_mdm_registration_service::Error::CommitUnknown)
+        ),
+        "{lost:?}"
+    );
     // No renewal receipt was received. Advance the credential verifier to its exact expiry;
     // the already committed grant retains its original database deadline.
     time.0.store(expiry, Ordering::Release);

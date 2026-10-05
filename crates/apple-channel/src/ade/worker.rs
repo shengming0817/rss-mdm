@@ -452,14 +452,26 @@ async fn apply(
                 let Some(d) = observed.get(serial).and_then(Value::as_object) else {
                     return Ok(("failed", json!({"reason":"incomplete_device_observation"})));
                 };
-                let actual = d
-                    .get("profile_uuid")
-                    .filter(|v| !v.is_null())
-                    .and_then(Value::as_str)
-                    .filter(|v| !v.is_empty())
-                    .map(Uuid::parse_str)
-                    .transpose()
-                    .map_err(|_| Error::Malformed)?;
+                let actual = match d.get("profile_uuid") {
+                    Some(Value::String(id)) if !id.is_empty() => {
+                        let Ok(id) = Uuid::parse_str(id) else {
+                            return Ok(("failed", json!({"reason":"invalid_device_observation"})));
+                        };
+                        if id.is_nil() {
+                            return Ok(("failed", json!({"reason":"invalid_device_observation"})));
+                        }
+                        Some(id)
+                    }
+                    None | Some(Value::Null) | Some(Value::String(_))
+                        if matches!(
+                            d.get("profile_status").and_then(Value::as_str),
+                            Some("empty" | "removed")
+                        ) =>
+                    {
+                        None
+                    }
+                    _ => return Ok(("failed", json!({"reason":"incomplete_device_observation"}))),
+                };
                 confirmed &= actual == expected;
                 observations.push((serial, actual));
             }

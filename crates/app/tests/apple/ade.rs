@@ -27,6 +27,8 @@ struct Remote {
     lose_profile: bool,
     lose_assign: bool,
     drop_assign_once: bool,
+    drop_clear_once: bool,
+    incomplete_details_once: bool,
     throttle_assign_once: bool,
     assignments: Vec<Vec<String>>,
     details_fail_once: bool,
@@ -217,11 +219,20 @@ async fn assign(
 async fn clear(
     State(state): State<Arc<tokio::sync::Mutex<Remote>>>,
     Json(body): Json<Value>,
-) -> Json<Value> {
-    state.lock().await.assigned = false;
+) -> axum::response::Response {
+    let mut s = state.lock().await;
+    if s.drop_clear_once {
+        s.drop_clear_once = false;
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "request lost before effect",
+        )
+            .into_response();
+    }
+    s.assigned = false;
     Json(
         json!({"devices":body["devices"].as_array().unwrap().iter().map(|d|(d.as_str().unwrap().to_owned(),json!("SUCCESS"))).collect::<serde_json::Map<_,_>>()}),
-    )
+    ).into_response()
 }
 async fn details(
     State(state): State<Arc<tokio::sync::Mutex<Remote>>>,
@@ -232,7 +243,11 @@ async fn details(
         s.details_fail_once = false;
         return (StatusCode::INTERNAL_SERVER_ERROR, "unavailable").into_response();
     }
-    Json(json!({"devices":body["devices"].as_array().unwrap().iter().map(|d|(d.as_str().unwrap().to_owned(),json!({"profile_uuid":if s.assigned{Some(s.profile)}else{None}}))).collect::<serde_json::Map<_,_>>()})).into_response()
+    if s.incomplete_details_once {
+        s.incomplete_details_once = false;
+        return Json(json!({"devices":body["devices"].as_array().unwrap().iter().map(|d|(d.as_str().unwrap().to_owned(),json!({}))).collect::<serde_json::Map<_,_>>()})).into_response();
+    }
+    Json(json!({"devices":body["devices"].as_array().unwrap().iter().map(|d|(d.as_str().unwrap().to_owned(),json!({"profile_uuid":if s.assigned{Some(s.profile)}else{None},"profile_status":if s.assigned{"assigned"}else{"empty"}}))).collect::<serde_json::Map<_,_>>()})).into_response()
 }
 async fn check_session(
     State(state): State<Arc<tokio::sync::Mutex<Remote>>>,
@@ -291,7 +306,7 @@ fn manufacturer(root: &std::path::Path) -> Result<tempfile::TempDir> {
             out.path().join("manufacturing.pem"),
             out.path().join("manufacturing.key"),
             "1024",
-            "-1",
+            "365",
             "-sha1",
         ),
         (
@@ -320,6 +335,38 @@ fn manufacturer(root: &std::path::Path) -> Result<tempfile::TempDir> {
             "-out".as_ref(),
             csr.as_os_str(),
         ])?;
+        if name == "device-ca" {
+            let config = out.path().join("historical-ca.conf");
+            std::fs::write(out.path().join("index"), "")?;
+            std::fs::write(out.path().join("serial"), "01\n")?;
+            std::fs::write(
+                &config,
+                format!(
+                    "[ca]\ndefault_ca=fixture\n[fixture]\ndatabase={0}/index\nserial={0}/serial\nnew_certs_dir={0}\ncertificate={1}\nprivate_key={2}\ndefault_md=sha1\npolicy=policy\n[policy]\ncommonName=supplied\n",
+                    out.path().display(),
+                    parent.display(),
+                    parent_key.display()
+                ),
+            )?;
+            scep_client::openssl(&[
+                "ca".as_ref(),
+                "-batch".as_ref(),
+                "-notext".as_ref(),
+                "-config".as_ref(),
+                config.as_os_str(),
+                "-in".as_ref(),
+                csr.as_os_str(),
+                "-out".as_ref(),
+                cert.as_os_str(),
+                "-startdate".as_ref(),
+                "20100101000000Z".as_ref(),
+                "-enddate".as_ref(),
+                "20140101000000Z".as_ref(),
+                "-extfile".as_ref(),
+                ca_ext.as_os_str(),
+            ])?;
+            continue;
+        }
         scep_client::openssl(&[
             "x509".as_ref(),
             "-req".as_ref(),
@@ -1021,5 +1068,48 @@ async fn unapplied_effect_releases_the_barrier_and_throttling_retries_only_pendi
         "successful device was reassigned during throttling retry"
     );
     pg.close().await?;
+    c.close().await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=apple.ade: incomplete observations cannot prove unassignment"]
+async fn incomplete_observation_never_confirms_a_clear() -> Result<()> {
+    let mut c = Control::start().await?;
+    c.setup().await?;
+    c.state.lock().await.drop_clear_once = true;
+    let clear = c
+        .command(json!({"kind":"clear","devices":[crate::test_support::case::name("ade-serial")]}))
+        .await?;
+    c.cycle().await?;
+    ensure!(c.result(clear).await?["state"] == "unknown");
+    c.state.lock().await.incomplete_details_once = true;
+    let query = c
+        .command(json!({"kind":"reconcile","operation":clear}))
+        .await?;
+    c.cycle().await?;
+    ensure!(
+        c.result(query).await?["state"] == "failed" && c.result(clear).await?["state"] == "unknown"
+    );
+    let machine = c.machine()?;
+    ensure!(
+        c.enroll(machine.clone()).await?.0 != StatusCode::OK,
+        "unknown clear authorized a pending enrollment"
+    );
+    let query = c
+        .command(json!({"kind":"reconcile","operation":clear}))
+        .await?;
+    c.cycle().await?;
+    ensure!(
+        c.result(query).await?["state"] == "succeeded"
+            && c.result(clear).await?["state"] == "failed"
+    );
+    ensure!(
+        c.enroll(machine.clone()).await?.0 == StatusCode::OK,
+        "authoritative assignment was lost during clear recovery"
+    );
+    c.command(json!({"kind":"clear","devices":[crate::test_support::case::name("ade-serial")]}))
+        .await?;
+    c.cycle().await?;
+    ensure!(c.enroll(machine).await?.0 != StatusCode::OK);
     c.close().await
 }
