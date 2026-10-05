@@ -25,5 +25,5 @@ CREATE POLICY tenant ON public.mdm_tenants USING(tenant_id=NULLIF(current_settin
 CREATE POLICY operator ON public.mdm_tenants TO mdm_owner USING(true) WITH CHECK(true);
 REVOKE ALL ON public.mdm_installation,public.mdm_tenants,public.mdm_tenant_registrations FROM PUBLIC;
 GRANT SELECT ON public.mdm_installation,public.mdm_tenants TO mdm_access,mdm_identity_runtime,mdm_identity_maintenance;
-GRANT SELECT ON rss_transactional_messaging.tenant_epoch TO mdm_access;
+GRANT SELECT ON rss_transactional_messaging.tenant_epoch TO mdm_access,mdm_identity_runtime,mdm_identity_maintenance;
 COMMIT;

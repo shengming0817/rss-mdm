@@ -14,7 +14,7 @@ import time
 from types import SimpleNamespace
 
 from candidate_fixture import INSTANCE, ADMIN
-from t2_context import contexts, installation, validate
+from t2_context import contexts, installation, registration_tenants, validate
 from t2_database import Costs, DatabasePool, measure
 from t2_hosts import Host
 from t2_environment import Environment, private, run
@@ -101,9 +101,11 @@ class RunFixtures:
                   if job.module.postgres and job.module.db_mode != 'instance']
         fault = [self.case_contexts[job.key] for job in jobs if job.module.db_mode == 'instance']
         if normal:
-            self.normal.installation = installation(normal)
+            self.normal.installation = installation()
+            self.normal.tenants = registration_tenants(normal)
         if fault:
-            self.fault.installation = installation(fault)
+            self.fault.installation = installation()
+            self.fault.tenants = registration_tenants(fault)
         for job in jobs:
             root = self.root / job.key
             root.mkdir()
@@ -151,7 +153,7 @@ class RunFixtures:
         password = private(root / 'account-password', 'Fixture-only-correct-horse-battery-2026!')
         for tenant in tenants:
             path = private(root / 'initialize.json', dict(database=maintenance, installation=pool.installation,
-                           tenant_id=tenant, principal_id=ADMIN, login='bootstrap', password_file=str(password)))
+                           tenant_id=tenant, expected_epoch=1, principal_id=ADMIN, login='bootstrap', password_file=str(password)))
             with measure(self.costs, 'identity-initialize', database=database, tenant=tenant):
                 run([self.builds.executables['rss-mdm'], 'initialize', '--config', path],
                     cwd=ROOT, env=env, capture_output=True, timeout=30)

@@ -58,8 +58,6 @@ async fn exercise(ledger: bool) -> Result<()> {
         instance_id: crate::test_support::identity::INSTANCE.into(),
         target: [1; 16],
         lineage: [2; 16],
-        epoch: 1,
-        tenants: vec![case_tenant().into()],
     };
     crate::migration::migrate(&options, &installation).await?;
     let mut value: serde_json::Value = serde_json::from_slice(&std::fs::read(&fixture)?)?;
@@ -82,6 +80,14 @@ async fn exercise(ledger: bool) -> Result<()> {
             serde_json::json!({"mode":"ledger", "key_id":"worker-fixture", "key_file":key});
     }
     let config: Config = serde_json::from_value(value.clone())?;
+    let mut owner = PgConnection::connect_with(&options).await?;
+    let registration = serde_json::from_value(serde_json::json!({
+        "database":config.identity.database, "installation":installation,
+        "tenant_id":case_tenant(), "initial_epoch":1, "operation_id":uuid::Uuid::new_v4()
+    }))?;
+    crate::tenant_registry::register_on(&mut owner, &registration).await?;
+    owner.close().await?;
+
     let mut maintenance = value["identity"]["database"].clone();
     maintenance["user"] = "mdm_identity_maintenance".into();
     maintenance["password_file"] = root
@@ -90,7 +96,7 @@ async fn exercise(ledger: bool) -> Result<()> {
         .to_string()
         .into();
     crate::maintenance::run(serde_json::from_value(serde_json::json!({
-        "database":maintenance, "installation":installation, "tenant_id":case_tenant(),
+        "database":maintenance, "installation":installation, "tenant_id":case_tenant(), "expected_epoch":1,
         "principal_id":crate::test_support::case::admin(), "login":"admin", "password_file":root.join("account-password")
     }))?, true).await?;
     let mut identity_resources = Vec::new();

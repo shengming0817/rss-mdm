@@ -312,7 +312,7 @@ fn units() -> Vec<(&'static str, &'static str)> {
 pub fn manifest() -> serde_json::Value {
     serde_json::json!({"units":units().into_iter().map(|(name, sql)| serde_json::json!({"name":name,"sha256":format!("{:x}", Sha256::digest(sql))})).collect::<Vec<_>>()})
 }
-async fn migrate_on(conn: &mut PgConnection, installation: &Installation) -> Result<()> {
+pub(crate) async fn migrate_on(conn: &mut PgConnection, installation: &Installation) -> Result<()> {
     migrate_units(conn, installation, &units()).await
 }
 async fn migrate_units(

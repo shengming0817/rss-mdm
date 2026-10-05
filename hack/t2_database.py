@@ -70,6 +70,7 @@ class DatabasePool:
         self.templates = {}
         self.shared = {}
         self.installation = None
+        self.tenants = []
 
     def postgres(self):
         with self.lock:
@@ -150,7 +151,7 @@ class DatabasePool:
 
     def coordinates(self, name, profile):
         if profile == 'product':
-            return json.loads(self.owner.sql('SELECT configuration FROM public.mdm_installation', name))
+            return json.loads(self.owner.sql("SELECT to_jsonb(i)-'singleton' FROM public.mdm_installation i", name))
         return self.owner.sql("SELECT encode(target,'hex')||':'||encode(lineage,'hex') FROM rss_transactional_messaging.storage_lineage ORDER BY target", name)
 
     def properties(self, name):
@@ -201,6 +202,13 @@ class DatabasePool:
                         config = self.installation_config(root, name)
                         run([self.builds.executables['rss-mdm'], 'migrate', '--config', config],
                             cwd=ROOT, capture_output=True, timeout=90)
+                        for tenant in self.tenants:
+                            registration = private(root / 'register.json', dict(
+                                database=self.database_config(root, name), installation=self.installation,
+                                tenant_id=tenant, initial_epoch=1,
+                                operation_id=str(uuid.uuid5(uuid.NAMESPACE_URL, name + '/' + tenant))))
+                            run([self.builds.executables['rss-mdm'], 'register-tenant', '--config', registration],
+                                cwd=ROOT, capture_output=True, timeout=45)
                     else:
                         executable = 'migrations' if profile == 'group' else 'policy_migrations'
                         sql = run([self.builds.executables[executable]], cwd=ROOT, capture_output=True).stdout
@@ -212,7 +220,7 @@ class DatabasePool:
                         owner.sql(f'BEGIN; SET ROLE {role}; {sql} COMMIT;', name)
                         owner.sql("INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES(decode(repeat('01',16),'hex'),decode(repeat('02',16),'hex')); "
                                   + 'INSERT INTO rss_transactional_messaging.tenant_epoch VALUES'
-                                  + ','.join(f'({literal(tenant)},1)' for tenant in self.installation['tenants']) + ';', name)
+                                  + ','.join(f'({literal(tenant)},1)' for tenant in self.tenants) + ';', name)
                 properties = self.properties(name)
                 coordinates = self.coordinates(name, profile)
                 owner.sql(f'ALTER DATABASE {identifier(name)} ALLOW_CONNECTIONS false;')

@@ -89,7 +89,8 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
     // A valid-looking but absent target never acquires the irreversible bootstrap marker.
     let wrong_key = Uuid::new_v4();
     let mut init = json!({"database":base["access_database"],"identityDatabase":base["identity"]["database"],
-        "installation":{"audit_mode":"plain","instance_id":INSTANCE,"target":base["flow"]["storage"]["target"],"lineage":base["flow"]["storage"]["lineage"],"epoch":base["flow"]["storage"]["epoch"],"tenants":[case_tenant()]},
+        "expectedEpoch":base["flow"]["storage"]["epoch"],
+        "installation":{"audit_mode":"plain","instance_id":INSTANCE,"target":base["flow"]["storage"]["target"],"lineage":base["flow"]["storage"]["lineage"]},
         "audit":{"mode":"plain"},"login":crate::test_support::case::name("authorization-member"),"passwordFile":std::path::Path::new(&std::env::var("MDM_TEST_CONFIG")?).parent().unwrap().join("account-password"),
         "operationId":wrong_key,"user":{"instanceId":INSTANCE,"tenantId":case_tenant(),"principalId":Uuid::new_v4()}});
     ensure!(matches!(
