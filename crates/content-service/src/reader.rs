@@ -12,7 +12,32 @@ pub struct Verified {
     pin: Uuid,
     pub(super) deadline: Deadline,
     plaintext: Option<Zeroizing<Vec<u8>>>,
-    _permit: Option<OwnedSemaphorePermit>,
+    _permit: Option<TransferLease>,
+}
+/// Release scarce transfer capacity at its absolute deadline, even when HTTP backpressure
+/// stops polling the body. The timer performs only this synchronous release; the lease
+/// owns and aborts it on drop. Storage pins already carry the same persisted deadline.
+/// ref: tokio tokio/src/runtime/task/join.rs (owned task cancellation).
+struct TransferLease {
+    permit: Arc<std::sync::Mutex<Option<OwnedSemaphorePermit>>>,
+    expiry: tokio::task::JoinHandle<()>,
+}
+impl TransferLease {
+    fn new(permit: OwnedSemaphorePermit, deadline: Deadline) -> Self {
+        let permit = Arc::new(std::sync::Mutex::new(Some(permit)));
+        let release = permit.clone();
+        let expiry = tokio::spawn(async move {
+            tokio::time::sleep_until(deadline.instant().into()).await;
+            release.lock().unwrap_or_else(|e| e.into_inner()).take();
+        });
+        Self { permit, expiry }
+    }
+}
+impl Drop for TransferLease {
+    fn drop(&mut self) {
+        self.permit.lock().unwrap_or_else(|e| e.into_inner()).take();
+        self.expiry.abort();
+    }
 }
 impl Drop for Verified {
     fn drop(&mut self) {
@@ -114,7 +139,7 @@ impl Store {
             .map_err(|_| Error::Conflict)?;
         let d = self.deadline()?;
         let mut v = self.verify_at(a, c, d).await?;
-        v._permit = Some(permit);
+        v._permit = Some(TransferLease::new(permit, d));
         Ok(v)
     }
     async fn verify_at(
@@ -166,7 +191,7 @@ impl Store {
             out.push(self.verify_at(a, *c, d).await?);
         }
         if let Some(v) = out.first_mut() {
-            v._permit = Some(permit);
+            v._permit = Some(TransferLease::new(permit, d));
         }
         Ok(out)
     }
@@ -292,5 +317,43 @@ impl Verified {
             },
         );
         Ok(stream.boxed())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct RuntimeTimer;
+    impl Clock for RuntimeTimer {
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "test concrete Tokio clock provider"
+        )]
+        fn now(&self) -> std::time::Instant {
+            tokio::time::Instant::now().into_std()
+        }
+    }
+    #[tokio::test]
+    async fn transfer_capacity_expires_without_polling_and_releases_on_drop() {
+        let slots = Arc::new(Semaphore::new(1));
+        let deadline = Deadline::at(RuntimeTimer.now() + std::time::Duration::from_millis(30));
+        let lease = TransferLease::new(slots.clone().try_acquire_owned().unwrap(), deadline);
+        assert!(slots.clone().try_acquire_owned().is_err());
+        let restored = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            slots.clone().acquire_owned(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        drop(restored);
+        assert_eq!(slots.available_permits(), 1);
+        drop(lease);
+        let lease = TransferLease::new(
+            slots.clone().try_acquire_owned().unwrap(),
+            Deadline::at(RuntimeTimer.now() + std::time::Duration::from_secs(60)),
+        );
+        drop(lease);
+        assert_eq!(slots.available_permits(), 1);
     }
 }

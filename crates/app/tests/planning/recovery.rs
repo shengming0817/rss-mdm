@@ -60,8 +60,40 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
             "GRANT UPDATE ON mdm_access.authorization_rules TO mdm_flow_runtime",
             "REVOKE UPDATE ON mdm_access.authorization_rules FROM mdm_flow_runtime",
         ),
+        (
+            "REVOKE UPDATE(state) ON mdm_agent_packages.releases FROM mdm_flow_runtime",
+            "GRANT UPDATE(state) ON mdm_agent_packages.releases TO mdm_flow_runtime",
+        ),
+        (
+            "CREATE ROLE pkg_drift NOLOGIN; GRANT USAGE ON SCHEMA mdm_agent_packages TO pkg_drift; GRANT DELETE ON mdm_agent_packages.releases TO pkg_drift; GRANT pkg_drift TO mdm_flow_runtime WITH INHERIT FALSE, SET TRUE",
+            "REVOKE pkg_drift FROM mdm_flow_runtime; DROP OWNED BY pkg_drift; DROP ROLE pkg_drift",
+        ),
+        (
+            "CREATE ROLE pkg_drift NOLOGIN; CREATE ROLE pkg_executor NOLOGIN; GRANT UPDATE(document) ON mdm_agent_packages.releases TO pkg_drift; GRANT pkg_drift TO pkg_executor WITH INHERIT TRUE, SET FALSE; GRANT pkg_executor TO mdm_flow_runtime WITH INHERIT FALSE, SET TRUE",
+            "REVOKE pkg_executor FROM mdm_flow_runtime; REVOKE pkg_drift FROM pkg_executor; DROP OWNED BY pkg_drift; DROP ROLE pkg_drift; DROP ROLE pkg_executor",
+        ),
+        (
+            "CREATE ROLE pkg_drift NOLOGIN; GRANT CREATE ON SCHEMA mdm_agent_packages TO pkg_drift; GRANT pkg_drift TO mdm_flow_runtime WITH INHERIT FALSE, SET TRUE",
+            "REVOKE pkg_drift FROM mdm_flow_runtime; DROP OWNED BY pkg_drift; DROP ROLE pkg_drift",
+        ),
+        (
+            "ALTER TABLE mdm_agent_packages.releases DISABLE ROW LEVEL SECURITY",
+            "ALTER TABLE mdm_agent_packages.releases ENABLE ROW LEVEL SECURITY",
+        ),
+        (
+            "ALTER TABLE mdm_agent_packages.releases DROP CONSTRAINT releases_request_digest_check; ALTER TABLE mdm_agent_packages.releases ADD CONSTRAINT releases_request_digest_check CHECK(true)",
+            "ALTER TABLE mdm_agent_packages.releases DROP CONSTRAINT releases_request_digest_check; ALTER TABLE mdm_agent_packages.releases ADD CONSTRAINT releases_request_digest_check CHECK(octet_length(request_digest)=32)",
+        ),
     ] {
         sql(change);
+        if change.contains("CREATE ROLE pkg_drift") {
+            assert_eq!(
+                sql(
+                    "SELECT NOT has_table_privilege('mdm_flow_runtime','mdm_agent_packages.releases','DELETE,UPDATE') AND NOT has_column_privilege('mdm_flow_runtime','mdm_agent_packages.releases','document','UPDATE') AND NOT has_schema_privilege('mdm_flow_runtime','mdm_agent_packages','CREATE')"
+                ),
+                "t"
+            );
+        }
         let rejected = crate::flow::admit_storage(&service.runtime, tenant())
             .await
             .is_err()
@@ -80,6 +112,7 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
         ("mdm_access.registrations", "state"),
         ("mdm_access.report_sources", "enabled"),
         ("mdm.inventory", "value"),
+        ("mdm_agent_packages.releases", "document"),
     ] {
         assert_eq!(
             sql(&format!(

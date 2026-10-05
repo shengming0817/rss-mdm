@@ -515,6 +515,7 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
     );
     let mut without_signing = fixture.base.clone();
     without_signing["task_signing"] = serde_json::Value::Null;
+    without_signing["agent_pki"] = json!({"mode":"disabled"});
     let mut unsigned = Fixture::from_config(without_signing).await?;
     reject_script_at_all_entrances(&mut unsigned, definition.clone(), StatusCode::CONFLICT).await?;
     ensure!(

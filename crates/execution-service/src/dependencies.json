@@ -1,6 +1,7 @@
 {
   "mdm.inventory": "7acf73cb80d92b8253aeabc0be452a4017dd0ae7fb984bbc26a25a543d3f3d0f",
-  "mdm_access.agent_grants": "62e5773a5fdabec30436c2ee8d5e3d027287c9943ab1da294dd53c36f470233a",
+  "mdm_access.agent_enrollment_settings": "672f0ee5f43cda4b36b250102effec4cf718cce8676843242ad117005933895a",
+  "mdm_access.agent_grants": "5593c79a37379a5016a22fc86071d4a81183c69853bd8dd441ff1f634b20e358",
   "mdm_access.agent_issuances": "40329b3acaeb8829c7d2628da0408b475f7e63293c145bbae9d1b1786d085dd8",
   "mdm_access.authorization_rules": "728a46e3366110ceca461be07d36a3b63a4fa116bcd82bf9428abc9d840a11aa",
   "mdm_access.collection_runs": "564c40cecfd5e3c0b48a53b9568a770d4952d577efa79b7c44845df5c4197564",

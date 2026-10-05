@@ -9,8 +9,6 @@ pub enum Config {
     Disabled {},
     StepCa {
         endpoint: Box<crate::native::TlsEndpoint>,
-        #[serde(default)]
-        policy: rss_mdm_registration_service::agent::Policy,
         trust_file: PathBuf,
         #[serde(default)]
         lifetime: Lifetime,
@@ -41,7 +39,6 @@ pub(crate) struct AgentPki {
     pub listen: std::net::SocketAddr,
     pub origin: String,
     pub tls: Arc<tokio_rustls::rustls::ServerConfig>,
-    pub policy: rss_mdm_registration_service::agent::Policy,
     pub pki_clock: Arc<dyn rss_mdm_registration_service::agent_pki::Clock>,
     clock: Arc<dyn crate::clock::Clock>,
     required_seconds: i64,
@@ -55,7 +52,6 @@ impl Config {
     ) -> Result<Option<Arc<AgentPki>>, Error> {
         let Self::StepCa {
             endpoint,
-            policy,
             trust_file,
             lifetime,
         } = self
@@ -71,7 +67,6 @@ impl Config {
         {
             return Err(invalid());
         }
-        policy.validate().map_err(|_| invalid())?;
         let days = lifetime.days()?;
         let device_trust = crate::device_pki::load(
             trust_file,
@@ -101,7 +96,6 @@ impl Config {
             listen: endpoint.listen,
             origin: endpoint.origin.clone(),
             tls,
-            policy: policy.clone(),
             pki_clock: Arc::new(PkiClock(clock.clone())),
             issuer: Arc::new(issuer),
             clock,

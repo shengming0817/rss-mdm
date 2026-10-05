@@ -32,3 +32,6 @@ pub const ENROLLMENT_PROGRESS_SQL: &str = include_str!("../schema/enrollment-pro
 
 /// Durable Apple account authorization on the existing request lifecycle.
 pub const APPLE_ACCOUNT_SQL: &str = include_str!("../schema/apple-account.sql");
+
+/// Registration settings and reusable administrator configurations.
+pub const AGENT_CONFIGURATIONS_SQL: &str = include_str!("../schema/agent-configurations.sql");

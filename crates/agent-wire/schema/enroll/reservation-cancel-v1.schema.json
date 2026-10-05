@@ -1,0 +1,61 @@
+{
+  "$defs": {
+    "Secret": {
+      "description": "Canonical 256-bit base64url secret. Debug output is always redacted.",
+      "maxLength": 43,
+      "minLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{43}$",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A secret-bound cancellation affects only an unconsumed machine reservation.",
+  "properties": {
+    "creationOperationId": {
+      "description": "Original creation operation.",
+      "format": "uuid",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "grantId": {
+      "description": "Granted machine authorization.",
+      "format": "uuid",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "operationId": {
+      "description": "Stable cancellation operation.",
+      "format": "uuid",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "secret": {
+      "$ref": "#/$defs/Secret",
+      "description": "This machine's grant secret, never the shared configuration secret."
+    },
+    "wireVersion": {
+      "const": 1,
+      "description": "Independent enrollment version."
+    }
+  },
+  "required": [
+    "wireVersion",
+    "grantId",
+    "operationId",
+    "creationOperationId",
+    "secret"
+  ],
+  "title": "Cancel",
+  "type": "object",
+  "$id": "https://rss.example/agent/enroll/v1/ReservationCancel"
+}

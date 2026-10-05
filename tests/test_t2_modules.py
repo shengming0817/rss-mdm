@@ -9,6 +9,17 @@ from ci_impact import select_inputs, SelectionError
 
 
 class ModuleImpactTests(unittest.TestCase):
+    def test_configuration_inputs_select_their_real_consumers(self):
+        for path, expected in {
+            'crates/content-service/src/reader.rs': {'agent.configurations', 'content.http', 'content.storage'},
+            'crates/agent-channel/src/enroll.rs': {'agent.configurations', 'agent.pki', 'agent.registration'},
+            'crates/agent-wire/src/enroll.rs': {'agent.configurations', 'agent.pki', 'agent.registration'},
+        }.items():
+            with self.subTest(path=path):
+                selected = set(select_inputs([path]).modules)
+                self.assertTrue(expected <= selected, selected)
+                self.assertTrue(selected.isdisjoint({'sources.brew_git', 'apple.apns'}), selected)
+
     def test_pki_artifacts_select_the_shared_protocol_consumers(self):
         expected = select_inputs(['crates/agent-wire/src/pki.rs']).modules
         for file in ('manifest.json', 'trust-v1.schema.json', 'acknowledgement-v1.schema.json'):
@@ -219,7 +230,7 @@ class ModuleImpactTests(unittest.TestCase):
 
     def test_test_module_carriers_select_exact_children(self):
         expected = {
-            'crates/app/tests/agent/mod.rs': {'agent.registration','agent.reports'},
+            'crates/app/tests/agent/mod.rs': {'agent.registration','agent.reports','agent.configurations'},
             'crates/app/tests/api/mod.rs': {'api.identity_context','diagnostics.http'},
             'crates/app/tests/execution/mod.rs': {name for name in MODULES if name.startswith('execution.')},
         }
@@ -237,7 +248,7 @@ class ModuleImpactTests(unittest.TestCase):
 
     def test_app_helpers_select_all_actual_consumers(self):
         self.assertEqual(self.selected('crates/app/tests/support/software.rs'), {
-            'planning.self_service','software.http','content.http','content.mirror','content.gc','content.storage',
+            'agent.configurations','planning.self_service','software.http','content.http','content.mirror','content.gc','content.storage',
             'planning.software','planning.policy','planning.http','apple.policy','execution.software.offer','execution.software.content','execution.software.recovery'})
         self.assertEqual(self.selected('crates/app/tests/support/process.rs'),
                          {'inventory.runtime','execution.commands.recovery'})
@@ -285,7 +296,7 @@ class ModuleImpactTests(unittest.TestCase):
 
     def test_shared_registration_fixture_selects_only_direct_consumers(self):
         self.assertEqual(self.selected('crates/app/tests/support/agent.rs'),
-                         {'installation.upgrade_runtime','planning.self_service','agent.registration','agent.reports','planning.remote','execution.agent.poll','execution.agent.recovery','planning.onboarding','execution.commands.onboarding','execution.agent.delivery','execution.software.recovery','planning.agent_policy','execution.software.offer','execution.agent.history','assets.http','execution.agent.content','apple.onboarding','planning.software','planning.http','execution.software.content','planning.frequency','execution.commands.windows','software.http'})
+                         {'agent.configurations','installation.upgrade_runtime','planning.self_service','agent.registration','agent.reports','planning.remote','execution.agent.poll','execution.agent.recovery','planning.onboarding','execution.commands.onboarding','execution.agent.delivery','execution.software.recovery','planning.agent_policy','execution.software.offer','execution.agent.history','assets.http','execution.agent.content','apple.onboarding','planning.software','planning.http','execution.software.content','planning.frequency','execution.commands.windows','software.http'})
 
     def test_content_range_selects_real_download_consumers(self):
         self.assertEqual(self.selected('crates/content-service/src/range.rs'),
@@ -461,9 +472,9 @@ class ModuleImpactTests(unittest.TestCase):
                          {'publication.winget','publication.brew','publication.withdrawal','publication.recovery'})
         self.assertEqual(self.selected('crates/software-service/src/publication/references.rs'),
                          {'publication.mapping','planning.resource_archive'})
-        self.assertEqual(self.selected('crates/management-http/src/software_catalog.rs'), {'software.http'})
+        self.assertEqual(self.selected('crates/management-http/src/software_catalog.rs'), {'software.http','agent.configurations'})
         self.assertEqual(self.selected('crates/software-service/src/management/catalog.rs'), {'software.http'})
-        self.assertEqual(self.selected('crates/content-service/src/software.rs'), {'software.http'})
+        self.assertEqual(self.selected('crates/content-service/src/software.rs'), {'software.http','agent.configurations'})
         self.assertEqual(self.selected('crates/software-service/src/preparation/mod.rs'),
                          {'software.catalog','planning.software','planning.onboarding','execution.commands.onboarding',
                           'execution.software.offer','execution.software.content','execution.software.recovery'})

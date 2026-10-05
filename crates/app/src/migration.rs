@@ -311,6 +311,14 @@ fn units() -> Vec<(&'static str, &'static str)> {
         "apple-account-channel-v1",
         rss_mdm_apple_channel::ACCOUNT_ENROLLMENT_SQL,
     ));
+    units.push((
+        "registration-agent-configurations-v1",
+        rss_mdm_registration_service::AGENT_CONFIGURATIONS_SQL,
+    ));
+    units.push((
+        "software-agent-packages-v1",
+        rss_mdm_software_service::agent_packages::INSTALL_SQL,
+    ));
     units
 }
 /// Exact immutable migration units embedded in this executable, without database access.
@@ -512,7 +520,15 @@ fn accepted_ledger(
         .take_while(|(name, _)| *name != "apple-account-authority-v1")
         .map(|(name, sql)| (*name, format!("{:x}", Sha256::digest(sql))))
         .collect::<BTreeMap<_, _>>();
-    matches(&predecessor) || matches(&previous) || matches(&before_account)
+    let before_configurations = current
+        .iter()
+        .take_while(|(name, _)| *name != "registration-agent-configurations-v1")
+        .map(|(name, sql)| (*name, format!("{:x}", Sha256::digest(sql))))
+        .collect::<BTreeMap<_, _>>();
+    matches(&predecessor)
+        || matches(&previous)
+        || matches(&before_account)
+        || matches(&before_configurations)
 }
 
 async fn install_identity(

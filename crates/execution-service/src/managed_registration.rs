@@ -12,7 +12,6 @@ impl ExecutionService {
         p: &DevicePrincipal,
         source: rss_mdm_inventory::ReportSource,
         input: &enroll::NativeGrantRequest,
-        policy: &rss_mdm_registration_service::agent::Policy,
         audit: &RequestAudit,
     ) -> std::result::Result<(enroll::GrantReceipt, bool), Error> {
         input.validate().map_err(|_| Error::Malformed)?;
@@ -29,22 +28,17 @@ impl ExecutionService {
             .write(
                 self.tenant,
                 &control,
-                (self, p, source, input, policy, audit),
+                (self, p, source, input, audit),
                 |ctx, tx| {
                     Box::pin(async move {
-                        let (service, p, source, input, policy, audit) = *ctx;
+                        let (service, p, source, input, audit) = *ctx;
                         let (receipt, replay) = tx
-                            .with_connection_context(
-                                &mut (service, p, source, input, policy),
-                                |ctx, c| {
-                                    Box::pin(async move {
-                                        let (service, p, source, input, policy) = *ctx;
-                                        service
-                                            .register_managed_on(c, p, source, input, policy)
-                                            .await
-                                    })
-                                },
-                            )
+                            .with_connection_context(&mut (service, p, source, input), |ctx, c| {
+                                Box::pin(async move {
+                                    let (service, p, source, input) = *ctx;
+                                    service.register_managed_on(c, p, source, input).await
+                                })
+                            })
                             .await?;
                         let digest = rss_mdm_registration_service::enrollment::digest(&(
                             "mdm.agent.native-grant/v1",
@@ -103,13 +97,12 @@ impl ExecutionService {
         p: &DevicePrincipal,
         source: rss_mdm_inventory::ReportSource,
         input: &enroll::NativeGrantRequest,
-        policy: &rss_mdm_registration_service::agent::Policy,
     ) -> std::result::Result<(enroll::GrantReceipt, bool), Error> {
         let grant = self
             .authorize_managed_on(c, p, source, input.installation_operation, &input.runtime)
             .await?;
         let native = serde_json::json!({"installation":input.installation_operation,"registration":p.registration(),"credential":p.credential(),"generation":p.generation(),"source":source,"runtime":input.runtime});
-        rss_mdm_registration_service::agent::native::create_in(c, grant, input, &native, policy)
+        rss_mdm_registration_service::agent::native::create_in(c, grant, input, &native)
             .await
             .map_err(Into::into)
     }

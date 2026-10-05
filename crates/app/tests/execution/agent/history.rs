@@ -342,10 +342,30 @@ async fn device_capabilities_use_current_permissions_after_proof_capture() -> Re
 async fn capability_product_support_requires_signer_and_content_independently() -> Result<()> {
     use rss_runtime::ManagedResource;
     let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    let mut unsigned_registration = base.clone();
+    unsigned_registration["task_signing"] = Value::Null;
+    let access = database(&unsigned_registration).await?;
+    let rejected = crate::api::application_fixture(
+        serde_json::from_value(unsigned_registration)?,
+        Arc::new(crate::clock::SystemClock),
+        monotonic(),
+        access.clone(),
+        None,
+        access
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?,
+    )
+    .await;
+    ensure!(matches!(
+        rejected,
+        Err(crate::Error::Configuration(crate::ConfigIssue::AgentPki))
+    ));
     for (signed, content) in [(true, true), (true, false), (false, true), (false, false)] {
         let mut config = base.clone();
         if !signed {
             config["task_signing"] = Value::Null;
+            // Registration configurations require a signer; task capability can be disabled.
+            config["agent_pki"] = json!({"mode":"disabled"});
         }
         if !content {
             config["content"] = Value::Null;

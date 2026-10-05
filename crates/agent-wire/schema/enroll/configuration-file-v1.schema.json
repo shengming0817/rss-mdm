@@ -1,0 +1,216 @@
+{
+  "$defs": {
+    "Channel": {
+      "description": "Release channel selected explicitly by the product.",
+      "oneOf": [
+        {
+          "const": "test",
+          "description": "Test releases.",
+          "type": "string"
+        },
+        {
+          "const": "pilot",
+          "description": "Pilot releases.",
+          "type": "string"
+        },
+        {
+          "const": "production",
+          "description": "Production releases.",
+          "type": "string"
+        }
+      ]
+    },
+    "Configuration": {
+      "additionalProperties": false,
+      "description": "Server-frozen metadata; read responses never contain the configuration secret.",
+      "properties": {
+        "channels": {
+          "description": "Allowed release channels; no implicit latest-version pin.",
+          "items": {
+            "$ref": "#/$defs/Channel"
+          },
+          "type": "array"
+        },
+        "configurationId": {
+          "description": "Reusable configuration identity.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "expiresAt": {
+          "description": "Final frozen Unix expiry, unrelated to device certificate lifetime.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "keyId": {
+          "description": "Key identity trusted by the installed candidate.",
+          "type": "string"
+        },
+        "origin": {
+          "description": "Trusted HTTPS Agent origin, checked against the installed candidate.",
+          "type": "string"
+        },
+        "quantity": {
+          "$ref": "#/$defs/Quantity",
+          "description": "Explicit finite or unlimited count."
+        },
+        "targets": {
+          "description": "Allowed native targets.",
+          "items": {
+            "$ref": "#/$defs/Target"
+          },
+          "type": "array"
+        },
+        "tenantId": {
+          "description": "Tenant fixed by the management authority.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "wireVersion": {
+          "const": 1,
+          "description": "Independent file format version."
+        }
+      },
+      "required": [
+        "wireVersion",
+        "configurationId",
+        "tenantId",
+        "origin",
+        "targets",
+        "channels",
+        "expiresAt",
+        "quantity",
+        "keyId"
+      ],
+      "type": "object"
+    },
+    "Quantity": {
+      "description": "A quantity authorization, independent of its expiry.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "At most this many independently bound devices.",
+          "properties": {
+            "count": {
+              "description": "Strictly positive device count.",
+              "format": "uint32",
+              "minimum": 1,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "finite",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "count"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "No configuration count ceiling; all other admission conditions still apply.",
+          "properties": {
+            "kind": {
+              "const": "unlimited",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Secret": {
+      "description": "Canonical 256-bit base64url secret. Debug output is always redacted.",
+      "maxLength": 43,
+      "minLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{43}$",
+      "type": "string"
+    },
+    "Target": {
+      "additionalProperties": false,
+      "description": "One native target; emulation does not select a different installer.",
+      "properties": {
+        "architecture": {
+          "$ref": "#/$defs/TaskArchitecture",
+          "description": "Native processor architecture."
+        },
+        "platform": {
+          "$ref": "#/$defs/TaskPlatform",
+          "description": "Native operating system."
+        }
+      },
+      "required": [
+        "platform",
+        "architecture"
+      ],
+      "type": "object"
+    },
+    "TaskArchitecture": {
+      "description": "Exact processor architecture of the selected artifact.",
+      "oneOf": [
+        {
+          "const": "x86_64",
+          "description": "x86-64.",
+          "type": "string"
+        },
+        {
+          "const": "aarch64",
+          "description": "ARM64.",
+          "type": "string"
+        }
+      ]
+    },
+    "TaskPlatform": {
+      "description": "Exact operating system of the selected immutable artifact.",
+      "oneOf": [
+        {
+          "const": "windows",
+          "description": "Windows.",
+          "type": "string"
+        },
+        {
+          "const": "macos",
+          "description": "macOS.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A complete transferable file. Its secret never belongs in URLs, argv or logs.",
+  "properties": {
+    "configuration": {
+      "$ref": "#/$defs/Configuration",
+      "description": "Frozen signed authorization and installation constraints."
+    },
+    "secret": {
+      "$ref": "#/$defs/Secret",
+      "description": "Configuration exchange secret; each device also generates its own grant secret."
+    },
+    "signature": {
+      "description": "Base64url Ed25519 signature over the canonical signing bytes.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "configuration",
+    "secret",
+    "signature"
+  ],
+  "title": "ConfigurationFile",
+  "type": "object",
+  "$id": "https://rss.example/agent/enroll/v1/ConfigurationFile"
+}

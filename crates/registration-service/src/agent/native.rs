@@ -7,13 +7,8 @@ pub async fn create_in(
     authority: Authority,
     input: &wire::NativeGrantRequest,
     native: &serde_json::Value,
-    policy: &Policy,
 ) -> Result<(wire::GrantReceipt, bool), Error> {
     input.validate().map_err(|_| Error::Malformed)?;
-    policy.validate()?;
-    if !policy.platforms.contains(&input.runtime.platform) {
-        return Err(Error::Forbidden);
-    }
     let p = authority.principal();
     let tenant = p.tenant().to_string();
     if authority.installation() != input.installation_operation {
@@ -51,6 +46,7 @@ native_authority->>'installation'= $2
         check_secret(&tenant, &row, &input.secret)?;
         return Ok((receipt(&row)?, true));
     }
+    let policy = settings::admit_on(c, &tenant, input.runtime.platform).await?;
     let id = Uuid::new_v4();
     let device = Uuid::new_v4().to_string();
     sqlx::query(

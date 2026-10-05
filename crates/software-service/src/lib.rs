@@ -100,3 +100,5 @@ impl AuditPort for rss_mdm_audit_integration::AuditStore {
         Box::pin(async move { self.append_request_in(tx, request, status, result).await })
     }
 }
+
+pub mod agent_packages;
