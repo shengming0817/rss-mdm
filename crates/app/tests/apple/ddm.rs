@@ -104,60 +104,9 @@ pub(super) fn report(manifest: &Value, active: bool, version: &str) -> Value {
 #[ignore = "MODULE=apple.ddm: coowner publication and logical policy withdrawal"]
 async fn policy_coowners_share_native_publication_without_fabricating_removal() -> Result<()> {
     let mut f = Fixture::start().await?;
-    let mut grants = crate::test_support::identity::device_grants(
-        Some(case_device()),
-        &[
-            "enrollment",
-            "credentials",
-            "inventory_read",
-            "inventory_collect",
-            "configuration_write",
-            "operation_read",
-            "operation_cancel",
-        ],
-    )?;
-    for operation in [
-        crate::authorization::Permission::ResourceRead,
-        crate::authorization::Permission::ResourceWrite,
-        crate::authorization::Permission::PolicyRead,
-        crate::authorization::Permission::PolicyWrite,
-        crate::authorization::Permission::ScopeRead,
-        crate::authorization::Permission::ScopeWrite,
-    ] {
-        grants.push(crate::authorization::Grant {
-            operation,
-            scope: crate::authorization::Scope::Tenant,
-        });
-    }
-    grants.extend(crate::test_support::identity::device_grants(
-        None,
-        &["inventory_read", "configuration_write"],
-    )?);
-    crate::test_support::identity::set_grants(
-        case_tenant(),
-        crate::test_support::case::admin(),
-        grants,
-    )
-    .await?;
+    f.policy_grants().await?;
     let (peer, device) = f.ready_local_peer().await?;
-    let mut owner = rss_runtime::ShutdownStack::try_new(
-        rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
-        Arc::new(crate::lifecycle::RuntimeTimer),
-    )?;
-    let automation = crate::automation::Automation::connect(
-        f.app.flow.planning.clone(),
-        f.app.flow.assets.clone(),
-        f.app.flow.compliance.clone(),
-        crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
-    )
-    .await?;
-    let mut startup = owner.startup()?;
-    startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-        crate::automation::Resource(automation.clone()),
-    ));
-    let mut launch = startup.commit();
-    launch.stage_deferred_task_with_token(automation.registration(f.signals.flow()).critical());
-    launch.finish();
+    let owner = f.policy_worker().await?;
     let resource = Uuid::new_v4();
     crate::test_support::planning_http::native_configuration_resource(&mut f.browser,&f.router,resource,"macos","aarch64",
         json!({"target":{"kind":"device"},"apply":task(vec![subscription("policy-subscriptions")],vec![]),"remove":task(vec![],vec![])})).await?;
@@ -278,6 +227,183 @@ async fn policy_coowners_share_native_publication_without_fabricating_removal() 
         "retained publication outlived current authority"
     );
     pg.close().await?;
+    ensure!(owner.shutdown().join().await?.is_clean());
+    drop(device);
+    f.close().await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=apple.ddm: managed Profile takeover and independent withdrawal proof"]
+async fn legacy_takeover_retains_guards_until_correlated_absence() -> Result<()> {
+    let mut f = Fixture::start().await?;
+    f.policy_grants().await?;
+    let (peer, device) = f.ready_local_peer().await?;
+    let owner = f.policy_worker().await?;
+    let profile = Uuid::new_v4();
+    let (classic_policy, classic) = f
+        .configuration_policy(profile_task(profile, true), None, "retain")
+        .await?;
+    let (execute, payload) = peer.next("InstallProfile").await?;
+    // Import unsigned native bytes from the actual attached CMS command payload.
+    let signed = f.root.join("legacy-signed.der");
+    let unsigned = f.root.join("legacy-unsigned.plist");
+    std::fs::write(&signed, payload["Payload"].as_data().unwrap())?;
+    scep_client::openssl(&[
+        "cms".as_ref(),
+        "-verify".as_ref(),
+        "-binary".as_ref(),
+        "-noverify".as_ref(),
+        "-inform".as_ref(),
+        "DER".as_ref(),
+        "-in".as_ref(),
+        signed.as_os_str(),
+        "-out".as_ref(),
+        unsigned.as_os_str(),
+    ])?;
+    let native_profile_bytes = std::fs::read(unsigned)?;
+    let bytes = peer.manage("Acknowledged", Some(execute), None).await?;
+    let (observe, query) = lifecycle::command(&bytes, "ProfileList")?;
+    ensure!(
+        query["ManagedOnly"].as_boolean() == Some(true),
+        "takeover lacks managed-only native query"
+    );
+    let managed = profile_manifest(profile, "com.apple.security.firewall");
+    peer.manage(
+        "Acknowledged",
+        Some(observe),
+        Some(("ProfileList", managed.clone())),
+    )
+    .await?;
+    ensure!(f.operation(classic).await?["commandStatus"] == "applied");
+    f.policy_post(
+        &format!("/api/v1/policies/{classic_policy}"),
+        1,
+        json!({"action":"disable"}),
+    )
+    .await?;
+    f.policy_claims_released(classic_policy).await?;
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let guarded: bool = sqlx::query_scalar("SELECT retired_at IS NULL FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND operation=$2")
+        .bind(case_tenant()).bind(classic).fetch_one(&mut pg).await?;
+    ensure!(
+        guarded,
+        "classic Policy retain released native ownership before takeover"
+    );
+    let resource = Uuid::new_v4();
+    crate::test_support::planning_http::native_configuration_bytes(
+        &mut f.browser,
+        &f.router,
+        resource,
+        "macos",
+        "aarch64",
+        &native_profile_bytes,
+    )
+    .await?;
+    let reply = f
+        .browser
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("/api/v1/resources/{resource}"),
+            None,
+        )
+        .await?;
+    ensure!(reply.0 == StatusCode::OK);
+    let asset = json!({"identifier":"legacy","resource":resource,"version":"v1","variant":"default","versionDigest":reply.1["versions"][0]["digest"],"contentType":"application/x-apple-aspen-config","profileSchemas":["mdm/profiles/com.apple.security.firewall.yaml"]});
+    let (takeover_policy, takeover) = f
+        .configuration_policy(
+            task(
+                vec![
+                    declaration("legacy", "com.apple.configuration.legacy", json!({})),
+                    declaration(
+                        "activation",
+                        "com.apple.activation.simple",
+                        json!({"StandardConfigurations":["legacy"]}),
+                    ),
+                ],
+                vec![asset],
+            ),
+            Some(task(vec![], vec![])),
+            "remove",
+        )
+        .await?;
+    let (execute, _) = peer.next("DeclarativeManagement").await?;
+    peer.manage("Acknowledged", Some(execute), None).await?;
+    let published = manifest(&peer, None).await?;
+    let guarded: bool = sqlx::query_scalar("SELECT retired_at IS NULL FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND operation=$2")
+        .bind(case_tenant()).bind(classic).fetch_one(&mut pg).await?;
+    ensure!(
+        guarded,
+        "DDM publication ACK retired classic ownership before native takeover truth"
+    );
+    native(
+        &peer,
+        None,
+        "status",
+        Some(&report(&published, true, "15.0")),
+    )
+    .await?;
+    ensure!(f.operation(takeover).await?["commandStatus"] == "applied");
+
+    let retired:bool=sqlx::query_scalar("SELECT retired_at IS NOT NULL FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND operation=$2").bind(case_tenant()).bind(classic).fetch_one(&mut pg).await?;
+    ensure!(retired, "native takeover retained classic ownership");
+    f.policy_post(
+        &format!("/api/v1/policies/{takeover_policy}"),
+        1,
+        json!({"action":"disable"}),
+    )
+    .await?;
+    let (execute, _) = peer.next("DeclarativeManagement").await?;
+    let withdrawal: Uuid = sqlx::query_scalar(
+        "SELECT operation FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(case_tenant())
+    .bind(execute)
+    .fetch_one(&mut pg)
+    .await?;
+    let bytes = peer.manage("Acknowledged", Some(execute), None).await?;
+    let (observe, _) = lifecycle::command(&bytes, "ProfileList")?;
+    peer.manage(
+        "Acknowledged",
+        Some(observe),
+        Some(("ProfileList", managed)),
+    )
+    .await?;
+    ensure!(f.operation(withdrawal).await?["commandStatus"] == "received");
+    let protected:bool=sqlx::query_scalar("SELECT retired_at IS NOT NULL AND legacy_released_at IS NULL FROM mdm_apple.declarations WHERE tenant_id=$1::uuid AND operation=$2").bind(case_tenant()).bind(takeover).fetch_one(&mut pg).await?;
+    ensure!(protected, "ACK or present Profile released withdrawn guard");
+    f.profile_query_due(withdrawal).await?;
+    let (observe, _) = peer.next("ProfileList").await?;
+    peer.manage(
+        "Acknowledged",
+        Some(observe),
+        Some(("ProfileList", plist::Value::Array(vec![]))),
+    )
+    .await?;
+    ensure!(f.operation(withdrawal).await?["commandStatus"] == "applied");
+    let released:bool=sqlx::query_scalar("SELECT legacy_released_at IS NOT NULL FROM mdm_apple.declarations WHERE tenant_id=$1::uuid AND operation=$2").bind(case_tenant()).bind(takeover).fetch_one(&mut pg).await?;
+    ensure!(released);
+    pg.close().await?;
+    f.policy_claims_released(takeover_policy).await?;
+    let replacement_profile = Uuid::new_v4();
+    let (_, replacement) = f
+        .configuration_policy(profile_task(replacement_profile, false), None, "retain")
+        .await?;
+    let (execute, _) = peer.next("InstallProfile").await?;
+    let bytes = peer.manage("Acknowledged", Some(execute), None).await?;
+    let (observe, _) = lifecycle::command(&bytes, "ProfileList")?;
+    peer.manage(
+        "Acknowledged",
+        Some(observe),
+        Some((
+            "ProfileList",
+            profile_manifest(replacement_profile, "com.apple.security.firewall"),
+        )),
+    )
+    .await?;
+    ensure!(f.operation(replacement).await?["commandStatus"] == "applied");
     ensure!(owner.shutdown().join().await?.is_clean());
     drop(device);
     f.close().await

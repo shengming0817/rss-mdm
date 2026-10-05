@@ -1180,7 +1180,7 @@ consume(('crates/apple-channel/src/ddm*', 'crates/apple-channel/src/ddm/*',
 consume(('crates/apple-channel/src/profiles.rs', 'crates/apple-channel/src/exchange.rs',
          'crates/apple-channel/src/evidence.rs', 'crates/apple-mdm/src/native/profiles.rs',
          'crates/apple-mdm/src/native/evidence.rs'), 'apple.profile apple.policy apple.ddm apple.status')
-for name in ('apple.ddm', 'apple.status'):
+for name in ('apple.profile', 'apple.ddm', 'apple.status'):
     MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs,
         'crates/app/tests/apple/ddm.rs','crates/app/tests/apple/users.rs','crates/app/tests/apple/policy.rs',
         'crates/app/tests/support/planning_http.rs','crates/app/tests/support/agent_execution.rs'))

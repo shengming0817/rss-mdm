@@ -55,7 +55,7 @@ impl Fixture {
         launch.finish();
         Ok(owner)
     }
-    pub(super) async fn policy_cycle(&mut self, peer: &lifecycle::Peer) -> Result<()> {
+    pub(super) async fn policy_grants(&self) -> Result<()> {
         let mut grants = crate::test_support::identity::device_grants(
             Some(case_device()),
             &[
@@ -91,6 +91,45 @@ impl Fixture {
             grants,
         )
         .await?;
+        Ok(())
+    }
+    pub(super) async fn configuration_policy(
+        &mut self,
+        apply: Value,
+        remove: Option<Value>,
+        exit: &str,
+    ) -> Result<(Uuid, Uuid)> {
+        let resource = Uuid::new_v4();
+        crate::test_support::planning_http::native_configuration_resource(
+            &mut self.browser,
+            &self.router,
+            resource,
+            "macos",
+            "aarch64",
+            json!({"target":{"kind":"device"},"apply":apply,"remove":remove}),
+        )
+        .await?;
+        let scope = Uuid::new_v4();
+        self.policy_post(&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}})).await?;
+        let policy = Uuid::new_v4();
+        self.policy_post(&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"resource":{"id":resource,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"kind":"configuration","exit":exit}}})).await?;
+        Ok((policy, self.policy_operation(policy).await?))
+    }
+    pub(super) async fn policy_claims_released(&self, policy: Uuid) -> Result<()> {
+        let mut db =
+            sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+                .await?;
+        tokio::time::timeout(Duration::from_secs(30), async { loop {
+            let count: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND policy=$2")
+                .bind(case_tenant()).bind(policy).fetch_one(&mut db).await?;
+            if count == 0 { return Ok::<_, anyhow::Error>(()); }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }}).await??;
+        db.close().await?;
+        Ok(())
+    }
+    pub(super) async fn policy_cycle(&mut self, peer: &lifecycle::Peer) -> Result<()> {
+        self.policy_grants().await?;
         let owner = self.policy_worker().await?;
         let resource = Uuid::new_v4();
         let profile = Uuid::new_v4();
