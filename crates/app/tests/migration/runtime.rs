@@ -212,10 +212,8 @@ async fn background_queued_and_retired_offers_keep_their_original_policy_and_rem
         .bind(run)
         .fetch_one(&mut conn)
         .await?;
-        if coordinates.2.is_some() {
-            f.execution
-                .recover_remote_fixture(coordinates.2.unwrap())
-                .await?;
+        if let Some(remote) = coordinates.2 {
+            f.execution.recover_remote_fixture(remote).await?;
             let state: Value = sqlx::query_scalar(
                 "SELECT state FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2",
             )

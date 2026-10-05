@@ -184,7 +184,7 @@ impl Fixture {
             )
             .await?;
         ensure!(wrong.0 == StatusCode::UNAUTHORIZED);
-        self.policy_cycle(&peer).await?;
+        self.policy_cycle(peer).await?;
         self.grant_native_actions(&["device_control"]).await?;
         let rejected = self.create_restart().await?;
         let (id, _) = peer.next("RestartDevice").await?;

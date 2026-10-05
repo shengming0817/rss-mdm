@@ -67,6 +67,7 @@ async fn fixed_controls_preserve_uncertainty_and_retire_old_authority() -> anyho
     let registration = &device.1["primaryMdmRegistration"];
     let confirmation = json!({"confirmed":true,"expectedRegistrationId":registration["registrationId"],"expectedGeneration":registration["generation"]});
     for action in [
+        json!({"kind":"restart","fields":{}}),
         json!({"kind":"lock","confirmed":true,"expectedRegistrationId":registration["registrationId"],"expectedGeneration":registration["generation"],"pin":"123456"}),
         json!({"kind":"wipe","confirmed":false,"expectedRegistrationId":registration["registrationId"],"expectedGeneration":registration["generation"]}),
         json!({"kind":"wipe","confirmed":true,"expectedRegistrationId":registration["registrationId"],"expectedGeneration":registration["generation"].as_i64().unwrap()+1}),

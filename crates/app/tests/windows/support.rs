@@ -878,8 +878,6 @@ async fn management(
     Ok((flow, timeline))
 }
 
-/// Exercise HTTP absolute-form over the actual old mutual TLS socket, bypassing client URL normalization.
-
 pub(crate) fn fixture_providers() -> anyhow::Result<Arc<rss_mdm_pki_service::providers::Providers>>
 {
     Ok(crate::device_pki::providers(&serde_json::from_slice::<

@@ -71,7 +71,7 @@ impl RegistrationConfirmation {
     deny_unknown_fields
 )]
 pub enum Action {
-    Restart,
+    Restart {},
     Lock {
         confirmed: bool,
         expected_registration_id: Uuid,
@@ -92,14 +92,14 @@ impl std::fmt::Debug for Action {
 impl Action {
     pub fn kind(&self) -> Kind {
         match self {
-            Self::Restart => Kind::Restart,
+            Self::Restart {} => Kind::Restart,
             Self::Lock { .. } => Kind::Lock,
             Self::Wipe { .. } => Kind::Wipe,
         }
     }
     pub fn confirmation(&self) -> Result<Option<RegistrationConfirmation>, Error> {
         let (confirmed, registration_id, generation) = match self {
-            Self::Restart => return Ok(None),
+            Self::Restart {} => return Ok(None),
             Self::Lock {
                 confirmed,
                 expected_registration_id,
@@ -134,7 +134,7 @@ impl Action {
         Ok(match source {
             ReportSource::MdmApple => {
                 let (request_type, fields) = match self {
-                    Self::Restart => ("RestartDevice", Fields::default()),
+                    Self::Restart {} => ("RestartDevice", Fields::default()),
                     Self::Lock { pin, .. } => (
                         "DeviceLock",
                         Fields(std::collections::BTreeMap::from([(
@@ -161,7 +161,7 @@ impl Action {
             }
             ReportSource::MdmWindows => {
                 let (node, value) = match self {
-                    Self::Restart => ("./Device/Vendor/MSFT/Reboot/RebootNow", None),
+                    Self::Restart {} => ("./Device/Vendor/MSFT/Reboot/RebootNow", None),
                     Self::Wipe { .. } => (
                         "./Device/Vendor/MSFT/RemoteWipe/doWipe",
                         Some(Value::Text(String::new())),
@@ -250,7 +250,7 @@ impl Approval {
 pub(crate) fn matches(kind: Kind, input: &Create) -> Result<bool, Error> {
     use rss_mdm_apple_mdm::native::{input::FieldValue, request::Request};
     let action = match kind {
-        Kind::Restart => Action::Restart,
+        Kind::Restart => Action::Restart {},
         Kind::Wipe => Action::Wipe {
             confirmed: true,
             expected_registration_id: Uuid::nil(),
