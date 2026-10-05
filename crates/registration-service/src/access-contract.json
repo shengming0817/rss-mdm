@@ -71,7 +71,9 @@
         "expires_at",
         "account_version",
         "account_reference",
-        "account_challenge"
+        "account_challenge",
+        "organization_version",
+        "organization_challenge"
       ],
       "delete_policy": null
     },

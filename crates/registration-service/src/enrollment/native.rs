@@ -45,7 +45,22 @@ pub struct Coordinates {
     pub operation: Uuid,
     pub source: ReportSource,
 }
+/// Apple owner gates organization policy and the verified manufacturer request.
+pub trait OrganizationAuthority: Send + Sync {
+    fn authorize_issue<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: &'a str,
+        organization: Uuid,
+        profile: Uuid,
+        machine: &'a rss_mdm_certificate::apple::ade::MachineInfo,
+    ) -> Pending<'a>;
+    fn current<'a>(&'a self, c: &'a mut PgConnection, data: &'a Coordinates) -> Pending<'a>;
+}
 enum Basis {
+    Organization {
+        authority: Arc<dyn OrganizationAuthority>,
+    },
     Password {
         credential: Uuid,
         proof: AuthorizedPrincipal,
@@ -122,14 +137,25 @@ impl Admission {
     pub fn is_account(&self) -> bool {
         matches!(self.basis, Basis::Account { .. })
     }
+    pub fn is_organization(&self) -> bool {
+        matches!(self.basis, Basis::Organization { .. })
+    }
     pub fn check_live(&self) -> Result<(), Error> {
         match &self.basis {
+            Basis::Organization { .. } => Ok(()),
             Basis::Password { proof, .. } => proof.check_live().map_err(Into::into),
             Basis::Account { proof, .. } => proof.check_live().map_err(|_| Error::Unauthorized),
         }
     }
     pub fn bind_audit(&self, audit: &RequestAudit) -> Result<(), Error> {
         match &self.basis {
+            Basis::Organization { .. } => {
+                if audit.tenant() != self.data.tenant {
+                    return Err(Error::Unauthorized);
+                }
+                audit.identify_service("service:apple-ade");
+                Ok(())
+            }
             Basis::Password { proof, .. } => proof.bind_audit(audit).map_err(Into::into),
             Basis::Account { proof, .. } => {
                 rss_mdm_authorization_service::session::bind_revalidated_audit(proof, audit)
@@ -143,6 +169,9 @@ impl Admission {
             self.revalidate_account_in(c).await?;
         }
         let d = &self.data;
+        if let Basis::Organization { authority } = &self.basis {
+            authority.current(c, d).await?;
+        }
         let row = request(c, &d.tenant, d.id).await?;
         if row.try_get::<String, _>("state").map_err(db)? != "pending"
             || !row.try_get::<bool, _>("live").map_err(db)?
@@ -157,6 +186,10 @@ impl Admission {
         }
         let kind: String = row.try_get("authority_kind").map_err(db)?;
         match &self.basis {
+            Basis::Organization { .. }
+                if kind == "apple_ade"
+                    && !row.try_get::<bool, _>("self_service").map_err(db)?
+                    && row.try_get::<i64, _>("organization_version").map_err(db)? == d.version => {}
             Basis::Password { credential, .. }
                 if kind == "password"
                     && uuid(&row, "credential_ref")? == *credential
@@ -377,4 +410,89 @@ pub async fn issue_in(
     )
     .await?;
     Ok((receipt, false))
+}
+
+/// The organization proof is revalidated inside the same transaction as its request.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one existing registration transaction with manufacturer evidence and mandatory organization authority"
+)]
+pub async fn issue_organization_in(
+    c: &mut PgConnection,
+    tenant: &str,
+    organization: Uuid,
+    profile: Uuid,
+    machine: &rss_mdm_certificate::apple::ade::MachineInfo,
+    id: Uuid,
+    challenge: &str,
+    authority: Arc<dyn OrganizationAuthority>,
+) -> Result<Admission, Error> {
+    if id.is_nil() || organization.is_nil() || profile.is_nil() {
+        return Err(Error::Malformed);
+    }
+    let device = format!("ade:{organization}:{id}");
+    crate::device::store::lock_channel(c, tenant, &device, rss_mdm_inventory::Channel::Mdm).await?;
+    authority
+        .authorize_issue(c, tenant, organization, profile, machine)
+        .await?;
+    let grant = Uuid::new_v4();
+    sqlx::query("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,created_at,expires_at) VALUES($1::uuid,$2,'service:apple-ade','service',$3,'enrollment','consumed',clock_timestamp(),clock_timestamp()+interval '300 seconds')")
+        .bind(tenant).bind(grant).bind(&device).execute(&mut *c).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,authority_kind,grant_id,state,source,expected_generation,issuance_operation,expires_at,self_service,organization_version,organization_challenge) VALUES($1::uuid,$2,'apple_ade',$3,'pending','mdm.apple',0,$2,clock_timestamp()+interval '300 seconds',false,1,$4)")
+        .bind(tenant).bind(id).bind(grant).bind(organization_challenge(tenant,id,challenge)).execute(c).await.map_err(db)?;
+    Ok(Admission {
+        data: Coordinates {
+            tenant: tenant.into(),
+            id,
+            device,
+            actor: "service:apple-ade".into(),
+            instance: "service".into(),
+            version: 1,
+            expected_generation: 0,
+            operation: id,
+            source: ReportSource::MdmApple,
+        },
+        basis: Basis::Organization { authority },
+    })
+}
+pub fn organization_challenge(tenant: &str, id: Uuid, challenge: &str) -> String {
+    digest(&("apple.ade.scep/v1", tenant, id, challenge))
+}
+pub async fn organization(
+    store: &crate::Store,
+    tenant: &str,
+    id: Uuid,
+    authority: Arc<dyn OrganizationAuthority>,
+    challenge: Option<&str>,
+) -> Result<Admission, Error> {
+    let mut tx = store.begin(tenant).await?;
+    let row = request(&mut tx, tenant, id).await?;
+    if row.try_get::<String, _>("authority_kind").map_err(db)? != "apple_ade" {
+        return Err(Error::Unauthorized);
+    }
+    if let Some(challenge) = challenge
+        && !super::equal(
+            &row.try_get::<String, _>("organization_challenge")
+                .map_err(db)?,
+            &organization_challenge(tenant, id, challenge),
+        )
+    {
+        return Err(Error::Unauthorized);
+    }
+    let data = Coordinates {
+        tenant: tenant.into(),
+        id,
+        device: row.try_get("device").map_err(db)?,
+        actor: row.try_get("actor").map_err(db)?,
+        instance: row.try_get("instance").map_err(db)?,
+        version: row.try_get("organization_version").map_err(db)?,
+        expected_generation: row.try_get("expected_generation").map_err(db)?,
+        operation: uuid(&row, "issuance_operation")?,
+        source: ReportSource::MdmApple,
+    };
+    tx.rollback().await.map_err(db)?;
+    Ok(Admission {
+        data,
+        basis: Basis::Organization { authority },
+    })
 }

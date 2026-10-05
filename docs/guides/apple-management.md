@@ -1,6 +1,6 @@
 # Apple 原生注册、命令与 Profile 管理
 
-Rust 服务端支持设备和用户通道，使用外部 step-ca v0.30.2 完成 SCEP 签发。原生命令、查询、回执和多 payload Profile 复用现有 Execution、注册及采集 owner。DDM 的声明发布与状态证据由 Apple 原生 owner 持有；组织/ADE 入网独立实施，这里的 Bootstrap escrow 不代表已实现 ADE 入网。受控 T2 不代替真实 Apple 组织、APNs 和 Mac 验收，T3 证据另行登记。
+Rust 服务端支持设备和用户通道，使用外部 step-ca v0.30.2 完成 SCEP 签发。原生命令、查询、回执和多 payload Profile 复用现有 Execution、注册及采集 owner。DDM 的声明发布与状态证据由 Apple 原生 owner 持有；账户驱动注册和 ADE 使用独立组织授权，ADE 同步与分配状态不代表设备已经完成注册。受控 T2 不代替真实 Apple 组织、APNs 和 Mac 验收，T3 证据另行登记。
 
 ## 注册与凭据
 
@@ -14,9 +14,32 @@ CN 为 enrollment UUID 的 32 位小写 hex 与 attempt UUID 的 32 位小写 he
 
 ## Managed Apple Account 账户驱动设备注册
 
+## ADE 组织注册
+
+ADE 面向企业所有、分配到指定 Apple MDM server 的 Mac，产品 MDM 能力基线为 macOS 15+；账户驱动注册协议从 macOS 14 起可用，不因此承诺 macOS 14 的产品 MDM。首批真机验收以 Apple silicon 为主；Intel 按 Apple 客户端支持和组织分配资格确认。控制台由后续前端任务消费 API。
+
+组织身份共用 `/api/v1/apple/organizations`，响应为 `id`、可空 `accountEnrollment` 和可空 `ade`。账户驱动设置归 `/organizations/{id}/account-enrollment`，ADE 设置归 `/organizations/{id}/ade`。旧组织管理写入口直接替换；发现和设备原生协议入口保持实际协议语义。
+
+管理员需要 `authorization_write`，查询需要 `authorization_read`；写入带 CSRF、Origin 和 UUID `Idempotency-Key`。ADE 操作步骤：
+
+1. `PUT /api/v1/apple/organizations/{id}/ade/configuration`，正文为 `expectedRevision`、`enabled`、Apple `serverUuid`、`orgId` 和 `rotateKey`。新组织 `expectedRevision=0`；组织与 server 身份建成后不能修改。公钥与私钥由服务端独立生成，私钥绑定租户/组织/密钥版本加密保存。
+2. `GET .../ade/public-key` 下载 PEM 公钥证书，上传到 Apple Business Manager / Apple School Manager 的对应 MDM server；随后从 Apple 下载加密 server token。
+3. `POST .../ade/operations` 提交 `{"kind":"token","expectedRevision":1,"p7m":"<原始 S/MIME 文件的 base64>"}`。服务端解密后检查到期，并读取 Apple `/account` 核对 server 与组织；导入不保存或返回明文凭据。轮换通过同一操作更新 token；公钥变更用 `rotateKey=true`，重新上传公钥、下载并导入新 token。不要替换其他组织的 token。
+4. `{"kind":"sync","full":true}` 触发全量同步；后台每半小时执行增量同步。失效 cursor 自动重建全量快照，分页结束前不改变已发布目录，缺席删除仅由完整全量快照证明。`GET .../ade/devices?after=<nextCursor>` 读取每页至多 100 条；同步新鲜度上限为七天。
+5. `{"kind":"profile","id":"<UUID>","expectedRevision":0,"configuration":{"name":"Corporate Mac","mandatory":true,"removable":false,"skip":["AppleID","Intelligence"]}}` 定义 Apple 注册配置。更新带当前 revision；`GET .../ade/profiles` 返回本地 revision 和远端 UUID。本期仅开放 mandatory、removable 与 macOS 15 已支持的 Setup Assistant pane，锁定移除必须 mandatory；不等待 DeviceConfigured，不开启 AutoAdvance、Platform SSO 或强制升级。
+6. `{"kind":"assign","profile":"<本地 UUID>","revision":1,"devices":["<serial>"]}` 分配；`{"kind":"clear","devices":["<serial>"]}` 取消配置。每次最多 1000 台。取消配置不将设备从 Apple 组织释放，也不撤销已绑定设备证书；注册退役由现有设备生命周期操作完成。
+
+操作入口返回提交回执，`GET .../ade/operations/{operationId}` 读取真实执行结果；重复 Idempotency-Key 必须保持同一主体与正文。组织内外部操作串行执行，`unknown` 禁止盲目再次发送。未知 profile 创建结果需要管理员取得对应远端 UUID，以 `{"kind":"resolve","operation":"<原操作 UUID>","remoteProfile":"<Apple UUID>"}` 只读查询并核对冻结配置；Apple API 没有完整 profile 列表，不能自动猜测 UUID。未知 assign/clear 用 `{"kind":"reconcile","operation":"<原操作 UUID>"}` 查询全部原设备的真实 profile 分配，缺少设备观测时保留未知；完整查询确认结果不一致时，记录原操作失败并发布实际分配，允许管理员重新提交。逐设备 `THROTTLED` 按 Apple 的 `retry_after_seconds` 延时，只重试被节流的设备，保留已成功回执。HTTP 401 刷新 session 一次，持续拒绝标记 token invalid；网络中断和不完整写回执保留未知。
+
+Setup Assistant 下载 URL 由服务端生成，接收 Apple 制造商证书链验证后的 CMS MachineInfo，并核对序列号、UDID、macOS 版本、组织目录与当前 profile 分配。已签字典不提供一次性 nonce，因此签名不等于新鲜性；它只启动五分钟、绑定固定 challenge/CSR/设备身份的现有注册。目录陈旧、取消分配、配置变更、禁用或 token 失效会拒绝未完成注册的后续证书准入。成功绑定之后沿用同一设备/注册/世代、SCEP、mTLS、TokenUpdate 与续期，不消费个人 quota，也不把管理员会话冒充设备主体。
+
+T2 使用受控 Apple HTTPS 和制造商根证书，仅证明本地协议、持久化与恢复行为。T3 必须另行记录真实 Apple 组织/server、公钥和 token、可重置 Mac 的采购/Configurator 加入来源、macOS/机型、完整 Setup Assistant、SCEP/mTLS/TokenUpdate、后台同步与轮换、mandatory/removal/skip 实际行为。无现成 ADE 资格的 Mac 可以在 Apple 支持条件下用 iPhone Apple Configurator 加入组织：Mac 需 Apple silicon 或 T2、macOS 12.0.1+，iPhone iOS 16+，抹除后停在地区选择阶段；还须核对三十天 provisional release 例外。此次未取得真实组织/token/Mac，T3 尚未验收，不能据 T2 宣称真实 ADE 注册成功。
+
+协议来源：[Apple ADE 认证](https://developer.apple.com/documentation/devicemanagement/authenticating-for-automated-device-enrollment)、[MachineInfo](https://developer.apple.com/documentation/devicemanagement/machineinfo)、[Setup Assistant keys](https://developer.apple.com/documentation/devicemanagement/skipkeys)，以及 NanoDEP `tokenpki/parse.go`、`client/auth.go`、`sync/syncer.go` 固定提交 `f3eedc15d92933b1e793f60001141299e1791f23`。制造商根直接来自 Apple 证书发布站点，溯源见证书 fixtures。
+
 macOS 14 及以上可在系统设置中用 Managed Apple Account 注册组织设备。浏览器控制台另行实施；服务端提供发现、最小认证桥和管理 API。只提供 `mdm-adde`，不提供个人 BYOD User Enrollment。组织域名须将 `/.well-known/com.apple.remotemanagement` 的请求转送到产品浏览器 HTTPS origin；发现请求包含 `user-identifier` 和 `model-family=Mac`。
 
-在 `native_protocols.apple.account_keys` 中按键名配置 `certificate_file` 与 `private_key_file`。私钥是 owner-only PKCS8 DER；这对 RSA 证书与私钥对应 Apple 组织登记的公钥，和 Profile/APNs 密钥分别管理。管理员从 Apple AccountDetail 取得真正的 `server_uuid` 后，用 `authorization_write` 权限配置 `PUT /api/v1/apple/account-enrollment/organizations/{id}`：`expectedRevision`（首次 0）、`domain`、`serverUuid`、`signingKey`、`enabled`。再用同一权限配置 `PUT .../organizations/{id}/accounts/{managed-account}`，提交 `expectedRevision`、`principalId`、`instanceId`、`enabled`。写入要求非零 UUID `Idempotency-Key`，更新采用预期版本；同一请求可重放。账户及域名规范为 ASCII、小写，账户本地部分支持字母数字与 `._+-`。映射必须属于当前 Identity 实例和组织域名。`authorization_read` 可通过 `GET .../organizations` 查看映射与本地签名密钥可用性；`externalOrganizationVerification=not_observed` 表示外部组织配置尚未验收。
+在 `native_protocols.apple.account_keys` 中按键名配置 `certificate_file` 与 `private_key_file`。私钥是 owner-only PKCS8 DER；这对 RSA 证书与私钥对应 Apple 组织登记的公钥，和 Profile/APNs 密钥分别管理。管理员从 Apple AccountDetail 取得真正的 `server_uuid` 后，用 `authorization_write` 权限配置 `PUT /api/v1/apple/organizations/{id}/account-enrollment`：`expectedRevision`（首次 0）、`domain`、`serverUuid`、`signingKey`、`enabled`。再用同一权限配置 `PUT .../organizations/{id}/account-enrollment/accounts/{managed-account}`，提交 `expectedRevision`、`principalId`、`instanceId`、`enabled`。写入要求非零 UUID `Idempotency-Key`，更新采用预期版本；同一请求可重放。账户及域名规范为 ASCII、小写，账户本地部分支持字母数字与 `._+-`。映射必须属于当前 Identity 实例和组织域名。`authorization_read` 可通过 `GET .../organizations` 查看映射与本地签名密钥可用性；`externalOrganizationVerification=not_observed` 表示外部组织配置尚未验收。
 
 Apple 的签名 CMS 请求只证明载荷完整性，不作为设备认证或组织授权。首次请求获得 `401` 与 `apple-as-web` 认证地址；认证桥复用 RSS Identity 登录、联合身份和 CSRF 验证。登录人必须与管理员设置的组织账户映射完全一致。认证成功通过 `308` 返回 Apple 原生登录回调和随机 bearer；同一授权可重放。随后同一签名请求携带 bearer 取得固定签名 Profile，使用 `EnrollmentMode=ADDE`、`AssignedManagedAppleID`、`com.apple.mdm.token` 和设备范围。该 Profile 的 SCEP、证书绑定、首次 Authenticate 和 TokenUpdate 沿用共同注册生命周期；注册归属真实 RSS 用户，占用其 macOS MDM 额度。
 

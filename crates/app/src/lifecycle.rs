@@ -367,6 +367,15 @@ pub async fn serve(
                         launch.stage_task_with_token(agent_pki.registration().critical());
                     }
                     launch.stage_task_with_token(notifications.registration().critical());
+                    if app.apple.is_some() {
+                        launch.stage_task_with_token(
+                            rss_mdm_apple_channel::ade::registration(
+                                app.apple_control.clone(),
+                                signals.handle(crate::worker_wake::Work::Apple),
+                            )
+                            .critical(),
+                        );
+                    }
                     if let Some(apple) = app.apple {
                         launch.stage_task_with_token(
                             rss_mdm_apple_channel::push::registration(

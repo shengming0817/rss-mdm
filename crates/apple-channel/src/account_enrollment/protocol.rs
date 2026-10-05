@@ -27,7 +27,7 @@ pub(super) async fn discover(
     let host = name.rsplit_once('@').ok_or(Error::Malformed)?.1;
     let tenant = app.identity.tenant().to_string();
     let mut tx = app.access.begin_read(&tenant).await?;
-    let row=sqlx::query("SELECT id,signing_key FROM mdm_apple.account_organizations WHERE tenant_id=$1::uuid AND domain=$2 AND enabled")
+    let row=sqlx::query("SELECT id,signing_key FROM mdm_apple.account_configuration WHERE tenant_id=$1::uuid AND domain=$2 AND enabled")
         .bind(&tenant).bind(host).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::NotFound)?;
     let key: String = row.try_get("signing_key").map_err(db)?;
     let signer = app.apple()?.account_keys.get(&key).ok_or(Error::Conflict)?;
@@ -271,7 +271,7 @@ async fn bootstrap_on(c: &mut sqlx::PgConnection, input: Bootstrap<'_>) -> Resul
         flow,
         digest,
     } = input;
-    let row=sqlx::query("SELECT revision,signing_key FROM mdm_apple.account_organizations WHERE tenant_id=$1::uuid AND id=$2 AND enabled FOR SHARE").bind(tenant).bind(organization).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+    let row=sqlx::query("SELECT revision,signing_key FROM mdm_apple.account_configuration WHERE tenant_id=$1::uuid AND id=$2 AND enabled FOR SHARE").bind(tenant).bind(organization).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Unauthorized)?;
     let key: String = row.try_get("signing_key").map_err(db)?;
     if !app.apple()?.account_keys.get(&key).is_some_and(|s| {
         app.clock

@@ -30,6 +30,7 @@ pub struct CertificatePayload {
 }
 pub enum EnrollmentMode<'a> {
     Profile,
+    Ade { removable: bool },
     Account { managed_account: &'a str },
 }
 pub struct EnrollmentProfile<'a> {
@@ -126,6 +127,9 @@ pub fn enrollment(
         capabilities.push("com.apple.mdm.token".into());
     }
     let mut profile = payload("Configuration", &identifier, enrollment);
+    if let EnrollmentMode::Ade { removable } = config.mode {
+        profile.insert("PayloadRemovalDisallowed".into(), (!removable).into());
+    }
     profile.insert("PayloadDisplayName".into(), "RSS Device Planning".into());
     profile.insert(
         "PayloadContent".into(),

@@ -16,6 +16,7 @@ pub enum Failure {
     Capacity,
     AppleInvariant,
     ApplePush,
+    AppleAde,
     AppleStorage,
     Audit,
     AuditAdmission,

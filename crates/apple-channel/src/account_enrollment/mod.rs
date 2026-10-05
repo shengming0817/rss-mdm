@@ -4,7 +4,7 @@
 mod authority;
 pub use authority::authority;
 mod bridge;
-mod management;
+pub(crate) mod management;
 mod protocol;
 mod store;
 use crate::{Error, Failure, HttpState};
@@ -46,20 +46,17 @@ pub fn routes() -> Router<Arc<HttpState>> {
             "/api/v1/apple/account-enrollment/bridge.js",
             get(bridge::script),
         )
+        .route("/api/v1/apple/organizations", get(management::list))
         .route(
-            "/api/v1/apple/account-enrollment/organizations",
-            get(management::list),
-        )
-        .route(
-            "/api/v1/apple/account-enrollment/organizations/{id}",
+            "/api/v1/apple/organizations/{id}/account-enrollment",
             put(management::organization),
         )
         .route(
-            "/api/v1/apple/account-enrollment/organizations/{id}/accounts/{account}",
+            "/api/v1/apple/organizations/{id}/account-enrollment/accounts/{account}",
             put(management::account),
         )
 }
-async fn authenticate(
+pub(crate) async fn authenticate(
     app: &HttpState,
     headers: &HeaderMap,
     active: bool,
@@ -339,7 +336,7 @@ pub(crate) async fn maid(
         access.current_in(&mut tx).await?;
     }
     let org: Uuid = row.try_get("organization").map_err(crate::database::db)?;
-    let organization=sqlx::query("SELECT server_uuid,signing_key FROM mdm_apple.account_organizations WHERE tenant_id=$1::uuid AND id=$2 AND enabled").bind(&tenant).bind(org).fetch_one(&mut *tx).await.map_err(crate::database::db)?;
+    let organization=sqlx::query("SELECT server_uuid,signing_key FROM mdm_apple.account_configuration WHERE tenant_id=$1::uuid AND id=$2 AND enabled").bind(&tenant).bind(org).fetch_one(&mut *tx).await.map_err(crate::database::db)?;
     let key: String = organization
         .try_get("signing_key")
         .map_err(crate::database::db)?;

@@ -417,6 +417,7 @@ fn installation_accepts_empty_current_or_explicit_complete_predecessor_ledger() 
         "enrollment-progress-v1",
         "apple-account-authority-v1",
         "registration-agent-configurations-v1",
+        "apple-organizations-v1",
     ]
     .map(|name| current.iter().position(|(unit, _)| *unit == name).unwrap());
     for prefix in 1..ledger.len() {

@@ -1,5 +1,6 @@
 //! Apple MDM protocol, SCEP lifecycle and APNs transport.
 pub mod account_enrollment;
+pub mod ade;
 mod agent_collection;
 pub mod attempt;
 mod checkin;
@@ -14,6 +15,7 @@ pub mod flow_store;
 mod material;
 mod native;
 mod operations;
+mod organizations;
 mod profiles;
 mod protection;
 pub mod push;
@@ -43,6 +45,8 @@ pub struct Webhook {
     pub id: String,
 }
 pub struct Apple {
+    #[cfg(feature = "integration")]
+    pub(crate) ade_fixture: Option<ade::Fixture>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) agent_identity: Option<rss_mdm_execution_service::agent_install::Identity>,
     pub(crate) config: Config,
@@ -134,6 +138,8 @@ impl Apple {
     ) -> Self {
         let configuration = protocol_identity(&config);
         Self {
+            #[cfg(feature = "integration")]
+            ade_fixture: None,
             protection,
             agent_identity,
             config,
@@ -147,6 +153,11 @@ impl Apple {
             providers,
             account_keys: Default::default(),
         }
+    }
+    #[cfg(feature = "integration")]
+    pub fn with_ade_fixture(mut self, fixture: ade::Fixture) -> Self {
+        self.ade_fixture = Some(fixture);
+        self
     }
     pub fn with_account_keys(
         mut self,
@@ -206,6 +217,7 @@ pub fn browser_routes(app: Arc<HttpState>, envelope: boundary::Envelope) -> axum
             .route("/api/v1/apple/scep/challenge", post(enrollment::challenge))
             .route("/api/v1/apple/scep/notify", post(enrollment::notify))
             .merge(account_enrollment::routes())
+            .merge(ade::routes())
             .with_state(app)
             .layer(axum::extract::DefaultBodyLimit::max(128 * 1024)),
         envelope,
@@ -335,6 +347,7 @@ pub async fn retire_in(
     registration: uuid::Uuid,
 ) -> Result<(), Error> {
     use crate::database::db;
+    sqlx::query("UPDATE mdm_apple.ade_enrollments SET revoked=true WHERE tenant_id=$1::uuid AND enrollment=(SELECT request_id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2)").bind(tenant).bind(registration).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("UPDATE mdm_apple.account_flows SET revoked=true,material=NULL,profile=NULL WHERE tenant_id=$1::uuid AND enrollment=(SELECT request_id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2)")
         .bind(tenant).bind(registration).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("UPDATE mdm_apple.devices SET state='retired',bootstrap=NULL WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut *tx).await.map_err(db)?;
@@ -399,4 +412,7 @@ impl Apple {
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 
 /// Forward migration for account-driven protocol state and general SCEP authority revision.
+pub const ORGANIZATIONS_SQL: &str = include_str!("../schema/organizations.sql");
 pub const ACCOUNT_ENROLLMENT_SQL: &str = include_str!("../schema/account-enrollment.sql");
+
+pub const ADE_SQL: &str = include_str!("../schema/ade.sql");

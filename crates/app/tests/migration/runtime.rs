@@ -29,15 +29,19 @@ async fn upgrade(conn: &mut PgConnection) -> Result<()> {
             .fetch_one(&mut *conn)
             .await?;
     let installation: super::Installation = serde_json::from_value(configuration)?;
-    // Account enrollment was not present in this released predecessor. Rewind its
+    // Account enrollment and ADE were not present in this released predecessor. Rewind their
     // structure too; deleting ledger entries alone would describe an impossible schema.
     conn.execute(
         r#"
         DROP FUNCTION mdm_apple.account_current(uuid,uuid,bigint,uuid,text);
-        DROP TABLE mdm_apple.account_flows, mdm_apple.account_bindings, mdm_apple.account_organizations;
+        DROP TABLE mdm_apple.ade_enrollments, mdm_apple.ade_sync_devices, mdm_apple.ade_operations,
+          mdm_apple.ade_devices, mdm_apple.ade_profiles, mdm_apple.ade_servers;
+        DROP TABLE mdm_apple.account_flows, mdm_apple.account_bindings, mdm_apple.account_configuration,
+          mdm_apple.organizations;
         ALTER TABLE mdm_apple.scep_attempts RENAME COLUMN authorization_version TO password_version;
         ALTER TABLE mdm_access.requests DROP CONSTRAINT enrollment_shape;
-        ALTER TABLE mdm_access.requests DROP COLUMN account_version, DROP COLUMN account_reference, DROP COLUMN account_challenge;
+        ALTER TABLE mdm_access.requests DROP COLUMN account_version, DROP COLUMN account_reference, DROP COLUMN account_challenge,
+          DROP COLUMN organization_version, DROP COLUMN organization_challenge;
         ALTER TABLE mdm_access.requests DROP CONSTRAINT requests_authority_kind_check;
         ALTER TABLE mdm_access.requests ADD CONSTRAINT requests_authority_kind_check CHECK(authority_kind IN ('password','parent_certificate'));
         ALTER TABLE mdm_access.requests ADD CONSTRAINT enrollment_shape CHECK (
@@ -53,7 +57,8 @@ async fn upgrade(conn: &mut PgConnection) -> Result<()> {
         ALTER TABLE mdm_access.agent_grants ADD CONSTRAINT agent_grants_source_check CHECK(source IN('download','browser','native','recovery','renewal'));
         DROP TABLE mdm_access.agent_configurations, mdm_access.agent_enrollment_settings;
         DROP SCHEMA mdm_agent_packages CASCADE;
-        DELETE FROM public.mdm_migrations WHERE name IN ('self-service-access-v1','enrollment-progress-v1','apple-account-authority-v1','apple-account-channel-v1','registration-agent-configurations-v1','software-agent-packages-v1');
+        DELETE FROM public.mdm_migrations WHERE name IN ('self-service-access-v1','enrollment-progress-v1','apple-account-authority-v1','apple-account-channel-v1',
+          'registration-agent-configurations-v1','software-agent-packages-v1','apple-organizations-v1','apple-ade-authority-v1','apple-ade-channel-v1');
         "#,
     )
     .await?;

@@ -3441,6 +3441,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "md-5 0.10.6",
+ "openssl",
  "plist",
  "reqwest",
  "ring",
@@ -3575,6 +3576,8 @@ dependencies = [
  "base64 0.22.1",
  "cms",
  "libxml",
+ "openssl",
+ "plist",
  "quick-xml 0.42.0",
  "ring",
  "rss-mdm-agent-wire",
@@ -3588,6 +3591,7 @@ dependencies = [
  "tokio-rustls",
  "uuid",
  "x509-cert",
+ "zeroize",
 ]
 
 [[package]]

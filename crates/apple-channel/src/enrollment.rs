@@ -45,7 +45,16 @@ async fn authorized(
     let row = request(&mut tx, &tenant, id).await?;
     let kind: String = row.try_get("authority_kind").map_err(db)?;
     tx.rollback().await.map_err(db)?;
-    let proof = if kind == "apple_account" {
+    let proof = if kind == "apple_ade" {
+        rss_mdm_registration_service::enrollment::native::organization(
+            &app.access.registration(),
+            &tenant,
+            id,
+            crate::ade::authority::authority(),
+            secret,
+        )
+        .await?
+    } else if kind == "apple_account" {
         crate::account_enrollment::require_binding(app, id).await?;
         rss_mdm_registration_service::enrollment::native::account(
             &app.access.registration(),
@@ -93,7 +102,7 @@ pub async fn download(
     let input = input.map_err(|_| Error::Malformed)?.0;
     let apple = app.apple()?;
     let (auth, proof) = authorized(&app, id, Some(input.password.expose()), &audit).await?;
-    if proof.is_account() {
+    if proof.is_account() || proof.is_organization() {
         return Err(Error::Unauthorized);
     }
     let budget =
@@ -326,6 +335,16 @@ pub async fn notify(
                                     if !pending {
                                         return Err(Error::Unauthorized);
                                     }
+                                    if row.try_get::<String, _>("authority_kind").map_err(db)?
+                                        == "apple_ade"
+                                    {
+                                        crate::ade::authority::require_in(
+                                            c,
+                                            &tenant,
+                                            leaf.enrollment(),
+                                        )
+                                        .await?;
+                                    }
                                     let attempt = attempt(c, &tenant, apple, leaf).await?;
                                     if attempt.try_get::<String, _>("transaction_id").map_err(db)?
                                         != transaction
@@ -533,6 +552,9 @@ async fn bind_on(tx: &mut sqlx::PgConnection, inputs: &mut BindInputs<'_>) -> Re
     let audit = *audit;
     let tenant = app.identity.tenant().to_string();
     admitted(tx, proof).await?;
+    if proof.is_organization() {
+        crate::ade::authority::udid_in(tx, &tenant, leaf.enrollment(), udid).await?;
+    }
     let attempt = attempt(tx, &tenant, app.apple()?, leaf).await?;
     if attempt.try_get::<String, _>("state").map_err(db)? != "consumed"
         || attempt

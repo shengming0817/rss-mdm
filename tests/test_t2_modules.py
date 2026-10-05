@@ -9,6 +9,10 @@ from ci_impact import select_inputs, SelectionError
 
 
 class ModuleImpactTests(unittest.TestCase):
+    def test_shared_apple_organization_schema_selects_both_enrollment_consumers(self):
+        selected=select_inputs(['crates/apple-channel/schema/organizations.sql'])
+        self.assertTrue({'apple.ade','apple.account_enrollment'} <= set(selected.modules))
+
     def test_configuration_inputs_select_their_real_consumers(self):
         for path, expected in {
             'crates/content-service/src/reader.rs': {'agent.configurations', 'content.http', 'content.storage'},
