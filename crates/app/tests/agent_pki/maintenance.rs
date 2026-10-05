@@ -18,7 +18,7 @@ async fn sweep_uses_response_and_dispatch_times_without_changing_attempts() -> a
     let mut serials = Vec::new();
     for _ in 0..2 {
         let g = grant()?;
-        let r = s.create(&p, &g, &audit()).await?;
+        let r = authorize_request(&s, &p, &g, &audit()).await?;
         let candidate = s.issue(&signing(&g, r.grant_id)?, &audit()).await?;
         let certificate = x509_cert::Certificate::from_der(&chain(&candidate)?[0])?;
         serials.push((

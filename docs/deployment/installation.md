@@ -119,11 +119,12 @@ Linux host 网络使回环浏览器监听与同机 HTTPS 网关配合；Windows 
     "certificate_file": "/private/agent-tls.crt",
     "private_key_file": "/private/agent-tls.pk8"
   },
-  "policy": {"grant_seconds": 86400, "platforms": ["windows", "macos"]},
   "trust_file": "/run/pki/agent-trust.json",
   "lifetime": {"mode":"standard"}
 }
 ```
+
+启用 Agent 同时配置既有 `task_signing` 私钥、key_id 与 trusted_keys，注册 owner 使用独立签名域签发配置文件；固定安装候选须预置相同公开验证密钥。授权期限和平台启用设置只由数据库后台接口持有，旧 `agent_pki.policy` 被拒绝，见 [Agent 接入](../guides/agent-integration.md)。
 
 使用独立 purpose/issuer 数据库的 step-ca（固定验证版本 0.30.2），创建独立 `rss-agent` JWK provisioner。MDM 只加载其 RSA PKCS#8 DER 私钥、CA TLS 根证书和叶证书直接签发者的公开证书；CA 根/中间私钥及管理员凭据只归 CA 运维。私钥为服务账户独占读取的普通文件（0600/0400），禁止符号链接、公开权限、环境正文和源码提交。CA 网络只允许受控服务调用 `/sign`；MDM 固定 HTTPS origin、固定根、禁用代理和重定向。
 

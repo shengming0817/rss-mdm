@@ -45,12 +45,16 @@ def prepare(root, configuration, password):
         ('san', 'rsa:2048', '/CN=rss-mdm-agent', ['-addext', 'subjectAltName=URI:urn:claimed']),
         ('ca', 'rsa:2048', '/CN=rss-mdm-agent', ['-addext', 'basicConstraints=critical,CA:TRUE']),
         ('server', 'rsa:2048', '/CN=rss-mdm-agent', ['-addext', 'extendedKeyUsage=serverAuth']),
-    ]:
+    ] + [(f'configuration-{i}', 'rsa:2048', '/CN=rss-mdm-agent', []) for i in range(24)]:
         openssl('req', '-new', '-newkey', algorithm, '-nodes', '-subj', subject,
                 '-keyout', root/('agent-csr-'+name+'.key'), '-outform', 'DER', '-out', root/(name+'.der'), *extra)
         (root/('agent-csr-'+name+'.key')).chmod(0o600)
     openssl('pkcs8', '-topk8', '-nocrypt', '-in', root/'agent-csr-agent.key', '-outform', 'DER', '-out', root/'agent.pk8')
     (root/'agent.pk8').chmod(0o600)
+
+    for name in ['other'] + [f'configuration-{i}' for i in range(24)]:
+        openssl('pkcs8', '-topk8', '-nocrypt', '-in', root/('agent-csr-'+name+'.key'), '-outform', 'DER', '-out', root/(name+'.pk8'))
+        (root/(name+'.pk8')).chmod(0o600)
 
     # A same-DN subordinate is a valid WebPKI path under this direct issuer,
     # but must never become another Agent signer through chain delegation.

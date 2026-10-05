@@ -109,7 +109,7 @@ async fn registration_binding_and_replay() -> Result<()> {
         .oneshot(
             Request::builder()
                 .method(Method::POST)
-                .uri("/api/v1/agent-grants")
+                .uri("/api/v1/agent-enrollment-settings")
                 .header("host", "mdm.example.test")
                 .header("origin", "https://mdm.example.test")
                 .header("x-identity-request", "1")
@@ -288,14 +288,6 @@ async fn browser_approval_quota_expiry_and_restart_are_durable() -> Result<()> {
     ensure!(
         service.issue(&sign, &a()).await.err().unwrap().code == wire::ErrorCode::PermissionDenied
     );
-    ensure!(
-        service
-            .preview(&user, pending.grant_id)
-            .await?
-            .public_key_fingerprint
-            .len()
-            == 64
-    );
     let approval = Uuid::new_v4();
     let approved = service
         .approve(&user, pending.grant_id, approval, &a())
@@ -304,9 +296,10 @@ async fn browser_approval_quota_expiry_and_restart_are_durable() -> Result<()> {
     let mut second = input.clone();
     second.operation_id = Uuid::new_v4();
     second.platform = rss_mdm_agent_wire::runtime::TaskPlatform::Windows;
+    let second_pending = service.request(&second, &a()).await?;
     ensure!(
         service
-            .create(&user, &second, &a())
+            .approve(&user, second_pending.grant_id, Uuid::new_v4(), &a())
             .await
             .err()
             .unwrap()
@@ -325,20 +318,13 @@ async fn browser_approval_quota_expiry_and_restart_are_durable() -> Result<()> {
         "approval replay must retain the fixed result"
     );
     ensure!(service.issue(&sign, &a()).await.err().unwrap().code == wire::ErrorCode::GrantRevoked);
-    let created = service.create(&user, &second, &a()).await?;
+    let created = service
+        .approve(&user, second_pending.grant_id, Uuid::new_v4(), &a())
+        .await?;
     let restart = crate::test_support::agent::service(&fixture).await?;
-    ensure!(restart.create(&user, &second, &a()).await? == created);
-    let mut invalid = second.clone();
-    invalid.lifetime_seconds = Some(604801);
-    ensure!(
-        restart
-            .create(&user, &invalid, &a())
-            .await
-            .err()
-            .unwrap()
-            .code
-            == wire::ErrorCode::MalformedRequest
-    );
+    ensure!(restart.request(&second, &a()).await?.grant_id == created.grant_id);
+    let invalid = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"secret":second.secret,"platform":"windows","csr":second.csr,"lifetimeSeconds":604801});
+    ensure!(serde_json::from_value::<wire::GrantRequest>(invalid).is_err());
     pg(&format!(
         "UPDATE mdm_access.agent_grants SET created_at=clock_timestamp()-interval '25 hours',expires_at=clock_timestamp()-interval '1 hour' WHERE tenant_id='{}' AND id='{}'",
         case_tenant(),
