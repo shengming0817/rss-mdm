@@ -28,6 +28,60 @@ pub(crate) fn rights(mask: i32) -> Vec<&'static str> {
     .filter_map(|(bit, name)| (mask & bit == bit).then_some(name))
     .collect()
 }
+
+/// Only authenticated evidence from this exact registration generation is usable.
+pub(crate) async fn control_supported(
+    c: &mut PgConnection,
+    protection: &rss_mdm_native_protection::Protector,
+    target: &crate::execution::channels::AppleRegistration,
+    action: crate::execution::device_control::Kind,
+    command: &rss_mdm_apple_mdm::native::input::CommandInput,
+) -> Result<bool, Error> {
+    let operation = sqlx::query_scalar::<_, Uuid>("SELECT d.operation FROM mdm_apple.attempts d JOIN mdm_apple.attempts s ON(s.tenant_id,s.operation,s.registration,s.generation)=(d.tenant_id,d.operation,d.registration,d.generation) WHERE d.tenant_id=$1::uuid AND d.registration=$2 AND d.generation=$3 AND d.phase='resolve_device' AND s.phase='resolve_security' AND d.state='acknowledged' AND s.state='acknowledged' AND d.accepted AND s.accepted ORDER BY greatest(d.received_at,s.received_at) DESC,d.operation LIMIT 1")
+        .bind(&target.tenant).bind(target.registration).bind(target.generation).fetch_optional(&mut *c).await.map_err(db)?;
+    let Some(operation) = operation else {
+        return Ok(false);
+    };
+    let rows = sqlx::query("SELECT id,phase,response FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND operation=$4 AND phase IN('resolve_device','resolve_security') AND state='acknowledged' AND accepted ORDER BY phase")
+        .bind(&target.tenant).bind(target.registration).bind(target.generation).bind(operation).fetch_all(&mut *c).await.map_err(db)?;
+    let mut device = None;
+    let mut security = None;
+    for row in rows {
+        let sealed: Vec<u8> = row.try_get("response").map_err(db)?;
+        let plain = crate::protection::open(
+            protection,
+            &target.tenant,
+            target.registration,
+            target.generation,
+            row.try_get("id").map_err(db)?,
+            crate::protection::Part::Response,
+            &sealed,
+        )?;
+        let body = protocol::decode(plain.expose())?;
+        match row.try_get::<String, _>("phase").map_err(db)?.as_str() {
+            "resolve_device" => device = Some(body),
+            "resolve_security" => security = Some(body),
+            _ => return Err(Error::Malformed),
+        }
+    }
+    let (Some(device), Some(security)) = (device, security) else {
+        return Ok(false);
+    };
+    let context = Context::from_reports(&device, Some(&security), Channel::Device)?;
+    if !action.supports_apple(&context) {
+        return Ok(false);
+    }
+    let mask = sqlx::query_scalar::<_, i32>("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'")
+        .bind(&target.tenant).bind(target.registration).fetch_optional(c).await.map_err(db)?;
+    let Some(mask) = mask else { return Ok(false) };
+    let rights = rights(mask);
+    Ok(command
+        .compile(&rss_mdm_apple_mdm::native::Target {
+            context: &context,
+            access_rights: &rights,
+        })
+        .is_ok())
+}
 pub(crate) async fn context(
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,

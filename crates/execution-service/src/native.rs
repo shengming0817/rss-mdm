@@ -420,7 +420,7 @@ fn edition_id(value: &str) -> Option<u32> {
     }
 }
 
-fn context(
+pub(crate) fn context(
     version: &str,
     edition: u32,
     scope: Scope,
@@ -548,6 +548,11 @@ pub(crate) async fn send_on(
         let approval: ExecutionAuthority =
             serde_json::from_value(row.try_get("approval").map_err(db)?).map_err(|_| protocol())?;
         let at = now(c).await?;
+        if matches!(approval, ExecutionAuthority::DeviceControl { .. })
+            && !approval.control_matches(&op, p.registration(), p.generation())?
+        {
+            continue;
+        }
         if !approval
             .valid(source, c, protection, &op.task.permissions()?, at)
             .await?

@@ -219,6 +219,14 @@ pub trait ApplePush: Send + Sync {
     ) -> Pending<'a, bool>;
 }
 pub trait AppleResults: Send + Sync {
+    /// Check current-registration platform evidence without issuing a command.
+    fn device_control_supported<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        target: AppleRegistration,
+        action: crate::device_control::Kind,
+        command: rss_mdm_apple_mdm::native::input::CommandInput,
+    ) -> Pending<'a, bool>;
     /// Server publication withdrawal is distinct from native object absence.
     fn withdrawal_published<'a>(
         &'a self,
