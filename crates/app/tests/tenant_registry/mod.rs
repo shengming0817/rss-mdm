@@ -168,15 +168,24 @@ async fn failed_registration_rolls_back_and_receipts_recover_uncertain_results()
     recovery.close().await?;
     Ok(())
 }
-async fn release_waiters(holder: &mut PgConnection) -> anyhow::Result<()> {
+async fn wait_for_waiters(
+    observer: &mut PgConnection,
+    key: i64,
+    minimum: i64,
+) -> anyhow::Result<()> {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let waiting: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND objid=2346 AND NOT granted").fetch_one(&mut *holder).await?;
-            if waiting >= 2 { break; }
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            let waiting: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND objid=$1::oid AND NOT granted")
+                .bind(key).fetch_one(&mut *observer).await?;
+            if waiting >= minimum { break; }
+            tokio::task::yield_now().await;
         }
         Ok::<_,anyhow::Error>(())
     }).await??;
+    Ok(())
+}
+async fn release_waiters(holder: &mut PgConnection) -> anyhow::Result<()> {
+    wait_for_waiters(holder, 2346, 2).await?;
     sqlx::query("SELECT pg_advisory_unlock(2346)")
         .execute(holder)
         .await?;
@@ -189,6 +198,11 @@ async fn concurrent_registration_replays_once_and_respects_last_slot() -> anyhow
     let mut holder = installed().await?;
     let mut one = owner().await?;
     let mut two = owner().await?;
+    for conn in [&mut one, &mut two] {
+        sqlx::query("SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            .execute(conn)
+            .await?;
+    }
     let same = input(Uuid::new_v4());
     sqlx::query("SELECT pg_advisory_lock(2346)")
         .execute(&mut holder)
@@ -233,6 +247,55 @@ async fn concurrent_registration_replays_once_and_respects_last_slot() -> anyhow
     one.close().await?;
     two.close().await?;
     holder.close().await?;
+    Ok(())
+}
+#[tokio::test]
+#[ignore = "MODULE=installation.migration: receipt query waits for the preceding commit"]
+async fn operation_query_waits_for_commit_with_repeatable_read_default() -> anyhow::Result<()> {
+    use anyhow::ensure;
+    let mut gate = installed().await?;
+    sqlx::raw_sql("CREATE FUNCTION public.hold_registration_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(2655); RETURN NEW; END $$; REVOKE ALL ON FUNCTION public.hold_registration_commit() FROM PUBLIC; CREATE CONSTRAINT TRIGGER registration_commit_gate AFTER INSERT ON public.mdm_tenant_registrations DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.hold_registration_commit()")
+        .execute(&mut gate).await?;
+    sqlx::query("SELECT pg_advisory_lock(2655)")
+        .execute(&mut gate)
+        .await?;
+    let mut writer = owner().await?;
+    let mut reader = owner().await?;
+    let mut observer = owner().await?;
+    sqlx::query("SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        .execute(&mut reader)
+        .await?;
+    let request = input(Uuid::new_v4());
+    let (written, queried, released) = tokio::join!(
+        register_on(&mut writer, &request),
+        async {
+            // The deferred trigger proves the writer holds the registration lock at commit.
+            wait_for_waiters(&mut observer, 2655, 1).await?;
+            Ok::<_, anyhow::Error>(
+                query_on(&mut reader, &request.installation, request.operation_id).await?,
+            )
+        },
+        async {
+            // Release only once the actual query is blocked behind that writer.
+            wait_for_waiters(&mut gate, 2346, 1).await?;
+            sqlx::query("SELECT pg_advisory_unlock(2655)")
+                .execute(&mut gate)
+                .await?;
+            Ok::<_, anyhow::Error>(())
+        }
+    );
+    released?;
+    ensure!(queried? == Some(written?));
+    ensure!(
+        sqlx::query_scalar::<_, String>("SHOW default_transaction_isolation")
+            .fetch_one(&mut reader)
+            .await?
+            == "repeatable read"
+    );
+    writer.close().await?;
+    reader.close().await?;
+    observer.close().await?;
+    gate.close().await?;
     Ok(())
 }
 #[tokio::test]

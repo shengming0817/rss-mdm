@@ -85,15 +85,23 @@ pub async fn query_operation(input: Query) -> std::result::Result<Option<Receipt
         return Err(error(input.operation_id, Reason::Invalid));
     }
     let mut conn = connect(&input.database, input.operation_id).await?;
-    let result = tokio::time::timeout(Duration::from_secs(30), async {
-        let mut tx = operator_transaction(&mut conn, &input.installation).await?;
-        let row = receipt_on(&mut tx, input.operation_id).await?;
-        tx.rollback().await.map_err(|_| Reason::Storage)?;
-        Ok(row.map(|(receipt, _)| receipt))
-    })
+    let result = tokio::time::timeout(
+        Duration::from_secs(30),
+        query_on(&mut conn, &input.installation, input.operation_id),
+    )
     .await
     .unwrap_or(Err(Reason::Deadline));
     settle(conn, input.operation_id, result).await
+}
+async fn query_on(
+    conn: &mut PgConnection,
+    installation: &Installation,
+    operation: Uuid,
+) -> Result<Option<Receipt>> {
+    let mut tx = operator_transaction(conn, installation).await?;
+    let row = receipt_on(&mut tx, operation).await?;
+    tx.rollback().await.map_err(|_| Reason::Storage)?;
+    Ok(row.map(|(receipt, _)| receipt))
 }
 async fn connect(
     database: &config::Database,
@@ -155,7 +163,9 @@ async fn operator_transaction<'a>(
         return Err(Reason::Forbidden);
     }
     let mut tx = conn.begin().await.map_err(|_| Reason::Storage)?;
-    sqlx::raw_sql("SET LOCAL statement_timeout='10s'; SET LOCAL lock_timeout='10s'")
+    // A lock waiter must observe the preceding commit, even with a session default of RR.
+    // ref: https://www.postgresql.org/docs/17/transaction-iso.html#XACT-READ-COMMITTED
+    sqlx::raw_sql("SET TRANSACTION ISOLATION LEVEL READ COMMITTED; SET LOCAL statement_timeout='10s'; SET LOCAL lock_timeout='10s'")
         .execute(&mut *tx)
         .await
         .map_err(|_| Reason::Storage)?;
