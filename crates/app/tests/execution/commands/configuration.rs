@@ -498,7 +498,10 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
                 Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":read.1["revision"]})),
             )
             .await?;
-        ensure!(cancelled.0 == StatusCode::OK);
+        ensure!(
+            cancelled.0 == StatusCode::CONFLICT,
+            "Policy child cannot be cancelled through the direct control route"
+        );
     }
     // Reconstruct the execution adapter and drive the same policy reconciliation on persisted facts.
     let config = crate::test_support::identity::config(case_tenant())?;

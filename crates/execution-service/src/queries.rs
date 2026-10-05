@@ -113,7 +113,11 @@ impl Queries {
                         storage::approval_valid(&service.source, &service.protection, tx, &op, now)
                             .await?;
                     let mut native_values = true;
-                    if matches!(
+                    if !op.approval.control_matches(
+                        &op.request,
+                        op.registration,
+                        op.registration_generation,
+                    )? && matches!(
                         op.request.task,
                         Task::Macos {
                             request: rss_mdm_apple_mdm::native::request::Request::Command { .. }

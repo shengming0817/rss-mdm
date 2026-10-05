@@ -205,7 +205,7 @@ MODULES['agent.pki'] = replace(MODULES['agent.pki'], scope='tenant', policies=(
     CasePolicy('agent_pki_tests::unknown_original_ca_result_blocks_retirement_after_rotation', 'reuse', 'tenant',('identity','agent_pki','pki_rotation')),
 ))
 
-add('installation.migration', selectors=('migration::tests::released_installation_retires_execution_entries_without_rewriting_units','migration::tests::released_installation_adds_configurations_without_rewriting_units','migration::tests::released_installation_adds_account_authority_without_rewriting_units','migration::tests::previous_release_adds_enrollment_progress_without_rewriting_units','migration::tests::complete_predecessor_withdraws_old_authority_and_preserves_started_evidence','migration::tests::fresh_installation_replay_and_mismatch_rejection','migration::pki::tests::'), profile='empty',
+add('installation.migration', selectors=('migration::tests::released_installation_adds_configurations_without_rewriting_units','migration::tests::released_installation_adds_account_authority_without_rewriting_units','migration::tests::previous_release_adds_enrollment_progress_without_rewriting_units','migration::tests::complete_predecessor_withdraws_old_authority_and_preserves_started_evidence','migration::tests::fresh_installation_replay_and_mismatch_rejection','migration::pki::tests::'), profile='empty',
     sources=('crates/app/src/migration.rs','crates/app/src/migration/pki.rs'),
     tests=('crates/app/tests/migration/mod.rs','crates/app/tests/migration/pki.rs'),
     python='installation', support=('hack/t2_modules/installation.py',))
@@ -1643,3 +1643,7 @@ consume(('crates/execution-service/src/native/outbound.rs',), 'execution.command
 consume(('crates/app/tests/support/agent_execution.rs',), 'windows.management apple.collection')
 
 consume(('crates/apple-channel/src/collection.rs',), 'apple.collection')
+
+consume(('crates/execution-service/src/queries.rs',), 'apple.commands apple.policy')
+
+consume(('crates/execution-service/src/wake.rs', 'crates/execution-service/src/recovery.rs'), 'apple.commands apple.policy apple.account_enrollment')

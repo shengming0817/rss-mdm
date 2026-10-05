@@ -33,15 +33,6 @@ async fn upgrade(conn: &mut PgConnection) -> Result<()> {
     // structure too; deleting ledger entries alone would describe an impossible schema.
     conn.execute(
         r#"
-        ALTER TABLE mdm_commands.operations DROP CONSTRAINT operation_authority_source;
-        ALTER TABLE mdm_commands.operations ADD CONSTRAINT operation_authority_source CHECK (COALESCE(
-          CASE source_kind
-            WHEN 'direct' THEN approval->>'kind'='user'
-            WHEN 'policy' THEN approval->>'kind' IN ('policy','agent_install') AND approval->>'tenant'=tenant_id::text AND approval->>'device'=device AND approval->>'version'=policy_version::text
-            WHEN 'remote_operation' THEN approval->>'kind'='remote_operation' AND approval->>'tenant'=tenant_id::text AND approval->>'device'=device AND approval->>'operation'=remote_operation::text
-          END, false));
-        GRANT INSERT ON mdm_planning.remote_operations, mdm_planning.remote_operation_targets TO mdm_command_runtime;
-        GRANT UPDATE(staged,cursor) ON mdm_planning.remote_operations TO mdm_command_runtime;
         DROP FUNCTION mdm_apple.account_current(uuid,uuid,bigint,uuid,text);
         DROP TABLE mdm_apple.ade_enrollments, mdm_apple.ade_sync_devices, mdm_apple.ade_operations,
           mdm_apple.ade_devices, mdm_apple.ade_profiles, mdm_apple.ade_servers;
@@ -67,7 +58,7 @@ async fn upgrade(conn: &mut PgConnection) -> Result<()> {
         DROP TABLE mdm_access.agent_configurations, mdm_access.agent_enrollment_settings;
         DROP SCHEMA mdm_agent_packages CASCADE;
         DELETE FROM public.mdm_migrations WHERE name IN ('self-service-access-v1','enrollment-progress-v1','apple-account-authority-v1','apple-account-channel-v1',
-          'registration-agent-configurations-v1','software-agent-packages-v1','apple-organizations-v1','apple-ade-authority-v1','apple-ade-channel-v1','execution-entry-boundary-v1');
+          'registration-agent-configurations-v1','software-agent-packages-v1','apple-organizations-v1','apple-ade-authority-v1','apple-ade-channel-v1');
         "#,
     )
     .await?;

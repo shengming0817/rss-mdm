@@ -32,7 +32,7 @@ MDM 宿主使用同一份运行配置生成两份公开 bootstrap 输入：`ui.j
 Identity callback 固定 `/api/v1/identity/oidc/callback`，其它 API 保留后端路由和错误，不能落入 SPA。
 这些宿主配置和 HTTP 接缝由后端验证；前端消费和页面验收由前端 owner 负责。
 
-使用 candidate.json 固定的依赖和二进制 --describe 声明的安装单元。接受空库或完全一致的当前安装记录；登记的完整前驱转换见[自助访问前驱升级](#自助访问前驱升级)与下文设备执行入口升级，失败恢复见[运维](operations.md)。
+使用 candidate.json 固定的依赖和二进制 --describe 声明的安装单元。接受空库或完全一致的当前安装记录；唯一前驱转换见[自助访问前驱升级](#自助访问前驱升级)，失败恢复见[运维](operations.md)。
 
 由数据库管理员创建专用数据库和 `mdm_owner`、`mdm_runtime`、`mdm_api`、`mdm_access` 基础角色。所有产品角色均禁止 SUPERUSER、BYPASSRLS 和高权继承；`mdm_owner` 需要该数据库与 public schema 的 CREATE 权限，但不持有 CREATEROLE。`mdm_api` 是组件 reader 的验证角色，不进入 serve 配置。
 
@@ -61,12 +61,6 @@ IMAGE 替换为 candidate.json 固定镜像身份。秘密和配置文件由 UID
 升级先停止旧服务写入口，保留一致的数据库、内容与密钥备份，再使用候选的 `migrate` 和原 installation 输入。转换将缺少 `access` 的自助配置暂停发布并显式设为 null；管理员须填写访问依据后重新发布。旧自助调用依据永久撤回，未启动的旧自助任务终止。后台自动 Policy 与 RemoteOperation 尚未签发 Offer 的 queued Run 保留；已签发但未启动的旧后台 Offer 退休，在同一 Run 下按当前协议重新领取，不新建业务执行坐标。
 
 已启动任务按原 attempt 和不可变执行材料安全收尾，软件材料一次性规范化供结果关联校验。新 Start 仍核对当前注册、权限和确切 OS/helper；缺少新执行能力本身不撤回已启动任务，真实撤回、世代与期限等边界继续适用。原 signed Offer/permit 保留为审计证据，不重签，也不引入旧 signed DTO decoder、兼容路由或别名。Agent 后续领取和新 Start 必须消费当前协议及指纹，见[企业任务](../guides/enterprise-tasks.md#自助任务与调用参数)。失败或回退须恢复匹配的数据库、制品、内容与密钥，不能仅降级二进制或改写迁移账本。
-
-## 执行入口边界升级（#2623）
-
-追加 `execution-entry-boundary-v1`，接受此前完整 ADE 安装集合，保留已有明确登记的完整前驱集合；不接受任意前缀或更改摘要。此前 SQL 单元不修改。迁移收紧 Remote INSERT/目标写入及 staged/cursor 更新权限，保留 cancelled/run_after 历史恢复能力；设备新授权与历史 User 授权在原 operations JSON 中区分，不新增执行引擎或来源副本。
-
-升级前保留数据库、加密密钥与签名验证材料。升级后不再创建或展开 Remote；恢复取消未启动的旧 Remote/通用直接命令。已启动或可能产生效果的 attempt 仍按原来源、注册、授权和 deadline 接受回执，不重新授权或重发。Unknown 不能清零成成功，已有签名和执行坐标不得重写为 Policy。前端与独立消费者须按新设备三动作合同分别更新；本次后端交付不修改前端。
 
 ## 桌面与 Agent 入口及服务器证书信任
 

@@ -5,6 +5,7 @@ use crate::execution::test_support::{
 };
 use anyhow::ensure;
 use axum::http::{Method, StatusCode};
+use base64::Engine;
 use rss_mdm_windows_mdm::{CodecLimits, syncml as s};
 use serde_json::json;
 use sqlx::Connection;
@@ -130,7 +131,35 @@ async fn fixed_controls_preserve_uncertainty_and_retire_old_authority() -> anyho
     let mut response = exchange.response.clone();
     let mut seen = std::collections::BTreeSet::new();
     let mut cached_delivery_requests = Vec::new();
+    let mut delivery_request = peer.ack.clone();
+    delivery_request.header.session_id = 1201;
+    if let s::Command::Status(status) = &mut delivery_request.commands[0] {
+        status.challenge.as_mut().unwrap().nonce = Some(rss_mdm_windows_mdm::Secret(
+            base64::engine::general_purpose::STANDARD.encode([1201u32 as u8; 16]),
+        ));
+    }
     for _ in 0..6 {
+        if response
+            .commands
+            .iter()
+            .any(|c| matches!(c, s::Command::Exec { .. }))
+        {
+            cached_delivery_requests.push(delivery_request.clone());
+            for c in &response.commands {
+                if let s::Command::Exec { items, .. } = c {
+                    let index =
+                        usize::from(items[0].target.as_deref().unwrap().ends_with("/doWipe"));
+                    let id = ids[index];
+                    // This attempt has reached the peer, but its original ACK has not arrived.
+                    sqlx::query("UPDATE mdm_commands.operations SET approval=(approval-'action'-'confirmation')||'{\"kind\":\"user\"}'::jsonb WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(id).execute(&mut pg).await?;
+                    client.publish_operation(id).await?;
+                    ensure!(
+                        client.call(Method::GET, &format!("/{id}"), None).await?.1["commandStatus"]
+                            == "published"
+                    );
+                }
+            }
+        }
         let gets = response
             .commands
             .iter()
@@ -177,27 +206,7 @@ async fn fixed_controls_preserve_uncertainty_and_retire_old_authority() -> anyho
         let reply = post(&peer.mutual, &peer.url, &packet).await?;
         ensure!(reply.status() == StatusCode::OK);
         response = s::decode(&reply.bytes().await?, &CodecLimits::default())?;
-        if response
-            .commands
-            .iter()
-            .any(|c| matches!(c, s::Command::Exec { .. }))
-        {
-            cached_delivery_requests.push(packet);
-            for c in &response.commands {
-                if let s::Command::Exec { items, .. } = c {
-                    let index =
-                        usize::from(items[0].target.as_deref().unwrap().ends_with("/doWipe"));
-                    let id = ids[index];
-                    // This attempt has reached the peer, but its original ACK has not arrived.
-                    sqlx::query("UPDATE mdm_commands.operations SET approval=(approval-'action'-'confirmation')||'{\"kind\":\"user\"}'::jsonb WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(id).execute(&mut pg).await?;
-                    client.publish_operation(id).await?;
-                    ensure!(
-                        client.call(Method::GET, &format!("/{id}"), None).await?.1["commandStatus"]
-                            == "published"
-                    );
-                }
-            }
-        }
+        delivery_request = packet;
         if seen.len() == 2 {
             break;
         }

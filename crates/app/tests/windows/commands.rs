@@ -36,7 +36,7 @@ async fn enrollment_to_native_command_wiring() -> anyhow::Result<()> {
         )
         .await?;
     anyhow::ensure!(
-        message.commands.iter().any(|command| matches!(command,
+        opened.response.commands.iter().chain(message.commands.iter()).any(|command| matches!(command,
             rss_mdm_windows_mdm::syncml::Command::Exec { items, .. }
             if items.iter().any(|item| item.target.as_deref() == Some("./Device/Vendor/MSFT/Reboot/RebootNow"))
         )),

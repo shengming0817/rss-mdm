@@ -404,7 +404,7 @@ pub(crate) async fn wake_configuration(
     sqlx::query("SELECT rss_reconcile.wake($1::uuid,$2,$3)")
         .bind(&tenant)
         .bind(super::DOMAIN)
-        .bind(format!("configuration:{}", p.device()))
+        .bind(crate::wake::configuration_key(p.device()))
         .execute(&mut *c)
         .await
         .map_err(db)?;

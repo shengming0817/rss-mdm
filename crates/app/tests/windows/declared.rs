@@ -1616,7 +1616,7 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
             .await?;
         let claims: Vec<(String, Option<Uuid>, Option<String>)> = sqlx::query_as("SELECT object_kind,operation,diagnosis FROM mdm_planning.configuration_objects WHERE tenant_id=$1::uuid AND device=$2")
             .bind(case_tenant()).bind(crate::test_support::case::name("tls-device")).fetch_all(&mut pg).await?;
-        let recovery: serde_json::Value = sqlx::query_scalar("SELECT jsonb_build_object('input',d.input_revision,'observed',d.observed_revision,'targets',(SELECT jsonb_agg(jsonb_build_object('entity',r.entity,'result',r.result,'failures',r.failures,'leaseUntil',r.lease_until,'nextRun',r.next_run)) FROM rss_reconcile.targets r WHERE r.tenant_id=d.tenant_id AND r.entity='configuration:'||d.device)) FROM mdm_planning.configuration_devices d WHERE d.tenant_id=$1::uuid AND d.device=$2")
+        let recovery: serde_json::Value = sqlx::query_scalar("SELECT jsonb_build_object('input',d.input_revision,'observed',d.observed_revision,'targets',(SELECT jsonb_agg(jsonb_build_object('entity',r.entity,'result',r.result,'failures',r.failures,'leaseUntil',r.lease_until,'nextRun',r.next_run)) FROM rss_reconcile.targets r WHERE r.tenant_id=d.tenant_id AND r.entity='configuration:'||encode(sha256(convert_to(d.device,'UTF8')),'hex'))) FROM mdm_planning.configuration_devices d WHERE d.tenant_id=$1::uuid AND d.device=$2")
             .bind(case_tenant()).bind(crate::test_support::case::name("tls-device")).fetch_one(&mut pg).await?;
         anyhow::bail!(
             "Delete did not release claims: status={}, objects={claims:?}, recovery={recovery}",

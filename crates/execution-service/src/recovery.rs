@@ -313,6 +313,14 @@ async fn device(tx: &mut PgTransaction<'_>, entity: &str) -> Result<Option<Strin
     let entity = entity.to_owned();
     Ok(tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT device FROM mdm_commands.devices WHERE tenant_id=$1::uuid AND encode(sha256(convert_to(device,'UTF8')),'hex')=$2").bind(tenant).bind(entity).fetch_optional(c).await})).await?)
 }
+async fn configuration_device(tx: &mut PgTransaction<'_>, digest: &str) -> Result<Option<String>> {
+    let tenant = tx.tenant_id().to_string();
+    let digest = digest.to_owned();
+    Ok(tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query_scalar("SELECT device FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND encode(sha256(convert_to(device,'UTF8')),'hex')=$2")
+            .bind(tenant).bind(digest).fetch_optional(c).await
+    })).await?)
+}
 impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
     type State = bool;
     fn observe<T: rss_reconcile::Timer>(
@@ -329,7 +337,10 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
             let (service,entity) = *ctx;
             if let Some(id)=remote_execution::operation_id(entity){return remote_execution::active(tx,id).await;}
             if let Some(id)=actions::recovery::policy_id(entity){return actions::recovery::active(tx,id).await;}
-            if let Some(device)=entity.strip_prefix("configuration:") {return native_configuration::pending(tx,device).await;}
+            if let Some(digest)=entity.strip_prefix("configuration:") {
+                let Some(device)=configuration_device(tx,digest).await? else {return Ok(false)};
+                return native_configuration::pending(tx,&device).await;
+            }
             let Some(device)=device(tx,entity).await? else{return Ok(false)};
             let mut after=Uuid::nil();
             loop {
@@ -379,7 +390,10 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                 storage::admit(tx).await?;
                 if let Some(id)=remote_execution::operation_id(entity){return service.advance_remote_in(tx,id).await;}
                 if let Some(id)=actions::recovery::policy_id(entity){return actions::recovery::recover(service,tx,id).await;}
-                if let Some(device)=entity.strip_prefix("configuration:") {return service.reconcile_configuration(tx,device,audit).await;}
+                if let Some(digest)=entity.strip_prefix("configuration:") {
+                    let Some(device)=configuration_device(tx,digest).await? else {return Ok(())};
+                    return service.reconcile_configuration(tx,&device,audit).await;
+                }
                 let Some(name)=device(tx,entity).await? else{return Ok(())};
                 storage::lock(tx,&name).await?;
                 let tenant=service.tenant.to_string();let key=name.clone();

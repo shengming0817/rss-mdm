@@ -238,7 +238,7 @@ CREATE TABLE mdm_commands.operations (
     remote_operation uuid,
     CONSTRAINT operation_authority_source CHECK (COALESCE(
 CASE source_kind
-    WHEN 'direct'::text THEN ((approval ->> 'kind'::text) = 'user'::text)
+    WHEN 'direct'::text THEN ((approval ->> 'kind'::text) IN ('user'::text,'device_control'::text))
     WHEN 'policy'::text THEN (((approval ->> 'kind'::text) IN ('policy'::text,'agent_install'::text)) AND ((approval ->> 'tenant'::text) = (tenant_id)::text) AND ((approval ->> 'device'::text) = device) AND ((approval ->> 'version'::text) = (policy_version)::text))
     WHEN 'remote_operation'::text THEN (((approval ->> 'kind'::text) = 'remote_operation'::text) AND ((approval ->> 'tenant'::text) = (tenant_id)::text) AND ((approval ->> 'device'::text) = device) AND ((approval ->> 'operation'::text) = (remote_operation)::text))
     ELSE NULL::boolean

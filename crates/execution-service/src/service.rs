@@ -106,7 +106,7 @@ impl ExecutionService {
             self.audit_store.append_in(tx, &fact, true).await?;
             return Ok(value);
         }
-        input.validate(storage::now(tx).await?)?;
+        input.validate(self.store.now(tx).await? / 1_000_000)?;
         let (registration, generation) = storage::current_registration(
             tx,
             device,
