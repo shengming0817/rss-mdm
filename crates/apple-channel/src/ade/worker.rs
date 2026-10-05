@@ -355,6 +355,8 @@ async fn finish(
                     // Discard this incomplete snapshot without changing published devices.
                     sqlx::query("DELETE FROM mdm_apple.ade_sync_devices WHERE tenant_id=$1::uuid AND operation=$2").bind(tenant).bind(work.id).execute(&mut *c).await.map_err(db)?;
                     sqlx::query("UPDATE mdm_apple.ade_operations SET full_sync=true,cursor=NULL,cursor_digests=ARRAY[]::text[] WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(work.id).execute(&mut *c).await.map_err(db)?;
+                    // The cursor chain is no longer authoritative until a complete full rebuild.
+                    sqlx::query("UPDATE mdm_apple.ade_servers SET cursor=NULL,synced_at=NULL WHERE tenant_id=$1::uuid AND organization=$2").bind(tenant).bind(work.organization).execute(&mut *c).await.map_err(db)?;
                     ("pending",json!({"reason":"cursor_reset"}))
                 }
                 Err(client::RemoteError::Unauthorized)=>{
@@ -543,8 +545,8 @@ async fn sync_page(
         .and_then(Value::as_bool)
         .ok_or(Error::Malformed)?;
     let cursor_digest = rss_mdm_registration_service::enrollment::digest(&cursor);
-    let used:bool=sqlx::query_scalar("SELECT cardinality(cursor_digests)>=10000 OR $3=ANY(cursor_digests) FROM mdm_apple.ade_operations WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(work.id).bind(&cursor_digest).fetch_one(&mut *c).await.map_err(db)?;
-    if used || work.cursor.as_deref() == Some(cursor) {
+    let (at_limit,used):(bool,bool)=sqlx::query_as("SELECT cardinality(cursor_digests)>=10000,$3=ANY(cursor_digests) FROM mdm_apple.ade_operations WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(work.id).bind(&cursor_digest).fetch_one(&mut *c).await.map_err(db)?;
+    if at_limit || (more && (used || work.cursor.as_deref() == Some(cursor))) {
         return Ok(("failed", json!({"reason":"cursor_no_progress"})));
     }
     // Validate the entire page before adding any rows to its private snapshot.
@@ -562,8 +564,11 @@ async fn sync_page(
             _ => return Err(Error::Malformed),
         };
         let date = d
-            .get("op_date")
-            .or_else(|| d.get("device_assigned_date"))
+            .get(if work.full {
+                "device_assigned_date"
+            } else {
+                "op_date"
+            })
             .and_then(Value::as_str)
             .ok_or(Error::Malformed)?;
         time::OffsetDateTime::parse(date, &time::format_description::well_known::Rfc3339)
@@ -579,13 +584,14 @@ async fn sync_page(
         page.push((serial, date, deleted, profile));
     }
     for (serial, date, deleted, profile) in page {
-        sqlx::query("INSERT INTO mdm_apple.ade_sync_devices(tenant_id,operation,serial,operation_date,deleted,remote_profile) VALUES($1::uuid,$2,$3,$4::text::timestamptz,$5,$6) ON CONFLICT(tenant_id,operation,serial) DO UPDATE SET operation_date=excluded.operation_date,deleted=excluded.deleted,remote_profile=excluded.remote_profile WHERE excluded.operation_date>mdm_apple.ade_sync_devices.operation_date")
-            .bind(tenant).bind(work.id).bind(serial).bind(date).bind(deleted).bind(profile).execute(&mut *c).await.map_err(db)?;
+        sqlx::query("INSERT INTO mdm_apple.ade_sync_devices(tenant_id,operation,serial,operation_date,deleted,remote_profile) VALUES($1::uuid,$2,$3,$4::text::timestamptz,$5,$6) ON CONFLICT(tenant_id,operation,serial) DO UPDATE SET operation_date=excluded.operation_date,deleted=excluded.deleted,remote_profile=excluded.remote_profile WHERE $7 OR excluded.operation_date>mdm_apple.ade_sync_devices.operation_date")
+            .bind(tenant).bind(work.id).bind(serial).bind(date).bind(deleted).bind(profile).bind(work.full).execute(&mut *c).await.map_err(db)?;
     }
     sqlx::query("UPDATE mdm_apple.ade_operations SET cursor=$3,cursor_digests=array_append(cursor_digests,$4) WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(work.id).bind(cursor).bind(cursor_digest).execute(&mut *c).await.map_err(db)?;
     if !more {
-        sqlx::query("INSERT INTO mdm_apple.ade_devices(tenant_id,organization,serial,operation_date,deleted,seen_run,remote_profile,observed_at) SELECT tenant_id,$3,serial,operation_date,deleted,$2,remote_profile,$4 FROM mdm_apple.ade_sync_devices WHERE tenant_id=$1::uuid AND operation=$2 ON CONFLICT(tenant_id,organization,serial) DO UPDATE SET operation_date=excluded.operation_date,deleted=excluded.deleted,remote_profile=excluded.remote_profile,assignment_revision=mdm_apple.ade_devices.assignment_revision+CASE WHEN excluded.deleted IS DISTINCT FROM mdm_apple.ade_devices.deleted OR excluded.remote_profile IS DISTINCT FROM mdm_apple.ade_devices.remote_profile THEN 1 ELSE 0 END,seen_run=excluded.seen_run,observed_at=excluded.observed_at WHERE excluded.operation_date>=mdm_apple.ade_devices.operation_date")
-            .bind(tenant).bind(work.id).bind(work.organization).bind(now(app)?).execute(&mut *c).await.map_err(db)?;
+        // A fenced full snapshot replaces current state; its assignment date is not an event version.
+        sqlx::query("INSERT INTO mdm_apple.ade_devices(tenant_id,organization,serial,operation_date,deleted,seen_run,remote_profile,observed_at) SELECT tenant_id,$3,serial,operation_date,deleted,$2,remote_profile,$4 FROM mdm_apple.ade_sync_devices WHERE tenant_id=$1::uuid AND operation=$2 ON CONFLICT(tenant_id,organization,serial) DO UPDATE SET operation_date=excluded.operation_date,deleted=excluded.deleted,remote_profile=excluded.remote_profile,assignment_revision=mdm_apple.ade_devices.assignment_revision+CASE WHEN excluded.deleted IS DISTINCT FROM mdm_apple.ade_devices.deleted OR excluded.remote_profile IS DISTINCT FROM mdm_apple.ade_devices.remote_profile THEN 1 ELSE 0 END,seen_run=excluded.seen_run,observed_at=excluded.observed_at WHERE $5 OR excluded.operation_date>=mdm_apple.ade_devices.operation_date")
+            .bind(tenant).bind(work.id).bind(work.organization).bind(now(app)?).bind(work.full).execute(&mut *c).await.map_err(db)?;
         if work.full {
             sqlx::query("UPDATE mdm_apple.ade_devices SET deleted=true,assignment_revision=assignment_revision+1,observed_at=$4 WHERE tenant_id=$1::uuid AND organization=$2 AND NOT EXISTS(SELECT 1 FROM mdm_apple.ade_sync_devices staged WHERE staged.tenant_id=mdm_apple.ade_devices.tenant_id AND staged.operation=$3 AND staged.serial=mdm_apple.ade_devices.serial) AND NOT deleted").bind(tenant).bind(work.organization).bind(work.id).bind(now(app)?).execute(&mut *c).await.map_err(db)?;
         }

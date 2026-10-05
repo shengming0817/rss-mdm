@@ -493,7 +493,7 @@ async fn check_devices(
     id: Uuid,
     devices: &[String],
 ) -> Result<(), Error> {
-    let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_apple.ade_devices WHERE tenant_id=$1::uuid AND organization=$2 AND serial=ANY($3) AND NOT deleted AND observed_at>floor(extract(epoch FROM clock_timestamp()))::bigint-604800").bind(tenant).bind(id).bind(devices).fetch_one(c).await.map_err(db)?;
+    let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_apple.ade_devices d JOIN mdm_apple.ade_servers s ON(s.tenant_id,s.organization)=(d.tenant_id,d.organization) WHERE d.tenant_id=$1::uuid AND d.organization=$2 AND d.serial=ANY($3) AND NOT d.deleted AND s.synced_at>floor(extract(epoch FROM clock_timestamp()))::bigint-604800").bind(tenant).bind(id).bind(devices).fetch_one(c).await.map_err(db)?;
     if count != devices.len() as i64 {
         return Err(Error::Conflict);
     }

@@ -33,6 +33,7 @@ struct Remote {
     assignments: Vec<Vec<String>>,
     details_fail_once: bool,
     cursor_fail_once: bool,
+    sync_responses: std::collections::VecDeque<Value>,
     reject_session_once: bool,
     block: Option<Arc<Gate>>,
     snapshot_serial: Option<String>,
@@ -136,6 +137,9 @@ async fn sync(
                 Json(json!({"error_code":"INVALID_CURSOR"})),
             )
                 .into_response();
+        }
+        if let Some(response) = s.sync_responses.pop_front() {
+            return Json(response).into_response();
         }
         (
             s.snapshot_serial
@@ -1111,5 +1115,193 @@ async fn incomplete_observation_never_confirms_a_clear() -> Result<()> {
         .await?;
     c.cycle().await?;
     ensure!(c.enroll(machine).await?.0 != StatusCode::OK);
+    c.close().await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=apple.ade: full snapshot authority after incremental cursor reset"]
+async fn full_rebuild_replaces_newer_delta_state_and_revokes_stale_profile() -> Result<()> {
+    let mut c = Control::start().await?;
+    c.setup().await?;
+    let machine = c.machine()?;
+    ensure!(c.enroll(machine.clone()).await?.0 == StatusCode::OK);
+    let serial = crate::test_support::case::name("ade-serial");
+    let remote = c.state.lock().await.profile;
+    // Incremental operation dates order events, including duplicates delivered out of order.
+    for (date, profile, cursor) in [
+        ("2026-10-02T00:00:00.123456Z", Some(remote), "delta-new"),
+        ("2026-10-01T00:00:00.123456Z", None, "delta-old"),
+    ] {
+        c.state.lock().await.sync_responses.push_back(json!({"devices":[{"serial_number":serial,"op_type":"modified","op_date":date,"profile_uuid":profile}],"cursor":cursor,"more_to_follow":false}));
+        let op = c.command(json!({"kind":"sync","full":false})).await?;
+        c.cycle().await?;
+        ensure!(c.result(op).await?["state"] == "succeeded");
+    }
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let before: (Option<Uuid>, String) = sqlx::query_as("SELECT remote_profile,operation_date::text FROM mdm_apple.ade_devices WHERE tenant_id=$1::uuid AND organization=$2 AND serial=$3")
+        .bind(case_tenant()).bind(c.organization).bind(serial).fetch_one(&mut pg).await?;
+    ensure!(before.0 == Some(remote) && before.1.starts_with("2026-10-02"));
+    ensure!(c.enroll(machine.clone()).await?.0 == StatusCode::OK);
+    {
+        let mut state = c.state.lock().await;
+        state.assigned = false;
+        state.cursor_fail_once = true;
+    }
+    let op = c.command(json!({"kind":"sync","full":false})).await?;
+    c.cycle().await?;
+    ensure!(c.result(op).await?["result"]["reason"] == "cursor_reset");
+    ensure!(c.enroll(machine.clone()).await?.0 == StatusCode::UNAUTHORIZED);
+    sqlx::query(
+        "UPDATE mdm_apple.ade_operations SET next_attempt=0 WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(case_tenant())
+    .bind(op)
+    .execute(&mut pg)
+    .await?;
+    c.cycle().await?;
+    let staged: Option<Uuid> = sqlx::query_scalar("SELECT remote_profile FROM mdm_apple.ade_devices WHERE tenant_id=$1::uuid AND organization=$2 AND serial=$3")
+        .bind(case_tenant()).bind(c.organization).bind(serial).fetch_one(&mut pg).await?;
+    ensure!(
+        staged == Some(remote),
+        "incomplete full snapshot was published"
+    );
+    ensure!(c.enroll(machine.clone()).await?.0 == StatusCode::UNAUTHORIZED);
+    c.cycle().await?;
+    ensure!(c.result(op).await?["state"] == "succeeded");
+    let current: (Option<Uuid>, String) = sqlx::query_as("SELECT remote_profile,operation_date::text FROM mdm_apple.ade_devices WHERE tenant_id=$1::uuid AND organization=$2 AND serial=$3")
+        .bind(case_tenant()).bind(c.organization).bind(serial).fetch_one(&mut pg).await?;
+    ensure!(
+        current.0.is_none() && current.1.starts_with("2026-10-01"),
+        "full assignment date was compared with the newer delta event date"
+    );
+    ensure!(c.enroll(machine.clone()).await?.0 == StatusCode::UNAUTHORIZED);
+    // A complete later snapshot also replaces the old local profile with another remote profile.
+    let replacement = Uuid::new_v4();
+    {
+        let mut state = c.state.lock().await;
+        state.profile = replacement;
+        state.assigned = true;
+    }
+    let op = c.command(json!({"kind":"sync","full":true})).await?;
+    c.cycle().await?;
+    c.cycle().await?;
+    ensure!(c.result(op).await?["state"] == "succeeded");
+    let current: Option<Uuid> = sqlx::query_scalar("SELECT remote_profile FROM mdm_apple.ade_devices WHERE tenant_id=$1::uuid AND organization=$2 AND serial=$3")
+        .bind(case_tenant()).bind(c.organization).bind(serial).fetch_one(&mut pg).await?;
+    ensure!(current == Some(replacement));
+    ensure!(c.enroll(machine).await?.0 == StatusCode::UNAUTHORIZED);
+    pg.close().await?;
+    c.close().await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=apple.ade: empty delta freshness, terminal cursor and broken-chain refusal"]
+async fn unchanged_devices_remain_authoritative_until_the_directory_chain_breaks() -> Result<()> {
+    let mut c = Control::start().await?;
+    c.setup().await?;
+    let serial = crate::test_support::case::name("ade-serial");
+    let machine = c.machine()?;
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    // Eight days with no device changes; an old completed directory must first be refused.
+    sqlx::query("UPDATE mdm_apple.ade_devices SET observed_at=floor(extract(epoch FROM clock_timestamp()))::bigint-691200 WHERE tenant_id=$1::uuid AND organization=$2")
+        .bind(case_tenant()).bind(c.organization).execute(&mut pg).await?;
+    sqlx::query("UPDATE mdm_apple.ade_servers SET synced_at=floor(extract(epoch FROM clock_timestamp()))::bigint-691200,next_sync=0 WHERE tenant_id=$1::uuid AND organization=$2")
+        .bind(case_tenant()).bind(c.organization).execute(&mut pg).await?;
+    ensure!(c.enroll(machine.clone()).await?.0 == StatusCode::UNAUTHORIZED);
+    c.state
+        .lock()
+        .await
+        .sync_responses
+        .push_back(json!({"devices":[],"cursor":"page-2","more_to_follow":false}));
+    c.cycle().await?; // The actual automatic scheduler continues the existing cursor.
+    let automatic: Uuid = sqlx::query_scalar("SELECT id FROM mdm_apple.ade_operations WHERE tenant_id=$1::uuid AND organization=$2 AND kind='sync' AND actor='service:apple-ade'")
+        .bind(case_tenant()).bind(c.organization).fetch_one(&mut pg).await?;
+    ensure!(c.result(automatic).await?["state"] == "succeeded");
+    let unchanged: bool = sqlx::query_scalar("SELECT observed_at<floor(extract(epoch FROM clock_timestamp()))::bigint-604800 FROM mdm_apple.ade_devices WHERE tenant_id=$1::uuid AND organization=$2 AND serial=$3")
+        .bind(case_tenant()).bind(c.organization).bind(serial).fetch_one(&mut pg).await?;
+    ensure!(
+        unchanged,
+        "empty delta rewrote the device observation to fake freshness"
+    );
+    let clear = c
+        .command(json!({"kind":"clear","devices":[serial]}))
+        .await?;
+    c.cycle().await?;
+    ensure!(c.result(clear).await?["state"] == "succeeded");
+    sqlx::query("UPDATE mdm_apple.ade_devices SET observed_at=floor(extract(epoch FROM clock_timestamp()))::bigint-691200 WHERE tenant_id=$1::uuid AND organization=$2")
+        .bind(case_tenant()).bind(c.organization).execute(&mut pg).await?;
+    let assign = c
+        .command(json!({"kind":"assign","profile":c.profile,"revision":1,"devices":[serial]}))
+        .await?;
+    c.cycle().await?;
+    ensure!(c.result(assign).await?["state"] == "succeeded");
+    sqlx::query("UPDATE mdm_apple.ade_devices SET observed_at=floor(extract(epoch FROM clock_timestamp()))::bigint-691200 WHERE tenant_id=$1::uuid AND organization=$2")
+        .bind(case_tenant()).bind(c.organization).execute(&mut pg).await?;
+    let pending = c.enroll(machine.clone()).await?;
+    ensure!(pending.0 == StatusCode::OK);
+    c.state.lock().await.cursor_fail_once = true;
+    let rebuild = c.command(json!({"kind":"sync","full":false})).await?;
+    c.cycle().await?;
+    ensure!(c.result(rebuild).await?["result"]["reason"] == "cursor_reset");
+    ensure!(c.enroll(machine.clone()).await?.0 == StatusCode::UNAUTHORIZED);
+    sqlx::query(
+        "UPDATE mdm_apple.ade_operations SET next_attempt=0 WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(case_tenant())
+    .bind(rebuild)
+    .execute(&mut pg)
+    .await?;
+    c.cycle().await?;
+    ensure!(c.enroll(machine.clone()).await?.0 == StatusCode::UNAUTHORIZED);
+    c.cycle().await?;
+    ensure!(c.result(rebuild).await?["state"] == "succeeded");
+    let replay = c.enroll(machine.clone()).await?;
+    ensure!(replay.0 == StatusCode::OK && replay.1 == pending.1);
+    let completed: i64 = sqlx::query_scalar(
+        "SELECT synced_at FROM mdm_apple.ade_servers WHERE tenant_id=$1::uuid AND organization=$2",
+    )
+    .bind(case_tenant())
+    .bind(c.organization)
+    .fetch_one(&mut pg)
+    .await?;
+    c.state
+        .lock()
+        .await
+        .sync_responses
+        .push_back(json!({"devices":[],"cursor":"page-2","more_to_follow":true}));
+    let looped = c.command(json!({"kind":"sync","full":false})).await?;
+    c.cycle().await?;
+    let result = c.result(looped).await?;
+    ensure!(result["state"] == "failed" && result["result"]["reason"] == "cursor_no_progress");
+    let after: i64 = sqlx::query_scalar(
+        "SELECT synced_at FROM mdm_apple.ade_servers WHERE tenant_id=$1::uuid AND organization=$2",
+    )
+    .bind(case_tenant())
+    .bind(c.organization)
+    .fetch_one(&mut pg)
+    .await?;
+    ensure!(
+        after == completed,
+        "incomplete looping delta refreshed directory authority"
+    );
+    sqlx::query("UPDATE mdm_apple.ade_servers SET synced_at=floor(extract(epoch FROM clock_timestamp()))::bigint-691200 WHERE tenant_id=$1::uuid AND organization=$2")
+        .bind(case_tenant()).bind(c.organization).execute(&mut pg).await?;
+    ensure!(c.enroll(machine).await?.0 == StatusCode::UNAUTHORIZED);
+    c.f.browser.operation = Some(Uuid::new_v4());
+    let refused =
+        c.f.browser
+            .call(
+                &c.f.router,
+                Method::POST,
+                &format!("{}/operations", c.path()),
+                Some(json!({"kind":"clear","devices":[serial]})),
+            )
+            .await?;
+    ensure!(refused.0 == StatusCode::CONFLICT);
+    pg.close().await?;
     c.close().await
 }
