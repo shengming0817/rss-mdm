@@ -556,7 +556,7 @@ pub async fn withdraw<C: ManagementContentPort>(
    Ok(None)
   })).await?;
   if old.as_ref().is_some_and(|v|v!=hash){return Err(Error::Conflict.into());}
-  let fact=Fact::business(a,&format!("agent-package-withdraw:{operation}"),&hash,200,"success",None)?;
+  let fact=Fact::business(a,&format!("agent-package-withdraw:{operation}"),hash,200,"success",None)?;
   app.audit.append_in(tx,&fact,old.is_some()).await?;p.check_live()?;Ok(())
  }),TransactionOwner::SoftwareCatalog).await
 }

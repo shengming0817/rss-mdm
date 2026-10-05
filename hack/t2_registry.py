@@ -205,7 +205,7 @@ MODULES['agent.pki'] = replace(MODULES['agent.pki'], scope='tenant', policies=(
     CasePolicy('agent_pki_tests::unknown_original_ca_result_blocks_retirement_after_rotation', 'reuse', 'tenant',('identity','agent_pki','pki_rotation')),
 ))
 
-add('installation.migration', selectors=('migration::tests::released_installation_adds_account_authority_without_rewriting_units','migration::tests::previous_release_adds_enrollment_progress_without_rewriting_units','migration::tests::complete_predecessor_withdraws_old_authority_and_preserves_started_evidence','migration::tests::fresh_installation_replay_and_mismatch_rejection','migration::pki::tests::'), profile='empty',
+add('installation.migration', selectors=('migration::tests::released_installation_adds_configurations_without_rewriting_units','migration::tests::released_installation_adds_account_authority_without_rewriting_units','migration::tests::previous_release_adds_enrollment_progress_without_rewriting_units','migration::tests::complete_predecessor_withdraws_old_authority_and_preserves_started_evidence','migration::tests::fresh_installation_replay_and_mismatch_rejection','migration::pki::tests::'), profile='empty',
     sources=('crates/app/src/migration.rs','crates/app/src/migration/pki.rs'),
     tests=('crates/app/tests/migration/mod.rs','crates/app/tests/migration/pki.rs'),
     python='installation', support=('hack/t2_modules/installation.py',))
@@ -863,7 +863,7 @@ for name, path in (('apple.push','push_cycle'), ('apple.host','production')):
     MODULES[name] = replace(MODULES[name], test_inputs=(f'crates/app/tests/apple/{path}.rs',))
 
 # Runtime fixture consumers sign durable candidates and use completed TLS peers.
-AGENT_FIXTURE_CONSUMERS = tuple(('agent.configurations planning.self_service agent.registration agent.reports execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.recovery execution.agent.history execution.software.offer execution.software.content execution.software.recovery planning.onboarding execution.commands.onboarding apple.onboarding planning.agent_policy planning.frequency planning.remote planning.http assets.http planning.software').split())
+AGENT_FIXTURE_CONSUMERS = tuple(('planning.self_service agent.registration agent.reports execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.recovery execution.agent.history execution.software.offer execution.software.content execution.software.recovery planning.onboarding execution.commands.onboarding apple.onboarding planning.agent_policy planning.frequency planning.remote planning.http assets.http planning.software').split())
 AGENT_FIXTURES = ('identity','apple','scep','windows','agent_pki')
 AGENT_FIXTURE_INPUTS = ('crates/app/tests/support/agent.rs','crates/app/tests/support/agent_tls.rs','hack/agent_pki_fixtures.py','hack/pki_fixtures.py','hack/pki_ca.py')
 for name in AGENT_FIXTURE_CONSUMERS:
@@ -1138,7 +1138,7 @@ consume(('crates/execution-service/src/catalog.sql', 'crates/execution-service/s
 
 consume(('crates/management-http/src/response.rs', 'crates/management-http/src/diagnostic.rs'), AUTH_CONSUMERS + ' api.diagnostics planning.http software.http content.http')
 consume(('crates/flow-service/src/error.rs', 'crates/flow-service/src/error_projection.rs', 'crates/flow-service/src/diagnostic.rs', 'crates/flow-service/src/lib.rs', 'crates/flow-service/src/operation.rs'), 'planning.http planning.policy planning.agent_policy planning.frequency planning.group_scope planning.recovery planning.resource_archive planning.scope planning.assets planning.software planning.onboarding')
-consume(('crates/app/src/flow/*',), 'planning.recovery planning.http planning.policy planning.resource_archive software.http content.http audit.integrity')
+consume(('crates/app/src/flow/*',), 'agent.configurations planning.recovery planning.http planning.policy planning.resource_archive software.http content.http audit.integrity')
 consume(('crates/software-service/src/publication/execution.rs',), 'planning.software execution.software.offer execution.software.content execution.software.recovery publication.mapping publication.winget publication.brew publication.withdrawal')
 consume(('crates/agent-channel/src/error.rs', 'crates/agent-channel/src/diagnostic.rs'), 'agent.registration agent.reports execution.agent.delivery execution.agent.content execution.agent.recovery execution.software.content api.diagnostics')
 
@@ -1622,5 +1622,5 @@ consume(('crates/app/src/enrollment_progress.rs',), 'enrollment.http windows.enr
 consume(('crates/registration-service/schema/enrollment-progress.sql',), 'installation.migration installation.upgrade_runtime catalog.contract enrollment.http windows.enrollment windows.management')
 consume(('crates/registration-service/src/database.rs',), 'enrollment.http enrollment.recovery enrollment.quotas device.binding device.revocation device.recovery agent.registration agent.pki')
 
-MODULES['agent.configurations'] = replace(MODULES['agent.configurations'], scope='tenant', support_inputs=(*MODULES['agent.configurations'].support_inputs,'crates/app/tests/support/software.rs','crates/app/tests/agent_pki/mod.rs','tests/support/software/mod.rs'))
+MODULES['agent.configurations'] = replace(MODULES['agent.configurations'], fixtures=('identity','agent_pki'), scope='tenant', support_inputs=(*MODULES['agent.configurations'].support_inputs,*AGENT_FIXTURE_INPUTS,'crates/app/tests/support/software.rs','crates/app/tests/agent_pki/mod.rs','tests/support/software/mod.rs'))
 consume(('crates/registration-service/src/agent/*','crates/registration-service/schema/agent-configurations.sql','crates/software-service/src/agent_packages*','crates/content-service/src/software.rs','crates/app/src/agent_configurations.rs','crates/agent-wire/src/enroll/configuration.rs','crates/management-http/src/agent_enrollment.rs','crates/management-http/src/software_catalog.rs'), 'agent.configurations')

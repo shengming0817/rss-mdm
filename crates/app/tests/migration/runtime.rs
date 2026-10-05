@@ -48,7 +48,12 @@ async fn upgrade(conn: &mut PgConnection) -> Result<()> {
         ALTER TABLE mdm_commands.action_attempts DROP COLUMN execution_material;
         ALTER TABLE mdm_commands.action_runs DROP COLUMN software_effect,DROP COLUMN invocation_archive;
         ALTER TABLE mdm_access.registrations DROP COLUMN first_authenticated_at;
-        DELETE FROM public.mdm_migrations WHERE name IN ('self-service-access-v1','enrollment-progress-v1','apple-account-authority-v1','apple-account-channel-v1');
+        ALTER TABLE mdm_access.agent_grants DROP COLUMN configuration_id, DROP COLUMN configuration_binding;
+        ALTER TABLE mdm_access.agent_grants DROP CONSTRAINT agent_grants_source_check;
+        ALTER TABLE mdm_access.agent_grants ADD CONSTRAINT agent_grants_source_check CHECK(source IN('download','browser','native','recovery','renewal'));
+        DROP TABLE mdm_access.agent_configurations, mdm_access.agent_enrollment_settings;
+        DROP SCHEMA mdm_agent_packages CASCADE;
+        DELETE FROM public.mdm_migrations WHERE name IN ('self-service-access-v1','enrollment-progress-v1','apple-account-authority-v1','apple-account-channel-v1','registration-agent-configurations-v1','software-agent-packages-v1');
         "#,
     )
     .await?;

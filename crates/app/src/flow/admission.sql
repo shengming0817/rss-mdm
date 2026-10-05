@@ -3,6 +3,12 @@ WITH tables AS (
  WHERE n.nspname IN('mdm_planning','mdm_flow','mdm_assets','mdm_automation','mdm_resource_catalog','mdm_publication') AND c.relkind='r'
 ), reachable AS (
  SELECT * FROM pg_roles WHERE rolname=current_user OR pg_has_role(current_user,oid,'MEMBER')
+), package_execution_roles AS (
+ -- SET ROLE is authorized against the original login, then inherits that role's privileges.
+ SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(session_user,oid,'SET')
+), package_reachable AS (
+ SELECT r.* FROM pg_roles r WHERE EXISTS(
+  SELECT 1 FROM package_execution_roles e WHERE pg_has_role(e.oid,r.oid,'USAGE'))
 )
 SELECT
  current_setting('transaction_isolation')='read committed'
@@ -23,7 +29,7 @@ SELECT
  AND has_schema_privilege(current_user,'mdm_planning','USAGE')
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname<>'information_schema' AND c.relkind IN('r','v','m','f')
  AND n.nspname NOT IN('mdm_planning','mdm_flow','mdm_assets','mdm_automation','mdm_resource_catalog','mdm_publication','mdm_software','mdm_content','mdm_group','mdm_policy','mdm_resource','mdm_compliance')
- AND (n.nspname,c.relname) NOT IN(('mdm_apple','devices'),('mdm_agent','bindings'),('mdm_access','authorization_rules'),('mdm_access','user_groups'),('mdm_commands','capabilities'),('mdm_commands','operations'),('mdm','field_versions'),('mdm','collection_definitions'),('mdm','asset_clock'),('mdm','asset_changes'),('mdm','inventory_history'),('mdm','manual_history'),('mdm_access','asset_authority_history'),('mdm_access','collection_history'),('rss_reconcile','targets'),('rss_audit','heads'),('rss_audit','records'),('rss_ledger','heads'),('rss_ledger','entries'),('mdm_audit','receipts'),('mdm_access','devices'),('mdm_access','registrations'),('mdm_access','report_sources'),('mdm_access','collection_runs'),('mdm','inventory'),('mdm','manual_assignments'),('mdm_access','credentials'),('mdm_software_composition','subjects'),('mdm_software_composition','targets'),('mdm_software_composition','projections'),('mdm_software_release','aggregates'),('rss_transactional_messaging','policy'),('rss_transactional_messaging','outbox'))
+ AND (n.nspname,c.relname) NOT IN(('mdm_agent_packages','releases'),('mdm_apple','devices'),('mdm_agent','bindings'),('mdm_access','authorization_rules'),('mdm_access','user_groups'),('mdm_commands','capabilities'),('mdm_commands','operations'),('mdm','field_versions'),('mdm','collection_definitions'),('mdm','asset_clock'),('mdm','asset_changes'),('mdm','inventory_history'),('mdm','manual_history'),('mdm_access','asset_authority_history'),('mdm_access','collection_history'),('rss_reconcile','targets'),('rss_audit','heads'),('rss_audit','records'),('rss_ledger','heads'),('rss_ledger','entries'),('mdm_audit','receipts'),('mdm_access','devices'),('mdm_access','registrations'),('mdm_access','report_sources'),('mdm_access','collection_runs'),('mdm','inventory'),('mdm','manual_assignments'),('mdm_access','credentials'),('mdm_software_composition','subjects'),('mdm_software_composition','targets'),('mdm_software_composition','projections'),('mdm_software_release','aggregates'),('rss_transactional_messaging','policy'),('rss_transactional_messaging','outbox'))
  AND (has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,REFERENCES')))
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE (n.nspname,c.relname) IN(('mdm_agent','bindings'),('mdm_access','authorization_rules'),('mdm_access','user_groups'),('mdm_commands','capabilities'),('mdm_commands','operations'),('mdm_access','devices'),('mdm_access','registrations'),('mdm_access','report_sources'),('mdm_access','collection_runs'),('mdm','inventory'),('mdm_software_composition','subjects'),('mdm_software_composition','targets'),('mdm_software_composition','projections'),('mdm_software_release','aggregates'))
  AND (NOT c.relrowsecurity OR NOT c.relforcerowsecurity OR c.relowner IN(SELECT oid FROM reachable) OR NOT has_table_privilege(current_user,c.oid,'SELECT') OR has_table_privilege(current_user,c.oid,'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(current_user,c.oid,'INSERT,UPDATE,REFERENCES')))
@@ -69,3 +75,33 @@ SELECT
  AND NOT has_any_column_privilege(current_user,c.oid,'INSERT,UPDATE,REFERENCES')
  AND NOT EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped
  AND has_column_privilege(current_user,c.oid,a.attnum,'SELECT')<>(a.attname IN('tenant_id','registration','state','access_rights'))))
+ -- Fixed installer publication authority belongs to the same software runtime.
+ AND EXISTS(SELECT 1 FROM pg_class c WHERE c.oid='mdm_agent_packages.releases'::regclass
+ AND c.relkind='r' AND c.relrowsecurity AND c.relforcerowsecurity
+ AND c.relowner NOT IN(SELECT oid FROM package_reachable)
+ AND has_schema_privilege(current_user,c.relnamespace,'USAGE')
+ AND has_table_privilege(current_user,c.oid,'SELECT') AND has_table_privilege(current_user,c.oid,'INSERT')
+ AND NOT EXISTS(SELECT 1 FROM package_reachable r WHERE has_schema_privilege(r.oid,c.relnamespace,'CREATE')
+ OR has_table_privilege(r.oid,c.oid,'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'))
+ AND (SELECT jsonb_agg(jsonb_build_array(attname,format_type(atttypid,atttypmod),attnotnull) ORDER BY attnum)
+ FROM pg_attribute WHERE attrelid=c.oid AND attnum>0 AND NOT attisdropped)='[["tenant_id","uuid",true],["id","uuid",true],["operation_id","uuid",true],["request_digest","bytea",true],["document","jsonb",true],["binding","jsonb",true],["state","text",true]]'::jsonb
+ AND (SELECT count(*)=6 AND bool_and(convalidated AND pg_get_constraintdef(oid)=CASE conname
+ WHEN 'releases_binding_check' THEN 'CHECK ((octet_length((binding)::text) <= 32768))'
+ WHEN 'releases_document_check' THEN 'CHECK ((octet_length((document)::text) <= 32768))'
+ WHEN 'releases_request_digest_check' THEN 'CHECK ((octet_length(request_digest) = 32))'
+ WHEN 'releases_state_check' THEN 'CHECK ((state = ANY (ARRAY[''published''::text, ''withdrawn''::text])))'
+ WHEN 'releases_pkey' THEN 'PRIMARY KEY (tenant_id, id)'
+ WHEN 'releases_tenant_id_operation_id_key' THEN 'UNIQUE (tenant_id, operation_id)' ELSE '' END)
+ FROM pg_constraint WHERE conrelid=c.oid)
+ AND NOT EXISTS(SELECT 1 FROM pg_index WHERE indrelid=c.oid AND (NOT indisvalid OR NOT indisready OR NOT indislive))
+ AND NOT EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped
+ AND (has_column_privilege(current_user,c.oid,a.attnum,'UPDATE')<>(a.attname='state')
+ OR EXISTS(SELECT 1 FROM package_reachable r WHERE has_column_privilege(r.oid,c.oid,a.attnum,'REFERENCES')
+ OR (has_column_privilege(r.oid,c.oid,a.attnum,'UPDATE') AND a.attname<>'state'))))
+ AND (SELECT count(*) FROM pg_policy WHERE polrelid=c.oid)=1
+ AND EXISTS(SELECT 1 FROM pg_policy p WHERE p.polrelid=c.oid AND p.polname='tenant' AND p.polcmd='*' AND p.polpermissive AND p.polroles=ARRAY[0::oid]
+ AND lower(replace(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'
+ AND pg_get_expr(p.polqual,p.polrelid)=pg_get_expr(p.polwithcheck,p.polrelid))
+ AND NOT EXISTS(SELECT 1 FROM aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM package_reachable) AND a.is_grantable))
+ AND NOT EXISTS(SELECT 1 FROM pg_attribute col,LATERAL aclexplode(col.attacl) a WHERE col.attrelid=c.oid AND (a.grantee=0 OR (a.grantee IN(SELECT oid FROM package_reachable) AND a.is_grantable))))
+;

@@ -238,6 +238,7 @@ async fn console_script_support_requires_signer_and_content() -> Result<()> {
         let mut config = fixture.base.clone();
         if !signed {
             config["task_signing"] = Value::Null;
+            config["agent_pki"] = json!({"mode":"disabled"});
         }
         if !content {
             config["content"] = Value::Null;

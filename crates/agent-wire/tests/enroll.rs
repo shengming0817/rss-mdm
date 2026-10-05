@@ -20,7 +20,7 @@ fn enrollment_has_an_independent_complete_artifact() {
 }
 #[test]
 fn bootstrap_is_closed_and_cannot_claim_a_device_or_runtime_credential() {
-    let value = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"secret":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","platform":"macos"});
+    let value = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"secret":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","platform":"macos","csr":"AA=="});
     let request: wire::GrantRequest = serde_json::from_value(value.clone()).unwrap();
     assert_eq!(format!("{:?}", request.secret), "[REDACTED]");
     let schema: Value = serde_json::from_str(include_str!(
@@ -29,9 +29,15 @@ fn bootstrap_is_closed_and_cannot_claim_a_device_or_runtime_credential() {
     .unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
     assert!(validator.is_valid(&value));
+    let mut missing_csr = value.clone();
+    missing_csr.as_object_mut().unwrap().remove("csr");
+    assert!(serde_json::from_value::<wire::GrantRequest>(missing_csr.clone()).is_err());
+    assert!(!validator.is_valid(&missing_csr));
     for (key, v) in [
         ("deviceId", json!("claimed")),
         ("credential", json!("bearer")),
+        ("lifetimeSeconds", json!(3600)),
+        ("csr", json!(null)),
         ("wireVersion", json!(6)),
         ("operationId", json!(Uuid::nil())),
     ] {

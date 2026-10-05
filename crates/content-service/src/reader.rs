@@ -323,28 +323,35 @@ impl Verified {
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct RuntimeTimer;
+    impl Clock for RuntimeTimer {
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "test concrete Tokio clock provider"
+        )]
+        fn now(&self) -> std::time::Instant {
+            tokio::time::Instant::now().into_std()
+        }
+    }
     #[tokio::test]
     async fn transfer_capacity_expires_without_polling_and_releases_on_drop() {
         let slots = Arc::new(Semaphore::new(1));
-        let deadline = Deadline::at(
-            tokio::time::Instant::now().into_std() + std::time::Duration::from_millis(30),
-        );
+        let deadline = Deadline::at(RuntimeTimer.now() + std::time::Duration::from_millis(30));
         let lease = TransferLease::new(slots.clone().try_acquire_owned().unwrap(), deadline);
         assert!(slots.clone().try_acquire_owned().is_err());
-        tokio::time::timeout(
+        let restored = tokio::time::timeout(
             std::time::Duration::from_secs(1),
             slots.clone().acquire_owned(),
         )
         .await
         .unwrap()
         .unwrap();
+        drop(restored);
         assert_eq!(slots.available_permits(), 1);
         drop(lease);
         let lease = TransferLease::new(
             slots.clone().try_acquire_owned().unwrap(),
-            Deadline::at(
-                tokio::time::Instant::now().into_std() + std::time::Duration::from_secs(60),
-            ),
+            Deadline::at(RuntimeTimer.now() + std::time::Duration::from_secs(60)),
         );
         drop(lease);
         assert_eq!(slots.available_permits(), 1);

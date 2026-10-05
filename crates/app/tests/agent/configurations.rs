@@ -74,6 +74,14 @@ async fn publish(
     user: &mut Browser,
     windows: bool,
 ) -> Result<w::configuration::Package> {
+    publish_version(f, user, windows, "1+enterprise").await
+}
+async fn publish_version(
+    f: &Fixture,
+    user: &mut Browser,
+    windows: bool,
+    version: &str,
+) -> Result<w::configuration::Package> {
     let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     let (platform, architecture, format, _filename) = if windows {
         ("windows", "x86_64", "exe", "rss-agent.exe")
@@ -82,10 +90,11 @@ async fn publish(
     };
     let bytes = vec![if windows { 0x4e } else { 0x50 }; 128 * 1024 + 3];
     let candidate = serde_json::to_vec(
-        &json!({"wireVersion":1,"tenantId":case_tenant(),"target":{"platform":platform,"architecture":architecture},"version":"1+enterprise","origin":"https://mdm.example.test:9445","signingKeys":base["task_signing"]["trusted_keys"],"packaging":if windows{json!({"kind":"nsis_exe","publisher":"RSS Test Publisher","signature_evidence":"external-signed-build:1"})}else{json!({"kind":"macos_pkg","team":"ABCDEFGHIJ","notarization_evidence":"external-notarized-build:1"})}}),
+        &json!({"wireVersion":1,"tenantId":case_tenant(),"target":{"platform":platform,"architecture":architecture},"version":version,"origin":"https://mdm.example.test:9445","signingKeys":base["task_signing"]["trusted_keys"],"packaging":if windows{json!({"kind":"nsis_exe","publisher":"RSS Test Publisher","signature_evidence":"external-signed-build:1"})}else{json!({"kind":"macos_pkg","team":"ABCDEFGHIJ","notarization_evidence":"external-notarized-build:1"})}}),
     )?;
     let mut definition =
         publication_support::private_definition(f.registered["snapshot"].clone(), &bytes);
+    definition["version"] = json!(version);
     definition["artifacts"]["candidate"] = json!({"reference":"candidate","length":candidate.len(),"sha256":rss_mdm_resource::Digest::of(&candidate).bytes()});
     definition["behavior"]["kind"] = json!(format);
     if windows {
@@ -97,7 +106,7 @@ async fn publish(
         definition["behavior"]["install"]["arguments"] = json!([]);
         definition["behavior"]["upgradeInvocation"]["arguments"] = json!([]);
         definition["behavior"]["detect"] =
-            json!({"kind":"pkg_receipt","receipt":"com.rss.agent","version":"1+enterprise"});
+            json!({"kind":"pkg_receipt","receipt":"com.rss.agent","version":version});
     }
     let id = Uuid::new_v4().to_string();
     let path = format!("/api/v1/resources/{id}");
@@ -110,7 +119,7 @@ async fn publish(
     )
     .await?;
     write(user,&f.router,&path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":platform,"architecture":architecture,"key":"default","declaration":{"kind":"software","definition":definition}}]})).await?;
-    upload(f, user, &id, platform, architecture, "package", &bytes).await?;
+    upload(f, user, &id, platform, architecture, "installer", &bytes).await?;
     upload(
         f,
         user,
@@ -352,6 +361,8 @@ async fn enroll(
         status == StatusCode::OK,
         "certificate {n} {status} {candidate}"
     );
+    // Independent devices share one loopback IP; respect the native one-connection-per-second refill.
+    tokio::time::sleep(Duration::from_secs(1)).await;
     Ok(tls.activate(&candidate, n).await?["runtime"]["deviceId"]
         .as_str()
         .unwrap()
@@ -903,7 +914,7 @@ async fn expired_unpolled_download_releases_capacity() -> Result<()> {
     let mut user = f.user.clone();
     let package = publish(&f, &mut user, true).await?;
     let artifact = rss_mdm_resource::SoftwareArtifact {
-        reference: "package".into(),
+        reference: "installer".into(),
         origin: None,
         length: package.length,
         sha256: package.installer_sha256,
@@ -928,5 +939,71 @@ async fn expired_unpolled_download_releases_capacity() -> Result<()> {
         "expired body resumed reading"
     );
     drop(next);
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "MODULE=agent.configurations: long-lived scope admits new candidates and rejects withdrawn releases"]
+async fn configuration_scope_follows_current_candidate_admission() -> Result<()> {
+    let f = fixture().await?;
+    let mut user = f.user.clone();
+    let old = publish(&f, &mut user, true).await?;
+    let file = configuration(
+        &f,
+        &mut user,
+        json!({"kind":"finite","count":2}),
+        Some(31536000),
+    )
+    .await?;
+    let first = exchange(&file, &old, 0)?;
+    let original = machine(&f, "/api/v1/agent/enroll/configurations/exchange", &first).await?;
+    ensure!(original.0 == StatusCode::OK);
+    let current = publish_version(&f, &mut user, true, "2+enterprise").await?;
+    ensure!(current.version != old.version && current.candidate_sha256 != old.candidate_sha256);
+    let withdrawn = user
+        .call(
+            &f.router,
+            Method::POST,
+            &format!("/api/v1/agent-packages/{}/withdraw", old.release_id),
+            Some(json!({"operationId":Uuid::new_v4()})),
+        )
+        .await?;
+    ensure!(withdrawn.0 == StatusCode::NO_CONTENT);
+    let anonymous = f
+        .client
+        .get(format!(
+            "{}/api/v1/agent/enroll/packages/{}/content",
+            f.origin, old.release_id
+        ))
+        .header("host", "mdm.example.test:9445")
+        .send()
+        .await?;
+    ensure!(!anonymous.status().is_success());
+    ensure!(
+        machine(&f, "/api/v1/agent/enroll/configurations/exchange", &first)
+            .await?
+            .1
+            == original.1
+    );
+    ensure!(
+        machine(
+            &f,
+            "/api/v1/agent/enroll/configurations/exchange",
+            &exchange(&file, &old, 1)?
+        )
+        .await?
+        .0 == StatusCode::FORBIDDEN
+    );
+    ensure!(
+        machine(
+            &f,
+            "/api/v1/agent/enroll/configurations/exchange",
+            &exchange(&file, &current, 1)?
+        )
+        .await?
+        .0 == StatusCode::OK
+    );
+    let state = read(&f, &mut user, file.configuration.configuration_id).await?;
+    ensure!(state["reserved"] == 2 && state["consumed"] == 0);
     Ok(())
 }
