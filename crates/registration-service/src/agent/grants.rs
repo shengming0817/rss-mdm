@@ -1,182 +1,37 @@
 use super::*;
 impl Service {
-    pub async fn create(
-        &self,
-        p: &AuthorizedPrincipal,
-        input: &wire::GrantRequest,
-        a: &RequestAudit,
-    ) -> Result<wire::GrantReceipt, Failure> {
-        self.proof(p, a)?;
-        self.create_inner(Some(p), input, a, false).await
-    }
+    /// Create only a machine CSR request. A live enterprise session authorizes it separately.
     pub async fn request(
         &self,
         input: &wire::GrantRequest,
         a: &RequestAudit,
     ) -> Result<wire::GrantReceipt, Failure> {
-        self.create_inner(None, input, a, true).await
-    }
-    async fn create_inner(
-        &self,
-        p: Option<&AuthorizedPrincipal>,
-        input: &wire::GrantRequest,
-        a: &RequestAudit,
-        pending: bool,
-    ) -> Result<wire::GrantReceipt, Failure> {
         version(input.wire_version, input.operation_id)?;
-        if !self.policy.platforms.contains(&input.platform) || (pending && input.csr.is_none()) {
-            return Err(Error::Forbidden.into());
-        }
-        let bound = input
-            .csr
-            .as_deref()
-            .map(csr)
-            .transpose()?
-            .map(|c| hex(c.spki()));
-        let seconds = input.lifetime_seconds.unwrap_or(self.policy.grant_seconds);
-        if seconds == 0 || seconds > self.policy.grant_seconds {
-            return Err(Error::Malformed.into());
-        }
-        let source = if pending { "browser" } else { "download" };
-        let digest = digest(input)?;
-        a.operation(
-            input.operation_id,
-            if pending {
-                "agent_authorization_request"
-            } else {
-                "agent_grant_create"
-            },
-        );
-        self.write(
-            a,
-            (self, p, input, a, source, digest, bound, seconds),
-            |ctx, c| {
-                Box::pin(async move {
-                    let (service, p, input, _a, source, digest, bound, seconds) = ctx;
-                    let tenant = service.tenant.to_string();
-                    sqlx::query(
-                        r#"
-SELECT pg_advisory_xact_lock(hashtextextended($1,2630))
-"#,
-                    )
-                    .bind(format!("{tenant}:{source}:{}", input.operation_id))
-                    .execute(&mut *c)
-                    .await
-                    .map_err(db)?;
-                    if let Some(id) = sqlx::query_scalar::<_, Uuid>(
-                        r#"
-SELECT id FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND source=$2 AND
-operation_id=$3
-"#,
-                    )
-                    .bind(&tenant)
-                    .bind(*source)
-                    .bind(input.operation_id)
-                    .fetch_optional(&mut *c)
-                    .await
-                    .map_err(db)?
-                    {
-                        let row = grant_row(c, &tenant, id).await?;
-                        if row.try_get::<String, _>("request_digest").map_err(db)? != *digest
-                            || p.is_some_and(|p| {
-                                row.get::<Option<String>, _>("actor").as_deref()
-                                    != Some(p.principal_id())
-                                    || row.get::<Option<String>, _>("instance").as_deref()
-                                        != Some(p.instance_id())
-                            })
-                        {
-                            return Err(Error::Conflict);
-                        }
-                        check_secret(&tenant, &row, &input.secret)?;
-                        return Ok(Change {
-                            value: receipt(&row)?,
-                            replay: true,
-                            digest: digest.clone(),
-                        });
-                    }
-                    if let Some(p) = p {
-                        crate::quotas::admit_on(
-                            c,
-                            &tenant,
-                            p.instance_id(),
-                            p.principal_id(),
-                            crate::quotas::Channel::Agent,
-                        )
-                        .await?;
-                        p.check_live()?;
-                    }
-                    // Anonymous pending requests are bounded per tenant independently of device quota.
-                    if p.is_none() {
-                        sqlx::query(
-                            r#"
-SELECT pg_advisory_xact_lock(hashtextextended($1,2630))
-"#,
-                        )
-                        .bind(format!("{tenant}:pending"))
-                        .execute(&mut *c)
-                        .await
-                        .map_err(db)?;
-                        let count: i64 = sqlx::query_scalar(
-                            r#"
-SELECT count(*) FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND state='pending' AND
-expires_at>clock_timestamp()
-"#,
-                        )
-                        .bind(&tenant)
-                        .fetch_one(&mut *c)
-                        .await
-                        .map_err(db)?;
-                        if count >= 1000 {
-                            return Err(Error::Capacity);
-                        }
-                    }
-                    let id = Uuid::new_v4();
-                    let device = Uuid::new_v4().to_string();
-                    sqlx::query(
-                        r#"
-INSERT INTO
-mdm_access.agent_grants(tenant_id,
-id,
-operation_id,
-source,
-actor,
-instance,
-device,
-platform,
-secret_digest,
-request_digest,
-spki,
-state,
-expires_at)
-VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,clock_timestamp()+make_interval(secs=>$13))
-"#,
-                    )
-                    .bind(&tenant)
-                    .bind(id)
-                    .bind(input.operation_id)
-                    .bind(*source)
-                    .bind(p.map(|p| p.principal_id()))
-                    .bind(p.map(|p| p.instance_id()))
-                    .bind(device)
-                    .bind(platform(input.platform))
-                    .bind(secret_digest(&tenant, id, &input.secret))
-                    .bind(&*digest)
-                    .bind(&*bound)
-                    .bind(if p.is_some() { "available" } else { "pending" })
-                    .bind(*seconds as f64)
-                    .execute(&mut *c)
-                    .await
-                    .map_err(db)?;
-                    Ok(Change {
-                        value: receipt(&grant_row(c, &tenant, id).await?)?,
-                        replay: false,
-                        digest: digest.clone(),
-                    })
-                })
-            },
-        )
-        .await
-        .map_err(Into::into)
+        let bound = hex(csr(&input.csr)?.spki());
+        let d = digest(input)?;
+        a.operation(input.operation_id, "agent_authorization_request");
+        self.write(a,(self,input,bound,d),|ctx,c|Box::pin(async move {
+            let (service,input,bound,d)=ctx;let tenant=service.tenant.to_string();
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2630))")
+                .bind(format!("{tenant}:browser:{}",input.operation_id)).execute(&mut *c).await.map_err(db)?;
+            if let Some(id)=sqlx::query_scalar::<_,Uuid>("SELECT id FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND source='browser' AND operation_id=$2")
+                .bind(&tenant).bind(input.operation_id).fetch_optional(&mut *c).await.map_err(db)? {
+                let row=grant_row(c,&tenant,id).await?;
+                if row.try_get::<String,_>("request_digest").map_err(db)?!=*d{return Err(Error::Conflict);}
+                check_secret(&tenant,&row,&input.secret)?;
+                return Ok(Change{value:receipt(&row)?,replay:true,digest:d.clone()});
+            }
+            let values=settings::admit_on(c,&tenant,input.platform).await?;
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2630))").bind(format!("{tenant}:pending")).execute(&mut *c).await.map_err(db)?;
+            let pending:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND state='pending' AND expires_at>clock_timestamp()")
+                .bind(&tenant).fetch_one(&mut *c).await.map_err(db)?;
+            if pending>=1000{return Err(Error::Capacity);}
+            let id=Uuid::new_v4();
+            sqlx::query("INSERT INTO mdm_access.agent_grants(tenant_id,id,operation_id,source,device,platform,secret_digest,request_digest,spki,state,expires_at) VALUES($1::uuid,$2,$3,'browser',$4,$5,$6,$7,$8,'pending',clock_timestamp()+make_interval(secs=>$9))")
+                .bind(&tenant).bind(id).bind(input.operation_id).bind(Uuid::new_v4().to_string()).bind(platform(input.platform))
+                .bind(secret_digest(&tenant,id,&input.secret)).bind(&*d).bind(&*bound).bind(f64::from(values.grant_seconds)).execute(&mut *c).await.map_err(db)?;
+            Ok(Change{value:receipt(&grant_row(c,&tenant,id).await?)?,replay:false,digest:d.clone()})
+        })).await.map_err(Into::into)
     }
     pub async fn approve(
         &self,
@@ -211,6 +66,9 @@ VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,clock_timestamp()+make_inter
                     });
                 }
                 let row = grant_row(c, &tenant, *id).await?;
+                if row.try_get::<String, _>("source").map_err(db)? != "browser" {
+                    return Err(Error::Forbidden);
+                }
                 let replay = row.try_get::<String, _>("state").map_err(db)? != "pending";
                 if replay {
                     if row
@@ -227,15 +85,10 @@ VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,clock_timestamp()+make_inter
                         return Err(Error::Forbidden);
                     }
                 } else {
-                    if !row.try_get::<bool, _>("live").map_err(db)?
-                        || !service
-                            .policy
-                            .platforms
-                            .iter()
-                            .any(|v| platform(*v) == row.get::<String, _>("platform"))
-                    {
-                        return Err(Error::Forbidden);
+                    if row.try_get::<i64, _>("expiry").map_err(db)? <= now(c).await? {
+                        return Err(Error::Agent(wire::ErrorCode::GrantExpired));
                     }
+                    settings::admit_on(c, &tenant, row_platform(&row)?).await?;
                     crate::quotas::admit_on(
                         c,
                         &tenant,
@@ -310,6 +163,7 @@ tenant_id=$1::uuid AND id=$2
                     });
                 }
                 let row = grant_row(c, &tenant, *id).await?;
+                if matches!(row.try_get::<String,_>("source").map_err(db)?.as_str(),"configuration"|"native"){return Err(Error::Forbidden);}
                 owned(p, &row)?;
                 sqlx::query(
                     r#"
@@ -341,22 +195,6 @@ UPDATE mdm_access.agent_grants SET state='revoked' WHERE tenant_id=$1::uuid AND 
         })
         .await
         .map_err(Into::into)
-    }
-    pub async fn status(
-        &self,
-        p: &AuthorizedPrincipal,
-        id: Uuid,
-    ) -> Result<wire::Progress, Failure> {
-        p.check_live()?;
-        if p.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Forbidden.into());
-        }
-        let mut tx = self.store.begin(p.tenant_id()).await?;
-        let row = grant_row(&mut tx, p.tenant_id(), id).await?;
-        owned(p, &row)?;
-        let out = progress(&mut tx, p.tenant_id(), &row).await?;
-        tx.commit().await.map_err(db)?;
-        Ok(out)
     }
     pub async fn poll(&self, input: &wire::StatusRequest) -> Result<wire::Progress, Failure> {
         version(input.wire_version, input.operation_id)?;
@@ -404,24 +242,15 @@ UPDATE mdm_access.agent_grants SET state='revoked' WHERE tenant_id=$1::uuid AND 
     ) -> Result<wire::GrantReceipt, Failure> {
         self.proof(p, a)?;
         version(input.wire_version, input.operation_id)?;
-        let bound = input
-            .csr
-            .as_deref()
-            .map(csr)
-            .transpose()?
-            .map(|c| hex(c.spki()));
-        let seconds = input.lifetime_seconds.unwrap_or(self.policy.grant_seconds);
-        if seconds == 0 || seconds > self.policy.grant_seconds {
-            return Err(Error::Malformed.into());
-        }
+        let bound = hex(csr(&input.csr)?.spki());
         a.operation(input.operation_id, "agent_recovery_grant");
         let digest = digest(&(registration, input))?;
         self.write(
             a,
-            (self, p, registration, input, a, bound, seconds, digest),
+            (self, p, registration, input, a, bound, digest),
             |ctx, c| {
                 Box::pin(async move {
-                    let (service, p, registration, input, a, bound, seconds, digest) = ctx;
+                    let (service, p, registration, input, a, bound, digest) = ctx;
                     let tenant = service.tenant.to_string();
                     let row = sqlx::query(
                         r#"
@@ -465,6 +294,9 @@ operation_id=$2
                             digest: digest.clone(),
                         });
                     }
+                    let seconds = settings::admit_on(c, &tenant, input.platform)
+                        .await?
+                        .grant_seconds;
                     let id = Uuid::new_v4();
                     sqlx::query(
                         r#"
@@ -511,7 +343,7 @@ $13)
                     .bind(secret_digest(&tenant, id, &input.secret))
                     .bind(&*digest)
                     .bind(&*bound)
-                    .bind(*seconds as f64)
+                    .bind(f64::from(seconds))
                     .bind(*registration)
                     .bind(row.try_get::<Uuid, _>("id").map_err(db)?)
                     .execute(&mut *c)
@@ -593,18 +425,14 @@ impl Service {
     ) -> Result<wire::GrantReceipt, Failure> {
         version(input.wire_version, input.operation_id)?;
         let principal = self.authenticate(peer).await?;
-        let bound = hex(csr(input.csr.as_deref().ok_or(Error::Malformed)?)?.spki());
-        let seconds = input.lifetime_seconds.unwrap_or(self.policy.grant_seconds);
-        if seconds == 0 || seconds > self.policy.grant_seconds {
-            return Err(Error::Malformed.into());
-        }
+        let bound = hex(csr(&input.csr)?.spki());
         let d = digest(&(principal.registration(), principal.credential(), input))?;
         a.identify_device(principal.registration());
         a.target(principal.device());
         a.operation(input.operation_id, "agent_renewal_grant");
-        self.write(a, (self, principal, input, bound, seconds, d), |ctx, c| {
+        self.write(a, (self, principal, input, bound, d), |ctx, c| {
             Box::pin(async move {
-                let (service, p, input, bound, seconds, d) = ctx;
+                let (service, p, input, bound, d) = ctx;
                 let tenant = service.tenant.to_string();
                 crate::device::store::revalidate_source(
                     c,
@@ -650,6 +478,9 @@ operation_id=$2
                         digest: d.clone(),
                     });
                 }
+                let seconds = settings::admit_on(c, &tenant, input.platform)
+                    .await?
+                    .grant_seconds;
                 let id = Uuid::new_v4();
                 sqlx::query(
                     r#"
@@ -696,7 +527,7 @@ $13)
                 .bind(secret_digest(&tenant, id, &input.secret))
                 .bind(&*d)
                 .bind(&*bound)
-                .bind(*seconds as f64)
+                .bind(f64::from(seconds))
                 .bind(p.registration())
                 .bind(p.credential())
                 .execute(&mut *c)
@@ -711,31 +542,5 @@ $13)
         })
         .await
         .map_err(Into::into)
-    }
-}
-impl Service {
-    pub async fn preview(
-        &self,
-        p: &AuthorizedPrincipal,
-        id: Uuid,
-    ) -> Result<wire::AuthorizationRequest, Failure> {
-        p.check_live()?;
-        if p.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Forbidden.into());
-        }
-        let mut tx = self.store.begin(p.tenant_id()).await?;
-        let row = grant_row(&mut tx, p.tenant_id(), id).await?;
-        if row.try_get::<String, _>("source").map_err(db)? != "browser" {
-            return Err(Error::Forbidden.into());
-        }
-        if row.try_get::<String, _>("state").map_err(db)? != "pending" {
-            owned(p, &row)?
-        }
-        let out = wire::AuthorizationRequest {
-            grant: receipt(&row)?,
-            public_key_fingerprint: row.try_get("spki").map_err(db)?,
-        };
-        tx.commit().await.map_err(db)?;
-        Ok(out)
     }
 }

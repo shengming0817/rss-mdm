@@ -24,7 +24,7 @@ pub struct Envelope {
 pub fn wrap(router: Router, envelope: Envelope) -> Router {
     router.layer(middleware::from_fn_with_state((envelope, false), admit))
 }
-pub(crate) fn wrap_enroll(router: Router, envelope: Envelope) -> Router {
+pub fn wrap_enroll(router: Router, envelope: Envelope) -> Router {
     router.layer(middleware::from_fn_with_state((envelope, true), admit))
 }
 fn family(response: Response, enrollment: bool) -> Response {

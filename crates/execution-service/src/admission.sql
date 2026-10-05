@@ -39,7 +39,7 @@ WITH tables AS (
 ), allowed(relation,sel,ins,del) AS (VALUES
  ('mdm_pki.trust',true,false,false),('mdm_pki.rotations',true,false,false),('mdm_pki.installations',true,true,false),('mdm_pki.acknowledgements',true,true,false),
  ('mdm_windows.trust_deliveries',true,true,false),('mdm_apple.trust_deliveries',true,true,false),
- ('mdm_content.manifests',true,false,false),('mdm_content.diagnostic_artifacts',true,true,false),('mdm_flow.native_protection',true,true,false),('mdm_access.agent_grants',true,true,false),
+ ('mdm_content.manifests',true,false,false),('mdm_content.diagnostic_artifacts',true,true,false),('mdm_flow.native_protection',true,true,false),('mdm_access.agent_grants',true,true,false),('mdm_access.agent_enrollment_settings',true,false,false),
  ('mdm.inventory',true,false,false),
  ('mdm.field_versions',true,false,false),('mdm.collection_definitions',true,true,false),('mdm.collection_results',true,true,false),
  ('mdm_software_composition.subjects',true,false,false),('mdm_software_composition.targets',true,false,false),('mdm_software_composition.projections',true,false,false),('mdm_software_release.aggregates',true,false,false),

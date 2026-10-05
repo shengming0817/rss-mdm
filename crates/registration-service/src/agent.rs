@@ -1,13 +1,16 @@
 //! Persistent Agent enrollment and online certificate authority.
 //! ref: smallstep/certificates api/sign.go@v0.30.2; sqlx-core/src/transaction.rs@v0.9.0.
 mod activation;
+pub mod configurations;
 mod grants;
 pub(crate) mod issuance;
 pub mod native;
+pub mod settings;
 mod trust;
 use crate::agent_pki::{AgentIssuer, Clock};
 use crate::{Error, Store, database::db};
 use base64::{Engine, engine::general_purpose::STANDARD};
+use issuance::{now, row_platform};
 use rss_mdm_agent_wire::{enroll as wire, runtime};
 use rss_mdm_audit_integration::{AuditStore, Fact, RequestAudit, budget::AuditBudget};
 use rss_mdm_authorization_service::context::AuthorizedPrincipal;
@@ -51,37 +54,6 @@ impl From<rss_mdm_authorization_service::Error> for Failure {
         Error::from(e).into()
     }
 }
-/// Tenant policy. A zero limit disables new user registrations, not existing devices.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub struct Policy {
-    pub grant_seconds: u32,
-    pub platforms: Vec<runtime::TaskPlatform>,
-}
-impl Default for Policy {
-    fn default() -> Self {
-        Self {
-            grant_seconds: 86400,
-            platforms: vec![runtime::TaskPlatform::Windows, runtime::TaskPlatform::Macos],
-        }
-    }
-}
-impl Policy {
-    pub fn validate(&self) -> Result<(), Error> {
-        if !(1..=604800).contains(&self.grant_seconds)
-            || self.platforms.is_empty()
-            || self.platforms.len() > 2
-            || self
-                .platforms
-                .iter()
-                .enumerate()
-                .any(|(i, p)| self.platforms[..i].contains(p))
-        {
-            return Err(Error::Configuration);
-        }
-        Ok(())
-    }
-}
 pub type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + Send + 'a>>;
 /// Coordinates allocated only by the registration owner at activation.
 pub struct Binding {
@@ -115,9 +87,11 @@ pub struct Service {
     audit: Arc<AuditStore>,
     issuer: Arc<AgentIssuer>,
     clock: Arc<dyn Clock>,
-    policy: Policy,
     binding: Arc<dyn RuntimeBinding>,
     native: Arc<dyn NativeAdmission>,
+    origin: String,
+    configuration_signer: Arc<configurations::Signer>,
+    installations: Arc<dyn configurations::InstallationAdmission>,
 }
 pub struct Assembly {
     pub tenant: rss_request_context::TenantId,
@@ -125,9 +99,11 @@ pub struct Assembly {
     pub audit: Arc<AuditStore>,
     pub issuer: Arc<AgentIssuer>,
     pub clock: Arc<dyn Clock>,
-    pub policy: Policy,
     pub binding: Arc<dyn RuntimeBinding>,
     pub native: Arc<dyn NativeAdmission>,
+    pub origin: String,
+    pub configuration_signer: Arc<configurations::Signer>,
+    pub installations: Arc<dyn configurations::InstallationAdmission>,
 }
 struct Change<R> {
     value: R,
@@ -136,16 +112,17 @@ struct Change<R> {
 }
 impl Service {
     pub fn new(a: Assembly) -> Result<Self, Error> {
-        a.policy.validate()?;
         Ok(Self {
             tenant: a.tenant,
             store: a.store,
             audit: a.audit,
             issuer: a.issuer,
             clock: a.clock,
-            policy: a.policy,
             binding: a.binding,
             native: a.native,
+            origin: a.origin,
+            configuration_signer: a.configuration_signer,
+            installations: a.installations,
         })
     }
     pub fn trust(&self) -> &Arc<AgentTrust> {
@@ -216,7 +193,7 @@ impl Service {
         if row.try_get::<String, _>("state").map_err(db)? == "revoked" {
             return Err(Error::Agent(wire::ErrorCode::GrantRevoked));
         }
-        if !row.try_get::<bool, _>("live").map_err(db)? {
+        if row.try_get::<i64, _>("expiry").map_err(db)? <= now(c).await? {
             return Err(Error::Agent(wire::ErrorCode::GrantExpired));
         }
         if row.try_get::<String, _>("state").map_err(db)? == "pending" {
@@ -306,4 +283,17 @@ fn platform(p: runtime::TaskPlatform) -> &'static str {
         runtime::TaskPlatform::Windows => "windows",
         runtime::TaskPlatform::Macos => "macos",
     }
+}
+
+async fn authorize_on(
+    c: &mut PgConnection,
+    p: &AuthorizedPrincipal,
+    permission: rss_mdm_authorization_service::Permission,
+) -> Result<(), Error> {
+    p.check_live()?;
+    rss_mdm_authorization_service::lock_on(c, p.tenant_id(), p.instance_id()).await?;
+    rss_mdm_authorization_service::snapshot_on(c, p.tenant_id(), p.instance_id())
+        .await?
+        .require(p, permission, None)
+        .map_err(|_| Error::Forbidden)
 }

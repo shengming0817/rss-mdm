@@ -23,6 +23,12 @@ fn main() {
             "SelfServiceStatus": schemars::schema_for!(runtime::SelfServiceStatus),
         },
         "enroll": {
+            "ConfigurationFile": schemars::schema_for!(enroll::configuration::ConfigurationFile),
+            "ConfigurationExchange": schemars::schema_for!(enroll::configuration::Exchange),
+            "ConfigurationExchangeStatus": schemars::schema_for!(enroll::configuration::ExchangeStatus),
+            "ReservationCancel": schemars::schema_for!(enroll::configuration::Cancel),
+            "Package": schemars::schema_for!(enroll::configuration::Package),
+
             "GrantRequest": schemars::schema_for!(enroll::GrantRequest),
             "CertificateRequest": schemars::schema_for!(enroll::CertificateRequest),
             "ActivationRequest": schemars::schema_for!(enroll::ActivationRequest),
@@ -34,7 +40,6 @@ fn main() {
             "RecoverIssuance": schemars::schema_for!(enroll::RecoverIssuance),
             "NativeGrantRequest": schemars::schema_for!(enroll::NativeGrantRequest),
             "ErrorBody": schemars::schema_for!(enroll::ErrorBody),
-            "AuthorizationRequest": schemars::schema_for!(enroll::AuthorizationRequest),
             "RenewalStatusRequest": schemars::schema_for!(enroll::RenewalStatusRequest),
         },
     });

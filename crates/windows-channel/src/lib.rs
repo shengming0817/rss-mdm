@@ -577,7 +577,6 @@ async fn enrollment(
 }
 
 pub struct HttpState {
-    pub agent_policy: Option<rss_mdm_registration_service::agent::Policy>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub mount: crate::device::ChannelMount,
     pub audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,

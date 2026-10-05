@@ -20,6 +20,9 @@ pub fn router(service: Arc<Service>, envelope: crate::boundary::Envelope) -> Rou
     crate::boundary::wrap_enroll(
         Router::new()
             .route("/requests", post(request))
+            .route("/configurations/exchange", post(exchange))
+            .route("/configurations/status", post(exchange_status))
+            .route("/reservations/cancel", post(cancel))
             .route("/certificates", post(issue))
             .route("/activate", post(activate))
             .route("/status", post(status))
@@ -156,4 +159,31 @@ async fn acknowledge(
         peer.ok_or_else(|| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
     s.acknowledge_trust(&peer.0, &body(input)?, &a).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn exchange(
+    State(s): State<Arc<Service>>,
+    Extension(a): Extension<RequestAudit>,
+    headers: HeaderMap,
+    input: Body<wire::configuration::Exchange>,
+) -> Result<Json<wire::GrantReceipt>, HttpFailure> {
+    bootstrap(&headers)?;
+    Ok(Json(s.exchange_configuration(&body(input)?, &a).await?))
+}
+async fn exchange_status(
+    State(s): State<Arc<Service>>,
+    headers: HeaderMap,
+    input: Body<wire::configuration::ExchangeStatus>,
+) -> Result<Json<wire::GrantReceipt>, HttpFailure> {
+    bootstrap(&headers)?;
+    Ok(Json(s.configuration_exchange_status(&body(input)?).await?))
+}
+async fn cancel(
+    State(s): State<Arc<Service>>,
+    Extension(a): Extension<RequestAudit>,
+    headers: HeaderMap,
+    input: Body<wire::configuration::Cancel>,
+) -> Result<Json<wire::GrantReceipt>, HttpFailure> {
+    bootstrap(&headers)?;
+    Ok(Json(s.cancel_reservation(&body(input)?, &a).await?))
 }

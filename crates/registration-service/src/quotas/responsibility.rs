@@ -94,7 +94,7 @@ async fn organization_on(
     device: &str,
 ) -> Result<(), Error> {
     p.enrollment(device)?;
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations r LEFT JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(r.tenant_id,r.request_id) LEFT JOIN mdm_access.agent_grants g ON(g.tenant_id,g.id)=(r.tenant_id,r.agent_grant_id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.purpose='primary' AND ((r.channel='mdm' AND NOT q.self_service) OR (r.channel='agent' AND g.source='native'))) OR EXISTS(SELECT 1 FROM mdm_access.requests q JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE q.tenant_id=$1::uuid AND g.device=$2 AND NOT q.self_service AND q.state<>'cancelled')")
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations r LEFT JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(r.tenant_id,r.request_id) LEFT JOIN mdm_access.agent_grants g ON(g.tenant_id,g.id)=(r.tenant_id,r.agent_grant_id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.purpose='primary' AND ((r.channel='mdm' AND NOT q.self_service) OR (r.channel='agent' AND g.source IN('native','configuration')))) OR EXISTS(SELECT 1 FROM mdm_access.requests q JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE q.tenant_id=$1::uuid AND g.device=$2 AND NOT q.self_service AND q.state<>'cancelled')")
         .bind(p.tenant_id()).bind(device).fetch_one(c).await.map_err(db)?;
     if exists { Ok(()) } else { Err(Error::NotFound) }
 }

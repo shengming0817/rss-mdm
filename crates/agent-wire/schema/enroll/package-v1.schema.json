@@ -1,0 +1,169 @@
+{
+  "$defs": {
+    "Channel": {
+      "description": "Release channel selected explicitly by the product.",
+      "oneOf": [
+        {
+          "const": "test",
+          "description": "Test releases.",
+          "type": "string"
+        },
+        {
+          "const": "pilot",
+          "description": "Pilot releases.",
+          "type": "string"
+        },
+        {
+          "const": "production",
+          "description": "Production releases.",
+          "type": "string"
+        }
+      ]
+    },
+    "Target": {
+      "additionalProperties": false,
+      "description": "One native target; emulation does not select a different installer.",
+      "properties": {
+        "architecture": {
+          "$ref": "#/$defs/TaskArchitecture",
+          "description": "Native processor architecture."
+        },
+        "platform": {
+          "$ref": "#/$defs/TaskPlatform",
+          "description": "Native operating system."
+        }
+      },
+      "required": [
+        "platform",
+        "architecture"
+      ],
+      "type": "object"
+    },
+    "TaskArchitecture": {
+      "description": "Exact processor architecture of the selected artifact.",
+      "oneOf": [
+        {
+          "const": "x86_64",
+          "description": "x86-64.",
+          "type": "string"
+        },
+        {
+          "const": "aarch64",
+          "description": "ARM64.",
+          "type": "string"
+        }
+      ]
+    },
+    "TaskPlatform": {
+      "description": "Exact operating system of the selected immutable artifact.",
+      "oneOf": [
+        {
+          "const": "windows",
+          "description": "Windows.",
+          "type": "string"
+        },
+        {
+          "const": "macos",
+          "description": "macOS.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Public metadata for one explicitly published fixed installer.",
+  "properties": {
+    "candidateSha256": {
+      "description": "Exact manifest/candidate digest admitted at publication.",
+      "items": {
+        "format": "uint8",
+        "maximum": 255,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "maxItems": 32,
+      "minItems": 32,
+      "type": "array"
+    },
+    "channel": {
+      "$ref": "#/$defs/Channel",
+      "description": "Explicit release channel."
+    },
+    "filename": {
+      "description": "Secret-free EXE or PKG filename.",
+      "type": "string"
+    },
+    "installerSha256": {
+      "description": "Installer digest; never used as the installation candidate identity.",
+      "items": {
+        "format": "uint8",
+        "maximum": 255,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "maxItems": 32,
+      "minItems": 32,
+      "type": "array"
+    },
+    "length": {
+      "description": "Installer byte length.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "origin": {
+      "description": "HTTPS enrollment authority in the reviewed candidate.",
+      "type": "string"
+    },
+    "releaseId": {
+      "description": "Release binding identity.",
+      "format": "uuid",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "signingKeys": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Candidate-owned verification keys, not a new trust root supplied by a config file.",
+      "type": "object"
+    },
+    "target": {
+      "$ref": "#/$defs/Target",
+      "description": "Supported native target."
+    },
+    "tenantId": {
+      "description": "Tenant whose candidate is packaged.",
+      "format": "uuid",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "version": {
+      "description": "Frozen product version.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "releaseId",
+    "tenantId",
+    "channel",
+    "target",
+    "version",
+    "filename",
+    "length",
+    "installerSha256",
+    "candidateSha256",
+    "origin",
+    "signingKeys"
+  ],
+  "title": "Package",
+  "type": "object",
+  "$id": "https://rss.example/agent/enroll/v1/Package"
+}

@@ -1,0 +1,571 @@
+{
+  "$defs": {
+    "Capability": {
+      "description": "Closed V1 capability set.",
+      "oneOf": [
+        {
+          "const": "inventory.collect.v1",
+          "description": "Full/partial/failed reports for the two basic inventory fields.",
+          "type": "string"
+        },
+        {
+          "const": "task.execute.v1",
+          "description": "Receive and execute signed task offers.",
+          "type": "string"
+        },
+        {
+          "const": "software.msi.system.v1",
+          "description": "Execute the exact software.msi.system.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "software.msi.user.v1",
+          "description": "Execute the exact software.msi.user.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "software.pkg.system.v1",
+          "description": "Execute the exact software.pkg.system.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "software.bundle.windows.system.v1",
+          "description": "Execute the exact software.bundle.windows.system.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "software.bundle.windows.user.v1",
+          "description": "Execute the exact software.bundle.windows.user.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "software.bundle.macos.system.v1",
+          "description": "Execute the exact software.bundle.macos.system.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "software.bundle.macos.user.v1",
+          "description": "Execute the exact software.bundle.macos.user.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "software.winget.system.v1",
+          "description": "Execute the exact software.winget.system.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "software.winget.user.v1",
+          "description": "Execute the exact software.winget.user.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "software.brew.bottle.user.v1",
+          "description": "Execute the exact software.brew.bottle.user.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "software.exe.system.v1",
+          "description": "Execute the exact software.exe.system.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "software.exe.user.v1",
+          "description": "Execute the exact software.exe.user.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "software.dmg.app.system.v1",
+          "description": "Execute the exact software.dmg.app.system.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "software.dmg.app.user.v1",
+          "description": "Execute the exact software.dmg.app.user.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "software.dmg.pkg.system.v1",
+          "description": "Execute the exact software.dmg.pkg.system.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "software.msix.registration.user.v1",
+          "description": "Execute the exact software.msix.registration.user.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "software.msix.provisioning.system.v1",
+          "description": "Execute the exact software.msix.provisioning.system.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "mdm.enrollment.v1",
+          "description": "Open the standard MDM enrollment entry with OS/user approval.",
+          "type": "string"
+        }
+      ]
+    },
+    "Channel": {
+      "description": "Release channel selected explicitly by the product.",
+      "oneOf": [
+        {
+          "const": "test",
+          "description": "Test releases.",
+          "type": "string"
+        },
+        {
+          "const": "pilot",
+          "description": "Pilot releases.",
+          "type": "string"
+        },
+        {
+          "const": "production",
+          "description": "Production releases.",
+          "type": "string"
+        }
+      ]
+    },
+    "Configuration": {
+      "additionalProperties": false,
+      "description": "Server-frozen metadata; read responses never contain the configuration secret.",
+      "properties": {
+        "channels": {
+          "description": "Allowed release channels; no implicit latest-version pin.",
+          "items": {
+            "$ref": "#/$defs/Channel"
+          },
+          "type": "array"
+        },
+        "configurationId": {
+          "description": "Reusable configuration identity.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "expiresAt": {
+          "description": "Final frozen Unix expiry, unrelated to device certificate lifetime.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "keyId": {
+          "description": "Key identity trusted by the installed candidate.",
+          "type": "string"
+        },
+        "origin": {
+          "description": "Trusted HTTPS Agent origin, checked against the installed candidate.",
+          "type": "string"
+        },
+        "quantity": {
+          "$ref": "#/$defs/Quantity",
+          "description": "Explicit finite or unlimited count."
+        },
+        "targets": {
+          "description": "Allowed native targets.",
+          "items": {
+            "$ref": "#/$defs/Target"
+          },
+          "type": "array"
+        },
+        "tenantId": {
+          "description": "Tenant fixed by the management authority.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "wireVersion": {
+          "const": 1,
+          "description": "Independent file format version."
+        }
+      },
+      "required": [
+        "wireVersion",
+        "configurationId",
+        "tenantId",
+        "origin",
+        "targets",
+        "channels",
+        "expiresAt",
+        "quantity",
+        "keyId"
+      ],
+      "type": "object"
+    },
+    "ConfigurationFile": {
+      "additionalProperties": false,
+      "description": "A complete transferable file. Its secret never belongs in URLs, argv or logs.",
+      "properties": {
+        "configuration": {
+          "$ref": "#/$defs/Configuration",
+          "description": "Frozen signed authorization and installation constraints."
+        },
+        "secret": {
+          "$ref": "#/$defs/Secret",
+          "description": "Configuration exchange secret; each device also generates its own grant secret."
+        },
+        "signature": {
+          "description": "Base64url Ed25519 signature over the canonical signing bytes.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "configuration",
+        "secret",
+        "signature"
+      ],
+      "type": "object"
+    },
+    "Installation": {
+      "additionalProperties": false,
+      "description": "Immutable identity of an installation candidate, distinct from installer bytes.",
+      "properties": {
+        "candidateSha256": {
+          "description": "SHA-256 of the candidate's exact manifest bytes, not the EXE/PKG.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "type": "array"
+        },
+        "releaseId": {
+          "description": "Published release binding.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "releaseId",
+        "candidateSha256"
+      ],
+      "type": "object"
+    },
+    "Quantity": {
+      "description": "A quantity authorization, independent of its expiry.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "At most this many independently bound devices.",
+          "properties": {
+            "count": {
+              "description": "Strictly positive device count.",
+              "format": "uint32",
+              "minimum": 1,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "finite",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "count"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "No configuration count ceiling; all other admission conditions still apply.",
+          "properties": {
+            "kind": {
+              "const": "unlimited",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RuntimeProfile": {
+      "additionalProperties": false,
+      "description": "A bounded runtime profile, frozen when a grant is consumed.",
+      "properties": {
+        "architecture": {
+          "$ref": "#/$defs/TaskArchitecture",
+          "description": "Processor architecture asserted by the client."
+        },
+        "capabilities": {
+          "description": "Runtime capability profile; independent of enrollment version.",
+          "items": {
+            "$ref": "#/$defs/Capability"
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "executionContext": {
+          "$ref": "#/$defs/SoftwareExecutionContext",
+          "description": "Current execution environment."
+        },
+        "platform": {
+          "$ref": "#/$defs/TaskPlatform",
+          "description": "Operating system asserted by the client."
+        }
+      },
+      "required": [
+        "capabilities",
+        "platform",
+        "architecture",
+        "executionContext"
+      ],
+      "type": "object"
+    },
+    "Secret": {
+      "description": "Canonical 256-bit base64url secret. Debug output is always redacted.",
+      "maxLength": 43,
+      "minLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{43}$",
+      "type": "string"
+    },
+    "SoftwareExecutionContext": {
+      "additionalProperties": false,
+      "description": "Complete current native execution environment reported by this registration.",
+      "properties": {
+        "interactiveUser": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SoftwareInteractiveUser"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Exact live interactive session, when one exists."
+        },
+        "msixSideload": {
+          "description": "Current native Windows sideload policy.",
+          "type": "boolean"
+        },
+        "msixUnsigned": {
+          "description": "Current native API support for explicitly approved unsigned packages.",
+          "type": "boolean"
+        },
+        "osVersion": {
+          "description": "Complete numeric OS version, not an inferred product/platform string.",
+          "items": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "not": {
+            "const": [
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "type": "array"
+        },
+        "revision": {
+          "description": "Strictly increasing local context generation; retries retain the same value.",
+          "format": "uint64",
+          "maximum": 9223372036854775807,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "sourceCredentials": {
+          "description": "Source-scoped read credential references actually available locally.",
+          "items": {
+            "$ref": "#/$defs/SoftwareReadCredential"
+          },
+          "maxItems": 16,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "systemBroker": {
+          "description": "Whether the native system broker is available in this Agent installation.",
+          "type": "boolean"
+        },
+        "userHelper": {
+          "description": "Whether a helper is bound to this exact live interactive session.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "revision",
+        "msixSideload",
+        "msixUnsigned",
+        "osVersion",
+        "systemBroker",
+        "userHelper",
+        "interactiveUser",
+        "sourceCredentials"
+      ],
+      "type": "object"
+    },
+    "SoftwareInteractiveUser": {
+      "additionalProperties": false,
+      "description": "One concrete live OS session.",
+      "properties": {
+        "administrator": {
+          "description": "Privilege needed by the exact native profile, not a generic authorization grant.",
+          "type": "boolean"
+        },
+        "identity": {
+          "description": "Windows SID or macOS numeric UID.",
+          "maxLength": 184,
+          "minLength": 1,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$",
+          "type": "string"
+        },
+        "sessionId": {
+          "description": "Changes on logoff/login; identical account names cannot reuse a previous session.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "identity",
+        "sessionId",
+        "administrator"
+      ],
+      "type": "object"
+    },
+    "SoftwareReadCredential": {
+      "additionalProperties": false,
+      "description": "Availability of a particular source read credential in the local Agent.",
+      "properties": {
+        "reference": {
+          "description": "Host-provisioned opaque credential reference; never token bytes or a URL.",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$",
+          "type": "string"
+        },
+        "source": {
+          "description": "Exact source identity in the consuming tenant.",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "reference"
+      ],
+      "type": "object"
+    },
+    "Target": {
+      "additionalProperties": false,
+      "description": "One native target; emulation does not select a different installer.",
+      "properties": {
+        "architecture": {
+          "$ref": "#/$defs/TaskArchitecture",
+          "description": "Native processor architecture."
+        },
+        "platform": {
+          "$ref": "#/$defs/TaskPlatform",
+          "description": "Native operating system."
+        }
+      },
+      "required": [
+        "platform",
+        "architecture"
+      ],
+      "type": "object"
+    },
+    "TaskArchitecture": {
+      "description": "Exact processor architecture of the selected artifact.",
+      "oneOf": [
+        {
+          "const": "x86_64",
+          "description": "x86-64.",
+          "type": "string"
+        },
+        {
+          "const": "aarch64",
+          "description": "ARM64.",
+          "type": "string"
+        }
+      ]
+    },
+    "TaskPlatform": {
+      "description": "Exact operating system of the selected immutable artifact.",
+      "oneOf": [
+        {
+          "const": "windows",
+          "description": "Windows.",
+          "type": "string"
+        },
+        {
+          "const": "macos",
+          "description": "macOS.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Exchange one reusable configuration for independently generated machine authority.",
+  "properties": {
+    "csr": {
+      "description": "Locally generated proof-of-possession CSR.",
+      "maxLength": 43692,
+      "minLength": 1,
+      "type": "string"
+    },
+    "file": {
+      "$ref": "#/$defs/ConfigurationFile",
+      "description": "Complete signed configuration file."
+    },
+    "installation": {
+      "$ref": "#/$defs/Installation",
+      "description": "Exact installation candidate admitted for this grant."
+    },
+    "operationId": {
+      "description": "Original machine operation, retained after unknown settlement.",
+      "format": "uuid",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "runtime": {
+      "$ref": "#/$defs/RuntimeProfile",
+      "description": "Exact runtime profile frozen by the exchange."
+    },
+    "secret": {
+      "$ref": "#/$defs/Secret",
+      "description": "Independent secret for this machine's grant and progress."
+    }
+  },
+  "required": [
+    "file",
+    "operationId",
+    "secret",
+    "csr",
+    "runtime",
+    "installation"
+  ],
+  "title": "Exchange",
+  "type": "object",
+  "$id": "https://rss.example/agent/enroll/v1/ConfigurationExchange"
+}

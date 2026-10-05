@@ -35,6 +35,7 @@ impl Service {
                 Box::pin(async move {
                     let (service, input, a, digest, spki, csr) = ctx;
                     let tenant = service.tenant.to_string();
+                    configurations::lock_for_grant(c, &tenant, input.grant_id).await?;
                     let grant = grant_row(c, &tenant, input.grant_id).await?;
                     check_secret(&tenant, &grant, &input.secret)?;
                     a.target(&grant.try_get::<String, _>("device").map_err(db)?);
@@ -76,8 +77,15 @@ SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND grant_id=$
                     {
                         return Err(Error::Forbidden);
                     }
-                    if !service.policy.platforms.contains(&input.runtime.platform)
-                        || row_platform(&grant)? != input.runtime.platform
+                    if let Some(binding) = grant
+                        .try_get::<Option<serde_json::Value>, _>("configuration_binding")
+                        .map_err(db)?
+                        && binding["runtime"]
+                            != serde_json::to_value(&input.runtime).map_err(|_| Error::Malformed)?
+                    {
+                        return Err(Error::Forbidden);
+                    }
+                    if row_platform(&grant)? != input.runtime.platform
                         || grant
                             .try_get::<Option<String>, _>("spki")
                             .map_err(db)?
@@ -405,7 +413,7 @@ SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2
             .map_err(Into::into)
     }
 }
-fn row_platform(row: &PgRow) -> Result<runtime::TaskPlatform, Error> {
+pub(super) fn row_platform(row: &PgRow) -> Result<runtime::TaskPlatform, Error> {
     match row.try_get::<String, _>("platform").map_err(db)?.as_str() {
         "windows" => Ok(runtime::TaskPlatform::Windows),
         "macos" => Ok(runtime::TaskPlatform::Macos),

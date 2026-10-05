@@ -125,6 +125,25 @@
         "principal"
       ],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "agent_enrollment_settings",
+      "read_write": true,
+      "updates": [
+        "revision",
+        "document"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "agent_configurations",
+      "read_write": true,
+      "updates": [
+        "state"
+      ],
+      "delete_policy": null
     }
   ],
   "functions": [],
