@@ -17,24 +17,15 @@ pub fn target(tenant: TenantId, device: &str) -> rss_reconcile::Target {
     .expect("bounded digest")
 }
 impl ExecutionService {
-    pub async fn create(
+    pub async fn create_control(
         &self,
         proof: &AuthorizedPrincipal,
         device: &str,
-        input: &Create,
+        input: &crate::device_control::Input,
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
-        if input
-            .task
-            .permissions()?
-            .contains(&Permission::SoftwareDeploy)
-            && !matches!(input.task, Task::Macos { .. })
-        {
-            return Err(Error::Unsupported);
-        }
-        for permission in input.task.permissions()? {
-            proof.require(permission, permission.device().then_some(device))?;
-        }
+        input.action.confirmation()?;
+        proof.require(input.action.kind().permission(), Some(device))?;
         let failure = Mutex::new(None);
         let timer = recovery::Timer::new();
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -63,7 +54,10 @@ impl ExecutionService {
                             |ctx, tx| {
                                 Box::pin(async move {
                                     let (service, proof, device, input, audit, failure) = **ctx;
-                                    match service.create_in(tx, proof, device, input, audit).await {
+                                    match service
+                                        .create_control_in(tx, proof, device, input, audit)
+                                        .await
+                                    {
                                         Ok(v) => {
                                             audit.mark_commit_started();
                                             Ok(v)
@@ -80,41 +74,20 @@ impl ExecutionService {
             .await;
         settle(attempt, audit, failure)
     }
-    pub async fn create_in(
+    async fn create_control_in(
         &self,
         tx: &mut PgTransaction<'_>,
         proof: &AuthorizedPrincipal,
         device: &str,
-        input: &Create,
+        input: &crate::device_control::Input,
         audit: &RequestAudit,
     ) -> Result<Value> {
-        if input
-            .task
-            .permissions()?
-            .contains(&Permission::SoftwareDeploy)
-            && !matches!(input.task, Task::Macos { .. })
-        {
-            return Err(Error::Unsupported.into());
-        }
         storage::admit(tx).await?;
         require_tenant(self.tenant, proof)?;
-        storage::authorized_native(tx, proof, device, &input.task.permissions()?).await?;
+        let action = input.action.kind();
+        let auth = storage::authorized_native(tx, proof, device, &[action.permission()]).await?;
         storage::lock(tx, &format!("request:{}", input.operation_id)).await?;
         storage::lock(tx, device).await?;
-        let required = apple::required(
-            tx,
-            &self.protection,
-            self.apple_profiles.clone(),
-            device,
-            input,
-            Some(format!(
-                "user:{}:{}",
-                proof.user().instance_id,
-                proof.user().principal_id
-            )),
-        )
-        .await?;
-        let auth = storage::authorized_native(tx, proof, device, &required).await?;
         let fingerprint = create_fingerprint(self, proof, device, input)?;
         if let Some(value) = replay(tx, input.operation_id, &fingerprint, audit).await? {
             audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
@@ -133,9 +106,33 @@ impl ExecutionService {
             self.audit_store.append_in(tx, &fact, true).await?;
             return Ok(value);
         }
-        let approval = ExecutionAuthority::from_proof(&auth, proof, device, &required)?;
+        input.validate(self.store.now(tx).await? / 1_000_000)?;
+        let (registration, generation) = storage::current_registration(
+            tx,
+            device,
+            rss_mdm_registration_service::Purpose::Primary,
+        )
+        .await?;
+        let confirmation = input.action.confirmation()?;
+        if let Some(confirmation) = confirmation {
+            confirmation.check(registration, generation)?;
+        }
+        let tenant = self.tenant.to_string();
+        let sources = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar::<_, String>("SELECT source FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND enabled AND source IN('mdm.apple','mdm.windows') ORDER BY source")
+                .bind(tenant).bind(registration).fetch_all(c).await
+        })).await?;
+        let source = match sources.as_slice() {
+            [source] if source == "mdm.apple" => rss_mdm_inventory::ReportSource::MdmApple,
+            [source] if source == "mdm.windows" => rss_mdm_inventory::ReportSource::MdmWindows,
+            _ => return Err(Error::Unsupported.into()),
+        };
+        let native = input.native(source)?;
+        self.validate_control_in(tx, device, registration, generation, &native, action)
+            .await?;
+        let approval = ExecutionAuthority::for_control(&auth, proof, device, action, confirmation)?;
         let response = self
-            .queue_authorized_in(tx, device, input, approval, fingerprint, audit)
+            .queue_authorized_in(tx, device, &native, approval, fingerprint, audit)
             .await?;
         proof.check_live()?;
         Ok(response)
@@ -149,6 +146,9 @@ impl ExecutionService {
         fingerprint: Vec<u8>,
         audit: &RequestAudit,
     ) -> Result<Value> {
+        if approval.retired() {
+            return Err(Error::Unsupported.into());
+        }
         let now = self.store.now(tx).await? / 1_000_000;
         input.validate(now)?;
         let diagnostic_progress = if let Some(log) = crate::native::diagnostic::input(&input.task) {
@@ -179,6 +179,11 @@ impl ExecutionService {
         }
         let (registration, registration_generation) =
             storage::current_registration(tx, device, input.task.purpose()?).await?;
+        if matches!(approval, ExecutionAuthority::DeviceControl { .. })
+            && !approval.control_matches(input, registration, registration_generation)?
+        {
+            return Err(Error::Unsupported.into());
+        }
         if input.task.purpose()? == rss_mdm_registration_service::Purpose::Primary {
             storage::require_source(tx, registration, input.task.source()).await?;
         }
@@ -247,14 +252,15 @@ impl ExecutionService {
                 return Err(Error::Forbidden.into());
             }
         }
-        let (source, policy_version, remote_operation) = match &approval {
-            ExecutionAuthority::User { .. } => ("direct", None, None),
-            ExecutionAuthority::AgentInstall { version, .. }
-            | ExecutionAuthority::Policy { version, .. } => ("policy", Some(*version), None),
-            ExecutionAuthority::RemoteOperation { operation, .. } => {
-                ("remote_operation", None, Some(*operation))
-            }
-        };
+        let (source, policy_version, remote_operation): (&str, Option<Uuid>, Option<Uuid>) =
+            match &approval {
+                ExecutionAuthority::DeviceControl { .. } => ("direct", None, None),
+                ExecutionAuthority::AgentInstall { version, .. }
+                | ExecutionAuthority::Policy { version, .. } => ("policy", Some(*version), None),
+                ExecutionAuthority::User { .. } | ExecutionAuthority::RemoteOperation { .. } => {
+                    return Err(Error::Unsupported.into());
+                }
+            };
         let approval = checked_input(serde_json::to_string(&approval))?;
         let digest = fingerprint.clone();
         tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_commands.operations(tenant_id,id,device,request,fingerprint,registration,registration_generation,generation,epoch,approval,dispatch_fingerprint,source_kind,policy_version,remote_operation,input_context,diagnostic_progress) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6::uuid,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15,$16)").bind(tenant).bind(id).bind(name).bind(request).bind(digest).bind(registration.to_string()).bind(registration_generation).bind(coordinate.generation()).bind(coordinate.epoch()).bind(approval).bind(dispatch_fingerprint).bind(source).bind(policy_version).bind(remote_operation).bind(input_context).bind(diagnostic_progress).execute(c).await?;Ok(())})).await?;
@@ -285,19 +291,30 @@ impl ExecutionService {
         device: &str,
         id: Uuid,
         change: &Change,
-        approve: bool,
+        control_approval: Option<&crate::device_control::Approval>,
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
         if change.request_id.is_nil() || change.expected_revision < 1 {
             return Err(Error::Malformed);
         }
-        crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,proof,device,id,change,approve,audit),|ctx,tx|Box::pin(async move {
-            let (service,proof,device,id,change,approve,audit) = *ctx;
+        crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,proof,device,id,change,control_approval,audit),|ctx,tx|Box::pin(async move {
+            let (service,proof,device,id,change,control_approval,audit) = *ctx;
+            let approve = control_approval.is_some();
             let op=storage::load(tx,&service.protection,id).await?;
+            if op.device != device { return Err(Error::Forbidden.into()); }
+            if !matches!(op.approval, ExecutionAuthority::DeviceControl { .. } | ExecutionAuthority::User { .. }) {
+                return Err(Error::Conflict.into());
+            }
+            if let Some(input) = control_approval {
+                let ExecutionAuthority::DeviceControl { action, confirmation, .. } = &op.approval else { return Err(Error::Conflict.into()) };
+                if !op.approval.control_matches(&op.request, op.registration, op.registration_generation)? { return Err(Error::Conflict.into()); }
+                if input.registration()? != *confirmation { return Err(Error::Conflict.into()); }
+                service.validate_control_in(tx, device, op.registration, op.registration_generation, &op.request, *action).await?;
+            }
             let permissions=if approve {op.approval.required().to_vec()}else{vec![Permission::OperationCancel]};
             let auth=storage::authorized_native(tx,proof,device,&permissions).await?;
             storage::lock(tx,&format!("request:{}",change.request_id)).await?;storage::lock(tx,device).await?;
-            let fingerprint=Sha256::digest(checked_input(serde_json::to_vec(&("mdm.command-change/v3",proof.user(),device,id,change,approve)))?).to_vec();
+            let fingerprint=Sha256::digest(checked_input(serde_json::to_vec(&("mdm.command-change/v4",proof.user(),device,id,change,control_approval)))?).to_vec();
             let event_key = format!("command-change:{}:{}", audit.snapshot().actor.ok_or(Error::Malformed)?, change.request_id);
             if let Some(value)=replay(tx,change.request_id,&fingerprint,audit).await? {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);let fact = Fact::business(audit, &event_key, &fingerprint, 200, "success", None)?; service.audit_store.append_in(tx, &fact, true).await?;return Ok(value);}
             let op=storage::load(tx,&service.protection,id).await?;
@@ -312,9 +329,9 @@ impl ExecutionService {
             let cancel_pending = !approve && diagnostic.as_ref().is_some_and(native::diagnostic::State::pending);
             if (command.status().is_terminal() && !cancel_pending) || now>=op.request.deadline {return Err(Error::Conflict.into());}
             let approval=if approve {
-                if !matches!(op.approval,ExecutionAuthority::User {..}) {return Err(Error::Conflict.into());}
+                let ExecutionAuthority::DeviceControl { action, confirmation, .. } = &op.approval else {return Err(Error::Conflict.into());};
                 if storage::current_registration(tx,device,op.request.task.purpose()?).await? != (op.registration,op.registration_generation) {return Err(Error::Conflict.into());}
-                ExecutionAuthority::from_proof(&auth,proof,device,op.approval.required())?
+                ExecutionAuthority::for_control(&auth,proof,device,*action,*confirmation)?
             } else {
                 if cancel_pending {
                     let state=diagnostic.as_mut().expect("pending diagnostic");
@@ -442,13 +459,13 @@ fn create_fingerprint(
     service: &ExecutionService,
     proof: &AuthorizedPrincipal,
     device: &str,
-    input: &Create,
+    input: &crate::device_control::Input,
 ) -> Result<Vec<u8>> {
     Ok(crate::protection::fingerprint(
         &service.protection,
         service.tenant,
         device,
-        "command-create/v3",
+        "device-control-create/v1",
         &(proof.user(), input),
     )?)
 }

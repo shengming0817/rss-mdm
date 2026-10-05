@@ -341,9 +341,15 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
             && first.1["asset"]["nextOffset"] == 1,
         "item quality: {first:?}"
     );
-    let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-    post(&mut f.browser,&f.router,"/api/v1/remote-operations",json!({"operationId":Uuid::new_v4(),"resource":{"id":id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"targets":{"kind":"devices","devices":[case_device()]},"action":{"kind":"collect_native"},"deadline":now+300})).await?;
+    let refresh_policy = Uuid::new_v4();
+    post(&mut f.browser,&f.router,&format!("/api/v1/policies/{refresh_policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"native_collection","resource":{"id":id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"runLifetimeSeconds":300}}}})).await?;
     let (refresh, _) = peer.next("DeviceInformation").await?;
+    let mut historical = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+    let parent = Uuid::new_v4();
+    crate::test_support::agent_execution::historical_remote_run(&mut historical,case_tenant(),refresh,parent).await?;
+    sqlx::query("UPDATE mdm_apple.attempts SET state='not_now',next_attempt=clock_timestamp() WHERE tenant_id=$1::uuid AND id=$2 AND phase='collect'").bind(case_tenant()).bind(refresh).execute(&mut historical).await?;
+    ensure!(peer.manage("Idle",None,None).await?.is_empty(), "retired Remote collection was retried");
+
     ensure!(refresh != run);
     peer.manage(
         "Acknowledged",
@@ -363,6 +369,10 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
         )),
     )
     .await?;
+    f.app.execution.recover_remote_fixture(parent).await?;
+    let state:String=sqlx::query_scalar("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(refresh).fetch_one(&mut historical).await?;
+    ensure!(state == "succeeded", "original Remote native receipt failed to settle: {state}");
+    historical.close().await?;
     let invalid = f
         .browser
         .call(

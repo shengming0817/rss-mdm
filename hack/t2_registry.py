@@ -596,9 +596,6 @@ MODULES['windows.retention'] = replace(MODULES['windows.retention'], db_mode='fr
 MODULES['windows.limits'] = replace(MODULES['windows.limits'], db_mode='reuse', scope='tenant')
 for name in ('apple.collection','apple.scep','apple.commands','apple.users','apple.ddm','apple.status'):
     MODULES[name] = replace(MODULES[name],scope='tenant',fixtures=(*MODULES[name].fixtures,'local_worker'))
-MODULES['apple.ddm'] = replace(MODULES['apple.ddm'], policies=(
-    CasePolicy('apple::tests::ddm::four_families_assets_recovery_and_withdrawal', 'fresh', 'tenant'),
-))
 MODULES['apple.profile'] = replace(MODULES['apple.profile'], scope='tenant', fixtures=(*MODULES['apple.profile'].fixtures,'local_worker'))
 MODULES['apple.policy'] = replace(MODULES['apple.policy'], db_mode='reuse', scope='tenant', fixtures=(*MODULES['apple.policy'].fixtures,'local_worker'), policies=(
     CasePolicy('apple::tests::policy::current_approval_and_deadlines', 'reuse', 'tenant'),
@@ -642,7 +639,7 @@ case_fixtures('windows.issuance', 'windows::t2::issuance::native_renewal_preserv
 case_fixtures('diagnostics.http', 'api::t2::runtime_diagnostics::execution_first_scan_failure_recovers_only_after_real_success', None)
 case_fixtures('assets.http', 'assets::t2::http::manual::manual_types_replay_cas_and_rollback', 'shared_worker')
 case_fixtures('planning.http', 'planning::t2::http::console_scope_ready_tracks_current_admission', 'local_worker')
-case_fixtures('planning.remote', 'planning::t2::remote::bulk_pages_restart_and_cancellation_are_durable', 'local_worker')
+case_fixtures('planning.remote', 'planning::t2::remote::creation_is_removed_and_existing_remote_history_still_settles', 'local_worker')
 case_fixtures('compliance.recovery', 'compliance::t2::recovery::mutation_unknown_commit_recovers_original_response', None)
 case_fixtures('compliance.recovery', 'compliance::t2::recovery::rule_and_fact_revisions_fence_stale_publication', 'local_worker')
 case_fixtures('execution.agent.delivery', 'execution::t2::agent::delivery::registration_capability_and_wire_gate', None)
@@ -1077,6 +1074,7 @@ T1_INPUTS = ('crates/content-s3/tests/unit.rs',) + ('crates/app/tests/agent_pki/
     'crates/execution-service/tests/recovery_unit.rs',
     'crates/execution-service/tests/query_records.rs',
     'crates/execution-service/tests/remote_phase_unit.rs',
+    'crates/execution-service/tests/device_control_unit.rs',
     'crates/execution-service/tests/actions/state_schedule_unit.rs',
     'crates/app/tests/flow/unit.rs',
     'crates/app/tests/config/publication_unit.rs',
@@ -1182,7 +1180,7 @@ consume(('crates/apple-channel/src/ddm*', 'crates/apple-channel/src/ddm/*',
 consume(('crates/apple-channel/src/profiles.rs', 'crates/apple-channel/src/exchange.rs',
          'crates/apple-channel/src/evidence.rs', 'crates/apple-mdm/src/native/profiles.rs',
          'crates/apple-mdm/src/native/evidence.rs'), 'apple.profile apple.policy apple.ddm apple.status')
-for name in ('apple.ddm', 'apple.status'):
+for name in ('apple.profile', 'apple.ddm', 'apple.status'):
     MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs,
         'crates/app/tests/apple/ddm.rs','crates/app/tests/apple/users.rs','crates/app/tests/apple/policy.rs',
         'crates/app/tests/support/planning_http.rs','crates/app/tests/support/agent_execution.rs'))
@@ -1193,6 +1191,7 @@ consume(('crates/execution-service/src/service.rs', 'crates/execution-service/sr
          'crates/execution-service/src/transaction.rs', 'crates/execution-service/src/channels.rs',
          'crates/execution-service/src/configuration.rs', 'crates/execution-service/src/native_configuration.rs',
          'crates/execution-service/src/model.rs', 'crates/apple-mdm/src/native/request.rs'), 'apple.ddm apple.status')
+consume(('crates/execution-service/src/native_configuration.rs',), 'apple.profile apple.policy')
 
 consume(('crates/authorization-service/src/authority.rs', 'crates/authorization-service/src/model.rs', 'crates/execution-service/src/frozen.rs',
          'crates/execution-service/src/storage.rs'), 'apple.ddm apple.status')
@@ -1572,8 +1571,8 @@ consume(('crates/windows-mdm/src/native/diagnostic.rs', 'crates/execution-servic
          'crates/content-service/src/diagnostic.rs'), 'execution.commands.windows content.gc')
 
 MODULES['execution.commands.windows'] = replace(MODULES['execution.commands.windows'],
-    selectors=(*MODULES['execution.commands.windows'].selectors, 'execution::t2::commands::diagnostics::'),
-    test_inputs=(*MODULES['execution.commands.windows'].test_inputs, 'crates/app/tests/execution/commands/diagnostics.rs'))
+    selectors=(*MODULES['execution.commands.windows'].selectors, 'execution::t2::commands::diagnostics::', 'execution::t2::commands::control::'),
+    test_inputs=(*MODULES['execution.commands.windows'].test_inputs, 'crates/app/tests/execution/commands/diagnostics.rs', 'crates/app/tests/execution/commands/control.rs'))
 
 add('content.s3', build=Build('rss-mdm-content-s3'), selectors=('s3_tests::',), profile='none', fixtures=('s3',),
     sources=('crates/content-s3/src/*',), tests=('crates/content-s3/tests/s3.rs',),
@@ -1635,3 +1634,17 @@ consume(('crates/registration-service/src/database.rs',), 'enrollment.http enrol
 
 MODULES['agent.configurations'] = replace(MODULES['agent.configurations'], fixtures=('identity','agent_pki'), scope='tenant', support_inputs=(*MODULES['agent.configurations'].support_inputs,*AGENT_FIXTURE_INPUTS,'crates/app/tests/support/software.rs','crates/app/tests/agent_pki/mod.rs','tests/support/software/mod.rs'))
 consume(('crates/registration-service/src/agent/*','crates/registration-service/schema/agent-configurations.sql','crates/software-service/src/agent_packages*','crates/content-service/src/software.rs','crates/content-service/src/reader.rs','crates/app/src/agent_configurations.rs','crates/agent-channel/src/enroll.rs','crates/agent-wire/src/enroll.rs','crates/agent-wire/src/enroll/configuration.rs','crates/management-http/src/agent_enrollment.rs','crates/management-http/src/software_catalog.rs'), 'agent.configurations')
+
+consume(('crates/execution-service/src/device_control.rs',), 'execution.commands.admission execution.commands.dispatch execution.commands.recovery execution.commands.windows apple.commands apple.policy')
+
+consume(('crates/management-http/src/remote_operations/http.rs',), 'planning.remote')
+
+consume(('crates/execution-service/src/native/outbound.rs',), 'execution.commands.windows')
+
+consume(('crates/app/tests/support/agent_execution.rs',), 'windows.management apple.collection')
+
+consume(('crates/apple-channel/src/collection.rs',), 'apple.collection')
+
+consume(('crates/execution-service/src/queries.rs',), 'apple.commands apple.policy')
+
+consume(('crates/execution-service/src/wake.rs', 'crates/execution-service/src/recovery.rs'), 'apple.commands apple.policy apple.account_enrollment')

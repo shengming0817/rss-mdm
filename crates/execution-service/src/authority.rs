@@ -16,6 +16,13 @@ pub enum ExecutionAuthority {
         device: String,
         operation: uuid::Uuid,
     },
+    DeviceControl {
+        action: crate::device_control::Kind,
+        confirmation: Option<crate::device_control::RegistrationConfirmation>,
+        required: Vec<Permission>,
+        evidence: Vec<UserGrant>,
+    },
+    /// Historical direct authority; never minted by the current create/approve path.
     User {
         required: Vec<Permission>,
         evidence: Vec<UserGrant>,
@@ -55,16 +62,21 @@ impl ExecutionAuthority {
                 )
                 .await
             }
-            _ => Ok(true),
+            Self::User { .. } | Self::RemoteOperation { .. } => Ok(false),
+            Self::DeviceControl { .. } | Self::Policy { .. } => Ok(true),
         }
     }
-    pub fn from_proof(
+    pub(crate) fn for_control(
         snapshot: &Snapshot,
         proof: &AuthorizedPrincipal,
         device: &str,
-        permissions: &[Permission],
+        action: crate::device_control::Kind,
+        confirmation: Option<crate::device_control::RegistrationConfirmation>,
     ) -> Result<Self, Error> {
-        Ok(Self::User {
+        let permissions = [action.permission()];
+        Ok(Self::DeviceControl {
+            action,
+            confirmation,
             required: permissions.to_vec(),
             evidence: permissions
                 .iter()
@@ -74,7 +86,7 @@ impl ExecutionAuthority {
     }
     pub fn apple_owner(&self, operation: uuid::Uuid) -> Result<String, Error> {
         Ok(match self {
-            Self::User { evidence, .. } => {
+            Self::User { evidence, .. } | Self::DeviceControl { evidence, .. } => {
                 let user = evidence.first().ok_or(Error::Forbidden)?.user();
                 if evidence.iter().any(|g| g.user() != user) {
                     return Err(Error::Forbidden);
@@ -89,7 +101,8 @@ impl ExecutionAuthority {
     }
     pub fn required(&self) -> &[Permission] {
         match self {
-            Self::User { required, .. }
+            Self::DeviceControl { required, .. }
+            | Self::User { required, .. }
             | Self::AgentInstall { required, .. }
             | Self::RemoteOperation { required, .. }
             | Self::Policy { required, .. } => required,
@@ -97,7 +110,8 @@ impl ExecutionAuthority {
     }
     pub fn bind_required(&mut self, permissions: Vec<Permission>) {
         match self {
-            Self::User { required, .. }
+            Self::DeviceControl { required, .. }
+            | Self::User { required, .. }
             | Self::AgentInstall { required, .. }
             | Self::RemoteOperation { required, .. }
             | Self::Policy { required, .. } => *required = permissions,
@@ -109,6 +123,34 @@ impl ExecutionAuthority {
             _ => None,
         }
     }
+    pub(crate) fn control_matches(
+        &self,
+        input: &crate::Create,
+        registration: uuid::Uuid,
+        generation: i64,
+    ) -> Result<bool, Error> {
+        let Self::DeviceControl {
+            action,
+            confirmation,
+            required,
+            ..
+        } = self
+        else {
+            return Ok(false);
+        };
+        if required != &[action.permission()] || action.dangerous() != confirmation.is_some() {
+            return Ok(false);
+        }
+        if let Some(confirmation) = confirmation {
+            confirmation.check(registration, generation)?;
+        }
+        crate::device_control::matches(*action, input)
+    }
+
+    pub(crate) fn retired(&self) -> bool {
+        matches!(self, Self::User { .. } | Self::RemoteOperation { .. })
+    }
+
     pub async fn valid(
         &self,
         source: &dyn crate::source_authority::SourceAuthority,
@@ -146,7 +188,7 @@ impl ExecutionAuthority {
                 }
                 crate::agent_install::authorized_on(source, conn, self, now).await
             }
-            Self::User { evidence, .. } => {
+            Self::DeviceControl { evidence, .. } | Self::User { evidence, .. } => {
                 for grant in evidence {
                     if grant.valid(conn, permission, now).await? {
                         return Ok(true);

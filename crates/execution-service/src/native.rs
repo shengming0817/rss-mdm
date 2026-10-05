@@ -81,7 +81,12 @@ pub async fn result_eligible_on(
         &row,
         "request",
     )?;
-    Ok(receipt_acceptance(source, c, protection, p, &input, &row, true, None).await? == Some(true))
+    let approval: ExecutionAuthority =
+        serde_json::from_str(&row.try_get::<String, _>("approval").map_err(db)?)
+            .map_err(|_| protocol())?;
+    Ok(approval.dispatch_ready(source, c).await?
+        && receipt_acceptance(source, c, protection, p, &input, &row, true, None).await?
+            == Some(true))
 }
 async fn collection_result_eligible(
     source: &dyn crate::source_authority::SourceAuthority,
@@ -97,7 +102,7 @@ async fn collection_result_eligible(
             return Ok(false);
         }
         return if row.try_get::<bool, _>("template").map_err(db)? {
-            crate::actions::native_collection::eligible_on(
+            crate::actions::native_collection::delivery_eligible_on(
                 source,
                 c,
                 p,
@@ -399,7 +404,7 @@ pub(crate) async fn wake_configuration(
     sqlx::query("SELECT rss_reconcile.wake($1::uuid,$2,$3)")
         .bind(&tenant)
         .bind(super::DOMAIN)
-        .bind(format!("configuration:{}", p.device()))
+        .bind(crate::wake::configuration_key(p.device()))
         .execute(&mut *c)
         .await
         .map_err(db)?;
@@ -420,7 +425,7 @@ fn edition_id(value: &str) -> Option<u32> {
     }
 }
 
-fn context(
+pub(crate) fn context(
     version: &str,
     edition: u32,
     scope: Scope,
@@ -548,6 +553,11 @@ pub(crate) async fn send_on(
         let approval: ExecutionAuthority =
             serde_json::from_value(row.try_get("approval").map_err(db)?).map_err(|_| protocol())?;
         let at = now(c).await?;
+        if matches!(approval, ExecutionAuthority::DeviceControl { .. })
+            && !approval.control_matches(&op, p.registration(), p.generation())?
+        {
+            continue;
+        }
         if !approval
             .valid(source, c, protection, &op.task.permissions()?, at)
             .await?
@@ -1089,7 +1099,8 @@ pub async fn replay_on(
         let approval: ExecutionAuthority =
             serde_json::from_str(&row.try_get::<String, _>("approval").map_err(db)?)
                 .map_err(|_| protocol())?;
-        if !request.target.matches_windows_context(p.user_context())
+        if !approval.dispatch_ready(source, c).await?
+            || !request.target.matches_windows_context(p.user_context())
             || request.deadline <= now
             || !matches!(
                 row.try_get::<String, _>("status").map_err(db)?.as_str(),
@@ -1099,6 +1110,13 @@ pub async fn replay_on(
                 .valid(source, c, protection, &request.task.permissions()?, now)
                 .await?
         {
+            return Err(Error::Forbidden);
+        }
+    }
+    let collections: Vec<uuid::Uuid> = sqlx::query_scalar("SELECT w.id FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND w.session_id=$3 AND w.request_message=$4 AND r.evidence ? 'nativeTemplate'")
+        .bind(p.tenant().to_string()).bind(p.registration()).bind(m.header.session_id.to_string()).bind(i64::from(m.header.message_id)).fetch_all(&mut *c).await.map_err(db)?;
+    for id in collections {
+        if !crate::actions::native_collection::delivery_eligible_on(source, c, p, id).await? {
             return Err(Error::Forbidden);
         }
     }

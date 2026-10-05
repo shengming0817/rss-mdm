@@ -836,7 +836,7 @@ async fn backend_settings_are_the_only_grant_lifetime_authority() -> Result<()> 
         .await?
         .0 == StatusCode::CONFLICT
     );
-    let file = configuration(&f, &mut user, json!({"kind":"finite","count":2}), Some(1)).await?;
+    let file = configuration(&f, &mut user, json!({"kind":"finite","count":2}), Some(5)).await?;
     let input = exchange(&file, &package, 0)?;
     let assigned = machine(&f, "/api/v1/agent/enroll/configurations/exchange", &input).await?;
     ensure!(
@@ -850,7 +850,7 @@ async fn backend_settings_are_the_only_grant_lifetime_authority() -> Result<()> 
         service.settings(&principal).await?.values.grant_seconds == 604800,
         "restart lost persistent lifetime settings"
     );
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::time::sleep(Duration::from_secs(6)).await;
     ensure!(
         machine(
             &f,

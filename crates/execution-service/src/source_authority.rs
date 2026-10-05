@@ -13,13 +13,6 @@ pub enum ScopeAdmission {
     Pending,
     Excluded,
 }
-#[derive(Clone, Copy, Debug)]
-pub struct ScopeSnapshot {
-    pub scope: Uuid,
-    pub result: Uuid,
-    pub definition_revision: i64,
-    pub resolution_revision: i64,
-}
 /// Existing immutable resolution, including unmatched rows used to explain a draft.
 #[derive(Clone, Debug)]
 pub struct ScopePreview {
@@ -87,12 +80,6 @@ pub trait SourceAuthority: Send + Sync {
         scope: Uuid,
         device: &'a str,
     ) -> Pending<'a, ScopeAdmission>;
-    fn capture_scope_on<'a>(
-        &'a self,
-        connection: &'a mut PgConnection,
-        tenant: TenantId,
-        scope: Uuid,
-    ) -> Pending<'a, ScopeSnapshot>;
     fn candidates_on<'a>(
         &'a self,
         connection: &'a mut PgConnection,
@@ -101,11 +88,4 @@ pub trait SourceAuthority: Send + Sync {
         kind: CandidateKind,
         after: Uuid,
     ) -> Pending<'a, Vec<PolicyCandidate>>;
-    fn snapshot_devices_on<'a>(
-        &'a self,
-        connection: &'a mut PgConnection,
-        tenant: TenantId,
-        snapshot: ScopeSnapshot,
-        after: Option<&'a str>,
-    ) -> Pending<'a, Vec<String>>;
 }

@@ -127,7 +127,12 @@ pub async fn continue_on(
         &row,
         "request",
     )?;
-    if receipt_acceptance(source, c, key, p, &input, &row, true, None).await? != Some(true) {
+    let approval: ExecutionAuthority =
+        serde_json::from_str(&row.try_get::<String, _>("approval").map_err(db)?)
+            .map_err(|_| protocol())?;
+    if !approval.dispatch_ready(source, c).await?
+        || receipt_acceptance(source, c, key, p, &input, &row, true, None).await? != Some(true)
+    {
         return Ok(Continuation::Abort);
     };
     let status: Option<i32> = row.try_get("status").map_err(db)?;

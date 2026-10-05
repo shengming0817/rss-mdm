@@ -6,7 +6,10 @@ use axum::{
     http::StatusCode,
     routing::{get, post},
 };
-use rss_mdm_execution_service::{Change, Create};
+use rss_mdm_execution_service::{
+    Change,
+    device_control::{Approval, Input},
+};
 use serde_json::Value;
 pub fn routes(queries: Arc<rss_mdm_execution_service::queries::Queries>) -> Router<Arc<HttpState>> {
     Router::new()
@@ -20,10 +23,7 @@ pub fn routes(queries: Arc<rss_mdm_execution_service::queries::Queries>) -> Rout
                 )
                 .with_state(queries),
         )
-        .route(
-            "/devices/{device}/operations",
-            post(create).layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024)),
-        )
+        .route("/devices/{device}/operations", post(create))
         .route("/devices/{device}/operations/{id}/cancel", post(cancel))
         .route("/devices/{device}/operations/{id}/approve", post(approve))
 }
@@ -47,22 +47,13 @@ async fn create(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
-    input: std::result::Result<Json<Create>, axum::extract::rejection::JsonRejection>,
+    input: std::result::Result<Json<Input>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<(StatusCode, Json<Value>), Error> {
     let input = input.map_err(|_| Error::Malformed)?.0;
-    match input.task.source() {
-        rss_mdm_inventory::ReportSource::MdmApple => {
-            app.apple()?;
-        }
-        rss_mdm_inventory::ReportSource::MdmWindows => {
-            app.windows()?;
-        }
-        _ => return Err(Error::Unsupported),
-    }
     audit.operation(input.operation_id, "command_accept");
     audit.target(&device);
     app.execution
-        .create(&auth.proof, &device, &input, &audit)
+        .create_control(&auth.proof, &device, &input, &audit)
         .await
         .map(|v| (StatusCode::ACCEPTED, Json(v)))
         .map_err(Error::from)
@@ -91,7 +82,7 @@ async fn cancel(
     audit.operation(change.request_id, "command_cancel");
     audit.target(&device);
     app.execution
-        .change(&auth.proof, &device, id, &change, false, &audit)
+        .change(&auth.proof, &device, id, &change, None, &audit)
         .await
         .map(Json)
         .map_err(Error::from)
@@ -101,13 +92,17 @@ async fn approve(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((device, id)): Path<(String, Uuid)>,
-    input: std::result::Result<Json<Change>, axum::extract::rejection::JsonRejection>,
+    input: std::result::Result<Json<Approval>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<Value>, Error> {
     let change = input.map_err(|_| Error::Malformed)?.0;
+    let revision = Change {
+        request_id: change.request_id,
+        expected_revision: change.expected_revision,
+    };
     audit.operation(change.request_id, "command_approve");
     audit.target(&device);
     app.execution
-        .change(&auth.proof, &device, id, &change, true, &audit)
+        .change(&auth.proof, &device, id, &revision, Some(&change), &audit)
         .await
         .map(Json)
         .map_err(Error::from)

@@ -83,7 +83,7 @@ impl ExecutionService {
             .bind(&tenant).bind(registration).bind(after).fetch_all(&mut *c).await.map_err(database::db)?;
             for id in &ids {
                 after = *id;
-                if crate::actions::native_collection::eligible_target_on(
+                if crate::actions::native_collection::delivery_eligible_target_on(
                     self.source.as_ref(),
                     c,
                     self.tenant,

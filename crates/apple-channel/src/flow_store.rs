@@ -294,6 +294,19 @@ impl channels::AppleCollections for Store {
     }
 }
 impl channels::AppleResults for Store {
+    fn device_control_supported<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        target: channels::AppleRegistration,
+        action: crate::execution::device_control::Kind,
+        command: rss_mdm_apple_mdm::native::input::CommandInput,
+    ) -> Pending<'a, bool> {
+        Box::pin(async move {
+            crate::native::control_supported(c, &self.protection, &target, action, &command)
+                .await
+                .map_err(Into::into)
+        })
+    }
     fn withdrawal_published<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -441,6 +454,20 @@ async fn send_command(
         }
         return super::native::resolve(c, &apple.protection, p, command).await;
     };
+    if command.input_version == "device-control-v1" {
+        let A::Command { command } = &command.request else {
+            return Err(Error::Malformed);
+        };
+        let action = match command.request_type.as_str() {
+            "RestartDevice" => crate::execution::device_control::Kind::Restart,
+            "DeviceLock" => crate::execution::device_control::Kind::Lock,
+            "EraseDevice" => crate::execution::device_control::Kind::Wipe,
+            _ => return Err(Error::Malformed),
+        };
+        if !action.supports_apple(&context) {
+            return Ok(AppleDispatch::Rejected(native::Error::Unsupported));
+        }
+    }
     let rights:i32=sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state<>'retired'").bind(p.tenant().to_string()).bind(p.registration()).fetch_one(&mut *c).await.map_err(db)?;
     let rights = super::native::rights(rights);
     let target = native::Target {

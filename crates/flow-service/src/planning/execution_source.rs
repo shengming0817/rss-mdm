@@ -102,27 +102,6 @@ impl SourceAuthority for ExecutionSource {
             )
         })
     }
-    fn capture_scope_on<'a>(
-        &'a self,
-        connection: &'a mut PgConnection,
-        tenant: TenantId,
-        scope: Uuid,
-    ) -> Pending<'a, ScopeSnapshot> {
-        Box::pin(async move {
-            let freshness = lock_scope_on(&mut *connection, scope).await?;
-            let row = sqlx::query("SELECT revision,resolution,resolution_revision FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted")
-                .bind(tenant.to_string()).bind(scope).fetch_optional(connection).await?.ok_or(SourceError::Missing)?;
-            if freshness["state"].as_str() != Some("fresh") {
-                return Err(SourceError::Conflict);
-            }
-            Ok(ScopeSnapshot {
-                scope,
-                result: row.try_get("resolution")?,
-                definition_revision: row.try_get("revision")?,
-                resolution_revision: row.try_get("resolution_revision")?,
-            })
-        })
-    }
     fn candidates_on<'a>(
         &'a self,
         connection: &'a mut PgConnection,
@@ -145,18 +124,6 @@ impl SourceAuthority for ExecutionSource {
                     })
                 })
                 .collect()
-        })
-    }
-    fn snapshot_devices_on<'a>(
-        &'a self,
-        connection: &'a mut PgConnection,
-        tenant: TenantId,
-        snapshot: ScopeSnapshot,
-        after: Option<&'a str>,
-    ) -> Pending<'a, Vec<String>> {
-        Box::pin(async move {
-            Ok(sqlx::query_scalar("SELECT device FROM mdm_planning.scope_results WHERE tenant_id=$1::uuid AND run=$2 AND matched AND device>coalesce($3,'') COLLATE \"C\" ORDER BY device COLLATE \"C\" LIMIT 65")
-                .bind(tenant.to_string()).bind(snapshot.result).bind(after).fetch_all(connection).await?)
         })
     }
 }

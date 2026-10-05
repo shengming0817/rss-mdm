@@ -335,6 +335,8 @@ pub struct RemoteSummary {
     deadline: i64,
     cancellation_requested: bool,
     staged: bool,
+    source_retired: bool,
+    target_expansion_stopped: bool,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -347,6 +349,8 @@ pub type RemoteDirectory = Directory<RemoteSummary, Uuid, RemoteStatistics>;
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteDetail {
+    source_retired: bool,
+    target_expansion_stopped: bool,
     operation_id: Uuid,
     deadline: i64,
     snapshot: crate::remote_operations::Snapshot,

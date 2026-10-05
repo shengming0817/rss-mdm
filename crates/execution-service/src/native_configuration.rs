@@ -116,12 +116,14 @@ fn claim_diagnosis(
     }
 }
 fn requires_sent_guard(task: &Task, status: dc::Status) -> bool {
+    // Profile rejection follows accepted Error plus complete contrary ProfileList evidence.
     status != dc::Status::Applied
         && !(status == dc::Status::Rejected
             && matches!(
                 task,
                 Task::Macos {
-                    request: rss_mdm_apple_mdm::native::request::Request::RemoveProfile { .. }
+                    request: rss_mdm_apple_mdm::native::request::Request::InstallProfile { .. }
+                        | rss_mdm_apple_mdm::native::request::Request::RemoveProfile { .. }
                 }
             ))
 }
@@ -566,7 +568,7 @@ impl ExecutionService {
         ) || (foreign && !command.status().is_terminal())
         {
             let sent = dispatched_in(tx, id).await?;
-            if sent {
+            if sent && requires_sent_guard(&old.request.task, command.status()) {
                 return Ok(true);
             }
         }

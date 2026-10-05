@@ -157,18 +157,6 @@ impl Host {
         )
         .await
     }
-    pub(crate) async fn with_management_addresses() -> anyhow::Result<Self> {
-        Self::bind(
-            None,
-            rss_device_command_postgres::CommandClock::Postgres,
-            None,
-            None,
-            None,
-            false,
-            true,
-        )
-        .await
-    }
     #[allow(
         clippy::cognitive_complexity,
         reason = "fixture composition keeps TLS certificate, listener and enrollment variants explicit"
@@ -888,67 +876,6 @@ async fn management(
     )?;
     timeline.initialize().await?;
     Ok((flow, timeline))
-}
-
-/// Exercise HTTP absolute-form over the actual old mutual TLS socket, bypassing client URL normalization.
-pub(crate) async fn absolute_form_post(
-    host: &Host,
-    peer: &Peer,
-    target: &str,
-    message: &syncml::Message,
-) -> anyhow::Result<u16> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio_rustls::rustls::{
-        self,
-        pki_types::{
-            CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, pem::PemObject,
-        },
-    };
-    let ca = &host.app.windows()?.channel.ca;
-    let cert = sign_certificate(ca, &peer.intent).await?;
-    let mut roots = rustls::RootCertStore::empty();
-    roots.add(CertificateDer::from_pem_slice(&std::fs::read(
-        host.root.join("ca.crt"),
-    )?)?)?;
-    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()?
-    .with_root_certificates(roots)
-    .with_client_auth_cert(
-        vec![cert.into()],
-        PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(std::fs::read(
-            host.root.join("device.pk8"),
-        )?)),
-    )?;
-    let endpoint = reqwest::Url::parse(&peer.url)?;
-    let socket =
-        tokio::net::TcpStream::connect(("127.0.0.1", endpoint.port_or_known_default().unwrap()))
-            .await?;
-    let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
-    let mut tls = connector
-        .connect(ServerName::try_from("localhost")?, socket)
-        .await?;
-    let body = syncml::encode(message, &CodecLimits::default())?;
-    let wire = format!(
-        "POST {target} HTTP/1.1\r\nHost: localhost:{}\r\nContent-Type: application/vnd.syncml.dm+xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        endpoint.port_or_known_default().unwrap(),
-        body.len()
-    );
-    tls.write_all(wire.as_bytes()).await?;
-    tls.write_all(&body).await?;
-    tls.flush().await?;
-    let mut response = Vec::new();
-    tokio::time::timeout(
-        Duration::from_secs(5),
-        tls.take(1024 * 1024).read_to_end(&mut response),
-    )
-    .await??;
-    Ok(std::str::from_utf8(&response)?
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| anyhow::anyhow!("missing HTTP status"))?
-        .parse()?)
 }
 
 pub(crate) fn fixture_providers() -> anyhow::Result<Arc<rss_mdm_pki_service::providers::Providers>>

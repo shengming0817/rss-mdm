@@ -63,17 +63,13 @@ GetBootstrapToken/SetBootstrapToken 由已绑定的设备证书认证，只有�
 
 ## 原生操作与 Profile
 
-设备 operation 使用 `POST /api/v1/devices/{id}/operations`，与 Policy/Resource 共用类型化原生输入。请求固定 `operationId`、`inputVersion`、`target`、`task` 和未来 Unix 秒 `deadline`。例如：
-
-```json
-{"operationId":"97c3820e-4698-47dc-bb09-b33bd53da2f0","inputVersion":"v1","target":{"kind":"device"},"task":{"platform":"macos","request":{"kind":"command","command":{"requestType":"InstalledApplicationList","fields":{}}}},"deadline":1800000000}
-```
+设备控制使用 `POST /api/v1/devices/{id}/operations`，只接受固定 `restart`、`lock`、`wipe`；请求形状、确认与平台条件见[设备操作](device-operations.md)。此入口不接受 `inputVersion`、`target`、`task` 或任意 Apple 命令。资产采集由 CollectionRun 持有；Profile 与 DDM 配置通过 Resource 的 NativeConfiguration 内容和 Policy 持有。
 
 原生字段显式保留 plist 类型：`string`、`boolean`、十进制字符串 `integer`、`unsigned`、`real`、`date`、Base64 `data`、`array` 和 `dictionary`。`RunScript` 返回 Unsupported；原生操作不会转成 Agent 脚本。平台合同来自固定 Apple release 和 macOS 15 起的必要历史定义，实际 OS、硬件、监督、注册方式、通道及安装的 AccessRights 由认证设备证据判定。设备先回答原生前提查询，服务端不会采用浏览器提交的可信平台事实。
 
-查询、应用/PKG、安全、账户、控制、设置和 OS 更新各自保留原生结果。查询完成可结束共同命令，但报告的 Unknown、安装中或拒绝仍是设备数据；ACK 仅证明接收。待重启、用户延后、错误及 Unknown 单独呈现，不能据此宣布安装、更新或合规成功。详细原生结果读取同时要求 operation_read 和原操作权限；目录只显示摘要。PKG 原生命令不建立固定 Agent 准入，后者继续由既有安装策略与软件 owner 负责。
+既有历史操作保留查询、应用/PKG、安全、账户、控制、设置和 OS 更新的原生结果；历史可读不表示设备控制入口仍能创建这些命令。查询完成可结束共同命令，但报告的 Unknown、安装中或拒绝仍是设备数据；ACK 仅证明接收。待重启、用户延后、错误及 Unknown 单独呈现，不能据此宣布安装、更新或合规成功。详细原生结果读取同时要求 operation_read 和原操作权限；目录只显示摘要。PKG 原生命令不建立固定 Agent 准入，后者继续由既有安装策略与软件 owner 负责。
 
-Profile 使用 `request.kind:"install_profile"` 和 `profile`，其中根及每个 payload 分别指定原生 identifier/UUID、metadata、schema 路径与 fields；移除使用 `request.kind:"remove_profile"`、identifier 和拥有的 UUID。完整输入见 [Profile 类型](../../crates/apple-mdm/src/native/profiles.rs)。`PayloadVersion=1` 属于 Apple 格式，`inputVersion` 属于内容版本。编译器决定 System/User scope，拒绝重复身份、单实例冲突和无效同 Profile 证书引用；客户端不能覆盖这些编译器字段。
+Resource 的 NativeConfiguration `apply` 使用 `request.kind:"install_profile"` 和 `profile`，其中根及每个 payload 分别指定原生 identifier/UUID、metadata、schema 路径与 fields；Policy 的移除内容由同一 Resource 的 `remove` 提供，使用 `request.kind:"remove_profile"`、identifier 和拥有的 UUID。完整输入见 [Profile 类型](../../crates/apple-mdm/src/native/profiles.rs)。`PayloadVersion=1` 属于 Apple 格式；Policy 冻结 Resource 版本，设备控制不接受内容版本参数。编译器决定 System/User scope，拒绝重复身份、单实例冲突和无效同 Profile 证书引用；客户端不能覆盖这些编译器字段。
 
 同一注册世代及通道内的 identifier 串行。已发出的未知副作用继续占有 guards；取消、超时或错误回执本身不释放它们。Profile owner 加密保存完整派发 manifest；替换或移除必须经当前、关联、接受的 ProfileList 证据确认。安装观测同时比较根和全部 payload 的 type/identifier/UUID/version；缺失、加密或不完整清单不证明替换完成。同一操作的接受 Error 后，完整清单证明安装目标确实缺席，或精确证明待移除的旧安装及全部 payload 仍在，才终结为 rejected 并退休该次失败预留；旧安装所有权继续保留。旧世代、旧尝试、晚到或越权回执不能覆盖新所有权。
 
@@ -88,7 +84,7 @@ Profile 使用 `request.kind:"install_profile"` 和 `profile`，其中根及每�
 | 完整且接受的 ProfileList 匹配 | applied，仅证明原生对象存在性 |
 | Error 后完整反向证据 | rejected，仅释放本次失败预留，保留旧安装 guards |
 
-不重投已发送且结果未知的变更；只读恢复复用现有 attempt 流并有次数与期限上限。只读观测查询的错误不证明原变更被拒绝，仍保留其不确定性。Profile 存在、OS 设置效果及合规分别记录，`effect:"unknown"` 不证明防火墙或其他设置已生效。查询、取消和重新批准沿用 [Execution](device-operations.md) 的 requestId 与 expectedRevision 契约。
+不重投已发送且结果未知的变更；只读恢复复用现有 attempt 流并有次数与期限上限。只读观测查询的错误不证明原变更被拒绝，仍保留其不确定性。Profile 存在、OS 设置效果及合规分别记录，`effect:"unknown"` 不证明防火墙或其他设置已生效。结果沿原操作坐标查询；Policy 子命令的取消与移除由 Policy owner 驱动。设备控制的取消和重新批准沿用[设备操作](device-operations.md)的 requestId 与 expectedRevision 契约。
 
 APNs 使用证书认证 HTTPS/HTTP2，token revision 和持久唤醒 lease 隔离过期回执。410 使对应当前 token 回到 pending_token；旧 revision 的 410 不撤销新 token。429 和网络失败按 30、60、120 秒递增退避，5xx 至少等待 900 秒，均封顶 960 秒，不改变命令结果。按闭合 APNs reason 判定 token 失效、配置拒绝或暂时故障；未知/畸形响应可重试，配置拒绝暂停当前 token revision/APNs 证书组合；TokenUpdate 或更换有效 APNs 证书并重启后可恢复。失效授权的采集会延后检查，不能持续占据有界队列前页。
 
@@ -96,7 +92,7 @@ APNs 唤醒在持久 lease 的授权事务完成时取得发送资格。已领�
 
 ## DDM 声明与状态
 
-operation 的 Apple 请求为 `{"kind":"declarations","declarations":[…],"assets":[…]}`；两个数组都必填，空 declarations 撤回当前调用方的集合。声明包含 identifier、declarationType 和类型化 payload，四类原生声明使用同一冻结版本/条件编译。StatusItems 订阅是 `com.apple.configuration.management.status-subscriptions` 配置声明中的 Name 数组，Apple 自动报告 management.declarations，无需显式订阅。其它状态按当前作用域合并有效订阅；未知或当前平台不支持的名称被拒绝。
+Resource 的 NativeConfiguration `apply` / `remove` 中，Apple 请求为 `{"kind":"declarations","declarations":[…],"assets":[…]}`；两个数组都必填，Policy 移除内容中的空 declarations 撤回该配置 owner 的集合，不是设备控制输入。声明包含 identifier、declarationType 和类型化 payload，四类原生声明使用同一冻结版本/条件编译。StatusItems 订阅是 `com.apple.configuration.management.status-subscriptions` 配置声明中的 Name 数组，Apple 自动报告 management.declarations，无需显式订阅。其它状态按当前作用域合并有效订阅；未知或当前平台不支持的名称被拒绝。
 
 原生客户端经现有 mTLS `PUT /checkin` 发送 DeclarativeManagement plist，Endpoint 支持 tokens、declaration-items、declaration/{activation|configuration|asset|management}/{identifier} 和 status。读取返回原生 JSON，缺少对象返回 404；status 的 Data 为原生 JSON 报告，成功返回 200 空 body。启用/唤醒同步使用现有 MDM attempt 的 DeclarativeManagement 命令，不建立第二套队列。
 
@@ -106,7 +102,7 @@ operation 的 Apple 请求为 `{"kind":"declarations","declarations":[…],"asse
 
 operation observation 分别返回 expected、synchronization、nativeStatus、effect 和 compliance。原生状态区分 valid/invalid/unknown、active 与 reasons；共同 applied 仅表示精确版本的声明核验完成。空集合撤回的 ACK 和无版本缺席报告不会证明终端移除。乱序的同版本冲突、未关联版本的增量状态保持 Unknown；receivedAt 只表示服务器收到证据的时间。详细值仍需要 operation_read 及原操作全部权限；Profile 原始清单还需要 inventory_collect，缺少权限时仍可读取核验摘要。每作用域最多 16 个有效 publication，累计状态预算为每个 512 KiB，预算耗尽后明确 Unknown；这些报告不自动成为 Inventory Snapshot 或合规成功。
 
-`make t2 MODULE=apple.ddm` 验证四类声明、资产、重启、Legacy 接管和 Policy 所有权；`MODULE=apple.status` 验证冲突、作用域和撤权。真实 Mac 的同步、状态与 Profile 交接属于独立 T3，缺口登记为 [#2647](https://dev.azure.com/shengming0923/rss/_workitems/edit/2647)。
+`make t2 MODULE=apple.ddm` 验证 Policy 共享声明、保留与撤回，以及受保护 Legacy Profile 资产的接管和独立移除证据；`MODULE=apple.status` 验证冲突、作用域和撤权。真实 Mac 的同步、状态与 Profile 交接属于独立 T3，缺口登记为 [#2647](https://dev.azure.com/shengming0923/rss/_workitems/edit/2647)。
 
 ## 产品配置
 

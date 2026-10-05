@@ -20,14 +20,7 @@ Get Results 的 MoreData / Size 在连续消息中重组，最后一片通过大
 
 ## 用户任务与配置输入
 
-有权管理员先从 `GET /api/v1/devices/{device}/registrations` 的 Full 活动注册读取 `userContextId`，使用[设备操作](device-operations.md#windows-原生操作)现有 `/api/v1/devices/{device}/operations` 入口。以下命令生成可提交 JSON；`user_context_id` 必须替换为该注册返回的值，提交仍需既有会话、Origin/CSRF 和设备操作授权：
-
-```sh
-user_context_id='<当前 Full 注册的 userContextId>'
-jq -n --arg operationId "$(uuidgen)" --arg userId "$user_context_id" --argjson deadline "$(($(date +%s)+300))" '{operationId:$operationId,inputVersion:"user-input-v1",deadline:$deadline,target:{kind:"user",userId:$userId},task:{platform:"windows",request:{kind:"sync_ml",request:{kind:"node",node:"./User/Vendor/MSFT/Policy/Config/Experience/AllowThirdPartySuggestionsInWindowsSpotlight",instance:[],operation:"get",value:null}}}}'
-```
-
-用户配置内容沿同一 Resource 上传与 Policy 消费路径，`apply` / `remove` 属于当前注册的用户 scope。配置 JSON 的形状如下；将 userId 替换为上述值，资源版本提供 operation 的 inputVersion：
+用户配置通过 Resource 的 NativeConfiguration 内容和 Policy 消费。有权管理员从 `GET /api/v1/devices/{device}/registrations` 的 Full 活动注册读取 `userContextId`，将其用于配置的 `target.kind="user"`；`apply` / `remove` 属于当前注册的用户 scope。Policy 冻结资源版本，配置示例如下：
 
 ```json
 {"target":{"kind":"user","userId":"<当前 Full 注册的 userContextId>"},"apply":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./User/Vendor/MSFT/Policy/Config/Experience/AllowThirdPartySuggestionsInWindowsSpotlight","instance":[],"operation":"replace","value":{"type":"integer","value":"1"}}}},"remove":null}
@@ -35,11 +28,11 @@ jq -n --arg operationId "$(uuidgen)" --arg userId "$user_context_id" --argjson d
 
 ## 通道配置与维护
 
-`windows.poll` 是必填的八字段配置，分钟单位；完整示例见 [配置样本](../../fixtures/mdm-config.example.json)。样本先每 15 分钟尝试 10 次，禁用第二阶段，然后每天无限轮询；两项登录触发均为 false。配置必须有可到达的无限阶段，不能依赖 Windows 对无效配置的自动修正。注册 provisioning 与后续维护使用同一个类型；维护通过既有 native execution 创建完整 Poll Replace Sequence，部分写入、删除和类型错误被拒绝，并沿既有 readback 确认效果。Rust 消费者调用 `rss_mdm_windows_mdm::native::Request::poll_schedule(provider_id, &poll)`，返回可序列化的完整 Sequence；将其放入已有 `task.platform="windows"` / `request.kind="sync_ml"` 的 operation envelope，target 为 Device，显式提供 operationId、inputVersion 和 deadline。普通 JSON 消费者可用 `serde_json::to_value` 的输出，不能只生成部分 Poll 节点。
+`windows.poll` 是必填的八字段配置，分钟单位；完整示例见 [配置样本](../../fixtures/mdm-config.example.json)。样本先每 15 分钟尝试 10 次，禁用第二阶段，然后每天无限轮询；两项登录触发均为 false。配置必须有可到达的无限阶段，不能依赖 Windows 对无效配置的自动修正。注册 provisioning 消费这个完整类型。内部原生编译器 `rss_mdm_windows_mdm::native::Request::poll_schedule(provider_id, &poll)` 保留完整 Poll Replace Sequence 与 readback 规则，部分写入、删除和类型错误被拒绝。设备控制入口不提供 Poll 维护，也不接受任意 SyncML Sequence；不存在可提交的旧 operation envelope。
 
 WNS 可选。配置 `push.package_family_name`、`sid` 和受保护的 `client_secret_file`；通道向当前已认证设备读取并关联 PFN / ChannelURI。只接受配置 PFN 与 HTTPS notify.windows.com 路由，不跟随重定向。URL 加密保存，token 仅内存缓存。worker 在审计事务内按当前注册世代、来源、凭据及任务授权获取租约，提交后发送空的 wns/raw 唤醒，再按世代、路由版本和租约结算。Accepted 仅为 WNS 接收，Unknown 表示网络结果不确定，两者均不能证明设备签入、命令交付或效果；Poll 独立继续工作。重复观察同一 URL 只刷新有效期，不重置租约或终止结果，URL 改变才增加版本。
 
-DMClient 维护限定当前 provider。DMAcc 先读取所选 account 的 ServerID，证实当前 provider 后才执行账户操作。管理地址修改只能指向配置的主地址或 `additional_management` 中真实启用的独立监听地址；Host、绝对 HTTP URI authority 与 SyncML Target 必须对应实际 listener。效果需另一个会话连接到所需实际地址，并提供关联 readback，客户端自报 Source 不能替代重连证据。
+内部原生 DMClient / DMAcc 维护规则保留在通道 owner 中，设备控制入口不提供这些维护操作。DMClient 维护限定当前 provider。DMAcc 先读取所选 account 的 ServerID，证实当前 provider 后才执行账户操作。管理地址修改只能指向配置的主地址或 `additional_management` 中真实启用的独立监听地址；Host、绝对 HTTP URI authority 与 SyncML Target 必须对应实际 listener。效果需另一个会话连接到所需实际地址，并提供关联 readback，客户端自报 Source 不能替代重连证据。
 
 ## 续期与原生注销
 
@@ -51,11 +44,11 @@ DMClient 维护限定当前 provider。DMAcc 先读取所选 account 的 ServerI
 
 XCEP 仅返回策略，导出的 BST 不授予登记权限。LinkedEnrollment.svc 校验原始 XML 的父证书签名、时间戳、当前父凭据及新 CSR 私钥证明，签发独立子证书。子登记与父登记共享设备身份，使用独立 provider、证书、世代、命令编号和 `/ManagementServer/Declared.svc` 会话；首次真正认证签入后才能接受任务。子登记不建立 Inventory 报告源。父证书正常续期保留子登记；父重新登记、撤销或被替换会连带退役子登记。子证书在自己的登记入口续期，父子证书不能跨管理入口使用。
 
-WinDC 子登记缺失或尚未首次认证时，设备操作 API 返回 HTTP 409 与 `windows_declared_enrollment_not_ready`；配置策略保留等待状态和既有资源占用，远程执行目标返回同一诊断的 blocked 结果。先完成子登记及 Declared 首次认证签入，再重试设备操作；首次认证会唤醒等待配置。普通主登记和 ConfigRefresh 独立可用。
+WinDC 子登记缺失或尚未首次认证时，Declared 配置策略保留等待状态和既有资源占用，并返回 `windows_declared_enrollment_not_ready` 诊断。先完成子登记及 Declared 首次认证签入；首次认证会唤醒等待配置。普通主登记和 ConfigRefresh 独立可用。
 
 ## DeclaredConfiguration 与 MI
 
-DeclaredConfiguration 使用现有配置与设备操作入口，Document 值为原生 XML；Delete 输入也保留原始文档，供删除效果与资源占用确认。支持的 Windows 证书协议版本来自冻结的官方事实，未知 servicing 分支拒绝。普通 ConfigRefresh 继续使用主登记。
+DeclaredConfiguration 使用 Resource / Policy 配置入口，Document 值为原生 XML；Delete 输入也保留原始文档，供删除效果与资源占用确认。支持的 Windows 证书协议版本来自冻结的官方事实，未知 servicing 分支拒绝。普通 ConfigRefresh 继续使用主登记。
 
 CSP 文档按内容检查每个资源的既有权限、schema 与设备能力。MI 参数的键和值均为字符串，仅允许 Device scope，并独立要求设备范围的 `windows_mi_execute` 权限。系统不维护 MI provider 白名单；资源占用按规范化 namespace/class 整类隔离，同一文档不重复声明同类，Key/Value 角色分别保留。
 

@@ -4,6 +4,7 @@ pub mod action_contract;
 pub mod agent_install;
 pub mod configuration;
 mod database;
+pub mod device_control;
 pub mod enrollment;
 mod error;
 pub mod frozen;

@@ -1,5 +1,11 @@
 use crate::{Error, transaction::*};
 use rss_transactional_messaging_postgres::PgTransaction;
+use sha2::{Digest, Sha256};
+
+pub(crate) fn configuration_key(device: &str) -> String {
+    format!("configuration:{:x}", Sha256::digest(device.as_bytes()))
+}
+
 pub async fn wake_native_in(
     source: std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
     tx: &mut PgTransaction<'_>,
@@ -35,7 +41,7 @@ pub async fn wake_native_in(
     }
     let target = rss_reconcile::Target::new(
         crate::recovery_scope(tx.tenant_id()),
-        format!("configuration:{device}"),
+        configuration_key(device),
     )
     .map_err(|_| Error::Malformed)?;
     rss_reconcile_postgres::messaging::wake_in(tx, &target, (), |_, _| Box::pin(async { Ok(()) }))

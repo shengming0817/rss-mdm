@@ -244,27 +244,15 @@ impl Fixture {
         ensure!(reply.0 == StatusCode::OK, "operation read: {reply:?}");
         Ok(reply.1)
     }
-    pub(super) async fn create_operation(
-        &mut self,
-        task: impl FnOnce(Uuid) -> Value,
-    ) -> Result<Uuid> {
-        self.create_operation_at(Uuid::new_v4(), task).await
-    }
-    pub(super) async fn create_operation_at(
-        &mut self,
-        id: Uuid,
-        task: impl FnOnce(Uuid) -> Value,
-    ) -> Result<Uuid> {
-        let body = json!({"operationId":id,"inputVersion":"1","target":{"kind":"device"},"task":task(id),"deadline":self.app.clock.unix_seconds()?+300});
-        let path = format!(
-            "/api/v1/devices/{DEVICE}/operations",
-            DEVICE = case_device()
-        );
+    pub(super) async fn create_restart(&mut self) -> Result<Uuid> {
+        let id = Uuid::new_v4();
+        let body = json!({"operationId":id,"action":{"kind":"restart"},"deadline":self.app.clock.unix_seconds()?+300});
+        let path = format!("/api/v1/devices/{}/operations", case_device());
         let reply = self
             .browser
             .call(&self.router, Method::POST, &path, Some(body.clone()))
             .await?;
-        ensure!(reply.0 == StatusCode::ACCEPTED, "create profile: {reply:?}");
+        ensure!(reply.0 == StatusCode::ACCEPTED, "restart: {reply:?}");
         ensure!(
             self.browser
                 .call(&self.router, Method::POST, &path, Some(body))
@@ -277,6 +265,6 @@ impl Fixture {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        anyhow::bail!("profile publication deadline")
+        anyhow::bail!("restart publication deadline")
     }
 }

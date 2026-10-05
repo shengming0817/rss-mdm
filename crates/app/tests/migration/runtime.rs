@@ -126,19 +126,13 @@ async fn background_queued_and_retired_offers_keep_their_original_policy_and_rem
     let mut tasks = Vec::new();
     for remote in [false, false, true, true] {
         let id = Uuid::new_v4();
+        let mut definition = scripts::policy_definition(resource, scripts::case_task_scope());
+        definition["action"]["schedule"] = json!({"trigger":{"kind":"registration"},"misfire":{"kind":"coalesce_one"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null});
+        scripts::post(&mut f.author,&f.router,&format!("/api/v1/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":definition}})).await?;
+        let mut task = scripts::claim(&f.router).await?;
         if remote {
-            let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-            scripts::post(&mut f.author,&f.router,"/api/v1/remote-operations",json!({"operationId":id,"resource":scripts::policy_definition(resource,scripts::case_task_scope())["action"]["resource"],"targets":{"kind":"scope","id":scripts::case_task_scope()},"action":{"kind":"execute","parameters":{}},"deadline":now+600})).await?;
-        } else {
-            let mut definition = scripts::policy_definition(resource, scripts::case_task_scope());
-            definition["action"]["schedule"] = json!({"trigger":{"kind":"registration"},"misfire":{"kind":"coalesce_one"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null});
-            scripts::post(&mut f.author,&f.router,&format!("/api/v1/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":definition}})).await?;
+            task = scripts::historical_remote(&f, &task, Uuid::new_v4()).await?;
         }
-        let task = scripts::claim(&f.router).await?;
-        ensure!(
-            task["payload"]["authorization"][if remote { "operationId" } else { "policyId" }]
-                == id.to_string()
-        );
         tasks.push(task);
     }
     crate::test_support::stop_worker(stack).await?;
@@ -198,7 +192,10 @@ async fn background_queued_and_retired_offers_keep_their_original_policy_and_rem
     }
     let stack = scripts::worker(&f.base).await?;
     let mut seen = std::collections::BTreeSet::new();
-    for _ in &original {
+    for _ in original
+        .iter()
+        .filter(|(_, coordinates)| coordinates.2.is_none())
+    {
         let task = scripts::claim(&f.router).await?;
         let run = Uuid::parse_str(task["payload"]["taskId"].as_str().unwrap())?;
         ensure!(
@@ -207,7 +204,7 @@ async fn background_queued_and_retired_offers_keep_their_original_policy_and_rem
         );
         scripts::complete(&f.router, &task).await?;
     }
-    for (run, _) in &original {
+    for (run, coordinates) in &original {
         let state: Value = sqlx::query_scalar(
             "SELECT state FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2",
         )
@@ -215,7 +212,19 @@ async fn background_queued_and_retired_offers_keep_their_original_policy_and_rem
         .bind(run)
         .fetch_one(&mut conn)
         .await?;
-        ensure!(state["execution"] == "succeeded");
+        if let Some(remote) = coordinates.2 {
+            f.execution.recover_remote_fixture(remote).await?;
+            let state: Value = sqlx::query_scalar(
+                "SELECT state FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2",
+            )
+            .bind(case_tenant())
+            .bind(run)
+            .fetch_one(&mut conn)
+            .await?;
+            ensure!(state["cancellation"] == "confirmed");
+        } else {
+            ensure!(state["execution"] == "succeeded");
+        }
     }
     let versions: Vec<_> = original.iter().filter_map(|(_, row)| row.1).collect();
     let operations: Vec<_> = original.iter().filter_map(|(_, row)| row.2).collect();

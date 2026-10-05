@@ -674,6 +674,10 @@ async fn user_asset(
     for operation in [
         crate::authorization::Permission::ResourceRead,
         crate::authorization::Permission::ResourceWrite,
+        crate::authorization::Permission::PolicyRead,
+        crate::authorization::Permission::PolicyWrite,
+        crate::authorization::Permission::ScopeRead,
+        crate::authorization::Permission::ScopeWrite,
         crate::authorization::Permission::AuthorizationRead,
         crate::authorization::Permission::AuthorizationWrite,
     ] {
@@ -723,12 +727,16 @@ async fn user_asset(
         )],
         vec![asset],
     );
-    let operation = Uuid::new_v4();
-    let created=f.browser.call(&f.router,Method::POST,&format!("/api/v1/devices/{device}/operations"),Some(json!({"operationId":operation,"inputVersion":"1","target":{"kind":"user","userId":Uuid::from_u128(27)},"task":task,"deadline":f.app.clock.unix_seconds()?+300}))).await?;
-    ensure!(
-        created.0 == StatusCode::ACCEPTED,
-        "user asset operation: {created:?}"
-    );
+    let worker = f.policy_worker().await?;
+    let configuration = Uuid::new_v4();
+    crate::test_support::planning_http::native_configuration_resource(&mut f.browser,&f.router,configuration,"macos","aarch64",json!({"target":{"kind":"user","userId":Uuid::from_u128(27)},"apply":task,"remove":ddm::task(vec![],vec![])})).await?;
+    let scope = Uuid::new_v4();
+    f.policy_post(&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":device}],"limitations":null,"exclusions":[]}})).await?;
+    // Retain keeps the asset authorized while renewal refreshes Scope authority.
+    // Browser logout still invalidates its separate account bearer.
+    let policy = Uuid::new_v4();
+    f.policy_post(&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"configuration","resource":{"id":configuration,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"exit":"retain"}}})).await?;
+    f.policy_operation(policy).await?;
     let (id, _) = peer.next("DeviceInformation").await?;
     let next = peer
         .manage(
@@ -818,6 +826,7 @@ async fn user_asset(
         peer.client.get(&url).send().await?.status() == StatusCode::UNAUTHORIZED,
         "asset accepted missing account bearer"
     );
+    crate::test_support::stop_worker(Some(worker)).await?;
     Ok(url)
 }
 

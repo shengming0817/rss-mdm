@@ -186,19 +186,15 @@ GRANT SELECT ON TABLE mdm_planning.configuration_objects TO mdm_flow_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_planning.configuration_objects TO mdm_command_runtime;
 
-GRANT SELECT,INSERT ON TABLE mdm_planning.remote_operation_targets TO mdm_command_runtime;
+GRANT SELECT ON TABLE mdm_planning.remote_operation_targets TO mdm_command_runtime;
 
 GRANT SELECT ON TABLE mdm_planning.remote_operation_targets TO mdm_flow_runtime;
 
 GRANT SELECT ON TABLE mdm_planning.remote_operations TO mdm_flow_runtime;
 
-GRANT SELECT,INSERT ON TABLE mdm_planning.remote_operations TO mdm_command_runtime;
+GRANT SELECT ON TABLE mdm_planning.remote_operations TO mdm_command_runtime;
 
 GRANT UPDATE(cancelled) ON TABLE mdm_planning.remote_operations TO mdm_command_runtime;
-
-GRANT UPDATE(staged) ON TABLE mdm_planning.remote_operations TO mdm_command_runtime;
-
-GRANT UPDATE(cursor) ON TABLE mdm_planning.remote_operations TO mdm_command_runtime;
 
 GRANT UPDATE(run_after) ON TABLE mdm_planning.remote_operations TO mdm_command_runtime;
 

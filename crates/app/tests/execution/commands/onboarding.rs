@@ -655,7 +655,29 @@ async fn cancellation_blocks_registration_and_preserves_uncertain_native_effect(
             Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":1})),
         )
         .await?;
-    ensure!(result.0 == StatusCode::OK, "{result:?}");
+    ensure!(
+        result.0 == StatusCode::CONFLICT,
+        "Policy-owned installation cannot be directly cancelled: {result:?}"
+    );
+    let view = client
+        .browser
+        .call(
+            &client.router,
+            Method::GET,
+            &format!("/api/v1/policies/{policy}"),
+            None,
+        )
+        .await?;
+    ensure!(view.0 == StatusCode::OK);
+    software::write(
+        &mut client.browser,
+        &client.router,
+        &format!("/api/v1/policies/{policy}"),
+        1,
+        json!({"action":"put","enabled":false,"definition":view.1["definition"]}),
+    )
+    .await?;
+    client.publish_operation(operation).await?;
     let url = peer.url.replace(
         "/ManagementServer/MDM.svc",
         "/api/v1/agent/enroll/native-grants",
@@ -667,7 +689,9 @@ async fn cancellation_blocks_registration_and_preserves_uncertain_native_effect(
         .call(Method::GET, &format!("/{operation}"), None)
         .await?;
     ensure!(
-        state.1["commandStatus"] == "cancelled"
+        state.1["commandStatus"] == "published"
+            && state.1["authorization"] == "blocked"
+            && state.1["agentInstallation"]["delivery"] == "unknown"
             && state.1["agentInstallation"]["installation"] == "unknown",
         "{state:?}"
     );

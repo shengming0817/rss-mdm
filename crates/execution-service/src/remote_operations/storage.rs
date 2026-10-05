@@ -55,32 +55,3 @@ pub fn authorize(
         Snapshot::Scope { .. } => proof.require_all_devices(permission).map_err(Error::from),
     }
 }
-impl crate::ExecutionService {
-    pub async fn capture_remote_targets_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        targets: &Targets,
-    ) -> Result<Snapshot> {
-        match targets {
-            Targets::Devices { devices } => Ok(Snapshot::Devices {
-                devices: devices.clone(),
-            }),
-            Targets::Scope { id } => {
-                let scope = *id;
-                let tenant = tx.tenant_id();
-                let source = self.source.clone();
-                let snapshot = tx
-                    .with_connection(move |c| {
-                        Box::pin(async move { Ok(source.capture_scope_on(c, tenant, scope).await) })
-                    })
-                    .await??;
-                Ok(Snapshot::Scope {
-                    scope: snapshot.scope,
-                    result: snapshot.result,
-                    definition_revision: snapshot.definition_revision,
-                    resolution_revision: snapshot.resolution_revision,
-                })
-            }
-        }
-    }
-}

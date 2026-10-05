@@ -34,7 +34,9 @@ impl Fixture {
             .await?;
         ensure!(reply.0 == StatusCode::OK);
         peer.token().await?;
-        let operation = self.create_operation(|id| profile_task(id, true)).await?;
+        self.policy_cycle(&peer).await?;
+        self.grant_native_actions(&["device_control"]).await?;
+        let operation = self.create_restart().await?;
         let participant = push::test_support::Participant::start(vec![200], vec![42; 32]).await?;
         let mut config = crate::test_support::identity::config(case_tenant())?;
         let port = tokio::net::TcpListener::bind("127.0.0.1:0").await?;

@@ -1,48 +1,45 @@
-# 设备操作与 Windows 防火墙
+# 设备操作与原生配置
 
 ## 范围与接口
 
-`GET /api/v1/operations` 查询现有命令与 Agent action run，支持 `device/kind/policy/remoteOperation/status`
-筛选，以及 `limit`（默认 64、1–1000）和 `descending`。`nextCursor` 包含 `id/kind`，续页同时传入
-`after/afterKind`，避免两种执行记录使用相同 UUID 时丢失记录。统计与列表候选使用同一次数据库读取，
-先按当前 `operation_read` 设备范围限制；摘要不返回原始输出和诊断流，通过 `detailUrl` 下钻既有接口。
+`POST /api/v1/devices/{device}/operations` 只接受 `operationId`、Unix 秒 `deadline` 和闭合 `action`。不接受 task、inputVersion、target、platform、URI/CSP、脚本、配置、软件、诊断或附加原生参数，也没有旧合同兼容入口。
 
-`GET /api/v1/remote-operations` 提供一次性操作目录，可按 `resource/kind/cancelled` 筛选，
-支持 `limit/after/descending`。显式设备快照须全部可读，Scope 快照沿用全设备读取要求。
-普通脚本计划使用执行型 Policy 和一次性操作目录，没有独立 ScriptPlan。
-
-首个任务类型是 Windows 状态核实。已有注册设备在下一次通过 mTLS 和 SyncML 双向认证的签入中，由任务自身的 Get 读取实际值。支持 `model` 与 `os_version`，值沿用 Inventory 的有界 UTF-8 校验且不裁剪或改写。每个任务核实一个字段；任务本身不修改设备。普通资产采集继续由既有通道负责。
-
-管理请求使用现有 Identity 会话、Origin/CSRF 和设备范围授权。端点为：
-
-| 方法与路径（前缀 `/api/v1/devices/{device}`） | 权限 | 请求 |
+| 动作 | action 参数 | 权限 |
 |---|---|---|
-| POST `/operations` | `state_verify` | `operationId`、`task: {kind:"state_verify",field,expectedValue}`、`deadline`（Unix 秒） |
-| GET `/operations/{id}` | `operation_read` | 无 |
-| POST `/operations/{id}/cancel` | `operation_cancel` | `requestId`、`expectedRevision` |
-| POST `/operations/{id}/approve` | `state_verify` | `requestId`、`expectedRevision` |
+| restart | `{"kind":"restart"}` | device_control |
+| lock | kind、confirmed:true、expectedRegistrationId、expectedGeneration、六位 ASCII 数字 pin | device_control |
+| wipe | kind、confirmed:true、expectedRegistrationId、expectedGeneration | device_wipe |
 
-创建返回 202 和稳定 operation/command 标识。请求 UUID 在租户内唯一；同键同主体同内容重放原回执，异内容返回 409。批准不改变原任务、期限或 command；已取消、超时、拒绝、取代或完成的任务不能重新批准。模型与 OS 版本使用同一套授权及生命周期，没有任意 URI、脚本或原生命令上传入口。
+危险动作的确认绑定当前主 MDM 注册世代，错代次返回冲突。`GET /api/v1/devices/{device}` 的 nullable `primaryMdmRegistration` 返回 registrationId、generation、source；不能从 channels 中的声明式或用户注册推断主注册。
 
-本地用户、用户组、IdP 组和部门均通过现有授权器生成任务批准。派发重新检查批准所依赖的规则版本、用户组成员和外部证据有效期；原依据失效即阻塞，需要有权主体显式重新批准。批准不保存会话秘密，不依赖浏览器保持连接。任务批准也不替代后续危险动作所需的专用执行批准。
+| 平台前提 | restart | lock | wipe |
+|---|---|---|---|
+| Windows 当前主 MDM；已核实 build/edition | 固定 RebootNow | Unsupported | 固定 RemoteWipe/doWipe |
+| macOS Device enrollment；已核实 OS 与硬件 | >=10.13 | Intel >=10.8；Apple silicon >=11.5；必须已知硬件 | Apple silicon >=12.0.1；DoNotObliterate；不允许 obliteration 回退 |
+
+Intel/T2 状态未知或不满足条件时不开放 Mac 擦除。平台事实必须来自同一注册世代的已认证原生交换，不能由管理请求提供；未知前提拒绝创建。该矩阵仍受固定平台 schema 与 enrollment access rights 约束，协议测试不替代真机验收。
+
+创建返回 202 和稳定 operation/command 身份；同请求 UUID、主体与内容重放原回执，异内容返回 409。PIN 进入现有加密原生输入，不出现在授权 JSON、查询、审计或 Debug 中。
+
+读取使用 `GET /operations/{id}`（operation_read）。取消使用 `POST /operations/{id}/cancel`，正文 requestId、expectedRevision（operation_cancel）。批准使用 `POST /operations/{id}/approve`，正文 requestId、expectedRevision；lock/wipe 另须 `confirmation:{confirmed:true,expectedRegistrationId,expectedGeneration}`。批准只刷新原动作权限，不修改动作、PIN、注册或 deadline；历史通用命令不能重批。Policy 和 Remote 子命令由其 owner 取消，不接受此设备取消入口。
+
 ## 结果与恢复
 
-`queued` 是持久受理；`published` 是精确 Outbox 消息已由产品网关持久接纳；`received` 是关联的原生 Get 成功 Status；`applied` 仅在关联实际 Results 校验并匹配预期摘要后出现。查询中的观察结果另外区分 `unknown`、`mismatched` 和 `matched`，并提供 attempt、原生关联 ID、原生状态与实际值。
+queued 是持久受理，published 是 Outbox 网关接纳，received 是关联原生回执。restart/lock/wipe 的 ACK 不证明终端效果，不转成已核实效果或合规。已派发未知变更不自动重发；取消、deadline、撤权和注册替换阻止后续执行，不表示副作用回滚。
 
-不匹配继续等待后续签入。每个 command 至多一个未结束的 attempt；新尝试沿用 operation/command，分配新的 attempt 与原生关联 ID。提前到达的 Results 由命令 attempt 保存，在对应 Status 到达前不标记匹配成功。旧尝试、错误注册或乱序消息不能覆盖当前结果。
+503 operation_unknown 表示提交可能完成：保留原请求和 UUID，先查询并以原内容重试；404 不能证明回滚。命令、Outbox、回执和审计继续共用原事务及现有 reconcile/device-command 恢复设施，重启不产生替代 operation。
 
-任务在管理响应编码前生成自身 Get 并持久化关联。合法缓存重放沿用已有 attempt；不能把受理前或批准失效期间发出的普通 Inventory Get 事后绑定给新任务。旧读数仍可作为 Inventory 观察保留，但不完成新任务。
+旧通用直接命令和 Remote 尚未启动时由恢复取消；已有 execute 证据只结算原 attempt，保留授权来源、期限、签名和历史。Remote 目录和历史详情返回 sourceRetired；未完成目标展开返回 targetExpansionStopped，禁止补发。
 
-取消、过期和撤权阻止后续任务投递；含失效任务的缓存响应也拒绝重放。已经发出的合法回执仍可保留；服务端终态不表示终端撤销、停止或效果回滚。会话缓存可清理，任务关联与历史证据保留。
+`GET /api/v1/operations` 保留设备、Policy、历史 Remote、状态筛选和 kind/id 复合游标。摘要移除原始输出与诊断流，完整证据沿 detailUrl 检查当前设备范围权限。脚本、原生采集、配置和软件继续走各自 Policy owner，见[企业任务](enterprise-tasks.md)。
 
-503 `operation_unknown` 表示提交可能完成。保留原请求及 UUID，先 GET 查询并以完全相同的请求重试；暂时 404 也不构成回滚证明。不要生成替代 operation。后台恢复由 RSS reconcile 的持久唤醒/租约和 device-command 的有界恢复提供，组件状态没有产品副本。worker 生命周期可无限等待并由运行时取消；每次存储操作仍使用有限预算，不能把无限预算直接转换为平台无法表示的 Instant。
+命令连接 execution.database 使用 mdm_command_runtime。完整运行配置见 fixtures/mdm-config.example.json；恢复、升级和历史处置见[运维](../deployment/operations.md)。
 
-命令连接配置是必填 `execution.database`，使用 `mdm_command_runtime`，与产品其他连接指向同一数据库。完整配置见 `fixtures/mdm-config.example.json`。命令 store 与 Outbox 共享精确同一 messaging runtime；Windows 会话、命令回执和成功审计借用同一事务。Observation 接收与 Inventory 投影仍有各自事务，任务核实不宣称投影或合规已经完成。
 ## Windows 原生操作
 
 Windows 使用固定 DDF/CSP/ADMX 来源和 Node/Atomic/Sequence 类型化操作树，通过现有 Resource/Policy/Scope 和受保护执行路径管理对象。动态身份、设备/用户 scope、build/edition 和实际操作权限分别校验；客户端不提供可信平台或权限事实。
 
-Resource 元数据入口为 `/api/v1/resources/{id}`，配置内容通过既有 `/api/v1/resources/{id}/content` 上传并保护。Policy、远程操作及设备 operation 使用 `/api/v1`。配置内容示例：
+Resource 元数据入口为 `/api/v1/resources/{id}`，配置内容通过既有 `/api/v1/resources/{id}/content` 上传并保护。Policy 与设备动作使用 `/api/v1`；Remote 仅提供历史读取和取消。配置内容示例：
 
 ```json
 {"target":{"kind":"device"},"apply":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/Policy/Config/Experience/AllowCortana","instance":[],"operation":"replace","value":{"type":"integer","value":"1"}}}},"remove":null}
@@ -56,21 +53,9 @@ Policy 引用精确资源版本/variant；它消费完整操作权限和多对�
 
 安装、升级和后台诊断见[运维](../deployment/operations.md)。ActionRun 与状态型任务分离，脚本退出码不转成变更效果；见[企业任务](enterprise-tasks.md)。
 
-## 原生诊断文件
+## 历史原生诊断文件
 
-Windows 已登记的 DiagnosticLog Provider、Collector 或 Channel 可沿现有设备 operation 读取完整文件。先完成必要的原生日志配置，再使用 [DiagnosticLog 输入](../../crates/windows-mdm/src/native/diagnostic.rs) 选择 FileContext；可选 trigger 只接受固定 schema 中的原生日志生产命令。设备范围需要 `device_diagnostics`；未配置真实 content storage 时拒绝创建。
-
-```json
-{"operationId":"<新 UUID>","inputVersion":"logs-v1","deadline":<有效 Unix 秒>,"target":{"kind":"device"},"task":{"platform":"windows","request":{"kind":"diagnostic_log","request":{"trigger":null,"fileContext":"DeviceManagement","blockSizeKb":4,"maxBytes":1048576}}}}
-```
-
-服务端接受完整块数、逐块索引/数据和最终块数核对后，设备命令才完成。`-1`、`-2` 块数保持等待；错序、缺块、大小超限、原生拒绝或完整性失败保留明确的停止原因。日志 trigger 的受理、设备输出完成与文件转存是独立事实，不证明配置效果或合规。原生 trigger 结果未知时不会重新触发；读取可在新会话重新选择同一块。
-
-普通 operation 查询仅投影诊断阶段、长度和受限制品元数据，隐藏所有诊断 Results 原文。文件完成转存及不可变关联后，元数据给出 `downloadUrl`，指向 `GET /api/v3/devices/{device}/operations/{operation}/diagnostic-artifact`。每次下载都核验当前 `operation_read` 与 `device_diagnostics`、租户、设备、当前注册世代及保留期限；全部文件读取和响应内容准备前后分别检查，响应禁止缓存。保留期结束后查询显示 `transfer: expired`、`reason: diagnostic_retention_expired`，并保留固定的 `expiresAt`；持久化的已完成转存事实不变。
-
-转存沿现有命令恢复 worker 运行：先提交接受事实，事务外完成加密文件 I/O，再在原租约保护的短事务内重新核验资格、登记关联与审计。重复及重启恢复使用相同物理上传身份；转存重试不会延长保留期。设备输出已 Applied 而文件仍 Pending 时，取消只将转存置为 Abandoned，保留 Applied 与已接受字节；尚在事务外写入的文件不得再登记关联。取消、到期、旧世代或当前授权失效时停止新的取块、转存和关联，保留既有事实；重新授权不会自动恢复已停止的文件。无引用的孤儿文件由现有 content 清理回收，已下载响应与正在关联的文件使用同一保护锁。
-
-Apple 只返回固定原生命令可提供的事实。Enhanced Log Collection 使用 Apple 要求的用户交互与 AppleCare 会话条件，不向 RSS 声明任意文件上传；无法建立真实原生映射时保持 Unsupported。平台依据为 [Microsoft DiagnosticLog CSP](https://learn.microsoft.com/en-us/windows/client-management/mdm/diagnosticlog-csp) 和 [Apple 固定 command schema](../../crates/native-schema/sources/lock.json)。这些后端协议测试不能替代真实设备验收。
+设备创建已退出原生诊断载荷。历史命令的加密输入、回执、诊断制品和审计仍按原来源与权限查询；既有 `GET /api/v1/devices/{device}/operations/{operation}/diagnostic-artifact` 不改变身份、注册世代、授权和保留期检查。退役入口不生成新的日志 trigger、取块或传输执行。已完成的转存事实仍保留，取消不表示设备输出或已下载文件被回滚。
 
 ## 设备时间线
 

@@ -88,7 +88,7 @@ impl Client {
     pub(crate) async fn set_authorized(&mut self, enabled: bool) -> anyhow::Result<()> {
         let mut permissions = vec!["operation_read", "operation_cancel"];
         if enabled {
-            permissions.push("inventory_collect");
+            permissions.push("device_control");
         }
         let grants: Vec<_> = permissions
             .iter()
@@ -111,9 +111,19 @@ impl Client {
         result?;
         Ok(())
     }
+    pub(crate) async fn known_windows_capability(&self, device: &str) -> anyhow::Result<()> {
+        use sqlx::Connection;
+        let mut c =
+            sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+                .await?;
+        sqlx::query("INSERT INTO mdm_commands.capabilities(tenant_id,registration,generation,os_version,edition,session,observed_at) SELECT tenant_id,id,generation,'10.0.22621.0',48,1,floor(extract(epoch FROM clock_timestamp()))::bigint FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND purpose='primary' AND channel='mdm' AND state='active' ON CONFLICT(tenant_id,registration) DO NOTHING")
+            .bind(case_tenant()).bind(device).execute(&mut c).await?;
+        c.close().await?;
+        Ok(())
+    }
     pub(crate) async fn accept_approved(&mut self) -> anyhow::Result<()> {
         self.set_authorized(true).await?;
-        let request = json!({"operationId":self.operation,"inputVersion":"1","target":{"kind":"device"},"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./DevInfo/Mod","instance":[],"operation":"get","value":null}}},"deadline":self.app.clock.unix_seconds()?+300});
+        let request = json!({"operationId":self.operation,"action":{"kind":"restart"},"deadline":self.app.clock.unix_seconds()?+300});
         ensure!(self.call(Method::POST, "", Some(request)).await?.0 == StatusCode::ACCEPTED);
         ensure!(
             self.call(
@@ -158,6 +168,7 @@ pub(crate) async fn ordinary(
     crate::device::test_support::bind(&host.app.devices, &proof, &credential, case_device(), 0)
         .await?;
     let client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    client.known_windows_capability(case_device()).await?;
     Ok((host, client))
 }
 #[cfg(feature = "integration")]

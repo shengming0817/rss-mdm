@@ -224,15 +224,27 @@ pub async fn recover_one(
     let plan = db::load_source(&service.policy_reader, tx, run.source).await?;
     let previous = run.state.clone();
     let stale = stale_registration(tx, &run.target).await?;
-    if stale || plan.withdrawn_in(service, tx, &run.target, now).await? {
+    let retired = matches!(run.source, db::Source::RemoteOperation { .. });
+    if (retired && run.state.started_at.is_none())
+        || stale
+        || plan.withdrawn_in(service, tx, &run.target, now).await?
+    {
         run.state.cancel();
     }
     if !stale
+        && !retired
         && run.state.cancellation == Cancellation::None
         && run.state.execution != Execution::Unknown
         && let db::ScheduledPolicy::Native(native) = &plan
     {
         super::native_collection::advance_run(service, tx, &mut run, native, now).await?;
+    }
+    if retired
+        && !stale
+        && run.state.cancellation == Cancellation::None
+        && matches!(plan, db::ScheduledPolicy::Native(_))
+    {
+        super::native_collection::settle_run(tx, &mut run).await?;
     }
     // A sealed protocol result is durable execution evidence, even after worker downtime.
     run.state.expire(now, plan.timeout_seconds());

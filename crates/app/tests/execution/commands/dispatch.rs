@@ -97,7 +97,8 @@ impl Client {
         ensure!(
             read.0 == StatusCode::OK
                 && read.1["task"]["kind"] == "sync_ml"
-                && read.1["task"]["objects"] == serde_json::json!(["./DevInfo/Mod"])
+                && read.1["task"]["objects"]
+                    == serde_json::json!(["./Device/Vendor/MSFT/Reboot/RebootNow"])
                 && read.1["commandStatus"] == "published"
                 && read.1["observation"]["effect"] == "waiting",
             "published is not observed {:?}",

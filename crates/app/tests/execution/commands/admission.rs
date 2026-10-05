@@ -47,7 +47,7 @@ impl Client {
         let effects = (effects.0, effects.1, effects.2, audits);
         ensure!(effects == (0, 0, 0, 0));
         check.close().await?;
-        let request = json!({"operationId":self.operation,"inputVersion":"1","target":{"kind":"device"},"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./DevInfo/Mod","instance":[],"operation":"get","value":null}}},"deadline":self.app.clock.unix_seconds()?+300});
+        let request = json!({"operationId":self.operation,"action":{"kind":"restart"},"deadline":self.app.clock.unix_seconds()?+300});
         let mut malformed = request.clone();
         malformed["unexpected"] = true.into();
         let rejected = self.call(Method::POST, "", Some(malformed)).await?;
@@ -83,8 +83,8 @@ impl Client {
         );
         ensure!(
             !sealed
-                .windows(b"./DevInfo/Mod".len())
-                .any(|v| v == b"./DevInfo/Mod")
+                .windows(b"./Device/Vendor/MSFT/Reboot/RebootNow".len())
+                .any(|v| v == b"./Device/Vendor/MSFT/Reboot/RebootNow")
         );
         ensure!(context.get("task").is_none() && context["platform"] == "windows");
         let envelope: Value = sqlx::query_scalar("SELECT envelope FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND message_id=$2")
@@ -154,7 +154,7 @@ impl Client {
         let replay = self.call(Method::POST, "", Some(request.clone())).await?;
         ensure!(replay == accepted);
         let mut conflict = request.clone();
-        conflict["task"]["request"]["request"]["node"] = "./DevDetail/SwV".into();
+        conflict["deadline"] = json!(conflict["deadline"].as_i64().unwrap() + 1);
         ensure!(self.call(Method::POST, "", Some(conflict)).await?.0 == StatusCode::CONFLICT);
         #[cfg(feature = "integration")]
         self.atomic_failure(&request).await?;
@@ -221,7 +221,7 @@ impl Client {
             first["operationId"] = id.to_string().into();
             let mut second = first.clone();
             if different {
-                second["task"]["request"]["request"]["node"] = "./DevDetail/SwV".into();
+                second["deadline"] = json!(second["deadline"].as_i64().unwrap() + 1);
             }
             let (a, b) = tokio::join!(
                 one.call(&self.router, Method::POST, &path, Some(first)),
@@ -559,17 +559,18 @@ impl Client {
             crate::device::test_support::proof(case_tenant(), rss_mdm_inventory::Channel::Mdm, 94);
         crate::device::test_support::bind(&self.app.devices, &proof, &credential, &other, 0)
             .await?;
+        self.known_windows_capability(&other).await?;
         let subject = crate::test_support::browser_subject(&self.browser, &self.router).await?;
         let mut grants = crate::test_support::identity::device_grants(
             None,
-            &["inventory_collect", "operation_read", "operation_cancel"],
+            &["device_control", "operation_read", "operation_cancel"],
         )?;
         grants.push(crate::authorization::Grant {
             operation: crate::authorization::Permission::AuthorizationRead,
             scope: crate::authorization::Scope::Tenant,
         });
         crate::test_support::identity::set_grants(case_tenant(), &subject, grants).await?;
-        let request = |id| json!({"operationId":id,"inputVersion":"1","target":{"kind":"device"},"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./DevInfo/Mod","instance":[],"operation":"get","value":null}}},"deadline":self.app.clock.unix_seconds().unwrap()+300});
+        let request = |id| json!({"operationId":id,"action":{"kind":"restart"},"deadline":self.app.clock.unix_seconds().unwrap()+300});
         let id = Uuid::new_v4();
         let mut other_browser = crate::test_support::Browser::default();
         let login = other_browser.call(&self.router,Method::POST,&format!("/api/v1/identity/tenants/{}/login",case_tenant()),Some(json!({"login":crate::test_support::case::login("other"),"password":crate::test_support::identity::PASSWORD}))).await?;
@@ -579,7 +580,7 @@ impl Client {
         crate::test_support::identity::set_grants(
             case_tenant(),
             &other_subject,
-            crate::test_support::identity::device_grants(Some(&other), &["inventory_collect"])?,
+            crate::test_support::identity::device_grants(Some(&other), &["device_control"])?,
         )
         .await?;
         ensure!(
@@ -610,4 +611,32 @@ impl Client {
         }
         anyhow::bail!("fixture projection did not drain")
     }
+}
+
+#[tokio::test]
+#[ignore = "MODULE=execution.commands.admission: durable acceptance replay outlives admission prerequisites"]
+async fn accepted_receipt_replays_after_deadline_and_capability_removal() -> anyhow::Result<()> {
+    let (host, mut client) = ordinary(rss_device_command_postgres::CommandClock::Postgres).await?;
+    client.set_authorized(true).await?;
+    let request = json!({"operationId":client.operation,"deadline":client.app.clock.unix_seconds()?+2,"action":{"kind":"restart"}});
+    let accepted = client.call(Method::POST, "", Some(request.clone())).await?;
+    ensure!(
+        accepted.0 == StatusCode::ACCEPTED,
+        "short deadline admission: {accepted:?}"
+    );
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    sqlx::query("DELETE FROM mdm_commands.capabilities WHERE tenant_id=$1::uuid")
+        .bind(case_tenant())
+        .execute(&mut pg)
+        .await?;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    ensure!(client.call(Method::POST, "", Some(request.clone())).await? == accepted);
+    let mut changed = request;
+    changed["deadline"] = json!(client.app.clock.unix_seconds()? + 300);
+    ensure!(client.call(Method::POST, "", Some(changed)).await?.0 == StatusCode::CONFLICT);
+    pg.close().await?;
+    host.close().await?;
+    Ok(())
 }
