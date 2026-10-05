@@ -40,7 +40,8 @@ def artifact(directory, manifest_path, library, area, write=False):
         raise ValueError('unknown protocol family')
     _, identity, versions = FAMILIES[area]
     manifest = json.loads(manifest_path.read_text())
-    if any(manifest.get(key) != value for key, value in versions.items()):
+    if any(type(manifest.get(key)) is not int or manifest[key] != value
+           for key, value in versions.items()):
         raise ValueError('manifest must declare Agent V1')
     entries = manifest['schemas']
     files = [entry['file'] for entry in entries]

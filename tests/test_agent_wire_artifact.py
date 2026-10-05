@@ -102,12 +102,13 @@ class WireArtifactTests(unittest.TestCase):
     def test_major_is_exact(self):
         for area, (_, _, versions) in artifact.FAMILIES.items():
             for key in versions:
-                def mutate(schemas, manifest, library):
-                    value = json.loads(manifest.read_text())
-                    value[key] = 2
-                    manifest.write_text(json.dumps(value))
-                with self.subTest(area=area, key=key):
-                    self.copy(area, mutate, 'Agent V1')
+                for invalid in (2, True, 1.0, '1', None):
+                    def mutate(schemas, manifest, library):
+                        value = json.loads(manifest.read_text())
+                        value[key] = invalid
+                        manifest.write_text(json.dumps(value))
+                    with self.subTest(area=area, key=key, invalid=invalid):
+                        self.copy(area, mutate, 'Agent V1')
 
     def test_unregistered_protocol_family_is_rejected(self):
         generated = dict(artifact.generated())
