@@ -18,9 +18,7 @@ impl Service {
         input: &Acknowledgement,
         a: &RequestAudit,
     ) -> Result<(), Failure> {
-        if input.operation.is_nil() {
-            return Err(Error::Malformed.into());
-        }
+        input.validate().map_err(|_| Error::Malformed)?;
         let p = self.authenticate(peer).await?;
         a.identify_device(p.registration());
         a.target(p.device());

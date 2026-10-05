@@ -1,7 +1,11 @@
 //! Generate protocol documentation directly from the current Rust DTOs.
-use rss_mdm_agent_wire::{enroll, runtime};
+use rss_mdm_agent_wire::{enroll, pki, runtime};
 fn main() {
     let schemas = serde_json::json!({
+        "pki": {
+            "Trust": schemars::schema_for!(pki::Trust),
+            "Acknowledgement": schemars::schema_for!(pki::Acknowledgement),
+        },
         "runtime": {
             "BindingProfile": schemars::schema_for!(runtime::BindingProfile),
             "ReportRequest": schemars::schema_for!(runtime::ReportRequest),

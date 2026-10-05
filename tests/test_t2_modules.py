@@ -9,6 +9,14 @@ from ci_impact import select_inputs, SelectionError
 
 
 class ModuleImpactTests(unittest.TestCase):
+    def test_pki_artifacts_select_the_shared_protocol_consumers(self):
+        expected = select_inputs(['crates/agent-wire/src/pki.rs']).modules
+        for file in ('manifest.json', 'trust-v1.schema.json', 'acknowledgement-v1.schema.json'):
+            selected = select_inputs(['crates/agent-wire/schema/pki/' + file])
+            self.assertEqual(selected.modules, expected)
+            self.assertIn('agent.pki', selected.modules)
+        self.assertEqual(select_inputs(['crates/agent-wire/tests/pki.rs']).modules, ())
+
     def test_self_service_consumes_trusted_subject_and_session_authority(self):
         for path in ('crates/authorization-service/src/evaluate.rs',
                      'crates/authorization-service/src/session.rs'):
