@@ -147,9 +147,10 @@ def execute(fixture):
                     'foreign tenant session crossed host binding')
         for index,path in enumerate(configs):
             config=json.loads(path.read_text())
+            config['listen']='127.0.0.1:0'
             config['identity']['tenant_id']=str(uuid.uuid4())
             command('serve',config,accepted=False)
-            config=json.loads(path.read_text());config['flow']['storage']['epoch']=2
+            config=json.loads(path.read_text());config['listen']='127.0.0.1:0';config['flow']['storage']['epoch']=2
             command('serve',config,accepted=False)
     require(snapshot() == before, 'initializing and consuming B changed A settings or epoch')
     print('fresh A -> register B -> account/authorization -> two real same-database hosts and tenant isolation passed',flush=True)
