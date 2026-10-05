@@ -206,7 +206,7 @@ MODULES['agent.pki'] = replace(MODULES['agent.pki'], scope='tenant', policies=(
 ))
 
 add('installation.migration', selectors=('migration::tests::fresh_installation_replay_and_mismatch_rejection','tenant_registry::tests::'), profile='empty',
-    sources=('crates/app/src/migration.rs','crates/app/src/migration/*','crates/app/src/tenant_registry.rs'), tests=('crates/app/tests/migration/mod.rs','crates/app/tests/tenant_registry/mod.rs',),
+    sources=('crates/app/src/migration.rs','crates/app/src/tenant_registry.rs'), tests=('crates/app/tests/migration/mod.rs','crates/app/tests/tenant_registry/mod.rs',),
     python='installation', support=('hack/t2_modules/installation.py',))
 add('installation.tenants', build=None, profile='empty', python='tenants',
     sources=('crates/app/src/tenant_registry.rs','crates/app/src/migration.rs','crates/app/src/maintenance.rs','crates/app/src/authorization_bootstrap.rs','crates/app/src/lifecycle.rs'),
