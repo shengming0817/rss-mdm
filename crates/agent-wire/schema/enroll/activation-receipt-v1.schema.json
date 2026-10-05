@@ -1,186 +1,316 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/agent/enroll/v1/ActivationReceipt",
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "wireVersion",
-    "issuanceId",
-    "operationId",
-    "runtime"
-  ],
-  "properties": {
-    "wireVersion": {
-      "const": 1
-    },
-    "issuanceId": {
-      "$ref": "#/$defs/nonNilUuid"
-    },
-    "operationId": {
-      "$ref": "#/$defs/nonNilUuid"
-    },
-    "runtime": {
-      "$ref": "#/$defs/bindingProfile"
-    }
-  },
   "$defs": {
-    "nonNilUuid": {
-      "type": "string",
-      "format": "uuid",
-      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-      "not": {
-        "const": "00000000-0000-0000-0000-000000000000"
-      }
+    "BindingProfile": {
+      "additionalProperties": false,
+      "description": "Durable registration result. It never contains the submitted credential.",
+      "properties": {
+        "capabilities": {
+          "description": "Exact accepted capability set.",
+          "items": {
+            "$ref": "#/$defs/Capability"
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "collections": {
+          "description": "Server-selected built-in collector versions for this registration.",
+          "items": {
+            "$ref": "#/$defs/CollectionDefinition"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "type": "array"
+        },
+        "deviceId": {
+          "description": "Server-owned product device identity.",
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^(?=.*\\S)[^\\u0000-\\u001F\\u007F-\\u009F]*$",
+          "type": "string"
+        },
+        "epoch": {
+          "description": "Observation epoch for this registration.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "generation": {
+          "description": "Channel-local registration generation.",
+          "format": "uint64",
+          "maximum": 9223372036854775807,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "operationId": {
+          "description": "Registration operation replay identity.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "registrationId": {
+          "description": "Immutable registration identity.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/ReportSource",
+          "const": "agent.builtin",
+          "description": "Authorized report source."
+        },
+        "wireVersion": {
+          "const": 1,
+          "description": "Exact wire major."
+        }
+      },
+      "required": [
+        "wireVersion",
+        "operationId",
+        "deviceId",
+        "registrationId",
+        "generation",
+        "source",
+        "epoch",
+        "capabilities",
+        "collections"
+      ],
+      "type": "object"
     },
-    "fieldType": {
+    "Capability": {
+      "description": "Closed V1 capability set.",
       "oneOf": [
         {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind"
-          ],
-          "properties": {
-            "kind": {
-              "const": "integer"
-            }
-          }
+          "const": "inventory.collect.v1",
+          "description": "Full/partial/failed reports for the two basic inventory fields.",
+          "type": "string"
         },
         {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind"
-          ],
-          "properties": {
-            "kind": {
-              "const": "number"
-            }
-          }
+          "const": "task.execute.v1",
+          "description": "Receive and execute signed task offers.",
+          "type": "string"
         },
         {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind"
-          ],
-          "properties": {
-            "kind": {
-              "const": "boolean"
-            }
-          }
+          "const": "software.msi.system.v1",
+          "description": "Execute the exact software.msi.system.v1 profile.",
+          "type": "string"
         },
         {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind"
-          ],
-          "properties": {
-            "kind": {
-              "const": "time"
-            }
-          }
+          "const": "software.msi.user.v1",
+          "description": "Execute the exact software.msi.user.v1 profile.",
+          "type": "string"
         },
         {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "maxLength",
-            "allowEmpty"
-          ],
-          "properties": {
-            "kind": {
-              "const": "string"
-            },
-            "maxLength": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 65536
-            },
-            "allowEmpty": {
-              "type": "boolean"
-            }
-          }
+          "const": "software.pkg.system.v1",
+          "description": "Execute the exact software.pkg.system.v1 profile.",
+          "type": "string"
         },
         {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "values"
-          ],
-          "properties": {
-            "kind": {
-              "const": "enum"
-            },
-            "values": {
-              "type": "array",
-              "minItems": 1,
-              "maxItems": 128,
-              "uniqueItems": true,
-              "items": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 256
-              }
-            }
-          }
+          "const": "software.bundle.windows.system.v1",
+          "description": "Execute the exact software.bundle.windows.system.v1 profile.",
+          "type": "string"
         },
         {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "items",
-            "maxItems"
-          ],
-          "properties": {
-            "kind": {
-              "const": "array"
-            },
-            "items": {
-              "$ref": "#/$defs/fieldType"
-            },
-            "maxItems": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 100000
-            }
-          }
+          "const": "software.bundle.windows.user.v1",
+          "description": "Execute the exact software.bundle.windows.user.v1 profile.",
+          "type": "string"
         },
         {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "properties"
-          ],
-          "properties": {
-            "kind": {
-              "const": "object"
-            },
-            "properties": {
-              "type": "object",
-              "minProperties": 1,
-              "maxProperties": 64,
-              "propertyNames": {
-                "type": "string",
-                "maxLength": 64,
-                "pattern": "^[a-z][a-z0-9_]*$"
-              },
-              "additionalProperties": {
-                "$ref": "#/$defs/fieldType"
-              }
-            }
-          }
+          "const": "software.bundle.macos.system.v1",
+          "description": "Execute the exact software.bundle.macos.system.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "software.bundle.macos.user.v1",
+          "description": "Execute the exact software.bundle.macos.user.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "software.winget.system.v1",
+          "description": "Execute the exact software.winget.system.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "software.winget.user.v1",
+          "description": "Execute the exact software.winget.user.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "software.brew.bottle.user.v1",
+          "description": "Execute the exact software.brew.bottle.user.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "software.exe.system.v1",
+          "description": "Execute the exact software.exe.system.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "software.exe.user.v1",
+          "description": "Execute the exact software.exe.user.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "software.dmg.app.system.v1",
+          "description": "Execute the exact software.dmg.app.system.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "software.dmg.app.user.v1",
+          "description": "Execute the exact software.dmg.app.user.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "software.dmg.pkg.system.v1",
+          "description": "Execute the exact software.dmg.pkg.system.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "software.msix.registration.user.v1",
+          "description": "Execute the exact software.msix.registration.user.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "software.msix.provisioning.system.v1",
+          "description": "Execute the exact software.msix.provisioning.system.v1 profile.",
+          "type": "string"
+        },
+        {
+          "const": "mdm.enrollment.v1",
+          "description": "Open the standard MDM enrollment entry with OS/user approval.",
+          "type": "string"
         }
       ]
     },
-    "fieldDefinition": {
-      "type": "object",
+    "CollectionDefinition": {
       "additionalProperties": false,
+      "description": "Frozen source and field definitions for one published collector version.\nConstructing this value validates structure; the caller still owns tenant/device authorization.",
+      "properties": {
+        "dataset": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+          "type": "string"
+        },
+        "fields": {
+          "items": {
+            "$ref": "#/$defs/FieldDefinition"
+          },
+          "maxItems": 128,
+          "minItems": 1,
+          "type": "array"
+        },
+        "source": {
+          "$ref": "#/$defs/Source",
+          "not": {
+            "const": "manual"
+          }
+        },
+        "version": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dataset",
+        "version",
+        "source",
+        "fields"
+      ],
+      "type": "object"
+    },
+    "FieldDefinition": {
+      "additionalProperties": false,
+      "description": "A published field version. No time-based expiry and no execution permission.",
+      "properties": {
+        "itemKey": {
+          "description": "Optional stable item-key property for a structured inventory list.",
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "$ref": "#/$defs/FieldKey",
+          "description": "Stable field identity.",
+          "maxLength": 128,
+          "pattern": "^(device|custom|channel)\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$"
+        },
+        "manual": {
+          "description": "Whether management assignment is permitted.",
+          "type": "boolean"
+        },
+        "nullable": {
+          "description": "Accept explicit null as distinct from deletion.",
+          "type": "boolean"
+        },
+        "platforms": {
+          "description": "Supported platforms.",
+          "items": {
+            "$ref": "#/$defs/Platform"
+          },
+          "maxItems": 2,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "searchable": {
+          "description": "Whether this field participates in conditions/search.",
+          "type": "boolean"
+        },
+        "sensitivity": {
+          "$ref": "#/$defs/Sensitivity",
+          "description": "Read/filter visibility classification."
+        },
+        "sources": {
+          "additionalProperties": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "Allowed sources with priority; lower numbers win, equal numbers require consensus.",
+          "minProperties": 1,
+          "propertyNames": {
+            "$ref": "#/$defs/Source"
+          },
+          "type": "object"
+        },
+        "unit": {
+          "description": "Exact optional unit; no implicit conversion.",
+          "maxLength": 64,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "valueType": {
+          "$ref": "#/$defs/ValueType",
+          "description": "Exact bounded type."
+        },
+        "version": {
+          "description": "Monotonic published version.",
+          "format": "uint64",
+          "maximum": 9223372036854775807,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
       "required": [
         "key",
         "version",
@@ -194,214 +324,299 @@
         "searchable",
         "itemKey"
       ],
-      "properties": {
-        "key": {
-          "type": "string",
-          "maxLength": 128,
-          "pattern": "^(device|custom|channel)\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$"
+      "type": "object"
+    },
+    "FieldKey": {
+      "description": "Bounded protocol field identity; parsing grants no catalog or source authority.",
+      "maxLength": 128,
+      "pattern": "^(device|custom|channel)\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+      "type": "string"
+    },
+    "Platform": {
+      "description": "Platform applicable to a field or collector.",
+      "oneOf": [
+        {
+          "const": "windows",
+          "description": "Windows.",
+          "type": "string"
         },
-        "version": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 9223372036854775807
+        {
+          "const": "macos",
+          "description": "macOS.",
+          "type": "string"
+        }
+      ]
+    },
+    "ReportSource": {
+      "description": "Server-owned report source returned after registration.",
+      "oneOf": [
+        {
+          "const": "agent.builtin",
+          "description": "Built-in RSS Agent inventory collector.",
+          "type": "string"
+        }
+      ]
+    },
+    "Sensitivity": {
+      "description": "Field visibility class, enforced by the product authorization boundary.",
+      "oneOf": [
+        {
+          "const": "standard",
+          "description": "Ordinary inventory.",
+          "type": "string"
         },
-        "valueType": {
-          "$ref": "#/$defs/fieldType"
+        {
+          "const": "sensitive",
+          "description": "Requires the sensitive inventory permission.",
+          "type": "string"
+        }
+      ]
+    },
+    "Source": {
+      "description": "All allowed asset sources. Serialized as their canonical stable identifier.",
+      "oneOf": [
+        {
+          "const": "agent.script",
+          "description": "Controlled collection script evidence.",
+          "type": "string"
         },
-        "nullable": {
-          "type": "boolean"
+        {
+          "const": "agent.osquery",
+          "description": "Published SQL template evidence.",
+          "type": "string"
         },
-        "manual": {
-          "type": "boolean"
+        {
+          "const": "mdm.apple",
+          "description": "Apple MDM evidence.",
+          "type": "string"
         },
-        "sources": {
-          "type": "object",
-          "minProperties": 1,
-          "propertyNames": {
-            "enum": [
-              "mdm.windows",
-              "mdm.apple",
-              "agent.builtin",
-              "agent.script",
-              "agent.osquery",
-              "manual"
-            ]
-          },
-          "additionalProperties": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 65535
-          }
+        {
+          "const": "agent.builtin",
+          "description": "Built-in agent evidence.",
+          "type": "string"
         },
-        "platforms": {
-          "type": "array",
-          "minItems": 1,
-          "maxItems": 2,
-          "uniqueItems": true,
-          "items": {
-            "enum": [
-              "windows",
-              "macos"
-            ]
-          }
+        {
+          "const": "manual",
+          "description": "Administrator assignment.",
+          "type": "string"
         },
-        "sensitivity": {
-          "enum": [
-            "standard",
-            "sensitive"
-          ]
-        },
-        "unit": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1,
-          "maxLength": 64
-        },
-        "searchable": {
-          "type": "boolean"
-        },
-        "itemKey": {
-          "anyOf": [
-            {
-              "type": "string",
-              "maxLength": 64,
-              "pattern": "^[a-z][a-z0-9_]*$"
+        {
+          "const": "mdm.windows",
+          "description": "Windows MDM evidence.",
+          "type": "string"
+        }
+      ]
+    },
+    "ValueType": {
+      "description": "Closed structural schema for one field; every property is explicit and required.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Bounded text; empty text is a legitimate value when allowed.",
+          "properties": {
+            "allowEmpty": {
+              "description": "Whether empty text is allowed.",
+              "type": "boolean"
             },
-            {
-              "type": "null"
+            "kind": {
+              "const": "string",
+              "type": "string"
+            },
+            "maxLength": {
+              "description": "Character budget.",
+              "format": "uint32",
+              "maximum": 65536,
+              "minimum": 1,
+              "type": "integer"
             }
-          ]
-        }
-      }
-    },
-    "collection": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "dataset",
-        "version",
-        "source",
-        "fields"
-      ],
-      "properties": {
-        "dataset": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
-        },
-        "version": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
-        },
-        "source": {
-          "enum": [
-            "mdm.windows",
-            "mdm.apple",
-            "agent.builtin",
-            "agent.script",
-            "agent.osquery"
-          ]
-        },
-        "fields": {
-          "type": "array",
-          "minItems": 1,
-          "maxItems": 128,
-          "items": {
-            "$ref": "#/$defs/fieldDefinition"
-          }
-        }
-      }
-    },
-    "bindingProfile": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "wireVersion",
-        "operationId",
-        "deviceId",
-        "registrationId",
-        "generation",
-        "source",
-        "epoch",
-        "capabilities",
-        "collections"
-      ],
-      "properties": {
-        "wireVersion": {
-          "const": 1
-        },
-        "operationId": {
-          "$ref": "#/$defs/nonNilUuid"
-        },
-        "deviceId": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 256,
-          "pattern": "^(?=.*\\S)[^\\u0000-\\u001F\\u007F-\\u009F]*$"
-        },
-        "registrationId": {
-          "$ref": "#/$defs/nonNilUuid"
-        },
-        "generation": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 9223372036854775807
-        },
-        "source": {
-          "const": "agent.builtin"
-        },
-        "epoch": {
-          "$ref": "#/$defs/nonNilUuid"
-        },
-        "capabilities": {
-          "type": "array",
-          "minItems": 1,
-          "maxItems": 20,
-          "uniqueItems": true,
-          "prefixItems": [
-            {
-              "const": "inventory.collect.v1"
-            }
+          },
+          "required": [
+            "kind",
+            "maxLength",
+            "allowEmpty"
           ],
-          "items": {
-            "enum": [
-              "inventory.collect.v1",
-              "task.execute.v1",
-              "software.msi.system.v1",
-              "software.msi.user.v1",
-              "software.pkg.system.v1",
-              "software.bundle.windows.system.v1",
-              "software.bundle.windows.user.v1",
-              "software.bundle.macos.system.v1",
-              "software.bundle.macos.user.v1",
-              "software.winget.system.v1",
-              "software.winget.user.v1",
-              "software.brew.bottle.user.v1",
-              "software.exe.system.v1",
-              "software.exe.user.v1",
-              "software.dmg.app.system.v1",
-              "software.dmg.app.user.v1",
-              "software.dmg.pkg.system.v1",
-              "software.msix.registration.user.v1",
-              "software.msix.provisioning.system.v1",
-              "mdm.enrollment.v1"
-            ]
-          }
+          "type": "object"
         },
-        "collections": {
-          "type": "array",
-          "minItems": 1,
-          "maxItems": 16,
-          "items": {
-            "$ref": "#/$defs/collection"
-          }
+        {
+          "additionalProperties": false,
+          "description": "Closed string vocabulary.",
+          "properties": {
+            "kind": {
+              "const": "enum",
+              "type": "string"
+            },
+            "values": {
+              "description": "Permitted nonempty values.",
+              "items": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 128,
+              "minItems": 1,
+              "type": "array",
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "kind",
+            "values"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Signed 64-bit integer.",
+          "properties": {
+            "kind": {
+              "const": "integer",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Finite numeric value.",
+          "properties": {
+            "kind": {
+              "const": "number",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Boolean.",
+          "properties": {
+            "kind": {
+              "const": "boolean",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "UTC Unix seconds.",
+          "properties": {
+            "kind": {
+              "const": "time",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Ordered values sharing one schema.",
+          "properties": {
+            "items": {
+              "$ref": "#/$defs/ValueType",
+              "description": "Element schema."
+            },
+            "kind": {
+              "const": "array",
+              "type": "string"
+            },
+            "maxItems": {
+              "description": "Maximum number of values.",
+              "format": "uint32",
+              "maximum": 100000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "items",
+            "maxItems"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Closed properties; undeclared and absent properties are rejected.",
+          "properties": {
+            "kind": {
+              "const": "object",
+              "type": "string"
+            },
+            "properties": {
+              "additionalProperties": {
+                "$ref": "#/$defs/ValueType"
+              },
+              "description": "Property schema by literal name.",
+              "maxProperties": 64,
+              "minProperties": 1,
+              "propertyNames": {
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9_]*$",
+                "type": "string"
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "kind",
+            "properties"
+          ],
+          "type": "object"
         }
-      }
+      ]
     }
-  }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Durable activation result, including an independently versioned runtime binding.",
+  "properties": {
+    "issuanceId": {
+      "description": "Exact activated issuance.",
+      "format": "uuid",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "operationId": {
+      "description": "Activation operation identity.",
+      "format": "uuid",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "runtime": {
+      "$ref": "#/$defs/BindingProfile",
+      "description": "Runtime binding and collection definitions selected by the server."
+    },
+    "wireVersion": {
+      "const": 1,
+      "description": "Enrollment API version."
+    }
+  },
+  "required": [
+    "wireVersion",
+    "issuanceId",
+    "operationId",
+    "runtime"
+  ],
+  "title": "ActivationReceipt",
+  "type": "object",
+  "$id": "https://rss.example/agent/enroll/v1/ActivationReceipt"
 }

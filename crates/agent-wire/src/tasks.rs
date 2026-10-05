@@ -2,13 +2,13 @@
 #[path = "tasks/context.rs"]
 mod context;
 use super::{WIRE_VERSION, WireError, strict_uuid};
-use base64::Engine;
 pub use context::{
     SoftwareExecutionContext, SoftwareExecutionTarget, SoftwareInteractiveUser,
     SoftwareReadCredential,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::Digest;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
@@ -42,14 +42,16 @@ where
     Option::deserialize(deserializer)
 }
 /// Cancellation applies only to this exact task attempt; it asserts no rollback.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskCancellation {
     /// Task identity.
     #[serde(with = "strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     task_id: Uuid,
     /// Attempt to stop.
     #[serde(with = "strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     attempt_id: Uuid,
 }
 impl TaskCancellation {
@@ -73,31 +75,24 @@ impl TaskCancellation {
     }
 }
 /// Poll response; the offer still requires signature verification and a separate start permit.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskClaimResponse {
     /// Sole supported major.
     #[serde(deserialize_with = "version")]
+    #[schemars(schema_with = "crate::runtime::version_schema")]
     wire_version: u8,
     /// At most one offered task.
+    #[serde(deserialize_with = "required_option")]
+    #[schemars(
+        required,
+        schema_with = "crate::self_service::nullable_schema::<SignedTask>"
+    )]
     task: Option<SignedTask>,
     /// Authenticated cancellation requests.
+    #[schemars(extend("maxItems" = 128))]
+    #[serde(deserialize_with = "cancellations")]
     cancellations: Vec<TaskCancellation>,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RawTaskClaimResponse {
-    #[serde(rename = "wireVersion", deserialize_with = "version")]
-    _wire_version: u8,
-    #[serde(deserialize_with = "required_option")]
-    task: Option<SignedTask>,
-    cancellations: Vec<TaskCancellation>,
-}
-impl<'de> Deserialize<'de> for TaskClaimResponse {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let raw = RawTaskClaimResponse::deserialize(deserializer)?;
-        Self::new(raw.task, raw.cancellations).map_err(serde::de::Error::custom)
-    }
 }
 impl TaskClaimResponse {
     /// Construct a bounded poll response with the fixed wire version.
@@ -128,17 +123,23 @@ impl TaskClaimResponse {
     }
 }
 /// A durable event receipt. Acceptance alone cannot authorize process execution.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskEventAck {
     /// Sole supported major.
     #[serde(deserialize_with = "version")]
+    #[schemars(schema_with = "crate::runtime::version_schema")]
     wire_version: u8,
     /// The event was durably accepted.
     #[serde(deserialize_with = "accepted")]
+    #[schemars(extend("const" = true))]
     accepted: bool,
     /// Only Start may return a freshly signed start permit.
     #[serde(deserialize_with = "required_option")]
+    #[schemars(
+        required,
+        schema_with = "crate::self_service::nullable_schema::<SignedTask>"
+    )]
     permit: Option<SignedTask>,
     /// Stop this attempt; execution effects may remain unknown.
     cancel_requested: bool,
@@ -171,7 +172,7 @@ impl TaskEventAck {
     }
 }
 /// A task receipt, start request, or bounded execution result; none proves applied state.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -249,6 +250,7 @@ struct DiagnosticsInput {
     #[schemars(range(max = MAX_TASK_DURATION_MS))]
     duration_ms: u64,
     #[schemars(range(min = 1))]
+    #[schemars(extend("minimum" = 1, "maximum" = 9223372036854775807u64))]
     executed_at: i64,
     #[serde(deserialize_with = "required_option")]
     #[schemars(
@@ -322,17 +324,20 @@ impl TaskDiagnostics {
     }
 }
 /// Private validated execution result.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "ResultInput", into = "ResultInput")]
 pub struct TaskResult(ResultInput);
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(transform = crate::runtime::tasks::result_constraints)]
 struct ResultInput {
     #[serde(deserialize_with = "required_option")]
+    #[schemars(required, schema_with = "crate::self_service::nullable_schema::<i32>")]
     exit_code: Option<i32>,
     quality: OutputQuality,
     output: Value,
     diagnostics: TaskDiagnostics,
+    #[schemars(extend("minimum" = 1, "maximum" = 9223372036854775807u64))]
     collected_at: i64,
 }
 impl From<TaskResult> for ResultInput {
@@ -412,16 +417,19 @@ impl TaskResult {
     }
 }
 /// Private validated event envelope, with no client-asserted tenant/device/generation.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "EventInput", into = "EventInput")]
 pub struct TaskEventRequest(EventInput);
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct EventInput {
+    #[schemars(schema_with = "crate::runtime::version_schema")]
     wire_version: u8,
     #[serde(with = "strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     operation_id: Uuid,
     #[serde(with = "strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     attempt_id: Uuid,
     event: TaskEvent,
     execution_context: SoftwareExecutionContext,
@@ -489,15 +497,18 @@ impl TaskEventRequest {
     }
 }
 /// Idempotent task poll. The server derives all identity from the credential.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "ClaimInput", into = "ClaimInput")]
 pub struct TaskClaimRequest(ClaimInput);
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ClaimInput {
+    #[schemars(schema_with = "crate::runtime::version_schema")]
     wire_version: u8,
     #[serde(with = "strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     operation_id: Uuid,
+    #[schemars(extend("maxItems" = 4, "uniqueItems" = true, "items" = serde_json::json!({"enum":["power_shell7","posix_sh","bash","osquery"]})))]
     profiles: Vec<ExecutorProfile>,
     execution_context: SoftwareExecutionContext,
 }
@@ -553,7 +564,7 @@ impl TaskClaimRequest {
     }
 }
 /// Fixed executor identity. There is no arbitrary command string.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutorProfile {
     /// PowerShell 7 on Windows.
@@ -575,7 +586,7 @@ pub enum ExecutionIdentity {
     LoggedInUser,
 }
 /// Signed message purpose prevents reusing a received offer as execution permission.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskPermit {
     /// Content download and acknowledgement only.
@@ -584,24 +595,29 @@ pub enum TaskPermit {
     Start,
 }
 /// Signed, exact content coordinates. The task route supplies download authority.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskContent {
     /// Expected byte count.
+    #[schemars(extend("minimum" = 1, "maximum" = 16777216))]
     pub length: u64,
     /// SHA-256 of exact content bytes.
     pub sha256: [u8; 32],
 }
 /// Frozen executor inputs carried inside the signature; output semantics stay server-owned.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(extend("allOf" = serde_json::json!([{"if":{"properties":{"profile":{"const":"osquery"}}},"then":{"required":["sqlParameters"],"properties":{"arguments":{"maxItems":0},"environment":{"maxProperties":0},"runAs":{"const":"system"},"sqlParameters":{"type":"object"}}},"else":{"properties":{"sqlParameters":{"type":"null"}}}}])))]
 pub struct TaskSpec {
     /// Exact wire major.
+    #[schemars(schema_with = "crate::runtime::version_schema")]
     pub wire_version: u8,
     /// Server-selected tenant.
     #[serde(with = "strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub tenant_id: Uuid,
     /// Server-selected device identity.
+    #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]+$"))]
     pub device_id: String,
     /// Selected artifact operating system.
     pub platform: TaskPlatform,
@@ -609,18 +625,23 @@ pub struct TaskSpec {
     pub architecture: TaskArchitecture,
     /// Current registration at approval/claim.
     #[serde(with = "strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub registration_id: Uuid,
     /// Registration generation.
+    #[schemars(extend("minimum" = 1, "maximum" = 9223372036854775807u64))]
     pub generation: u64,
     /// Immutable run identity.
     #[serde(with = "strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub task_id: Uuid,
     /// Exact execution attempt.
     #[serde(with = "strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub attempt_id: Uuid,
     /// Signature purpose.
     pub permit: TaskPermit,
     /// Nonnegative Unix expiry, checked against a trusted clock by the consumer.
+    #[schemars(extend("minimum" = 0, "maximum" = 9223372036854775807u64))]
     pub expires_at: i64,
     /// Exact Resource version digest, including its full execution interface.
     pub resource_digest: [u8; 32],
@@ -629,28 +650,36 @@ pub struct TaskSpec {
     /// Trusted server authorization decision.
     pub authorization: super::TaskAuthorization,
     /// Complete resolved values, covered by the task signature.
+    #[schemars(extend("maxProperties" = 32, "propertyNames" = serde_json::json!({"type":"string","minLength":1,"maxLength":64,"pattern":"^[A-Za-z0-9_]+$"}), "additionalProperties" = serde_json::json!({"anyOf":[{"type":"string","pattern":"^[^\\u0000]*$"},{"type":"boolean"},{"type":"integer","minimum":-9223372036854775808i64,"maximum":9223372036854775807i64}]})))]
     pub parameters: BTreeMap<String, Value>,
     /// Absolute Run deadline, independent of the permit expiry.
+    #[schemars(extend("minimum" = 0, "maximum" = 9223372036854775807u64))]
     pub deadline: i64,
     /// Exact downloadable artifact.
     pub content: TaskContent,
     /// Fixed interpreter profile.
     pub profile: ExecutorProfile,
     /// Literal parameters for the signed SQL template artifact; no free-form query text.
+    #[schemars(extend("maxProperties" = 32, "propertyNames" = serde_json::json!({"type":"string","minLength":1,"maxLength":64,"pattern":"^[a-zA-Z0-9_]+$"}), "additionalProperties" = serde_json::json!({"oneOf":[{"type":"string","maxLength":4096,"pattern":"^[^\\u0000]*$"},{"type":"boolean"},{"type":"integer","minimum":-9223372036854775808i64,"maximum":9223372036854775807i64}]})))]
     pub sql_parameters: Option<BTreeMap<String, serde_json::Value>>,
     /// Required execution identity.
     pub run_as: ExecutionIdentity,
     /// Exact effect target covered by the same signature as the script inputs.
     pub execution_target: SoftwareExecutionTarget,
     /// Literal arguments, with no shell interpolation.
+    #[schemars(extend("maxItems" = 64, "items" = serde_json::json!({"type":"string","minLength":0,"maxLength":65536,"pattern":"^[^\\u0000]*$"})))]
     pub arguments: Vec<String>,
     /// Only explicit product parameter variables.
+    #[schemars(extend("maxProperties" = 32, "propertyNames" = serde_json::json!({"type":"string","minLength":11,"maxLength":64,"pattern":"^RSS_PARAM_[A-Za-z0-9_]+$"}), "additionalProperties" = serde_json::json!({"type":"string","minLength":0,"maxLength":65536,"pattern":"^[^\\u0000]*$"})))]
     pub environment: BTreeMap<String, String>,
     /// Wall-time limit.
+    #[schemars(extend("minimum" = 1, "maximum" = 3600))]
     pub timeout_seconds: u32,
     /// Output byte budget.
+    #[schemars(extend("minimum" = 1, "maximum" = 16777216))]
     pub output_bytes: u32,
     /// Maximum output rows.
+    #[schemars(extend("minimum" = 1, "maximum" = 65535))]
     pub max_rows: u16,
 }
 impl TaskSpec {
@@ -783,7 +812,7 @@ impl TaskSpec {
     }
 }
 /// Software operation selected by the server; detection remains independent evidence.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SoftwareTaskIntent {
     /// Install the frozen version.
@@ -794,7 +823,7 @@ pub enum SoftwareTaskIntent {
     Uninstall,
 }
 /// Whether a signed task can start automatically or awaits trusted local user action.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SoftwareStartMode {
     /// Policy-required task may start when offered and locally admitted.
@@ -803,12 +832,14 @@ pub enum SoftwareStartMode {
     UserInitiated,
 }
 /// One exact artifact needed by an executable software step.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SoftwareTaskArtifact {
     /// Opaque task-local key in the content endpoint.
+    #[schemars(extend("minLength" = 1, "maxLength" = 132, "pattern" = "^(?!\\.{1,2}(?:/|$))(?!.*\\/\\.{1,2}(?:/|$))[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"))]
     pub key: String,
     /// Exact byte count.
+    #[schemars(extend("minimum" = 1, "maximum" = 1099511627776u64))]
     pub length: u64,
     /// Exact SHA-256 digest.
     pub sha256: [u8; 32],
@@ -818,7 +849,7 @@ pub struct SoftwareTaskArtifact {
 mod software;
 pub use software::*;
 /// Permitted reboot handling.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SoftwareTaskReboot {
     /// Reboot requirement fails the task.
@@ -827,7 +858,7 @@ pub enum SoftwareTaskReboot {
     Report,
 }
 /// Exact downgrade permission.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SoftwareTaskDowngrade {
     /// Block downgrade.
@@ -836,38 +867,44 @@ pub enum SoftwareTaskDowngrade {
     Allow,
 }
 /// A declared member of a bounded bundle.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftwareTaskBundleEntry {
     /// Uncompressed member size.
+    #[schemars(extend("minimum" = 0, "maximum" = 1099511627776u64))]
     pub length: u64,
     /// Member content digest.
     pub sha256: [u8; 32],
 }
 /// Complete platform-bound bundle manifest.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftwareTaskBundle {
     /// Bundle schema major.
+    #[schemars(extend("minimum" = 0, "maximum" = 4294967295u64))]
     pub schema: u32,
     /// Target operating system.
     pub platform: TaskPlatform,
     /// Target architecture.
     pub architecture: TaskArchitecture,
     /// Complete declared member set.
+    #[schemars(extend("maxProperties" = 4096))]
     pub entries: BTreeMap<String, SoftwareTaskBundleEntry>,
 }
 /// Complete executable action. No independently selectable format or executor.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftwareTaskAction {
     /// Exact ecosystem package identity.
+    #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
     pub package: String,
     /// Exact package version.
+    #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]*$"))]
     pub version: String,
     /// Format-specific closed executable plan.
     pub behavior: SoftwareTaskBehavior,
     /// Explicit signature requirements; empty allows unsigned content subject to OS prerequisites.
+    #[schemars(extend("maxItems" = 64))]
     pub signatures: Vec<SoftwareTaskSignature>,
     /// Approved reboot reporting.
     pub reboot: SoftwareTaskReboot,
@@ -940,12 +977,13 @@ impl SoftwareTaskAction {
     }
 }
 /// One locally executable step; the server has already ordered fixed prerequisites.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SoftwareTaskStep {
     /// Device action and independent detector without Catalog source or dependency graph.
     pub action: SoftwareTaskAction,
     /// Task-local artifacts for this step.
+    #[schemars(extend("minItems" = 1, "maxItems" = 64))]
     pub artifacts: Vec<SoftwareTaskArtifact>,
     /// Frozen readonly native source or direct native artifact consumption.
     pub export: SoftwareTaskExport,
@@ -953,15 +991,18 @@ pub struct SoftwareTaskStep {
     pub target: SoftwareExecutionTarget,
 }
 /// Signed software task with ordered executable steps and no Policy or Catalog model.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SoftwareTaskSpec {
     /// Exact wire major.
+    #[schemars(schema_with = "crate::runtime::version_schema")]
     pub wire_version: u8,
     /// Server-selected tenant.
     #[serde(with = "strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub tenant_id: Uuid,
     /// Server-selected device.
+    #[schemars(extend("minLength" = 1, "maxLength" = 1024, "pattern" = "^[^\\p{Cc}]+$"))]
     pub device_id: String,
     /// Target platform.
     pub platform: TaskPlatform,
@@ -969,24 +1010,30 @@ pub struct SoftwareTaskSpec {
     pub architecture: TaskArchitecture,
     /// Current registration.
     #[serde(with = "strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub registration_id: Uuid,
     /// Registration generation.
+    #[schemars(extend("minimum" = 1, "maximum" = 9223372036854775807u64))]
     pub generation: u64,
     /// Immutable run.
     #[serde(with = "strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub task_id: Uuid,
     /// Exact attempt.
     #[serde(with = "strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub attempt_id: Uuid,
     /// Offer or Start authority.
     pub permit: TaskPermit,
     /// Unix expiry.
+    #[schemars(extend("minimum" = 0, "maximum" = 9223372036854775807u64))]
     pub expires_at: i64,
     /// Current execution environment, frozen across Offer and Start.
     pub execution_context: SoftwareExecutionContext,
     /// Same server-owned origin decision as script tasks, covered by the signature.
     pub authorization: super::TaskAuthorization,
     /// Ordered prerequisites followed by the requested action.
+    #[schemars(extend("minItems" = 1, "maxItems" = 32))]
     pub steps: Vec<SoftwareTaskStep>,
     /// SHA-256 of canonical serialized steps.
     pub definition_digest: [u8; 32],
@@ -1040,25 +1087,27 @@ impl SoftwareTaskSpec {
         self.execution_context.validate_for(self.platform)?;
         let encoded = serde_json::to_vec(&self.steps).map_err(|_| WireError::InvalidValue)?;
         if encoded.len() > 4_194_304
-            || ring::digest::digest(&ring::digest::SHA256, &encoded).as_ref()
-                != self.definition_digest
+            || sha2::Sha256::digest(&encoded).as_slice() != self.definition_digest
         {
             return Err(WireError::InvalidValue);
         }
         let mut keys = std::collections::BTreeSet::new();
         for (index, step) in self.steps.iter().enumerate() {
             step.action.validate()?;
-            if step
-                .action
-                .execution_target(self.platform, &self.execution_context)?
-                != step.target
-                || matches!(&step.action.behavior,SoftwareTaskBehavior::Msix(n) if matches!(n.deployment,SoftwareTaskMsixDeployment::TargetUserRegistration{target:SoftwareTaskUser::ActiveInteractive}))
+            step.target.validate_for(self.platform)?;
+            if !matches!(
+                (step.action.behavior.invocation().run_as, &step.target),
+                (ExecutionIdentity::System, SoftwareExecutionTarget::Device)
+                    | (
+                        ExecutionIdentity::LoggedInUser,
+                        SoftwareExecutionTarget::User { .. }
+                    )
+            ) || matches!(&step.action.behavior,SoftwareTaskBehavior::Msix(n) if matches!(n.deployment,SoftwareTaskMsixDeployment::TargetUserRegistration{target:SoftwareTaskUser::ActiveInteractive}))
             {
                 return Err(WireError::InvalidValue);
             }
             software::validate_step(step, index, self.platform, self.architecture)?;
-            step.export
-                .validate_for(step, self.tenant_id, &self.execution_context)?;
+            step.export.validate_for(step, self.tenant_id)?;
             if step.artifacts.is_empty() || keys.len() + step.artifacts.len() > 64 {
                 return Err(WireError::InvalidValue);
             }
@@ -1093,7 +1142,7 @@ impl SoftwareTaskSpec {
         Ok(bytes)
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 enum RawTaskPayload {
     Script(Box<TaskSpec>),
@@ -1102,7 +1151,7 @@ enum RawTaskPayload {
     Enrollment(crate::runtime::EnrollmentTaskSpec),
 }
 /// Validated immutable script or software task payload.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "RawTaskPayload", into = "RawTaskPayload")]
 pub enum TaskPayload {
     /// Existing script task, upgraded to the current wire major.
@@ -1221,7 +1270,7 @@ impl TaskPayload {
 }
 
 /// Exact operating system of the selected immutable artifact.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskPlatform {
     /// Windows.
@@ -1230,7 +1279,7 @@ pub enum TaskPlatform {
     Macos,
 }
 /// Exact processor architecture of the selected artifact.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskArchitecture {
     /// x86-64.
@@ -1239,97 +1288,29 @@ pub enum TaskArchitecture {
     Aarch64,
 }
 /// Ed25519 signature envelope. A trusted key must be selected by key ID out of band.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SignedTask {
     /// Exact task inputs and authority coordinates.
     pub payload: TaskPayload,
     /// Key identifier from the configured trust set.
+    #[schemars(extend("minLength" = 1, "maxLength" = 128))]
     pub key_id: String,
     /// Unpadded base64url 64-byte Ed25519 signature.
+    #[schemars(extend("pattern" = "^[A-Za-z0-9_-]{85}[AQgw]$"))]
     pub signature: String,
 }
-/// Trusted local identity and key selection, never populated from the received message.
-pub struct TaskVerification<'a> {
-    /// Expected key identifier from the configured trust set.
-    pub key_id: &'a str,
-    /// Trusted Ed25519 public key.
-    pub public_key: &'a [u8],
-    /// Locally enrolled tenant.
-    pub tenant_id: Uuid,
-    /// Locally enrolled device identity.
-    pub device_id: &'a str,
-    /// Actual local operating system.
-    pub platform: TaskPlatform,
-    /// Actual local processor architecture.
-    pub architecture: TaskArchitecture,
-    /// Locally enrolled current registration.
-    pub registration_id: Uuid,
-    /// Locally enrolled generation.
-    pub generation: u64,
-    /// Task identity being accepted.
-    pub task_id: Uuid,
-    /// Attempt identity being accepted.
-    pub attempt_id: Uuid,
-    /// Required permission; an offer cannot authorize start.
-    pub permit: TaskPermit,
-    /// Trusted current Unix time.
-    pub now: i64,
+
+pub(crate) fn result_constraints(schema: &mut schemars::Schema) {
+    schema.insert("allOf".into(), serde_json::json!([{"if":{"properties":{"quality":{"const":"complete"}}},"then":{"properties":{"exitCode":{"const":0},"diagnostics":{"properties":{"failure":{"type":"null"}}}}}},{"if":{"properties":{"diagnostics":{"properties":{"failure":{"const":"non_zero_exit"}}}}},"then":{"properties":{"exitCode":{"type":"integer","not":{"const":0}}}}},{"if":{"properties":{"diagnostics":{"properties":{"failure":{"const":"launch_failed"}}}}},"then":{"properties":{"exitCode":{"type":"null"}}}},{"if":{"properties":{"quality":{"const":"failed"}}},"then":{"properties":{"diagnostics":{"properties":{"failure":{"type":"string"}}}}}},{"if":{"properties":{"quality":{"const":"truncated"}}},"then":{"properties":{"diagnostics":{"properties":{"failure":{"const":"output_limit"}}}}}}]));
 }
-/// Authenticated payload for the exact local context. Only verification constructs this value.
-pub struct VerifiedTask<'a>(&'a TaskPayload);
-impl VerifiedTask<'_> {
-    /// Borrow the verified immutable executor inputs.
-    pub fn payload(&self) -> &TaskPayload {
-        self.0
+
+fn cancellations<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<TaskCancellation>, D::Error> {
+    let value = Vec::deserialize(d)?;
+    if value.len() > MAX_TASK_CANCELLATIONS {
+        return Err(serde::de::Error::custom(WireError::InvalidValue));
     }
-}
-impl SignedTask {
-    /// Authenticate exact bytes, signing key identity, expiry and all local authority coordinates.
-    pub fn verify(&self, context: &TaskVerification<'_>) -> Result<VerifiedTask<'_>, WireError> {
-        let p = &self.payload;
-        let (tenant, device, registration, generation) = match p {
-            TaskPayload::Script(v) => (
-                v.tenant_id,
-                v.device_id.as_str(),
-                v.registration_id,
-                v.generation,
-            ),
-            TaskPayload::Enrollment(v) => (
-                v.tenant_id,
-                v.device_id.as_str(),
-                v.registration_id,
-                v.generation,
-            ),
-            TaskPayload::Software(v) => (
-                v.tenant_id,
-                v.device_id.as_str(),
-                v.registration_id,
-                v.generation,
-            ),
-        };
-        if self.key_id != context.key_id
-            || context.now < 0
-            || context.now >= p.expires_at()
-            || p.permit() != context.permit
-            || tenant != context.tenant_id
-            || device != context.device_id
-            || p.platform() != context.platform
-            || p.architecture() != context.architecture
-            || registration != context.registration_id
-            || generation != context.generation
-            || p.task_id() != context.task_id
-            || p.attempt_id() != context.attempt_id
-            || self.signature.len() != 86
-        {
-            return Err(WireError::InvalidValue);
-        }
-        let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(&self.signature)
-            .map_err(|_| WireError::InvalidValue)?;
-        ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, context.public_key)
-            .verify(&p.signing_bytes(&self.key_id)?, &signature)
-            .map_err(|_| WireError::InvalidValue)?;
-        Ok(VerifiedTask(p))
-    }
+    Ok(value)
 }

@@ -677,6 +677,11 @@ consume(('crates/execution-service/src/input_preparation.rs',
 consume(('crates/execution-service/src/freeze_inputs.rs', 'crates/flow-service/src/resource_catalog/mod.rs'),
         'planning.agent_policy planning.remote planning.onboarding')
 TASK_CONSUMERS = 'installation.upgrade_runtime planning.self_service planning.onboarding planning.policy planning.agent_policy planning.frequency planning.remote planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
+consume(('crates/agent-wire/src/collection.rs', 'crates/agent-channel/src/inventory_wire.rs'),
+        TASK_CONSUMERS + ' agent.registration agent.reports')
+for name in ('execution.agent.delivery', 'execution.software.offer'):
+    MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs,
+                           'crates/app/tests/support/task_signature.rs'))
 consume(('crates/agent-wire/src/tasks.rs', 'crates/agent-wire/schema/runtime/task-*.json',
          'crates/agent-wire/schema/runtime/signed-task-v1.schema.json', 'crates/execution-service/src/task_signing.rs',
          'crates/execution-service/src/actions/mod.rs'), TASK_CONSUMERS)
@@ -1515,7 +1520,8 @@ consume(('crates/registration-service/src/agent*','crates/agent-wire/schema/enro
 
 consume(('crates/agent-channel/src/database.rs',), 'agent.registration agent.reports execution.agent.delivery execution.agent.poll execution.agent.content')
 consume(('crates/agent-wire/src/enroll.rs','crates/management-http/src/agent_enrollment.rs'), 'agent.registration agent.pki execution.commands.onboarding apple.onboarding')
-consume(('crates/agent-wire/src/chunks.rs','crates/agent-wire/src/tasks/context.rs','crates/agent-wire/src/tasks/export.rs'), TASK_CONSUMERS)
+consume(('crates/agent-wire/src/chunks.rs','crates/agent-wire/src/tasks/context.rs','crates/agent-wire/src/tasks/export.rs',
+         'crates/agent-wire/src/tasks/software.rs'), TASK_CONSUMERS)
 consume(('crates/registration-service/src/lib.rs','crates/registration-service/src/error.rs'), 'agent.registration agent.pki device.binding device.revocation enrollment.http')
 consume(('crates/windows-channel/src/error.rs',), 'windows.enrollment windows.management execution.commands.onboarding api.diagnostics')
 consume(('crates/apple-channel/src/error.rs',), 'apple.profile apple.onboarding apple.collection api.diagnostics')
@@ -1570,6 +1576,8 @@ consume(('crates/registration-service/src/quotas.rs', 'crates/registration-servi
 consume(('crates/management-http/src/enrollment/mod.rs',), 'enrollment.http enrollment.quotas')
 
 T1_INPUTS += ('crates/registration-service/tests/credentials.rs',)
+T1_INPUTS += ('crates/software-service/tests/execution_context.rs',
+              'crates/software-service/tests/execution_evidence.rs')
 consume(('crates/windows-channel/src/enrollment_store.rs',), 'windows.issuance windows.enrollment windows.declared')
 
 # PKI trust is consumed by native authentication, distribution and issuance owners.

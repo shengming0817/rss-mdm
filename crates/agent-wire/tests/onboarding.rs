@@ -1,3 +1,4 @@
+mod support;
 use rss_mdm_agent_wire::runtime::ReportRequest;
 use serde_json::json;
 use uuid::Uuid;
@@ -55,16 +56,7 @@ fn enrollment_schema_and_signing_agree_on_text_and_expiry_boundaries() {
 }
 
 fn enrollment_collection() -> rss_mdm_agent_wire::runtime::CollectionDefinition {
-    rss_mdm_agent_wire::runtime::CollectionDefinition::new(
-        "channel.mdm.enrollment",
-        1,
-        rss_mdm_inventory::Source::AgentBuiltin,
-        rss_mdm_inventory::builtin::fields()
-            .into_iter()
-            .filter(|f| f.key == rss_mdm_inventory::builtin::MDM_ENROLLMENT)
-            .collect(),
-    )
-    .unwrap()
+    support::enrollment_collection()
 }
 
 #[test]
@@ -85,27 +77,13 @@ fn enrollment_task_rejects_the_old_signature_domain() {
     let document = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
     let key = Ed25519KeyPair::from_pkcs8(document.as_ref()).unwrap();
     let bytes = spec.signing_bytes("key").unwrap();
-    let context = TaskVerification {
-        key_id: "key",
-        public_key: key.public_key().as_ref(),
-        tenant_id: id,
-        device_id: "agent",
-        platform: TaskPlatform::Macos,
-        architecture: TaskArchitecture::Aarch64,
-        registration_id: id,
-        generation: 1,
-        task_id: id,
-        attempt_id: id,
-        permit: TaskPermit::Offer,
-        now: 100,
-    };
     let mut signed = SignedTask {
         payload: spec.try_into().unwrap(),
         key_id: "key".into(),
         signature: base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(key.sign(&bytes).as_ref()),
     };
-    signed.verify(&context).unwrap();
+    support::verify_signature(&signed, key.public_key().as_ref()).unwrap();
     let old_domain = b"rss-mdm-agent-mdm-enrollment-v6-ed25519\0";
     let current_domain = b"rss-mdm-agent-mdm-enrollment-v1-ed25519\0";
     assert!(bytes.starts_with(current_domain));
@@ -113,5 +91,5 @@ fn enrollment_task_rejects_the_old_signature_domain() {
     old_bytes.extend_from_slice(&bytes[current_domain.len()..]);
     signed.signature =
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.sign(&old_bytes).as_ref());
-    assert!(signed.verify(&context).is_err());
+    assert!(support::verify_signature(&signed, key.public_key().as_ref()).is_err());
 }

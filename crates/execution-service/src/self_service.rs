@@ -241,7 +241,9 @@ async fn prepare_in(
                         .ok_or(Error::Forbidden)?
                         .into(),
                 },
-                run_as: root.action.execution_identity(),
+                run_as: rss_mdm_software_service::preparation::execution::execution_identity(
+                    &root.action,
+                ),
                 target: root.target.clone(),
             };
             Ok(Some(Prepared {
@@ -277,17 +279,17 @@ async fn execution_target_in(
         return Ok(None);
     };
     match plan {
-        db::ScheduledPolicy::Script(script) => Ok(script
-            .frozen
-            .execution_identity()
-            .execution_target(
+        db::ScheduledPolicy::Script(script) => Ok(
+            rss_mdm_software_service::preparation::execution::identity_target(
+                script.frozen.execution_identity(),
                 match platform {
                     rss_mdm_policy::Platform::Windows => wire::TaskPlatform::Windows,
                     rss_mdm_policy::Platform::Macos => wire::TaskPlatform::Macos,
                 },
                 &binding.execution_context,
             )
-            .ok()),
+            .ok(),
+        ),
         db::ScheduledPolicy::Software(software) => Ok(software
             .assignment
             .prepared_in(

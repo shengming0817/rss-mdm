@@ -1,4 +1,6 @@
 //! Software rules over the caller's transaction; no Run, device admission or scheduling owner.
+pub mod evidence;
+pub mod execution;
 mod exports;
 mod wire;
 pub use crate::catalog::{Error, Result};
@@ -155,7 +157,9 @@ impl Preparation {
             let step = wire::software_step(spec, index, platform, context, export)
                 .map_err(|_| Error::Unsupported)?;
             step.export
-                .validate_for(&step, tenant, context)
+                .validate_for(&step, tenant)
+                .map_err(|_| Error::Unsupported)?;
+            execution::validate_export_context(&step.export, context)
                 .map_err(|_| Error::Unsupported)?;
             steps.push(step);
         }

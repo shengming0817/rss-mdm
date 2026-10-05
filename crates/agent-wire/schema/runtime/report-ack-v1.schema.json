@@ -1,38 +1,53 @@
 {
+  "$defs": {
+    "IntakeStatus": {
+      "description": "Durable intake stage.",
+      "oneOf": [
+        {
+          "const": "durable",
+          "description": "The sealed report and receipt committed to PostgreSQL.",
+          "type": "string"
+        }
+      ]
+    }
+  },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/report-ack.schema.json",
-  "type": "object",
   "additionalProperties": false,
+  "description": "Immutable durable-intake acknowledgement.",
+  "properties": {
+    "intake": {
+      "$ref": "#/$defs/IntakeStatus",
+      "const": "durable",
+      "description": "Durable intake status."
+    },
+    "receivedAt": {
+      "description": "Authoritative server receipt time as Unix seconds.",
+      "format": "int64",
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "reportId": {
+      "description": "Report identity.",
+      "format": "uuid",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "wireVersion": {
+      "const": 1,
+      "description": "Exact wire major."
+    }
+  },
   "required": [
     "wireVersion",
     "reportId",
     "receivedAt",
     "intake"
   ],
-  "properties": {
-    "wireVersion": {
-      "const": 1
-    },
-    "reportId": {
-      "$ref": "#/$defs/nonNilUuid"
-    },
-    "receivedAt": {
-      "type": "integer",
-      "minimum": 0,
-      "maximum": 9223372036854775807
-    },
-    "intake": {
-      "const": "durable"
-    }
-  },
-  "$defs": {
-    "nonNilUuid": {
-      "type": "string",
-      "format": "uuid",
-      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-      "not": {
-        "const": "00000000-0000-0000-0000-000000000000"
-      }
-    }
-  }
+  "title": "ReportAck",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/report-ack.schema.json"
 }

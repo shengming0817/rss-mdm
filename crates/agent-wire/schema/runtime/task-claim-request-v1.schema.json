@@ -1,72 +1,63 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/task-claim-request.schema.json",
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "wireVersion",
-    "operationId",
-    "profiles",
-    "executionContext"
-  ],
-  "properties": {
-    "wireVersion": {
-      "const": 1
-    },
-    "operationId": {
-      "type": "string",
-      "format": "uuid",
-      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-      "not": {
-        "const": "00000000-0000-0000-0000-000000000000"
-      }
-    },
-    "profiles": {
-      "type": "array",
-      "maxItems": 4,
-      "uniqueItems": true,
-      "items": {
-        "enum": [
-          "power_shell7",
-          "posix_sh",
-          "bash",
-          "osquery"
-        ]
-      }
-    },
-    "executionContext": {
-      "$ref": "#/$defs/SoftwareExecutionContext"
-    }
-  },
   "$defs": {
+    "ExecutorProfile": {
+      "description": "Fixed executor identity. There is no arbitrary command string.",
+      "oneOf": [
+        {
+          "const": "power_shell7",
+          "description": "PowerShell 7 on Windows.",
+          "type": "string"
+        },
+        {
+          "const": "posix_sh",
+          "description": "POSIX sh on macOS.",
+          "type": "string"
+        },
+        {
+          "const": "bash",
+          "description": "Bash on macOS.",
+          "type": "string"
+        },
+        {
+          "const": "osquery",
+          "description": "Bound query from a published read-only SQL template.",
+          "type": "string"
+        }
+      ]
+    },
     "SoftwareExecutionContext": {
-      "type": "object",
       "additionalProperties": false,
-      "required": [
-        "revision",
-        "osVersion",
-        "systemBroker",
-        "interactiveUser",
-        "sourceCredentials",
-        "msixSideload",
-        "msixUnsigned",
-        "userHelper"
-      ],
+      "description": "Complete current native execution environment reported by this registration.",
       "properties": {
-        "revision": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 9223372036854775807
+        "interactiveUser": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SoftwareInteractiveUser"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Exact live interactive session, when one exists."
+        },
+        "msixSideload": {
+          "description": "Current native Windows sideload policy.",
+          "type": "boolean"
+        },
+        "msixUnsigned": {
+          "description": "Current native API support for explicitly approved unsigned packages.",
+          "type": "boolean"
         },
         "osVersion": {
-          "type": "array",
-          "minItems": 4,
-          "maxItems": 4,
+          "description": "Complete numeric OS version, not an inferred product/platform string.",
           "items": {
-            "type": "integer",
+            "format": "uint16",
+            "maximum": 65535,
             "minimum": 0,
-            "maximum": 65535
+            "type": "integer"
           },
+          "maxItems": 4,
+          "minItems": 4,
           "not": {
             "const": [
               0,
@@ -74,82 +65,143 @@
               0,
               0
             ]
-          }
+          },
+          "type": "array"
         },
-        "systemBroker": {
-          "type": "boolean"
-        },
-        "interactiveUser": {
-          "oneOf": [
-            {
-              "type": "null"
-            },
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "identity",
-                "sessionId",
-                "administrator"
-              ],
-              "properties": {
-                "identity": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 184,
-                  "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-                },
-                "sessionId": {
-                  "type": "string",
-                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                  "not": {
-                    "const": "00000000-0000-0000-0000-000000000000"
-                  }
-                },
-                "administrator": {
-                  "type": "boolean"
-                }
-              }
-            }
-          ]
+        "revision": {
+          "description": "Strictly increasing local context generation; retries retain the same value.",
+          "format": "uint64",
+          "maximum": 9223372036854775807,
+          "minimum": 1,
+          "type": "integer"
         },
         "sourceCredentials": {
-          "type": "array",
-          "maxItems": 16,
-          "uniqueItems": true,
+          "description": "Source-scoped read credential references actually available locally.",
           "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "source",
-              "reference"
-            ],
-            "properties": {
-              "source": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 128,
-                "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-              },
-              "reference": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 128,
-                "pattern": "^[^\\x00-\\x1f\\x7f]+$"
-              }
-            }
-          }
+            "$ref": "#/$defs/SoftwareReadCredential"
+          },
+          "maxItems": 16,
+          "type": "array",
+          "uniqueItems": true
         },
-        "msixSideload": {
-          "type": "boolean"
-        },
-        "msixUnsigned": {
+        "systemBroker": {
+          "description": "Whether the native system broker is available in this Agent installation.",
           "type": "boolean"
         },
         "userHelper": {
+          "description": "Whether a helper is bound to this exact live interactive session.",
           "type": "boolean"
         }
-      }
+      },
+      "required": [
+        "revision",
+        "msixSideload",
+        "msixUnsigned",
+        "osVersion",
+        "systemBroker",
+        "userHelper",
+        "interactiveUser",
+        "sourceCredentials"
+      ],
+      "type": "object"
+    },
+    "SoftwareInteractiveUser": {
+      "additionalProperties": false,
+      "description": "One concrete live OS session.",
+      "properties": {
+        "administrator": {
+          "description": "Privilege needed by the exact native profile, not a generic authorization grant.",
+          "type": "boolean"
+        },
+        "identity": {
+          "description": "Windows SID or macOS numeric UID.",
+          "maxLength": 184,
+          "minLength": 1,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$",
+          "type": "string"
+        },
+        "sessionId": {
+          "description": "Changes on logoff/login; identical account names cannot reuse a previous session.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "identity",
+        "sessionId",
+        "administrator"
+      ],
+      "type": "object"
+    },
+    "SoftwareReadCredential": {
+      "additionalProperties": false,
+      "description": "Availability of a particular source read credential in the local Agent.",
+      "properties": {
+        "reference": {
+          "description": "Host-provisioned opaque credential reference; never token bytes or a URL.",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$",
+          "type": "string"
+        },
+        "source": {
+          "description": "Exact source identity in the consuming tenant.",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "reference"
+      ],
+      "type": "object"
     }
-  }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Idempotent task poll. The server derives all identity from the credential.",
+  "properties": {
+    "executionContext": {
+      "$ref": "#/$defs/SoftwareExecutionContext"
+    },
+    "operationId": {
+      "format": "uuid",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "profiles": {
+      "items": {
+        "enum": [
+          "power_shell7",
+          "posix_sh",
+          "bash",
+          "osquery"
+        ]
+      },
+      "maxItems": 4,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "wireVersion": {
+      "const": 1
+    }
+  },
+  "required": [
+    "wireVersion",
+    "operationId",
+    "profiles",
+    "executionContext"
+  ],
+  "title": "TaskClaimRequest",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/task-claim-request.schema.json"
 }

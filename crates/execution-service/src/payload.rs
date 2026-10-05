@@ -105,16 +105,15 @@ impl FrozenAction {
                 r::RunAs::System => wire::ExecutionIdentity::System,
                 r::RunAs::LoggedInUser => wire::ExecutionIdentity::LoggedInUser,
             },
-            execution_target: self
-                .execution_identity()
-                .execution_target(
-                    match self.input.platform {
-                        Platform::Windows => wire::TaskPlatform::Windows,
-                        Platform::Macos => wire::TaskPlatform::Macos,
-                    },
-                    context,
-                )
-                .map_err(|_| Error::Forbidden)?,
+            execution_target: rss_mdm_software_service::preparation::execution::identity_target(
+                self.execution_identity(),
+                match self.input.platform {
+                    Platform::Windows => wire::TaskPlatform::Windows,
+                    Platform::Macos => wire::TaskPlatform::Macos,
+                },
+                context,
+            )
+            .map_err(|_| Error::Forbidden)?,
             arguments,
             environment,
             timeout_seconds: spec.timeout_seconds,

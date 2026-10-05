@@ -332,7 +332,7 @@ pub(crate) fn software_step(
     export: w::SoftwareTaskExport,
 ) -> std::result::Result<w::SoftwareTaskStep, w::WireError> {
     let mut action = software_action(input);
-    let target = action.bind_execution_target(platform, context)?;
+    let target = super::execution::bind_target(&mut action, platform, context)?;
     let artifacts = input
         .artifacts
         .iter()

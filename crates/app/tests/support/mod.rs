@@ -8,6 +8,7 @@
 )]
 //! Shared setup only. Assertions remain with each capability's tests.
 pub(crate) mod authority;
+pub(crate) mod task_signature;
 pub(crate) use crate::publication_support::pg::case;
 pub(crate) mod identity;
 pub(crate) use crate::config::Config;

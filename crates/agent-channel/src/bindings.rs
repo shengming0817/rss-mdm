@@ -31,9 +31,7 @@ impl channels::Agent for Bindings {
                         .map_err(|e| channels::Rejection::from(db(e)))?,
                 )
                 .map_err(|_| channels::Rejection::Protocol)?;
-            context
-                .validate_update(&previous)
-                .map_err(|_| channels::Rejection::Conflict)?;
+            validate_context_update(context, &previous)?;
             if context.revision > previous.revision {
                 let value =
                     serde_json::to_value(context).map_err(|_| channels::Rejection::Malformed)?;
@@ -156,5 +154,40 @@ impl rss_mdm_registration_service::agent::RuntimeBinding for Bindings {
                 collections,
             })
         })
+    }
+}
+
+fn validate_context_update(
+    context: &rss_mdm_agent_wire::runtime::SoftwareExecutionContext,
+    previous: &rss_mdm_agent_wire::runtime::SoftwareExecutionContext,
+) -> Result<(), channels::Rejection> {
+    if context.revision < previous.revision
+        || (context.revision == previous.revision && context != previous)
+    {
+        Err(channels::Rejection::Conflict)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+    fn context() -> rss_mdm_agent_wire::runtime::SoftwareExecutionContext {
+        serde_json::from_value(serde_json::json!({"revision":1,"osVersion":[14,0,0,0],"userHelper":true,"systemBroker":true,"interactiveUser":{"identity":"501","sessionId":Uuid::new_v4(),"administrator":false},"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false})).unwrap()
+    }
+    #[test]
+    fn context_updates_cannot_reuse_a_revision_or_restore_a_previous_login() {
+        let first = context();
+        let mut next = first.clone();
+        next.revision = 2;
+        next.interactive_user.as_mut().unwrap().session_id = Uuid::new_v4();
+        assert!(validate_context_update(&next, &first).is_ok());
+        assert!(validate_context_update(&first, &next).is_err());
+        let mut reused = next.clone();
+        reused.interactive_user.as_mut().unwrap().session_id = Uuid::new_v4();
+        assert!(validate_context_update(&reused, &next).is_err());
+        assert!(validate_context_update(&next, &next).is_ok());
     }
 }

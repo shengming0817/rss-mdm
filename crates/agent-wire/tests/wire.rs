@@ -1,3 +1,4 @@
+mod support;
 use rss_mdm_agent_wire::runtime::{
     BindingProfile, Capability, CollectedValue, ErrorBody, ErrorCode, FailureCode, IntakeStatus,
     ObservationStatus, ProjectionStatus, ReportAck, ReportBody, ReportRequest, ReportSource,
@@ -40,6 +41,47 @@ fn published_schemas_match_wire_rejections() {
         invalid[key] = value;
         assert!(!report_validator.is_valid(&invalid));
         assert!(serde_json::from_value::<ReportRequest>(invalid).is_err());
+    }
+}
+
+#[test]
+fn every_collection_schema_rejects_unknown_source_keys() {
+    use rss_mdm_agent_wire::runtime::{FieldDefinition, Source};
+    for published in [
+        include_str!("../schema/runtime/report-request-v1.schema.json"),
+        include_str!("../schema/runtime/binding-profile-v1.schema.json"),
+        include_str!("../schema/enroll/activation-receipt-v1.schema.json"),
+        include_str!("../schema/enroll/progress-v1.schema.json"),
+    ] {
+        let schema: Value = serde_json::from_str(published).unwrap();
+        let validator = jsonschema::validator_for(&json!({
+            "$ref":"#/$defs/FieldDefinition", "$defs":schema["$defs"]
+        }))
+        .unwrap();
+        for source in [
+            Source::AgentScript,
+            Source::AgentOsquery,
+            Source::MdmApple,
+            Source::AgentBuiltin,
+            Source::Manual,
+            Source::MdmWindows,
+        ] {
+            let key = serde_json::to_value(source).unwrap();
+            let mut field = serde_json::to_value(&collection().fields()[0]).unwrap();
+            field["manual"] = json!(source == Source::Manual);
+            field["sources"] = json!({key.as_str().unwrap():65535});
+            assert!(validator.is_valid(&field), "rejected source {key}");
+            serde_json::from_value::<FieldDefinition>(field.clone())
+                .unwrap()
+                .validate()
+                .unwrap();
+            field["sources"]["arbitrary"] = json!(0);
+            assert!(!validator.is_valid(&field), "accepted unknown source");
+            assert!(serde_json::from_value::<FieldDefinition>(field.clone()).is_err());
+            field["sources"] = json!({key.as_str().unwrap():65536});
+            assert!(!validator.is_valid(&field), "accepted overflowing priority");
+            assert!(serde_json::from_value::<FieldDefinition>(field).is_err());
+        }
     }
 }
 
@@ -208,7 +250,10 @@ fn report_profile_is_closed_bounded_and_canonical() {
     let b: ReportRequest = serde_json::from_value(b).unwrap();
     assert_eq!(a.canonical().unwrap(), b.canonical().unwrap());
     assert!(matches!(a.body(), ReportBody::Snapshot(_)));
-    assert_eq!(a.values()[0].field, rss_mdm_inventory::builtin::MODEL);
+    assert_eq!(
+        a.values()[0].field,
+        rss_mdm_agent_wire::runtime::FieldKey::parse("device.model").unwrap()
+    );
     assert_eq!(a.values()[0].value, CollectedValue::Unsupported);
 
     let duplicate = json!({
@@ -247,20 +292,5 @@ fn failed_reports_and_error_codes_are_closed() {
 }
 
 fn collection() -> rss_mdm_agent_wire::runtime::CollectionDefinition {
-    rss_mdm_agent_wire::runtime::CollectionDefinition::new(
-        "inventory",
-        1,
-        rss_mdm_inventory::Source::AgentBuiltin,
-        rss_mdm_inventory::builtin::fields()
-            .into_iter()
-            .filter(|f| {
-                [
-                    rss_mdm_inventory::builtin::MODEL,
-                    rss_mdm_inventory::builtin::OS_VERSION,
-                ]
-                .contains(&f.key)
-            })
-            .collect(),
-    )
-    .unwrap()
+    support::collection()
 }

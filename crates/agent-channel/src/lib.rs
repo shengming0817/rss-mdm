@@ -9,6 +9,7 @@ use rss_mdm_registration_service::{device, enrollment};
 mod bindings;
 mod database;
 pub mod enroll;
+mod inventory_wire;
 pub use bindings::Bindings;
 pub use database::Store;
 mod content;
@@ -332,17 +333,19 @@ pub(crate) async fn authenticate(
         .map_err(|e| AgentError::Enrollment(e.code))
 }
 fn batch(input: &wire::ReportRequest) -> Result<Batch, AgentError> {
+    let definition = inventory_wire::to_domain(input.collection())?;
     let changes = input
         .values()
         .iter()
         .map(|item| {
-            let field = input
-                .collection()
-                .field(item.field)
+            let key = rss_mdm_inventory::FieldKey::parse(item.field.as_str())
                 .map_err(|_| Error::Malformed)?;
+            let field = definition.field(key).map_err(|_| Error::Malformed)?;
             Ok(Change::upsert(
                 Id::new(item.field.as_str()).map_err(|_| Error::Malformed)?,
-                item.value.encode(field).map_err(|_| Error::Malformed)?,
+                inventory_wire::value(&item.value)
+                    .encode(field)
+                    .map_err(|_| Error::Malformed)?,
             ))
         })
         .collect::<Result<Vec<_>, AgentError>>()?;
@@ -362,10 +365,7 @@ fn batch(input: &wire::ReportRequest) -> Result<Batch, AgentError> {
         Id::new(input.report_id().to_string()).map_err(|_| Error::Malformed)?,
         input.sequence(),
         rss_contract::Timepoint::try_from(input.observed_at()).map_err(|_| Error::Malformed)?,
-        input
-            .collection()
-            .coverage()
-            .map_err(|_| Error::Malformed)?,
+        definition.coverage().map_err(|_| Error::Malformed)?,
         body,
     )
     .map_err(|_| Error::Malformed.into())
@@ -452,7 +452,9 @@ async fn builtin_collections(
             epoch,
             dataset,
         )?;
-        definitions.push(collection::store::freeze_in(c, &scope, 1, &keys).await?);
+        definitions.push(inventory_wire::to_wire(
+            &collection::store::freeze_in(c, &scope, 1, &keys).await?,
+        )?);
     }
     Ok(definitions)
 }

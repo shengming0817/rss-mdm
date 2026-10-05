@@ -67,7 +67,9 @@ pub(crate) fn result_event(
     for (index, step) in spec.steps.iter().enumerate() {
         let after = match state {
             "present" => wire::SoftwareDetectionObservation::Present {
-                version: step.action.detected_version(),
+                version: rss_mdm_software_service::preparation::evidence::detected_version(
+                    &step.action,
+                ),
                 evidence_sha256: Sha256::digest(b"controlled present observation").into(),
                 observed_at: 2,
             },
@@ -85,7 +87,9 @@ pub(crate) fn result_event(
             step_digest: step.digest()?,
             target: step.target.clone(),
             package: step.action.package.clone(),
-            identity: step.action.observed_identity(),
+            identity: rss_mdm_software_service::preparation::evidence::observed_identity(
+                &step.action,
+            ),
             before: wire::SoftwareDetectionObservation::Absent {
                 evidence_sha256: Sha256::digest(b"controlled prior observation").into(),
                 observed_at: 1,

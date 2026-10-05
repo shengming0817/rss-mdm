@@ -1,252 +1,209 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/report-request.schema.json",
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "wireVersion",
-    "reportId",
-    "sequence",
-    "observedAt",
-    "body",
-    "collection"
-  ],
-  "properties": {
-    "wireVersion": {
-      "const": 1
-    },
-    "reportId": {
-      "type": "string",
-      "format": "uuid",
-      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-      "not": {
-        "const": "00000000-0000-0000-0000-000000000000"
-      }
-    },
-    "sequence": {
-      "type": "integer",
-      "minimum": 0,
-      "maximum": 9223372036854775807
-    },
-    "observedAt": {
-      "type": "integer",
-      "minimum": 0,
-      "maximum": 9223372036854775807
-    },
-    "body": {
+  "$defs": {
+    "CollectedValue": {
+      "description": "Definitive per-field outcome. Failed/missing attempts never delete a last-known fact.",
       "oneOf": [
         {
-          "$ref": "#/$defs/valuesBody",
-          "properties": {
-            "kind": {
-              "const": "snapshot"
-            }
-          }
-        },
-        {
-          "$ref": "#/$defs/valuesBody",
-          "properties": {
-            "kind": {
-              "const": "partial"
-            }
-          }
-        },
-        {
-          "type": "object",
           "additionalProperties": false,
+          "description": "Typed value validated against the frozen field version.",
+          "properties": {
+            "kind": {
+              "const": "value",
+              "type": "string"
+            },
+            "value": {
+              "$ref": "#/$defs/Scalar"
+            }
+          },
           "required": [
             "kind",
-            "code"
+            "value"
           ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Explicit legal null.",
           "properties": {
             "kind": {
-              "const": "failed"
-            },
-            "code": {
-              "enum": [
-                "permissionDenied",
-                "temporarilyUnavailable",
-                "collectionFailed"
-              ]
+              "const": "null",
+              "type": "string"
             }
-          }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Explicit removal of this source's field; never inferred from failure.",
+          "properties": {
+            "kind": {
+              "const": "deleted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Collector explicitly cannot provide this field.",
+          "properties": {
+            "kind": {
+              "const": "unsupported",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
         }
       ]
     },
-    "collection": {
-      "$ref": "#/$defs/collection"
-    }
-  },
-  "$defs": {
-    "valuesBody": {
-      "type": "object",
+    "CollectionDefinition": {
       "additionalProperties": false,
-      "required": [
-        "kind",
-        "values"
-      ],
+      "description": "Frozen source and field definitions for one published collector version.\nConstructing this value validates structure; the caller still owns tenant/device authorization.",
       "properties": {
-        "kind": {
+        "dataset": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
           "type": "string"
         },
-        "values": {
-          "type": "array",
-          "maxItems": 128,
+        "fields": {
           "items": {
-            "$ref": "#/$defs/fieldValue"
+            "$ref": "#/$defs/FieldDefinition"
+          },
+          "maxItems": 128,
+          "minItems": 1,
+          "type": "array"
+        },
+        "source": {
+          "$ref": "#/$defs/Source",
+          "not": {
+            "const": "manual"
           }
+        },
+        "version": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+          "type": "string"
         }
-      }
+      },
+      "required": [
+        "dataset",
+        "version",
+        "source",
+        "fields"
+      ],
+      "type": "object"
     },
-    "fieldType": {
+    "FailureCode": {
+      "description": "Closed collection failure categories; raw diagnostics are never transported.",
       "oneOf": [
         {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind"
-          ],
-          "properties": {
-            "kind": {
-              "const": "integer"
-            }
-          }
+          "const": "permissionDenied",
+          "description": "Collector lacked operating-system permission.",
+          "type": "string"
         },
         {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind"
-          ],
-          "properties": {
-            "kind": {
-              "const": "number"
-            }
-          }
+          "const": "temporarilyUnavailable",
+          "description": "A retryable dependency was unavailable.",
+          "type": "string"
         },
         {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind"
-          ],
-          "properties": {
-            "kind": {
-              "const": "boolean"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind"
-          ],
-          "properties": {
-            "kind": {
-              "const": "time"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "maxLength",
-            "allowEmpty"
-          ],
-          "properties": {
-            "kind": {
-              "const": "string"
-            },
-            "maxLength": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 65536
-            },
-            "allowEmpty": {
-              "type": "boolean"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "values"
-          ],
-          "properties": {
-            "kind": {
-              "const": "enum"
-            },
-            "values": {
-              "type": "array",
-              "minItems": 1,
-              "maxItems": 128,
-              "uniqueItems": true,
-              "items": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 256
-              }
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "items",
-            "maxItems"
-          ],
-          "properties": {
-            "kind": {
-              "const": "array"
-            },
-            "items": {
-              "$ref": "#/$defs/fieldType"
-            },
-            "maxItems": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 100000
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "properties"
-          ],
-          "properties": {
-            "kind": {
-              "const": "object"
-            },
-            "properties": {
-              "type": "object",
-              "minProperties": 1,
-              "maxProperties": 64,
-              "propertyNames": {
-                "type": "string",
-                "maxLength": 64,
-                "pattern": "^[a-z][a-z0-9_]*$"
-              },
-              "additionalProperties": {
-                "$ref": "#/$defs/fieldType"
-              }
-            }
-          }
+          "const": "collectionFailed",
+          "description": "Collection failed without a more specific safe category.",
+          "type": "string"
         }
       ]
     },
-    "fieldDefinition": {
-      "type": "object",
+    "FieldDefinition": {
       "additionalProperties": false,
+      "description": "A published field version. No time-based expiry and no execution permission.",
+      "properties": {
+        "itemKey": {
+          "description": "Optional stable item-key property for a structured inventory list.",
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "$ref": "#/$defs/FieldKey",
+          "description": "Stable field identity.",
+          "maxLength": 128,
+          "pattern": "^(device|custom|channel)\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$"
+        },
+        "manual": {
+          "description": "Whether management assignment is permitted.",
+          "type": "boolean"
+        },
+        "nullable": {
+          "description": "Accept explicit null as distinct from deletion.",
+          "type": "boolean"
+        },
+        "platforms": {
+          "description": "Supported platforms.",
+          "items": {
+            "$ref": "#/$defs/Platform"
+          },
+          "maxItems": 2,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "searchable": {
+          "description": "Whether this field participates in conditions/search.",
+          "type": "boolean"
+        },
+        "sensitivity": {
+          "$ref": "#/$defs/Sensitivity",
+          "description": "Read/filter visibility classification."
+        },
+        "sources": {
+          "additionalProperties": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "Allowed sources with priority; lower numbers win, equal numbers require consensus.",
+          "minProperties": 1,
+          "propertyNames": {
+            "$ref": "#/$defs/Source"
+          },
+          "type": "object"
+        },
+        "unit": {
+          "description": "Exact optional unit; no implicit conversion.",
+          "maxLength": 64,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "valueType": {
+          "$ref": "#/$defs/ValueType",
+          "description": "Exact bounded type."
+        },
+        "version": {
+          "description": "Monotonic published version.",
+          "format": "uint64",
+          "maximum": 9223372036854775807,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
       "required": [
         "key",
         "version",
@@ -260,331 +217,527 @@
         "searchable",
         "itemKey"
       ],
-      "properties": {
-        "key": {
-          "type": "string",
-          "maxLength": 128,
-          "pattern": "^(device|custom|channel)\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$"
-        },
-        "version": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 9223372036854775807
-        },
-        "valueType": {
-          "$ref": "#/$defs/fieldType"
-        },
-        "nullable": {
-          "type": "boolean"
-        },
-        "manual": {
-          "type": "boolean"
-        },
-        "sources": {
-          "type": "object",
-          "minProperties": 1,
-          "propertyNames": {
-            "enum": [
-              "mdm.windows",
-              "mdm.apple",
-              "agent.builtin",
-              "agent.script",
-              "agent.osquery",
-              "manual"
-            ]
-          },
-          "additionalProperties": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 65535
-          }
-        },
-        "platforms": {
-          "type": "array",
-          "minItems": 1,
-          "maxItems": 2,
-          "uniqueItems": true,
-          "items": {
-            "enum": [
-              "windows",
-              "macos"
-            ]
-          }
-        },
-        "sensitivity": {
-          "enum": [
-            "standard",
-            "sensitive"
-          ]
-        },
-        "unit": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1,
-          "maxLength": 64
-        },
-        "searchable": {
-          "type": "boolean"
-        },
-        "itemKey": {
-          "anyOf": [
-            {
-              "type": "string",
-              "maxLength": 64,
-              "pattern": "^[a-z][a-z0-9_]*$"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      }
+      "type": "object"
     },
-    "scalar": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "value"
-          ],
-          "properties": {
-            "kind": {
-              "const": "string"
-            },
-            "value": {
-              "type": "string",
-              "maxLength": 65536
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "value"
-          ],
-          "properties": {
-            "kind": {
-              "const": "integer"
-            },
-            "value": {
-              "type": "integer",
-              "minimum": -9223372036854775808,
-              "maximum": 9223372036854775807
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "value"
-          ],
-          "properties": {
-            "kind": {
-              "const": "number"
-            },
-            "value": {
-              "type": "number"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "value"
-          ],
-          "properties": {
-            "kind": {
-              "const": "boolean"
-            },
-            "value": {
-              "type": "boolean"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "value"
-          ],
-          "properties": {
-            "kind": {
-              "const": "time"
-            },
-            "value": {
-              "type": "integer"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "value"
-          ],
-          "properties": {
-            "kind": {
-              "const": "array"
-            },
-            "value": {
-              "type": "array",
-              "maxItems": 100000,
-              "items": {
-                "$ref": "#/$defs/scalar"
-              }
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "value"
-          ],
-          "properties": {
-            "kind": {
-              "const": "object"
-            },
-            "value": {
-              "type": "object",
-              "maxProperties": 64,
-              "propertyNames": {
-                "type": "string",
-                "maxLength": 64,
-                "pattern": "^[a-z][a-z0-9_]*$"
-              },
-              "additionalProperties": {
-                "$ref": "#/$defs/scalar"
-              }
-            }
-          }
-        }
-      ]
+    "FieldKey": {
+      "description": "Bounded protocol field identity; parsing grants no catalog or source authority.",
+      "maxLength": 128,
+      "pattern": "^(device|custom|channel)\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+      "type": "string"
     },
-    "collection": {
-      "type": "object",
+    "FieldValue": {
       "additionalProperties": false,
-      "required": [
-        "dataset",
-        "version",
-        "source",
-        "fields"
-      ],
+      "description": "One field and its explicit outcome.",
       "properties": {
-        "dataset": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+        "field": {
+          "$ref": "#/$defs/FieldKey",
+          "description": "Field identity."
         },
-        "version": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
-        },
-        "source": {
-          "enum": [
-            "mdm.windows",
-            "mdm.apple",
-            "agent.builtin",
-            "agent.script",
-            "agent.osquery"
-          ]
-        },
-        "fields": {
-          "type": "array",
-          "minItems": 1,
-          "maxItems": 128,
-          "items": {
-            "$ref": "#/$defs/fieldDefinition"
-          }
+        "value": {
+          "$ref": "#/$defs/CollectedValue",
+          "description": "Collected outcome."
         }
-      }
-    },
-    "fieldValue": {
-      "type": "object",
-      "additionalProperties": false,
+      },
       "required": [
         "field",
         "value"
       ],
-      "properties": {
-        "field": {
-          "type": "string",
-          "maxLength": 128,
-          "pattern": "^(device|custom|channel)\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$"
+      "type": "object"
+    },
+    "Platform": {
+      "description": "Platform applicable to a field or collector.",
+      "oneOf": [
+        {
+          "const": "windows",
+          "description": "Windows.",
+          "type": "string"
         },
-        "value": {
-          "oneOf": [
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "kind",
-                "value"
-              ],
-              "properties": {
-                "kind": {
-                  "const": "value"
-                },
-                "value": {
-                  "$ref": "#/$defs/scalar"
-                }
-              }
-            },
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "kind"
-              ],
-              "properties": {
-                "kind": {
-                  "const": "null"
-                }
-              }
-            },
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "kind"
-              ],
-              "properties": {
-                "kind": {
-                  "const": "deleted"
-                }
-              }
-            },
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "kind"
-              ],
-              "properties": {
-                "kind": {
-                  "const": "unsupported"
-                }
-              }
-            }
-          ]
+        {
+          "const": "macos",
+          "description": "macOS.",
+          "type": "string"
         }
-      }
+      ]
+    },
+    "ReportBody": {
+      "description": "Closed V1 report body.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "snapshot",
+              "type": "string"
+            },
+            "values": {
+              "items": {
+                "$ref": "#/$defs/FieldValue"
+              },
+              "maxItems": 128,
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "values"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "partial",
+              "type": "string"
+            },
+            "values": {
+              "items": {
+                "$ref": "#/$defs/FieldValue"
+              },
+              "maxItems": 128,
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "values"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/FailureCode"
+            },
+            "kind": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "code"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Scalar": {
+      "description": "Explicitly typed asset scalar. Times are UTC Unix seconds, never validity windows.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Nonblank bounded text.",
+          "properties": {
+            "kind": {
+              "const": "string",
+              "type": "string"
+            },
+            "value": {
+              "maxLength": 65536,
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Signed integer.",
+          "properties": {
+            "kind": {
+              "const": "integer",
+              "type": "string"
+            },
+            "value": {
+              "format": "int64",
+              "maximum": 9223372036854775807,
+              "minimum": -9223372036854775808,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Finite numeric observation.",
+          "properties": {
+            "kind": {
+              "const": "number",
+              "type": "string"
+            },
+            "value": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Ordered bounded collection.",
+          "properties": {
+            "kind": {
+              "const": "array",
+              "type": "string"
+            },
+            "value": {
+              "items": {
+                "$ref": "#/$defs/Scalar"
+              },
+              "maxItems": 100000,
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Declared structured attributes.",
+          "properties": {
+            "kind": {
+              "const": "object",
+              "type": "string"
+            },
+            "value": {
+              "additionalProperties": {
+                "$ref": "#/$defs/Scalar"
+              },
+              "maxProperties": 64,
+              "propertyNames": {
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9_]*$",
+                "type": "string"
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Boolean value, including false.",
+          "properties": {
+            "kind": {
+              "const": "boolean",
+              "type": "string"
+            },
+            "value": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "UTC Unix seconds.",
+          "properties": {
+            "kind": {
+              "const": "time",
+              "type": "string"
+            },
+            "value": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Sensitivity": {
+      "description": "Field visibility class, enforced by the product authorization boundary.",
+      "oneOf": [
+        {
+          "const": "standard",
+          "description": "Ordinary inventory.",
+          "type": "string"
+        },
+        {
+          "const": "sensitive",
+          "description": "Requires the sensitive inventory permission.",
+          "type": "string"
+        }
+      ]
+    },
+    "Source": {
+      "description": "All allowed asset sources. Serialized as their canonical stable identifier.",
+      "oneOf": [
+        {
+          "const": "agent.script",
+          "description": "Controlled collection script evidence.",
+          "type": "string"
+        },
+        {
+          "const": "agent.osquery",
+          "description": "Published SQL template evidence.",
+          "type": "string"
+        },
+        {
+          "const": "mdm.apple",
+          "description": "Apple MDM evidence.",
+          "type": "string"
+        },
+        {
+          "const": "agent.builtin",
+          "description": "Built-in agent evidence.",
+          "type": "string"
+        },
+        {
+          "const": "manual",
+          "description": "Administrator assignment.",
+          "type": "string"
+        },
+        {
+          "const": "mdm.windows",
+          "description": "Windows MDM evidence.",
+          "type": "string"
+        }
+      ]
+    },
+    "ValueType": {
+      "description": "Closed structural schema for one field; every property is explicit and required.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Bounded text; empty text is a legitimate value when allowed.",
+          "properties": {
+            "allowEmpty": {
+              "description": "Whether empty text is allowed.",
+              "type": "boolean"
+            },
+            "kind": {
+              "const": "string",
+              "type": "string"
+            },
+            "maxLength": {
+              "description": "Character budget.",
+              "format": "uint32",
+              "maximum": 65536,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "maxLength",
+            "allowEmpty"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Closed string vocabulary.",
+          "properties": {
+            "kind": {
+              "const": "enum",
+              "type": "string"
+            },
+            "values": {
+              "description": "Permitted nonempty values.",
+              "items": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 128,
+              "minItems": 1,
+              "type": "array",
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "kind",
+            "values"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Signed 64-bit integer.",
+          "properties": {
+            "kind": {
+              "const": "integer",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Finite numeric value.",
+          "properties": {
+            "kind": {
+              "const": "number",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Boolean.",
+          "properties": {
+            "kind": {
+              "const": "boolean",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "UTC Unix seconds.",
+          "properties": {
+            "kind": {
+              "const": "time",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Ordered values sharing one schema.",
+          "properties": {
+            "items": {
+              "$ref": "#/$defs/ValueType",
+              "description": "Element schema."
+            },
+            "kind": {
+              "const": "array",
+              "type": "string"
+            },
+            "maxItems": {
+              "description": "Maximum number of values.",
+              "format": "uint32",
+              "maximum": 100000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "items",
+            "maxItems"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Closed properties; undeclared and absent properties are rejected.",
+          "properties": {
+            "kind": {
+              "const": "object",
+              "type": "string"
+            },
+            "properties": {
+              "additionalProperties": {
+                "$ref": "#/$defs/ValueType"
+              },
+              "description": "Property schema by literal name.",
+              "maxProperties": 64,
+              "minProperties": 1,
+              "propertyNames": {
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9_]*$",
+                "type": "string"
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "kind",
+            "properties"
+          ],
+          "type": "object"
+        }
+      ]
     }
-  }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Strict V1 inventory report.",
+  "properties": {
+    "body": {
+      "$ref": "#/$defs/ReportBody"
+    },
+    "collection": {
+      "$ref": "#/$defs/CollectionDefinition"
+    },
+    "observedAt": {
+      "format": "int64",
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "reportId": {
+      "format": "uuid",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "sequence": {
+      "format": "uint64",
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "wireVersion": {
+      "const": 1
+    }
+  },
+  "required": [
+    "wireVersion",
+    "reportId",
+    "sequence",
+    "observedAt",
+    "collection",
+    "body"
+  ],
+  "title": "ReportRequest",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/report-request.schema.json"
 }

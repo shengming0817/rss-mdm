@@ -1,14 +1,18 @@
-"""Regressions for the complete current Agent V1 schema artifact."""
+"""Generated schemas cannot drift, even when their digest is recomputed."""
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import re
 import shutil
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location("wire_artifact", ROOT / "hack/agent_wire_artifact.py")
+sys.path.insert(0, str(ROOT / 'hack'))
+SPEC = importlib.util.spec_from_file_location('wire_artifact', ROOT / 'hack/agent_wire_artifact.py')
 artifact = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(artifact)
 
@@ -16,98 +20,57 @@ SPEC.loader.exec_module(artifact)
 class WireArtifactTests(unittest.TestCase):
     def test_current_manifest_and_fingerprint(self):
         artifact.check()
+        artifact.enrollment()
 
-    def fixture(self):
-        directory = tempfile.TemporaryDirectory()
-        schema = Path(directory.name) / "schema"
-        shutil.copytree(ROOT / "crates/agent-wire/schema/runtime", schema)
-        return directory, schema
+    def copy(self, area, mutate, message, rehash=False):
+        with tempfile.TemporaryDirectory() as temporary:
+            schemas = Path(temporary) / 'schemas'
+            shutil.copytree(ROOT / 'crates/agent-wire/schema' / area, schemas)
+            manifest = schemas / ('agent-v1.schema-manifest.json' if area == 'runtime' else 'manifest.json')
+            library = Path(temporary) / 'lib.rs'
+            library.write_text((ROOT / 'crates/agent-wire/src' / (area + '.rs')).read_text())
+            mutate(schemas, manifest, library)
+            if rehash:
+                digest = hashlib.sha256(b''.join((schemas / e['file']).read_bytes() for e in json.loads(manifest.read_text())['schemas'])).hexdigest()
+                library.write_text(re.sub(r'(pub const SCHEMA_FINGERPRINT:\s*&str\s*=\s*")[0-9a-f]{64}', lambda m: m[1] + digest, library.read_text()))
+            with self.assertRaisesRegex(ValueError, message):
+                artifact.artifact(schemas, manifest, library, area)
 
-    def check_copy(self, schema):
-        with patch.object(artifact, "SCHEMAS", schema), patch.object(artifact, "MANIFEST", schema / "agent-v1.schema-manifest.json"):
-            artifact.check()
-
-    def test_task_mutation_fails_embedded_contract(self):
-        directory, schema = self.fixture()
-        with directory:
-            path = schema / "task-payload-v1.schema.json"
-            value = json.loads(path.read_text())
-            value["oneOf"][1]["properties"]["intent"]["enum"].append("arbitrary")
-            path.write_text(json.dumps(value))
-            with self.assertRaisesRegex(ValueError, "embedded task contract"):
-                self.check_copy(schema)
-
-    def test_other_schema_mutation_fails_fingerprint(self):
-        directory, schema = self.fixture()
-        with directory:
-            path = schema / "report-ack-v1.schema.json"
-            value = json.loads(path.read_text())
-            value["properties"]["receivedAt"]["minimum"] += 1
-            path.write_text(json.dumps(value))
-            with self.assertRaisesRegex(ValueError, "fingerprint"):
-                self.check_copy(schema)
-
-    def test_referenced_behavior_mutation_fails_embedded_contract(self):
-        directory, schema = self.fixture()
-        with directory:
-            path = schema / "task-payload-v1.schema.json"
-            value = json.loads(path.read_text())
-            value["$defs"]["SoftwareTaskInvocation"]["properties"]["timeoutSeconds"]["maximum"] += 1
-            path.write_text(json.dumps(value))
-            with self.assertRaisesRegex(ValueError, "embedded task contract"):
-                self.check_copy(schema)
+    def test_mutations_cannot_be_approved_by_rehashing(self):
+        for area, file in [('runtime', 'task-payload-v1.schema.json'), ('enroll', 'grant-request-v1.schema.json')]:
+            for change in ('constraint', 'identity', 'embedded'):
+                def mutate(schemas, manifest, library):
+                    path = schemas / file
+                    value = json.loads(path.read_text())
+                    if change == 'constraint':
+                        value['additionalProperties'] = True
+                    elif change == 'identity':
+                        value['$id'] += '/drift'
+                    else:
+                        value.setdefault('$defs', {})['Injected'] = {'type':'string'}
+                    path.write_text(json.dumps(value))
+                with self.subTest(area=area, change=change):
+                    self.copy(area, mutate, 'schema differs from Rust', rehash=True)
 
     def test_missing_or_extra_shape_fails(self):
-        directory, schema = self.fixture()
-        with directory:
-            (schema / "report-ack-v1.schema.json").unlink()
-            with self.assertRaisesRegex(ValueError, "schema directory"):
-                self.check_copy(schema)
-        directory, schema = self.fixture()
-        with directory:
-            (schema / "report-ack-v6.schema.json").write_text("{}")
-            with self.assertRaisesRegex(ValueError, "schema directory"):
-                self.check_copy(schema)
+        self.copy('runtime', lambda s, m, l: (s / 'report-ack-v1.schema.json').unlink(), 'schema directory')
+        self.copy('runtime', lambda s, m, l: (s / 'extra-v1.schema.json').write_text('{}'), 'schema directory')
 
     def test_manifest_cannot_drop_a_public_shape(self):
-        directory, schema = self.fixture()
-        with directory:
-            path = schema / "agent-v1.schema-manifest.json"
-            value = json.loads(path.read_text())
-            value["schemas"].pop()
-            path.write_text(json.dumps(value))
-            with self.assertRaisesRegex(ValueError, "schema directory"):
-                self.check_copy(schema)
+        def mutate(schemas, manifest, library):
+            value = json.loads(manifest.read_text())
+            removed = value['schemas'].pop()
+            (schemas / removed['file']).unlink()
+            manifest.write_text(json.dumps(value))
+        self.copy('runtime', mutate, 'Rust protocol declarations')
 
-    def test_major_and_schema_identity_are_exact(self):
-        directory, schema = self.fixture()
-        with directory:
-            path = schema / "agent-v1.schema-manifest.json"
-            value = json.loads(path.read_text())
-            value["wireVersion"] = 6
-            path.write_text(json.dumps(value))
-            with self.assertRaisesRegex(ValueError, "Agent V1"):
-                self.check_copy(schema)
+    def test_fingerprint_is_checked(self):
+        self.copy('runtime', lambda s, m, l: l.write_text(l.read_text().replace('pub const SCHEMA_FINGERPRINT:', 'pub const OTHER:')), 'fingerprint declaration')
+        self.copy('runtime', lambda s, m, l: l.write_text(re.sub(r'(pub const SCHEMA_FINGERPRINT:\s*&str\s*=\s*")[0-9a-f]{64}', lambda match: match[1] + '0' * 64, l.read_text())), 'schema fingerprint differs')
 
-    def test_retired_schema_identity_and_version_cannot_be_rehashed(self):
-        for mutation, error in [("identity", "schema identifier"), ("version", "wireVersion")]:
-            with self.subTest(mutation=mutation):
-                directory, schema = self.fixture()
-                with directory:
-                    path = schema / "report-status-v1.schema.json"
-                    value = json.loads(path.read_text())
-                    if mutation == "identity":
-                        value["$id"] = value["$id"].replace("/payload/v1/", "/payload/v6/")
-                    else:
-                        value["properties"]["ack"]["properties"]["wireVersion"]["const"] = 6
-                    path.write_text(json.dumps(value))
-                    manifest = json.loads((schema / "agent-v1.schema-manifest.json").read_text())
-                    import hashlib
-                    import re
-                    digest = hashlib.sha256(b"".join((schema / item["file"]).read_bytes() for item in manifest["schemas"])).hexdigest()
-                    source = re.sub(r'(pub const SCHEMA_FINGERPRINT: &str =\s*")[0-9a-f]{64}', lambda m: m[1] + digest, artifact.LIB.read_text())
-                    library = schema / "runtime.rs"
-                    library.write_text(source)
-                    with patch.object(artifact, "LIB", library):
-                        with self.assertRaisesRegex(ValueError, error):
-                            self.check_copy(schema)
+    def test_major_is_exact(self):
+        def mutate(schemas, manifest, library):
+            value = json.loads(manifest.read_text())
+            value['wireVersion'] = 2
+            manifest.write_text(json.dumps(value))
+        self.copy('runtime', mutate, 'Agent V1')

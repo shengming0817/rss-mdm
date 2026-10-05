@@ -1,207 +1,101 @@
 #!/usr/bin/env python3
-"""Task payload schema is canonical; derive embeddings, then verify the V1 artifact."""
+"""Materialize and verify schemas derived from the protocol's Rust declarations."""
+from functools import cache
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
+import subprocess
 import sys
-import copy
+from build_run import LEASE_ENV, lease_fds, require_lease
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMAS = ROOT / "crates/agent-wire/schema/runtime"
-MANIFEST = SCHEMAS / "agent-v1.schema-manifest.json"
-LIB = ROOT / "crates/agent-wire/src/runtime.rs"
-EMBEDDED = {
-    "signed-task-v1.schema.json": ("properties", "payload"),
-    "task-claim-response-v1.schema.json": ("properties", "task", "oneOf", 1, "properties", "payload"),
-    "task-event-ack-v1.schema.json": ("properties", "permit", "oneOf", 1, "properties", "payload"),
-}
+SCHEMAS = ROOT / 'crates/agent-wire/schema/runtime'
+MANIFEST = SCHEMAS / 'agent-v1.schema-manifest.json'
+LIB = ROOT / 'crates/agent-wire/src/runtime.rs'
+ENROLL = ROOT / 'crates/agent-wire/schema/enroll'
+ENROLL_LIB = ROOT / 'crates/agent-wire/src/enroll.rs'
 
 
-def embedded(schema, path):
-    for part in path:
-        schema = schema[part]
-    return schema
+@cache
+def generated():
+    cargo = ['cargo', 'run', '--quiet', '--locked', '-p', 'rss-mdm-agent-wire',
+             '--example', 'protocol_schema']
+    if LEASE_ENV in os.environ:
+        require_lease(ROOT)
+        command, fds = cargo, lease_fds()
+    else:
+        command, fds = [sys.executable, str(ROOT / 'hack/build_run.py'), '--', *cargo], ()
+    result = subprocess.run(
+        command, pass_fds=fds, cwd=ROOT, check=True, stdout=subprocess.PIPE, text=True,
+    )
+    return json.loads(result.stdout)
 
 
-def collection_definitions():
-    def obj(properties):
-        return {"type":"object","additionalProperties":False,"required":list(properties),"properties":properties}
-    def ref(name):
-        return {"$ref":"#/$defs/"+name}
-    key={"type":"string","maxLength":128,"pattern":r"^(device|custom|channel)\.[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$"}
-    prop={"type":"string","maxLength":64,"pattern":"^[a-z][a-z0-9_]*$"}
-    bounded={"type":"string","minLength":1,"maxLength":128,"pattern":r"^[^\u0000-\u001F\u007F]+$"}
-    types=[obj({"kind":{"const":kind}}) for kind in ("integer","number","boolean","time")]
-    types += [obj({"kind":{"const":"string"},"maxLength":{"type":"integer","minimum":1,"maximum":65536},"allowEmpty":{"type":"boolean"}}),
-        obj({"kind":{"const":"enum"},"values":{"type":"array","minItems":1,"maxItems":128,"uniqueItems":True,"items":{"type":"string","minLength":1,"maxLength":256}}}),
-        obj({"kind":{"const":"array"},"items":ref("fieldType"),"maxItems":{"type":"integer","minimum":1,"maximum":100000}}),
-        obj({"kind":{"const":"object"},"properties":{"type":"object","minProperties":1,"maxProperties":64,"propertyNames":prop,"additionalProperties":ref("fieldType")}})]
-    sources=["mdm.windows","mdm.apple","agent.builtin","agent.script","agent.osquery"]
-    field=obj({"key":key,"version":{"type":"integer","minimum":1,"maximum":9223372036854775807},"valueType":ref("fieldType"),
-        "nullable":{"type":"boolean"},"manual":{"type":"boolean"},"sources":{"type":"object","minProperties":1,"propertyNames":{"enum":sources+["manual"]},"additionalProperties":{"type":"integer","minimum":0,"maximum":65535}},
-        "platforms":{"type":"array","minItems":1,"maxItems":2,"uniqueItems":True,"items":{"enum":["windows","macos"]}},
-        "sensitivity":{"enum":["standard","sensitive"]},"unit":{"type":["string","null"],"minLength":1,"maxLength":64},"searchable":{"type":"boolean"},"itemKey":{"anyOf":[prop,{"type":"null"}]}})
-    scalar=[]
-    for kind,shape in [("string",{"type":"string","maxLength":65536}),("integer",{"type":"integer","minimum":-9223372036854775808,"maximum":9223372036854775807}),
-        ("number",{"type":"number"}),("boolean",{"type":"boolean"}),("time",{"type":"integer"}),
-        ("array",{"type":"array","maxItems":100000,"items":ref("scalar")}),
-        ("object",{"type":"object","maxProperties":64,"propertyNames":prop,"additionalProperties":ref("scalar")})]:
-        scalar.append(obj({"kind":{"const":kind},"value":shape}))
-    return {"fieldType":{"oneOf":types},"fieldDefinition":field,"scalar":{"oneOf":scalar},
-        "collection":obj({"dataset":bounded,"version":bounded,"source":{"enum":sources},"fields":{"type":"array","minItems":1,"maxItems":128,"items":ref("fieldDefinition")}}),
-        "fieldValue":obj({"field":key,"value":{"oneOf":[obj({"kind":{"const":"value"},"value":ref("scalar")}),obj({"kind":{"const":"null"}}),obj({"kind":{"const":"deleted"}}),obj({"kind":{"const":"unsupported"}})]}})}
-
-
-def write_collections():
-    for name in ["report-request-v1.schema.json","binding-profile-v1.schema.json"]:
-        path=SCHEMAS/name
-        schema=json.loads(path.read_text())
-        schema.setdefault("$defs",{}).update(collection_definitions())
-        if name.startswith("report-"):
-            schema["required"]=list(dict.fromkeys(schema["required"]+["collection"]))
-            schema["properties"]["collection"]={"$ref":"#/$defs/collection"}
-            schema["$defs"]["valuesBody"]["properties"]["values"]={"type":"array","maxItems":128,"items":{"$ref":"#/$defs/fieldValue"}}
-        else:
-            schema["required"]=list(dict.fromkeys(schema["required"]+["collections"]))
-            schema["properties"]["collections"]={"type":"array","minItems":1,"maxItems":16,"items":{"$ref":"#/$defs/collection"}}
-        path.write_text(json.dumps(schema,indent=2)+"\n")
-
-
-def software_result_event(payload):
-    result=payload["$defs"]["SoftwareTaskResult"]
-    return {"type":"object","additionalProperties":False,"required":["kind",*result["required"]],"properties":{"kind":{"const":"software_result"},**copy.deepcopy(result["properties"])}}
-
-def event_variant(schema):
-    return next(value for value in schema["properties"]["event"]["oneOf"] if value["properties"]["kind"].get("const")=="software_result")
-
-
-def write():
-    write_collections()
-    payload = json.loads((SCHEMAS / "task-payload-v1.schema.json").read_text())
-    for name, path in EMBEDDED.items():
-        file = SCHEMAS / name
-        schema = json.loads(file.read_text())
-        embedded(schema, path)["oneOf"] = copy.deepcopy(payload["oneOf"])
-        schema["$defs"] = copy.deepcopy(payload["$defs"])
-        file.write_text(json.dumps(schema, indent=2, ensure_ascii=False) + "\n")
-    event_file=SCHEMAS / "task-event-request-v1.schema.json"
-    event_schema=json.loads(event_file.read_text())
-    variant=event_variant(event_schema);variant.clear();variant.update(software_result_event(payload))
-    event_schema["$defs"]=copy.deepcopy(payload["$defs"])
-    event_file.write_text(json.dumps(event_schema,indent=2,ensure_ascii=False)+"\n")
-    manifest = json.loads(MANIFEST.read_text())
+def artifact(directory, manifest_path, library, area, write=False):
+    manifest = json.loads(manifest_path.read_text())
+    if manifest.get('apiVersion') != 1 or (area == 'runtime' and manifest.get('wireVersion') != 1):
+        raise ValueError('manifest must declare Agent V1')
+    entries = manifest['schemas']
+    files = [entry['file'] for entry in entries]
+    types = [entry['type'] for entry in entries]
+    if (not files or len(files) != len(set(files)) or len(types) != len(set(types))
+            or any(not name.endswith('-v1.schema.json') for name in files)):
+        raise ValueError('manifest has duplicate or non-V1 schema entries')
+    if set(types) != set(generated()[area]):
+        raise ValueError('manifest differs from the Rust protocol declarations')
+    if {path.name for path in directory.glob('*.json')} != set(files) | {manifest_path.name}:
+        raise ValueError('schema directory differs from the V1 manifest')
     digest = hashlib.sha256()
-    for entry in manifest["schemas"]:
-        digest.update((SCHEMAS / entry["file"]).read_bytes())
-    source = LIB.read_text()
-    source, count = re.subn(r'(pub const SCHEMA_FINGERPRINT: &str =\s*")[0-9a-f]{64}(";)',
-                            lambda match: match.group(1) + digest.hexdigest() + match.group(2), source)
-    if count != 1:
-        raise ValueError("wire fingerprint declaration missing")
-    LIB.write_text(source)
-
-
-def check_wire_versions(value, name):
-    if isinstance(value, dict):
-        properties = value.get("properties", {})
-        if "wireVersion" in properties and properties["wireVersion"] != {"const": 1}:
-            raise ValueError(f"{name}: non-V1 wireVersion constraint")
-        for child in value.values():
-            check_wire_versions(child, name)
-    elif isinstance(value, list):
-        for child in value:
-            check_wire_versions(child, name)
+    for entry in entries:
+        schema = dict(generated()[area][entry['type']])
+        schema['$id'] = (
+            'https://rss.example/mdm/agent/runtime/v1/payload/v1/'
+            + entry['file'].replace('-v1.schema.json', '.schema.json')
+            if area == 'runtime' else 'https://rss.example/agent/enroll/v1/' + entry['type']
+        )
+        expected = (json.dumps(schema, indent=2, ensure_ascii=False) + '\n').encode()
+        path = directory / entry['file']
+        if write:
+            path.write_bytes(expected)
+        elif path.read_bytes() != expected:
+            raise ValueError(f"{entry['file']}: schema differs from Rust declarations; regenerate the artifact")
+        digest.update(expected)
+    pattern = r'(pub const SCHEMA_FINGERPRINT:\s*&str\s*=\s*")[0-9a-f]{64}(";)'
+    source = library.read_text()
+    match = re.search(pattern, source)
+    if match is None:
+        raise ValueError('schema fingerprint declaration missing')
+    if write:
+        library.write_text(re.sub(pattern, lambda m: m[1] + digest.hexdigest() + m[2], source))
+    elif match[0] != match[1] + digest.hexdigest() + match[2]:
+        raise ValueError('schema fingerprint differs from the declared V1 artifact')
 
 
 def check():
-    manifest = json.loads(MANIFEST.read_text())
-    if manifest.get("wireVersion") != 1 or manifest.get("apiVersion") != 1:
-        raise ValueError("manifest must declare Agent V1")
-    files = [entry["file"] for entry in manifest["schemas"]]
-    if len(files) != len(set(files)) or not files or any(not name.endswith("-v1.schema.json") for name in files):
-        raise ValueError("manifest has duplicate or non-V1 schema entries")
-    actual = {path.name for path in SCHEMAS.glob("*.json")}
-    if actual != set(files) | {MANIFEST.name}:
-        raise ValueError("schema directory differs from the V1 manifest")
-    for name in ["report-request-v1.schema.json","binding-profile-v1.schema.json"]:
-        definitions=json.loads((SCHEMAS/name).read_text()).get("$defs",{})
-        if any(definitions.get(key)!=value for key,value in collection_definitions().items()):
-            raise ValueError(f"{name}: collection contracts differ from their canonical schema")
-    payload = json.loads((SCHEMAS / "task-payload-v1.schema.json").read_text())
-    for name, path in EMBEDDED.items():
-        schema = json.loads((SCHEMAS / name).read_text())
-        if embedded(schema, path)["oneOf"] != payload["oneOf"] or schema.get("$defs") != payload["$defs"]:
-            raise ValueError(f"{name}: embedded task contract differs from the canonical payload")
-    event=json.loads((SCHEMAS / "task-event-request-v1.schema.json").read_text())
-    if event_variant(event)!=software_result_event(payload) or event.get("$defs")!=payload["$defs"]:
-        raise ValueError("task-event-request-v1.schema.json: software result differs from the canonical contract")
-    digest = hashlib.sha256()
-    for name in files:
-        data = (SCHEMAS / name).read_bytes()
-        schema = json.loads(data)
-        expected_id = "https://rss.example/mdm/agent/runtime/v1/payload/v1/" + name.replace("-v1.schema.json", ".schema.json")
-        if schema.get("$id") != expected_id:
-            raise ValueError(f"{name}: non-V1 schema identifier")
-        check_wire_versions(schema, name)
-        digest.update(data)
-    expected = re.search(r'pub const SCHEMA_FINGERPRINT: &str =\s*"([0-9a-f]{64})"', LIB.read_text())
-    if expected is None or expected.group(1) != digest.hexdigest():
-        raise ValueError("schema fingerprint differs from the declared V1 artifact")
+    artifact(SCHEMAS, MANIFEST, LIB, 'runtime')
 
 
-ENROLL=ROOT / "crates/agent-wire/schema/enroll"
-ENROLL_LIB=ROOT / "crates/agent-wire/src/enroll.rs"
 def enrollment(write=False):
-    manifest=json.loads((ENROLL/"manifest.json").read_text())
-    if manifest.get("apiVersion")!=1:raise ValueError("enrollment manifest version")
-    files=[entry["file"] for entry in manifest["schemas"]]
-    if len(files)!=len(set(files)) or {p.name for p in ENROLL.glob("*.json")}!=set(files)|{"manifest.json"}:raise ValueError("enrollment schema directory differs from manifest")
-    binding=json.loads((SCHEMAS/"binding-profile-v1.schema.json").read_text())
-    binding_shape={k:v for k,v in binding.items() if k not in ("$schema","$id","$defs")}
-    task=json.loads((SCHEMAS/"task-payload-v1.schema.json").read_text())
-    canonical_defs={**binding["$defs"],"SoftwareExecutionContext":task["$defs"]["SoftwareExecutionContext"]}
-    digest=hashlib.sha256()
-    for name in files:
-        schema=json.loads((ENROLL/name).read_text())
-        profile=schema.get("properties",{}).get("runtime",{})
-        if "capabilities" in profile.get("properties",{}):
-            if write:profile["properties"]["capabilities"]=copy.deepcopy(binding["properties"]["capabilities"])
-            elif profile["properties"]["capabilities"]!=binding["properties"]["capabilities"]:raise ValueError(f"{name}: runtime capabilities drift")
-        definitions=schema.get("$defs",{})
-        if "bindingProfile" in definitions:
-            if write:definitions["bindingProfile"]=copy.deepcopy(binding_shape)
-            elif definitions["bindingProfile"]!=binding_shape:raise ValueError(f"{name}: runtime binding drift")
-        for key in definitions.keys() & canonical_defs.keys():
-            if write:definitions[key]=copy.deepcopy(canonical_defs[key])
-            elif definitions[key]!=canonical_defs[key]:raise ValueError(f"{name}: runtime definition drift: {key}")
-        if write:(ENROLL/name).write_text(json.dumps(schema,indent=2,ensure_ascii=False)+"\n")
-        data=(ENROLL/name).read_bytes()
-        if "/agent/enroll/v1/" not in json.loads(data).get("$id",""):raise ValueError("enrollment schema identity")
-        digest.update(data)
-    source=ENROLL_LIB.read_text()
-    pattern=r'(pub const SCHEMA_FINGERPRINT:\s*&str\s*=\s*")[0-9a-f]{64}(";)'
-    if write:
-        source,count=re.subn(pattern,lambda m:m[1]+digest.hexdigest()+m[2],source)
-        if count!=1:raise ValueError("enrollment fingerprint declaration")
-        ENROLL_LIB.write_text(source)
-    elif digest.hexdigest() not in source:raise ValueError("enrollment schema fingerprint")
+    artifact(ENROLL, ENROLL / 'manifest.json', ENROLL_LIB, 'enroll', write)
+
 
 def main():
     try:
-        if sys.argv[1:] == ["--write"]:
-            write()
+        if sys.argv[1:] == ['--write']:
+            artifact(SCHEMAS, MANIFEST, LIB, 'runtime', True)
             enrollment(True)
         elif len(sys.argv) != 1:
-            raise ValueError("usage: agent_wire_artifact.py [--write]")
+            raise ValueError('usage: agent_wire_artifact.py [--write]')
         check()
         enrollment()
-    except (ValueError, OSError, KeyError, TypeError) as error:
-        print(f"agent-wire artifact: {error}", file=sys.stderr)
+    except (ValueError, OSError, KeyError, TypeError, subprocess.CalledProcessError) as error:
+        print(f'agent-wire artifact: {error}', file=sys.stderr)
         return 1
-    print("Agent enrollment V1 and runtime V1 / payload V1 artifacts are complete")
+    print('Agent enrollment V1 and runtime V1 / payload V1 schemas match Rust declarations')
     return 0
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     sys.exit(main())

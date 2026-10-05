@@ -1,39 +1,39 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/agent/enroll/v1/RecoverIssuance",
-  "type": "object",
   "additionalProperties": false,
+  "description": "Administrator attaches the original CA result to a persisted unknown attempt.",
+  "properties": {
+    "certificateChain": {
+      "description": "Original base64 DER certificate chain obtained from the CA.",
+      "items": {
+        "maxLength": 43692,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 4,
+      "minItems": 1,
+      "type": "array"
+    },
+    "operationId": {
+      "description": "Idempotent administrative operation.",
+      "format": "uuid",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "wireVersion": {
+      "const": 1,
+      "description": "Enrollment API version."
+    }
+  },
   "required": [
     "wireVersion",
     "operationId",
     "certificateChain"
   ],
-  "properties": {
-    "wireVersion": {
-      "const": 1
-    },
-    "operationId": {
-      "$ref": "#/$defs/nonNilUuid"
-    },
-    "certificateChain": {
-      "type": "array",
-      "minItems": 1,
-      "maxItems": 4,
-      "items": {
-        "type": "string",
-        "minLength": 1,
-        "maxLength": 43692
-      }
-    }
-  },
-  "$defs": {
-    "nonNilUuid": {
-      "type": "string",
-      "format": "uuid",
-      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-      "not": {
-        "const": "00000000-0000-0000-0000-000000000000"
-      }
-    }
-  }
+  "title": "RecoverIssuance",
+  "type": "object",
+  "$id": "https://rss.example/agent/enroll/v1/RecoverIssuance"
 }

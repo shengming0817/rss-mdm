@@ -258,6 +258,9 @@
           "properties": {
             "identity": {
               "description": "Exact SID/UID.",
+              "maxLength": 184,
+              "minLength": 1,
+              "pattern": "^[^\\x00-\\x1f\\x7f]+$",
               "type": "string"
             },
             "kind": {
@@ -267,6 +270,10 @@
             "sessionId": {
               "description": "Exact login generation.",
               "format": "uuid",
+              "not": {
+                "const": "00000000-0000-0000-0000-000000000000"
+              },
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
               "type": "string"
             }
           },

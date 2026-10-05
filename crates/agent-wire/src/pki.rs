@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 /// Independent device-certificate purposes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Purpose {
     /// Windows native device identity.
@@ -13,7 +13,7 @@ pub enum Purpose {
     Agent,
 }
 /// Approved issuer lifecycle. Retired issuers are excluded from distributed trust.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
     /// Trust is distributed before signing switches.
@@ -24,7 +24,7 @@ pub enum Mode {
     VerifyOnly,
 }
 /// Public issuer and its independently signed revocation material. All DER values use base64.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Issuer {
     /// SHA256 of exact issuer certificate DER.
@@ -45,7 +45,7 @@ pub struct Issuer {
     pub kid: String,
 }
 /// One complete approved trust revision, bound to the existing authenticated HTTPS authority.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Trust {
     /// Trust format, currently exactly one.
@@ -62,7 +62,7 @@ pub struct Trust {
     pub issuers: Vec<Issuer>,
 }
 /// Device acknowledges the exact installed trust revision over its current authenticated channel.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Acknowledgement {
     /// Idempotent device operation.

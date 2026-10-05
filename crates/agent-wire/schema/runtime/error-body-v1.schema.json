@@ -1,29 +1,94 @@
 {
+  "$defs": {
+    "ErrorCode": {
+      "description": "Closed Agent HTTP error codes.",
+      "oneOf": [
+        {
+          "const": "malformed_request",
+          "description": "JSON or field validation failed.",
+          "type": "string"
+        },
+        {
+          "const": "unsupported_wire",
+          "description": "The wire major is unsupported.",
+          "type": "string"
+        },
+        {
+          "const": "unsupported_capability",
+          "description": "The exact capability profile is unsupported.",
+          "type": "string"
+        },
+        {
+          "const": "invalid_identity",
+          "description": "Bootstrap or long-term device identity was rejected.",
+          "type": "string"
+        },
+        {
+          "const": "credential_revoked",
+          "description": "The active device certificate has been revoked.",
+          "type": "string"
+        },
+        {
+          "const": "certificate_expired",
+          "description": "The device certificate has expired on this request.",
+          "type": "string"
+        },
+        {
+          "const": "credential_retired",
+          "description": "A newer certificate supersedes this device certificate.",
+          "type": "string"
+        },
+        {
+          "const": "report_not_found",
+          "description": "A referenced durable report does not exist for this principal.",
+          "type": "string"
+        },
+        {
+          "const": "permission_denied",
+          "description": "The current task authorization was withdrawn or does not cover the operation.",
+          "type": "string"
+        },
+        {
+          "const": "task_not_found",
+          "description": "No task is visible at the supplied identity.",
+          "type": "string"
+        },
+        {
+          "const": "range_not_satisfiable",
+          "description": "The requested single byte range cannot be served.",
+          "type": "string"
+        },
+        {
+          "const": "operation_conflict",
+          "description": "An idempotent identity was reused with different semantic content.",
+          "type": "string"
+        },
+        {
+          "const": "operation_unknown",
+          "description": "Commit outcome is unknown; retry the exact request.",
+          "type": "string"
+        },
+        {
+          "const": "service_unavailable",
+          "description": "A required service is temporarily unavailable.",
+          "type": "string"
+        }
+      ]
+    }
+  },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/error-body.schema.json",
-  "type": "object",
   "additionalProperties": false,
+  "description": "Stable JSON error body.",
+  "properties": {
+    "code": {
+      "$ref": "#/$defs/ErrorCode",
+      "description": "Closed machine-readable code."
+    }
+  },
   "required": [
     "code"
   ],
-  "properties": {
-    "code": {
-      "enum": [
-        "malformed_request",
-        "unsupported_wire",
-        "unsupported_capability",
-        "invalid_identity",
-        "report_not_found",
-        "operation_conflict",
-        "operation_unknown",
-        "service_unavailable",
-        "permission_denied",
-        "task_not_found",
-        "range_not_satisfiable",
-        "credential_revoked",
-        "certificate_expired",
-        "credential_retired"
-      ]
-    }
-  }
+  "title": "ErrorBody",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/error-body.schema.json"
 }

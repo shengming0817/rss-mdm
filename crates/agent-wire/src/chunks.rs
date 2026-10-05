@@ -8,12 +8,13 @@ pub const OUTPUT_MAX_BYTES: usize = 16 * 1024 * 1024;
 /// Raw bytes in every non-final chunk.
 pub const OUTPUT_CHUNK_BYTES: usize = 256 * 1024;
 /// Immutable output identity; chunk count is derived from byte length.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "ManifestInput", into = "ManifestInput")]
 pub struct OutputManifest(ManifestInput);
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ManifestInput {
+    #[schemars(extend("minimum" = 1, "maximum" = 16777216))]
     bytes: u32,
     sha256: [u8; 32],
 }
@@ -50,14 +51,16 @@ impl OutputManifest {
     }
 }
 /// Exactly one position in a manifest; duplicate positions must contain identical bytes.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "ChunkInput", into = "ChunkInput")]
 pub struct OutputChunk(ChunkInput);
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ChunkInput {
     manifest: OutputManifest,
+    #[schemars(extend("minimum" = 0, "maximum" = 63))]
     index: u16,
+    #[schemars(length(min = 2, max = 349526), regex(pattern = "^[A-Za-z0-9_-]+$"))]
     data: String,
 }
 impl From<OutputChunk> for ChunkInput {
@@ -111,17 +114,20 @@ impl OutputChunk {
     }
 }
 /// Terminal process evidence referencing an assembled output; missing chunks cannot be complete.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "ResultInput", into = "ResultInput")]
 pub struct ChunkedTaskResult(ResultInput);
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(transform = crate::runtime::tasks::result_constraints)]
 struct ResultInput {
     #[serde(deserialize_with = "crate::runtime::tasks::required_option")]
+    #[schemars(required, schema_with = "crate::self_service::nullable_schema::<i32>")]
     exit_code: Option<i32>,
     quality: OutputQuality,
     diagnostics: TaskDiagnostics,
     manifest: OutputManifest,
+    #[schemars(extend("minimum" = 1, "maximum" = 9223372036854775807u64))]
     collected_at: i64,
 }
 impl From<ChunkedTaskResult> for ResultInput {
