@@ -12,6 +12,7 @@ struct Work {
     lease: Uuid,
     kind: String,
     request: Value,
+    previous_result: Option<Value>,
     cursor: Option<String>,
     full: bool,
     attempt: i32,
@@ -191,6 +192,7 @@ async fn claim_in(
             lease,
             kind,
             request: r.try_get("request").map_err(db)?,
+            previous_result: r.try_get("result").map_err(db)?,
             cursor: r.try_get("cursor").map_err(db)?,
             full: r.try_get("full_sync").map_err(db)?,
             attempt,
@@ -255,9 +257,9 @@ async fn perform(
             let remote = remote.ok_or(client::RemoteError::Invalid)?;
             client
                 .request(
-                    reqwest::Method::PUT,
+                    reqwest::Method::POST,
                     "/profile/devices",
-                    Some(&json!({"profile_uuid":remote,"devices":devices})),
+                    Some(&json!({"profile_uuid":remote,"devices":retry_devices(work, &devices)})),
                 )
                 .await
         }
@@ -266,7 +268,7 @@ async fn perform(
                 .request(
                     reqwest::Method::DELETE,
                     "/profile/devices",
-                    Some(&json!({"devices":devices})),
+                    Some(&json!({"devices":retry_devices(work, &devices)})),
                 )
                 .await
         }
@@ -309,6 +311,24 @@ async fn perform(
 fn is_write(kind: &str) -> bool {
     matches!(kind, "profile" | "assign" | "clear")
 }
+fn retry_devices<'a>(work: &Work, devices: &'a [String]) -> Vec<&'a String> {
+    devices
+        .iter()
+        .filter(|serial| {
+            !matches!(
+                previous_outcome(work, serial),
+                Some("SUCCESS" | "FAILED" | "NOT_ACCESSIBLE")
+            )
+        })
+        .collect()
+}
+fn previous_outcome<'a>(work: &'a Work, serial: &str) -> Option<&'a str> {
+    work.previous_result
+        .as_ref()?
+        .get("devices")?
+        .get(serial)?
+        .as_str()
+}
 async fn finish(
     app: &HttpState,
     tenant: &str,
@@ -349,7 +369,8 @@ async fn finish(
             if work.kind=="sync" && state!="pending" {
                 sqlx::query("DELETE FROM mdm_apple.ade_sync_devices WHERE tenant_id=$1::uuid AND operation=$2").bind(tenant).bind(work.id).execute(&mut *c).await.map_err(db)?;
             }
-            sqlx::query("UPDATE mdm_apple.ade_operations SET state=$4,result=$5,lease=NULL,lease_until=NULL,next_attempt=$6 WHERE tenant_id=$1::uuid AND id=$2 AND lease=$3").bind(tenant).bind(work.id).bind(work.lease).bind(state).bind(value).bind(now(app)?+if state=="pending" && work.kind!="sync"{60}else if response.is_err(){30}else{0}).execute(c).await.map_err(db)?;Ok(true)
+            let delay=if state=="pending" && work.kind!="sync"{value.get("retryAfterSeconds").and_then(Value::as_i64).unwrap_or(60)}else if response.is_err(){30}else{0};
+            sqlx::query("UPDATE mdm_apple.ade_operations SET state=$4,result=$5,lease=NULL,lease_until=NULL,next_attempt=$6 WHERE tenant_id=$1::uuid AND id=$2 AND lease=$3").bind(tenant).bind(work.id).bind(work.lease).bind(state).bind(value).bind(now(app)?+delay).execute(c).await.map_err(db)?;Ok(true)
         })).await?;
         if committed{let fact=Fact::business(audit,&format!("ade:{}:finish:{}",work.id,work.attempt),format!("{}:{}",work.id,work.attempt).as_bytes(),200,"success",Some(work.id))?;app.audit_store.append(tx,&fact,false).await.map_err(Error::from)?;}
         audit.mark_commit_started();Ok(())
@@ -425,6 +446,8 @@ async fn apply(
                 return Ok(("failed", json!({"reason":"missing_device_observation"})));
             };
             // Query all requested devices; absence never proves a successful clear.
+            let mut observations = Vec::with_capacity(devices.len());
+            let mut confirmed = true;
             for serial in &devices {
                 let Some(d) = observed.get(serial).and_then(Value::as_object) else {
                     return Ok(("failed", json!({"reason":"incomplete_device_observation"})));
@@ -437,14 +460,18 @@ async fn apply(
                     .map(Uuid::parse_str)
                     .transpose()
                     .map_err(|_| Error::Malformed)?;
-                if actual != expected {
-                    return Ok(("failed", json!({"reason":"effect_not_confirmed"})));
-                }
+                confirmed &= actual == expected;
+                observations.push((serial, actual));
             }
-            let receipts = json!({"devices":devices.iter().map(|s|(s.clone(),json!("SUCCESS"))).collect::<serde_json::Map<_,_>>()});
-            let result = assignment(c, app, tenant, work, &devices, expected, &receipts).await?;
-            sqlx::query("UPDATE mdm_apple.ade_operations SET state='succeeded',result=$3 WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(operation).bind(json!({"recoveredBy":work.id,"registration":"not_implied"})).execute(c).await.map_err(db)?;
-            Ok(result)
+            // A complete authoritative read also resolves an effect that did not apply.
+            // Publish each observation atomically before releasing the unknown barrier.
+            for (serial, actual) in observations {
+                sqlx::query("UPDATE mdm_apple.ade_devices SET remote_profile=$4,assignment_revision=assignment_revision+CASE WHEN remote_profile IS DISTINCT FROM $4 THEN 1 ELSE 0 END,observed_at=$5 WHERE tenant_id=$1::uuid AND organization=$2 AND serial=$3 AND NOT deleted").bind(tenant).bind(work.organization).bind(serial).bind(actual).bind(now(app)?).execute(&mut *c).await.map_err(db)?;
+            }
+            let resolved = if confirmed { "succeeded" } else { "failed" };
+            let result = json!({"recoveredBy":work.id,"reason":if confirmed{"effect_confirmed"}else{"effect_not_confirmed"},"registration":"not_implied"});
+            sqlx::query("UPDATE mdm_apple.ade_operations SET state=$3,result=$4 WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(operation).bind(resolved).bind(&result).execute(c).await.map_err(db)?;
+            Ok(("succeeded", result))
         }
         Command::Resolve {
             operation,
@@ -579,21 +606,47 @@ async fn assignment(
         .and_then(Value::as_object)
         .ok_or(Error::Malformed)?;
     let mut results = serde_json::Map::new();
-    let mut success = true;
+    let mut throttled = false;
+    let mut failed = false;
+    let mut unknown = false;
     for serial in devices {
-        let outcome = outcomes
-            .get(serial)
-            .and_then(Value::as_str)
-            .unwrap_or("UNKNOWN");
+        let outcome = match previous_outcome(work, serial) {
+            Some(old @ ("SUCCESS" | "FAILED" | "NOT_ACCESSIBLE")) => old,
+            _ => outcomes
+                .get(serial)
+                .and_then(Value::as_str)
+                .unwrap_or("UNKNOWN"),
+        };
+        let outcome = match outcome {
+            "SUCCESS" | "FAILED" | "NOT_ACCESSIBLE" | "THROTTLED" => outcome,
+            _ => "UNKNOWN",
+        };
         results.insert(serial.clone(), json!(outcome));
         if outcome == "SUCCESS" {
             sqlx::query("UPDATE mdm_apple.ade_devices SET remote_profile=$4,assignment_revision=assignment_revision+CASE WHEN remote_profile IS DISTINCT FROM $4 THEN 1 ELSE 0 END,observed_at=$5 WHERE tenant_id=$1::uuid AND organization=$2 AND serial=$3 AND NOT deleted").bind(tenant).bind(work.organization).bind(serial).bind(profile).bind(now(app)?).execute(&mut *c).await.map_err(db)?;
+        } else if outcome == "THROTTLED" {
+            throttled = true;
+        } else if matches!(outcome, "FAILED" | "NOT_ACCESSIBLE") {
+            failed = true;
         } else {
-            success = false;
+            unknown = true;
         }
     }
+    let delay = value
+        .get("retry_after_seconds")
+        .and_then(Value::as_i64)
+        .unwrap_or(60);
+    unknown |= throttled && !(1..=86400).contains(&delay);
     Ok((
-        if success { "succeeded" } else { "unknown" },
-        json!({"devices":results,"retryAfterSeconds":value.get("retry_after_seconds"),"registration":"not_implied"}),
+        if unknown {
+            "unknown"
+        } else if throttled {
+            "pending"
+        } else if failed {
+            "failed"
+        } else {
+            "succeeded"
+        },
+        json!({"devices":results,"retryAfterSeconds":if throttled && !unknown{Some(delay)}else{None},"registration":"not_implied"}),
     ))
 }

@@ -1549,7 +1549,7 @@ consume(('crates/agent-wire/src/chunks.rs','crates/agent-wire/src/tasks/context.
          'crates/agent-wire/src/tasks/software.rs'), TASK_CONSUMERS)
 consume(('crates/registration-service/src/lib.rs','crates/registration-service/src/error.rs'), 'agent.registration agent.pki device.binding device.revocation enrollment.http')
 consume(('crates/windows-channel/src/error.rs',), 'windows.enrollment windows.management execution.commands.onboarding api.diagnostics')
-consume(('crates/apple-channel/src/error.rs',), 'apple.profile apple.onboarding apple.collection api.diagnostics')
+consume(('crates/apple-channel/src/error.rs', 'crates/apple-channel/src/diagnostic.rs'), 'apple.ade apple.account_enrollment apple.profile apple.onboarding apple.collection api.diagnostics')
 consume(('crates/inventory-service/src/error.rs',), 'agent.reports planning.onboarding assets.http api.diagnostics')
 
 consume_dependencies('api.diagnostics apple.onboarding apple.push apple.users', dev='rss-mdm-apple-channel')

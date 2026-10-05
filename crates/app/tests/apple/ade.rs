@@ -5,7 +5,7 @@ use axum::{
     extract::State,
     http::HeaderMap,
     response::IntoResponse,
-    routing::{get, post, put},
+    routing::{get, post},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::Value;
@@ -26,11 +26,15 @@ struct Remote {
     assigned: bool,
     lose_profile: bool,
     lose_assign: bool,
+    drop_assign_once: bool,
+    throttle_assign_once: bool,
+    assignments: Vec<Vec<String>>,
     details_fail_once: bool,
     cursor_fail_once: bool,
     reject_session_once: bool,
     block: Option<Arc<Gate>>,
     snapshot_serial: Option<String>,
+    additional_serial: Option<String>,
     origin: String,
 }
 fn verify_oauth(headers: &HeaderMap, origin: &str) -> Result<bool> {
@@ -120,7 +124,7 @@ async fn sync(
     State(state): State<Arc<tokio::sync::Mutex<Remote>>>,
     Json(body): Json<Value>,
 ) -> axum::response::Response {
-    let (serial, profile, gate) = {
+    let (serial, profile, additional, gate) = {
         let mut s = state.lock().await;
         s.pages += 1;
         if body.get("cursor").is_some() && s.cursor_fail_once {
@@ -136,6 +140,7 @@ async fn sync(
                 .clone()
                 .unwrap_or_else(|| crate::test_support::case::name("ade-serial").into()),
             if s.assigned { Some(s.profile) } else { None },
+            s.additional_serial.clone(),
             if body.get("cursor").is_none() {
                 s.block.take()
             } else {
@@ -148,7 +153,13 @@ async fn sync(
         gate.release.notified().await;
     }
     if body.get("cursor").is_none() {
-        Json(json!({"devices":[{"serial_number":serial,"device_assigned_date":"2026-10-01T00:00:00.123456Z","profile_uuid":profile}],"cursor":"page-1","more_to_follow":true})).into_response()
+        let mut devices = vec![
+            json!({"serial_number":serial,"device_assigned_date":"2026-10-01T00:00:00.123456Z","profile_uuid":profile}),
+        ];
+        if let Some(serial) = additional {
+            devices.push(json!({"serial_number":serial,"device_assigned_date":"2026-10-01T00:00:00.123456Z","profile_uuid":profile}));
+        }
+        Json(json!({"devices":devices,"cursor":"page-1","more_to_follow":true})).into_response()
     } else {
         Json(json!({"devices":[],"cursor":"page-2","more_to_follow":false})).into_response()
     }
@@ -173,6 +184,25 @@ async fn assign(
     Json(body): Json<Value>,
 ) -> axum::response::Response {
     let mut s = state.lock().await;
+    let devices = body["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    s.assignments.push(devices.clone());
+    if s.drop_assign_once {
+        s.drop_assign_once = false;
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "request lost before effect",
+        )
+            .into_response();
+    }
+    if s.throttle_assign_once {
+        s.throttle_assign_once = false;
+        return Json(json!({"devices":devices.iter().enumerate().map(|(i,d)|(d.clone(),json!(if i==0{"SUCCESS"}else{"THROTTLED"}))).collect::<serde_json::Map<_,_>>(),"retry_after_seconds":120})).into_response();
+    }
     s.assigned = true;
     if s.lose_assign {
         s.lose_assign = false;
@@ -357,7 +387,7 @@ impl Control {
             .route("/server/devices", post(sync))
             .route("/devices/sync", post(sync))
             .route("/profile", post(define_profile).get(get_profile))
-            .route("/profile/devices", put(assign).delete(clear))
+            .route("/profile/devices", post(assign).delete(clear))
             .route("/devices", post(details))
             .with_state(state.clone())
             .layer(axum::middleware::from_fn_with_state(
@@ -924,6 +954,72 @@ async fn interrupted_snapshots_and_unknown_assignment_recover_without_false_publ
         .await?;
     ensure!(leaked == 0);
     other.rollback().await?;
+    pg.close().await?;
+    c.close().await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=apple.ade: definitive read recovery and per-device throttling"]
+async fn unapplied_effect_releases_the_barrier_and_throttling_retries_only_pending_devices()
+-> Result<()> {
+    let mut c = Control::start().await?;
+    c.setup().await?;
+    let serial = crate::test_support::case::name("ade-serial");
+    c.command(json!({"kind":"clear","devices":[serial]}))
+        .await?;
+    c.cycle().await?;
+    c.state.lock().await.drop_assign_once = true;
+    let lost = c
+        .command(json!({"kind":"assign","profile":c.profile,"revision":1,"devices":[serial]}))
+        .await?;
+    c.cycle().await?;
+    ensure!(c.result(lost).await?["state"] == "unknown");
+    let query = c
+        .command(json!({"kind":"reconcile","operation":lost}))
+        .await?;
+    c.cycle().await?;
+    ensure!(c.result(query).await?["state"] == "succeeded");
+    ensure!(c.result(lost).await?["state"] == "failed");
+    let second = crate::test_support::case::name("ade-second-serial");
+    c.state.lock().await.additional_serial = Some(second.into());
+    c.command(json!({"kind":"sync","full":true})).await?;
+    c.cycle().await?;
+    c.cycle().await?;
+    c.state.lock().await.throttle_assign_once = true;
+    let op = c
+        .command(
+            json!({"kind":"assign","profile":c.profile,"revision":1,"devices":[serial,second]}),
+        )
+        .await?;
+    c.cycle().await?;
+    let pending = c.result(op).await?;
+    ensure!(
+        pending["state"] == "pending"
+            && pending["result"]["devices"][serial] == "SUCCESS"
+            && pending["result"]["devices"][second] == "THROTTLED"
+    );
+    ensure!(
+        !rss_mdm_apple_channel::ade::worker::cycle(&c.f.ade).await?,
+        "throttled assignment retried before its delay"
+    );
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let delay:i64=sqlx::query_scalar("SELECT next_attempt-created_at FROM mdm_apple.ade_operations WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(op).fetch_one(&mut pg).await?;
+    ensure!(delay >= 120);
+    sqlx::query(
+        "UPDATE mdm_apple.ade_operations SET next_attempt=0 WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(case_tenant())
+    .bind(op)
+    .execute(&mut pg)
+    .await?;
+    c.cycle().await?;
+    ensure!(c.result(op).await?["state"] == "succeeded");
+    ensure!(
+        c.state.lock().await.assignments.last() == Some(&vec![second.to_owned()]),
+        "successful device was reassigned during throttling retry"
+    );
     pg.close().await?;
     c.close().await
 }
