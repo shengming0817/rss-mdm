@@ -1598,7 +1598,7 @@ consume(('crates/windows-channel/src/enrollment_store.rs',), 'windows.issuance w
 
 # PKI trust is consumed by native authentication, distribution and issuance owners.
 PKI_CONSUMERS = tuple(name for name in MODULES if name.startswith(('windows.', 'apple.')) or name in AGENT_FIXTURE_CONSUMERS or name == 'agent.pki')
-consume(('crates/agent-wire/src/pki.rs','crates/device-trust/src/*','crates/pki-service/src/*','crates/pki-service/schema/*'), ' '.join(PKI_CONSUMERS))
+consume(('crates/agent-wire/src/pki.rs','crates/agent-wire/schema/pki/*','crates/device-trust/src/*','crates/pki-service/src/*','crates/pki-service/schema/*'), ' '.join(PKI_CONSUMERS))
 consume(('crates/windows-channel/src/trust_installation.rs',), ' '.join(name for name in MODULES if name.startswith('windows.')))
 consume(('crates/apple-channel/src/trust_installation.rs','crates/apple-channel/src/access-admission.sql'), ' '.join(name for name in MODULES if name.startswith('apple.')))
 consume(('fixtures/mdm-config.example.json',), ' '.join((*PKI_CONSUMERS, 'host.lifecycle', 'installation.migration')))

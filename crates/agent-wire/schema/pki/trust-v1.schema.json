@@ -1,0 +1,160 @@
+{
+  "$defs": {
+    "Issuer": {
+      "additionalProperties": false,
+      "description": "Public issuer and its independently signed revocation material. All DER values use base64.",
+      "properties": {
+        "certificate": {
+          "description": "DER issuer certificate.",
+          "type": "string"
+        },
+        "crl": {
+          "description": "DER CRL signed by this issuer.",
+          "type": "string"
+        },
+        "digest": {
+          "description": "SHA256 of exact issuer certificate DER.",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "kid": {
+          "description": "JWK public key identity; empty for native SCEP and historical local issuers.",
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/Mode",
+          "description": "Approved lifecycle state."
+        },
+        "provisioner": {
+          "description": "Authorized CA provisioner marker.",
+          "type": "string"
+        },
+        "root": {
+          "description": "DER offline root certificate.",
+          "type": "string"
+        },
+        "root_crl": {
+          "description": "DER CRL signed by the offline root, including intermediate revocations.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "digest",
+        "mode",
+        "certificate",
+        "root",
+        "crl",
+        "root_crl",
+        "provisioner",
+        "kid"
+      ],
+      "type": "object"
+    },
+    "Mode": {
+      "description": "Approved issuer lifecycle. Retired issuers are excluded from distributed trust.",
+      "oneOf": [
+        {
+          "const": "prepared",
+          "description": "Trust is distributed before signing switches.",
+          "type": "string"
+        },
+        {
+          "const": "active",
+          "description": "Sole issuer for newly authorized signing operations.",
+          "type": "string"
+        },
+        {
+          "const": "verify_only",
+          "description": "Existing identities remain trusted while migration finishes.",
+          "type": "string"
+        }
+      ]
+    },
+    "Purpose": {
+      "description": "Independent device-certificate purposes.",
+      "oneOf": [
+        {
+          "const": "windows",
+          "description": "Windows native device identity.",
+          "type": "string"
+        },
+        {
+          "const": "apple",
+          "description": "Apple native device identity.",
+          "type": "string"
+        },
+        {
+          "const": "agent",
+          "description": "Agent runtime identity.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One complete approved trust revision, bound to the existing authenticated HTTPS authority.",
+  "properties": {
+    "issuers": {
+      "contains": {
+        "properties": {
+          "mode": {
+            "const": "active"
+          }
+        },
+        "required": [
+          "mode"
+        ]
+      },
+      "description": "Complete overlap set, bounded to sixteen issuer generations.",
+      "items": {
+        "$ref": "#/$defs/Issuer"
+      },
+      "maxContains": 1,
+      "maxItems": 16,
+      "minContains": 1,
+      "minItems": 1,
+      "type": "array"
+    },
+    "origin": {
+      "description": "Exact configured service origin, without a path or trailing slash.",
+      "type": "string"
+    },
+    "purpose": {
+      "$ref": "#/$defs/Purpose",
+      "description": "Device certificate purpose, independent of HTTPS/APNs/profile signing."
+    },
+    "revision": {
+      "description": "Monotonic approved trust revision.",
+      "maximum": 9223372036854775807,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "tenant": {
+      "description": "Tenant owning these device identities.",
+      "format": "uuid",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "version": {
+      "const": 1,
+      "description": "Trust format, currently exactly one."
+    }
+  },
+  "required": [
+    "version",
+    "origin",
+    "tenant",
+    "purpose",
+    "revision",
+    "issuers"
+  ],
+  "title": "Trust",
+  "type": "object",
+  "$id": "https://rss.example/agent/pki/v1/Trust"
+}
