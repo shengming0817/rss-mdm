@@ -9,6 +9,17 @@ from ci_impact import select_inputs, SelectionError
 
 
 class ModuleImpactTests(unittest.TestCase):
+    def test_configuration_inputs_select_their_real_consumers(self):
+        for path, expected in {
+            'crates/content-service/src/reader.rs': {'agent.configurations', 'content.http', 'content.storage'},
+            'crates/agent-channel/src/enroll.rs': {'agent.configurations', 'agent.pki', 'agent.registration'},
+            'crates/agent-wire/src/enroll.rs': {'agent.configurations', 'agent.pki', 'agent.registration'},
+        }.items():
+            with self.subTest(path=path):
+                selected = set(select_inputs([path]).modules)
+                self.assertTrue(expected <= selected, selected)
+                self.assertTrue(selected.isdisjoint({'sources.brew_git', 'apple.apns'}), selected)
+
     def test_self_service_consumes_trusted_subject_and_session_authority(self):
         for path in ('crates/authorization-service/src/evaluate.rs',
                      'crates/authorization-service/src/session.rs'):
