@@ -53,7 +53,17 @@ impl Client {
         self.set_authorized(true).await?;
         let expiry = Uuid::new_v4();
         let expires_at = clock.now() / 1_000_000 + 1;
-        ensure!(self.call(Method::POST,"",Some(json!({"operationId":expiry,"inputVersion":"1","target":{"kind":"device"},"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./DevInfo/Mod","instance":[],"operation":"get","value":null}}},"deadline":expires_at}))).await?.0==StatusCode::ACCEPTED);
+        ensure!(
+            self.call(
+                Method::POST,
+                "",
+                Some(
+                    json!({"operationId":expiry,"action":{"kind":"restart"},"deadline":expires_at})
+                )
+            )
+            .await?
+            .0 == StatusCode::ACCEPTED
+        );
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;

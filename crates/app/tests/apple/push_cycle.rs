@@ -14,7 +14,9 @@ async fn state(pg: &mut PgConnection) -> Result<serde_json::Value> {
 }
 impl Fixture {
     pub async fn push_cycle(&mut self, peer: &lifecycle::Peer) -> Result<()> {
-        let operation = self.create_operation(|id| profile_task(id, true)).await?;
+        self.policy_cycle(peer).await?;
+        self.grant_native_actions(&["device_control"]).await?;
+        let operation = self.create_restart().await?;
         let mut pg =
             PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")

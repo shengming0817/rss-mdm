@@ -19,7 +19,6 @@ pub(crate) async fn post(
 pub(crate) struct ReadExchange {
     pub(crate) first: s::Message,
     pub(crate) gets: Vec<(u32, String)>,
-    pub(crate) ack: s::Message,
     pub(crate) response: s::Message,
 }
 pub(crate) async fn begin(
@@ -83,7 +82,6 @@ pub(crate) async fn begin(
     Ok(ReadExchange {
         first,
         gets,
-        ack,
         response: message,
     })
 }

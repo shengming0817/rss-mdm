@@ -209,7 +209,9 @@ impl Fixture {
 use lifecycle::Peer;
 impl Fixture {
     async fn approval_and_timeout(&mut self, peer: &Peer) -> Result<()> {
-        let op = self.create_operation(|id| profile_task(id, true)).await?;
+        self.policy_cycle(peer).await?;
+        self.grant_native_actions(&["device_control"]).await?;
+        let op = self.create_restart().await?;
         let path = format!(
             "/api/v1/devices/{DEVICE}/collection-runs",
             DEVICE = case_device()

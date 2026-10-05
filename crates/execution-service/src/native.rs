@@ -81,7 +81,12 @@ pub async fn result_eligible_on(
         &row,
         "request",
     )?;
-    Ok(receipt_acceptance(source, c, protection, p, &input, &row, true, None).await? == Some(true))
+    let approval: ExecutionAuthority =
+        serde_json::from_str(&row.try_get::<String, _>("approval").map_err(db)?)
+            .map_err(|_| protocol())?;
+    Ok(approval.dispatch_ready(source, c).await?
+        && receipt_acceptance(source, c, protection, p, &input, &row, true, None).await?
+            == Some(true))
 }
 async fn collection_result_eligible(
     source: &dyn crate::source_authority::SourceAuthority,
@@ -97,7 +102,7 @@ async fn collection_result_eligible(
             return Ok(false);
         }
         return if row.try_get::<bool, _>("template").map_err(db)? {
-            crate::actions::native_collection::eligible_on(
+            crate::actions::native_collection::delivery_eligible_on(
                 source,
                 c,
                 p,
@@ -1094,7 +1099,8 @@ pub async fn replay_on(
         let approval: ExecutionAuthority =
             serde_json::from_str(&row.try_get::<String, _>("approval").map_err(db)?)
                 .map_err(|_| protocol())?;
-        if !request.target.matches_windows_context(p.user_context())
+        if !approval.dispatch_ready(source, c).await?
+            || !request.target.matches_windows_context(p.user_context())
             || request.deadline <= now
             || !matches!(
                 row.try_get::<String, _>("status").map_err(db)?.as_str(),

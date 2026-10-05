@@ -1,244 +1,104 @@
-//! Real TLS/HTTP and PG verify native families separately from external effects.
+//! Three fixed controls use authenticated applicability and retain native effect uncertainty.
 use super::*;
-use lifecycle::command;
-fn task(kind: &str, fields: serde_json::Value) -> serde_json::Value {
-    json!({"platform":"macos","request":{"kind":"command","command":{"requestType":kind,"fields":fields}}})
-}
+use sqlx::Connection;
 #[tokio::test]
-#[ignore = "MODULE=apple.commands: native command families over real mTLS and PG"]
-async fn native_families_keep_results_separate_from_effects() -> Result<()> {
+#[ignore = "MODULE=apple.commands: closed device controls over real mTLS and PG"]
+async fn native_controls_are_closed_and_never_claim_effects() -> Result<()> {
     let mut f = Fixture::start().await?;
-    f.grant_native_actions(&[
-        "device_control",
-        "security_operate",
-        "account_write",
-        "software_deploy",
-        "device_update",
-    ])
-    .await?;
+    f.grant_native_actions(&["device_control", "device_wipe"])
+        .await?;
     let (peer, device) = f.ready_local_peer().await?;
-    let query = f
-        .create_operation(|_| task("InstalledApplicationList", json!({})))
+    let path = format!("/api/v1/devices/{}/operations", case_device());
+    for task in [
+        json!({"platform":"macos","request":{"kind":"command","command":{"requestType":"InstalledApplicationList","fields":{}}}}),
+        json!({"platform":"macos","request":{"kind":"command","command":{"requestType":"EraseDevice","fields":{}}}}),
+        json!({"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/Reboot/RebootNow","instance":[],"operation":"exec","value":null}}}),
+    ] {
+        let response=f.browser.call(&f.router,Method::POST,&path,Some(json!({"operationId":Uuid::new_v4(),"deadline":f.app.clock.unix_seconds()?+300,"task":task}))).await?;
+        ensure!(
+            response.0 == StatusCode::BAD_REQUEST,
+            "generic input accepted: {response:?}"
+        );
+    }
+    let unknown=f.browser.call(&f.router,Method::POST,&path,Some(json!({"operationId":Uuid::new_v4(),"deadline":f.app.clock.unix_seconds()?+300,"action":{"kind":"restart"}}))).await?;
+    ensure!(
+        !unknown.0.is_success(),
+        "missing native prerequisites accepted: {unknown:?}"
+    );
+    // A real Policy-owned Profile exchange supplies native context for this registration.
+    f.policy_cycle(&peer).await?;
+    f.grant_native_actions(&["device_control", "device_wipe"])
         .await?;
-    let (id, _) = peer.next("InstalledApplicationList").await?;
-    peer.manage(
-        "Acknowledged",
-        Some(id),
-        Some(("InstalledApplicationList", plist::Value::Array(vec![]))),
-    )
-    .await?;
-    let result = f.operation(query).await?;
-    ensure!(
-        result["commandStatus"] == "applied"
-            && result["observation"]["result"] == "query_result"
-            && result["observation"]["effect"] == "unverified",
-        "query {result}"
-    );
-    let settings = f.create_operation(|_| task("Settings", json!({"Settings":{"type":"array","value":[{"type":"dictionary","value":{"Item":{"type":"string","value":"HostName"},"HostName":{"type":"string","value":"fixture.local"}}}]}}))).await?;
-    let (id, _) = peer.next("Settings").await?;
-    peer.manage(
-        "Acknowledged",
-        Some(id),
-        Some((
-            "Settings",
-            plist::Value::Dictionary(protocol::dictionary([("Status", "Error".into())])),
-        )),
-    )
-    .await?;
-    let result = f.operation(settings).await?;
-    ensure!(
-        result["commandStatus"] == "rejected" && result["observation"]["result"] == "rejected",
-        "Settings inner Error {result}"
-    );
-    let security = f
-        .create_operation(|_| {
-            task(
-                "VerifyRecoveryLock",
-                json!({"Password":{"type":"string","value":"fixture-secret"}}),
-            )
-        })
-        .await?;
-    let (id, _) = peer.next("VerifyRecoveryLock").await?;
-    peer.manage(
-        "Acknowledged",
-        Some(id),
-        Some(("PasswordVerified", false.into())),
-    )
-    .await?;
-    let result = f.operation(security).await?;
-    ensure!(
-        result["observation"]["result"] == "rejected" && result["commandStatus"] != "applied",
-        "verification {result}"
-    );
-    ensure!(result["observation"]["fields"]["PasswordVerified"]["value"] == false);
-    ensure!(
-        result["observation"]["receipts"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|r| r["phase"] == "execute" && r["fields"]["PasswordVerified"]["value"] == false)
-    );
-    let lom_request = Uuid::new_v4().to_string();
-    let fields = rss_mdm_apple_mdm::native::input::Fields::from_plist(&protocol::dictionary([(
-        "RequestList",
-        plist::Value::Array(vec![plist::Value::Dictionary(protocol::dictionary([
-            ("DeviceRequestUUID", lom_request.clone().into()),
-            ("DeviceRequestType", "PowerON".into()),
-            ("DeviceDNSName", "device.example.test".into()),
-            ("LOMProtocolVersion", 1.into()),
-            (
-                "PrimaryIPv6AddressList",
-                plist::Value::Array(vec!["::1".into()]),
-            ),
-            ("SecondaryIPv6AddressList", plist::Value::Array(vec![])),
-        ]))]),
-    )]))?;
-    let lom = f
-        .create_operation(|_| task("LOMDeviceRequest", serde_json::to_value(fields).unwrap()))
-        .await?;
-    let (id, _) = peer.next("LOMDeviceRequest").await?;
-    peer.manage(
-        "Acknowledged",
-        Some(id),
-        Some((
-            "ResponseList",
-            plist::Value::Array(vec![plist::Value::Dictionary(protocol::dictionary([
-                ("DeviceRequestUUID", lom_request.into()),
-                ("DeviceRequestSuccess", false.into()),
-                ("DeviceRequestReturnError", "fixture-denied".into()),
-            ]))]),
-        )),
-    )
-    .await?;
-    let result = f.operation(lom).await?;
-    ensure!(result["observation"]["result"] == "rejected");
-    ensure!(
-        result["observation"]["fields"]["ResponseList"]["value"][0]["value"]["DeviceRequestReturnError"]
-            ["value"]
-            == "fixture-denied"
-    );
-    let account = f
-        .create_operation(|_| {
-            task(
-                "UnlockUserAccount",
-                json!({"UserName":{"type":"string","value":"fixture-local"}}),
-            )
-        })
-        .await?;
-    let (id, _) = peer.next("UnlockUserAccount").await?;
-    peer.manage("Acknowledged", Some(id), None).await?;
-    ensure!(f.operation(account).await?["observation"]["result"] == "acknowledged");
-    let control = f
-        .create_operation(|_| task("RestartDevice", json!({})))
-        .await?;
-    let (id, _) = peer.next("RestartDevice").await?;
-    peer.manage("Acknowledged", Some(id), None).await?;
-    let result = f.operation(control).await?;
-    ensure!(
-        result["commandStatus"] == "received"
-            && result["observation"]["result"] == "pending_restart",
-        "restart {result}"
-    );
-    let pkg=f.create_operation(|_|task("InstallEnterpriseApplication",json!({"ManifestURL":{"type":"string","value":"https://packages.example.test/manifest.plist"}}))).await?;
-    let (id, payload) = peer.next("InstallEnterpriseApplication").await?;
-    ensure!(
-        payload["ManifestURL"].as_string() == Some("https://packages.example.test/manifest.plist")
-    );
-    let next = peer.manage("Acknowledged", Some(id), None).await?;
-    ensure!(
-        next.is_empty(),
-        "ManifestURL cannot supply a trusted bundle identity"
-    );
-    let result = f.operation(pkg).await?;
-    ensure!(
-        result["commandStatus"] == "received" && result["observation"]["effect"] == "unverified",
-        "PKG {result}"
-    );
-    let fields = rss_mdm_apple_mdm::native::input::Fields::from_plist(&protocol::dictionary([(
-        "Manifest",
-        plist::Value::Dictionary(protocol::dictionary([(
-            "items",
-            plist::Value::Array(vec![plist::Value::Dictionary(protocol::dictionary([
-                (
-                    "assets",
-                    plist::Value::Array(vec![plist::Value::Dictionary(protocol::dictionary([
-                        ("kind", "software-package".into()),
-                        ("url", "https://packages.example.test/app.pkg".into()),
-                        ("sha256", "ab".repeat(32).into()),
-                    ]))]),
-                ),
-                (
-                    "metadata",
-                    plist::Value::Dictionary(protocol::dictionary([
-                        ("bundle-identifier", "org.example.native-pkg".into()),
-                        ("bundle-version", "1.2.3".into()),
-                        ("kind", "software".into()),
-                        ("title", "Fixture".into()),
-                    ])),
-                ),
-            ]))]),
-        )])),
-    )]))?;
-    let pkg = f
-        .create_operation(|_| {
-            task(
-                "InstallEnterpriseApplication",
-                serde_json::to_value(fields).unwrap(),
-            )
-        })
-        .await?;
-    let (id, _) = peer.next("InstallEnterpriseApplication").await?;
-    let next = peer.manage("Acknowledged", Some(id), None).await?;
-    let (observe, payload) = command(&next, "InstalledApplicationList")?;
-    ensure!(
-        payload["Identifiers"]
-            .as_array()
-            .is_some_and(|identifiers| {
-                identifiers.len() == 1
-                    && identifiers[0].as_string() == Some("org.example.native-pkg")
-            })
-    );
-    peer.manage("Error", Some(observe), None).await?;
-    let result = f.operation(pkg).await?;
-    ensure!(
-        result["commandStatus"] == "received" && result["observation"]["effect"] == "unverified",
-        "query error rejected pending PKG {result}"
-    );
-    let update=f.create_operation(|_|task("ScheduleOSUpdate",json!({"Updates":{"type":"array","value":[{"type":"dictionary","value":{"ProductKey":{"type":"string","value":"fixture-update"},"InstallAction":{"type":"string","value":"InstallLater"},"MaxUserDeferrals":{"type":"integer","value":"3"}}}]}}))).await?;
-    let (id, _) = peer.next("ScheduleOSUpdate").await?;
-    let next = peer
-        .manage(
-            "Acknowledged",
-            Some(id),
-            Some((
-                "UpdateResults",
-                plist::Value::Array(vec![plist::Value::Dictionary(protocol::dictionary([
-                    ("ProductKey", "fixture-update".into()),
-                    ("InstallAction", "InstallLater".into()),
-                    ("Status", "Idle".into()),
-                ]))]),
-            )),
+    let detail = f
+        .browser
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("/api/v1/devices/{}", case_device()),
+            None,
         )
         .await?;
-    let (observe, _) = command(&next, "OSUpdateStatus")?;
-    let result = f.operation(update).await?;
-    ensure!(
-        result["commandStatus"] == "received" && result["observation"]["result"] == "deferred",
-        "OS update {result}"
-    );
-    ensure!(
-        result["observation"]["receipts"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|r| r["phase"] == "execute" && r["fields"].get("UpdateResults").is_some())
-    );
-    peer.manage("Error", Some(observe), None).await?;
-    let result = f.operation(update).await?;
-    ensure!(
-        result["commandStatus"] == "received" && result["observation"]["effect"] == "unverified",
-        "query error rejected pending update {result}"
-    );
+    ensure!(detail.0 == StatusCode::OK, "device detail: {detail:?}");
+    let registration = &detail.1["primaryMdmRegistration"];
+    ensure!(registration["source"] == "mdm.apple");
+    let confirmation = json!({"confirmed":true,"expectedRegistrationId":registration["registrationId"],"expectedGeneration":registration["generation"]});
+    for (kind, command) in [
+        ("restart", "RestartDevice"),
+        ("lock", "DeviceLock"),
+        ("wipe", "EraseDevice"),
+    ] {
+        let id = Uuid::new_v4();
+        let mut action = if kind == "restart" {
+            json!({})
+        } else {
+            confirmation.clone()
+        };
+        action["kind"] = json!(kind);
+        if kind == "lock" {
+            action["pin"] = json!("781239")
+        }
+        let input =
+            json!({"operationId":id,"deadline":f.app.clock.unix_seconds()?+300,"action":action});
+        let accepted = f
+            .browser
+            .call(&f.router, Method::POST, &path, Some(input.clone()))
+            .await?;
+        ensure!(accepted.0 == StatusCode::ACCEPTED, "{kind}: {accepted:?}");
+        ensure!(
+            f.browser
+                .call(&f.router, Method::POST, &path, Some(input))
+                .await?
+                == accepted
+        );
+        let (attempt, payload) = peer.next(command).await?;
+        if kind == "lock" {
+            ensure!(payload["PIN"].as_string() == Some("781239"))
+        }
+        if kind == "wipe" {
+            ensure!(payload["ObliterationBehavior"].as_string() == Some("DoNotObliterate"));
+            ensure!(!payload.contains_key("PIN"));
+        }
+        peer.manage("Acknowledged", Some(attempt), None).await?;
+        let result = f.operation(id).await?;
+        ensure!(
+            result["commandStatus"] == "received"
+                && result["observation"]["effect"] == "unverified",
+            "control ACK claimed effect: {result}"
+        );
+        ensure!(
+            !result.to_string().contains("781239"),
+            "PIN escaped operation projection"
+        );
+        let mut pg =
+            sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+                .await?;
+        let (authority,sealed):(String,Vec<u8>)=sqlx::query_as("SELECT approval::text,request FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(id).fetch_one(&mut pg).await?;
+        ensure!(
+            !authority.contains("781239") && !sealed.windows(6).any(|v| v == b"781239"),
+            "PIN persisted in plaintext"
+        );
+        pg.close().await?;
+    }
     drop(device);
     f.close().await
 }

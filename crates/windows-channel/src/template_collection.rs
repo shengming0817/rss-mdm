@@ -33,8 +33,10 @@ pub async fn send(
         .bind(p.tenant().to_string()).bind(p.registration()).fetch_optional(&mut *c).await.map_err(db)?;
     if let Some(row) = row {
         let id: Uuid = row.try_get("id").map_err(db)?;
-        if !rss_mdm_execution_service::actions::native_collection::delivery_eligible_on(source, c, p, id)
-            .await?
+        if !rss_mdm_execution_service::actions::native_collection::delivery_eligible_on(
+            source, c, p, id,
+        )
+        .await?
         {
             return Ok(false);
         }
@@ -147,8 +149,10 @@ pub async fn receive(
         consumed.extend(commands.iter().filter_map(refs));
         let mut run = store::load_on(c, &tenant, id).await?;
         if run.sealed_at.is_some()
-            || !rss_mdm_execution_service::actions::native_collection::delivery_eligible_on(source, c, p, id)
-                .await?
+            || !rss_mdm_execution_service::actions::native_collection::delivery_eligible_on(
+                source, c, p, id,
+            )
+            .await?
         {
             continue;
         }

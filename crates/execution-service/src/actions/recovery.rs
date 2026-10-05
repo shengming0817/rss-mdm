@@ -239,7 +239,11 @@ pub async fn recover_one(
     {
         super::native_collection::advance_run(service, tx, &mut run, native, now).await?;
     }
-    if retired && !stale && run.state.cancellation == Cancellation::None && matches!(plan, db::ScheduledPolicy::Native(_)) {
+    if retired
+        && !stale
+        && run.state.cancellation == Cancellation::None
+        && matches!(plan, db::ScheduledPolicy::Native(_))
+    {
         super::native_collection::settle_run(tx, &mut run).await?;
     }
     // A sealed protocol result is durable execution evidence, even after worker downtime.

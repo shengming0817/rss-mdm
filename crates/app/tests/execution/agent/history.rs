@@ -212,17 +212,17 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
     .await?;
     let stack = worker(&f.base).await?;
     for remote in [false, true] {
-        let parent = if remote {
-            let parent = Uuid::new_v4();
-            let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-            post(&mut f.author,&f.router,"/api/v1/remote-operations",json!({"operationId":parent,"resource":policy_definition(id,case_task_scope())["action"]["resource"],"targets":{"kind":"devices","devices":[case_device_id()]},"action":{"kind":"execute","parameters":{}},"deadline":now+600})).await?;
-            parent
-        } else {
-            publish(&mut f.author, &f.router, id).await?
-        };
-        let task = claim(&f.router).await?;
+        let policy = publish(&mut f.author, &f.router, id).await?;
+        let mut task = claim(&f.router).await?;
         task_event(&f.router, &task, json!({"kind":"received"})).await?;
         task_event(&f.router, &task, json!({"kind":"start"})).await?;
+        let parent = if remote {
+            let parent = Uuid::new_v4();
+            task = historical_remote(&f, &task, parent).await?;
+            parent
+        } else {
+            policy
+        };
         task_event(&f.router,&task,json!({"kind":"result","exitCode":0,"quality":"complete","output":{"secret":"private-collection-canary"},"diagnostics":{"stdout":"private-collection-canary","stderr":"private-collection-canary","durationMs":1,"executedAt":1,"failure":null}})).await?;
         let route = if remote {
             "remote-operations"

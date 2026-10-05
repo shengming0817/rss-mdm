@@ -319,13 +319,37 @@ pub async fn eligible_on(
 }
 
 /// Retired sources have no new delivery eligibility; receipt eligibility remains separate.
-pub async fn delivery_eligible_on(source: &dyn crate::source_authority::SourceAuthority, c: &mut sqlx::PgConnection, p: &rss_mdm_registration_service::DevicePrincipal, id: Uuid) -> std::result::Result<bool, crate::Error> {
-    delivery_eligible_target_on(source, c, p.tenant(), &crate::Target { device: p.device().into(), registration: p.registration(), generation: p.generation() }, id).await
+pub async fn delivery_eligible_on(
+    source: &dyn crate::source_authority::SourceAuthority,
+    c: &mut sqlx::PgConnection,
+    p: &rss_mdm_registration_service::DevicePrincipal,
+    id: Uuid,
+) -> std::result::Result<bool, crate::Error> {
+    delivery_eligible_target_on(
+        source,
+        c,
+        p.tenant(),
+        &crate::Target {
+            device: p.device().into(),
+            registration: p.registration(),
+            generation: p.generation(),
+        },
+        id,
+    )
+    .await
 }
-pub(crate) async fn delivery_eligible_target_on(source: &dyn crate::source_authority::SourceAuthority, c: &mut sqlx::PgConnection, tenant: rss_request_context::TenantId, target: &crate::Target, id: Uuid) -> std::result::Result<bool, crate::Error> {
+pub(crate) async fn delivery_eligible_target_on(
+    source: &dyn crate::source_authority::SourceAuthority,
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    target: &crate::Target,
+    id: Uuid,
+) -> std::result::Result<bool, crate::Error> {
     let retired: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2 AND source_kind='remote_operation')")
         .bind(tenant.to_string()).bind(id).fetch_one(&mut *c).await.map_err(crate::database::db)?;
-    if retired { return Ok(false) }
+    if retired {
+        return Ok(false);
+    }
     eligible_target_on(source, c, tenant, target, id).await
 }
 

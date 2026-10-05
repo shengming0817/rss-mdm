@@ -571,63 +571,18 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
             Some(remote_input.clone()),
         )
         .await?;
-    ensure!(accepted.0 == StatusCode::OK, "remote native: {accepted:?}");
-    ensure!(accepted.1["statusUrl"] == format!("/api/v1/remote-operations/{remote}"));
     ensure!(
-        accepted
-            == client
-                .browser
-                .call(
-                    &client.router,
-                    Method::POST,
-                    "/api/v1/remote-operations",
-                    Some(remote_input)
-                )
-                .await?,
-        "remote replay changed the protected publication"
+        accepted.0 == StatusCode::METHOD_NOT_ALLOWED,
+        "retired Remote native: {accepted:?}"
     );
-    let frozen: String = sqlx::query_scalar("SELECT frozen::text FROM mdm_planning.remote_operations WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(remote).fetch_one(&mut pg).await?;
-    ensure!(
-        !frozen.contains(CORTANA) && !frozen.contains(CAMERA),
-        "remote native input remained plaintext"
-    );
-    let delivery = tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            let read = client
-                .browser
-                .call(
-                    &client.router,
-                    Method::GET,
-                    &format!("/api/v1/remote-operations/{remote}"),
-                    None,
-                )
-                .await?;
-            ensure!(read.0 == StatusCode::OK, "remote read: {read:?}");
-            if let Some(id) = read.1["items"][0]["deliveryId"].as_str() {
-                let id = Uuid::parse_str(id)?;
-                if client.call(Method::GET, &format!("/{id}"), None).await?.1["commandStatus"]
-                    == "published"
-                {
-                    return Ok::<_, anyhow::Error>(id);
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await??;
-    let mut writes = exchange(&peer, 975, &mut values).await?;
-    writes.sort();
-    ensure!(
-        writes == expected,
-        "protected remote configuration was not applied: {writes:?}"
-    );
-    ensure!(
-        client
-            .call(Method::GET, &format!("/{delivery}"), None)
-            .await?
-            .1["commandStatus"]
-            == "applied"
-    );
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM mdm_planning.remote_operations WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(case_tenant())
+    .bind(remote)
+    .fetch_one(&mut pg)
+    .await?;
+    ensure!(count == 0, "retired Remote created source material");
     host.replace(&peer).await?;
     let replacement = tokio::time::timeout(Duration::from_secs(30), async {
         loop {

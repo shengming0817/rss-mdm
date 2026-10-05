@@ -122,3 +122,28 @@ impl ExecutionService {
 #[cfg(test)]
 #[path = "../tests/remote_phase_unit.rs"]
 mod tests;
+
+#[cfg(feature = "integration")]
+impl ExecutionService {
+    /// Exercise the production retired-source recovery transaction against persisted history.
+    pub async fn recover_remote_fixture(&self, id: Uuid) -> std::result::Result<(), Error> {
+        let audit = RequestAudit::new(self.tenant.to_string(), "command_reconcile");
+        audit.identify_service("command-recovery");
+        let result = crate::transaction::run(
+            &self.audit_store,
+            &self.runtime,
+            self.tenant,
+            &audit,
+            (self, id),
+            |ctx, tx| Box::pin(async move { ctx.0.advance_remote_in(tx, ctx.1).await }),
+        )
+        .await;
+        audit.finalize(
+            result
+                .as_ref()
+                .err()
+                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+        );
+        result
+    }
+}

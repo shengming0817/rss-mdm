@@ -16,19 +16,3 @@ fn expire_upload(id: uuid::Uuid) -> anyhow::Result<()> {
     ))?;
     Ok(())
 }
-
-pub(crate) fn physical_paths(
-    directory: &std::path::Path,
-    class: &str,
-) -> anyhow::Result<Vec<std::path::PathBuf>> {
-    let ids = crate::test_support::pg(&format!(
-        "SELECT p->'coordinate'->>'id' FROM mdm_content.manifests m, jsonb_array_elements(m.document->'value'->'pieces') p WHERE m.tenant_id='{}' AND m.class='{}' AND m.state='ready'",
-        crate::test_support::case_tenant(),
-        class
-    ))?;
-    Ok(ids
-        .lines()
-        .filter(|s| !s.is_empty())
-        .map(|id| directory.join(id))
-        .collect())
-}

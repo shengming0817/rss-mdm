@@ -341,8 +341,8 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
             && first.1["asset"]["nextOffset"] == 1,
         "item quality: {first:?}"
     );
-    let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-    post(&mut f.browser,&f.router,"/api/v1/remote-operations",json!({"operationId":Uuid::new_v4(),"resource":{"id":id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"targets":{"kind":"devices","devices":[case_device()]},"action":{"kind":"collect_native"},"deadline":now+300})).await?;
+    let refresh_policy = Uuid::new_v4();
+    post(&mut f.browser,&f.router,&format!("/api/v1/policies/{refresh_policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"native_collection","resource":{"id":id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"runLifetimeSeconds":300}}}})).await?;
     let (refresh, _) = peer.next("DeviceInformation").await?;
     ensure!(refresh != run);
     peer.manage(

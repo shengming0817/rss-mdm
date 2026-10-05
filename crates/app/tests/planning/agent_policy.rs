@@ -346,7 +346,6 @@ async fn reject_script_at_all_entrances(
     definition: Value,
     expected: StatusCode,
 ) -> Result<()> {
-    let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
     let requests = [
         (
             "/api/v1/policies/previews".to_owned(),
@@ -355,10 +354,6 @@ async fn reject_script_at_all_entrances(
         (
             format!("/api/v1/policies/{}", Uuid::new_v4()),
             json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":definition}}),
-        ),
-        (
-            "/api/v1/remote-operations".to_owned(),
-            json!({"operationId":Uuid::new_v4(),"resource":definition["action"]["resource"],"targets":{"kind":"devices","devices":[case_device_id()]},"action":{"kind":"execute","parameters":definition["action"]["parameters"]},"deadline":now+600}),
         ),
     ];
     let mut code = None;
@@ -522,31 +517,22 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
         script_effects()? == before,
         "unsigned draft or publication wrote execution facts"
     );
-    let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-    let input = json!({"operationId":Uuid::new_v4(),"resource":definition["action"]["resource"],"targets":{"kind":"devices","devices":[case_device_id()]},"action":{"kind":"execute","parameters":{}},"deadline":now+600});
-    let accepted = post(
-        &mut fixture.author,
-        &fixture.router,
-        "/api/v1/remote-operations",
-        input.clone(),
-    )
-    .await?;
-    ensure!(
-        post(
-            &mut fixture.author,
+    let retired = fixture
+        .author
+        .call(
             &fixture.router,
+            Method::POST,
             "/api/v1/remote-operations",
-            input
+            Some(json!({"operationId":Uuid::new_v4(),"action":{"kind":"execute"}})),
         )
-        .await?
-            == accepted
-    );
+        .await?;
+    ensure!(retired.0 == StatusCode::METHOD_NOT_ALLOWED);
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.agent_policy"]
-async fn registered_script_eligibility_gates_preview_automatic_and_remote() -> Result<()> {
+async fn registered_script_eligibility_gates_preview_and_automatic() -> Result<()> {
     use crate::test_support::software_execution::{Platform, context};
     let mut f = Fixture::new().await?;
     f.register().await?;
@@ -608,32 +594,6 @@ async fn registered_script_eligibility_gates_preview_automatic_and_remote() -> R
             "{platform}/{architecture}/{profiles:?}: {preview}"
         );
         ensure!(script_effects()? == before, "preview wrote execution facts");
-        let operation = Uuid::new_v4();
-        let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-        post(&mut f.author,&f.router,"/api/v1/remote-operations",json!({"operationId":operation,"resource":definition["action"]["resource"],"targets":{"kind":"devices","devices":[case_device_id()]},"action":{"kind":"execute","parameters":{}},"deadline":now+600})).await?;
-        tokio::time::timeout(Duration::from_secs(30), async {
-            loop {
-                if pg(&format!(
-                    "SELECT staged FROM mdm_planning.remote_operations WHERE id='{operation}'"
-                ))?
-                .trim()
-                    == "t"
-                {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-            Ok::<_, anyhow::Error>(())
-        })
-        .await??;
-        ensure!(pg(&format!("SELECT diagnosis FROM mdm_planning.remote_operation_targets WHERE operation='{operation}' AND status='blocked'"))?.trim()=="script_ineligible");
-        ensure!(
-            pg(&format!(
-                "SELECT count(*) FROM mdm_commands.action_runs WHERE remote_operation='{operation}'"
-            ))?
-            .trim()
-                == "0"
-        );
         // A real check-in announces its current profiles; the absent-profile case
         // announces a mismatched profile, so it still cannot admit an automatic Run.
         let announced = profiles.unwrap_or_else(|| json!(["bash"]));
@@ -665,12 +625,6 @@ async fn registered_script_eligibility_gates_preview_automatic_and_remote() -> R
     .await?;
     ensure!(preview["items"][0]["taskAdmission"]["state"] == "eligible");
     ensure!(script_effects()? == before);
-    let operation = Uuid::new_v4();
-    let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-    post(&mut f.author,&f.router,"/api/v1/remote-operations",json!({"operationId":operation,"resource":definition["action"]["resource"],"targets":{"kind":"devices","devices":[case_device_id()]},"action":{"kind":"execute","parameters":{}},"deadline":now+600})).await?;
-    let task = claim(&f.router).await?;
-    ensure!(task["payload"]["authorization"]["operationId"] == operation.to_string());
-    complete(&f.router, &task).await?;
     crate::test_support::stop_worker(stack).await?;
     Ok(())
 }

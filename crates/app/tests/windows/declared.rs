@@ -1640,35 +1640,12 @@ async fn remote_not_ready(
     let operation = Uuid::new_v4();
     let response=client.browser.call(&client.router,Method::POST,"/api/v1/remote-operations",Some(json!({"operationId":operation,"resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"targets":{"kind":"devices","devices":[crate::test_support::case::name("tls-device")]},"action":{"kind":"apply_configuration"},"deadline":now()+600}))).await?;
     ensure!(
-        response.0 == StatusCode::OK,
-        "remote native input: {response:?}"
+        response.0 == StatusCode::METHOD_NOT_ALLOWED,
+        "retired Remote: {response:?}"
     );
-    tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        loop {
-            let read = client
-                .browser
-                .call(
-                    &client.router,
-                    Method::GET,
-                    &format!("/api/v1/remote-operations/{operation}"),
-                    None,
-                )
-                .await?;
-            ensure!(read.0 == StatusCode::OK, "remote read: {read:?}");
-            if !read.1["items"].as_array().unwrap().is_empty() {
-                ensure!(
-                    read.1["items"][0]["diagnosis"] == "windows_declared_enrollment_not_ready"
-                        && read.1["items"][0]["status"] == "blocked",
-                    "wrong remote diagnosis: {read:?}"
-                );
-                return Ok::<_, anyhow::Error>(());
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    })
-    .await??;
     Ok(())
 }
+
 #[cfg(feature = "integration")]
 #[tokio::test]
 #[ignore = "make t2 MODULE=windows.declared"]
