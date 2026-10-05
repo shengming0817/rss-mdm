@@ -1190,7 +1190,8 @@ consume(('crates/execution-service/src/service.rs', 'crates/execution-service/sr
          'crates/execution-service/src/queries.rs', 'crates/execution-service/src/queries/records.rs',
          'crates/execution-service/src/transaction.rs', 'crates/execution-service/src/channels.rs',
          'crates/execution-service/src/configuration.rs', 'crates/execution-service/src/native_configuration.rs',
-         'crates/execution-service/src/model.rs', 'crates/apple-mdm/src/native/request.rs'), 'apple.profile apple.policy apple.ddm apple.status')
+         'crates/execution-service/src/model.rs', 'crates/apple-mdm/src/native/request.rs'), 'apple.ddm apple.status')
+consume(('crates/execution-service/src/native_configuration.rs',), 'apple.profile apple.policy')
 
 consume(('crates/authorization-service/src/authority.rs', 'crates/authorization-service/src/model.rs', 'crates/execution-service/src/frozen.rs',
          'crates/execution-service/src/storage.rs'), 'apple.ddm apple.status')
