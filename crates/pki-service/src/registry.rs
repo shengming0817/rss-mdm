@@ -417,9 +417,7 @@ impl Registry {
         input: &Acknowledgement,
     ) -> Result<(), Error> {
         input.validate().map_err(|_| Error::Conflict)?;
-        if input.revision != trust.revision
-            || input.digest != trust.installation_digest()
-        {
+        if input.revision != trust.revision || input.digest != trust.installation_digest() {
             return Err(Error::Conflict);
         }
         if trust.tenant.to_string() != tenant {
