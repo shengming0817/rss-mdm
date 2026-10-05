@@ -418,6 +418,7 @@ fn installation_accepts_empty_current_or_explicit_complete_predecessor_ledger() 
         "apple-account-authority-v1",
         "registration-agent-configurations-v1",
         "apple-organizations-v1",
+        "execution-entry-boundary-v1",
     ]
     .map(|name| current.iter().position(|(unit, _)| *unit == name).unwrap());
     for prefix in 1..ledger.len() {
@@ -513,4 +514,10 @@ async fn released_upgrade(first_new: &str) -> Result<()> {
     migrate_on(&mut owner, &installation).await?;
     owner.close().await?;
     Ok(())
+}
+
+#[tokio::test]
+#[ignore = "MODULE=installation.migration: released execution entry boundary upgrade"]
+async fn released_installation_retires_execution_entries_without_rewriting_units() -> Result<()> {
+    released_upgrade("execution-entry-boundary-v1").await
 }

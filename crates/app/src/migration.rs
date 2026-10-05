@@ -328,6 +328,10 @@ fn units() -> Vec<(&'static str, &'static str)> {
         rss_mdm_registration_service::APPLE_ADE_SQL,
     ));
     units.push(("apple-ade-channel-v1", rss_mdm_apple_channel::ADE_SQL));
+    units.push((
+        "execution-entry-boundary-v1",
+        include_str!("../schema/execution-entry-boundary.sql"),
+    ));
     units
 }
 /// Exact immutable migration units embedded in this executable, without database access.
@@ -539,7 +543,13 @@ fn accepted_ledger(
         .take_while(|(name, _)| *name != "apple-organizations-v1")
         .map(|(name, sql)| (*name, format!("{:x}", Sha256::digest(sql))))
         .collect::<BTreeMap<_, _>>();
-    matches(&predecessor)
+    let before_execution_boundary = current
+        .iter()
+        .take_while(|(name, _)| *name != "execution-entry-boundary-v1")
+        .map(|(name, sql)| (*name, format!("{:x}", Sha256::digest(sql))))
+        .collect::<BTreeMap<_, _>>();
+    matches(&before_execution_boundary)
+        || matches(&predecessor)
         || matches(&previous)
         || matches(&before_account)
         || matches(&before_configurations)

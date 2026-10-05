@@ -1704,7 +1704,7 @@
       "operations",
       "operation_authority_source",
       "c",
-      "CHECK (COALESCE(\nCASE source_kind\n    WHEN 'direct'::text THEN ((approval ->> 'kind'::text) = 'user'::text)\n    WHEN 'policy'::text THEN (((approval ->> 'kind'::text) = ANY (ARRAY['policy'::text, 'agent_install'::text])) AND ((approval ->> 'tenant'::text) = (tenant_id)::text) AND ((approval ->> 'device'::text) = device) AND ((approval ->> 'version'::text) = (policy_version)::text))\n    WHEN 'remote_operation'::text THEN (((approval ->> 'kind'::text) = 'remote_operation'::text) AND ((approval ->> 'tenant'::text) = (tenant_id)::text) AND ((approval ->> 'device'::text) = device) AND ((approval ->> 'operation'::text) = (remote_operation)::text))\n    ELSE NULL::boolean\nEND, false))",
+      "CHECK (COALESCE(\nCASE source_kind\n    WHEN 'direct'::text THEN ((approval ->> 'kind'::text) = ANY (ARRAY['user'::text, 'device_control'::text]))\n    WHEN 'policy'::text THEN (((approval ->> 'kind'::text) = ANY (ARRAY['policy'::text, 'agent_install'::text])) AND ((approval ->> 'tenant'::text) = (tenant_id)::text) AND ((approval ->> 'device'::text) = device) AND ((approval ->> 'version'::text) = (policy_version)::text))\n    WHEN 'remote_operation'::text THEN (((approval ->> 'kind'::text) = 'remote_operation'::text) AND ((approval ->> 'tenant'::text) = (tenant_id)::text) AND ((approval ->> 'device'::text) = device) AND ((approval ->> 'operation'::text) = (remote_operation)::text))\n    ELSE NULL::boolean\nEND, false))",
       true
     ],
     [
