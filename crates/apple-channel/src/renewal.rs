@@ -217,11 +217,19 @@ async fn prepare_on(
     .fetch_one(&mut *c)
     .await
     .map_err(db)?;
+    let ade_removable: Option<bool> = if authority == "apple_ade" {
+        sqlx::query_scalar("SELECT (machine->>'removable')::boolean FROM mdm_apple.ade_enrollments WHERE tenant_id=$1::uuid AND enrollment=$2 AND NOT revoked").bind(tenant).bind(enrollment).fetch_optional(&mut *c).await.map_err(db)?
+    } else {
+        None
+    };
     let mode = match (authority.as_str(), assigned.as_deref()) {
         ("apple_account", Some(managed_account)) => {
             profile::EnrollmentMode::Account { managed_account }
         }
         ("password", None) => profile::EnrollmentMode::Profile,
+        ("apple_ade", None) => profile::EnrollmentMode::Ade {
+            removable: ade_removable.ok_or(Error::Unavailable(crate::Failure::AppleInvariant))?,
+        },
         _ => return Err(Error::Unavailable(crate::Failure::AppleInvariant)),
     };
     let (issuer, scep_url, scep_provisioner) = apple.active_scep(c, tenant).await?;

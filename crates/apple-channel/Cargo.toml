@@ -41,6 +41,7 @@ base64.workspace=true
 md-5.workspace=true
 ring.workspace=true
 zeroize.workspace=true
+openssl.workspace=true
 x509-cert.workspace=true
 tokio-rustls.workspace=true
 tokio-util.workspace=true
@@ -53,4 +54,4 @@ anyhow.workspace=true
 workspace=true
 
 [features]
-integration=[]
+integration=["rss-mdm-certificate/integration"]

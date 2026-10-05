@@ -589,7 +589,7 @@ pub(crate) fn from_state(
     let browser = Router::new()
         .merge(management)
         .merge(rss_mdm_apple_channel::browser_routes(
-            apple_state,
+            apple_state.clone(),
             apple_boundary,
         ))
         .merge(authentication)
@@ -605,6 +605,7 @@ pub(crate) fn from_state(
         )
         .layer(DefaultBodyLimit::max(16384));
     crate::native::Routers {
+        apple_control: apple_state,
         pki: state.pki.clone(),
         agent_pki: state.agent_pki.clone(),
         windows: state.windows.clone(),

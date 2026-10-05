@@ -108,7 +108,14 @@ impl EnrollmentProgress {
         let evidence = rss_mdm_apple_channel::enrollment::progress_in(c, context)
             .await
             .map_err(|_| Error::Storage)?;
-        let (instructions, reauthentication_required) = if context.account_driven {
+        let (instructions, reauthentication_required) = if context.organization_driven {
+            (
+                Instructions::MacosAde {
+                    enrollment_method: "automated_device_enrollment",
+                },
+                false,
+            )
+        } else if context.account_driven {
             let (managed_account, required) =
                 rss_mdm_apple_channel::account_enrollment::progress_in(c, &self.sessions, context)
                     .await

@@ -311,6 +311,15 @@ fn units() -> Vec<(&'static str, &'static str)> {
         "apple-account-channel-v1",
         rss_mdm_apple_channel::ACCOUNT_ENROLLMENT_SQL,
     ));
+    units.push((
+        "apple-organizations-v1",
+        rss_mdm_apple_channel::ORGANIZATIONS_SQL,
+    ));
+    units.push((
+        "apple-ade-authority-v1",
+        rss_mdm_registration_service::APPLE_ADE_SQL,
+    ));
+    units.push(("apple-ade-channel-v1", rss_mdm_apple_channel::ADE_SQL));
     units
 }
 /// Exact immutable migration units embedded in this executable, without database access.

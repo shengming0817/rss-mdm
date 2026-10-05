@@ -25,7 +25,7 @@ pub struct AccountChange {
     instance_id: Uuid,
     enabled: bool,
 }
-fn operation(headers: &HeaderMap) -> Result<Uuid, Error> {
+pub(crate) fn operation(headers: &HeaderMap) -> Result<Uuid, Error> {
     if headers.get_all("idempotency-key").iter().count() != 1 {
         return Err(Error::Malformed);
     }
@@ -48,13 +48,43 @@ pub(super) async fn list(
     let proof = authenticate(&app, &headers, false).await?;
     proof.manage(Permission::AuthorizationRead)?;
     let mut tx = app.access.begin_read(proof.tenant_id()).await?;
-    let rows=sqlx::query("SELECT * FROM mdm_apple.account_organizations WHERE tenant_id=$1::uuid ORDER BY id LIMIT 1001").bind(proof.tenant_id()).fetch_all(&mut *tx).await.map_err(db)?;
+    let rows = sqlx::query(
+        "SELECT id FROM mdm_apple.organizations WHERE tenant_id=$1::uuid ORDER BY id LIMIT 1001",
+    )
+    .bind(proof.tenant_id())
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(db)?;
     if rows.len() > 1000 {
         return Err(Error::Unavailable(Failure::Capacity));
     }
     let mut organizations = Vec::new();
     for row in rows {
         let id: Uuid = row.try_get("id").map_err(db)?;
+        let ade = sqlx::query(
+            "SELECT * FROM mdm_apple.ade_servers WHERE tenant_id=$1::uuid AND organization=$2",
+        )
+        .bind(proof.tenant_id())
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?;
+        let ade = ade
+            .as_ref()
+            .map(|r| crate::ade::management::status_row(r, crate::ade::now(&app)?))
+            .transpose()?;
+        let Some(row) = sqlx::query(
+            "SELECT * FROM mdm_apple.account_configuration WHERE tenant_id=$1::uuid AND id=$2",
+        )
+        .bind(proof.tenant_id())
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?
+        else {
+            organizations.push(serde_json::json!({"id":id,"accountEnrollment":null,"ade":ade}));
+            continue;
+        };
         let key: String = row.try_get("signing_key").map_err(db)?;
         let accounts=sqlx::query("SELECT account,principal,instance,revision,enabled FROM mdm_apple.account_bindings WHERE tenant_id=$1::uuid AND organization=$2 ORDER BY account LIMIT 1001").bind(proof.tenant_id()).bind(id).fetch_all(&mut *tx).await.map_err(db)?;
         if accounts.len() > 1000 {
@@ -66,7 +96,7 @@ pub(super) async fn list(
                 .unix_seconds()
                 .is_some_and(|now| s.expires() > now as u64)
         });
-        organizations.push(serde_json::json!({"id":id,"domain":row.try_get::<String,_>("domain").map_err(db)?,"serverUuid":row.try_get::<Uuid,_>("server_uuid").map_err(db)?,"signingKey":key,"enabled":row.try_get::<bool,_>("enabled").map_err(db)?,"revision":row.try_get::<i64,_>("revision").map_err(db)?,"signingKeyConfigured":configured,"accounts":accounts,"externalOrganizationVerification":"not_observed"}));
+        organizations.push(serde_json::json!({"id":id,"ade":ade,"accountEnrollment":{"domain":row.try_get::<String,_>("domain").map_err(db)?,"serverUuid":row.try_get::<Uuid,_>("server_uuid").map_err(db)?,"signingKey":key,"enabled":row.try_get::<bool,_>("enabled").map_err(db)?,"revision":row.try_get::<i64,_>("revision").map_err(db)?,"signingKeyConfigured":configured,"accounts":accounts,"externalOrganizationVerification":"not_observed"}}));
     }
     proof.check_live()?;
     Ok(Json(serde_json::json!({"items":organizations})))
@@ -200,7 +230,8 @@ async fn change_on(
         .map_err(db)?;
     let (revision, replayed) = match input {
         Change::Organization(v) => {
-            let old=sqlx::query("SELECT * FROM mdm_apple.account_organizations WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(p.tenant_id()).bind(id).fetch_optional(&mut *c).await.map_err(db)?;
+            crate::organizations::ensure_in(c, p.tenant_id(), id).await?;
+            let old=sqlx::query("SELECT * FROM mdm_apple.account_configuration WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(p.tenant_id()).bind(id).fetch_optional(&mut *c).await.map_err(db)?;
             let replayed = old.as_ref().is_some_and(|r| {
                 r.try_get::<i64, _>("revision").ok() == Some(v.expected_revision + 1)
                     && r.try_get::<Uuid, _>("operation").ok() == Some(operation)
@@ -218,7 +249,7 @@ async fn change_on(
                 if revision != v.expected_revision {
                     return Err(Error::Conflict);
                 }
-                sqlx::query("INSERT INTO mdm_apple.account_organizations(tenant_id,id,domain,server_uuid,signing_key,enabled,revision,operation) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(tenant_id,id) DO UPDATE SET domain=excluded.domain,server_uuid=excluded.server_uuid,signing_key=excluded.signing_key,enabled=excluded.enabled,revision=excluded.revision,operation=excluded.operation")
+                sqlx::query("INSERT INTO mdm_apple.account_configuration(tenant_id,id,domain,server_uuid,signing_key,enabled,revision,operation) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(tenant_id,id) DO UPDATE SET domain=excluded.domain,server_uuid=excluded.server_uuid,signing_key=excluded.signing_key,enabled=excluded.enabled,revision=excluded.revision,operation=excluded.operation")
                     .bind(p.tenant_id()).bind(id).bind(&v.domain).bind(v.server_uuid).bind(&v.signing_key).bind(v.enabled).bind(revision+1).bind(operation).execute(&mut *c).await.map_err(unique)?;
             }
             (v.expected_revision + 1, replayed)
@@ -227,7 +258,7 @@ async fn change_on(
             if v.instance_id.to_string() != p.instance_id() {
                 return Err(Error::Forbidden);
             }
-            let host:String=sqlx::query_scalar("SELECT domain FROM mdm_apple.account_organizations WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(p.tenant_id()).bind(id).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::NotFound)?;
+            let host:String=sqlx::query_scalar("SELECT domain FROM mdm_apple.account_configuration WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(p.tenant_id()).bind(id).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::NotFound)?;
             if name.rsplit_once('@').map(|(_, d)| d) != Some(host.as_str()) {
                 return Err(Error::Malformed);
             }

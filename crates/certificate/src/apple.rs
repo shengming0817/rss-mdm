@@ -345,3 +345,5 @@ impl Csr {
         self.digest
     }
 }
+
+pub mod ade;
