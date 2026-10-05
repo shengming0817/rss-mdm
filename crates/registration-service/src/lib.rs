@@ -34,3 +34,6 @@ pub const ENROLLMENT_PROGRESS_SQL: &str = include_str!("../schema/enrollment-pro
 pub const APPLE_ACCOUNT_SQL: &str = include_str!("../schema/apple-account.sql");
 
 pub const APPLE_ADE_SQL: &str = include_str!("../schema/apple-ade.sql");
+
+/// Registration settings and reusable administrator configurations.
+pub const AGENT_CONFIGURATIONS_SQL: &str = include_str!("../schema/agent-configurations.sql");

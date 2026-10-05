@@ -30,42 +30,39 @@ struct Operation {
 }
 pub fn routes(app: Option<Arc<Service>>) -> Router {
     Router::new()
-        .route("/agent-requests/{id}", get(preview))
-        .route("/agent-grants", post(create))
-        .route("/self-enrollments/agent", post(create_self))
-        .route("/self-enrollments/agent/{id}/cancel", post(cancel_self))
-        .route("/agent-grants/{id}", get(status))
-        .route("/agent-grants/{id}/approve", post(approve))
-        .route("/agent-grants/{id}/revoke", post(revoke))
+        .route("/agent-configurations", post(create_configuration))
+        .route("/agent-configurations/{id}", get(read_configuration))
+        .route(
+            "/agent-configurations/{id}/revoke",
+            post(revoke_configuration),
+        )
+        .route("/agent-requests/{id}/authorize", post(approve))
+        .route("/agent-requests/{id}/cancel", post(revoke))
+        .route(
+            "/agent-enrollment-settings",
+            get(settings).put(update_settings),
+        )
         .route("/agent-registrations/{id}/recovery", post(recovery))
         .route("/agent-issuances/{id}/recover", post(recover_issuance))
         .with_state(Arc::new(app))
 }
-async fn preview(
+async fn settings(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
-    Path(id): Path<Uuid>,
-) -> Result<Json<wire::AuthorizationRequest>, HttpFailure> {
-    Ok(Json(service(&app)?.preview(&auth.proof, id).await?))
+) -> Result<Json<rss_mdm_registration_service::agent::settings::Settings>, HttpFailure> {
+    Ok(Json(service(&app)?.settings(&auth.proof).await?))
 }
-async fn create(
+async fn update_settings(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
-    input: Body<wire::GrantRequest>,
-) -> Result<Json<wire::GrantReceipt>, HttpFailure> {
+    input: Body<rss_mdm_registration_service::agent::settings::Update>,
+) -> Result<Json<rss_mdm_registration_service::agent::settings::Settings>, HttpFailure> {
     Ok(Json(
         service(&app)?
-            .create(&auth.proof, &body(input)?, &a)
+            .update_settings(&auth.proof, &body(input)?, &a)
             .await?,
     ))
-}
-async fn status(
-    State(app): State<App>,
-    Extension(auth): Extension<RequestAuth>,
-    Path(id): Path<Uuid>,
-) -> Result<Json<wire::Progress>, HttpFailure> {
-    Ok(Json(service(&app)?.status(&auth.proof, id).await?))
 }
 async fn approve(
     State(app): State<App>,
@@ -159,51 +156,36 @@ impl IntoResponse for HttpFailure {
     }
 }
 
-async fn create_self(
+async fn create_configuration(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
-    input: Body<wire::GrantRequest>,
-) -> Result<Json<wire::GrantReceipt>, crate::Error> {
-    let service = service(&app).map_err(|e| {
-        crate::Error::from(
-            e.0.source
-                .unwrap_or(rss_mdm_registration_service::Error::Configuration),
-        )
-    })?;
-    let input = input.map_err(|_| crate::Error::Malformed)?.0;
-    service
-        .create(&auth.proof, &input, &a)
-        .await
-        .map(Json)
-        .map_err(|e| {
-            crate::Error::from(
-                e.source
-                    .unwrap_or(rss_mdm_registration_service::Error::Storage),
-            )
-        })
+    input: Body<rss_mdm_registration_service::agent::configurations::Create>,
+) -> Result<Json<wire::configuration::ConfigurationFile>, HttpFailure> {
+    Ok(Json(
+        service(&app)?
+            .create_configuration(&auth.proof, &body(input)?, &a)
+            .await?,
+    ))
 }
-
-async fn cancel_self(
+async fn read_configuration(
+    State(app): State<App>,
+    Extension(auth): Extension<RequestAuth>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<rss_mdm_registration_service::agent::configurations::Read>, HttpFailure> {
+    Ok(Json(
+        service(&app)?.read_configuration(&auth.proof, id).await?,
+    ))
+}
+async fn revoke_configuration(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     input: Body<Operation>,
-) -> Result<Json<wire::GrantReceipt>, crate::Error> {
-    let service = app
-        .as_ref()
-        .as_deref()
-        .ok_or_else(|| crate::Error::from(rss_mdm_registration_service::Error::Configuration))?;
-    let input = input.map_err(|_| crate::Error::Malformed)?.0;
-    service
-        .revoke(&auth.proof, id, input.operation_id, &a)
-        .await
-        .map(Json)
-        .map_err(|e| {
-            crate::Error::from(
-                e.source
-                    .unwrap_or(rss_mdm_registration_service::Error::Storage),
-            )
-        })
+) -> Result<StatusCode, HttpFailure> {
+    service(&app)?
+        .revoke_configuration(&auth.proof, id, body(input)?.operation_id, &a)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }

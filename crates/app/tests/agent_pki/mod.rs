@@ -90,7 +90,9 @@ async fn service_with_provider(
         audit,
         issuer: pki.issuer.clone(),
         clock: pki.pki_clock.clone(),
-        policy: pki.policy.clone(),
+        origin: pki.origin.clone(),
+        configuration_signer: Arc::new(crate::test_support::agent::fixture_signer()?),
+        installations: Arc::new(crate::agent_configurations::Installations),
         binding: Arc::new(crate::agent::Bindings),
         native: Arc::new(NoNative),
     })?))
@@ -104,8 +106,7 @@ fn grant() -> anyhow::Result<wire::GrantRequest> {
         operation_id: Uuid::new_v4(),
         secret: runtime::Secret::parse(&crate::enrollment::random())?,
         platform: runtime::TaskPlatform::Macos,
-        lifetime_seconds: None,
-        csr: Some(STANDARD.encode(std::fs::read(root().join("agent.der"))?)),
+        csr: STANDARD.encode(std::fs::read(root().join("agent.der"))?),
     })
 }
 fn signing(g: &wire::GrantRequest, id: Uuid) -> anyhow::Result<wire::CertificateRequest> {
@@ -114,7 +115,7 @@ fn signing(g: &wire::GrantRequest, id: Uuid) -> anyhow::Result<wire::Certificate
         operation_id: Uuid::new_v4(),
         grant_id: id,
         secret: g.secret.clone(),
-        csr: g.csr.clone().unwrap(),
+        csr: g.csr.clone(),
         runtime: serde_json::from_value(
             crate::test_support::json!({"capabilities":["inventory.collect.v1"],"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)}),
         )?,
@@ -181,7 +182,9 @@ async fn renewal_grant_lookup_survives_expired_identity_without_writing_authorit
             audit: audit_store.clone(),
             issuer: pki.issuer.clone(),
             clock: time.clone(),
-            policy: pki.policy.clone(),
+            origin: pki.origin.clone(),
+            configuration_signer: Arc::new(crate::test_support::agent::fixture_signer()?),
+            installations: Arc::new(crate::agent_configurations::Installations),
             binding: Arc::new(crate::agent::Bindings),
             native: Arc::new(NoNative),
         })?))
@@ -189,7 +192,7 @@ async fn renewal_grant_lookup_survives_expired_identity_without_writing_authorit
     let s = assemble(case_a())?;
     let p = admin(case_a(), "admin-a").await?;
     let initial = grant()?;
-    let r = original.create(&p, &initial, &audit()).await?;
+    let r = authorize_request(&original, &p, &initial, &audit()).await?;
     let candidate = original
         .issue(&signing(&initial, r.grant_id)?, &audit())
         .await?;
@@ -211,9 +214,13 @@ async fn renewal_grant_lookup_survives_expired_identity_without_writing_authorit
         .metadata()
         .not_after;
     let renewal = grant()?;
+    // Certificate issuance uses the database clock; start the frozen verifier only
+    // after activation so it cannot precede the certificate's validity window.
     time.0.store(now(), Ordering::Release);
+    s.authenticate(&evidence).await?;
     audit_store.inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
     let lost = s.renew(&evidence, &renewal, &audit()).await.unwrap_err();
+    assert_eq!(lost.code, wire::ErrorCode::ActivationUnknown);
     assert!(
         matches!(
             &lost.source,
@@ -328,8 +335,8 @@ async fn restored_ca_signs_only_live_authorized_agent_csrs_and_tls_preserves_pur
         )
     }
     let g = grant()?;
-    assert!(s.create(&foreign, &g, &audit()).await.is_err());
-    let receipt = s.create(&p, &g, &audit()).await?;
+    assert!(authorize_request(&s, &foreign, &g, &audit()).await.is_err());
+    let receipt = authorize_request(&s, &p, &g, &audit()).await?;
     let input = signing(&g, receipt.grant_id)?;
     let mut wrong = input.clone();
     wrong.secret = runtime::Secret::parse(&crate::enrollment::random())?;
@@ -391,7 +398,7 @@ async fn explicit_development_limit_and_unknown_result_remain_auditable() -> any
     value["lifetime"] = serde_json::json!({"mode":"development","days":3650});
     let s = service(value.clone()).await?;
     let g = grant()?;
-    let r = s.create(&p, &g, &audit()).await?;
+    let r = authorize_request(&s, &p, &g, &audit()).await?;
     let c = s.issue(&signing(&g, r.grant_id)?, &audit()).await?;
     let evidence = peer(s.trust(), &chain(&c)?, &root()).await?;
     let metadata = s.trust().verify_peer(&evidence, now())?;
@@ -411,7 +418,7 @@ async fn explicit_development_limit_and_unknown_result_remain_auditable() -> any
     let value = deployment();
     let unknown = service_with_provider(value, Some("absent-agent-key")).await?;
     let g = grant()?;
-    let r = unknown.create(&p, &g, &audit()).await?;
+    let r = authorize_request(&unknown, &p, &g, &audit()).await?;
     let input = signing(&g, r.grant_id)?;
     use axum::{Router, body::Body, http::Request};
     use http_body_util::BodyExt;
@@ -649,10 +656,18 @@ async fn agent_ingress_holds_one_global_permit_per_request() -> anyhow::Result<(
     Ok(())
 }
 
-type AgentHttp = tokio::io::BufReader<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>;
+pub(crate) type AgentHttp =
+    tokio::io::BufReader<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>;
 async fn connect_agent(
     address: std::net::SocketAddr,
     chain: Option<&[Vec<u8>]>,
+) -> anyhow::Result<AgentHttp> {
+    connect_agent_with_key(address, chain, "agent.pk8").await
+}
+pub(crate) async fn connect_agent_with_key(
+    address: std::net::SocketAddr,
+    chain: Option<&[Vec<u8>]>,
+    key_file: &str,
 ) -> anyhow::Result<AgentHttp> {
     use tokio_rustls::{
         TlsConnector,
@@ -676,7 +691,7 @@ async fn connect_agent(
         Some(chain) => builder.with_client_auth_cert(
             chain.iter().cloned().map(CertificateDer::from).collect(),
             PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(std::fs::read(
-                root().join("agent.pk8"),
+                root().join(key_file),
             )?)),
         )?,
         None => builder.with_no_client_auth(),
@@ -688,7 +703,7 @@ async fn connect_agent(
             .await?,
     ))
 }
-async fn agent_http(
+pub(crate) async fn agent_http(
     io: &mut AgentHttp,
     method: &str,
     path: &str,
@@ -728,6 +743,10 @@ async fn agent_http(
         {
             length = Some(value.trim().parse::<usize>()?);
         }
+    }
+    if status == 204 {
+        anyhow::ensure!(length.is_none_or(|n| n == 0), "204 must have no body");
+        return Ok((status, serde_json::Value::Null));
     }
     let mut bytes = vec![0; length.ok_or_else(|| anyhow::anyhow!("missing HTTP content-length"))?];
     io.read_exact(&mut bytes).await?;
@@ -821,6 +840,95 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
         body["code"], "report_not_found",
         "active identity reaches report lookup"
     );
+    let (status, body) =
+        agent_http(&mut anonymous, "GET", "/api/v1/agent/enroll/trust", None).await?;
+    assert_eq!(status, 200);
+    let trust: rss_mdm_agent_wire::pki::Trust = serde_json::from_value(body)?;
+    let ack = rss_mdm_agent_wire::pki::Acknowledgement {
+        operation: Uuid::new_v4(),
+        version: 1,
+        revision: trust.revision,
+        digest: trust.installation_digest(),
+    };
+    let mut tx = host.store.archive_pool().begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_a())
+        .execute(&mut *tx)
+        .await?;
+    let installations = "SELECT count(*) FROM mdm_pki.installations WHERE tenant_id=$1::uuid AND purpose='agent' AND registration=$2";
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(installations)
+            .bind(case_a())
+            .bind(active.runtime.registration_id)
+            .fetch_one(&mut *tx)
+            .await?,
+        0
+    );
+    for (field, value, expected) in [
+        ("version", serde_json::json!(2), 400),
+        ("operation", serde_json::json!(Uuid::nil()), 400),
+        (
+            "operation",
+            serde_json::json!(ack.operation.simple().to_string()),
+            400,
+        ),
+        ("revision", serde_json::json!(0), 400),
+        ("revision", serde_json::json!(i64::MAX as u64 + 1), 400),
+        ("digest", serde_json::json!("A".repeat(64)), 400),
+        ("digest", serde_json::json!("0".repeat(64)), 409),
+        ("purpose", serde_json::json!("agent"), 400),
+    ] {
+        let mut invalid = serde_json::to_value(&ack)?;
+        invalid[field] = value;
+        let (status, _) = agent_http(
+            &mut certified,
+            "POST",
+            "/api/v1/agent/enroll/trust/acknowledgements",
+            Some(invalid),
+        )
+        .await?;
+        assert_eq!(status, expected, "{field}");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(installations)
+                .bind(case_a())
+                .bind(active.runtime.registration_id)
+                .fetch_one(&mut *tx)
+                .await?,
+            0
+        );
+    }
+    for _ in 0..2 {
+        let (status, _) = agent_http(
+            &mut certified,
+            "POST",
+            "/api/v1/agent/enroll/trust/acknowledgements",
+            Some(serde_json::to_value(&ack)?),
+        )
+        .await?;
+        assert_eq!(status, 204, "valid ACK and exact retry");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(installations)
+                .bind(case_a())
+                .bind(active.runtime.registration_id)
+                .fetch_one(&mut *tx)
+                .await?,
+            1
+        );
+    }
+    let service = host.app.agent_enrollment.as_ref().unwrap();
+    let evidence = peer(service.trust(), &chain(&candidate)?, &root()).await?;
+    let mut invalid = ack;
+    invalid.version = 2;
+    assert_eq!(
+        service
+            .acknowledge_trust(&evidence, &invalid, &audit())
+            .await
+            .unwrap_err()
+            .code,
+        wire::ErrorCode::MalformedRequest,
+        "direct Rust ACK is checked before replay"
+    );
+    tx.rollback().await?;
     host.app
         .devices
         .revoke(
@@ -864,7 +972,7 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
     let s = service(deployment()).await?;
     let p = admin(case_a(), "admin-a").await?;
     let g = grant()?;
-    let r = s.create(&p, &g, &audit()).await?;
+    let r = authorize_request(&s, &p, &g, &audit()).await?;
     let request = signing(&g, r.grant_id)?;
     let candidate = s.issue(&request, &audit()).await?;
     let evidence = peer(s.trust(), &chain(&candidate)?, &root()).await?;
@@ -884,6 +992,24 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
         fixture_providers()?,
     );
     let previous = registry.trust(Purpose::Agent)?;
+    for purpose in [Purpose::Windows, Purpose::Apple] {
+        let mut wrong = previous.clone();
+        wrong.purpose = purpose;
+        assert!(wrong.validate().is_ok());
+        assert!(matches!(
+            rss_mdm_device_trust::DeviceTrust::new(wrong, Purpose::Agent, now()),
+            Err(rss_mdm_device_trust::Error::Malformed)
+        ));
+    }
+    let mut duplicate = previous.clone();
+    let mut issuer = duplicate.issuers[0].clone();
+    issuer.mode = Mode::VerifyOnly;
+    duplicate.issuers.push(issuer);
+    assert!(duplicate.validate().is_ok());
+    assert!(matches!(
+        rss_mdm_device_trust::DeviceTrust::new(duplicate, Purpose::Agent, now()),
+        Err(rss_mdm_device_trust::Error::Conflict)
+    ));
     let next_root = PathBuf::from(std::env::var("MDM_AGENT_PKI_CANDIDATE_FIXTURES")?);
     let next: Trust = serde_json::from_slice(&std::fs::read(next_root.join("agent-trust.json"))?)?;
     let new_digest = next.issuers[0].digest.clone();
@@ -946,7 +1072,7 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
     assert_eq!(binding.active()?.digest, new_digest);
     // An actual CA request follows the newly active generation.
     let newer = grant()?;
-    let grant_receipt = s.create(&p, &newer, &audit()).await?;
+    let grant_receipt = authorize_request(&s, &p, &newer, &audit()).await?;
     let issued = s
         .issue(&signing(&newer, grant_receipt.grant_id)?, &audit())
         .await?;
@@ -1124,7 +1250,7 @@ async fn root_revocation_is_accepted_durably_and_denies_live_issuer_without_eras
     let s = service(deployment()).await?;
     let p = admin(case_a(), "admin-a").await?;
     let g = grant()?;
-    let r = s.create(&p, &g, &audit()).await?;
+    let r = authorize_request(&s, &p, &g, &audit()).await?;
     let candidate = s.issue(&signing(&g, r.grant_id)?, &audit()).await?;
     let bytes = chain(&candidate)?;
     let db = Database::connect(options("mdm_access")?).await?;
@@ -1280,7 +1406,7 @@ async fn unknown_original_ca_result_blocks_retirement_after_rotation() -> anyhow
     let s = service_with_provider(deployment(), Some("unapproved-token-key")).await?;
     let p = admin(case_a(), "admin-a").await?;
     let g = grant()?;
-    let receipt = s.create(&p, &g, &audit()).await?;
+    let receipt = authorize_request(&s, &p, &g, &audit()).await?;
     assert_eq!(
         s.issue(&signing(&g, receipt.grant_id)?, &audit())
             .await
@@ -1352,4 +1478,17 @@ async fn unknown_original_ca_result_blocks_retirement_after_rotation() -> anyhow
     );
     db.close().await;
     Ok(())
+}
+
+async fn authorize_request(
+    s: &Service,
+    p: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+    g: &wire::GrantRequest,
+    a: &RequestAudit,
+) -> Result<wire::GrantReceipt, rss_mdm_registration_service::agent::Failure> {
+    if p.tenant_id() != a.tenant() {
+        return Err(rss_mdm_registration_service::Error::Forbidden.into());
+    }
+    let request = s.request(g, a).await?;
+    s.approve(p, request.grant_id, g.operation_id, a).await
 }

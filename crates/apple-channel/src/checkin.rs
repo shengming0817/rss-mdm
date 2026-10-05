@@ -527,7 +527,6 @@ pub async fn register_agent(
             &principal,
             rss_mdm_inventory::ReportSource::MdmApple,
             &input,
-            app.agent_policy.as_ref().ok_or(Error::Unsupported)?,
             &audit,
         )
         .await?;

@@ -413,8 +413,13 @@ fn installation_accepts_empty_current_or_explicit_complete_predecessor_ledger() 
         .collect::<Vec<_>>();
     assert!(accepted_ledger(&[], &current));
     assert!(accepted_ledger(&ledger, &current));
-    let released = ["enrollment-progress-v1", "apple-account-authority-v1"]
-        .map(|name| current.iter().position(|(unit, _)| *unit == name).unwrap());
+    let released = [
+        "enrollment-progress-v1",
+        "apple-account-authority-v1",
+        "registration-agent-configurations-v1",
+        "apple-organizations-v1",
+    ]
+    .map(|name| current.iter().position(|(unit, _)| *unit == name).unwrap());
     for prefix in 1..ledger.len() {
         assert_eq!(
             accepted_ledger(&ledger[..prefix], &current),
@@ -465,6 +470,12 @@ async fn previous_release_adds_enrollment_progress_without_rewriting_units() -> 
 #[ignore = "MODULE=installation.migration: released installation adds account authority with immutable units"]
 async fn released_installation_adds_account_authority_without_rewriting_units() -> Result<()> {
     released_upgrade("apple-account-authority-v1").await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=installation.migration: released installation adds Agent configurations with immutable units"]
+async fn released_installation_adds_configurations_without_rewriting_units() -> Result<()> {
+    released_upgrade("registration-agent-configurations-v1").await
 }
 
 async fn released_upgrade(first_new: &str) -> Result<()> {

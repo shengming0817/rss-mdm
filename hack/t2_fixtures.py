@@ -308,7 +308,7 @@ class RunFixtures:
                 stack.enter_context(pki(root,env,case=job.key,windows=True))
             if 'agent_pki' in module.fixtures:
                 from pki_fixtures import running as pki
-                stack.enter_context(pki(root,env,case=job.key,agent=True))
+                stack.enter_context(pki(root,env,case=job.key,agent=True,configuration_devices=48 if module.id == "agent.configurations" else 0))
             if 'pki_rotation' in module.fixtures:
                 stack.enter_context(pki(root,env,case=job.key,agent=True,generation='next'))
             if 'scep' in module.fixtures:

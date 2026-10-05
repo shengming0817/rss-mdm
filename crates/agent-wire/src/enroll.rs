@@ -1,4 +1,6 @@
 //! Agent enrollment API v1, independent of runtime payload versions.
+/// Complete reusable configuration and fixed installation contracts.
+pub mod configuration;
 use crate::runtime::{
     Capability, Secret, SoftwareExecutionContext, TaskArchitecture, TaskPlatform,
 };
@@ -9,7 +11,7 @@ use uuid::Uuid;
 pub const API_VERSION: u8 = 1;
 /// Canonical enrollment schema manifest.
 pub const SCHEMA_FINGERPRINT: &str =
-    "89d7c13e7689a5cbe385e8bf1e1345a140b789ea5f6e2e3943f8042e29992d3b";
+    "b83440f0fdf790b3420c7b37381a0ce9e68c6dd6adc53517f6fcbc56dcb1bc95";
 /// Canonical enrollment schema manifest.
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/enroll/manifest.json");
 /// A bounded runtime profile, frozen when a grant is consumed.
@@ -35,7 +37,7 @@ impl RuntimeProfile {
         self.execution_context.validate_for(self.platform)
     }
 }
-/// A user download grant or an unauthenticated client authorization request.
+/// CSR-bound machine materials for user authorization, renewal or recovery.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GrantRequest {
@@ -52,10 +54,9 @@ pub struct GrantRequest {
     pub secret: Secret,
     /// Requested platform, fixed by authorization.
     pub platform: TaskPlatform,
-    /// Optional shorter lifetime; tenant policy remains the upper bound.
-    pub lifetime_seconds: Option<u32>,
-    /// Base64 DER CSR; required for a client browser-authorization request.
-    pub csr: Option<String>,
+    /// Base64 DER CSR signed by the locally held machine key.
+    #[schemars(extend("minLength" = 1, "maxLength" = 43692))]
+    pub csr: String,
 }
 /// Persisted authorization lifecycle.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
@@ -344,17 +345,6 @@ fn version<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
         ));
     }
     Ok(v)
-}
-
-/// Secret-free preview of the exact CSR a browser user is approving.
-#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AuthorizationRequest {
-    /// Current request state and deadline.
-    pub grant: GrantReceipt,
-    /// SHA-256 of the verified CSR public key, encoded as lowercase hexadecimal.
-    #[schemars(extend("pattern" = "^[0-9a-f]{64}$"))]
-    pub public_key_fingerprint: String,
 }
 
 fn required_nullable<'de, D, T>(d: D) -> Result<Option<T>, D::Error>

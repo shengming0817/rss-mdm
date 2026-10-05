@@ -416,11 +416,8 @@ impl Registry {
         trust: &Trust,
         input: &Acknowledgement,
     ) -> Result<(), Error> {
-        if input.operation.is_nil()
-            || input.version != 1
-            || input.revision != trust.revision
-            || input.digest != trust.installation_digest()
-        {
+        input.validate().map_err(|_| Error::Conflict)?;
+        if input.revision != trust.revision || input.digest != trust.installation_digest() {
             return Err(Error::Conflict);
         }
         if trust.tenant.to_string() != tenant {

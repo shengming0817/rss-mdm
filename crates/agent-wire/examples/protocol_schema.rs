@@ -1,7 +1,11 @@
 //! Generate protocol documentation directly from the current Rust DTOs.
-use rss_mdm_agent_wire::{enroll, runtime};
+use rss_mdm_agent_wire::{enroll, pki, runtime};
 fn main() {
     let schemas = serde_json::json!({
+        "pki": {
+            "Trust": schemars::schema_for!(pki::Trust),
+            "Acknowledgement": schemars::schema_for!(pki::Acknowledgement),
+        },
         "runtime": {
             "BindingProfile": schemars::schema_for!(runtime::BindingProfile),
             "ReportRequest": schemars::schema_for!(runtime::ReportRequest),
@@ -23,6 +27,12 @@ fn main() {
             "SelfServiceStatus": schemars::schema_for!(runtime::SelfServiceStatus),
         },
         "enroll": {
+            "ConfigurationFile": schemars::schema_for!(enroll::configuration::ConfigurationFile),
+            "ConfigurationExchange": schemars::schema_for!(enroll::configuration::Exchange),
+            "ConfigurationExchangeStatus": schemars::schema_for!(enroll::configuration::ExchangeStatus),
+            "ReservationCancel": schemars::schema_for!(enroll::configuration::Cancel),
+            "Package": schemars::schema_for!(enroll::configuration::Package),
+
             "GrantRequest": schemars::schema_for!(enroll::GrantRequest),
             "CertificateRequest": schemars::schema_for!(enroll::CertificateRequest),
             "ActivationRequest": schemars::schema_for!(enroll::ActivationRequest),
@@ -34,7 +44,6 @@ fn main() {
             "RecoverIssuance": schemars::schema_for!(enroll::RecoverIssuance),
             "NativeGrantRequest": schemars::schema_for!(enroll::NativeGrantRequest),
             "ErrorBody": schemars::schema_for!(enroll::ErrorBody),
-            "AuthorizationRequest": schemars::schema_for!(enroll::AuthorizationRequest),
             "RenewalStatusRequest": schemars::schema_for!(enroll::RenewalStatusRequest),
         },
     });

@@ -322,7 +322,6 @@ pub struct HttpState {
     pub authentication: account_enrollment::Authentication,
     pub account_authority:
         Arc<dyn rss_mdm_registration_service::enrollment::native::AccountAuthority>,
-    pub agent_policy: Option<rss_mdm_registration_service::agent::Policy>,
     pub mount: crate::device::ChannelMount,
     pub audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
     pub access: std::sync::Arc<crate::Store>,

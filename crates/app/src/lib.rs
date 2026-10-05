@@ -201,3 +201,5 @@ pub mod agent_pki;
 mod agent_pki_tests;
 
 mod device_pki;
+
+mod agent_configurations;

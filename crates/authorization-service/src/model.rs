@@ -20,6 +20,8 @@ pub enum Permission {
     InventoryCollect,
     InventoryAssign,
     Enrollment,
+    AgentEnrollmentRead,
+    AgentEnrollmentWrite,
     Credentials,
     DeviceWipe,
     ConfigurationWrite,
@@ -83,7 +85,9 @@ impl Permission {
             | Self::SoftwareDeploy
             | Self::OperationRead
             | Self::OperationCancel => true,
-            Self::CertificateArchiveRead
+            Self::AgentEnrollmentRead
+            | Self::AgentEnrollmentWrite
+            | Self::CertificateArchiveRead
             | Self::CertificateArchiveWrite
             | Self::CertificateArchiveUnlock
             | Self::CertificateArchiveExport

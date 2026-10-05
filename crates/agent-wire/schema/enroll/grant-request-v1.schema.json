@@ -25,23 +25,13 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "A user download grant or an unauthenticated client authorization request.",
+  "description": "CSR-bound machine materials for user authorization, renewal or recovery.",
   "properties": {
     "csr": {
-      "description": "Base64 DER CSR; required for a client browser-authorization request.",
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "lifetimeSeconds": {
-      "description": "Optional shorter lifetime; tenant policy remains the upper bound.",
-      "format": "uint32",
-      "minimum": 0,
-      "type": [
-        "integer",
-        "null"
-      ]
+      "description": "Base64 DER CSR signed by the locally held machine key.",
+      "maxLength": 43692,
+      "minLength": 1,
+      "type": "string"
     },
     "operationId": {
       "description": "Caller-selected stable request and retry identity.",
@@ -70,7 +60,8 @@
     "wireVersion",
     "operationId",
     "secret",
-    "platform"
+    "platform",
+    "csr"
   ],
   "title": "GrantRequest",
   "type": "object",

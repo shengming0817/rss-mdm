@@ -272,9 +272,16 @@ pub(crate) async fn from_compiled(
                     audit: audit_store.clone(),
                     issuer: pki.issuer.clone(),
                     clock: pki.pki_clock.clone(),
-                    policy: pki.policy.clone(),
                     binding: Arc::new(rss_mdm_agent_channel::Bindings),
                     native: execution.clone(),
+                    origin: pki.origin.clone(),
+                    configuration_signer: Arc::new(crate::agent_configurations::signer(
+                        config
+                            .task_signing
+                            .as_ref()
+                            .ok_or(Error::Configuration(ConfigIssue::AgentPki))?,
+                    )?),
+                    installations: Arc::new(crate::agent_configurations::Installations),
                 },
             )
             .map(Arc::new)
@@ -327,7 +334,6 @@ pub(crate) fn from_state(
             http: state.identity.browser().http.clone(),
             origin: format!("https://{host}"),
         },
-        agent_policy: state.agent_pki.as_ref().map(|p| p.policy.clone()),
         mount: crate::device::ChannelMount::new(
             state.identity.tenant,
             rss_mdm_inventory::ReportSource::MdmApple,
@@ -350,7 +356,6 @@ pub(crate) fn from_state(
         requests: state.requests.clone(),
     });
     let windows_state = Arc::new(rss_mdm_windows_channel::HttpState {
-        agent_policy: state.agent_pki.as_ref().map(|p| p.policy.clone()),
         protection: state.protection.clone(),
         mount: crate::device::ChannelMount::new(
             state.identity.tenant,
@@ -438,35 +443,7 @@ pub(crate) fn from_state(
             assets: state.flow.assets.clone(),
             catalog: state.flow.catalog.clone(),
             publications: state.flow.publications.clone(),
-            software_catalog: Arc::new(rss_mdm_software_service::management::catalog::Access {
-                resources: state.flow.software_resources.clone(),
-                clock: Arc::new(crate::clock::ContentClock(state.clock.clone())),
-                runtime: state.flow.runtime.clone(),
-                audit: state.audit_store.clone(),
-                tenant: state.identity.tenant,
-                catalog: rss_mdm_software_service::catalog::Catalog::new(
-                    state.flow.runtime.clone(),
-                    state.identity.tenant,
-                    state.audit_store.clone(),
-                ),
-                content: state.content_writer.as_ref().map(|store| {
-                    Arc::new(rss_mdm_content_service::software::SoftwareContent::new(
-                        store.clone(),
-                        Arc::new(crate::clock::ContentClock(state.clock.clone())),
-                    ))
-                }),
-                imports: rss_mdm_software_service::management::catalog::ImportConfig {
-                    sources: state
-                        .content_writer
-                        .as_ref()
-                        .map(|s| s.config.imports.clone())
-                        .unwrap_or_default(),
-                    transfer_seconds: state
-                        .content_writer
-                        .as_ref()
-                        .map_or(0, |s| s.config.transfer_seconds),
-                },
-            }),
+            software_catalog: software_access(&state),
             content: Arc::new(rss_mdm_content_service::service::Access {
                 catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(
                     state.identity.tenant,
@@ -556,9 +533,17 @@ pub(crate) fn from_state(
         ));
         let router = Router::new().nest("/api/v1/agent/runtime", runtime).nest(
             "/api/v1/agent/enroll",
-            rss_mdm_agent_channel::enroll::router(service.clone(), envelope.clone()).merge(
-                rss_mdm_agent_channel::installation_router(state.execution.clone(), envelope),
-            ),
+            rss_mdm_agent_channel::enroll::router(service.clone(), envelope.clone())
+                .merge(rss_mdm_agent_channel::installation_router(
+                    state.execution.clone(),
+                    envelope.clone(),
+                ))
+                .merge(rss_mdm_agent_channel::boundary::wrap_enroll(
+                    rss_mdm_management_http::software_catalog::agent_packages_public(
+                        software_access(&state),
+                    ),
+                    envelope,
+                )),
         );
         listeners.push((
             crate::native::NativeListenerKind::Agent,
@@ -639,3 +624,41 @@ mod tests;
 #[cfg(test)]
 #[path = "../tests/api/mod.rs"]
 pub(crate) mod t2;
+
+fn software_access(
+    state: &Assembly,
+) -> Arc<
+    rss_mdm_software_service::management::catalog::Access<
+        rss_mdm_content_service::software::SoftwareContent,
+    >,
+> {
+    Arc::new(rss_mdm_software_service::management::catalog::Access {
+        resources: state.flow.software_resources.clone(),
+        clock: Arc::new(crate::clock::ContentClock(state.clock.clone())),
+        runtime: state.flow.runtime.clone(),
+        audit: state.audit_store.clone(),
+        tenant: state.identity.tenant,
+        catalog: rss_mdm_software_service::catalog::Catalog::new(
+            state.flow.runtime.clone(),
+            state.identity.tenant,
+            state.audit_store.clone(),
+        ),
+        content: state.content_writer.as_ref().map(|store| {
+            Arc::new(rss_mdm_content_service::software::SoftwareContent::new(
+                store.clone(),
+                Arc::new(crate::clock::ContentClock(state.clock.clone())),
+            ))
+        }),
+        imports: rss_mdm_software_service::management::catalog::ImportConfig {
+            sources: state
+                .content_writer
+                .as_ref()
+                .map(|s| s.config.imports.clone())
+                .unwrap_or_default(),
+            transfer_seconds: state
+                .content_writer
+                .as_ref()
+                .map_or(0, |s| s.config.transfer_seconds),
+        },
+    })
+}

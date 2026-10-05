@@ -1,0 +1,51 @@
+{
+  "$defs": {
+    "Secret": {
+      "description": "Canonical 256-bit base64url secret. Debug output is always redacted.",
+      "maxLength": 43,
+      "minLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{43}$",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Lookup never allocates authority, including after the reusable file expires.",
+  "properties": {
+    "configurationId": {
+      "description": "Configuration identity, not its shared secret.",
+      "format": "uuid",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "operationId": {
+      "description": "Original machine exchange operation.",
+      "format": "uuid",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "secret": {
+      "$ref": "#/$defs/Secret",
+      "description": "Independent original machine secret."
+    },
+    "wireVersion": {
+      "const": 1,
+      "description": "Independent enrollment version."
+    }
+  },
+  "required": [
+    "wireVersion",
+    "configurationId",
+    "operationId",
+    "secret"
+  ],
+  "title": "ExchangeStatus",
+  "type": "object",
+  "$id": "https://rss.example/agent/enroll/v1/ConfigurationExchangeStatus"
+}

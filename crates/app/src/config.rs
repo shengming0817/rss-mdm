@@ -207,10 +207,7 @@ impl Config {
                 return Err(Error::Configuration(ConfigIssue::AppleListeners));
             }
         }
-        if let crate::agent_pki::Config::StepCa {
-            endpoint, policy, ..
-        } = &self.agent_pki
-        {
+        if let crate::agent_pki::Config::StepCa { endpoint, .. } = &self.agent_pki {
             let origin = https_url(&endpoint.origin)
                 .map_err(|_| Error::Configuration(ConfigIssue::AgentPki))?;
             if origin.origin().ascii_serialization() != endpoint.origin
@@ -229,9 +226,6 @@ impl Config {
             {
                 return Err(Error::Configuration(ConfigIssue::AgentPki));
             }
-            policy
-                .validate()
-                .map_err(|_| Error::Configuration(ConfigIssue::AgentPki))?;
         }
         if !self.agent_installation.packages.is_empty() {
             let crate::agent_pki::Config::StepCa { endpoint, .. } = &self.agent_pki else {

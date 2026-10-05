@@ -39,12 +39,6 @@ impl NativeAdmission for NoNative {
     }
 }
 pub(crate) async fn service(fixture: &authority::Authority) -> Result<Arc<Service>> {
-    service_with_policy(fixture, None).await
-}
-pub(crate) async fn service_with_policy(
-    fixture: &authority::Authority,
-    policy: Option<rss_mdm_registration_service::agent::Policy>,
-) -> Result<Arc<Service>> {
     let config: crate::agent_pki::Config =
         serde_json::from_value(fixture.base["agent_pki"].clone())?;
     let providers = crate::device_pki::providers(&serde_json::from_value::<
@@ -76,7 +70,9 @@ pub(crate) async fn service_with_policy(
         audit: fixture.audit.clone(),
         issuer: pki.issuer.clone(),
         clock: pki.pki_clock.clone(),
-        policy: policy.unwrap_or_else(|| pki.policy.clone()),
+        origin: pki.origin.clone(),
+        configuration_signer: Arc::new(fixture_signer()?),
+        installations: Arc::new(crate::agent_configurations::Installations),
         binding: Arc::new(crate::agent::Bindings),
         native: Arc::new(NoNative),
     })?))
@@ -136,7 +132,9 @@ pub(crate) fn application_service(
         audit,
         issuer: pki.issuer.clone(),
         clock: pki.pki_clock.clone(),
-        policy: pki.policy.clone(),
+        origin: pki.origin.clone(),
+        configuration_signer: Arc::new(fixture_signer()?),
+        installations: Arc::new(crate::agent_configurations::Installations),
         binding: Arc::new(crate::agent::Bindings),
         native: execution,
     })?))
@@ -161,7 +159,19 @@ pub(crate) async fn enroll_profile(
 ) -> Result<(Value, Value)> {
     let secret = super::credential(&Uuid::new_v4().to_string());
     let op = Uuid::new_v4();
-    let (status,grant)=browser.call(router,Method::POST,"/api/v1/agent-grants",Some(json!({"wireVersion":1,"operationId":op,"secret":secret,"platform":profile["platform"],"csr":csr()?}))).await?;
+    let (status,pending)=agent_call(router,Method::POST,"/api/v1/agent/enroll/requests",None,Some(json!({"wireVersion":1,"operationId":op,"secret":secret,"platform":profile["platform"],"csr":csr()?}))).await?;
+    ensure!(status.is_success(), "request {status} {pending}");
+    let (status, grant) = browser
+        .call(
+            router,
+            Method::POST,
+            &format!(
+                "/api/v1/agent-requests/{}/authorize",
+                pending["grantId"].as_str().unwrap()
+            ),
+            Some(json!({"operationId":Uuid::new_v4()})),
+        )
+        .await?;
     ensure!(status.is_success(), "grant {status} {grant}");
     let request = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"grantId":grant["grantId"],"secret":secret,"csr":csr()?,"runtime":profile});
     let (status, candidate) = agent_call(
@@ -325,4 +335,11 @@ COMMIT;
     let mut devices = vec![canonical.to_owned()];
     devices.extend((1..=count).map(|n| format!("restart-agent-{n:03}")));
     Ok(devices)
+}
+
+pub(crate) fn fixture_signer() -> Result<rss_mdm_registration_service::agent::configurations::Signer>
+{
+    let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    let config: crate::task_signing::Config = serde_json::from_value(base["task_signing"].clone())?;
+    Ok(crate::agent_configurations::signer(&config)?)
 }

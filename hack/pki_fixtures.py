@@ -69,7 +69,7 @@ def trust(root, purpose, origin, tenant, provisioner, kid, ca_origin):
 
 
 @contextmanager
-def running(root, env, *, case, windows=False, agent=False, agent_origin=None, agent_template=None, windows_template=None, compose_file=None, providers=None, generation=None):
+def running(root, env, *, case, windows=False, agent=False, agent_origin=None, agent_template=None, windows_template=None, compose_file=None, providers=None, generation=None, configuration_devices=0):
     import shutil
     case_root=Path(root).resolve()
     purpose='agent' if agent else 'windows'
@@ -96,7 +96,7 @@ def running(root, env, *, case, windows=False, agent=False, agent_origin=None, a
     private(configuration,config)
     if agent:
         from agent_pki_fixtures import prepare
-        prepare(root,configuration,password)
+        prepare(root,configuration,password,configuration_devices=configuration_devices)
     root_certificate=Path(config['root'][0]);root_key=root/'step/secrets/root_ca_key'
     offline=root_crl(root,root_certificate,root_key,password)
     isolate_root(root_key,password,offline)

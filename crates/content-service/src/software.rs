@@ -139,3 +139,46 @@ fn error(error: crate::Error) -> software::Error {
         crate::Error::Cleanup => Error::Unavailable(Failure::ContentCleanup),
     }
 }
+
+impl rss_mdm_software_service::agent_packages::Materials for SoftwareContent {
+    async fn publication_materials(
+        &self,
+        installer: &rss_mdm_resource::Artifact,
+        manifest: &rss_mdm_resource::Artifact,
+    ) -> Result<rss_mdm_software_service::agent_packages::PublicationMaterials<Verified>, Error>
+    {
+        use futures::TryStreamExt;
+        if manifest.length() > 32768 {
+            return Err(Error::Malformed);
+        }
+        let mut files = self
+            .store
+            .verify_materials(&[
+                (installer.clone(), crate::StorageClass::Artifact),
+                (manifest.clone(), crate::StorageClass::Artifact),
+            ])
+            .await
+            .map_err(error)?;
+        let file = files
+            .pop()
+            .ok_or(Error::Unavailable(Failure::ContentInvariant))?;
+        let installer = files
+            .pop()
+            .ok_or(Error::Unavailable(Failure::ContentInvariant))?;
+        let mut stream = file.stream(0, manifest.length()).await.map_err(error)?;
+        let mut bytes = Vec::with_capacity(manifest.length() as usize);
+        while let Some(chunk) = stream
+            .try_next()
+            .await
+            .map_err(|_| Error::Unavailable(Failure::ContentStorage))?
+        {
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(
+            rss_mdm_software_service::agent_packages::PublicationMaterials {
+                installer,
+                manifest: bytes,
+            },
+        )
+    }
+}

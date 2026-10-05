@@ -16,6 +16,14 @@ pub(crate) async fn peer(
     chain: &[Vec<u8>],
     root: &Path,
 ) -> anyhow::Result<HandshakePeer> {
+    peer_with_key(trust, chain, root, "agent.pk8").await
+}
+pub(crate) async fn peer_with_key(
+    trust: &AgentTrust,
+    chain: &[Vec<u8>],
+    root: &Path,
+    key_file: &str,
+) -> anyhow::Result<HandshakePeer> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let certificates = CertificateDer::pem_slice_iter(&std::fs::read(root.join("server.crt"))?)
         .collect::<Result<Vec<_>, _>>()?;
@@ -36,7 +44,7 @@ pub(crate) async fn peer(
         .with_client_auth_cert(
             chain.iter().cloned().map(CertificateDer::from).collect(),
             PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(std::fs::read(
-                root.join("agent.pk8"),
+                root.join(key_file),
             )?)),
         )?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
