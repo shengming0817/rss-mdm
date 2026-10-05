@@ -1641,3 +1641,5 @@ consume(('crates/management-http/src/remote_operations/http.rs',), 'planning.rem
 consume(('crates/execution-service/src/native/outbound.rs',), 'execution.commands.windows')
 
 consume(('crates/app/tests/support/agent_execution.rs',), 'windows.management apple.collection')
+
+consume(('crates/apple-channel/src/collection.rs',), 'apple.collection')
