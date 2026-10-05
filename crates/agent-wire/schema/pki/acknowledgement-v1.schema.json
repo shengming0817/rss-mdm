@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Device acknowledges the exact installed trust revision over its current authenticated channel.",
+  "properties": {
+    "digest": {
+      "description": "SHA256 of approved generations and revision; CRL refreshes do not change this binding.",
+      "maxLength": 64,
+      "minLength": 64,
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "operation": {
+      "description": "Idempotent device operation.",
+      "format": "uuid",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "revision": {
+      "description": "Installed monotonic revision.",
+      "maximum": 9223372036854775807,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "version": {
+      "const": 1,
+      "description": "Trust wire format."
+    }
+  },
+  "required": [
+    "operation",
+    "version",
+    "revision",
+    "digest"
+  ],
+  "title": "Acknowledgement",
+  "type": "object",
+  "$id": "https://rss.example/agent/pki/v1/Acknowledgement"
+}

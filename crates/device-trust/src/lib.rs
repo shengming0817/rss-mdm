@@ -212,6 +212,7 @@ impl DeviceTrust {
     /// Load a previously accepted signed snapshot before the host refreshes its CRLs.
     /// This does not authorize requests: verify() still checks freshness against request time.
     pub fn restore(trust: Trust, purpose: Purpose, now: i64) -> Result<Self, Error> {
+        trust.validate().map_err(invalid)?;
         let mut checkpoint = 0;
         for g in &trust.issuers {
             for value in [&g.crl, &g.root_crl] {
@@ -235,20 +236,8 @@ impl DeviceTrust {
         now: i64,
         restoring: bool,
     ) -> Result<Snapshot, Error> {
-        if trust.version != 1
-            || trust.purpose != purpose
-            || trust.revision == 0
-            || trust.revision > i64::MAX as u64
-            || trust.tenant.is_nil()
-            || trust.issuers.is_empty()
-            || trust.issuers.len() > 16
-            || trust
-                .issuers
-                .iter()
-                .filter(|g| g.mode == Mode::Active)
-                .count()
-                != 1
-        {
+        trust.validate().map_err(invalid)?;
+        if trust.purpose != purpose {
             return Err(Error::Malformed);
         }
         let origin = url::Url::parse(&trust.origin).map_err(invalid)?;
