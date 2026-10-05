@@ -11,6 +11,9 @@ pub fn uuid(row: &PgRow, name: &str) -> Result<Uuid, Error> {
     Uuid::parse_str(&row.try_get::<String, _>(name).map_err(db)?).map_err(|_| Error::Storage)
 }
 pub fn authorization(row: PgRow) -> Result<Authorization, Error> {
+    if row.try_get::<String, _>("authority_kind").map_err(db)? != "password" {
+        return Err(Error::Unauthorized);
+    }
     Ok(Authorization {
         self_service: row.try_get("self_service").map_err(db)?,
         id: uuid(&row, "id")?,
@@ -33,7 +36,7 @@ pub fn authorization(row: PgRow) -> Result<Authorization, Error> {
 }
 pub async fn request(tx: &mut sqlx::PgConnection, tenant: &str, id: Uuid) -> Result<PgRow, Error> {
     // Cancelled rows cannot supply enrollment authority.
-    sqlx::query("SELECT r.id::text,r.self_service,r.state,r.source,r.windows_profile,r.password_digest,r.password_version,r.expected_generation,r.credential_ref::text,r.issuance_operation::text,floor(extract(epoch FROM r.expires_at))::bigint AS expiry,r.expires_at::text AS deadline,r.expires_at>clock_timestamp() AS live,g.actor,g.instance,g.device FROM mdm_access.requests r JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(r.tenant_id,r.grant_id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND r.issuance_operation IS NOT NULL AND r.authority_kind='password' FOR UPDATE OF r")
+    sqlx::query("SELECT r.id::text,CASE WHEN r.authority_kind='apple_account' THEN r.account_version ELSE r.password_version END AS native_version,r.authority_kind,r.account_version,r.account_reference,r.account_challenge,r.self_service,r.state,r.source,r.windows_profile,r.password_digest,r.password_version,r.expected_generation,r.credential_ref::text,r.issuance_operation::text,floor(extract(epoch FROM r.expires_at))::bigint AS expiry,r.expires_at::text AS deadline,r.expires_at>clock_timestamp() AS live,g.actor,g.instance,g.device FROM mdm_access.requests r JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(r.tenant_id,r.grant_id) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND r.issuance_operation IS NOT NULL AND r.authority_kind IN ('password','apple_account') FOR UPDATE OF r")
         .bind(tenant).bind(id.to_string()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)
 }
 
@@ -342,6 +345,9 @@ async fn change_enrollment_on(
             .map_err(|_| Error::Storage);
     }
     let row = request(tx, proof.tenant_id(), id).await?;
+    if resume.is_some() && row.try_get::<String, _>("authority_kind").map_err(db)? != "password" {
+        return Err(Error::Forbidden);
+    }
     same_actor(&row, proof)?;
     if row.try_get::<bool, _>("self_service").map_err(db)? != permission.self_service() {
         return Err(Error::Forbidden);

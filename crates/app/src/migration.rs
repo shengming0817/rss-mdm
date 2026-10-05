@@ -303,6 +303,14 @@ fn units() -> Vec<(&'static str, &'static str)> {
         "enrollment-progress-v1",
         rss_mdm_registration_service::ENROLLMENT_PROGRESS_SQL,
     ));
+    units.push((
+        "apple-account-authority-v1",
+        rss_mdm_registration_service::APPLE_ACCOUNT_SQL,
+    ));
+    units.push((
+        "apple-account-channel-v1",
+        rss_mdm_apple_channel::ACCOUNT_ENROLLMENT_SQL,
+    ));
     units
 }
 /// Exact immutable migration units embedded in this executable, without database access.
@@ -496,10 +504,15 @@ fn accepted_ledger(
         .collect::<BTreeMap<_, _>>();
     let previous = current
         .iter()
-        .filter(|(name, _)| *name != "enrollment-progress-v1")
+        .take_while(|(name, _)| *name != "enrollment-progress-v1")
         .map(|(name, sql)| (*name, format!("{:x}", Sha256::digest(sql))))
         .collect::<BTreeMap<_, _>>();
-    matches(&predecessor) || matches(&previous)
+    let before_account = current
+        .iter()
+        .take_while(|(name, _)| *name != "apple-account-authority-v1")
+        .map(|(name, sql)| (*name, format!("{:x}", Sha256::digest(sql))))
+        .collect::<BTreeMap<_, _>>();
+    matches(&predecessor) || matches(&previous) || matches(&before_account)
 }
 
 async fn install_identity(

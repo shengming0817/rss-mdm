@@ -207,10 +207,28 @@ async fn prepare_on(
     let id = Uuid::new_v4();
     let enrollment = rss_mdm_registration_service::enrollment::store::uuid(&old, "enrollment")?;
     let secret = zeroize::Zeroizing::new(rss_mdm_registration_service::enrollment::random());
+    // The assigned account is an immutable enrollment attribute, independent of
+    // current browser sessions and control-plane binding revisions.
+    let (authority, assigned): (String, Option<String>) = sqlx::query_as(
+        "SELECT q.authority_kind,(SELECT f.account FROM mdm_apple.account_flows f WHERE f.tenant_id=q.tenant_id AND f.enrollment=q.id AND f.account IS NOT NULL ORDER BY f.authorization_version,f.id LIMIT 1) FROM mdm_access.requests q WHERE q.tenant_id=$1::uuid AND q.id=$2 AND q.source='mdm.apple'",
+    )
+    .bind(tenant)
+    .bind(enrollment)
+    .fetch_one(&mut *c)
+    .await
+    .map_err(db)?;
+    let mode = match (authority.as_str(), assigned.as_deref()) {
+        ("apple_account", Some(managed_account)) => {
+            profile::EnrollmentMode::Account { managed_account }
+        }
+        ("password", None) => profile::EnrollmentMode::Profile,
+        _ => return Err(Error::Unavailable(crate::Failure::AppleInvariant)),
+    };
     let (issuer, scep_url, scep_provisioner) = apple.active_scep(c, tenant).await?;
     let signed = apple.signer.sign(
         &profile::enrollment(
             &profile::EnrollmentProfile {
+                mode,
                 access_rights: apple.access_rights() as u16,
                 scep_url: &scep_url,
                 scep_provisioner: &scep_provisioner,
@@ -233,7 +251,7 @@ async fn prepare_on(
     )?;
     let registration: String = old.try_get("registration").map_err(db)?;
     let deadline = after.min(now + 3600);
-    sqlx::query("INSERT INTO mdm_apple.scep_attempts(tenant_id,id,enrollment,password_version,configuration,state,issuer,expires_at,registration,renewal_of,generation,challenge_hash,access_rights,scep_url,scep_provisioner) SELECT $1::uuid,$2::uuid,$3::uuid,coalesce(max(password_version),0)+1,$4,'prepared',$5,to_timestamp($6),$7::uuid,$8::uuid,$9,$10,$11,$12,$13 FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND enrollment=$3::uuid")
+    sqlx::query("INSERT INTO mdm_apple.scep_attempts(tenant_id,id,enrollment,authorization_version,configuration,state,issuer,expires_at,registration,renewal_of,generation,challenge_hash,access_rights,scep_url,scep_provisioner) SELECT $1::uuid,$2::uuid,$3::uuid,coalesce(max(authorization_version),0)+1,$4,'prepared',$5,to_timestamp($6),$7::uuid,$8::uuid,$9,$10,$11,$12,$13 FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND enrollment=$3::uuid")
         .bind(tenant).bind(id.to_string()).bind(enrollment.to_string()).bind(apple.configuration.as_slice()).bind(issuer).bind(deadline as f64).bind(&registration).bind(&old_id).bind(generation).bind(Sha256::digest(secret.as_bytes()).as_slice()).bind(apple.access_rights()).bind(scep_url).bind(scep_provisioner).execute(&mut *c).await.map_err(db)?;
     let request = crate::protection::seal(
         &apple.protection,

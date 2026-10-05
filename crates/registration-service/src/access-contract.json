@@ -68,7 +68,10 @@
         "password_digest",
         "password_version",
         "credential_ref",
-        "expires_at"
+        "expires_at",
+        "account_version",
+        "account_reference",
+        "account_challenge"
       ],
       "delete_policy": null
     },

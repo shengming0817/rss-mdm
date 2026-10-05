@@ -63,17 +63,40 @@ impl Apple {
                 id: config.notify_webhook.id.clone(),
             },
         };
-        let channel = Arc::new(rss_mdm_apple_channel::Apple::new(
-            protection,
-            options,
-            authority,
-            signer,
-            push,
-            challenge_key,
-            notify_key,
-            agent_identity,
-            providers,
-        ));
+        let account_keys = config
+            .account_keys
+            .iter()
+            .map(|(id, input)| {
+                if id.is_empty()
+                    || id.len() > 128
+                    || !id
+                        .bytes()
+                        .all(|v| v.is_ascii_alphanumeric() || b"_-".contains(&v))
+                {
+                    return Err(Error::Configuration(ConfigIssue::AppleProfileSigner));
+                }
+                let signer = rss_mdm_certificate::apple::ManagedAccountTokenSigner::from_bytes(
+                    &crate::config::read(&input.certificate_file, 128 * 1024, false)?,
+                    &crate::config::read(&input.private_key_file, 32768, true)?,
+                    now,
+                )?;
+                Ok((id.clone(), signer))
+            })
+            .collect::<Result<_, Error>>()?;
+        let channel = Arc::new(
+            rss_mdm_apple_channel::Apple::new(
+                protection,
+                options,
+                authority,
+                signer,
+                push,
+                challenge_key,
+                notify_key,
+                agent_identity,
+                providers,
+            )
+            .with_account_keys(account_keys),
+        );
         Ok(Self {
             config,
             channel,

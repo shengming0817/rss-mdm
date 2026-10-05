@@ -321,6 +321,12 @@ pub(crate) fn from_state(
     monotonic: Arc<dyn rss_observation::Clock>,
 ) -> crate::native::Routers {
     let apple_state = Arc::new(rss_mdm_apple_channel::HttpState {
+        account_authority: rss_mdm_apple_channel::account_enrollment::authority(),
+        authentication: rss_mdm_apple_channel::account_enrollment::Authentication {
+            authority: state.identity.authority.clone(),
+            http: state.identity.browser().http.clone(),
+            origin: format!("https://{host}"),
+        },
         agent_policy: state.agent_pki.as_ref().map(|p| p.policy.clone()),
         mount: crate::device::ChannelMount::new(
             state.identity.tenant,
@@ -472,6 +478,7 @@ pub(crate) fn from_state(
                 clock: Arc::new(crate::clock::ContentClock(state.clock.clone())),
             }),
             enrollment_progress: Arc::new(crate::enrollment_progress::EnrollmentProgress {
+                sessions: apple_state.identity.clone(),
                 windows: state.windows.as_ref().map(|w| w.channel.clone()),
                 apple: state.apple.as_ref().map(|a| a.channel.clone()),
             }),

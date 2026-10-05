@@ -62,6 +62,12 @@ impl Authority {
             crate::enrollment::http::routes().with_state(Arc::new(
                 crate::enrollment::http::HttpState {
                     native: Arc::new(crate::enrollment_progress::EnrollmentProgress {
+                        sessions: Arc::new(
+                            rss_mdm_authorization_service::session::SessionAuthority::new(
+                                self.identity.authority.clone(),
+                                self.identity.tenant,
+                            ),
+                        ),
                         windows: None,
                         apple: None,
                     }),

@@ -264,6 +264,7 @@ pub(crate) async fn publish(
     Ok(Ok(set.tokens()))
 }
 struct Exchange {
+    user_access: Option<crate::account_enrollment::UserAccess>,
     apple: std::sync::Arc<crate::Apple>,
     udid: String,
     user: String,
@@ -273,6 +274,7 @@ struct Exchange {
 pub fn prepare(
     apple: std::sync::Arc<crate::Apple>,
     dictionary: &plist::Dictionary,
+    user_access: Option<crate::account_enrollment::UserAccess>,
 ) -> Result<Box<dyn channels::AppleDdmExchange>, Error> {
     let crate::protocol::CheckIn::DeclarativeManagement {
         udid,
@@ -284,6 +286,7 @@ pub fn prepare(
         return Err(Error::Malformed);
     };
     Ok(Box::new(Exchange {
+        user_access,
         apple,
         udid: udid.into(),
         user: user.map(|u| u.to_string()).unwrap_or_default(),
@@ -301,6 +304,9 @@ impl channels::AppleDdmExchange for Exchange {
         p: &'a DevicePrincipal,
     ) -> channels::Pending<'a, ()> {
         Box::pin(async move {
+            if let Some(access) = &self.user_access {
+                access.current_in(c).await?;
+            }
             crate::flow_store::current(c, p, &self.udid, &self.user)
                 .await
                 .map_err(Into::into)

@@ -387,6 +387,38 @@ impl DeviceService {
         )
         .await
     }
+    /// Both native authority kinds enter the same registration mutation after live admission.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one borrowed registration transaction"
+    )]
+    pub async fn bind_native_in(
+        &self,
+        tx: &mut sqlx::PgConnection,
+        admission: &crate::enrollment::native::Admission,
+        credential: &VerifiedChannelCredential,
+        ids: [Uuid; 3],
+        facts: &mut Vec<rss_mdm_audit_integration::Fact>,
+    ) -> Result<RegistrationReceipt, Error> {
+        admission.current(tx).await?;
+        let data = &admission.coordinates();
+        store::bind_authorized_in(
+            tx,
+            &data.tenant,
+            credential,
+            &BindRegistration {
+                operation_id: data.operation,
+                request_id: data.id,
+                expected_generation: data.expected_generation,
+                source: data.source,
+            },
+            data.device.clone(),
+            ids,
+            facts,
+            Some(self.access.retirement.as_ref()),
+        )
+        .await
+    }
     #[cfg(feature = "integration")]
     pub fn fixture_audit_store(&self) -> &rss_mdm_audit_integration::AuditStore {
         &self.audit_store

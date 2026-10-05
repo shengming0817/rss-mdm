@@ -368,7 +368,18 @@ impl OidcConfig {
                     )
                     .map_err(failure)?,
                 ),
-                targets: self.return_targets.clone(),
+                targets: {
+                    let mut targets = self.return_targets.clone();
+                    let bridge = format!("{origin}/api/v1/apple/account-enrollment/authenticate");
+                    if targets
+                        .get("apple-account-enrollment")
+                        .is_some_and(|v| *v != bridge)
+                    {
+                        return Err(invalid());
+                    }
+                    targets.insert("apple-account-enrollment".into(), bridge);
+                    targets
+                },
             },
         )
         .map_err(failure)

@@ -413,10 +413,12 @@ fn installation_accepts_empty_current_or_explicit_complete_predecessor_ledger() 
         .collect::<Vec<_>>();
     assert!(accepted_ledger(&[], &current));
     assert!(accepted_ledger(&ledger, &current));
+    let released = ["enrollment-progress-v1", "apple-account-authority-v1"]
+        .map(|name| current.iter().position(|(unit, _)| *unit == name).unwrap());
     for prefix in 1..ledger.len() {
         assert_eq!(
             accepted_ledger(&ledger[..prefix], &current),
-            prefix == baseline_units().len() || prefix == current.len() - 1
+            prefix == baseline_units().len() || released.contains(&prefix)
         );
     }
     let mut altered = ledger.clone();
@@ -456,6 +458,16 @@ fn installation_validates_tenant_coordinates_within_the_declared_limit() {
 #[tokio::test]
 #[ignore = "MODULE=installation.migration: previous released ledger adds enrollment evidence"]
 async fn previous_release_adds_enrollment_progress_without_rewriting_units() -> Result<()> {
+    released_upgrade("enrollment-progress-v1").await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=installation.migration: released installation adds account authority with immutable units"]
+async fn released_installation_adds_account_authority_without_rewriting_units() -> Result<()> {
+    released_upgrade("apple-account-authority-v1").await
+}
+
+async fn released_upgrade(first_new: &str) -> Result<()> {
     let options = PgConnectOptions::from_str(&std::env::var("MDM_OWNER_URL")?)?
         .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
         .ssl_root_cert(std::env::var("PG_CA_FILE")?);
@@ -472,7 +484,7 @@ async fn previous_release_adds_enrollment_progress_without_rewriting_units() -> 
     let previous = current
         .iter()
         .copied()
-        .filter(|(name, _)| *name != "enrollment-progress-v1")
+        .take_while(|(name, _)| *name != first_new)
         .collect::<Vec<_>>();
     migrate_units(&mut owner, &installation, &previous).await?;
     let old: Vec<(String, String, bool)> =
@@ -484,7 +496,7 @@ async fn previous_release_adds_enrollment_progress_without_rewriting_units() -> 
         sqlx::query_as("SELECT name,digest,complete FROM public.mdm_migrations ORDER BY name")
             .fetch_all(&mut owner)
             .await?;
-    ensure!(migrated.len() == old.len() + 1 && old.iter().all(|unit| migrated.contains(unit)));
+    ensure!(migrated.len() == current.len() && old.iter().all(|unit| migrated.contains(unit)));
     let nullable:bool=sqlx::query_scalar("SELECT NOT attnotnull FROM pg_attribute WHERE attrelid='mdm_access.registrations'::regclass AND attname='first_authenticated_at'").fetch_one(&mut owner).await?;
     ensure!(nullable);
     migrate_on(&mut owner, &installation).await?;

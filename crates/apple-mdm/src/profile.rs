@@ -28,7 +28,12 @@ pub struct CertificatePayload {
     pub fingerprint: String,
     pub content: Vec<u8>,
 }
+pub enum EnrollmentMode<'a> {
+    Profile,
+    Account { managed_account: &'a str },
+}
 pub struct EnrollmentProfile<'a> {
+    pub mode: EnrollmentMode<'a>,
     pub access_rights: u16,
     pub scep_url: &'a str,
     pub scep_provisioner: &'a str,
@@ -103,6 +108,22 @@ pub fn enrollment(
         ),
     ] {
         mdm.insert(key.into(), value);
+    }
+    if let EnrollmentMode::Account { managed_account } = config.mode {
+        if managed_account.is_empty()
+            || managed_account.len() > 320
+            || managed_account.chars().any(char::is_control)
+            || !managed_account.contains('@')
+        {
+            return Err(Error::Malformed);
+        }
+        mdm.insert("EnrollmentMode".into(), "ADDE".into());
+        mdm.insert("AssignedManagedAppleID".into(), managed_account.into());
+        let capabilities = mdm
+            .get_mut("ServerCapabilities")
+            .and_then(Value::as_array_mut)
+            .ok_or(Error::Malformed)?;
+        capabilities.push("com.apple.mdm.token".into());
     }
     let mut profile = payload("Configuration", &identifier, enrollment);
     profile.insert("PayloadDisplayName".into(), "RSS Device Planning".into());

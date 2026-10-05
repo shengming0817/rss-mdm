@@ -1,6 +1,11 @@
 {
   "tables": [],
-  "functions": [],
+  "functions": [
+    {
+      "name": "mdm_apple.account_current",
+      "search_path": "search_path=pg_catalog"
+    }
+  ],
   "external_relations": [],
   "verified_schemas": [
     "mdm_apple"

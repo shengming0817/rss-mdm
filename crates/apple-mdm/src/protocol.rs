@@ -153,6 +153,10 @@ pub fn user(d: &Dictionary) -> Result<Option<Uuid>, Error> {
     Ok(user)
 }
 pub enum CheckIn<'a> {
+    GetToken {
+        udid: &'a str,
+        user: Option<Uuid>,
+    },
     Authenticate {
         udid: &'a str,
         topic: &'a str,
@@ -207,6 +211,16 @@ pub fn checkin(d: &Dictionary) -> Result<CheckIn<'_>, Error> {
         return Err(Error::Malformed);
     }
     match kind {
+        "GetToken" => {
+            if text(d, "TokenServiceType")? != "com.apple.maid" || d.contains_key("TokenParameters")
+            {
+                return Err(Error::Malformed);
+            }
+            Ok(CheckIn::GetToken {
+                udid,
+                user: user(d)?,
+            })
+        }
         "DeclarativeManagement" => {
             let endpoint = text(d, "Endpoint")?;
             if endpoint.len() > 1024 {

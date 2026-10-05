@@ -4,6 +4,7 @@ use rss_mdm_inventory::ReportSource;
 use rss_mdm_registration_service::{Error, enrollment::read::*};
 use std::sync::Arc;
 pub(crate) struct EnrollmentProgress {
+    pub(crate) sessions: Arc<rss_mdm_authorization_service::session::SessionAuthority>,
     pub(crate) windows: Option<Arc<rss_mdm_windows_channel::Windows>>,
     pub(crate) apple: Option<Arc<rss_mdm_apple_channel::Apple>>,
 }
@@ -93,6 +94,7 @@ impl EnrollmentProgress {
             first_authenticated_check_in,
             channel_ready: first_authenticated_check_in,
             credential_usable: false,
+            reauthentication_required: false,
         })
     }
     async fn apple(
@@ -106,11 +108,29 @@ impl EnrollmentProgress {
         let evidence = rss_mdm_apple_channel::enrollment::progress_in(c, context)
             .await
             .map_err(|_| Error::Storage)?;
+        let (instructions, reauthentication_required) = if context.account_driven {
+            let (managed_account, required) =
+                rss_mdm_apple_channel::account_enrollment::progress_in(c, &self.sessions, context)
+                    .await
+                    .map_err(|_| Error::Storage)?;
+            (
+                Instructions::MacosAccount {
+                    managed_account,
+                    enrollment_method: "account_driven_device_enrollment",
+                },
+                required,
+            )
+        } else {
+            (
+                Instructions::Macos {
+                    profile_url: format!("/api/v1/enrollments/{}/profile", context.enrollment),
+                    enrollment_method: "profile_based_device_enrollment",
+                },
+                false,
+            )
+        };
         Ok(NativeDetails {
-            instructions: Instructions::Macos {
-                profile_url: format!("/api/v1/enrollments/{}/profile", context.enrollment),
-                enrollment_method: "profile_based_device_enrollment",
-            },
+            instructions,
             profile_prepared: if evidence.profile_prepared {
                 Observation::Observed
             } else {
@@ -120,6 +140,7 @@ impl EnrollmentProgress {
             first_authenticated_check_in: evidence.first_authenticated_check_in,
             channel_ready: evidence.channel_ready,
             credential_usable: false,
+            reauthentication_required,
         })
     }
 }
@@ -132,5 +153,6 @@ fn unavailable() -> NativeDetails {
         first_authenticated_check_in: false,
         channel_ready: false,
         credential_usable: false,
+        reauthentication_required: false,
     }
 }

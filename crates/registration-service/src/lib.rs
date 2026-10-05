@@ -29,3 +29,6 @@ pub const QUOTAS_SQL: &str = include_str!("../schema/quotas.sql");
 
 /// Adds durable native management contact without guessing historical evidence.
 pub const ENROLLMENT_PROGRESS_SQL: &str = include_str!("../schema/enrollment-progress.sql");
+
+/// Durable Apple account authorization on the existing request lifecycle.
+pub const APPLE_ACCOUNT_SQL: &str = include_str!("../schema/apple-account.sql");

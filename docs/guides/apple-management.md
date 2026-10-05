@@ -12,6 +12,18 @@ SCEP challenge 在返回 allow 前提交唯一消费事实，绑定 enrollment�
 
 CN 为 enrollment UUID 的 32 位小写 hex 与 attempt UUID 的 32 位小写 hex 直接拼接，长度 64。证书只接受专用 issuer、完整身份绑定、clientAuth EKU、digitalSignature、非 CA、无 SAN 和不超过 90 日的有效期。设备先进入 pending_token；TokenUpdate 验证 topic、UDID 并保存 token/PushMagic 后才允许管理投递。CheckOut、管理员撤销和换代均停用旧设备身份；旧证书、旧 source/epoch 或旧代际不能承接新任务。
 
+## Managed Apple Account 账户驱动设备注册
+
+macOS 14 及以上可在系统设置中用 Managed Apple Account 注册组织设备。浏览器控制台另行实施；服务端提供发现、最小认证桥和管理 API。只提供 `mdm-adde`，不提供个人 BYOD User Enrollment。组织域名须将 `/.well-known/com.apple.remotemanagement` 的请求转送到产品浏览器 HTTPS origin；发现请求包含 `user-identifier` 和 `model-family=Mac`。
+
+在 `native_protocols.apple.account_keys` 中按键名配置 `certificate_file` 与 `private_key_file`。私钥是 owner-only PKCS8 DER；这对 RSA 证书与私钥对应 Apple 组织登记的公钥，和 Profile/APNs 密钥分别管理。管理员从 Apple AccountDetail 取得真正的 `server_uuid` 后，用 `authorization_write` 权限配置 `PUT /api/v1/apple/account-enrollment/organizations/{id}`：`expectedRevision`（首次 0）、`domain`、`serverUuid`、`signingKey`、`enabled`。再用同一权限配置 `PUT .../organizations/{id}/accounts/{managed-account}`，提交 `expectedRevision`、`principalId`、`instanceId`、`enabled`。写入要求非零 UUID `Idempotency-Key`，更新采用预期版本；同一请求可重放。账户及域名规范为 ASCII、小写，账户本地部分支持字母数字与 `._+-`。映射必须属于当前 Identity 实例和组织域名。`authorization_read` 可通过 `GET .../organizations` 查看映射与本地签名密钥可用性；`externalOrganizationVerification=not_observed` 表示外部组织配置尚未验收。
+
+Apple 的签名 CMS 请求只证明载荷完整性，不作为设备认证或组织授权。首次请求获得 `401` 与 `apple-as-web` 认证地址；认证桥复用 RSS Identity 登录、联合身份和 CSRF 验证。登录人必须与管理员设置的组织账户映射完全一致。认证成功通过 `308` 返回 Apple 原生登录回调和随机 bearer；同一授权可重放。随后同一签名请求携带 bearer 取得固定签名 Profile，使用 `EnrollmentMode=ADDE`、`AssignedManagedAppleID`、`com.apple.mdm.token` 和设备范围。该 Profile 的 SCEP、证书绑定、首次 Authenticate 和 TokenUpdate 沿用共同注册生命周期；注册归属真实 RSS 用户，占用其 macOS MDM 额度。
+
+浏览器流程和未完成注册各有 300 秒期限。进行中的流程不配置续命入口，过期后重新从系统发起。bearer 的持续授权由原 Identity 会话的当前有效性决定，不单独延长会话。账户注册的用户通道每次请求都同时验证当前设备证书、bearer、组织/账户版本和原 Identity 会话；设备通道使用设备证书。登出、停用或会话失效后，用户通道返回新的认证地址，登录后在同一 enrollment/registration 上轮换授权，不增加额度。撤销组织映射或注册后旧授权不能继续使用。密码式 Profile 下载或 resume 不接受账户注册。进度仅报告服务端观察到的证书、首次 check-in、TokenUpdate 和重新认证需求；不声明已观察到系统确认。
+
+原生 `GetToken` 只接受 `TokenServiceType=com.apple.maid`，返回由组织密钥签名的 RS256 JWT，issuer 使用 Apple 指定的服务器 UUID。其有效性还依赖真实 Apple 组织的公钥登记与配置；本地 API 成功不证明 Apple 接受。`make t2 MODULE=apple.account_enrollment` 覆盖真实 HTTP/Identity/PostgreSQL、CMS、外部 SCEP、mTLS、同一注册重新认证与撤权；真实组织和 Mac 验收由独立后续任务持有。
+
 ## 用户通道与 Bootstrap Token
 
 原生用户 GUID 绑定当前租户、设备注册及世代，共用设备身份凭据。UserAuthenticate 不授予资源权限；用户 TokenUpdate 分别保存加密 token/PushMagic、revision、租约与失效状态。operation 的 `target` 为 `{"kind":"user","userId":"规范小写非零 UUID"}`。设备前提只从设备通道查询，实际用户命令、回执和 ProfileList 只在该用户通道关联。每个通道的 410 只停用该通道；设备 token 失效后，已取得设备前提的用户命令仍可收发。设备 CheckOut/撤销/换代统一退役所有通道、Profile history 和 Bootstrap 材料。
@@ -133,3 +145,5 @@ Mac 的 Legacy 接管以关联的 `ProfileList(ManagedOnly=true)` 证明 MDM 所
 CA 公共证书由单独的受管理 `com.rss-mdm.pki.<registration>` Profile 持有，不放进 SCEP 身份 Profile，避免两份独立 CA 安装 owner。根载荷是 `com.apple.security.root` DER，中间载荷是 `com.apple.security.pem` PEM。InstallProfile 后发出原通道的 `ProfileList(ManagedOnly=true)`，逐项核对 Profile 与所有证书载荷的 identifier、UUID、类型和有序结构，再记录安装回执；InstallProfile ACK 不代替该证明。退役后的完整信任集合通过替换这个 Profile 移除旧 CA。
 
 服务 HTTPS/SCEP HTTPS 的证书信任独立于设备 CA，设备须预先信任这些服务证书；生产可使用受信任的服务 TLS 入口。当前协议验证不等于真实 macOS 安装/移除行为已验证，真机 T3 仍独立。轮换、撤销和 CRL 发布操作见[设备 PKI 运维](../deployment/operations.md#设备-pki-轮换与撤销)。
+
+真实 Apple 组织上线与 Mac 设备矩阵验收由 [#2687](https://dev.azure.com/shengming0923/rss/_workitems/edit/2687) 承接；本次后端实现关联 #2672，rss-web 管理界面另行规划。

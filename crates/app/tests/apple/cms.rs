@@ -47,3 +47,73 @@ fn cms_is_attached_and_independently_verified() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+#[test]
+#[ignore = "MODULE=apple.cms: independent CMS signed attributes and ECDSA bootstrap integrity"]
+fn account_bootstrap_integrity_is_not_apple_attestation() -> anyhow::Result<()> {
+    let work = tempfile::tempdir()?;
+    let key = work.path().join("ec.key");
+    let certificate = work.path().join("ec.pem");
+    let input = work.path().join("request.plist");
+    let output = work.path().join("request.cms");
+    let payload=b"<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>PRODUCT</key><string>Mac14,2</string></dict></plist>";
+    std::fs::write(&input, payload)?;
+    let generated = std::process::Command::new("openssl")
+        .args([
+            "req",
+            "-new",
+            "-x509",
+            "-newkey",
+            "ec",
+            "-pkeyopt",
+            "ec_paramgen_curve:prime256v1",
+            "-nodes",
+            "-days",
+            "1",
+            "-subj",
+            "/CN=Untrusted bootstrap signer",
+            "-keyout",
+        ])
+        .arg(&key)
+        .arg("-out")
+        .arg(&certificate)
+        .output()?;
+    anyhow::ensure!(generated.status.success());
+    let signed = std::process::Command::new("openssl")
+        .args([
+            "cms",
+            "-sign",
+            "-binary",
+            "-nodetach",
+            "-md",
+            "sha256",
+            "-in",
+        ])
+        .arg(&input)
+        .arg("-signer")
+        .arg(&certificate)
+        .arg("-inkey")
+        .arg(&key)
+        .args(["-outform", "DER", "-out"])
+        .arg(&output)
+        .output()?;
+    anyhow::ensure!(signed.status.success());
+    let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+    let bytes = std::fs::read(output)?;
+    let request = rss_mdm_certificate::apple::enrollment_request(&bytes, now)?;
+    anyhow::ensure!(request.payload == payload);
+    anyhow::ensure!(
+        rss_mdm_certificate::apple::enrollment_request(&bytes, now + 2 * 86400).is_err()
+    );
+    let mut changed = bytes;
+    let index = changed
+        .windows(payload.len())
+        .position(|s| s == payload)
+        .unwrap();
+    changed[index + 4] ^= 1;
+    anyhow::ensure!(
+        rss_mdm_certificate::apple::enrollment_request(&changed, now).is_err(),
+        "tampered CMS accepted"
+    );
+    Ok(())
+}

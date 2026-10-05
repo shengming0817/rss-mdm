@@ -13,6 +13,7 @@ pub async fn checkin(
     State(app): State<Arc<HttpState>>,
     Extension(peer): Extension<rss_mdm_certificate::HandshakePeer>,
     Extension(audit): Extension<RequestAudit>,
+    headers: axum::http::HeaderMap,
     bytes: Bytes,
 ) -> Result<axum::response::Response, Error> {
     use axum::response::IntoResponse;
@@ -32,7 +33,8 @@ pub async fn checkin(
             }
             Some(udid)
         }
-        CheckIn::CheckOut { udid }
+        CheckIn::GetToken { udid, .. }
+        | CheckIn::CheckOut { udid }
         | CheckIn::UserAuthenticate { udid, .. }
         | CheckIn::DeclarativeManagement { udid, .. } => Some(udid),
         CheckIn::SetBootstrapToken { .. } | CheckIn::GetBootstrapToken => dictionary
@@ -54,12 +56,38 @@ pub async fn checkin(
     audit.identify_device(principal.registration());
     audit.target(principal.device());
     audit.registration(principal.registration());
+    let user_access = if protocol::user(&dictionary)?.is_some() {
+        match crate::account_enrollment::authorize_user(&app, leaf.enrollment(), &headers).await {
+            Ok(access) => access,
+            Err(Error::Unauthorized) => {
+                return crate::account_enrollment::reauthentication(
+                    &app,
+                    leaf.enrollment(),
+                    &audit,
+                )
+                .await;
+            }
+            Err(error) => return Err(error),
+        }
+    } else {
+        None
+    };
+    if matches!(input, CheckIn::GetToken { .. }) {
+        return crate::account_enrollment::maid(
+            &app,
+            &principal,
+            leaf.enrollment(),
+            udid.ok_or(Error::Malformed)?,
+            user_access.as_ref(),
+        )
+        .await;
+    }
     if matches!(input, CheckIn::DeclarativeManagement { .. }) {
         let reply = app
             .execution
             .apple_ddm(
                 &principal,
-                crate::ddm::prepare(apple.clone(), &dictionary)?,
+                crate::ddm::prepare(apple.clone(), &dictionary, user_access)?,
                 &audit,
             )
             .await?;
@@ -109,6 +137,7 @@ pub async fn checkin(
                     facts: Vec::new(),
                     protection: &apple.protection,
                     response: Vec::new(),
+                    user_access: user_access.as_ref(),
                 },
             ),
             |(store, inputs), tx| {
@@ -144,6 +173,7 @@ pub async fn checkin(
         .into_response())
 }
 struct CheckinInputs<'a> {
+    user_access: Option<&'a crate::account_enrollment::UserAccess>,
     retirement: &'a dyn rss_mdm_registration_service::Retirement,
     principal: &'a crate::device::DevicePrincipal,
     udid: Option<&'a str>,
@@ -168,6 +198,7 @@ async fn checkin_on(
         facts,
         protection,
         response,
+        user_access,
     } = inputs;
     let principal = *principal;
     let udid = *udid;
@@ -186,8 +217,13 @@ async fn checkin_on(
     if udid.is_some_and(|udid| row.try_get::<String, _>("udid").ok().as_deref() != Some(udid)) {
         return Err(Error::Unauthorized);
     }
+    if let Some(access) = *user_access {
+        access.current_in(tx).await?;
+    }
     let (key, details) = match input {
-        CheckIn::DeclarativeManagement { .. } => return Err(Error::Malformed),
+        CheckIn::GetToken { .. } | CheckIn::DeclarativeManagement { .. } => {
+            return Err(Error::Malformed);
+        }
         CheckIn::Authenticate { .. } => return Ok(Some("success")),
         CheckIn::TokenUpdate {
             token, magic, user, ..
@@ -333,6 +369,7 @@ pub async fn manage(
     State(app): State<Arc<HttpState>>,
     Extension(peer): Extension<rss_mdm_certificate::HandshakePeer>,
     Extension(audit): Extension<RequestAudit>,
+    headers: axum::http::HeaderMap,
     bytes: Bytes,
 ) -> Result<axum::response::Response, Error> {
     use axum::response::IntoResponse;
@@ -354,6 +391,22 @@ pub async fn manage(
     audit.identify_device(principal.registration());
     audit.target(principal.device());
     audit.registration(principal.registration());
+    let user_access = if message.user.is_some() {
+        match crate::account_enrollment::authorize_user(&app, leaf.enrollment(), &headers).await {
+            Ok(access) => access,
+            Err(Error::Unauthorized) => {
+                return crate::account_enrollment::reauthentication(
+                    &app,
+                    leaf.enrollment(),
+                    &audit,
+                )
+                .await;
+            }
+            Err(error) => return Err(error),
+        }
+    } else {
+        None
+    };
     if message.user.is_none()
         && let Some(response) =
             super::renewal::management(&app, &principal, &dictionary, &bytes, &audit).await?
@@ -372,7 +425,7 @@ pub async fn manage(
         .apple_management(
             apple.clone(),
             &principal,
-            crate::exchange::prepare(apple.clone(), dictionary, bytes.to_vec())?,
+            crate::exchange::prepare(apple.clone(), dictionary, bytes.to_vec(), user_access)?,
             &audit,
         )
         .await?;

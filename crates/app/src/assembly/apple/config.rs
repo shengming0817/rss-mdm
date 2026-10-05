@@ -8,6 +8,8 @@ pub struct Config {
     #[cfg(test)]
     #[serde(skip)]
     pub test_push_transport: Option<(String, PathBuf)>,
+    #[serde(default)]
+    pub account_keys: std::collections::BTreeMap<String, AccountSigningKey>,
     pub management: TlsEndpoint,
     pub trust_file: PathBuf,
     pub profile_certificate_file: PathBuf,
@@ -56,4 +58,11 @@ impl Config {
         }
         Ok(())
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AccountSigningKey {
+    pub certificate_file: PathBuf,
+    pub private_key_file: PathBuf,
 }
