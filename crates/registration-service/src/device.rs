@@ -400,22 +400,13 @@ impl DeviceService {
         ids: [Uuid; 3],
         facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     ) -> Result<RegistrationReceipt, Error> {
-        admission.current(tx).await?;
-        let data = &admission.coordinates();
-        store::bind_authorized_in(
+        store::bind_native_in(
             tx,
-            &data.tenant,
+            admission,
             credential,
-            &BindRegistration {
-                operation_id: data.operation,
-                request_id: data.id,
-                expected_generation: data.expected_generation,
-                source: data.source,
-            },
-            data.device.clone(),
             ids,
             facts,
-            Some(self.access.retirement.as_ref()),
+            self.access.retirement.as_ref(),
         )
         .await
     }

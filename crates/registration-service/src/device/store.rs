@@ -752,3 +752,36 @@ pub async fn revalidate_management(
 ) -> Result<(), Error> {
     super::management::revalidate(c, p).await
 }
+
+/// The same binding kernel consumes all closed native admission kinds.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "borrowed registration transaction with live admission"
+)]
+pub async fn bind_native_in(
+    tx: &mut sqlx::PgConnection,
+    admission: &crate::enrollment::native::Admission,
+    credential: &VerifiedChannelCredential,
+    ids: [Uuid; 3],
+    facts: &mut Vec<rss_mdm_audit_integration::Fact>,
+    retirement: &dyn crate::Retirement,
+) -> Result<RegistrationReceipt, Error> {
+    admission.current(tx).await?;
+    let d = admission.coordinates();
+    bind_authorized_in(
+        tx,
+        &d.tenant,
+        credential,
+        &BindRegistration {
+            operation_id: d.operation,
+            request_id: d.id,
+            expected_generation: d.expected_generation,
+            source: d.source,
+        },
+        d.device.clone(),
+        ids,
+        facts,
+        Some(retirement),
+    )
+    .await
+}

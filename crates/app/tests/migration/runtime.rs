@@ -29,10 +29,11 @@ async fn upgrade(conn: &mut PgConnection) -> Result<()> {
             .fetch_one(&mut *conn)
             .await?;
     let installation: super::Installation = serde_json::from_value(configuration)?;
-    // Account enrollment and ADE were not present in this released predecessor. Rewind their
+    // Account enrollment, ADE and Entra were absent from this released predecessor. Rewind their
     // structure too; deleting ledger entries alone would describe an impossible schema.
     conn.execute(
         r#"
+        DROP TABLE mdm_windows.entra_admissions, mdm_windows.entra_consents, mdm_windows.entra_policy;
         DROP FUNCTION mdm_apple.account_current(uuid,uuid,bigint,uuid,text);
         DROP TABLE mdm_apple.ade_enrollments, mdm_apple.ade_sync_devices, mdm_apple.ade_operations,
           mdm_apple.ade_devices, mdm_apple.ade_profiles, mdm_apple.ade_servers;
@@ -58,7 +59,8 @@ async fn upgrade(conn: &mut PgConnection) -> Result<()> {
         DROP TABLE mdm_access.agent_configurations, mdm_access.agent_enrollment_settings;
         DROP SCHEMA mdm_agent_packages CASCADE;
         DELETE FROM public.mdm_migrations WHERE name IN ('self-service-access-v1','enrollment-progress-v1','apple-account-authority-v1','apple-account-channel-v1',
-          'registration-agent-configurations-v1','software-agent-packages-v1','apple-organizations-v1','apple-ade-authority-v1','apple-ade-channel-v1');
+          'registration-agent-configurations-v1','software-agent-packages-v1','apple-organizations-v1','apple-ade-authority-v1','apple-ade-channel-v1',
+          'windows-entra-authority-v1','windows-entra-channel-v1');
         "#,
     )
     .await?;

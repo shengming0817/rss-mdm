@@ -1,5 +1,5 @@
 -- One read snapshot of active registrations and live reservations. Renewal/recovery
--- retain the original registration; organization origins never enter this relation.
+-- retain the original registration; organization authority is exempt from personal quotas.
 WITH agent AS (
  SELECT g.device,g.id,g.expires_at,
  EXISTS(SELECT 1 FROM mdm_access.registrations r WHERE r.tenant_id=g.tenant_id AND r.agent_grant_id=g.id AND r.state='active') AS active,

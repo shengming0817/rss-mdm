@@ -43,6 +43,11 @@ pub enum Diagnostic {
     rename_all_fields = "camelCase"
 )]
 pub enum Instructions {
+    WindowsEntra {
+        discovery_url: String,
+        windows_profile: WindowsProfile,
+        enrollment_method: &'static str,
+    },
     Windows {
         server: String,
         discovery_url: String,
@@ -169,7 +174,7 @@ pub async fn enrollment_status(
 ) -> Result<Status, Error> {
     permission.check()?;
     let mut tx = database.snapshot(permission.proof().tenant_id()).await?;
-    let row = sqlx::query("SELECT q.state,q.source,q.authority_kind,CASE q.authority_kind WHEN 'apple_account' THEN q.account_version WHEN 'apple_ade' THEN q.organization_version ELSE q.password_version END AS authorization_version,q.windows_profile,q.credential_ref,floor(extract(epoch FROM q.expires_at))::bigint AS expires_at,floor(extract(epoch FROM statement_timestamp()))::bigint AS now,r.id AS registration,r.generation,r.state AS registration_state,floor(extract(epoch FROM r.first_authenticated_at))::bigint AS first_authenticated_at,EXISTS(SELECT 1 FROM mdm_access.report_sources s WHERE s.tenant_id=r.tenant_id AND s.registration=r.id AND s.source=q.source AND s.enabled) AS source_enabled FROM mdm_access.requests q JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(q.tenant_id,q.grant_id) LEFT JOIN mdm_access.registrations r ON (r.tenant_id,r.request_id)=(q.tenant_id,q.id) WHERE q.tenant_id=$1::uuid AND q.id=$2 AND g.device=$3 AND q.issuance_operation IS NOT NULL AND (NOT $4 OR (q.self_service AND g.instance=$5 AND g.actor=$6))")
+    let row = sqlx::query("SELECT q.state,q.source,q.authority_kind,CASE q.authority_kind WHEN 'apple_account' THEN q.account_version WHEN 'apple_ade' THEN q.organization_version WHEN 'windows_entra' THEN q.organization_version ELSE q.password_version END AS authorization_version,q.windows_profile,q.credential_ref,floor(extract(epoch FROM q.expires_at))::bigint AS expires_at,floor(extract(epoch FROM statement_timestamp()))::bigint AS now,r.id AS registration,r.generation,r.state AS registration_state,floor(extract(epoch FROM r.first_authenticated_at))::bigint AS first_authenticated_at,EXISTS(SELECT 1 FROM mdm_access.report_sources s WHERE s.tenant_id=r.tenant_id AND s.registration=r.id AND s.source=q.source AND s.enabled) AS source_enabled FROM mdm_access.requests q JOIN mdm_access.grants g ON (g.tenant_id,g.id)=(q.tenant_id,q.grant_id) LEFT JOIN mdm_access.registrations r ON (r.tenant_id,r.request_id)=(q.tenant_id,q.id) WHERE q.tenant_id=$1::uuid AND q.id=$2 AND g.device=$3 AND q.issuance_operation IS NOT NULL AND (NOT $4 OR (q.self_service AND g.instance=$5 AND g.actor=$6))")
         .bind(permission.proof().tenant_id()).bind(id).bind(permission.device()).bind(permission.self_service()).bind(permission.proof().instance_id()).bind(permission.proof().principal_id()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
     let context = context(&row, permission.proof().tenant_id(), id)?;
     let expires_at: i64 = row.try_get("expires_at").map_err(db)?;
@@ -238,7 +243,12 @@ fn context(row: &sqlx::postgres::PgRow, tenant: &str, enrollment: Uuid) -> Resul
         now: row.try_get("now").map_err(db)?,
         authorization_version: row.try_get("authorization_version").map_err(db)?,
         account_driven: row.try_get::<String, _>("authority_kind").map_err(db)? == "apple_account",
-        organization_driven: row.try_get::<String, _>("authority_kind").map_err(db)? == "apple_ade",
+        organization_driven: matches!(
+            row.try_get::<String, _>("authority_kind")
+                .map_err(db)?
+                .as_str(),
+            "apple_ade" | "windows_entra"
+        ),
         windows_profile: WindowsProfile::parse(
             row.try_get::<Option<String>, _>("windows_profile")
                 .map_err(db)?

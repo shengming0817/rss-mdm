@@ -9,6 +9,7 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WindowsConfig {
+    pub entra: Option<rss_mdm_windows_channel::entra::Config>,
     pub enrollment: TlsEndpoint,
     pub management: TlsEndpoint,
     pub trust_file: PathBuf,

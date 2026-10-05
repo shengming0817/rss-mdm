@@ -387,6 +387,10 @@ add('native.tls', selectors=('native::tls::tests::',), profile='product', fixtur
 app_family('windows',
            fixtures=('windows',), namespace='windows::t2')
 MODULES['windows.declared'] = replace(MODULES['windows.declared'], support_inputs=(*MODULES['windows.declared'].support_inputs, 'crates/app/tests/windows/support.rs', 'crates/app/tests/device/support.rs', 'crates/app/tests/enrollment/support.rs', 'crates/app/tests/execution/support.rs', 'crates/app/tests/execution/support/native.rs', 'crates/app/tests/execution/support/configuration.rs'), db_mode='fresh', scope='objects')
+add('windows.entra', selectors=('windows::t2::entra::',), profile='product',fixtures=('windows','identity','local_worker'),
+    sources=('crates/windows-channel/src/entra/*','crates/windows-channel/schema/entra.sql','crates/registration-service/schema/windows-entra.sql','crates/authorization-service/src/entra.rs','crates/management-http/src/windows_entra.rs'),
+    support=('crates/app/tests/windows/support.rs','crates/app/tests/windows/mod.rs'),tests=('crates/app/tests/windows/entra.rs',))
+MODULES['windows.entra']=replace(MODULES['windows.entra'],scope='tenant',policies=(CasePolicy('windows::t2::entra::consent_native_issuance_replay_scope_and_revocation','fresh','objects'),))
 for name in ('windows.issuance','windows.enrollment','windows.management','windows.commands','windows.retention','windows.limits','execution.commands.windows','execution.commands.configuration','execution.commands.onboarding'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs + ('crates/app/tests/windows/support.rs',))
 for name in ('enrollment.recovery','windows.issuance','windows.enrollment','windows.management','windows.commands','windows.retention','windows.limits','execution.commands.admission','execution.commands.dispatch','execution.commands.recovery','execution.commands.windows','execution.commands.configuration','execution.commands.onboarding'):
@@ -971,7 +975,7 @@ APP_HELPER_CONSUMERS = {
         'planning.http','software.http','execution.software.offer','execution.software.content',
         'execution.software.recovery','execution.commands.admission','execution.commands.dispatch',
         'execution.commands.recovery','execution.commands.windows','execution.commands.configuration','execution.commands.onboarding',
-        'windows.commands','windows.enrollment','windows.issuance','windows.limits','windows.management','windows.retention','windows.declared',
+        'windows.commands','windows.enrollment','windows.issuance','windows.limits','windows.management','windows.retention','windows.declared','windows.entra',
         'apple.collection','apple.profile','apple.policy','apple.onboarding','apple.renewal','apple.identity','apple.push',
         'apple.fairness','apple.host','apple.scep','apple.commands','apple.users','apple.ddm','apple.status'),
     'support/audit.rs': (
@@ -1420,7 +1424,7 @@ consume_dependencies(
 )
 
 consume_dependencies(
-    'api.identity_context diagnostics.http identity.audit identity.local identity.sso',
+    'api.identity_context diagnostics.http identity.audit identity.local identity.sso windows.entra',
     normal='rss-identity-oidc',
 )
 
@@ -1634,6 +1638,10 @@ consume(('crates/registration-service/src/database.rs',), 'enrollment.http enrol
 
 MODULES['agent.configurations'] = replace(MODULES['agent.configurations'], fixtures=('identity','agent_pki'), scope='tenant', support_inputs=(*MODULES['agent.configurations'].support_inputs,*AGENT_FIXTURE_INPUTS,'crates/app/tests/support/software.rs','crates/app/tests/agent_pki/mod.rs','tests/support/software/mod.rs'))
 consume(('crates/registration-service/src/agent/*','crates/registration-service/schema/agent-configurations.sql','crates/software-service/src/agent_packages*','crates/content-service/src/software.rs','crates/content-service/src/reader.rs','crates/app/src/agent_configurations.rs','crates/agent-channel/src/enroll.rs','crates/agent-wire/src/enroll.rs','crates/agent-wire/src/enroll/configuration.rs','crates/management-http/src/agent_enrollment.rs','crates/management-http/src/software_catalog.rs'), 'agent.configurations')
+
+consume(('crates/registration-service/src/enrollment/native.rs','crates/registration-service/src/device/store.rs','crates/registration-service/schema/quota-usage.sql','crates/windows-channel/src/issuance.rs','crates/windows-channel/src/lib.rs','crates/windows-mdm/src/soap*','crates/windows-mdm/src/soap/*','crates/app/src/assembly/windows/*','crates/app/src/identity.rs','crates/app/src/api.rs','crates/authorization-service/src/context.rs','crates/authorization-service/src/session.rs','crates/management-http/src/router.rs'), 'windows.entra')
+
+consume(('crates/windows-channel/src/operations.rs',), 'windows.entra windows.issuance windows.declared')
 
 consume(('crates/execution-service/src/device_control.rs',), 'execution.commands.admission execution.commands.dispatch execution.commands.recovery execution.commands.windows apple.commands apple.policy')
 

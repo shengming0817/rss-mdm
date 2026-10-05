@@ -201,7 +201,7 @@ class ModuleImpactTests(unittest.TestCase):
             'execution.software.content', 'execution.software.recovery'})
         self.assertEqual(self.selected('crates/windows-channel/src/lib.rs'), {
             'windows.enrollment', 'windows.issuance', 'windows.management',
-            'windows.commands', 'windows.retention', 'windows.limits', 'windows.declared'})
+            'windows.commands', 'windows.retention', 'windows.limits', 'windows.declared', 'windows.entra'})
 
     def test_runtime_diagnostics_has_exact_tests_and_live_owner_inputs(self):
         self.assertEqual(self.selected('crates/app/tests/api/runtime_diagnostics.rs'), {'diagnostics.http'})

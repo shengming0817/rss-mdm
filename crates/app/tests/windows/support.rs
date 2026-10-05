@@ -12,11 +12,13 @@ use anyhow::ensure;
 use axum::Router;
 use axum::http::StatusCode;
 use base64::{Engine, engine::general_purpose::STANDARD};
+use rss_identity_core::{entra::EntraTokenProfile, federation::*};
 use rss_mdm_windows_mdm::syncml::{self, Command, CommandName};
 use rss_mdm_windows_mdm::{
     CodecLimits, Secret,
     soap::{self, Body, Operation},
 };
+use std::collections::BTreeMap;
 use std::{path::PathBuf, time::Duration};
 use uuid::Uuid;
 use x509_cert::der::Decode;
@@ -123,6 +125,24 @@ pub(crate) struct Host {
     running: Option<rss_runtime::ShutdownStack>,
 }
 impl Host {
+    #[cfg(feature = "integration")]
+    pub(crate) async fn with_entra(
+        binding: rss_mdm_windows_channel::entra::Config,
+        verifier: Arc<dyn rss_identity_core::entra::EntraTokenVerifier>,
+        jit: bool,
+    ) -> anyhow::Result<Self> {
+        Self::bind(
+            None,
+            rss_device_command_postgres::CommandClock::Postgres,
+            None,
+            None,
+            None,
+            false,
+            false,
+            Some((binding, verifier, jit)),
+        )
+        .await
+    }
     /// Prepare in-process product routes; listeners and workers start only in listen().
     pub(crate) async fn open() -> anyhow::Result<Self> {
         Self::with_agent(None, rss_device_command_postgres::CommandClock::Postgres).await
@@ -131,7 +151,7 @@ impl Host {
         agent: Option<serde_json::Value>,
         command_clock: rss_device_command_postgres::CommandClock,
     ) -> anyhow::Result<Self> {
-        Self::bind(agent, command_clock, None, None, None, false, false).await
+        Self::bind(agent, command_clock, None, None, None, false, false, None).await
     }
     pub(super) async fn renewal_window() -> anyhow::Result<Self> {
         Self::bind(
@@ -142,6 +162,7 @@ impl Host {
             Some("renewal-window"),
             false,
             false,
+            None,
         )
         .await
     }
@@ -154,11 +175,13 @@ impl Host {
             None,
             true,
             false,
+            None,
         )
         .await
     }
     #[allow(
         clippy::cognitive_complexity,
+        clippy::too_many_arguments,
         reason = "fixture composition keeps TLS certificate, listener and enrollment variants explicit"
     )]
     async fn bind(
@@ -169,6 +192,11 @@ impl Host {
         ca: Option<&str>,
         push: bool,
         additional_address: bool,
+        entra: Option<(
+            rss_mdm_windows_channel::entra::Config,
+            Arc<dyn rss_identity_core::entra::EntraTokenVerifier>,
+            bool,
+        )>,
     ) -> anyhow::Result<Self> {
         let root = root()?;
         let enroll =
@@ -246,7 +274,11 @@ impl Host {
             value["native_protocols"]["windows"]["additional_management"] =
                 serde_json::json!([endpoint]);
         }
-        let config: crate::config::Config = serde_json::from_value(value)?;
+        let mut config: crate::config::Config = serde_json::from_value(value)?;
+        if entra.is_some() {
+            config.identity_management =
+                crate::test_support::identity::config(case_tenant())?.identity_management;
+        }
         let clock = Arc::new(crate::clock::SystemClock);
         let identity_management = Arc::new(
             crate::authorization::identity_management::IdentityManagementPolicy::new(
@@ -317,7 +349,7 @@ impl Host {
                 )
             })
             .transpose()?;
-        let windows = Arc::new(Windows::load(
+        let mut windows = Windows::load(
             config
                 .native_protocols
                 .windows
@@ -328,7 +360,24 @@ impl Host {
                 .agent_installation
                 .identity(rss_mdm_policy::Platform::Windows)
                 .cloned(),
-        )?);
+        )?;
+        if let Some((mut binding, verifier, jit)) = entra {
+            let view = provider(&identity, &secret, &binding.token, jit).await?;
+            binding.provider_id = Uuid::parse_str(&view.id.to_string())?;
+            let provider =
+                rss_identity_core::federation::ProviderId::parse(&binding.provider_id.to_string())?;
+            let authority = rss_identity_postgres::EntraAuthority::new(
+                identity.authority.clone(),
+                verifier,
+                identity.tenant,
+                provider,
+                binding.token.clone(),
+            )?;
+            Arc::get_mut(&mut windows.channel).unwrap().entra = Some(Arc::new(
+                rss_mdm_windows_channel::entra::Entra::new(authority, identity.tenant, binding)?,
+            ));
+        }
+        let windows = Arc::new(windows);
         let mut trusts = vec![windows.channel.ca.trust.clone()];
         if let Some(a) = &agent_pki {
             trusts.push(a.issuer.trust().trust.clone());
@@ -518,6 +567,7 @@ impl Host {
             None,
             false,
             false,
+            None,
         )
         .await?;
         next.listen().await?;
@@ -980,4 +1030,79 @@ pub(crate) async fn sign_certificate(
         .await?;
     access.close().await;
     Ok(chain[0].clone())
+}
+
+fn federation(
+    identity: &crate::identity::Identity,
+) -> anyhow::Result<rss_identity_postgres::Federation> {
+    Ok(rss_identity_postgres::Federation::new(
+        rss_identity_core::groups::GroupFactsMaxAge::new(60)?,
+        identity.authority.clone(),
+        Arc::new(rss_identity_oidc::HttpOidc::new(Vec::new(), Vec::new())?),
+        StateSigner::new([11; 32], "native-fixture")?,
+        rss_identity_postgres::FederationConfig {
+            callback: "https://mdm.example.test/api/v1/identity/oidc/callback".into(),
+            credential_keys: Arc::new(rss_identity_postgres::CredentialKeys::new(
+                "fixture".into(),
+                vec![("fixture".into(), [22; 32])],
+            )?),
+            targets: BTreeMap::from([("app".into(), "https://mdm.example.test".into())]),
+        },
+    )?)
+}
+async fn provider(
+    identity: &crate::identity::Identity,
+    secret: &rss_identity_core::session::SessionSecret,
+    profile: &EntraTokenProfile,
+    jit: bool,
+) -> anyhow::Result<ProviderView> {
+    let actor = identity
+        .authority
+        .authenticate_session(
+            identity.tenant,
+            rss_identity_core::session::SessionSecret::parse(secret.expose().into())?,
+            crate::identity::deadline(),
+        )
+        .await?;
+    let f = federation(identity)?;
+    let settings: ProviderSettings = ProviderSettingsInput {
+        issuer: profile.issuer(),
+        client_id: profile.app_id.to_string(),
+        redirect_uri: "https://mdm.example.test/api/v1/identity/oidc/callback".into(),
+        scopes: vec!["openid".into(), "profile".into()],
+        claims: ClaimMapping {
+            subject: rss_identity_core::entra::SubjectMapping::Entra {
+                tenant: profile.tenant,
+            },
+            email: None,
+            groups: None,
+            department_snapshot: None,
+        },
+        jit,
+    }
+    .try_into()?;
+    let view = f
+        .create_provider(
+            actor,
+            settings,
+            ProviderCredentials::new("fixture-client-secret".into(), None)?,
+            crate::identity::deadline(),
+        )
+        .await?;
+    let actor = identity
+        .authority
+        .authenticate_session(
+            identity.tenant,
+            rss_identity_core::session::SessionSecret::parse(secret.expose().into())?,
+            crate::identity::deadline(),
+        )
+        .await?;
+    Ok(f.enable_provider(
+        actor,
+        view.id,
+        view.version,
+        true,
+        crate::identity::deadline(),
+    )
+    .await?)
 }

@@ -37,3 +37,5 @@ pub const APPLE_ADE_SQL: &str = include_str!("../schema/apple-ade.sql");
 
 /// Registration settings and reusable administrator configurations.
 pub const AGENT_CONFIGURATIONS_SQL: &str = include_str!("../schema/agent-configurations.sql");
+
+pub const WINDOWS_ENTRA_SQL: &str = include_str!("../schema/windows-entra.sql");

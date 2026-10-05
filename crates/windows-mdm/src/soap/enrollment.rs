@@ -11,7 +11,7 @@ const PKCS7: &str =
 const RENEW: &str = "http://docs.oasis-open.org/ws-sx/ws-trust/200512/Renew";
 const ISSUE: &str = "http://docs.oasis-open.org/ws-sx/ws-trust/200512/Issue";
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// Untrusted device discovery claims under the supported OnPremise profile.
+/// Untrusted device discovery claims under explicit advertised authentication profiles.
 /// SOAP encoding/decoding checks syntax and budgets, not the caller's identity.
 pub struct Discover {
     /// Nonblank email claim bounded by `field_bytes`; no email syntax or ownership verification.
@@ -24,17 +24,17 @@ pub struct Discover {
     pub application_version: String,
     /// Caller-reported OS edition number, including zero.
     pub os_edition: u32,
-    /// At most three distinct policies, including OnPremise; also bounded by `items`.
+    /// One to three distinct policies, also bounded by `items`.
     pub auth_policies: Vec<AuthPolicy>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 /// Advertised discovery authentication mode; codec support does not implement the mode.
 pub enum AuthPolicy {
-    /// On-premises authentication advertisement, required by this profile.
+    /// On-premises password authentication advertisement.
     OnPremise,
-    /// Federated advertisement preserved alongside required OnPremise.
+    /// Federated authentication advertisement.
     Federated,
-    /// Certificate advertisement preserved alongside required OnPremise.
+    /// Certificate authentication advertisement.
     Certificate,
 }
 impl AuthPolicy {
@@ -71,8 +71,10 @@ pub struct Disposition {
     pub value: NillableText,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// OnPremise discovery response; endpoint authorization belongs to the product.
+/// Explicit discovery response; endpoint authorization belongs to the product.
 pub struct DiscoverResponse {
+    /// Explicit supported authentication profile.
+    pub auth_policy: AuthPolicy,
     /// Exactly `4.0` in the supported response profile.
     pub enrollment_version: String,
     /// Nonblank bounded policy endpoint text; codec does not enforce HTTPS or destination policy.
@@ -225,7 +227,7 @@ pub(super) fn validate_discover(d: &Discover, l: &CodecLimits) -> Result<()> {
             return Err(E::Duplicate);
         }
     }
-    if !policies.contains(&AuthPolicy::OnPremise) {
+    if policies.is_empty() {
         return Err(E::Unsupported);
     }
     version(&d.application_version)
@@ -306,16 +308,21 @@ pub(super) fn read_discover_response(p: &mut Input<'_>) -> Result<DiscoverRespon
     }
     p.end(ENROLL, "DiscoverResult")?;
     p.end(ENROLL, "DiscoverResponse")?;
-    if auth.as_deref() != Some("OnPremise") {
+    let auth_policy = AuthPolicy::parse(auth.as_deref().ok_or(E::Structure)?)?;
+    if auth_policy == AuthPolicy::Certificate {
         return Err(E::Unsupported);
     }
     Ok(DiscoverResponse {
+        auth_policy,
         enrollment_version: version.ok_or(E::Structure)?,
         policy_url: policy.ok_or(E::Structure)?,
         enrollment_url: enroll.ok_or(E::Structure)?,
     })
 }
 pub(super) fn validate_discover_response(d: &DiscoverResponse, l: &CodecLimits) -> Result<()> {
+    if d.auth_policy == AuthPolicy::Certificate {
+        return Err(E::Unsupported);
+    }
     text(&d.enrollment_version, l.identifier_bytes, false)?;
     if d.enrollment_version != "4.0" {
         return Err(E::Unsupported);
@@ -330,7 +337,12 @@ pub(super) fn write_discover_response(
 ) -> Result<()> {
     w.start("e:DiscoverResponse", &[])?;
     w.start("e:DiscoverResult", &[])?;
-    w.scalar("e:AuthPolicy", "OnPremise", l.identifier_bytes, false)?;
+    w.scalar(
+        "e:AuthPolicy",
+        d.auth_policy.name(),
+        l.identifier_bytes,
+        false,
+    )?;
     w.scalar(
         "e:EnrollmentVersion",
         &d.enrollment_version,

@@ -1,6 +1,7 @@
 //! Windows enrollment and management protocol boundary.
 mod database;
 pub mod enrollment_store;
+pub mod entra;
 pub mod issuance;
 mod linked;
 pub mod management;
@@ -44,6 +45,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 pub struct Windows {
+    pub entra: Option<Arc<entra::Entra>>,
     pub poll: rss_mdm_windows_mdm::provisioning::Poll,
     pub push: Option<push::Push>,
     pub additional_management_origins: Vec<String>,
@@ -113,6 +115,7 @@ impl Windows {
             &poll,
         )?;
         Ok(Self {
+            entra: None,
             poll,
             push: None,
             additional_management_origins: Vec::new(),
@@ -190,6 +193,10 @@ pub fn routers(
             "/EnrollmentServer/Discovery.svc",
             axum::routing::get(discovery_probe).post(discover),
         )
+        .route(
+            "/api/v1/windows/entra/terms",
+            axum::routing::get(entra::terms).post(entra::accept),
+        )
         .route("/EnrollmentServer/Policy.svc", post(policy))
         .route("/EnrollmentServer/Enrollment.svc", post(issue))
         .route("/EnrollmentConfiguration", post(linked::discover))
@@ -260,7 +267,7 @@ fn response(request: Option<&soap::Message>, body: Body, now: i64) -> Result<Res
     };
     let security = if matches!(body, Body::IssueResponse(_)) {
         Some(soap::Security {
-            certificate: None,
+            binary_token: None,
             signature: false,
             username: None,
             timestamp: Some(soap::Timestamp {
@@ -334,6 +341,11 @@ async fn discover(State(app): State<Arc<HttpState>>, headers: HeaderMap, bytes: 
     response(
         Some(&message),
         Body::DiscoverResponse(soap::DiscoverResponse {
+            auth_policy: if windows.entra.is_some() {
+                soap::AuthPolicy::Federated
+            } else {
+                soap::AuthPolicy::OnPremise
+            },
             enrollment_version: "4.0".into(),
             policy_url: format!("{}/EnrollmentServer/Policy.svc", windows.enrollment_origin),
             enrollment_url: format!(
@@ -424,6 +436,12 @@ async fn enrollment(
             .security
             .as_ref()
             .ok_or(Error::Unauthorized)?;
+        if let Some(token) = &security.binary_token {
+            if security.signature {
+                return Err(Error::Unsupported);
+            }
+            return entra::enrollment(&app, &message, &audit, issuing, &token.bytes.0).await;
+        }
         let token = security.username.as_ref().ok_or(Error::Unauthorized)?;
         let id = app
             .windows()?
@@ -662,3 +680,5 @@ pub async fn retire_in(
         .bind(tenant).bind(registration).execute(c).await.map_err(database::db)?;
     Ok(())
 }
+
+pub const ENTRA_SQL: &str = include_str!("../schema/entra.sql");

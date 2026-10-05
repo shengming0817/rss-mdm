@@ -77,17 +77,28 @@ impl EnrollmentProgress {
             .as_ref()
             .is_some_and(|r| r.first_authenticated_at.is_some());
         Ok(NativeDetails {
-            instructions: Instructions::Windows {
-                server: windows.enrollment_origin.clone(),
-                discovery_url: format!(
-                    "{}/EnrollmentServer/Discovery.svc",
-                    windows.enrollment_origin
-                ),
-                username: windows
-                    .enrollment_username(context.enrollment)
-                    .map_err(|_| Error::Configuration)?,
-                windows_profile: context.windows_profile.ok_or(Error::Corrupt)?,
-                requires_local_administrator: true,
+            instructions: if context.organization_driven {
+                Instructions::WindowsEntra {
+                    discovery_url: format!(
+                        "{}/EnrollmentServer/Discovery.svc",
+                        windows.enrollment_origin
+                    ),
+                    windows_profile: context.windows_profile.ok_or(Error::Corrupt)?,
+                    enrollment_method: "entra_user_credential",
+                }
+            } else {
+                Instructions::Windows {
+                    server: windows.enrollment_origin.clone(),
+                    discovery_url: format!(
+                        "{}/EnrollmentServer/Discovery.svc",
+                        windows.enrollment_origin
+                    ),
+                    username: windows
+                        .enrollment_username(context.enrollment)
+                        .map_err(|_| Error::Configuration)?,
+                    windows_profile: context.windows_profile.ok_or(Error::Corrupt)?,
+                    requires_local_administrator: true,
+                }
             },
             profile_prepared: Observation::NotApplicable,
             certificate_issued,

@@ -83,7 +83,7 @@ pub(crate) async fn policy(
     };
     let result = (|| {
         let security = message.header.security.as_ref().ok_or(Error::Malformed)?;
-        if security.certificate.is_none() || security.username.is_some() {
+        if security.binary_token.is_none() || security.username.is_some() {
             return Err(Error::Unsupported);
         }
         // XCEP is policy retrieval. Exported BST possession is not parent authentication.

@@ -51,7 +51,7 @@ impl SessionAuthority {
     }
 }
 
-fn authority_error(error: AuthorityError) -> Error {
+pub(crate) fn authority_error(error: AuthorityError) -> Error {
     match error {
         AuthorityError::Rejected | AuthorityError::ReauthenticationFailed => Error::Unauthorized,
         AuthorityError::CommitUnknown(_) => Error::CommitUnknown,

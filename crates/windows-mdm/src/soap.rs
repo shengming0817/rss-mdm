@@ -12,7 +12,7 @@ pub use enrollment::{
     NillableText,
 };
 pub use policy::Policy;
-pub use security::{CertificateToken, Security, Timestamp, UsernameToken};
+pub use security::{BinaryToken, Security, Timestamp, UsernameToken};
 /// SOAP 1.2 envelope namespace.
 pub const NS: &str = "http://www.w3.org/2003/05/soap-envelope";
 /// WS-Addressing 2005/08 namespace.
@@ -98,7 +98,7 @@ pub struct Header {
     pub to: Option<String>,
     /// Whether an anonymous ReplyTo is present; responses must set this to false.
     pub reply_to: bool,
-    /// Unverified security fields; primary enrollment uses UsernameToken, linked enrollment uses certificate proof.
+    /// Unverified security fields; primary enrollment uses PasswordText or verified Entra access tokens; linked enrollment requires signed certificate proof.
     /// CMS renewal uses the existing TLS identity; issue responses need Timestamp.
     pub security: Option<Security>,
 }
@@ -115,7 +115,7 @@ pub struct Message {
 pub enum Body {
     /// Device-supplied discovery claims.
     Discover(Discover),
-    /// OnPremise discovery endpoints and enrollment version.
+    /// Explicit discovery authentication profile and endpoints and enrollment version.
     DiscoverResponse(DiscoverResponse),
     /// Fixed XCEP request with nil last-update, preferred-language and filter fields.
     GetPolicies,
@@ -269,7 +269,7 @@ fn validate_header(h: &Header, op: Operation, l: &CodecLimits) -> Result<()> {
     if op == Operation::GetPolicies
         && h.security
             .as_ref()
-            .is_none_or(|s| s.username.is_none() && s.certificate.is_none())
+            .is_none_or(|s| s.username.is_none() && s.binary_token.is_none())
     {
         return Err(E::Structure);
     }
@@ -360,7 +360,7 @@ fn validate(m: &Message, l: &CodecLimits) -> Result<()> {
                 && m.header
                     .security
                     .as_ref()
-                    .is_none_or(|s| s.username.is_none() && s.certificate.is_none())
+                    .is_none_or(|s| s.username.is_none() && s.binary_token.is_none())
             {
                 return Err(E::Structure);
             }

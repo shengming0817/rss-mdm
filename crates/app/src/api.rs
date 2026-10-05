@@ -213,15 +213,41 @@ pub(crate) async fn from_compiled(
         .native_protocols
         .windows
         .map(|config| {
-            crate::windows::Windows::load(
+            let entra = config
+                .entra
+                .clone()
+                .map(|binding| {
+                    let verifier = rss_identity_oidc::entra::HttpEntra::new()
+                        .map_err(|_| Error::Configuration(ConfigIssue::IdentityConfiguration))?;
+                    let provider = rss_identity_core::federation::ProviderId::parse(
+                        &binding.provider_id.to_string(),
+                    )
+                    .map_err(|_| Error::Configuration(ConfigIssue::IdentityConfiguration))?;
+                    let authority = rss_identity_postgres::EntraAuthority::new(
+                        identity.authority.clone(),
+                        Arc::new(verifier),
+                        identity.tenant,
+                        provider,
+                        binding.token.clone(),
+                    )
+                    .map_err(crate::identity::failure)?;
+                    rss_mdm_windows_channel::entra::Entra::new(authority, identity.tenant, binding)
+                        .map(Arc::new)
+                        .map_err(Error::from)
+                })
+                .transpose()?;
+            let mut windows = crate::windows::Windows::load(
                 config,
                 clock.unix_seconds()?,
                 providers.clone(),
                 native_agent
                     .identity(rss_mdm_policy::Platform::Windows)
                     .cloned(),
-            )
-            .map(Arc::new)
+            )?;
+            Arc::get_mut(&mut windows.channel)
+                .ok_or(Error::Conflict)?
+                .entra = entra;
+            Ok::<_, Error>(Arc::new(windows))
         })
         .transpose()?;
     let apple = config
@@ -417,6 +443,17 @@ pub(crate) fn from_state(
         rss_mdm_management_http::authentication_routes(authentication, management_boundary.clone());
     let management = rss_mdm_management_http::router(
         rss_mdm_management_http::Services {
+            windows_entra: state
+                .windows
+                .as_ref()
+                .and_then(|w| w.channel.entra.as_ref())
+                .map(|entra| {
+                    Arc::new(rss_mdm_windows_channel::entra::Management::new(
+                        state.access.windows_store(),
+                        state.audit_store.clone(),
+                        entra.clone(),
+                    ))
+                }),
             agent_enrollment: state.agent_enrollment.clone(),
             pki: state.pki.clone(),
             pki_clock: Arc::new(crate::agent_pki::PkiClock(state.clock.clone())),

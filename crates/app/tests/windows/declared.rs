@@ -122,9 +122,9 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
             expires: format_time(at + 300),
         }),
         username: None,
-        certificate: Some(soap::CertificateToken {
+        binary_token: Some(soap::BinaryToken {
             id: "parent-cert".into(),
-            certificate: Secret(parent_cert.clone()),
+            bytes: Secret(parent_cert.clone()),
         }),
         signature: false,
     });
@@ -811,9 +811,9 @@ async fn linked_peer(
             expires: format_time(now() + 300),
         }),
         username: None,
-        certificate: Some(soap::CertificateToken {
+        binary_token: Some(soap::BinaryToken {
             id: "parent-cert".into(),
-            certificate: Secret(certificate.to_vec()),
+            bytes: Secret(certificate.to_vec()),
         }),
         signature: false,
     });

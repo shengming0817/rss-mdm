@@ -21,24 +21,24 @@ pub struct Timestamp {
     /// RFC 3339 expiry text bounded by `identifier_bytes`; no expiry/order enforcement.
     pub expires: String,
 }
-/// Unverified exported certificate token; neither token possession nor parsing authenticates it.
+/// Unverified enrollment credential bytes; neither token possession nor parsing authenticates it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CertificateToken {
+pub struct BinaryToken {
     /// WS-Security token identity.
     pub id: String,
-    /// Exported certificate bytes; the channel must verify a signature with the current parent.
-    pub certificate: Secret<Vec<u8>>,
+    /// Encoded access-token or exported-certificate bytes; their meaning and verification belong to the channel.
+    pub bytes: Secret<Vec<u8>>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Supported unverified WS-Security fields; token and timestamp identities must differ.
-/// Signature, password and freshness verification belong to the certificate/channel owners.
+/// Signature, password and freshness verification belong to the identity and certificate owners.
 pub struct Security {
     /// Optional timestamp; required on IssueResponse by the SOAP profile.
     pub timestamp: Option<Timestamp>,
     /// Optional PasswordText token for primary enrollment.
     pub username: Option<UsernameToken>,
-    /// Unverified certificate token; XCEP policy alone has no authentication side effects.
-    pub certificate: Option<CertificateToken>,
+    /// Unverified binary token; parsing never supplies authentication evidence.
+    pub binary_token: Option<BinaryToken>,
     /// Presence only; signature verification must use the original XML bytes.
     pub signature: bool,
 }
@@ -53,7 +53,7 @@ pub(super) fn read(p: &mut Input<'_>) -> Result<Security> {
     understood(&p.start(SECURITY, "Security")?)?;
     let mut timestamp = None;
     let mut username = None;
-    let mut certificate = None;
+    let mut binary_token = None;
     let mut signature = false;
     loop {
         if p.is(UTILITY, "Timestamp")? {
@@ -88,7 +88,7 @@ pub(super) fn read(p: &mut Input<'_>) -> Result<Security> {
                 password: Secret(password),
             });
         } else if p.is(SECURITY, "BinarySecurityToken")? {
-            if certificate.is_some() {
+            if binary_token.is_some() {
                 return Err(E::Duplicate);
             }
             let token = p.start(SECURITY, "BinarySecurityToken")?;
@@ -116,9 +116,9 @@ pub(super) fn read(p: &mut Input<'_>) -> Result<Security> {
                 .decode(value.split_whitespace().collect::<String>())
                 .map_err(|_| E::InvalidValue)?;
             bound(bytes.len(), p.limits.binary_bytes)?;
-            certificate = Some(CertificateToken {
+            binary_token = Some(BinaryToken {
                 id,
-                certificate: Secret(bytes),
+                bytes: Secret(bytes),
             });
         } else if p.is("http://www.w3.org/2000/09/xmldsig#", "Signature")? {
             if signature {
@@ -134,25 +134,25 @@ pub(super) fn read(p: &mut Input<'_>) -> Result<Security> {
     let s = Security {
         timestamp,
         username,
-        certificate,
+        binary_token,
         signature,
     };
     validate(&s, p.limits)?;
     Ok(s)
 }
 pub(super) fn validate(s: &Security, l: &CodecLimits) -> Result<()> {
-    if s.timestamp.is_none() && s.username.is_none() && s.certificate.is_none() {
+    if s.timestamp.is_none() && s.username.is_none() && s.binary_token.is_none() {
         return Err(E::Structure);
     }
-    if s.username.is_some() && s.certificate.is_some()
-        || s.signature && (s.certificate.is_none() || s.timestamp.is_none())
+    if s.username.is_some() && s.binary_token.is_some()
+        || s.signature && (s.binary_token.is_none() || s.timestamp.is_none())
     {
         return Err(E::Structure);
     }
-    if let Some(t) = &s.certificate {
+    if let Some(t) = &s.binary_token {
         text(&t.id, l.identifier_bytes, false)?;
-        bound(t.certificate.0.len(), l.binary_bytes)?;
-        if t.certificate.0.is_empty() || s.timestamp.as_ref().is_some_and(|v| v.id == t.id) {
+        bound(t.bytes.0.len(), l.binary_bytes)?;
+        if t.bytes.0.is_empty() || s.timestamp.as_ref().is_some_and(|v| v.id == t.id) {
             return Err(E::Structure);
         }
     }
@@ -196,9 +196,9 @@ pub(super) fn write(w: &mut Output<'_>, s: &Security, l: &CodecLimits) -> Result
         w.end("o:Password")?;
         w.end("o:UsernameToken")?;
     }
-    if let Some(t) = &s.certificate {
+    if let Some(t) = &s.binary_token {
         use base64::Engine;
-        let value = base64::engine::general_purpose::STANDARD.encode(&t.certificate.0);
+        let value = base64::engine::general_purpose::STANDARD.encode(&t.bytes.0);
         w.start("o:BinarySecurityToken", &[("u:Id", &t.id), ("ValueType", "http://schemas.microsoft.com/5.0.0.0/ConfigurationManager/Enrollment/DeviceEnrollmentUserToken"), ("EncodingType", "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd#base64binary")])?;
         w.content(&value, l.binary_bytes * 2)?;
         w.end("o:BinarySecurityToken")?;

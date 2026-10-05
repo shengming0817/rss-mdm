@@ -164,7 +164,7 @@ fn baseline_units() -> Vec<(&'static str, &'static str)> {
             include_str!("../schema/installation.sql"),
         ),
         (
-            "identity-authority-v11",
+            "identity-authority-v12",
             rss_identity_postgres::MIGRATION_SQL,
         ),
         (
@@ -328,6 +328,14 @@ fn units() -> Vec<(&'static str, &'static str)> {
         rss_mdm_registration_service::APPLE_ADE_SQL,
     ));
     units.push(("apple-ade-channel-v1", rss_mdm_apple_channel::ADE_SQL));
+    units.push((
+        "windows-entra-authority-v1",
+        rss_mdm_registration_service::WINDOWS_ENTRA_SQL,
+    ));
+    units.push((
+        "windows-entra-channel-v1",
+        rss_mdm_windows_channel::ENTRA_SQL,
+    ));
     units
 }
 /// Exact immutable migration units embedded in this executable, without database access.
@@ -407,7 +415,7 @@ async fn apply_unit(
         .map_err(|_| MigrationError::at(name, "recording installation intent"))?;
     if matches!(name, "audit-v1" | "audit-ledger-v1") {
         install_audit_component(conn, name, sql).await?;
-    } else if name == "identity-authority-v11" {
+    } else if name == "identity-authority-v12" {
         install_identity(conn, installation, instance).await?;
     } else if name != "identity-audit-runtime-v1" || installation.audit_mode == AuditMode::Ledger {
         sqlx::raw_sql(sql).execute(&mut *conn).await.map_err(|_| {
@@ -597,7 +605,7 @@ async fn install_identity(
     }
     install(conn, installation, instance).await.map_err(|_| {
         MigrationError::at(
-            "identity-authority-v11",
+            "identity-authority-v12",
             "installation not confirmed; inspect ledger",
         )
     })

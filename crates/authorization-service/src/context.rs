@@ -177,3 +177,19 @@ impl Principal {
         &self.principal
     }
 }
+
+/// Audit identity is derived solely from Identity's live native proof.
+pub fn bind_native_audit(
+    proof: &crate::entra::RevalidatedAccount,
+    audit: &rss_mdm_audit_integration::RequestAudit,
+) -> Result<(), Error> {
+    proof.check_live().map_err(|_| Error::Unauthorized)?;
+    if audit.tenant() != proof.account().tenant.to_string() {
+        return Err(Error::Forbidden);
+    }
+    audit.set_principal(
+        &proof.account().principal.as_uuid().to_string(),
+        &proof.instance().to_string(),
+    );
+    Ok(())
+}

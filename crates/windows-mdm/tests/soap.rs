@@ -23,7 +23,7 @@ fn attribute_is_escaped_once() {
             to: None,
             reply_to: false,
             security: Some(soap::Security {
-                certificate: None,
+                binary_token: None,
                 signature: false,
                 username: None,
                 timestamp: Some(soap::Timestamp {
@@ -484,4 +484,54 @@ fn initial_issue_requires_username_but_cms_renewal_uses_transport_identity() {
         })
     ));
     // The codec accepts the CMS envelope; the channel still verifies its signature and TLS identity.
+}
+
+#[test]
+fn federated_only_discovery_and_binary_token_remain_unverified_wire_fields() {
+    let limits = CodecLimits::default();
+    let request = String::from_utf8(DISCOVER.to_vec())
+        .unwrap()
+        .replace("OnPremise", "Federated");
+    let request = soap::decode(request.as_bytes(), Operation::Discover, &limits).unwrap();
+    let Body::Discover(discovery) = request.body else {
+        panic!()
+    };
+    assert_eq!(discovery.auth_policies, vec![soap::AuthPolicy::Federated]);
+    let mut issue = soap::decode(
+        include_bytes!("fixtures/issue-request.xml"),
+        Operation::Issue,
+        &limits,
+    )
+    .unwrap();
+    let security = issue.header.security.as_mut().unwrap();
+    security.username = None;
+    security.binary_token = Some(soap::BinaryToken {
+        id: "native-token".into(),
+        bytes: rss_mdm_windows_mdm::Secret(b"synthetic.not-a-verified.token".to_vec()),
+    });
+    let wire = soap::encode(&issue, &limits).unwrap();
+    assert_eq!(
+        soap::decode(&wire, Operation::Issue, &limits).unwrap(),
+        issue
+    );
+    let response = soap::Message {
+        header: soap::Header {
+            message_id: None,
+            relates_to: Some("urn:uuid:test".into()),
+            to: None,
+            reply_to: false,
+            security: None,
+        },
+        body: Body::DiscoverResponse(soap::DiscoverResponse {
+            auth_policy: soap::AuthPolicy::Federated,
+            enrollment_version: "4.0".into(),
+            policy_url: "https://mdm.example.test/policy".into(),
+            enrollment_url: "https://mdm.example.test/enroll".into(),
+        }),
+    };
+    let bytes = soap::encode(&response, &limits).unwrap();
+    assert_eq!(
+        soap::decode(&bytes, Operation::DiscoverResponse, &limits).unwrap(),
+        response
+    );
 }

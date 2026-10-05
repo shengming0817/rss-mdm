@@ -16,6 +16,52 @@ use sqlx::Row;
 use tokio_rustls::rustls::pki_types::CertificateDer;
 use uuid::Uuid;
 
+/// One issuance pipeline consumes either the original password authority or native admission.
+pub(crate) enum IssuanceAuthority<'a> {
+    Password(&'a Authorization, &'a AuthorizedPrincipal),
+    Native(&'a rss_mdm_registration_service::enrollment::native::Admission),
+}
+impl IssuanceAuthority<'_> {
+    fn coordinates(&self) -> rss_mdm_registration_service::enrollment::native::Coordinates {
+        use rss_mdm_registration_service::enrollment::native::Coordinates;
+        match self {
+            Self::Native(p) => p.coordinates().clone(),
+            Self::Password(a, p) => Coordinates {
+                tenant: p.tenant_id().into(),
+                id: a.id,
+                device: a.device.clone(),
+                actor: a.actor.clone(),
+                instance: a.instance.clone(),
+                version: a.version,
+                expected_generation: a.expected_generation,
+                operation: a.operation,
+                source: a.source,
+            },
+        }
+    }
+    async fn current(&self, c: &mut sqlx::PgConnection) -> Result<sqlx::postgres::PgRow, Error> {
+        match self {
+            Self::Native(p) => {
+                let d = p.coordinates();
+                crate::device::store::lock_channel(c, &d.tenant, &d.device, d.source.channel())
+                    .await?;
+                p.current_request(c).await.map_err(Into::into)
+            }
+            Self::Password(a, p) => {
+                let r = request(c, p.tenant_id(), a.id).await?;
+                current(&r, a, p)?;
+                Ok(r)
+            }
+        }
+    }
+    fn check_live(&self) -> Result<(), Error> {
+        match self {
+            Self::Native(p) => p.check_live().map_err(Into::into),
+            Self::Password(a, p) => a.authorize(p).map_err(Into::into),
+        }
+    }
+}
+
 pub struct Intent {
     pub protocol_device: Option<String>,
     pub enrollment_type: EnrollmentType,
@@ -70,25 +116,47 @@ pub(crate) async fn issuance_for_device(
     protocol_device: Option<&str>,
     now: i64,
 ) -> Result<Intent, Error> {
+    issue_intent(
+        database,
+        windows,
+        IssuanceAuthority::Password(auth, proof),
+        input,
+        protocol_device,
+        now,
+    )
+    .await
+}
+pub(crate) async fn issue_intent(
+    database: &crate::Store,
+    windows: &Windows,
+    authority: IssuanceAuthority<'_>,
+    input: (&[u8], EnrollmentType),
+    protocol_device: Option<&str>,
+    now: i64,
+) -> Result<Intent, Error> {
+    let d = authority.coordinates();
     let (csr, enrollment_type) = input;
     if let Some(device) = protocol_device {
         rss_observation::Id::new(device).map_err(|_| Error::Malformed)?;
     }
-    if auth.windows_profile.map(|v| v.as_str()) != Some(enrollment_type.as_str()) {
+    let verified = Csr::verify(csr)?;
+    let mut tx = database.begin(&d.tenant).await?;
+    let row = authority.current(&mut tx).await?;
+    if row
+        .try_get::<Option<String>, _>("windows_profile")
+        .map_err(db)?
+        .as_deref()
+        != Some(enrollment_type.as_str())
+    {
         return Err(Error::Forbidden);
     }
-    let verified = Csr::verify(csr)?;
-    let mut tx = database.begin(proof.tenant_id()).await?;
-    let row = request(&mut tx, proof.tenant_id(), auth.id).await?;
-    current(&row, auth, proof)?;
-    if let Some(old) =
-        crate::enrollment_store::intent(&mut tx, proof.tenant_id(), auth.id.to_string())
-            .await
-            .map_err(db)?
+    if let Some(old) = crate::enrollment_store::intent(&mut tx, &d.tenant, d.id.to_string())
+        .await
+        .map_err(db)?
     {
         let old = intent(old)?;
         if protocol_device
-            .is_some_and(|d| old.protocol_device.as_deref().unwrap_or(&auth.device) != d)
+            .is_some_and(|value| old.protocol_device.as_deref().unwrap_or(&d.device) != value)
             || old.enrollment_type != enrollment_type
             || old.csr != csr
             || old.configuration != windows.configuration
@@ -97,10 +165,10 @@ pub(crate) async fn issuance_for_device(
         }
         return Ok(old);
     }
-    if auth.self_service && protocol_device.is_none() {
+    if row.try_get::<bool, _>("self_service").map_err(db)? && protocol_device.is_none() {
         return Err(Error::Malformed);
     }
-    if auth.state != "pending" {
+    if row.try_get::<String, _>("state").map_err(db)? != "pending" {
         return Err(Error::Conflict);
     }
     let registration = Uuid::new_v4();
@@ -114,16 +182,14 @@ pub(crate) async fn issuance_for_device(
         registration,
         credential: Uuid::new_v4(),
         epoch: Uuid::new_v4(),
-        sealed: windows.protection.seal(
-            proof.tenant_id(),
-            auth.id,
-            &protection::Secrets::generate()?,
-        )?,
+        sealed: windows
+            .protection
+            .seal(&d.tenant, d.id, &protection::Secrets::generate()?)?,
     };
     authorize_profile(
         &mut tx,
         windows,
-        proof.tenant_id(),
+        &d.tenant,
         intent.credential,
         &intent.csr,
         &certificate::IssuanceProfile::decode(&intent.profile)?,
@@ -131,9 +197,9 @@ pub(crate) async fn issuance_for_device(
     .await?;
     crate::enrollment_store::insert_intent(
         &mut tx,
-        proof.tenant_id(),
+        &d.tenant,
         crate::enrollment_store::NewIntent {
-            request: auth.id.to_string(),
+            request: d.id.to_string(),
             protocol_device: intent.protocol_device.as_deref(),
             csr: &intent.csr,
             profile: &intent.profile,
@@ -177,6 +243,35 @@ pub async fn complete_issuance(
     mount: &crate::device::ChannelMount,
     retirement: &dyn rss_mdm_registration_service::Retirement,
 ) -> Result<(), Error> {
+    complete(
+        store,
+        windows,
+        IssuanceAuthority::Password(auth, proof),
+        intent,
+        certificate,
+        audit,
+        now,
+        mount,
+        retirement,
+    )
+    .await
+}
+#[allow(
+    clippy::too_many_arguments,
+    reason = "single pipeline with live authority and immutable issuance evidence"
+)]
+pub(crate) async fn complete(
+    store: &rss_mdm_audit_integration::AuditStore,
+    windows: &Windows,
+    authority: IssuanceAuthority<'_>,
+    intent: &Intent,
+    certificate: &[u8],
+    audit: &RequestAudit,
+    now: i64,
+    mount: &crate::device::ChannelMount,
+    retirement: &dyn rss_mdm_registration_service::Retirement,
+) -> Result<(), Error> {
+    let d = authority.coordinates();
     let profile = certificate::IssuanceProfile::decode(&intent.profile)?;
     let checked = windows.ca.validate_issued(
         &profile,
@@ -185,30 +280,25 @@ pub async fn complete_issuance(
         now,
     )?;
     let credential = mount.credential(checked.fingerprint())?;
-    let digest = crate::enrollment::digest(&(
-        "enrollment_issue",
-        auth.id,
-        &intent.csr,
-        &intent.configuration,
-    ));
+    let digest =
+        crate::enrollment::digest(&("enrollment_issue", d.id, &intent.csr, &intent.configuration));
     let operation = Operation {
-        actor: crate::operations::Actor::from_authorized(proof),
-        key: auth.operation,
+        actor: crate::operations::Actor::from_coordinates(&d),
+        key: d.operation,
         digest: &digest,
     };
     let budget = rss_mdm_audit_integration::budget::AuditBudget::retirement(None);
     let control = budget.control();
     let attempt = store
         .write(
-            TenantId::parse(proof.tenant_id()).map_err(|_| Error::Malformed)?,
+            TenantId::parse(&d.tenant).map_err(|_| Error::Malformed)?,
             &control,
             (
                 store,
                 CompletionInputs {
                     retirement,
                     windows,
-                    auth,
-                    proof,
+                    authority: &authority,
                     intent,
                     certificate,
                     credential: &credential,
@@ -231,13 +321,13 @@ pub async fn complete_issuance(
                         inputs.audit,
                         &format!(
                             "enrollment_issue:{}:{}",
-                            inputs.proof.principal_id(),
-                            inputs.auth.operation
+                            inputs.authority.coordinates().actor,
+                            inputs.authority.coordinates().operation
                         ),
                         inputs.operation.digest.as_bytes(),
                         200,
                         "success",
-                        Some(inputs.auth.id),
+                        Some(inputs.authority.coordinates().id),
                     )
                     .map_err(Error::from)?;
                     store
@@ -260,8 +350,7 @@ pub async fn complete_issuance(
 struct CompletionInputs<'a> {
     retirement: &'a dyn rss_mdm_registration_service::Retirement,
     windows: &'a Windows,
-    auth: &'a Authorization,
-    proof: &'a AuthorizedPrincipal,
+    authority: &'a IssuanceAuthority<'a>,
     intent: &'a Intent,
     certificate: &'a [u8],
     credential: &'a VerifiedChannelCredential,
@@ -276,8 +365,7 @@ async fn complete_on(
     let CompletionInputs {
         retirement,
         windows,
-        auth,
-        proof,
+        authority,
         intent,
         certificate,
         credential,
@@ -286,25 +374,21 @@ async fn complete_on(
         facts,
     } = inputs;
     let windows = *windows;
-    let auth = *auth;
-    let proof = *proof;
+    let authority = *authority;
+    let d = authority.coordinates();
     let intent = *intent;
     let certificate = *certificate;
     let credential = *credential;
     let operation = *operation;
     let audit = *audit;
     let old = crate::operations::replay(tx, operation).await?;
-    let row = request(tx, proof.tenant_id(), auth.id).await?;
-    current(&row, auth, proof)?;
+    let row = authority.current(tx).await?;
     if old.is_some() {
-        crate::enrollment_store::active_windows_enrollment(tx, proof.tenant_id(), auth.id).await?;
-        let old: Vec<u8> = crate::enrollment_store::required_certificate(
-            tx,
-            proof.tenant_id(),
-            auth.id.to_string(),
-        )
-        .await
-        .map_err(db)?;
+        crate::enrollment_store::active_windows_enrollment(tx, &d.tenant, d.id).await?;
+        let old: Vec<u8> =
+            crate::enrollment_store::required_certificate(tx, &d.tenant, d.id.to_string())
+                .await
+                .map_err(db)?;
         if old != certificate {
             return Err(Error::Conflict);
         }
@@ -314,29 +398,42 @@ async fn complete_on(
     if row.try_get::<String, _>("state").map_err(db)? != "pending" {
         return Err(Error::Conflict);
     }
-    let receipt = bind_in(
-        tx,
-        proof,
-        credential,
-        &BindRegistration {
-            operation_id: auth.operation,
-            request_id: auth.id,
-            expected_generation: auth.expected_generation,
-            source: ReportSource::MdmWindows,
-        },
-        auth.device.clone(),
-        [intent.registration, intent.credential, intent.epoch],
-        facts,
-        *retirement,
-    )
-    .await?;
-    let secrets = windows
-        .protection
-        .open(proof.tenant_id(), auth.id, &intent.sealed)?;
+    let receipt = match authority {
+        IssuanceAuthority::Password(_, proof) => {
+            bind_in(
+                tx,
+                proof,
+                credential,
+                &BindRegistration {
+                    operation_id: d.operation,
+                    request_id: d.id,
+                    expected_generation: d.expected_generation,
+                    source: ReportSource::MdmWindows,
+                },
+                d.device.clone(),
+                [intent.registration, intent.credential, intent.epoch],
+                facts,
+                *retirement,
+            )
+            .await?
+        }
+        IssuanceAuthority::Native(admission) => {
+            crate::device::store::bind_native_in(
+                tx,
+                admission,
+                credential,
+                [intent.registration, intent.credential, intent.epoch],
+                facts,
+                *retirement,
+            )
+            .await?
+        }
+    };
+    let secrets = windows.protection.open(&d.tenant, d.id, &intent.sealed)?;
     crate::enrollment_store::insert_certificate(
         tx,
-        proof.tenant_id(),
-        auth.id.to_string(),
+        &d.tenant,
+        d.id.to_string(),
         certificate,
         secrets.server_nonce.as_slice(),
     )
@@ -344,7 +441,7 @@ async fn complete_on(
     .map_err(db)?;
     rss_mdm_pki_service::certificates::record_in(
         tx,
-        proof.tenant_id(),
+        &d.tenant,
         "windows",
         intent.registration,
         &rss_mdm_device_trust::digest(&intent.issuer),
@@ -353,9 +450,14 @@ async fn complete_on(
     .await
     .map_err(|_| Error::Unavailable(Failure::Database))?;
     // Evaluate again after channel/registration lock waits, immediately before committing.
-    crate::enrollment::store::mark_bound_in(tx, proof.tenant_id(), auth).await?;
+    match authority {
+        IssuanceAuthority::Password(auth, _) => {
+            crate::enrollment::store::mark_bound_in(tx, &d.tenant, auth).await?
+        }
+        IssuanceAuthority::Native(p) => p.mark_bound_in(tx).await?,
+    }
     audit.registration(receipt.registration);
-    auth.authorize(proof)?;
+    authority.check_live()?;
     crate::operations::save(
         tx,
         operation,
@@ -392,7 +494,16 @@ pub fn provision(
     auth: &Authorization,
     tenant: &str,
 ) -> Result<Vec<u8>, Error> {
-    let secrets = w.protection.open(tenant, auth.id, &intent.sealed)?;
+    provision_request(w, intent, certificate, auth.id, tenant)
+}
+pub(crate) fn provision_request(
+    w: &Windows,
+    intent: &Intent,
+    certificate: &[u8],
+    request: Uuid,
+    tenant: &str,
+) -> Result<Vec<u8>, Error> {
+    let secrets = w.protection.open(tenant, request, &intent.sealed)?;
     let subject = format!("CN={}", intent.registration);
     // SHA-1 is only the Windows certificate-store address; management authority uses SHA-256.
     let thumbprint = |bytes: &[u8]| -> String {

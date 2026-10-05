@@ -11,6 +11,7 @@ use rss_mdm_registration_service::device::coordinates::Coordinates;
 use serde::Deserialize;
 use std::sync::Arc;
 pub struct Services {
+    pub windows_entra: Option<Arc<rss_mdm_windows_channel::entra::Management>>,
     pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
     pub pki_clock: Arc<dyn rss_mdm_registration_service::agent_pki::Clock>,
     pub agent_enrollment: Option<Arc<rss_mdm_registration_service::agent::Service>>,
@@ -132,6 +133,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
     ));
     let operations = Router::new()
         .merge(crate::agent_enrollment::routes(state.agent_enrollment))
+        .merge(crate::windows_entra::routes(state.windows_entra))
         .merge(crate::execution::routes(state.queries.clone()).with_state(execution))
         .merge(
             crate::planning::policies::http::routes(state.queries.clone())

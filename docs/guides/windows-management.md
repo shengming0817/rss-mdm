@@ -69,3 +69,21 @@ CollectionRun 拥有命令关联、完整性与报告封存。Status 或 Final �
 服务端在已有认证 SyncML 会话中通过 RootCATrustedCertificates CSP 安装完整重叠集合：根进入 Device/Root，中间证书进入 Device/CA。SHA1 只用作 Windows CSP 节点定位；代次、安装回执与证书身份使用 SHA256。每条证书均以关联的 Get 回读 exact DER 确认，分条投递遵守设备消息预算；Add 的成功状态不能代替安装证明。安装完成后才记录对应 trust revision 的回执，允许管理员批准并激活新 issuer。旧 CA 退役后删除其 CSP 节点，并用关联 Get 的 404 确认移除。注册、代际、证书、会话与消息关联继续由原 owner 校验。
 
 签发默认完整 90 天，冻结 CSR/SPKI、注册 CN、issuer 与绝对有效期后才调用 CA；初始、关联注册与续期共用该路径。未知结果只能找回原 CA 的原证书，不重复签发。迁移与管理接口见[安装](../deployment/installation.md#设备-pki-升级)和[运维](../deployment/operations.md#设备-pki-轮换与撤销)。真实 Windows 的 Root/CA 安装、续期和退役需要独立 T3 证据。
+
+## 私有 Entra 原生注册
+
+每个客户部署只绑定一个客户 Entra tenant 和其内部 MDM 应用。`native_protocols.windows.entra` 为可选的严格配置：`provider_id` 指向 Identity 已启用的 Entra provider；`token` 包含 `tenant`、`app_id`、`authorized_clients`、非空 `required_scopes` 和明确的 `device_claim`。Identity provider 的 subject 必须为 `{"kind":"entra","tenant":"客户 tenant UUID"}`，issuer 固定为该租户的 Microsoft v2 issuer，浏览器 scopes 包含 openid、profile。JIT 由 Identity 独立、明确配置，默认禁用；MDM 组织策略不会打开 JIT。浏览器与原生人员身份均使用同一 provider 的 `(tid,oid)`，不使用 sub、email 或 UPN 兜底。
+
+Access token 只接受 Entra v2、RS256、appId audience、明确允许的客户端与 delegated scopes、`idtyp=user`，并验证签名、issuer 和时间。应用需配置 include_user_token optional claim。实际 WSTEP 注册必须有非空设备 UUID claim；TOU 阶段允许缺少该 claim。Token 不创建浏览器会话，也不充当设备证书；续证与管理仍使用已建立的设备证书和现有协议认证。
+
+`GET /api/v1/windows/entra-policy` 与 `PUT` 使用产品浏览器认证及 authorization_read／authorization_write；写入包含 `expectedRevision`、`operationId` 和 `policy`。策略字段为 enabled、allUsers、users（明确的 oid 列表）、termsVersion、allowBackground。缺少策略时默认关闭；组织用户范围、条款版本和非交互注册授权均由 MDM 持有。没有 Graph 查询或隐式 group/scope 推断。
+
+注册监听器提供 `GET /api/v1/windows/entra/terms` 和 `POST`，均使用 Entra Bearer token。GET 返回当前 termsVersion；POST 接收 `{"termsVersion":"版本","accepted":true}`，返回 isAccepted、opaqueBlob、expiresIn。拒绝只返回 isAccepted=false。同意记录绑定 tid、oid、策略 revision，五分钟过期；原生 WSTEP 将 opaqueBlob 放入 EnrollmentData。首次消费绑定一个注册请求及其 CSR／profile，精确重试复用该结果；其它用户、设备或输入不能重用。未携带同意时只有明确启用 allowBackground 的组织策略可以授权用户凭据注册。
+
+原生准入先验证 token 和 MDM 范围、设备及同意，再由 Identity 解析／JIT canonical 账户。它使用独立 windows_entra authority_kind，不持有密码或浏览器会话续接引用；设备身份为 `entra:{tid}:{deviceid}`，客户端 DeviceID 仅是协议描述输入。签发复用同一持久 PKI 意图、回执和设备绑定流程，最终绑定前在无 MDM 锁时重验 Identity，然后在 MDM 事务内重验组织策略。注册期间的撤销或策略版本变化会拒绝完成。
+
+Entra 用户凭据注册保留 canonical 注册用户及组织来源，按 WMD-E06 免个人 Windows MDM 额度，不伪装为 self_service；个人额度为零也不阻止已获组织策略及同意授权的注册。设备归属、组织策略、同意和世代校验仍由共享原生生命周期执行。
+
+本项只提供 TOU 和组织配置后端。Web 页面、原生 TOU 重定向交互与安装引导由 #2633 完成。合成签名／JWKS、真实 HTTPS／PG 的 T2 不证明真实 Entra 或 Windows 注册通过：Settings／OOBE 验收见 #2690，AD／hybrid GPO 第三方兼容性见 #2691；当前只接受用户凭据，不提供 Device Credential、Autopilot 或 Graph compliance。
+
+协议依据：[Microsoft Entra 与 MDM 集成](https://learn.microsoft.com/en-us/windows/client-management/azure-active-directory-integration-with-mdm)、[Access-token claims](https://learn.microsoft.com/en-us/entra/identity-platform/access-token-claims-reference)、[Optional claims](https://learn.microsoft.com/en-us/entra/identity-platform/optional-claims-reference)。Entra 注册使用系统提供的 discovery 地址并跳过 AuthenticationServiceURL；配置 Entra 后 Discovery 明确返回 Federated。生产 verifier 的密钥来源固定为客户租户的 Microsoft 公共 JWKS，不接受自定义 URL、重定向或代理。

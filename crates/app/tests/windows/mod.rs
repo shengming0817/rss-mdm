@@ -9,3 +9,6 @@ mod commands;
 mod issuance;
 
 mod declared;
+
+#[cfg(feature = "integration")]
+mod entra;

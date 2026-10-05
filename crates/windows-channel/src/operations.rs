@@ -103,6 +103,16 @@ pub(crate) struct Operation<'a> {
 }
 
 impl<'a> Actor<'a> {
+    pub(crate) fn from_coordinates(
+        d: &'a rss_mdm_registration_service::enrollment::native::Coordinates,
+    ) -> Self {
+        Self {
+            tenant: &d.tenant,
+            subject: &d.actor,
+            instance: &d.instance,
+        }
+    }
+
     pub(crate) fn from_authorized(
         proof: &'a crate::authorization::context::AuthorizedPrincipal,
     ) -> Self {

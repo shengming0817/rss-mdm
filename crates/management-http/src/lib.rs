@@ -46,3 +46,5 @@ pub mod remote_operations;
 pub mod agent_enrollment;
 
 mod pki;
+
+mod windows_entra;

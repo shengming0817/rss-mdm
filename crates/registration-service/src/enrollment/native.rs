@@ -57,7 +57,15 @@ pub trait OrganizationAuthority: Send + Sync {
     ) -> Pending<'a>;
     fn current<'a>(&'a self, c: &'a mut PgConnection, data: &'a Coordinates) -> Pending<'a>;
 }
+/// The Windows owner must revalidate persisted organization policy in the consuming transaction.
+pub trait EntraPolicyAuthority: Send + Sync {
+    fn current<'a>(&'a self, c: &'a mut PgConnection, coordinates: &'a Coordinates) -> Pending<'a>;
+}
 enum Basis {
+    Entra {
+        proof: rss_mdm_authorization_service::entra::RevalidatedAccount,
+        authority: Arc<dyn EntraPolicyAuthority>,
+    },
     Organization {
         authority: Arc<dyn OrganizationAuthority>,
     },
@@ -143,12 +151,17 @@ impl Admission {
     pub fn check_live(&self) -> Result<(), Error> {
         match &self.basis {
             Basis::Organization { .. } => Ok(()),
+            Basis::Entra { proof, .. } => proof.check_live().map_err(|_| Error::Unauthorized),
             Basis::Password { proof, .. } => proof.check_live().map_err(Into::into),
             Basis::Account { proof, .. } => proof.check_live().map_err(|_| Error::Unauthorized),
         }
     }
     pub fn bind_audit(&self, audit: &RequestAudit) -> Result<(), Error> {
         match &self.basis {
+            Basis::Entra { proof, .. } => {
+                rss_mdm_authorization_service::context::bind_native_audit(proof, audit)
+                    .map_err(Into::into)
+            }
             Basis::Organization { .. } => {
                 if audit.tenant() != self.data.tenant {
                     return Err(Error::Unauthorized);
@@ -164,6 +177,14 @@ impl Admission {
         }
     }
     pub async fn current(&self, c: &mut PgConnection) -> Result<PgRow, Error> {
+        let row = self.current_request(c).await?;
+        if row.try_get::<String, _>("state").map_err(db)? != "pending" {
+            return Err(Error::Conflict);
+        }
+        Ok(row)
+    }
+    /// Binding and exact certificate replay share current authority checks.
+    pub async fn current_request(&self, c: &mut PgConnection) -> Result<PgRow, Error> {
         self.check_live()?;
         if self.is_account() {
             self.revalidate_account_in(c).await?;
@@ -172,8 +193,11 @@ impl Admission {
         if let Basis::Organization { authority } = &self.basis {
             authority.current(c, d).await?;
         }
+        if let Basis::Entra { authority, .. } = &self.basis {
+            authority.current(c, d).await?;
+        }
         let row = request(c, &d.tenant, d.id).await?;
-        if row.try_get::<String, _>("state").map_err(db)? != "pending"
+        if row.try_get::<String, _>("state").map_err(db)? == "cancelled"
             || !row.try_get::<bool, _>("live").map_err(db)?
             || row.try_get::<String, _>("actor").map_err(db)? != d.actor
             || row.try_get::<String, _>("instance").map_err(db)? != d.instance
@@ -186,6 +210,10 @@ impl Admission {
         }
         let kind: String = row.try_get("authority_kind").map_err(db)?;
         match &self.basis {
+            Basis::Entra { .. }
+                if kind == "windows_entra"
+                    && !row.try_get::<bool, _>("self_service").map_err(db)?
+                    && row.try_get::<i64, _>("organization_version").map_err(db)? == d.version => {}
             Basis::Organization { .. }
                 if kind == "apple_ade"
                     && !row.try_get::<bool, _>("self_service").map_err(db)?
@@ -495,4 +523,96 @@ pub async fn organization(
         data,
         basis: Basis::Organization { authority },
     })
+}
+
+/// Only a live Identity account plus the mandatory product policy can create native authority.
+pub async fn entra_in(
+    c: &mut PgConnection,
+    proof: rss_mdm_authorization_service::entra::RevalidatedAccount,
+    authority: Arc<dyn EntraPolicyAuthority>,
+    id: Uuid,
+    policy_version: i64,
+    profile: super::WindowsProfile,
+) -> Result<Admission, Error> {
+    proof.check_live().map_err(|_| Error::Unauthorized)?;
+    let claims = proof.claims().map_err(|_| Error::Unauthorized)?;
+    let device_id = claims.device.ok_or(Error::Unauthorized)?;
+    let device = format!("entra:{}:{}", claims.tenant, device_id);
+    let tenant = proof.account().tenant.to_string();
+    let actor = proof.account().principal.as_uuid().to_string();
+    let instance = proof.instance().to_string();
+    if id.is_nil() || policy_version <= 0 {
+        return Err(Error::Malformed);
+    }
+    // Organization authority uses the shared lifecycle without personal quota locks.
+    crate::device::store::lock_channel(c, &tenant, &device, rss_mdm_inventory::Channel::Mdm)
+        .await?;
+    let old = sqlx::query("SELECT q.id FROM mdm_access.requests q JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE q.tenant_id=$1::uuid AND q.authority_kind='windows_entra' AND g.device=$2 AND q.state<>'cancelled' AND ((q.state='bound' AND EXISTS(SELECT 1 FROM mdm_access.registrations r WHERE r.tenant_id=q.tenant_id AND r.request_id=q.id AND r.state='active' AND r.purpose='primary')) OR (q.state='pending' AND q.expires_at>clock_timestamp())) FOR UPDATE OF q")
+        .bind(&tenant).bind(&device).fetch_optional(&mut *c).await.map_err(db)?;
+    let (id, generation) = if let Some(old) = old {
+        let id: Uuid = old.try_get("id").map_err(db)?;
+        let row = request(c, &tenant, id).await?;
+        if row.try_get::<String, _>("actor").map_err(db)? != actor
+            || row.try_get::<String, _>("instance").map_err(db)? != instance
+            || row.try_get::<i64, _>("organization_version").map_err(db)? != policy_version
+            || row
+                .try_get::<Option<String>, _>("windows_profile")
+                .map_err(db)?
+                .as_deref()
+                != Some(profile.as_str())
+        {
+            return Err(Error::Conflict);
+        }
+        (
+            id,
+            row.try_get::<i64, _>("expected_generation").map_err(db)?,
+        )
+    } else {
+        // Active enrollments use certificate renewal; a new native token cannot replace another owner.
+        let generation: i64 = sqlx::query_scalar("SELECT coalesce(max(generation),0) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel='mdm' AND purpose='primary'")
+            .bind(&tenant).bind(&device).fetch_one(&mut *c).await.map_err(db)?;
+        let grant = Uuid::new_v4();
+        sqlx::query("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,created_at,expires_at) SELECT $1::uuid,$2,$3,$4,$5,'enrollment','consumed',now,now+interval '300 seconds' FROM (SELECT clock_timestamp() AS now) t")
+            .bind(&tenant).bind(grant).bind(&actor).bind(&instance).bind(&device).execute(&mut *c).await.map_err(db)?;
+        sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,authority_kind,grant_id,state,source,expected_generation,issuance_operation,expires_at,self_service,organization_version,windows_profile) VALUES($1::uuid,$2,'windows_entra',$3,'pending','mdm.windows',$4,$2,clock_timestamp()+interval '300 seconds',false,$5,$6)")
+            .bind(&tenant).bind(id).bind(grant).bind(generation).bind(policy_version).bind(profile.as_str()).execute(&mut *c).await.map_err(db)?;
+        (id, generation)
+    };
+    let admission = Admission {
+        data: Coordinates {
+            tenant,
+            id,
+            device,
+            actor,
+            instance,
+            version: policy_version,
+            expected_generation: generation,
+            operation: id,
+            source: ReportSource::MdmWindows,
+        },
+        basis: Basis::Entra { proof, authority },
+    };
+    admission.current_request(c).await?;
+    Ok(admission)
+}
+impl Admission {
+    pub async fn recheck_entra(
+        self,
+        authority: &rss_mdm_authorization_service::entra::EntraAuthority,
+    ) -> Result<Self, Error> {
+        let Self { data, basis } = self;
+        match basis {
+            Basis::Entra {
+                proof,
+                authority: policy,
+            } => Ok(Self {
+                data,
+                basis: Basis::Entra {
+                    proof: rss_mdm_authorization_service::entra::recheck(authority, proof).await?,
+                    authority: policy,
+                },
+            }),
+            _ => Err(Error::Unauthorized),
+        }
+    }
 }
