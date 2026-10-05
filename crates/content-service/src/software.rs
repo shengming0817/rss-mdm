@@ -151,8 +151,20 @@ impl rss_mdm_software_service::agent_packages::Materials for SoftwareContent {
         if manifest.length() > 32768 {
             return Err(Error::Malformed);
         }
-        let installer = self.store.verify(installer).await.map_err(error)?;
-        let file = self.store.verify(manifest).await.map_err(error)?;
+        let mut files = self
+            .store
+            .verify_materials(&[
+                (installer.clone(), crate::StorageClass::Artifact),
+                (manifest.clone(), crate::StorageClass::Artifact),
+            ])
+            .await
+            .map_err(error)?;
+        let file = files
+            .pop()
+            .ok_or(Error::Unavailable(Failure::ContentInvariant))?;
+        let installer = files
+            .pop()
+            .ok_or(Error::Unavailable(Failure::ContentInvariant))?;
         let mut stream = file.stream(0, manifest.length()).await.map_err(error)?;
         let mut bytes = Vec::with_capacity(manifest.length() as usize);
         while let Some(chunk) = stream

@@ -811,7 +811,7 @@ consume(('crates/agent-channel/src/tasks.rs',),
 consume(('crates/windows-channel/src/lib.rs',),
         'windows.enrollment windows.issuance windows.management windows.commands windows.retention windows.limits')
 
-consume(('crates/backend-postgres-support/src/access*', 'crates/*/src/access-contract.json', 'crates/app/src/database.rs'),
+consume(('crates/backend-postgres-support/src/access*', 'crates/*/src/access-contract.json', 'crates/app/src/database.rs', 'crates/flow-service/src/access-admission.sql'),
         ' '.join(name for name, module in MODULES.items() if module.build == APP and module.postgres))
 
 # Shared production configuration has a broad, but real, consumer set. No-PG

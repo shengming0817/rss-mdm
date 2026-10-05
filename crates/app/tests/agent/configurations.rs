@@ -15,7 +15,7 @@ fn profile(windows: bool) -> Value {
     json!({"capabilities":["inventory.collect.v1"],"platform":if windows{"windows"}else{"macos"},"architecture":if windows{"x86_64"}else{"aarch64"},"executionContext":software_execution::context(if windows{software_execution::Platform::Windows}else{software_execution::Platform::MacOs})})
 }
 async fn fixture() -> Result<Fixture> {
-    let f = Fixture::open(false).await?;
+    let f = Fixture::with_peer_and_uploads(None, Some(1)).await?;
     let tenant = [
         "resource_read",
         "resource_write",
@@ -80,16 +80,12 @@ async fn publish(
     } else {
         ("macos", "aarch64", "pkg", "rss-agent.pkg")
     };
-    let bytes = if windows {
-        b"fixed NSIS EXE artifact".as_slice()
-    } else {
-        b"fixed notarized PKG artifact".as_slice()
-    };
+    let bytes = vec![if windows { 0x4e } else { 0x50 }; 128 * 1024 + 3];
     let candidate = serde_json::to_vec(
         &json!({"wireVersion":1,"tenantId":case_tenant(),"target":{"platform":platform,"architecture":architecture},"version":"1+enterprise","origin":"https://mdm.example.test:9445","signingKeys":base["task_signing"]["trusted_keys"],"packaging":if windows{json!({"kind":"nsis_exe","publisher":"RSS Test Publisher","signature_evidence":"external-signed-build:1"})}else{json!({"kind":"macos_pkg","team":"ABCDEFGHIJ","notarization_evidence":"external-notarized-build:1"})}}),
     )?;
     let mut definition =
-        publication_support::private_definition(f.registered["snapshot"].clone(), bytes);
+        publication_support::private_definition(f.registered["snapshot"].clone(), &bytes);
     definition["artifacts"]["candidate"] = json!({"reference":"candidate","length":candidate.len(),"sha256":rss_mdm_resource::Digest::of(&candidate).bytes()});
     definition["behavior"]["kind"] = json!(format);
     if windows {
@@ -114,7 +110,7 @@ async fn publish(
     )
     .await?;
     write(user,&f.router,&path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":platform,"architecture":architecture,"key":"default","declaration":{"kind":"software","definition":definition}}]})).await?;
-    upload(f, user, &id, platform, architecture, "package", bytes).await?;
+    upload(f, user, &id, platform, architecture, "package", &bytes).await?;
     upload(
         f,
         user,
@@ -156,7 +152,7 @@ async fn publish(
     );
     let package: w::configuration::Package = serde_json::from_value(document)?;
     ensure!(
-        package.installer_sha256 == rss_mdm_resource::Digest::of(bytes).bytes()
+        package.installer_sha256 == rss_mdm_resource::Digest::of(&bytes).bytes()
             && package.candidate_sha256 == rss_mdm_resource::Digest::of(&candidate).bytes()
             && package.installer_sha256 != package.candidate_sha256
     );
@@ -333,6 +329,34 @@ impl Tls {
         Ok(receipt)
     }
 }
+async fn enroll(
+    f: &Fixture,
+    tls: &Tls,
+    file: &w::configuration::ConfigurationFile,
+    package: &w::configuration::Package,
+    n: usize,
+) -> Result<String> {
+    let input = exchange(file, package, n)?;
+    let (status, grant) =
+        machine(f, "/api/v1/agent/enroll/configurations/exchange", &input).await?;
+    ensure!(status == StatusCode::OK, "exchange {n} {status} {grant}");
+    ensure!(
+        machine(f, "/api/v1/agent/enroll/configurations/exchange", &input)
+            .await?
+            .1
+            == grant
+    );
+    let request = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"grantId":grant["grantId"],"secret":input.secret,"csr":input.csr,"runtime":input.runtime});
+    let (status, candidate) = machine(f, "/api/v1/agent/enroll/certificates", &request).await?;
+    ensure!(
+        status == StatusCode::OK,
+        "certificate {n} {status} {candidate}"
+    );
+    Ok(tls.activate(&candidate, n).await?["runtime"]["deviceId"]
+        .as_str()
+        .unwrap()
+        .to_owned())
+}
 #[tokio::test]
 #[ignore = "MODULE=agent.configurations: published fixed installers, 21 independent keys and real mTLS HTTP"]
 async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Result<()> {
@@ -346,25 +370,7 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
     let mut devices = std::collections::BTreeSet::new();
     for n in 0..21 {
         let package = if n % 2 == 0 { &windows } else { &macos };
-        let input = exchange(&file, package, n)?;
-        let (status, grant) =
-            machine(&f, "/api/v1/agent/enroll/configurations/exchange", &input).await?;
-        ensure!(status == StatusCode::OK, "exchange {n} {status} {grant}");
-        ensure!(
-            machine(&f, "/api/v1/agent/enroll/configurations/exchange", &input)
-                .await?
-                .1
-                == grant
-        );
-        let request = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"grantId":grant["grantId"],"secret":input.secret,"csr":input.csr,"runtime":input.runtime});
-        let (status, candidate) =
-            machine(&f, "/api/v1/agent/enroll/certificates", &request).await?;
-        ensure!(
-            status == StatusCode::OK,
-            "certificate {n} {status} {candidate}"
-        );
-        let receipt = tls.activate(&candidate, n).await?;
-        ensure!(devices.insert(receipt["runtime"]["deviceId"].as_str().unwrap().to_owned()));
+        ensure!(devices.insert(enroll(&f, &tls, &file, package, n).await?));
     }
     let state = read(&f, &mut user, file.configuration.configuration_id).await?;
     ensure!(state["reserved"] == 0 && state["consumed"] == 21);
@@ -377,6 +383,13 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
         .await?
         .0 == StatusCode::TOO_MANY_REQUESTS
     );
+    let unlimited = configuration(&f, &mut user, json!({"kind":"unlimited"}), None).await?;
+    for n in 21..42 {
+        let package = if n % 2 == 0 { &windows } else { &macos };
+        ensure!(devices.insert(enroll(&f, &tls, &unlimited, package, n).await?));
+    }
+    let state = read(&f, &mut user, unlimited.configuration.configuration_id).await?;
+    ensure!(state["reserved"] == 0 && state["consumed"] == 21);
     let me = user
         .call(
             &f.router,
@@ -385,10 +398,7 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
             None,
         )
         .await?;
-    ensure!(
-        me.0 == StatusCode::OK && me.1["channels"][0]["used"] == 0,
-        "organization counted as self {me:?}"
-    );
+    ensure!(me.0 == StatusCode::OK && me.1["channels"][0]["used"] == 0);
     for device in &devices {
         let responsibility = user
             .call(
@@ -398,25 +408,8 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
                 None,
             )
             .await?;
-        ensure!(
-            responsibility.0 == StatusCode::OK && responsibility.1["user"].is_null(),
-            "organization responsibility {responsibility:?}"
-        );
+        ensure!(responsibility.0 == StatusCode::OK && responsibility.1["user"].is_null());
     }
-    let unlimited = configuration(&f, &mut user, json!({"kind":"unlimited"}), None).await?;
-    for n in 0..21 {
-        ensure!(
-            machine(
-                &f,
-                "/api/v1/agent/enroll/configurations/exchange",
-                &exchange(&unlimited, &macos, n)?
-            )
-            .await?
-            .0 == StatusCode::OK
-        );
-    }
-    let state = read(&f, &mut user, unlimited.configuration.configuration_id).await?;
-    ensure!(state["reserved"] == 21 && state["consumed"] == 0);
     user.call(
         &f.router,
         Method::POST,
@@ -429,7 +422,7 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
     .await?;
     let live:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND channel='agent' AND state='active'").bind(case_tenant()).fetch_one(&mut *authority.access.begin(case_tenant()).await?).await?;
     ensure!(
-        live == 21,
+        live == 42,
         "configuration revoke deactivated existing devices"
     );
     ensure!(tls.owner.shutdown().join().await?.is_clean());
@@ -899,5 +892,41 @@ async fn backend_settings_are_the_only_grant_lifetime_authority() -> Result<()> 
             .0
             == StatusCode::FORBIDDEN
     );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "MODULE=agent.configurations: expired unpolled download releases shared Content capacity"]
+async fn expired_unpolled_download_releases_capacity() -> Result<()> {
+    use futures::StreamExt;
+    let f = fixture().await?;
+    let mut user = f.user.clone();
+    let package = publish(&f, &mut user, true).await?;
+    let artifact = rss_mdm_resource::SoftwareArtifact {
+        reference: "package".into(),
+        origin: None,
+        length: package.length,
+        sha256: package.installer_sha256,
+    }
+    .artifact()?;
+    let mut bounded = f.content.as_ref().unwrap().as_ref().clone();
+    bounded.config.transfer_seconds = 1;
+    let bounded = Arc::new(bounded);
+    let file = bounded.verify(&artifact).await?;
+    let mut body = file.stream(0, artifact.length()).await?;
+    ensure!(body.next().await.transpose()?.is_some());
+    ensure!(matches!(
+        bounded.verify(&artifact).await,
+        Err(rss_mdm_content_service::Error::Conflict)
+    ));
+    // Leave the response stream alive but do not poll it, as with a stalled HTTP writer.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let next = bounded.verify(&artifact).await?;
+    ensure!(next.matches(&artifact));
+    ensure!(
+        body.next().await.transpose().is_err(),
+        "expired body resumed reading"
+    );
+    drop(next);
     Ok(())
 }
