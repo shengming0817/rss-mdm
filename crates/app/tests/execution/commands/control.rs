@@ -247,7 +247,35 @@ async fn fixed_controls_preserve_uncertainty_and_retire_old_authority() -> anyho
     let pending = Uuid::new_v4();
     ensure!(client.call(Method::POST,"",Some(json!({"operationId":pending,"deadline":host.app.clock.unix_seconds()?+300,"action":{"kind":"restart"}}))).await?.0==StatusCode::ACCEPTED);
     sqlx::query("UPDATE mdm_commands.operations SET approval=(approval-'action'-'confirmation')||'{\"kind\":\"user\"}'::jsonb WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(pending).execute(&mut pg).await?;
-    client.publish_operation(pending).await?;
+    // Run the execution owner's recovery, which retires unstarted legacy authority.
+    // The gateway publication helper alone does not apply that business rule.
+    let timer = rss_mdm_execution_service::recovery::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(2), &cancel);
+    let policy = rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
+        concurrency: 1,
+        lease_ttl: Duration::from_secs(10),
+        attempt_timeout: Duration::from_secs(1),
+        scan_interval: Duration::from_millis(100),
+        idle_scan_interval: Duration::from_millis(100),
+        initial_backoff: Duration::from_millis(100),
+        max_backoff: Duration::from_secs(1),
+        max_attempts: 3,
+    })?;
+    let recovery = client
+        .app
+        .execution
+        .run_recovery(
+            &rss_mdm_execution_service::recovery_scope(client.app.identity.tenant),
+            policy,
+            &control,
+            &tokio::sync::Notify::new(),
+        )
+        .await?;
+    ensure!(
+        recovery.execution_failed == 0 && recovery.suspended == 0,
+        "{recovery:?}"
+    );
     ensure!(
         client
             .call(Method::GET, &format!("/{pending}"), None)

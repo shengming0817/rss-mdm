@@ -732,8 +732,10 @@ async fn user_asset(
     crate::test_support::planning_http::native_configuration_resource(&mut f.browser,&f.router,configuration,"macos","aarch64",json!({"target":{"kind":"user","userId":Uuid::from_u128(27)},"apply":task,"remove":ddm::task(vec![],vec![])})).await?;
     let scope = Uuid::new_v4();
     f.policy_post(&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":device}],"limitations":null,"exclusions":[]}})).await?;
+    // Retain keeps the asset authorized while renewal refreshes Scope authority.
+    // Browser logout still invalidates its separate account bearer.
     let policy = Uuid::new_v4();
-    f.policy_post(&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"configuration","resource":{"id":configuration,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"exit":"remove"}}})).await?;
+    f.policy_post(&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"configuration","resource":{"id":configuration,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"exit":"retain"}}})).await?;
     f.policy_operation(policy).await?;
     let (id, _) = peer.next("DeviceInformation").await?;
     let next = peer
