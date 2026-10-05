@@ -88,6 +88,24 @@ impl ExecutionService {
         let auth = storage::authorized_native(tx, proof, device, &[action.permission()]).await?;
         storage::lock(tx, &format!("request:{}", input.operation_id)).await?;
         storage::lock(tx, device).await?;
+        let fingerprint = create_fingerprint(self, proof, device, input)?;
+        if let Some(value) = replay(tx, input.operation_id, &fingerprint, audit).await? {
+            audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
+            let fact = Fact::business(
+                audit,
+                &format!(
+                    "command:{}:{}:accept",
+                    audit.snapshot().actor.ok_or(Error::Malformed)?,
+                    input.operation_id
+                ),
+                &fingerprint,
+                202,
+                "success",
+                None,
+            )?;
+            self.audit_store.append_in(tx, &fact, true).await?;
+            return Ok(value);
+        }
         input.validate(storage::now(tx).await?)?;
         let (registration, generation) = storage::current_registration(
             tx,
@@ -112,24 +130,6 @@ impl ExecutionService {
         let native = input.native(source)?;
         self.validate_control_in(tx, device, registration, generation, &native, action)
             .await?;
-        let fingerprint = create_fingerprint(self, proof, device, input)?;
-        if let Some(value) = replay(tx, input.operation_id, &fingerprint, audit).await? {
-            audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
-            let fact = Fact::business(
-                audit,
-                &format!(
-                    "command:{}:{}:accept",
-                    audit.snapshot().actor.ok_or(Error::Malformed)?,
-                    input.operation_id
-                ),
-                &fingerprint,
-                202,
-                "success",
-                None,
-            )?;
-            self.audit_store.append_in(tx, &fact, true).await?;
-            return Ok(value);
-        }
         let approval = ExecutionAuthority::for_control(&auth, proof, device, action, confirmation)?;
         let response = self
             .queue_authorized_in(tx, device, &native, approval, fingerprint, audit)

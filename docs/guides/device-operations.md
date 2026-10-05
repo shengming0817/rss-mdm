@@ -55,7 +55,7 @@ Policy 引用精确资源版本/variant；它消费完整操作权限和多对�
 
 ## 历史原生诊断文件
 
-设备创建已退出原生诊断载荷。历史命令的加密输入、回执、诊断制品和审计仍按原来源与权限查询；既有 `GET /api/v3/devices/{device}/operations/{operation}/diagnostic-artifact` 不改变身份、注册世代、授权和保留期检查。退役入口不生成新的日志 trigger、取块或传输执行。已完成的转存事实仍保留，取消不表示设备输出或已下载文件被回滚。
+设备创建已退出原生诊断载荷。历史命令的加密输入、回执、诊断制品和审计仍按原来源与权限查询；既有 `GET /api/v1/devices/{device}/operations/{operation}/diagnostic-artifact` 不改变身份、注册世代、授权和保留期检查。退役入口不生成新的日志 trigger、取块或传输执行。已完成的转存事实仍保留，取消不表示设备输出或已下载文件被回滚。
 
 ## 设备时间线
 

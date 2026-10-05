@@ -149,10 +149,8 @@ pub async fn receive(
         consumed.extend(commands.iter().filter_map(refs));
         let mut run = store::load_on(c, &tenant, id).await?;
         if run.sealed_at.is_some()
-            || !rss_mdm_execution_service::actions::native_collection::delivery_eligible_on(
-                source, c, p, id,
-            )
-            .await?
+            || !rss_mdm_execution_service::actions::native_collection::eligible_on(source, c, p, id)
+                .await?
         {
             continue;
         }

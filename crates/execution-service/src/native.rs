@@ -1113,6 +1113,13 @@ pub async fn replay_on(
             return Err(Error::Forbidden);
         }
     }
+    let collections: Vec<uuid::Uuid> = sqlx::query_scalar("SELECT w.id FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND w.session_id=$3 AND w.request_message=$4 AND r.evidence ? 'nativeTemplate'")
+        .bind(p.tenant().to_string()).bind(p.registration()).bind(m.header.session_id.to_string()).bind(i64::from(m.header.message_id)).fetch_all(&mut *c).await.map_err(db)?;
+    for id in collections {
+        if !crate::actions::native_collection::delivery_eligible_on(source, c, p, id).await? {
+            return Err(Error::Forbidden);
+        }
+    }
     Ok(())
 }
 

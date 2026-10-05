@@ -364,6 +364,20 @@ pub(crate) fn run_count(policy: Uuid) -> Result<String> {
     ))
 }
 
+/// Prepare historical ownership before exercising the current retirement/recovery paths.
+pub(crate) async fn historical_remote_run(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    run: Uuid,
+    parent: Uuid,
+) -> Result<()> {
+    sqlx::query("INSERT INTO mdm_planning.remote_operations(tenant_id,id,resource,resource_version,frozen,snapshot,created_at,deadline,author,staged) SELECT r.tenant_id,$3,p.definition->'action'->'resource'->>'id',p.definition->'action'->'resource'->>'version',v.frozen,jsonb_build_object('kind','devices','devices',jsonb_build_array(r.device)),r.created_at,r.deadline,'{}',true FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND r.id=$2")
+        .bind(tenant).bind(run).bind(parent).execute(&mut *c).await?;
+    sqlx::query("INSERT INTO mdm_planning.remote_operation_targets(tenant_id,operation,device,status,delivery_id) SELECT tenant_id,$3,device,'accepted',id FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(run).bind(parent).execute(&mut *c).await?;
+    sqlx::query("UPDATE mdm_commands.action_runs SET source_kind='remote_operation',remote_operation=$3,policy_version=NULL WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(run).bind(parent).execute(&mut *c).await?;
+    Ok(())
+}
+
 /// Reconstruct a predecessor Remote record from complete production-owned script material.
 /// This fixture writes historical coordinates directly; no current execution entrance invokes it.
 pub(crate) async fn historical_remote(f: &Fixture, task: &Value, parent: Uuid) -> Result<Value> {
@@ -372,12 +386,7 @@ pub(crate) async fn historical_remote(f: &Fixture, task: &Value, parent: Uuid) -
     let mut c =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
-    let frozen:Value=sqlx::query_scalar("SELECT v.frozen FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND r.id=$2").bind(case_tenant()).bind(run).fetch_one(&mut c).await?;
-    let snapshot = json!({"kind":"devices","devices":[case_device_id()]});
-    sqlx::query("INSERT INTO mdm_planning.remote_operations(tenant_id,id,resource,resource_version,frozen,snapshot,created_at,deadline,author,staged) SELECT tenant_id,$2,'historical-script','v1',$3,$4,created_at,deadline,'{}',true FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$5")
-        .bind(case_tenant()).bind(parent).bind(frozen).bind(snapshot).bind(run).execute(&mut c).await?;
-    sqlx::query("INSERT INTO mdm_planning.remote_operation_targets(tenant_id,operation,device,status,delivery_id) VALUES($1::uuid,$2,$3,'accepted',$4)").bind(case_tenant()).bind(parent).bind(case_device_id()).bind(run).execute(&mut c).await?;
-    sqlx::query("UPDATE mdm_commands.action_runs SET source_kind='remote_operation',remote_operation=$3,policy_version=NULL WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(run).bind(parent).execute(&mut c).await?;
+    historical_remote_run(&mut c, case_tenant(), run, parent).await?;
     let config: crate::task_signing::Config =
         serde_json::from_value(f.base["task_signing"].clone())?;
     let signer = crate::task_signing::open(&config)?;

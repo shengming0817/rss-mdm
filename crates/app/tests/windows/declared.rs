@@ -391,53 +391,69 @@ struct MiOperation {
     client: crate::execution::test_support::Client,
     operation: Uuid,
     document: String,
+    workers: Vec<rss_runtime::ShutdownStack>,
 }
 #[cfg(feature = "integration")]
 async fn mi_admit(host: &Host) -> anyhow::Result<MiOperation> {
     use crate::execution::test_support::Client;
-    use axum::http::Method;
     use serde_json::json;
     let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
-    client.set_authorized(false).await?;
+    use crate::execution::test_support::configuration::{change, published, resource_input};
+    let mut grants = crate::test_support::identity::device_grants(
+        None,
+        &[
+            "windows_mi_execute",
+            "configuration_write",
+            "inventory_read",
+            "operation_read",
+            "operation_cancel",
+        ],
+    )?;
+    for operation in [
+        crate::authorization::Permission::ResourceRead,
+        crate::authorization::Permission::ResourceWrite,
+        crate::authorization::Permission::PolicyRead,
+        crate::authorization::Permission::PolicyWrite,
+        crate::authorization::Permission::ScopeRead,
+        crate::authorization::Permission::ScopeWrite,
+    ] {
+        grants.push(crate::authorization::Grant {
+            operation,
+            scope: crate::authorization::Scope::Tenant,
+        });
+    }
+    crate::test_support::identity::set_grants(
+        case_tenant(),
+        crate::test_support::case::admin(),
+        grants,
+    )
+    .await?;
+    let workers = vec![
+        automation(host).await?,
+        client.command_worker(host.notifications.signals.clone())?,
+    ];
     let id = Uuid::new_v4();
     let document = format!(
         r#"<DeclaredConfiguration schema="1.0" context="Device" id="{id}" checksum="immutable-v1" osdefinedscenario="MSFTExtensibilityMIProviderConfig"><DSC namespace="root/test" className="ExampleProvider"><Key name="Name">resource</Key><Value name="Text">sensitive</Value></DSC></DeclaredConfiguration>"#
     );
-    let operation = Uuid::new_v4();
-    let input = json!({"operationId":operation,"inputVersion":"mi-1","deadline":now()+300,"target":{"kind":"device"},"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/DeclaredConfiguration/Host/Complete/Documents/*/Document","instance":[id],"operation":"replace","value":{"type":"xml","value":document}}}}});
-    ensure!(
-        client.call(Method::POST, "", Some(input.clone())).await?.0 == StatusCode::FORBIDDEN,
-        "MI must default deny"
-    );
-    let grants = ["operation_read","operation_cancel","windows_mi_execute"].into_iter().map(|permission| json!({"operation":permission,"scope":{"kind":"device","id":crate::test_support::case::name("tls-device")}})).collect::<Vec<_>>();
-    let value = json!({"subject":{"kind":"user","user":crate::test_support::identity::user(case_tenant(),crate::test_support::case::admin())},"grants":grants});
-    let granted = client
-        .browser
-        .call(
-            &client.router,
-            Method::PUT,
-            &format!("/api/v1/authorization/rules/{}", Uuid::new_v4()),
-            Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"value":value})),
-        )
-        .await?;
-    ensure!(granted.0 == StatusCode::OK, "MI permission: {granted:?}");
-    ensure!(client.call(Method::POST, "", Some(input)).await?.0 == StatusCode::ACCEPTED);
-    ensure!(
-        client
-            .call(
-                Method::POST,
-                &format!("/{operation}/approve"),
-                Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":1}))
-            )
-            .await?
-            .0
-            == StatusCode::OK
-    );
-    client.publish_operation(operation).await?;
+    let task = |operation| json!({"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/DeclaredConfiguration/Host/Complete/Documents/*/Document","instance":[id],"operation":operation,"value":{"type":"xml","value":document}}}});
+    let resource = resource_input(
+        &mut client,
+        json!({"target":{"kind":"device"},"apply":task("replace"),"remove":task("delete")}),
+        &["sensitive"],
+    )
+    .await?;
+    let scope = Uuid::new_v4();
+    change(&mut client,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":crate::test_support::case::name("tls-device")}],"limitations":null,"exclusions":[]}})).await?;
+    let policy = Uuid::new_v4();
+    change(&mut client,&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"configuration","resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"remove"}}})).await?;
+    let operations = published(&mut client, policy).await?;
+    ensure!(operations.len() == 1);
     Ok(MiOperation {
         client,
-        operation,
+        operation: operations[0],
         document,
+        workers,
     })
 }
 #[cfg(feature = "integration")]
@@ -502,6 +518,7 @@ async fn mi_effect(
         mut client,
         operation,
         document,
+        workers,
     } = mi_admit(host).await?;
     let response = mi_dispatch(child, url, initial, authenticated).await?;
     let observed = native::post(child, url, &result_packet(initial, &response, None)).await?;
@@ -544,7 +561,7 @@ async fn mi_effect(
     repeated_completed_summaries(child, url, initial, parent_ack, &document)
         .await
         .context("repeat completed summaries")?;
-    mi_version_changes(
+    let result = mi_version_changes(
         &mut client,
         operation,
         &document,
@@ -553,7 +570,11 @@ async fn mi_effect(
         initial,
         parent_ack,
     )
-    .await
+    .await;
+    for worker in workers {
+        crate::test_support::stop_worker(Some(worker)).await?;
+    }
+    result
 }
 #[cfg(feature = "integration")]
 async fn mi_version_changes(
@@ -1669,12 +1690,15 @@ async fn declared_readiness_has_closed_http_diagnosis_and_primary_remains_availa
     let input = || json!({"operationId":Uuid::new_v4(),"inputVersion":"1","deadline":now()+300,"target":{"kind":"device"},"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/DeclaredConfiguration/Host/Complete/Documents/*/Document","instance":[id],"operation":"replace","value":{"type":"xml","value":document}}}}});
     let missing = client.call(Method::POST, "", Some(input())).await?;
     ensure!(
-        missing.0 == StatusCode::CONFLICT
-            && missing.1["code"] == "windows_declared_enrollment_not_ready",
-        "missing: {missing:?}"
+        missing.0 == StatusCode::BAD_REQUEST,
+        "retired arbitrary MI input: {missing:?}"
     );
-    let ordinary = json!({"operationId":Uuid::new_v4(),"inputVersion":"1","deadline":now()+300,"target":{"kind":"device"},"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/DMClient/Provider/*/ConfigRefresh/Enabled","instance":[host.app.windows()?.channel.provider_id],"operation":"get","value":null}}}});
-    let primary = client.call(Method::POST, "", Some(ordinary)).await?;
+    client
+        .known_windows_capability(crate::test_support::case::name("tls-device"))
+        .await?;
+    let ordinary =
+        || json!({"operationId":Uuid::new_v4(),"deadline":now()+300,"action":{"kind":"restart"}});
+    let primary = client.call(Method::POST, "", Some(ordinary())).await?;
     ensure!(
         primary.0 == StatusCode::ACCEPTED,
         "Primary depended on child: {primary:?}"
@@ -1683,13 +1707,26 @@ async fn declared_readiness_has_closed_http_diagnosis_and_primary_remains_availa
     let certificate = sign_certificate(ca, &parent.intent).await?;
     let child = linked_peer(&host, &parent, &certificate, &host.root.join("device.key")).await?;
     let unready = client.call(Method::POST, "", Some(input())).await?;
-    ensure!(
-        unready.0 == StatusCode::CONFLICT
-            && unready.1["code"] == "windows_declared_enrollment_not_ready",
-        "unready: {unready:?}"
-    );
+    ensure!(unready.0 == StatusCode::BAD_REQUEST);
     authenticate_child(&child.mutual, &child.url, &child.message, &parent.ack).await?;
-    ensure!(client.call(Method::POST, "", Some(input())).await?.0 == StatusCode::ACCEPTED);
+    let primary = client.call(Method::POST, "", Some(ordinary())).await?;
+    ensure!(primary.0 == StatusCode::ACCEPTED);
+    let detail = client
+        .browser
+        .call(
+            &client.router,
+            Method::GET,
+            &format!(
+                "/api/v1/devices/{}",
+                crate::test_support::case::name("tls-device")
+            ),
+            None,
+        )
+        .await?;
+    ensure!(
+        detail.1["primaryMdmRegistration"]["registrationId"]
+            == parent.intent.registration.to_string()
+    );
     host.app
         .devices
         .revoke(
@@ -1701,8 +1738,7 @@ async fn declared_readiness_has_closed_http_diagnosis_and_primary_remains_availa
         .await?;
     let retired = client.call(Method::POST, "", Some(input())).await?;
     ensure!(
-        retired.0 == StatusCode::CONFLICT
-            && retired.1["code"] == "windows_declared_enrollment_not_ready",
+        retired.0 == StatusCode::BAD_REQUEST,
         "parent retirement: {retired:?}"
     );
     host.close().await?;

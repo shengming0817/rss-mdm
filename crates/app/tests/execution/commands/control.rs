@@ -124,6 +124,9 @@ async fn fixed_controls_preserve_uncertainty_and_retire_old_authority() -> anyho
         None,
     )
     .await?;
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
     let mut response = exchange.response.clone();
     let mut seen = std::collections::BTreeSet::new();
     let mut cached_delivery_requests = Vec::new();
@@ -180,15 +183,26 @@ async fn fixed_controls_preserve_uncertainty_and_retire_old_authority() -> anyho
             .any(|c| matches!(c, s::Command::Exec { .. }))
         {
             cached_delivery_requests.push(packet);
+            for c in &response.commands {
+                if let s::Command::Exec { items, .. } = c {
+                    let index =
+                        usize::from(items[0].target.as_deref().unwrap().ends_with("/doWipe"));
+                    let id = ids[index];
+                    // This attempt has reached the peer, but its original ACK has not arrived.
+                    sqlx::query("UPDATE mdm_commands.operations SET approval=(approval-'action'-'confirmation')||'{\"kind\":\"user\"}'::jsonb WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(id).execute(&mut pg).await?;
+                    client.publish_operation(id).await?;
+                    ensure!(
+                        client.call(Method::GET, &format!("/{id}"), None).await?.1["commandStatus"]
+                            == "published"
+                    );
+                }
+            }
         }
         if seen.len() == 2 {
             break;
         }
     }
     ensure!(seen.len() == 2, "fixed native controls missing: {seen:?}");
-    let mut pg =
-        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
-            .await?;
     for id in &ids {
         let read = client.call(Method::GET, &format!("/{id}"), None).await?;
         ensure!(
@@ -196,8 +210,6 @@ async fn fixed_controls_preserve_uncertainty_and_retire_old_authority() -> anyho
                 && read.1["observation"]["effect"] == "unverifiable",
             "ACK claimed effect: {read:?}"
         );
-        // Reconstruct the historical direct authority without altering its sealed input or attempts.
-        sqlx::query("UPDATE mdm_commands.operations SET approval=(approval-'action'-'confirmation')||'{\"kind\":\"user\"}'::jsonb WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(id).execute(&mut pg).await?;
         client.publish_operation(*id).await?;
         ensure!(
             client

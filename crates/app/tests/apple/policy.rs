@@ -32,6 +32,29 @@ impl Fixture {
             if let Some(id)=id {return Ok::<_,anyhow::Error>(id);}tokio::time::sleep(Duration::from_millis(50)).await;
         }}).await?
     }
+    pub(super) async fn policy_worker(&self) -> Result<rss_runtime::ShutdownStack> {
+        let mut owner = rss_runtime::ShutdownStack::try_new(
+            rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
+            Arc::new(crate::lifecycle::RuntimeTimer),
+        )?;
+        let automation = crate::automation::Automation::connect(
+            self.app.flow.planning.clone(),
+            self.app.flow.assets.clone(),
+            self.app.flow.compliance.clone(),
+            crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
+        )
+        .await?;
+        let mut startup = owner.startup()?;
+        startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+            crate::automation::Resource(automation.clone()),
+        ));
+        let mut launch = startup.commit();
+        launch.stage_deferred_task_with_token(
+            automation.registration(self.signals.flow()).critical(),
+        );
+        launch.finish();
+        Ok(owner)
+    }
     pub(super) async fn policy_cycle(&mut self, peer: &lifecycle::Peer) -> Result<()> {
         let mut grants = crate::test_support::identity::device_grants(
             Some(case_device()),
@@ -68,26 +91,7 @@ impl Fixture {
             grants,
         )
         .await?;
-        let mut owner = rss_runtime::ShutdownStack::try_new(
-            rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
-            Arc::new(crate::lifecycle::RuntimeTimer),
-        )?;
-        let automation = crate::automation::Automation::connect(
-            self.app.flow.planning.clone(),
-            self.app.flow.assets.clone(),
-            self.app.flow.compliance.clone(),
-            crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
-        )
-        .await?;
-        let mut startup = owner.startup()?;
-        startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-            crate::automation::Resource(automation.clone()),
-        ));
-        let mut launch = startup.commit();
-        launch.stage_deferred_task_with_token(
-            automation.registration(self.signals.flow()).critical(),
-        );
-        launch.finish();
+        let owner = self.policy_worker().await?;
         let resource = Uuid::new_v4();
         let profile = Uuid::new_v4();
         crate::test_support::planning_http::native_configuration_resource(

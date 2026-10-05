@@ -596,8 +596,6 @@ MODULES['windows.retention'] = replace(MODULES['windows.retention'], db_mode='fr
 MODULES['windows.limits'] = replace(MODULES['windows.limits'], db_mode='reuse', scope='tenant')
 for name in ('apple.collection','apple.scep','apple.commands','apple.users','apple.ddm','apple.status'):
     MODULES[name] = replace(MODULES[name],scope='tenant',fixtures=(*MODULES[name].fixtures,'local_worker'))
-MODULES['apple.ddm'] = replace(MODULES['apple.ddm'], policies=(
-))
 MODULES['apple.profile'] = replace(MODULES['apple.profile'], scope='tenant', fixtures=(*MODULES['apple.profile'].fixtures,'local_worker'))
 MODULES['apple.policy'] = replace(MODULES['apple.policy'], db_mode='reuse', scope='tenant', fixtures=(*MODULES['apple.policy'].fixtures,'local_worker'), policies=(
     CasePolicy('apple::tests::policy::current_approval_and_deadlines', 'reuse', 'tenant'),
@@ -1639,3 +1637,7 @@ consume(('crates/registration-service/src/agent/*','crates/registration-service/
 consume(('crates/execution-service/src/device_control.rs',), 'execution.commands.admission execution.commands.dispatch execution.commands.recovery execution.commands.windows apple.commands apple.policy')
 
 consume(('crates/management-http/src/remote_operations/http.rs',), 'planning.remote')
+
+consume(('crates/execution-service/src/native/outbound.rs',), 'execution.commands.windows')
+
+consume(('crates/app/tests/support/agent_execution.rs',), 'windows.management apple.collection')

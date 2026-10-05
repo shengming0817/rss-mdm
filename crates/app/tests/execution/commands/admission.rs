@@ -612,3 +612,31 @@ impl Client {
         anyhow::bail!("fixture projection did not drain")
     }
 }
+
+#[tokio::test]
+#[ignore = "MODULE=execution.commands.admission: durable acceptance replay outlives admission prerequisites"]
+async fn accepted_receipt_replays_after_deadline_and_capability_removal() -> anyhow::Result<()> {
+    let (host, mut client) = ordinary(rss_device_command_postgres::CommandClock::Postgres).await?;
+    client.set_authorized(true).await?;
+    let request = json!({"operationId":client.operation,"deadline":client.app.clock.unix_seconds()?+2,"action":{"kind":"restart"}});
+    let accepted = client.call(Method::POST, "", Some(request.clone())).await?;
+    ensure!(
+        accepted.0 == StatusCode::ACCEPTED,
+        "short deadline admission: {accepted:?}"
+    );
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    sqlx::query("DELETE FROM mdm_commands.capabilities WHERE tenant_id=$1::uuid")
+        .bind(case_tenant())
+        .execute(&mut pg)
+        .await?;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    ensure!(client.call(Method::POST, "", Some(request.clone())).await? == accepted);
+    let mut changed = request;
+    changed["deadline"] = json!(client.app.clock.unix_seconds()? + 300);
+    ensure!(client.call(Method::POST, "", Some(changed)).await?.0 == StatusCode::CONFLICT);
+    pg.close().await?;
+    host.close().await?;
+    Ok(())
+}

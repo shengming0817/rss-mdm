@@ -605,3 +605,169 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
     host.close().await?;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "MODULE=execution.commands.configuration: historical outgoing frames cannot resume delivery"]
+async fn retired_generic_input_accepts_its_buffer_receipt_without_sending_another_frame()
+-> anyhow::Result<()> {
+    let mut host = crate::windows::test_support::Host::open().await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    let mut grants = crate::test_support::identity::device_grants(
+        None,
+        &[
+            "configuration_write",
+            "inventory_read",
+            "operation_read",
+            "operation_cancel",
+        ],
+    )?;
+    for operation in [
+        crate::authorization::Permission::ResourceRead,
+        crate::authorization::Permission::ResourceWrite,
+        crate::authorization::Permission::PolicyRead,
+        crate::authorization::Permission::PolicyWrite,
+        crate::authorization::Permission::ScopeRead,
+        crate::authorization::Permission::ScopeWrite,
+    ] {
+        grants.push(crate::authorization::Grant {
+            operation,
+            scope: crate::authorization::Scope::Tenant,
+        });
+    }
+    crate::test_support::identity::set_grants(
+        case_tenant(),
+        crate::test_support::case::admin(),
+        grants,
+    )
+    .await?;
+    let automation = crate::automation::Automation::connect(
+        client.app.flow.planning.clone(),
+        client.app.flow.assets.clone(),
+        client.app.flow.compliance.clone(),
+        crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
+    )
+    .await?;
+    let mut owner = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    let mut startup = owner.startup()?;
+    startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+        crate::automation::Resource(automation.clone()),
+    ));
+    let mut launch = startup.commit();
+    launch.stage_deferred_task_with_token(
+        automation
+            .registration(host.notifications.signals.flow())
+            .critical(),
+    );
+    launch.finish();
+    let commands = client.command_worker(host.notifications.signals.clone())?;
+    let warm = native::begin(
+        &peer.mutual,
+        &peer.url,
+        &peer.message,
+        &peer.ack,
+        1980,
+        None,
+    )
+    .await?;
+    ensure!(
+        native::post(
+            &peer.mutual,
+            &peer.url,
+            &native::report(&warm.first, &warm.gets, "10.0.22621.521", 200)
+        )
+        .await?
+        .status()
+            == StatusCode::OK
+    );
+    let data = format!(
+        "<AssessmentsRoot><Assessments><Assessment><TestName>{}</TestName><TestUri>https://example.test</TestUri></Assessment></Assessments></AssessmentsRoot>",
+        "chunk-value-".repeat(1200)
+    );
+    let node = "./Vendor/MSFT/SecureAssessment/Assessments";
+    let task = |remove| json!({"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":node,"instance":[],"operation":if remove{"delete"}else{"replace"},"value":if remove{Value::Null}else{json!({"type":"text","value":data})}}}});
+    let resource = resource_input(
+        &mut client,
+        json!({"target":{"kind":"device"},"apply":task(false),"remove":task(true)}),
+        &["chunk-value-"],
+    )
+    .await?;
+    let scope = Uuid::new_v4();
+    change(&mut client,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}})).await?;
+    let policy = Uuid::new_v4();
+    change(&mut client,&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"configuration","resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"remove"}}})).await?;
+    let ids = published(&mut client, policy).await?;
+    ensure!(ids.len() == 1);
+    let operation = ids[0];
+    let mut initial = peer.message.clone();
+    initial
+        .header
+        .meta
+        .get_or_insert_with(s::Meta::default)
+        .max_message_size = Some(4096);
+    let exchange = native::begin(&peer.mutual, &peer.url, &initial, &peer.ack, 1981, None).await?;
+    let sent = exchange.response;
+    let (id, item) = sent
+        .commands
+        .iter()
+        .find_map(|c| match c {
+            s::Command::Replace { id, items, .. } => Some((*id, &items[0])),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow::anyhow!("no initial outgoing frame"))?;
+    ensure!(item.more_data && !sent.final_message);
+    crate::test_support::stop_worker(Some(owner)).await?;
+    crate::test_support::stop_worker(Some(commands)).await?;
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    // Reconstruct historical direct ownership with real frozen grants; preserve sealed input and attempt bytes.
+    sqlx::query("UPDATE mdm_commands.operations o SET approval=jsonb_build_object('kind','user','required',o.approval->'required','evidence',v.frozen->'grants'->'*'),source_kind='direct',policy_version=NULL FROM mdm_policy.versions v WHERE o.tenant_id=$1::uuid AND o.id=$2 AND (v.tenant_id,v.id)=(o.tenant_id,o.policy_version)").bind(case_tenant()).bind(operation).execute(&mut pg).await?;
+    let mut packet = native::report(&exchange.first, &exchange.gets, "10.0.22621.521", 200);
+    packet.header.message_id = sent.header.message_id + 1;
+    if let s::Command::Status(v) = &mut packet.commands[0] {
+        v.message_ref = sent.header.message_id;
+    }
+    packet.final_message = false;
+    packet.commands.push(s::Command::Status(s::Status {
+        id: 100,
+        message_ref: sent.header.message_id,
+        command_ref: id,
+        command: s::CommandName::Replace,
+        target_refs: vec![item.target.clone().unwrap()],
+        source_refs: vec![],
+        code: 213,
+        items: vec![],
+        challenge: None,
+        credential: None,
+    }));
+    let response = native::post(&peer.mutual, &peer.url, &packet).await?;
+    ensure!(response.status() == StatusCode::OK);
+    let response = s::decode(&response.bytes().await?, &CodecLimits::default())?;
+    ensure!(
+        !response
+            .commands
+            .iter()
+            .any(|c| matches!(c, s::Command::Replace { .. })),
+        "retired input continued outgoing payload"
+    );
+    ensure!(response.commands.iter().any(|c| matches!(
+        c,
+        s::Command::Alert {
+            alert: s::Alert::SessionAbort,
+            ..
+        }
+    )));
+    let (frames,accepted):(i64,bool)=sqlx::query_as("SELECT count(*),bool_and(f.accepted) FROM mdm_commands.attempt_frames f JOIN mdm_commands.attempts a ON(a.tenant_id,a.id)=(f.tenant_id,f.attempt) WHERE a.tenant_id=$1::uuid AND a.operation=$2").bind(case_tenant()).bind(operation).fetch_one(&mut pg).await?;
+    ensure!(
+        frames == 1 && accepted,
+        "original buffer receipt lost or new frame created"
+    );
+    pg.close().await?;
+    host.close().await?;
+    Ok(())
+}

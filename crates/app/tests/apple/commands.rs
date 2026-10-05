@@ -78,6 +78,21 @@ async fn native_controls_are_closed_and_never_claim_effects() -> Result<()> {
             ensure!(payload["ObliterationBehavior"].as_string() == Some("DoNotObliterate"));
             ensure!(!payload.contains_key("PIN"));
         }
+        if kind == "restart" {
+            let mut pg = sqlx::PgConnection::connect_with(&crate::device::test_support::options(
+                "postgres",
+            )?)
+            .await?;
+            sqlx::query("UPDATE mdm_commands.operations SET approval=(approval-'action'-'confirmation')||'{\"kind\":\"user\"}'::jsonb WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(id).execute(&mut pg).await?;
+            let audit = rss_mdm_audit_integration::RequestAudit::new(
+                case_tenant().into(),
+                "management_read",
+            );
+            f.app.execution.recover_operation(id, &audit).await?;
+            audit.finalize(None);
+            ensure!(f.operation(id).await?["commandStatus"] == "published");
+            pg.close().await?;
+        }
         peer.manage("Acknowledged", Some(attempt), None).await?;
         let result = f.operation(id).await?;
         ensure!(
