@@ -27,7 +27,7 @@ pub struct SelfServiceUser {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SelfServiceSubject {
     /// Device credential plus effective device scope; no enterprise session.
-    Device,
+    Device {},
     /// A live enterprise session matched by product authorization.
     User {
         /// Authenticated enterprise coordinates, without a credential.
@@ -37,7 +37,7 @@ pub enum SelfServiceSubject {
 impl SelfServiceSubject {
     fn valid(&self, tenant: Uuid) -> bool {
         match self {
-            Self::Device => true,
+            Self::Device {} => true,
             Self::User { user } => {
                 user.tenant_id == tenant
                     && !user.instance_id.is_nil()
@@ -231,6 +231,8 @@ pub struct SelfServiceDirectoryItem {
     pub policy_revision: u64,
     /// Immutable execution version.
     pub policy_version: Uuid,
+    /// Current qualified subject, rechecked when invoking and before execution.
+    pub subject: SelfServiceSubject,
     /// Normalized presentation and invocation settings.
     pub self_service: SelfServiceMetadata,
     /// Closed task kind and the exact invocation interface.

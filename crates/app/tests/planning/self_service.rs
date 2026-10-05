@@ -1032,6 +1032,37 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
             && employee_directory.1["items"].as_array().unwrap().len() == 4,
         "untrusted IdP/department facts must not match: {employee_directory:?}"
     );
+    let expected_user = json!({"kind":"user","user":{
+        "tenantId":case_tenant(),
+        "instanceId":crate::test_support::identity::INSTANCE,
+        "principalId":f.author_id
+    }});
+    for item in employee_directory.1["items"].as_array().unwrap() {
+        let expected = if item["policyId"] == published[0].0.to_string() {
+            json!({"kind":"device"})
+        } else {
+            expected_user.clone()
+        };
+        ensure!(
+            item["subject"] == expected,
+            "incorrect qualified subject: {item}"
+        );
+    }
+    ensure!(device_directory.1["items"][0]["subject"] == json!({"kind":"device"}));
+    let human_directory = call(
+        &f,
+        Method::GET,
+        "/api/v1/agent/runtime/self-service?source=human",
+        None,
+        true,
+        true,
+    )
+    .await?;
+    ensure!(
+        human_directory.0 == StatusCode::OK
+            && human_directory.1["items"] == employee_directory.1["items"],
+        "caller origin must not change qualified subjects: {human_directory:?}"
+    );
     let stack = worker(&f.base).await?;
     let (device, policy) = &published[0];
     let device_input = request(*device, policy, json!({}));
@@ -1049,6 +1080,10 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
     ensure!(
         device_task["payload"]["authorization"]["subject"]["kind"] == "device"
             && device_task["payload"]["runAs"] == "system"
+    );
+    ensure!(
+        device_task["payload"]["authorization"]["subject"]
+            == device_directory.1["items"][0]["subject"]
     );
     complete(&f.router, &device_task).await?;
     ensure!(
@@ -1078,6 +1113,7 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
         .0 == StatusCode::ACCEPTED
     );
     let grouped = claim(&f.router).await?;
+    ensure!(grouped["payload"]["authorization"]["subject"] == expected_user);
     let mut disabled = group_value.clone();
     disabled["enabled"] = json!(false);
     ensure!(
@@ -1366,6 +1402,18 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
             && directory.1["items"][0]["task"]["runAs"] == "system"
             && directory.1["items"][0]["selfService"]["riskLevel"] == 2
     );
+    let expected_subject = json!({"kind":"user","user":{
+        "tenantId":current["tenantId"],
+        "instanceId":current["instanceId"],
+        "principalId":current["principalId"]
+    }});
+    ensure!(
+        directory.1["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["subject"] == expected_subject)
+    );
     let mut unconfirmed = request(policies[0].0, &policies[0].1, json!({}));
     unconfirmed["confirmed"] = json!(false);
     ensure!(
@@ -1470,6 +1518,7 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
         .1 == accepted.1
     );
     let task = software::claim(&f.router).await?;
+    ensure!(task["payload"]["authorization"]["subject"] == expected_subject);
     ensure!(
         task["payload"]["taskId"] == accepted.1["runId"]
             && task["payload"]["authorization"]["kind"] == "self_service"

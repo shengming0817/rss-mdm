@@ -97,7 +97,7 @@ pub async fn qualify_in(
     basis: &Basis,
 ) -> Result<Option<wire::SelfServiceSubject>> {
     match (config.access.as_ref(), basis) {
-        (Some(Access::Device), Basis::Device) => Ok(Some(wire::SelfServiceSubject::Device)),
+        (Some(Access::Device), Basis::Device) => Ok(Some(wire::SelfServiceSubject::Device {})),
         (Some(Access::AuthenticatedUser | Access::Users { .. }), Basis::User { reference }) => {
             let facts = match service.sessions.recheck(reference).await {
                 Ok(facts) => facts,

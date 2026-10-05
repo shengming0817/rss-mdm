@@ -90,6 +90,10 @@
           "$ref": "#/$defs/SelfServiceMetadata",
           "description": "Normalized presentation and invocation settings."
         },
+        "subject": {
+          "$ref": "#/$defs/SelfServiceSubject",
+          "description": "Current qualified subject, rechecked when invoking and before execution."
+        },
         "task": {
           "$ref": "#/$defs/SelfServiceTask",
           "description": "Closed task kind and the exact invocation interface."
@@ -99,6 +103,7 @@
         "policyId",
         "policyRevision",
         "policyVersion",
+        "subject",
         "selfService",
         "task"
       ],
@@ -164,6 +169,44 @@
         "riskLevel"
       ],
       "type": "object"
+    },
+    "SelfServiceSubject": {
+      "description": "Subject selected by the server's explicit Policy access basis.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Device credential plus effective device scope; no enterprise session.",
+          "properties": {
+            "kind": {
+              "const": "device",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A live enterprise session matched by product authorization.",
+          "properties": {
+            "kind": {
+              "const": "user",
+              "type": "string"
+            },
+            "user": {
+              "$ref": "#/$defs/SelfServiceUser",
+              "description": "Authenticated enterprise coordinates, without a credential."
+            }
+          },
+          "required": [
+            "kind",
+            "user"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "SelfServiceTask": {
       "description": "One directory interface; software does not inherit script parameter semantics.",
@@ -234,6 +277,33 @@
           "type": "object"
         }
       ]
+    },
+    "SelfServiceUser": {
+      "additionalProperties": false,
+      "description": "Authenticated product user; contains no session credential.",
+      "properties": {
+        "instanceId": {
+          "description": "Identity instance.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "principalId": {
+          "description": "Authenticated principal.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "tenantId": {
+          "description": "Product tenant.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenantId",
+        "instanceId",
+        "principalId"
+      ],
+      "type": "object"
     },
     "SoftwareExecutionTarget": {
       "description": "Concrete effect target bound before an Offer is signed.",

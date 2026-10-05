@@ -327,7 +327,7 @@ fn bind(
 }
 fn actor(p: &DevicePrincipal, subject: &wire::SelfServiceSubject) -> String {
     let subject = match subject {
-        wire::SelfServiceSubject::Device => "device".into(),
+        wire::SelfServiceSubject::Device {} => "device".into(),
         wire::SelfServiceSubject::User { user } => {
             format!("{}:{}", user.instance_id, user.principal_id)
         }
@@ -340,7 +340,7 @@ fn actor(p: &DevicePrincipal, subject: &wire::SelfServiceSubject) -> String {
 }
 fn owns(subject: &wire::SelfServiceSubject, proof: Option<&AuthorizedPrincipal>) -> bool {
     match subject {
-        wire::SelfServiceSubject::Device => true,
+        wire::SelfServiceSubject::Device {} => true,
         wire::SelfServiceSubject::User { user } => proof.is_some_and(|proof| {
             proof.instance_id() == user.instance_id.to_string()
                 && proof.principal_id() == user.principal_id.to_string()
@@ -373,11 +373,11 @@ impl ExecutionService {
                 let Some(config) = policy.definition.self_service.as_ref() else { continue; };
                 if !policy.enabled || !config.published || (input.source == wire::SelfServiceCaller::Ai && config.allow_ai != Some(true)) { continue; }
                 let Some(basis) = access::select(config, proof)? else { continue; };
-                if access::qualify_in(service, tx, config, &basis).await?.is_none() { continue; }
+                let Some(subject) = access::qualify_in(service, tx, config, &basis).await? else { continue; };
                 let plan = db::load_source(&service.policy_reader, tx, db::Source::Policy { version: policy.version }).await?;
                 let Some(prepared) = prepare_in(service, tx, &plan, &target, Uuid::new_v4(), None, now).await? else { continue; };
                 let mut metadata = metadata(config)?; metadata.risk_level = effective_risk(&policy);
-                items.push(wire::SelfServiceDirectoryItem { policy_id: id, policy_revision: policy.revision as u64, policy_version: policy.version, self_service: metadata, task: prepared.task });
+                items.push(wire::SelfServiceDirectoryItem { policy_id: id, policy_revision: policy.revision as u64, policy_version: policy.version, subject, self_service: metadata, task: prepared.task });
             }
             if let Some(proof) = proof { proof.check_live()?; }
             service.audit_store.append_request_in(tx, audit, 200, "success").await?;
@@ -458,7 +458,7 @@ impl ExecutionService {
         run(&self.audit_store, &self.runtime, self.tenant, audit, (self, p, proof, request, audit), |ctx, tx| Box::pin(async move {
             let (service, p, proof, request, audit) = *ctx;
             storage::lock(tx, p.device()).await?; crate::actions::agent::principal(service, tx, p).await?;
-            let mut actors = vec![actor(p, &wire::SelfServiceSubject::Device)];
+            let mut actors = vec![actor(p, &wire::SelfServiceSubject::Device {})];
             if let Some(proof) = proof { actors.insert(0, actor(p, &wire::SelfServiceSubject::User { user: wire::SelfServiceUser { tenant_id: checked_input(Uuid::parse_str(proof.tenant_id()))?, instance_id: checked_input(Uuid::parse_str(proof.instance_id()))?, principal_id: checked_input(Uuid::parse_str(proof.principal_id()))? } })); }
             let tenant = tx.tenant_id().to_string();
             let response: Value = tx.with_connection(move |c| Box::pin(async move { sqlx::query_scalar("SELECT response FROM mdm_commands.action_receipts WHERE tenant_id=$1::uuid AND actor=ANY($2) AND id=$3 ORDER BY array_position($2,actor) LIMIT 1").bind(tenant).bind(actors).bind(request).fetch_optional(c).await })).await?.ok_or(Error::NotFound)?;

@@ -196,7 +196,7 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
     assert!(self_service.validate().is_err());
     self_service.authorization = TaskAuthorization::SelfService {
         request_id: id,
-        subject: SelfServiceSubject::Device,
+        subject: SelfServiceSubject::Device {},
         source: SelfServiceCaller::Human,
         policy_id: id,
         policy_revision: 1,
@@ -629,6 +629,51 @@ fn software_support_is_a_closed_format_scope_context_profile() {
             .is_err()
     );
 }
+#[test]
+fn self_service_directory_requires_a_closed_subject() {
+    use rss_mdm_agent_wire::runtime::*;
+    let id = Uuid::new_v4();
+    let schema: serde_json::Value = serde_json::from_str(include_str!(
+        "../schema/runtime/self-service-directory-response-v1.schema.json"
+    ))
+    .unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    for subject in [
+        json!({"kind":"device"}),
+        json!({"kind":"user","user":{"tenantId":id,"instanceId":id,"principalId":id}}),
+    ] {
+        let value = json!({"items":[{
+            "policyId":id,"policyRevision":1,"policyVersion":id,"subject":subject,
+            "selfService":{"published":true,"displayName":"Repair","description":"",
+                "prerequisites":"","sideEffects":"","category":"Support","keywords":[],
+                "allowAi":true,"riskLevel":2},
+            "task":{"kind":"script","resource":{"id":"repair","version":"1","variant":"macos"},
+                "runAs":"system","parameterSources":{},"parameterSchema":{"type":"object"}}
+        }],"nextCursor":null,"asOf":1});
+        assert!(validator.is_valid(&value));
+        let decoded: SelfServiceDirectoryResponse = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), value);
+        let mut missing = value.clone();
+        missing["items"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("subject");
+        assert!(!validator.is_valid(&missing));
+        assert!(serde_json::from_value::<SelfServiceDirectoryResponse>(missing).is_err());
+        for invalid_subject in [
+            serde_json::Value::Null,
+            json!({"kind":"authenticated_user"}),
+            json!({"kind":"user"}),
+            json!({"kind":"device","user":{"tenantId":id,"instanceId":id,"principalId":id}}),
+        ] {
+            let mut invalid = value.clone();
+            invalid["items"][0]["subject"] = invalid_subject;
+            assert!(!validator.is_valid(&invalid));
+            assert!(serde_json::from_value::<SelfServiceDirectoryResponse>(invalid).is_err());
+        }
+    }
+}
+
 #[test]
 fn self_service_schemas_follow_owned_dtos_and_reject_model_authority() {
     use rss_mdm_agent_wire::runtime::*;
