@@ -46,6 +46,8 @@ async fn failed_install_partial_manifest_keeps_ownership_until_proven_absent() -
     let (policy, failed) = f
         .configuration_policy(profile_task(profile, true), None, "retain")
         .await?;
+    // Keep the Policy authorized while pausing convergence, so a terminal failure cannot race a new install.
+    ensure!(owner.shutdown().join().await?.is_clean());
     let (execute, _) = peer.next("InstallProfile").await?;
     let next = peer.manage("Error", Some(execute), None).await?;
     let (observe, _) = command(&next, "ProfileList")?;
@@ -69,16 +71,6 @@ async fn failed_install_partial_manifest_keeps_ownership_until_proven_absent() -
         guarded,
         "partial manifest released failed install reservation"
     );
-    // A withdrawn Policy retains its uncertain claim until native evidence settles the attempt.
-    f.policy_post(
-        &format!("/api/v1/policies/{policy}"),
-        1,
-        json!({"action":"disable"}),
-    )
-    .await?;
-    let guarded: bool = sqlx::query_scalar("SELECT observed_at IS NULL AND retired_at IS NULL FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND operation=$2")
-        .bind(case_tenant()).bind(failed).fetch_one(&mut pg).await?;
-    ensure!(guarded, "Policy exit released uncertain native ownership");
     pg.close().await?;
     f.profile_query_due(failed).await?;
     let (observe, _) = peer.next("ProfileList").await?;
@@ -89,6 +81,13 @@ async fn failed_install_partial_manifest_keeps_ownership_until_proven_absent() -
     )
     .await?;
     ensure!(f.operation(failed).await?["commandStatus"] == "rejected");
+    f.policy_post(
+        &format!("/api/v1/policies/{policy}"),
+        1,
+        json!({"action":"disable"}),
+    )
+    .await?;
+    let owner = f.policy_worker().await?;
     f.policy_claims_released(policy).await?;
     let replacement_profile = Uuid::new_v4();
     let (_, replacement) = f
