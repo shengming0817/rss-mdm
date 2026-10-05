@@ -91,6 +91,7 @@ mod lifecycle;
 pub mod maintenance;
 pub mod migration;
 mod native;
+pub mod tenant_registry;
 #[cfg(test)]
 #[path = "../tests/support/mod.rs"]
 mod test_support;

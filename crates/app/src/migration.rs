@@ -265,45 +265,45 @@ fn units() -> Vec<(&'static str, &'static str)> {
         ),
         ("device-pki-v1", rss_mdm_pki_service::INSTALL_SQL),
         (
-        "self-service-access-v1",
-        include_str!("../schema/self-service-access.sql"),
+            "self-service-access-v1",
+            include_str!("../schema/self-service-access.sql"),
         ),
         (
-        "enrollment-progress-v1",
-        rss_mdm_registration_service::ENROLLMENT_PROGRESS_SQL,
+            "enrollment-progress-v1",
+            rss_mdm_registration_service::ENROLLMENT_PROGRESS_SQL,
         ),
         (
-        "apple-account-authority-v1",
-        rss_mdm_registration_service::APPLE_ACCOUNT_SQL,
+            "apple-account-authority-v1",
+            rss_mdm_registration_service::APPLE_ACCOUNT_SQL,
         ),
         (
-        "apple-account-channel-v1",
-        rss_mdm_apple_channel::ACCOUNT_ENROLLMENT_SQL,
+            "apple-account-channel-v1",
+            rss_mdm_apple_channel::ACCOUNT_ENROLLMENT_SQL,
         ),
         (
-        "registration-agent-configurations-v1",
-        rss_mdm_registration_service::AGENT_CONFIGURATIONS_SQL,
+            "registration-agent-configurations-v1",
+            rss_mdm_registration_service::AGENT_CONFIGURATIONS_SQL,
         ),
         (
-        "software-agent-packages-v1",
-        rss_mdm_software_service::agent_packages::INSTALL_SQL,
+            "software-agent-packages-v1",
+            rss_mdm_software_service::agent_packages::INSTALL_SQL,
         ),
         (
-        "apple-organizations-v1",
-        rss_mdm_apple_channel::ORGANIZATIONS_SQL,
+            "apple-organizations-v1",
+            rss_mdm_apple_channel::ORGANIZATIONS_SQL,
         ),
         (
-        "apple-ade-authority-v1",
-        rss_mdm_registration_service::APPLE_ADE_SQL,
+            "apple-ade-authority-v1",
+            rss_mdm_registration_service::APPLE_ADE_SQL,
         ),
         ("apple-ade-channel-v1", rss_mdm_apple_channel::ADE_SQL),
         (
-        "windows-entra-authority-v1",
-        rss_mdm_registration_service::WINDOWS_ENTRA_SQL,
+            "windows-entra-authority-v1",
+            rss_mdm_registration_service::WINDOWS_ENTRA_SQL,
         ),
         (
-        "windows-entra-channel-v1",
-        rss_mdm_windows_channel::ENTRA_SQL,
+            "windows-entra-channel-v1",
+            rss_mdm_windows_channel::ENTRA_SQL,
         ),
     ]
 }
@@ -326,7 +326,10 @@ async fn migrate_units(
         .await
         .map_err(|_| MigrationError::at("installation", "session setup"))?;
     if !owner_admitted(conn).await? {
-        return Err(MigrationError::at("installation", "mdm_owner admission rejected"));
+        return Err(MigrationError::at(
+            "installation",
+            "mdm_owner admission rejected",
+        ));
     }
     sqlx::query("SELECT pg_advisory_lock(2346)")
         .execute(&mut *conn)
@@ -482,9 +485,25 @@ fn accepted_ledger(
     false
 }
 
+pub(crate) async fn verify_current_manifest(
+    conn: &mut PgConnection,
+) -> std::result::Result<(), sqlx::Error> {
+    let installed: Vec<(String, String, bool)> =
+        sqlx::query_as("SELECT name,digest,complete FROM public.mdm_migrations")
+            .fetch_all(conn)
+            .await?;
+    if installed.is_empty() || !accepted_ledger(&installed, &units()) {
+        return Err(sqlx::Error::Protocol("incomplete installation".into()));
+    }
+    Ok(())
+}
+
 impl AuditMode {
     pub(crate) fn as_str(self) -> &'static str {
-        match self { Self::Plain => "plain", Self::Ledger => "ledger" }
+        match self {
+            Self::Plain => "plain",
+            Self::Ledger => "ledger",
+        }
     }
 }
 /// Database-authenticated installation operator; runtime profiles never inherit it.
@@ -498,11 +517,18 @@ SELECT current_user='mdm_owner' AND session_user='mdm_owner'
 "#).fetch_one(conn).await.map_err(|_| MigrationError::at("installation", "owner probe unavailable"))
 }
 /// The one stable attestation consumed by installer, operator and runtime.
-pub(crate) async fn verify_identity(conn: &mut PgConnection, installation: &Installation) -> std::result::Result<(), sqlx::Error> {
+pub(crate) async fn verify_identity(
+    conn: &mut PgConnection,
+    installation: &Installation,
+) -> std::result::Result<(), sqlx::Error> {
     let matched: bool = sqlx::query_scalar("SELECT count(*)=1 AND coalesce(bool_and(instance_id=$1::uuid AND target=$2 AND lineage=$3 AND audit_mode=$4),false) FROM public.mdm_installation")
         .bind(&installation.instance_id).bind(installation.target.as_slice()).bind(installation.lineage.as_slice()).bind(installation.audit_mode.as_str())
         .fetch_one(conn).await?;
-    if !matched { return Err(sqlx::Error::Protocol("installation identity mismatch".into())); }
+    if !matched {
+        return Err(sqlx::Error::Protocol(
+            "installation identity mismatch".into(),
+        ));
+    }
     Ok(())
 }
 
