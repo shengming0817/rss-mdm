@@ -721,6 +721,10 @@ async fn agent_http(
             length = Some(value.trim().parse::<usize>()?);
         }
     }
+    if status == 204 {
+        anyhow::ensure!(length.is_none_or(|n| n == 0), "204 must have no body");
+        return Ok((status, serde_json::Value::Null));
+    }
     let mut bytes = vec![0; length.ok_or_else(|| anyhow::anyhow!("missing HTTP content-length"))?];
     io.read_exact(&mut bytes).await?;
     Ok((status, serde_json::from_slice(&bytes)?))
@@ -813,6 +817,95 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
         body["code"], "report_not_found",
         "active identity reaches report lookup"
     );
+    let (status, body) =
+        agent_http(&mut anonymous, "GET", "/api/v1/agent/enroll/trust", None).await?;
+    assert_eq!(status, 200);
+    let trust: rss_mdm_agent_wire::pki::Trust = serde_json::from_value(body)?;
+    let ack = rss_mdm_agent_wire::pki::Acknowledgement {
+        operation: Uuid::new_v4(),
+        version: 1,
+        revision: trust.revision,
+        digest: trust.installation_digest(),
+    };
+    let mut tx = host.store.archive_pool().begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_a())
+        .execute(&mut *tx)
+        .await?;
+    let installations = "SELECT count(*) FROM mdm_pki.installations WHERE tenant_id=$1::uuid AND purpose='agent' AND registration=$2";
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(installations)
+            .bind(case_a())
+            .bind(active.runtime.registration_id)
+            .fetch_one(&mut *tx)
+            .await?,
+        0
+    );
+    for (field, value, expected) in [
+        ("version", serde_json::json!(2), 400),
+        ("operation", serde_json::json!(Uuid::nil()), 400),
+        (
+            "operation",
+            serde_json::json!(ack.operation.simple().to_string()),
+            400,
+        ),
+        ("revision", serde_json::json!(0), 400),
+        ("revision", serde_json::json!(i64::MAX as u64 + 1), 400),
+        ("digest", serde_json::json!("A".repeat(64)), 400),
+        ("digest", serde_json::json!("0".repeat(64)), 409),
+        ("purpose", serde_json::json!("agent"), 400),
+    ] {
+        let mut invalid = serde_json::to_value(&ack)?;
+        invalid[field] = value;
+        let (status, _) = agent_http(
+            &mut certified,
+            "POST",
+            "/api/v1/agent/enroll/trust/acknowledgements",
+            Some(invalid),
+        )
+        .await?;
+        assert_eq!(status, expected, "{field}");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(installations)
+                .bind(case_a())
+                .bind(active.runtime.registration_id)
+                .fetch_one(&mut *tx)
+                .await?,
+            0
+        );
+    }
+    for _ in 0..2 {
+        let (status, _) = agent_http(
+            &mut certified,
+            "POST",
+            "/api/v1/agent/enroll/trust/acknowledgements",
+            Some(serde_json::to_value(&ack)?),
+        )
+        .await?;
+        assert_eq!(status, 204, "valid ACK and exact retry");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(installations)
+                .bind(case_a())
+                .bind(active.runtime.registration_id)
+                .fetch_one(&mut *tx)
+                .await?,
+            1
+        );
+    }
+    let service = host.app.agent_enrollment.as_ref().unwrap();
+    let evidence = peer(service.trust(), &chain(&candidate)?, &root()).await?;
+    let mut invalid = ack;
+    invalid.version = 2;
+    assert_eq!(
+        service
+            .acknowledge_trust(&evidence, &invalid, &audit())
+            .await
+            .unwrap_err()
+            .code,
+        wire::ErrorCode::MalformedRequest,
+        "direct Rust ACK is checked before replay"
+    );
+    tx.rollback().await?;
     host.app
         .devices
         .revoke(
@@ -876,6 +969,24 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
         fixture_providers()?,
     );
     let previous = registry.trust(Purpose::Agent)?;
+    for purpose in [Purpose::Windows, Purpose::Apple] {
+        let mut wrong = previous.clone();
+        wrong.purpose = purpose;
+        assert!(wrong.validate().is_ok());
+        assert!(matches!(
+            rss_mdm_device_trust::DeviceTrust::new(wrong, Purpose::Agent, now()),
+            Err(rss_mdm_device_trust::Error::Malformed)
+        ));
+    }
+    let mut duplicate = previous.clone();
+    let mut issuer = duplicate.issuers[0].clone();
+    issuer.mode = Mode::VerifyOnly;
+    duplicate.issuers.push(issuer);
+    assert!(duplicate.validate().is_ok());
+    assert!(matches!(
+        rss_mdm_device_trust::DeviceTrust::new(duplicate, Purpose::Agent, now()),
+        Err(rss_mdm_device_trust::Error::Conflict)
+    ));
     let next_root = PathBuf::from(std::env::var("MDM_AGENT_PKI_CANDIDATE_FIXTURES")?);
     let next: Trust = serde_json::from_slice(&std::fs::read(next_root.join("agent-trust.json"))?)?;
     let new_digest = next.issuers[0].digest.clone();
