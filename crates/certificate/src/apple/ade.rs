@@ -1,5 +1,6 @@
 //! ADE S/MIME and Apple-signed MachineInfo; neither grants a product device principal.
-//! ref: openssl openssl/src/pkcs7.rs@openssl-v0.10.81;
+//! ref: Apple Security SecPolicy.c::SecPolicyCreateiPhoneDeviceCertificate;
+//! openssl openssl/src/pkcs7.rs@openssl-v0.10.81;
 //! Apple devicemanagement/machineinfo and examining-server-tokens.
 use crate::Error;
 use openssl::{
@@ -161,7 +162,7 @@ impl MachineVerifier {
                 .collect::<Result<_, _>>()?,
         })
     }
-    pub fn verify(&self, bytes: &[u8], now: i64) -> Result<MachineInfo, Error> {
+    pub fn verify(&self, bytes: &[u8], _now: i64) -> Result<MachineInfo, Error> {
         if bytes.is_empty() || bytes.len() > 128 * 1024 {
             return Err(Error::Malformed);
         }
@@ -172,23 +173,51 @@ impl MachineVerifier {
         if signers.len() != 1 {
             return Err(Error::Unauthorized);
         }
+        let issuer = signers[0]
+            .issuer_name()
+            .entries_by_nid(openssl::nid::Nid::COMMONNAME)
+            .collect::<Vec<_>>();
+        if issuer.len() != 1 || issuer[0].data().as_slice() != b"Apple iPhone Device CA" {
+            return Err(Error::Unauthorized);
+        }
         let mut store = X509StoreBuilder::new().map_err(invalid)?;
         for root in &self.roots {
             store.add_cert(root.clone()).map_err(invalid)?;
         }
         let mut param = X509VerifyParam::new().map_err(invalid)?;
-        param.set_time(now);
+        // Apple SecPolicyCreateiPhoneDeviceCertificate uses a basic policy
+        // without validity windows for this manufacturing chain. Its Device CA
+        // expired in 2014; SHA-1 / RSA-1024 are limited to this identified chain.
+        param
+            .set_flags(openssl::x509::verify::X509VerifyFlags::NO_CHECK_TIME)
+            .map_err(invalid)?;
+        param.set_auth_level(0);
         // Apple device identity certificates are not email-protection certificates.
         param
             .set_purpose(openssl::x509::X509PurposeId::ANY)
             .map_err(invalid)?;
         param.set_depth(6);
         store.set_param(&param).map_err(invalid)?;
+        let store = store.build();
+        let empty = Stack::new().map_err(invalid)?;
+        let intermediates = signed
+            .signed()
+            .and_then(|data| data.certificates())
+            .ok_or(Error::Unauthorized)?;
+        let mut chain = openssl::x509::X509StoreContext::new().map_err(invalid)?;
+        let valid = chain
+            .init(&store, &signers[0], intermediates, |ctx| {
+                Ok(ctx.verify_cert()? && ctx.chain().is_some_and(|chain| chain.len() == 4))
+            })
+            .map_err(|_| Error::Unauthorized)?;
+        if !valid {
+            return Err(Error::Unauthorized);
+        }
         let mut plain = Vec::new();
         signed
             .verify(
-                Stack::new().map_err(invalid)?.as_ref(),
-                &store.build(),
+                empty.as_ref(),
+                &store,
                 None,
                 Some(&mut plain),
                 Pkcs7Flags::BINARY,

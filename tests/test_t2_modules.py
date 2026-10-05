@@ -9,6 +9,10 @@ from ci_impact import select_inputs, SelectionError
 
 
 class ModuleImpactTests(unittest.TestCase):
+    def test_shared_apple_organization_schema_selects_both_enrollment_consumers(self):
+        selected=select_inputs(['crates/apple-channel/schema/organizations.sql'])
+        self.assertTrue({'apple.ade','apple.account_enrollment'} <= set(selected.modules))
+
     def test_self_service_consumes_trusted_subject_and_session_authority(self):
         for path in ('crates/authorization-service/src/evaluate.rs',
                      'crates/authorization-service/src/session.rs'):

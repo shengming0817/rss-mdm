@@ -387,7 +387,9 @@ pub(super) fn remote_client(
 pub(super) fn remote(error: client::RemoteError) -> Error {
     match error {
         client::RemoteError::Unauthorized => Error::Unauthorized,
-        client::RemoteError::Unknown => Error::CommitUnknown,
+        client::RemoteError::Unknown
+        | client::RemoteError::Throttled
+        | client::RemoteError::Invalid => Error::Unavailable(Failure::AppleAde),
         _ => Error::Conflict,
     }
 }

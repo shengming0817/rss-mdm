@@ -157,6 +157,8 @@ impl Client {
         if self.session.is_empty() {
             self.session().await?;
         }
+        let mutating =
+            matches!(path, "/profile" | "/profile/devices") && method != reqwest::Method::GET;
         for round in 0..2 {
             let mut request = self
                 .http
@@ -172,20 +174,26 @@ impl Client {
                 continue;
             }
             if let Some(s) = response.headers().get("X-ADM-Auth-Session") {
-                let s = s.to_str().map_err(|_| RemoteError::Invalid)?;
+                let s = s.to_str().map_err(|_| {
+                    if mutating {
+                        RemoteError::Unknown
+                    } else {
+                        RemoteError::Invalid
+                    }
+                })?;
                 if s.is_empty() || s.len() > 4096 {
-                    return Err(RemoteError::Invalid);
+                    return Err(if mutating {
+                        RemoteError::Unknown
+                    } else {
+                        RemoteError::Invalid
+                    });
                 }
                 self.session = Zeroizing::new(s.into());
             }
-            let success = response.status().is_success();
+            let status = response.status();
             let result = bounded(response).await;
-            // A write may have committed even if its success receipt cannot be parsed.
-            return if success
-                && method != reqwest::Method::GET
-                && path != "/server/devices"
-                && path != "/devices/sync"
-                && matches!(result, Err(RemoteError::Invalid))
+            // Rejected requests have a definite response; corrupted success receipts do not.
+            return if mutating && status.is_success() && matches!(result, Err(RemoteError::Invalid))
             {
                 Err(RemoteError::Unknown)
             } else {
@@ -202,6 +210,9 @@ async fn bounded(mut response: reqwest::Response) -> Result<Value, RemoteError> 
     }
     if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
         return Err(RemoteError::Throttled);
+    }
+    if status.is_server_error() {
+        return Err(RemoteError::Unknown);
     }
     let mut bytes = Zeroizing::new(Vec::new());
     while let Some(chunk) = response.chunk().await.map_err(|_| RemoteError::Unknown)? {

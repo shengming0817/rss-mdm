@@ -12,6 +12,11 @@ use serde_json::Value;
 use sqlx::Connection;
 
 #[derive(Default)]
+struct Gate {
+    started: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+#[derive(Default)]
 struct Remote {
     organization: Uuid,
     profile: Uuid,
@@ -20,23 +25,74 @@ struct Remote {
     pages: usize,
     assigned: bool,
     lose_profile: bool,
+    lose_assign: bool,
+    details_fail_once: bool,
+    cursor_fail_once: bool,
+    reject_session_once: bool,
+    block: Option<Arc<Gate>>,
+    snapshot_serial: Option<String>,
+    origin: String,
+}
+fn verify_oauth(headers: &HeaderMap, origin: &str) -> Result<bool> {
+    use std::io::Write;
+    let Some(header) = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("OAuth realm=\"ADM\","))
+    else {
+        return Ok(false);
+    };
+    let encoded = header
+        .split(',')
+        .map(|p| p.replacen("=\"", "=", 1).trim_end_matches('"').to_owned())
+        .collect::<Vec<_>>()
+        .join("&");
+    let mut fields = url::form_urlencoded::parse(encoded.as_bytes())
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let Some(signature) = fields.remove("oauth_signature") else {
+        return Ok(false);
+    };
+    if fields.get("oauth_consumer_key").map(String::as_str) != Some("fixture-consumer")
+        || fields.get("oauth_token").map(String::as_str) != Some("fixture-access")
+        || fields.get("oauth_signature_method").map(String::as_str) != Some("HMAC-SHA1")
+    {
+        return Ok(false);
+    }
+    let encode = |s: &str| url::form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>();
+    let parameters = fields
+        .iter()
+        .map(|(k, v)| format!("{}={}", encode(k), encode(v)))
+        .collect::<Vec<_>>()
+        .join("&");
+    let input = format!(
+        "GET&{}&{}",
+        encode(&format!("{origin}/session")),
+        encode(&parameters)
+    );
+    let mut child = std::process::Command::new("openssl")
+        .args([
+            "dgst",
+            "-sha1",
+            "-hmac",
+            "fixture-secret&fixture-access-secret",
+            "-binary",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()?;
+    child.stdin.take().unwrap().write_all(input.as_bytes())?;
+    let signed = child.wait_with_output()?;
+    Ok(signed.status.success() && STANDARD.decode(signature)? == signed.stdout)
 }
 async fn session(
     State(state): State<Arc<tokio::sync::Mutex<Remote>>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let authorized = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| {
-            v.starts_with("OAuth realm=\"ADM\"")
-                && v.contains("oauth_signature=")
-                && v.contains("oauth_signature_method=\"HMAC-SHA1\"")
-        });
-    if !authorized {
+    let mut s = state.lock().await;
+    if !verify_oauth(&headers, &s.origin).unwrap_or(false) {
         return (StatusCode::UNAUTHORIZED, Json(json!({})));
     }
-    let mut s = state.lock().await;
     s.session += 1;
     (
         StatusCode::OK,
@@ -63,16 +119,38 @@ async fn account(
 async fn sync(
     State(state): State<Arc<tokio::sync::Mutex<Remote>>>,
     Json(body): Json<Value>,
-) -> impl IntoResponse {
-    let mut s = state.lock().await;
-    s.pages += 1;
-    let serial = crate::test_support::case::name("ade-serial");
-    if body.get("cursor").is_none() {
-        Json(
-            json!({"devices":[{"serial_number":serial,"device_assigned_date":"2026-10-01T00:00:00Z","profile_uuid":null}],"cursor":"page-1","more_to_follow":true}),
+) -> axum::response::Response {
+    let (serial, profile, gate) = {
+        let mut s = state.lock().await;
+        s.pages += 1;
+        if body.get("cursor").is_some() && s.cursor_fail_once {
+            s.cursor_fail_once = false;
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error_code":"INVALID_CURSOR"})),
+            )
+                .into_response();
+        }
+        (
+            s.snapshot_serial
+                .clone()
+                .unwrap_or_else(|| crate::test_support::case::name("ade-serial").into()),
+            if s.assigned { Some(s.profile) } else { None },
+            if body.get("cursor").is_none() {
+                s.block.take()
+            } else {
+                None
+            },
         )
+    };
+    if let Some(gate) = gate {
+        gate.started.notify_one();
+        gate.release.notified().await;
+    }
+    if body.get("cursor").is_none() {
+        Json(json!({"devices":[{"serial_number":serial,"device_assigned_date":"2026-10-01T00:00:00.123456Z","profile_uuid":profile}],"cursor":"page-1","more_to_follow":true})).into_response()
     } else {
-        Json(json!({"devices":[],"cursor":"page-2","more_to_follow":false}))
+        Json(json!({"devices":[],"cursor":"page-2","more_to_follow":false})).into_response()
     }
 }
 async fn define_profile(
@@ -93,11 +171,18 @@ async fn get_profile(State(state): State<Arc<tokio::sync::Mutex<Remote>>>) -> Js
 async fn assign(
     State(state): State<Arc<tokio::sync::Mutex<Remote>>>,
     Json(body): Json<Value>,
-) -> Json<Value> {
-    state.lock().await.assigned = true;
-    Json(
-        json!({"devices":body["devices"].as_array().unwrap().iter().map(|d|(d.as_str().unwrap().to_owned(),json!("SUCCESS"))).collect::<serde_json::Map<_,_>>()}),
-    )
+) -> axum::response::Response {
+    let mut s = state.lock().await;
+    s.assigned = true;
+    if s.lose_assign {
+        s.lose_assign = false;
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "upstream disconnected after commit",
+        )
+            .into_response();
+    }
+    Json(json!({"devices":body["devices"].as_array().unwrap().iter().map(|d|(d.as_str().unwrap().to_owned(),json!("SUCCESS"))).collect::<serde_json::Map<_,_>>()})).into_response()
 }
 async fn clear(
     State(state): State<Arc<tokio::sync::Mutex<Remote>>>,
@@ -111,11 +196,141 @@ async fn clear(
 async fn details(
     State(state): State<Arc<tokio::sync::Mutex<Remote>>>,
     Json(body): Json<Value>,
-) -> Json<Value> {
-    let s = state.lock().await;
-    Json(
-        json!({"devices":body["devices"].as_array().unwrap().iter().map(|d|(d.as_str().unwrap().to_owned(),json!({"profile_uuid":if s.assigned{Some(s.profile)}else{None}}))).collect::<serde_json::Map<_,_>>()}),
-    )
+) -> axum::response::Response {
+    let mut s = state.lock().await;
+    if s.details_fail_once {
+        s.details_fail_once = false;
+        return (StatusCode::INTERNAL_SERVER_ERROR, "unavailable").into_response();
+    }
+    Json(json!({"devices":body["devices"].as_array().unwrap().iter().map(|d|(d.as_str().unwrap().to_owned(),json!({"profile_uuid":if s.assigned{Some(s.profile)}else{None}}))).collect::<serde_json::Map<_,_>>()})).into_response()
+}
+async fn check_session(
+    State(state): State<Arc<tokio::sync::Mutex<Remote>>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if request.uri().path() != "/session" {
+        let mut s = state.lock().await;
+        if s.reject_session_once {
+            s.reject_session_once = false;
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+        if request
+            .headers()
+            .get("X-Server-Protocol-Version")
+            .and_then(|v| v.to_str().ok())
+            != Some("10")
+            || request
+                .headers()
+                .get("X-ADM-Auth-Session")
+                .and_then(|v| v.to_str().ok())
+                != Some(format!("session-{}", s.session).as_str())
+        {
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+    }
+    next.run(request).await
+}
+/// Four certificates and the historical SHA-1/expired Device CA, matching Apple's
+/// positive device-identity policy. Ordinary profile signers share the root but fail it.
+fn manufacturer(root: &std::path::Path) -> Result<tempfile::TempDir> {
+    let out = tempfile::tempdir()?;
+    let ca_ext = out.path().join("ca.ext");
+    let leaf_ext = out.path().join("leaf.ext");
+    std::fs::write(
+        &ca_ext,
+        "basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\n",
+    )?;
+    std::fs::write(
+        &leaf_ext,
+        "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\n",
+    )?;
+    for (name, cn, parent, parent_key, bits, days, hash) in [
+        (
+            "manufacturing",
+            "Apple iPhone Certification Authority",
+            root.join("apple-root.pem"),
+            root.join("apple-root.key"),
+            "2048",
+            "90",
+            "-sha256",
+        ),
+        (
+            "device-ca",
+            "Apple iPhone Device CA",
+            out.path().join("manufacturing.pem"),
+            out.path().join("manufacturing.key"),
+            "1024",
+            "-1",
+            "-sha1",
+        ),
+        (
+            "machine",
+            "RSS ADE device identity",
+            out.path().join("device-ca.pem"),
+            out.path().join("device-ca.key"),
+            "2048",
+            "30",
+            "-sha256",
+        ),
+    ] {
+        let key = out.path().join(format!("{name}.key"));
+        let csr = out.path().join(format!("{name}.csr"));
+        let cert = out.path().join(format!("{name}.pem"));
+        scep_client::openssl(&[
+            "req".as_ref(),
+            "-new".as_ref(),
+            "-newkey".as_ref(),
+            format!("rsa:{bits}").as_ref(),
+            "-nodes".as_ref(),
+            "-subj".as_ref(),
+            format!("/CN={cn}").as_ref(),
+            "-keyout".as_ref(),
+            key.as_os_str(),
+            "-out".as_ref(),
+            csr.as_os_str(),
+        ])?;
+        scep_client::openssl(&[
+            "x509".as_ref(),
+            "-req".as_ref(),
+            "-in".as_ref(),
+            csr.as_os_str(),
+            "-CA".as_ref(),
+            parent.as_os_str(),
+            "-CAkey".as_ref(),
+            parent_key.as_os_str(),
+            "-set_serial".as_ref(),
+            Uuid::new_v4().as_u128().to_string().as_ref(),
+            "-days".as_ref(),
+            days.as_ref(),
+            hash.as_ref(),
+            "-extfile".as_ref(),
+            if name == "machine" {
+                leaf_ext.as_os_str()
+            } else {
+                ca_ext.as_os_str()
+            },
+            "-out".as_ref(),
+            cert.as_os_str(),
+        ])?;
+    }
+    scep_client::openssl(&[
+        "pkcs8".as_ref(),
+        "-topk8".as_ref(),
+        "-nocrypt".as_ref(),
+        "-in".as_ref(),
+        out.path().join("machine.key").as_os_str(),
+        "-outform".as_ref(),
+        "DER".as_ref(),
+        "-out".as_ref(),
+        out.path().join("machine.pk8").as_os_str(),
+    ])?;
+    let mut chain = std::fs::read(out.path().join("machine.pem"))?;
+    for name in ["device-ca", "manufacturing"] {
+        chain.extend(std::fs::read(out.path().join(format!("{name}.pem")))?);
+    }
+    std::fs::write(out.path().join("machine-chain.pem"), chain)?;
+    Ok(out)
 }
 struct Control {
     f: Fixture,
@@ -123,10 +338,12 @@ struct Control {
     owner: rss_runtime::ShutdownStack,
     organization: Uuid,
     profile: Uuid,
+    manufacturer: tempfile::TempDir,
 }
 impl Control {
     async fn start() -> Result<Self> {
         let root = PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?);
+        let manufacturer = manufacturer(&root)?;
         let organization = Uuid::new_v4();
         let profile = Uuid::new_v4();
         let state = Arc::new(tokio::sync::Mutex::new(Remote {
@@ -142,9 +359,14 @@ impl Control {
             .route("/profile", post(define_profile).get(get_profile))
             .route("/profile/devices", put(assign).delete(clear))
             .route("/devices", post(details))
-            .with_state(state.clone());
+            .with_state(state.clone())
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                check_session,
+            ));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let origin = format!("https://localhost:{}", listener.local_addr()?.port());
+        state.lock().await.origin = origin.clone();
         let endpoint = native::TlsEndpoint {
             listen: listener.local_addr()?,
             origin: origin.clone(),
@@ -213,6 +435,7 @@ impl Control {
             owner,
             organization,
             profile,
+            manufacturer,
         })
     }
     fn path(&self) -> String {
@@ -332,8 +555,8 @@ impl Control {
     }
     fn machine(&self) -> Result<Vec<u8>> {
         let signer = rss_mdm_certificate::apple::ProfileSigner::from_bytes(
-            &std::fs::read(self.f.root.join("apple-profile.pem"))?,
-            &std::fs::read(self.f.root.join("apple-profile.pk8"))?,
+            &std::fs::read(self.manufacturer.path().join("machine-chain.pem"))?,
+            &std::fs::read(self.manufacturer.path().join("machine.pk8"))?,
             self.f.app.clock.unix_seconds()?,
         )?;
         Ok(signer.sign(
@@ -352,6 +575,35 @@ impl Control {
             ]))?,
             self.f.app.clock.unix_seconds()?,
         )?)
+    }
+    fn coordinates(bytes: &[u8]) -> Result<(Uuid, Uuid, String)> {
+        let d = account_enrollment::plist_cms(bytes)?;
+        let e = Uuid::parse_str(d["PayloadUUID"].as_string().unwrap())?;
+        let p = d["PayloadContent"].as_array().unwrap()[0]
+            .as_dictionary()
+            .unwrap();
+        Ok((
+            e,
+            Uuid::parse_str(p["PayloadUUID"].as_string().unwrap())?,
+            p["PayloadContent"].as_dictionary().unwrap()["Challenge"]
+                .as_string()
+                .unwrap()
+                .into(),
+        ))
+    }
+    async fn result(&mut self, op: Uuid) -> Result<Value> {
+        let r = self
+            .f
+            .browser
+            .call(
+                &self.f.router,
+                Method::GET,
+                &format!("{}/operations/{op}", self.path()),
+                None,
+            )
+            .await?;
+        ensure!(r.0 == StatusCode::OK);
+        Ok(r.1)
     }
     async fn enroll(&self, bytes: Vec<u8>) -> Result<(StatusCode, Vec<u8>)> {
         let result = account_enrollment::request(
@@ -379,8 +631,33 @@ impl Control {
 async fn organization_ade_enrolls_without_a_user_or_personal_quota() -> Result<()> {
     let mut c = Control::start().await?;
     c.setup().await?;
+    c.f.browser.operation = Some(Uuid::new_v4());
+    let quota = c
+        .f
+        .browser
+        .call(
+            &c.f.router,
+            Method::PUT,
+            "/api/v1/registration-quotas/defaults",
+            Some(json!({"expectedRevision":0,"limits":{"agent":0,"windows_mdm":0,"macos_mdm":0}})),
+        )
+        .await?;
+    ensure!(quota.0 == StatusCode::OK, "zero personal quota: {quota:?}");
     ensure!(c.enroll(vec![0; 64]).await?.0 != StatusCode::OK);
     let machine = c.machine()?;
+    let ordinary = rss_mdm_certificate::apple::ProfileSigner::from_bytes(
+        &std::fs::read(c.f.root.join("apple-profile.pem"))?,
+        &std::fs::read(c.f.root.join("apple-profile.pk8"))?,
+        c.f.app.clock.unix_seconds()?,
+    )?;
+    let forged = ordinary.sign(
+        &protocol::xml(account_enrollment::plist_cms(&machine)?)?,
+        c.f.app.clock.unix_seconds()?,
+    )?;
+    ensure!(
+        c.enroll(forged).await?.0 != StatusCode::OK,
+        "ordinary same-root signer became a manufacturing identity"
+    );
     let signed = c.enroll(machine.clone()).await?;
     ensure!(
         signed.0 == StatusCode::OK,
@@ -442,13 +719,81 @@ async fn unknown_profile_is_resolved_and_unassignment_revokes_pending_admission(
     let machine = c.machine()?;
     let signed = c.enroll(machine.clone()).await?;
     ensure!(signed.0 == StatusCode::OK);
+    let (old_id, old_attempt, old_challenge) = Control::coordinates(&signed.1)?;
+    let old_device = scep_client::Device::new(old_id, old_attempt, &old_challenge)?;
+    let old_csr = old_device.request(
+        &c.f.root.join("apple-issuer.pem"),
+        &Uuid::new_v4().to_string(),
+        c.f.app.clock.unix_seconds()?,
+    )?;
     c.command(json!({"kind":"clear","devices":[crate::test_support::case::name("ade-serial")]}))
         .await?;
     c.cycle().await?;
     ensure!(
-        c.enroll(machine).await?.0 != StatusCode::OK,
+        c.enroll(machine.clone()).await?.0 != StatusCode::OK,
         "unassigned pending enrollment remained usable"
     );
+    ensure!(
+        old_device
+            .enroll(
+                &c.f.client()?,
+                &c.f.app.apple()?.channel.scep_fixture()?.0,
+                &old_csr
+            )
+            .await
+            .is_err(),
+        "old challenge survived unassignment"
+    );
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let prepared: bool = sqlx::query_scalar(
+        "SELECT state='prepared' FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(case_tenant())
+    .bind(old_attempt)
+    .fetch_one(&mut pg)
+    .await?;
+    ensure!(prepared);
+    sqlx::query("UPDATE mdm_access.requests SET expires_at=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(old_id).execute(&mut pg).await?;
+    c.command(json!({"kind":"assign","profile":c.profile,"revision":1,"devices":[crate::test_support::case::name("ade-serial")]})).await?;
+    c.cycle().await?;
+    let fresh = c.enroll(machine).await?;
+    ensure!(
+        fresh.0 == StatusCode::OK,
+        "expired pending could not be reissued"
+    );
+    let (id, attempt, challenge) = Control::coordinates(&fresh.1)?;
+    ensure!(id != old_id && challenge != old_challenge);
+    let device = scep_client::Device::new(id, attempt, &challenge)?;
+    let csr = device.request(
+        &c.f.root.join("apple-issuer.pem"),
+        &Uuid::new_v4().to_string(),
+        c.f.app.clock.unix_seconds()?,
+    )?;
+    let der = device
+        .enroll(
+            &c.f.client()?,
+            &c.f.app.apple()?.channel.scep_fixture()?.0,
+            &csr,
+        )
+        .await?;
+    c.command(json!({"kind":"clear","devices":[crate::test_support::case::name("ade-serial")]}))
+        .await?;
+    c.cycle().await?;
+    ensure!(
+        c.f.authenticate_peer(&device, &der).await.is_err(),
+        "first binding survived unassignment"
+    );
+    let pending: bool = sqlx::query_scalar(
+        "SELECT state='pending' FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(case_tenant())
+    .bind(id)
+    .fetch_one(&mut pg)
+    .await?;
+    ensure!(pending);
+    pg.close().await?;
     c.state.lock().await.lose_profile = true;
     let op=c.command(json!({"kind":"profile","id":c.profile,"expectedRevision":1,"configuration":{"name":"Resolved ADE","mandatory":true,"removable":true,"skip":[]}})).await?;
     c.cycle().await?;
@@ -476,5 +821,109 @@ async fn unknown_profile_is_resolved_and_unassignment_revokes_pending_admission(
             )
             .await?;
     ensure!(status.1["state"] == "succeeded");
+    c.close().await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=apple.ade: checkpoint, cursor reset, stale HTTP fencing and read-only recovery"]
+async fn interrupted_snapshots_and_unknown_assignment_recover_without_false_publication()
+-> Result<()> {
+    let mut c = Control::start().await?;
+    c.setup().await?;
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let serial = crate::test_support::case::name("ade-serial");
+    let next_serial = crate::test_support::case::name("ade-next-serial");
+    c.state.lock().await.snapshot_serial = Some(next_serial.into());
+    let op = c.command(json!({"kind":"sync","full":true})).await?;
+    c.cycle().await?;
+    let visible:bool=sqlx::query_scalar("SELECT NOT deleted FROM mdm_apple.ade_devices WHERE tenant_id=$1::uuid AND organization=$2 AND serial=$3").bind(case_tenant()).bind(c.organization).bind(serial).fetch_one(&mut pg).await?;
+    ensure!(visible, "incomplete snapshot deleted an existing device");
+    // Discard the worker handle and continue from a newly assembled durable reader.
+    let resumed =
+        crate::api::from_state(c.f.app.clone(), "mdm.example.test".into(), fixture_clock())
+            .apple_control;
+    c.state.lock().await.cursor_fail_once = true;
+    ensure!(rss_mdm_apple_channel::ade::worker::cycle(&resumed).await?);
+    let state = c.result(op).await?;
+    ensure!(state["state"] == "pending" && state["result"]["reason"] == "cursor_reset");
+    sqlx::query(
+        "UPDATE mdm_apple.ade_operations SET next_attempt=0 WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(case_tenant())
+    .bind(op)
+    .execute(&mut pg)
+    .await?;
+    ensure!(rss_mdm_apple_channel::ade::worker::cycle(&resumed).await?);
+    ensure!(rss_mdm_apple_channel::ade::worker::cycle(&resumed).await?);
+    ensure!(c.result(op).await?["state"] == "succeeded");
+    let removed:bool=sqlx::query_scalar("SELECT deleted FROM mdm_apple.ade_devices WHERE tenant_id=$1::uuid AND organization=$2 AND serial=$3").bind(case_tenant()).bind(c.organization).bind(serial).fetch_one(&mut pg).await?;
+    ensure!(removed);
+
+    let gate = Arc::new(Gate::default());
+    {
+        let mut s = c.state.lock().await;
+        s.snapshot_serial = Some(serial.into());
+        s.block = Some(gate.clone());
+        s.reject_session_once = true;
+    }
+    let stale = c.command(json!({"kind":"sync","full":true})).await?;
+    let worker = c.f.ade.clone();
+    let task =
+        tokio::spawn(async move { rss_mdm_apple_channel::ade::worker::cycle(&worker).await });
+    tokio::time::timeout(Duration::from_secs(10), gate.started.notified()).await?;
+    c.f.browser.operation = Some(Uuid::new_v4());
+    let changed=c.f.browser.call(&c.f.router,Method::PUT,&format!("{}/configuration",c.path()),Some(json!({"expectedRevision":1,"enabled":true,"serverUuid":c.organization,"orgId":"T2-organization","rotateKey":false}))).await?;
+    ensure!(
+        changed.0 == StatusCode::OK,
+        "configuration was blocked behind external HTTP"
+    );
+    gate.release.notify_one();
+    ensure!(task.await??);
+    ensure!(c.result(stale).await?["state"] == "superseded");
+    let still_removed:bool=sqlx::query_scalar("SELECT deleted FROM mdm_apple.ade_devices WHERE tenant_id=$1::uuid AND organization=$2 AND serial=$3").bind(case_tenant()).bind(c.organization).bind(serial).fetch_one(&mut pg).await?;
+    ensure!(still_removed, "old HTTP published after authority changed");
+
+    c.command(json!({"kind":"sync","full":true})).await?;
+    c.cycle().await?;
+    c.cycle().await?;
+    c.state.lock().await.lose_assign = true;
+    let assign = c
+        .command(json!({"kind":"assign","profile":c.profile,"revision":1,"devices":[serial]}))
+        .await?;
+    c.cycle().await?;
+    ensure!(
+        c.result(assign).await?["state"] == "unknown",
+        "HTML 500 after effect was treated as definite failure"
+    );
+    c.state.lock().await.details_fail_once = true;
+    let recovery = c
+        .command(json!({"kind":"reconcile","operation":assign}))
+        .await?;
+    c.cycle().await?;
+    ensure!(
+        c.result(recovery).await?["state"] == "pending",
+        "read-only failure made a permanent unknown barrier"
+    );
+    sqlx::query(
+        "UPDATE mdm_apple.ade_operations SET next_attempt=0 WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(case_tenant())
+    .bind(recovery)
+    .execute(&mut pg)
+    .await?;
+    c.cycle().await?;
+    ensure!(
+        c.result(assign).await?["state"] == "succeeded"
+            && c.result(recovery).await?["state"] == "succeeded"
+    );
+    let mut other = c.f.app.access.begin(&Uuid::new_v4().to_string()).await?;
+    let leaked: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_apple.ade_devices")
+        .fetch_one(&mut *other)
+        .await?;
+    ensure!(leaked == 0);
+    other.rollback().await?;
+    pg.close().await?;
     c.close().await
 }

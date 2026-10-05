@@ -306,6 +306,9 @@ async fn perform(
         _ => Err(client::RemoteError::Invalid),
     }
 }
+fn is_write(kind: &str) -> bool {
+    matches!(kind, "profile" | "assign" | "clear")
+}
 async fn finish(
     app: &HttpState,
     tenant: &str,
@@ -325,7 +328,7 @@ async fn finish(
             if !active{return Ok::<_,Error>(false);}
             let (state,value)=if s.try_get::<i64,_>("revision").map_err(db)?!=work.revision || s.try_get::<i64,_>("token_revision").map_err(db)?!=work.token_revision || !s.try_get::<bool,_>("enabled").map_err(db)?{
                 // The external effect may have happened; a newer authority must not consume it.
-                (if work.kind=="sync"{"superseded"}else{"unknown"},json!({"reason":"authority_changed"}))
+                (if is_write(&work.kind){"unknown"}else{"superseded"},json!({"reason":"authority_changed"}))
             }else{match response{
                 Ok(value)=>apply(c,app,tenant,work,value).await?,
                 Err(client::RemoteError::Cursor) if work.kind=="sync"=>{
@@ -339,7 +342,7 @@ async fn finish(
                     ("failed",json!({"reason":"token_invalid"}))
                 }
                 Err(client::RemoteError::Throttled)=>("pending",json!({"reason":"throttled"})),
-                Err(client::RemoteError::Unknown)=> (if work.kind=="sync"{"pending"}else{"unknown"},json!({"reason":"external_outcome_unknown"})),
+                Err(client::RemoteError::Unknown)=> (if is_write(&work.kind){"unknown"}else{"pending"},json!({"reason":"external_outcome_unknown"})),
                 Err(client::RemoteError::Invalid)=>("failed",json!({"reason":"invalid_response"})),
                 Err(client::RemoteError::Cursor)=>("failed",json!({"reason":"invalid_cursor"})),
             }};

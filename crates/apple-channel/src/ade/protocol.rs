@@ -39,14 +39,19 @@ pub async fn enroll(
             let digest=machine.digest().iter().map(|b|format!("{b:02x}")).collect::<String>();
             let old=sqlx::query("SELECT e.* FROM mdm_apple.ade_enrollments e WHERE tenant_id=$1::uuid AND organization=$2 AND udid=$3 AND NOT revoked FOR UPDATE").bind(tenant).bind(organization).bind(machine.udid()).fetch_optional(&mut *c).await.map_err(db)?;
             if let Some(old)=old{
-                if old.try_get::<String,_>("machine_digest").map_err(db)?!=digest || old.try_get::<Uuid,_>("profile_id").map_err(db)?!=profile{return Err(Error::Unauthorized);}
                 let id:Uuid=old.try_get("enrollment").map_err(db)?;
-                authority::require_in(c,tenant,id).await?;
-                let pending:bool=sqlx::query_scalar("SELECT state='pending' AND expires_at>clock_timestamp() FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_one(&mut *c).await.map_err(db)?;
-                if !pending{return Err(Error::Conflict);}
-                let sealed:Vec<u8>=old.try_get("profile").map_err(db)?;
-                let bytes=app.protection.open_bytes(&sealed,&aad(tenant,organization,&id.to_string(),"apple.ade.profile")?).map_err(|_|Error::Conflict)?;
-                return Ok((bytes.expose().to_vec(),id,true));
+                let(state,live):(String,bool)=sqlx::query_as("SELECT state,expires_at>clock_timestamp() FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(tenant).bind(id).fetch_one(&mut *c).await.map_err(db)?;
+                if state=="pending" && !live {
+                    // The old request and challenge have expired; retain them as history.
+                    sqlx::query("UPDATE mdm_apple.ade_enrollments SET revoked=true WHERE tenant_id=$1::uuid AND enrollment=$2").bind(tenant).bind(id).execute(&mut *c).await.map_err(db)?;
+                }else{
+                    if old.try_get::<String,_>("machine_digest").map_err(db)?!=digest || old.try_get::<Uuid,_>("profile_id").map_err(db)?!=profile{return Err(Error::Unauthorized);}
+                    authority::require_in(c,tenant,id).await?;
+                    if state!="pending" || !live{return Err(Error::Conflict);}
+                    let sealed:Vec<u8>=old.try_get("profile").map_err(db)?;
+                    let bytes=app.protection.open_bytes(&sealed,&aad(tenant,organization,&id.to_string(),"apple.ade.profile")?).map_err(|_|Error::Conflict)?;
+                    return Ok((bytes.expose().to_vec(),id,true));
+                }
             }
             let config=authority::issue_row(c,tenant,organization,profile,machine.serial()).await?;
             let id=Uuid::new_v4();let challenge=zeroize::Zeroizing::new(rss_mdm_registration_service::enrollment::random());
