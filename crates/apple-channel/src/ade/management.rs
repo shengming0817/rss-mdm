@@ -170,8 +170,9 @@ pub async fn configure(
             let row=sqlx::query("SELECT * FROM mdm_apple.ade_servers WHERE tenant_id=$1::uuid AND organization=$2 FOR UPDATE").bind(p.tenant_id()).bind(id).fetch_optional(&mut *c).await.map_err(db)?;
             let current=row.as_ref().map(|r|r.try_get::<i64,_>("revision").map_err(db)).transpose()?.unwrap_or(0);
             if current!=input.expected_revision{return Err(Error::Conflict);}
-            if let Some(r)=&row {
-                if r.try_get::<Uuid,_>("server_uuid").map_err(db)?!=input.server_uuid || r.try_get::<String,_>("org_id").map_err(db)?!=input.org_id{return Err(Error::Conflict);}
+            if let Some(r)=&row
+                && (r.try_get::<Uuid,_>("server_uuid").map_err(db)?!=input.server_uuid || r.try_get::<String,_>("org_id").map_err(db)?!=input.org_id){
+                return Err(Error::Conflict);
             }
             let key_id=Uuid::new_v4();
             let sealed=app.protection.seal_bytes(&key.private_key,&aad(p.tenant_id(),id,&key_id.to_string(),"apple.ade.key")?).map_err(|_|Error::Conflict)?;
@@ -419,7 +420,7 @@ pub(super) async fn replay(
         if r.try_get::<String, _>("digest").map_err(db)? != digest {
             return Err(Error::Conflict);
         }
-        Ok(r.try_get::<Value, _>("receipt").map_err(db)?)
+        r.try_get::<Value, _>("receipt").map_err(db)
     })
     .transpose()
 }

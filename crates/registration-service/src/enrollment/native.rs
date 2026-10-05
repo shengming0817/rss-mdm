@@ -470,14 +470,14 @@ pub async fn organization(
     if row.try_get::<String, _>("authority_kind").map_err(db)? != "apple_ade" {
         return Err(Error::Unauthorized);
     }
-    if let Some(challenge) = challenge {
-        if !super::equal(
+    if let Some(challenge) = challenge
+        && !super::equal(
             &row.try_get::<String, _>("organization_challenge")
                 .map_err(db)?,
             &organization_challenge(tenant, id, challenge),
-        ) {
-            return Err(Error::Unauthorized);
-        }
+        )
+    {
+        return Err(Error::Unauthorized);
     }
     let data = Coordinates {
         tenant: tenant.into(),
