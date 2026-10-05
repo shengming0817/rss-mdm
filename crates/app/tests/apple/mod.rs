@@ -4,6 +4,7 @@
 )]
 //! Real Apple mTLS participant and fixed external SCEP provider; no principal or status stubs.
 mod account_enrollment;
+mod ade;
 mod commands;
 mod ddm;
 mod lifecycle;
@@ -47,6 +48,7 @@ struct Fixture {
     signals: Arc<crate::worker_wake::Signals>,
     root: PathBuf,
     lose_notify: Arc<std::sync::atomic::AtomicBool>,
+    ade: Arc<rss_mdm_apple_channel::HttpState>,
 }
 impl Fixture {
     async fn start() -> Result<Self> {
@@ -59,6 +61,14 @@ impl Fixture {
         agent: Option<serde_json::Value>,
         address: Option<std::net::SocketAddr>,
         preserve_authorization: bool,
+    ) -> Result<Self> {
+        Self::with_ade_endpoint(agent, address, preserve_authorization, None).await
+    }
+    async fn with_ade_endpoint(
+        agent: Option<serde_json::Value>,
+        address: Option<std::net::SocketAddr>,
+        preserve_authorization: bool,
+        ade: Option<rss_mdm_apple_channel::ade::Fixture>,
     ) -> Result<Self> {
         let root = PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?);
         let manage =
@@ -184,7 +194,7 @@ impl Fixture {
                 )
             })
             .transpose()?;
-        let apple = Arc::new(Apple::load(
+        let mut apple = Apple::load(
             execution.protection.clone(),
             config.native_protocols.apple.unwrap(),
             crate::clock::SystemClock.unix_seconds()?,
@@ -193,7 +203,15 @@ impl Fixture {
                 .agent_installation
                 .identity(rss_mdm_policy::Platform::Macos)
                 .cloned(),
-        )?);
+        )?;
+        if let Some(ade) = ade {
+            apple.channel = Arc::new(
+                Arc::try_unwrap(apple.channel)
+                    .map_err(|_| anyhow::anyhow!("shared fixture channel"))?
+                    .with_ade_fixture(ade),
+            );
+        }
+        let apple = Arc::new(apple);
         let mut trusts = vec![apple.channel.device_trust().clone()];
         if let Some(a) = &agent_pki {
             trusts.push(a.issuer.trust().trust.clone());
@@ -252,6 +270,7 @@ impl Fixture {
         });
         let native::Routers {
             browser: mut router,
+            apple_control: ade,
             mut listeners,
             ..
         } = crate::api::from_state(app.clone(), "mdm.example.test".into(), monotonic.clone());
@@ -388,6 +407,7 @@ impl Fixture {
             signals,
             root,
             lose_notify,
+            ade,
         })
     }
     async fn profile_query_due(&self, operation: Uuid) -> Result<()> {

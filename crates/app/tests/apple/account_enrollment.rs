@@ -4,7 +4,7 @@ use axum::http::{HeaderMap, header};
 use sqlx::Connection;
 use x509_cert::der::{Decode, asn1::OctetString};
 
-async fn request(
+pub(super) async fn request(
     f: &Fixture,
     method: Method,
     path: &str,
@@ -26,7 +26,7 @@ async fn request(
         axum::body::to_bytes(body, 1024 * 1024).await?.to_vec(),
     ))
 }
-fn cookies(browser: &Browser, flow: Option<&str>) -> String {
+pub(super) fn cookies(browser: &Browser, flow: Option<&str>) -> String {
     let mut values = browser
         .cookies
         .iter()
@@ -100,7 +100,7 @@ fn token(headers: &HeaderMap) -> Result<String> {
         .unwrap()
         .to_owned())
 }
-fn plist_cms(bytes: &[u8]) -> Result<plist::Dictionary> {
+pub(super) fn plist_cms(bytes: &[u8]) -> Result<plist::Dictionary> {
     let cms = cms::content_info::ContentInfo::from_der(bytes)?
         .content
         .decode_as::<cms::signed_data::SignedData>()?;
@@ -124,7 +124,7 @@ async fn configure(f: &mut Fixture, organization: Uuid, name: &str) -> Result<()
     )
     .await?;
     f.browser.operation = Some(Uuid::new_v4());
-    let path = format!("/api/v1/apple/account-enrollment/organizations/{organization}");
+    let path = format!("/api/v1/apple/organizations/{organization}/account-enrollment");
     let input = json!({"expectedRevision":0,"domain":"managed.example.test","serverUuid":organization,"signingKey":"organization","enabled":true});
     let saved = f
         .browser
@@ -587,11 +587,11 @@ async fn account_enrollment_and_reauthentication_keep_one_registration() -> Resu
             == StatusCode::OK
     );
     browser.operation = Some(Uuid::new_v4());
-    let revised=browser.call(&f.router,Method::PUT,&format!("/api/v1/apple/account-enrollment/organizations/{org}/accounts/{name}"),Some(json!({"expectedRevision":1,"principalId":crate::test_support::case::admin(),"instanceId":crate::test_support::INSTANCE,"enabled":true}))).await?;
+    let revised=browser.call(&f.router,Method::PUT,&format!("/api/v1/apple/organizations/{org}/account-enrollment/accounts/{name}"),Some(json!({"expectedRevision":1,"principalId":crate::test_support::case::admin(),"instanceId":crate::test_support::INSTANCE,"enabled":true}))).await?;
     ensure!(revised.0 == StatusCode::OK);
     new_token = recover(&f, &peer, &browser, &new_token, name).await?;
     browser.operation = Some(Uuid::new_v4());
-    let rotated=browser.call(&f.router,Method::PUT,&format!("/api/v1/apple/account-enrollment/organizations/{org}"),Some(json!({"expectedRevision":1,"domain":"managed.example.test","serverUuid":org,"signingKey":"organization","enabled":true}))).await?;
+    let rotated=browser.call(&f.router,Method::PUT,&format!("/api/v1/apple/organizations/{org}/account-enrollment"),Some(json!({"expectedRevision":1,"domain":"managed.example.test","serverUuid":org,"signingKey":"organization","enabled":true}))).await?;
     ensure!(rotated.0 == StatusCode::OK);
     new_token = recover(&f, &peer, &browser, &new_token, name).await?;
     let same:Uuid=sqlx::query_scalar("SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND request_id=$2 AND state='active'").bind(case_tenant()).bind(enrollment).fetch_one(&mut pg).await?;
@@ -604,11 +604,11 @@ async fn account_enrollment_and_reauthentication_keep_one_registration() -> Resu
         "bearer stored plaintext"
     );
     browser.operation = Some(Uuid::new_v4());
-    let disabled=browser.call(&f.router,Method::PUT,&format!("/api/v1/apple/account-enrollment/organizations/{org}/accounts/{name}"),Some(json!({"expectedRevision":2,"principalId":crate::test_support::case::admin(),"instanceId":crate::test_support::INSTANCE,"enabled":false}))).await?;
+    let disabled=browser.call(&f.router,Method::PUT,&format!("/api/v1/apple/organizations/{org}/account-enrollment/accounts/{name}"),Some(json!({"expectedRevision":2,"principalId":crate::test_support::case::admin(),"instanceId":crate::test_support::INSTANCE,"enabled":false}))).await?;
     ensure!(disabled.0 == StatusCode::OK);
     ensure!(user_token(&peer, Some(&new_token)).await?.0 == StatusCode::UNAUTHORIZED);
     browser.operation = Some(Uuid::new_v4());
-    let disabled_organization=browser.call(&f.router,Method::PUT,&format!("/api/v1/apple/account-enrollment/organizations/{org}"),Some(json!({"expectedRevision":2,"domain":"managed.example.test","serverUuid":org,"signingKey":"unavailable-key","enabled":false}))).await?;
+    let disabled_organization=browser.call(&f.router,Method::PUT,&format!("/api/v1/apple/organizations/{org}/account-enrollment"),Some(json!({"expectedRevision":2,"domain":"managed.example.test","serverUuid":org,"signingKey":"unavailable-key","enabled":false}))).await?;
     ensure!(
         disabled_organization.0 == StatusCode::OK,
         "missing signing key prevented disable: {disabled_organization:?}"

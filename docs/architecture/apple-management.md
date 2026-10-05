@@ -2,6 +2,10 @@
 
 产品拥有身份、注册、采集和结果；step-ca 仅负责外部 SCEP 签发，NanoMDM 仅作协议对照。复用 Execution/CollectionRun/Observation/Inventory，避免第二套队列与设备状态权威。
 
+组织身份由 Apple 产品 owner 单源持有，账户驱动与 ADE 各自持有配置和授权。ADE server token 使用独立 RSA/S-MIME 密钥并绑定租户/组织/版本加密；外部 HTTP 不持有业务行锁。ADE journal 仅持有 Apple 控制面操作，现有 runtime 执行每次一页/一效果，不新增设备任务框架。完成时重验 server revision、token revision 和租约；组织内未知外部写必须先只读恢复，不能覆盖或盲目重发。同步页面放入每操作隔离的暂存目录，最终页事务发布并推进 cursor；只有完整全量结果可证明目录缺席。
+
+ADE 原生请求必须通过 Apple 根链/CMS 验证并匹配当前序列号、UDID、profile 分配和新鲜组织目录。注册 authority 固定为 apple_ade 服务主体，pending 事务、SCEP challenge、证书通知与首次 mTLS 都重新检查组织授权。MachineInfo 无 nonce，不把签名解释为防重放证明；实际一次性准入沿用现有 challenge/CSR/注册绑定。成功绑定的设备不依赖 ADE token 持续有效，续期保留冻结的 removal 行为，撤销与退役仍由唯一 registration owner 持有。同步/分配成功、证书签发、首次 check-in 与真实 Setup Assistant/T3 分别记录。
+
 一次性 challenge 先事务提交消费再返回 allow，重复回调不能再次授权。签名模板使用产品授权主题并绑定公钥与 attempt，不信任任意 CSR 主题。通知丢失可由首次匹配的 mTLS 叶证书恢复；签发响应丢失则新授权、新 attempt、新密钥，不能透明重签。
 
 APNs 只是唤醒，不推进命令。关联 ACK 记录接收，完整且认证的 ProfileList 记录产品 Profile 存在性，两者都不能证明 OS 防火墙效果。采集由 CollectionRun 独立关联和封存，不把 DeviceInformation 伪装成状态型命令。

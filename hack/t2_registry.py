@@ -414,6 +414,16 @@ for part in ('cms', 'apns', 'scep', 'collection', 'profile', 'policy', 'onboardi
         tests=(('crates/app/tests/apple/apns.rs',) if part == 'apns' else
                ('crates/app/tests/apple/cms.rs',) if part == 'cms' else (f'crates/app/tests/apple/{part}.rs',)))
 MODULES['apple.cms'] = replace(MODULES['apple.cms'], production_inputs=(*MODULES['apple.cms'].production_inputs, 'crates/certificate/src/apple/account.rs'))
+add('apple.ade', selectors=('apple::tests::ade::',), profile='product',
+    fixtures=('apple','identity','oracle','scep'),
+    sources=('crates/apple-channel/src/ade/*','crates/apple-channel/schema/ade.sql','crates/apple-channel/schema/organizations.sql','crates/apple-channel/src/organizations.rs',
+             'crates/certificate/src/apple/ade.rs','crates/certificate/fixtures/*','crates/registration-service/schema/apple-ade.sql',
+             'crates/registration-service/src/enrollment/native.rs','crates/registration-service/src/enrollment/read.rs',
+             'crates/apple-channel/src/enrollment.rs','crates/apple-channel/src/renewal.rs','crates/apple-channel/src/lib.rs',
+             'crates/apple-channel/src/access-admission.sql','crates/app/src/api.rs','crates/app/src/lifecycle.rs','crates/app/src/enrollment_progress.rs',
+             'crates/apple-mdm/src/profile.rs','crates/execution-service/src/dependencies.json'),
+    support=('crates/app/tests/apple/mod.rs','crates/app/tests/apple/account_enrollment.rs','crates/app/tests/apple/support/scep.rs','crates/app/tests/apple/lifecycle.rs'),
+    tests=('crates/app/tests/apple/ade.rs',))
 add('apple.account_enrollment', selectors=('apple::tests::account_enrollment::',), profile='product',
     fixtures=('apple','identity','oracle','scep'),
     sources=('crates/apple-channel/src/account_enrollment/*', 'crates/apple-channel/schema/account-enrollment.sql',
