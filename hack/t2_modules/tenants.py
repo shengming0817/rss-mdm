@@ -1,4 +1,4 @@
-"""Real CLI registration followed by two same-database, tenant-bound product hosts."""
+"""Real CLI CRUD followed by two same-database, tenant-bound product hosts."""
 from contextlib import ExitStack
 import http.client
 from http.cookies import SimpleCookie
@@ -83,36 +83,69 @@ def execute(fixture):
     database = pool.database_config(root, fixture.database)
     def sql(query):
         return fixture.owner.sql(query, fixture.database).strip()
-    def command(verb, value, *, accepted=True):
+    def command(verb, value, *, accepted=True, reason=None):
         path = private(root / (verb + '.json'), value)
         result = subprocess.run([fixture.binary, verb, '--config', str(path)], cwd=ROOT,
                      pass_fds=lease_fds(), capture_output=True, text=True, timeout=75)
         require((result.returncode == 0) == accepted,
                 'tenant command failed: ' + verb + ': ' + result.stderr)
-        if not accepted:
+        if not accepted and verb == 'serve':
             require('startup.tenant_binding' in result.stderr, 'invalid binding rejected at another stage: ' + result.stderr)
+        if reason is not None:
+            require(reason in result.stderr, 'unexpected tenant failure: ' + result.stderr)
         return json.loads(result.stdout) if result.stdout.strip() else None
     command('migrate', dict(database=database, installation=installation()))
     require(sql('SELECT count(*) FROM public.mdm_tenants') == '0', 'installer seeded a tenant')
-    def register(tenant):
+    def create(tenant):
         request = dict(database=database, installation=installation(), tenant_id=tenant,
                        initial_epoch=1, operation_id=str(uuid.uuid4()))
-        receipt = command('register-tenant', request)
-        require(command('register-tenant', request) == receipt, 'registration replay changed receipt')
+        receipt = command('tenant-create', request)
+        require(command('tenant-create', request) == receipt, 'registration replay changed receipt')
         query = dict(database=database, installation=installation(), operation_id=request['operation_id'])
-        require(command('tenant-registration-status', query) == {'status':'committed','receipt':receipt},
+        require(command('tenant-operation-status', query) == {'status':'committed','receipt':receipt},
                 'registration query did not recover durable result')
         return receipt
-    register(a)
+    create(a)
     require(sql('SELECT count(*) FROM public.mdm_tenants') == '1', 'first registration changed tenant count')
     def snapshot():
         return sql(f"SELECT jsonb_build_object('epoch',(SELECT epoch FROM rss_transactional_messaging.tenant_epoch WHERE tenant_id='{a}'),'settings',(SELECT to_jsonb(s) FROM mdm_access.agent_enrollment_settings s WHERE tenant_id='{a}'))")
     before = snapshot()
     require(sql(f"SELECT count(*) FROM public.mdm_tenants WHERE tenant_id='{b}'") == '0', 'B was pre-registered')
-    register(b)
+    create(b)
     require(snapshot() == before, 'adding B changed A epoch or settings')
     command('migrate', dict(database=database, installation=installation()))
     require(sql('SELECT count(*) FROM identity_authority.accounts') == '0', 'registration seeded an account')
+    # Exercise the public management path before any tenant use is claimed.
+    common = dict(database=database, installation=installation())
+    c = str(uuid.uuid4())
+    created = dict(**common, tenant_id=c, initial_epoch=1, operation_id=str(uuid.uuid4()), name='测试租户', notes='说明')
+    first = command('tenant-create', created)
+    require(first['action'] == 'create' and first['tenant']['revision'] == 1 and first['tenant']['deletable'], 'bad create receipt')
+    require(command('tenant-get', dict(**common, tenant_id=c)) == first['tenant'], 'get differs from create')
+    changed = dict(**common, tenant_id=c, expected_revision=1, operation_id=str(uuid.uuid4()), name='新名称')
+    second = command('tenant-update', changed)
+    require(second['tenant']['revision'] == 2 and second['tenant']['notes'] is None, 'replacement did not clear omitted notes')
+    command('tenant-update', dict(changed, operation_id=str(uuid.uuid4())), accepted=False, reason='revision conflict')
+    cleared = command('tenant-update', dict(**common, tenant_id=c, expected_revision=2, operation_id=str(uuid.uuid4())))
+    require(cleared['tenant']['revision'] == 3 and cleared['tenant']['name'] is None, 'omitted metadata did not clear')
+    remove = dict(**common, tenant_id=c, expected_revision=3, operation_id=str(uuid.uuid4()))
+    removed = command('tenant-delete', remove)
+    require(removed['tenant']['revision'] == 4 and not removed['tenant']['deletable'], 'bad deletion receipt')
+    require(command('tenant-delete', remove) == removed, 'deleted operation did not replay')
+    require(command('tenant-create', created) == first, 'creation replay changed after deletion')
+    command('tenant-get', dict(**common, tenant_id=c), accepted=False, reason='tenant not found')
+    command('tenant-create', dict(created, operation_id=str(uuid.uuid4())), accepted=False, reason='conflict')
+    listed = command('tenant-list', common)
+    require([t['tenant_id'] for t in listed] == sorted([a,b]), 'list leaked tombstone or changed ordering')
+    # An authorization initialization failure still permanently claims tenant use.
+    d = str(uuid.uuid4())
+    create(d)
+    command('initialize-authorization', dict(database=pool.database_config(root,fixture.database,'mdm_access','access-fixture'),
+        identityDatabase=pool.database_config(root,fixture.database,'mdm_identity_runtime','identity-runtime-fixture'),
+        audit={'mode':'plain'}, installation=installation(), expectedEpoch=1, login='admin',
+        passwordFile=str(root/'account-password'), operationId=str(uuid.uuid4()),
+        user=dict(instanceId=INSTANCE,tenantId=d,principalId=ADMIN)), accepted=False)
+    command('tenant-delete', dict(**common, tenant_id=d, expected_revision=1, operation_id=str(uuid.uuid4())), accepted=False, reason='tenant already used')
     configs, rules = [], []
     for tenant in (a,b):
         command('initialize', dict(database=pool.database_config(root,fixture.database,'mdm_identity_maintenance','identity-maintenance-fixture'),
@@ -127,12 +160,16 @@ def execute(fixture):
         config = RunFixtures.runtime_config(context,pool,root,fixture.database,tenant)
         config['agent_pki'] = {'mode':'disabled'}
         configs.append(private(root/('runtime-'+tenant+'.json'),config))
+        detail=command('tenant-get',dict(**common,tenant_id=tenant))
+        require(detail['revision']==1 and not detail['deletable'], 'initialization changed metadata revision or left deletion open')
+        command('tenant-delete',dict(**common,tenant_id=tenant,expected_revision=1,operation_id=str(uuid.uuid4())),accepted=False,reason='tenant already used')
     with ExitStack() as stack:
         hosts = []
         for index,path in enumerate(configs):
             host=Host(builds,path,root/('host-'+str(index)))
             stack.callback(host.close)
             hosts.append(host)
+        command('tenant-update',dict(**common,tenant_id=b,expected_revision=1,operation_id=str(uuid.uuid4()),name='正在使用的租户'))
         browsers=[Browser(host,'https://mdm.example.test') for host in hosts]
         for tenant,browser,rule in zip((a,b),browsers,rules):
             require(browser.call('POST',f'/api/v1/identity/tenants/{tenant}/login',dict(login='admin',password=password))[0] == 200,
@@ -157,4 +194,4 @@ def execute(fixture):
             config=json.loads(path.read_text());config['listen']='127.0.0.1:0';config['flow']['storage']['epoch']=2
             command('serve',config,accepted=False)
     require(snapshot() == before, 'initializing and consuming B changed A settings or epoch')
-    print('fresh A -> register B -> account/authorization -> two real same-database hosts and tenant isolation passed',flush=True)
+    print('CLI CRUD/replay/tombstone -> failed first use -> account/authorization -> two hosts and tenant isolation passed',flush=True)

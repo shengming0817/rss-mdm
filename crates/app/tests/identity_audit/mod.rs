@@ -85,7 +85,7 @@ async fn exercise(ledger: bool) -> Result<()> {
         "database":config.identity.database, "installation":installation,
         "tenant_id":case_tenant(), "initial_epoch":1, "operation_id":uuid::Uuid::new_v4()
     }))?;
-    crate::tenant_registry::register_on(&mut owner, &registration).await?;
+    crate::tenant_registry::create_on(&mut owner, &registration).await?;
     owner.close().await?;
 
     let mut maintenance = value["identity"]["database"].clone();
