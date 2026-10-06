@@ -57,9 +57,7 @@ def native_pki_journey(deployed,browser):
     csr=base64.b64encode((fixture/'agent.der').read_bytes()).decode()
     secret=secrets.token_urlsafe(32);deployed.private_values.append(secret)
     operation=str(uuid.uuid4())
-    request=dict(wireVersion=1,operationId=operation,secret=secret,platform='macos',lifetimeSeconds=None,csr=csr)
-    status,grant=browser.call('POST','/api/v1/agent-grants',request)
-    require(status==200,'candidate Agent authorization failed')
+    request=dict(wireVersion=1,operationId=operation,secret=secret,platform='macos',csr=csr)
     context=ssl.create_default_context(cafile=str(root/'ca.crt'))
     def connection():return http.client.HTTPSConnection('localhost',deployed.agent_port,context=context,timeout=15)
     def call(client,method,path,body=None):
@@ -70,6 +68,11 @@ def native_pki_journey(deployed,browser):
         return response.status,json.loads(data) if data else None
     client=connection()
     try:
+        status,pending=call(client,'POST','/api/v1/agent/enroll/requests',request)
+        require(status==200 and pending['state']=='pending','candidate CSR request failed')
+        status,grant=browser.call('POST','/api/v1/agent-requests/'+pending['grantId']+'/authorize',
+                                  dict(operationId=str(uuid.uuid4())))
+        require(status==200 and grant['state']=='available','candidate Agent authorization failed')
         status,trust=call(client,'GET','/api/v1/agent/enroll/trust')
         require(status==200 and trust['origin']==deployed.agent_origin and trust['purpose']=='agent','candidate public trust authority mismatch')
         profile=dict(capabilities=['inventory.collect.v1'],platform='macos',architecture='aarch64',
@@ -126,6 +129,17 @@ def run_smoke(directory):
         require(browser.call("POST",tenant+"/login",dict(login="admin",password=PASSWORD))[0]==200,"local candidate login failed")
         status,principal=browser.call("GET","/api/v1/authorization")
         require(status==200 and (principal["instanceId"],principal["tenantId"],principal["principalId"])==(INSTANCE,TENANT,ADMIN),"candidate subject mismatch")
+        management=Browser(deployed.port,deployed.root/"ca.crt")
+        management_api="/api/v1/identity/tenants/"+deployed.management_tenant
+        require(management.call("POST",management_api+"/login",dict(login="admin",password=PASSWORD))[0]==200,
+                "candidate management login failed")
+        status,grants=management.call("GET","/api/v1/tenant-administration/authorization")
+        require(status==200 and {grant["operation"] for grant in grants["grants"]}==
+                {"tenant_create","tenant_read","tenant_update","tenant_delete","authorization_read","authorization_write"},
+                "candidate management permissions mismatch")
+        require(management.call("GET","/api/v1/resources")[0] in (401,403),"candidate management entered business")
+        require(browser.call("GET","/api/v1/tenant-administration/authorization")[0]==401,
+                "candidate business entered management")
         rule=dict(subject=dict(kind='user',user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=ADMIN)),grants=[dict(operation=operation,scope=dict(kind='device',id='device-1')) for operation in ['inventory_read','enrollment','credentials']])
         require(browser.call('PUT','/api/v1/authorization/rules/'+str(uuid.uuid4()),dict(operationId=str(uuid.uuid4()),expectedRevision=0,value=rule))[0]==200,'candidate explicit authorization')
         operation=str(uuid.uuid4())
@@ -158,7 +172,7 @@ def run_smoke(directory):
         require("mdm_request" in logs, "candidate request diagnostics missing")
         require(elapsed<45 and docker("inspect","--format","{{.State.ExitCode}}",server,stage=Stage.EXIT)=="0" and "mdm_shutdown_failure" not in logs,"candidate bounded shutdown failed")
         result=dict(source=manifest["source"],candidate_sha256=sha(directory/"candidate.json"),manifest_digest=digest,archive_sha256=sha(archive),platform=manifest["platform"],
-                    checks=pki_checks+["migrate","migration_replay","initialize","authorization_initialize","authorization_replay","livez","readyz","local_login","authoritative_subject","enrollment","idempotent_replay","device_scope_denial","denial_no_effect","denial_audit","wipe_denial","inventory_scope_denial","refresh_rotation","logout","bounded_stop"],
+                    checks=pki_checks+["management_bootstrap","management_login","management_grants","management_business_isolation","migrate","migration_replay","initialize","authorization_initialize","authorization_replay","livez","readyz","local_login","authoritative_subject","enrollment","idempotent_replay","device_scope_denial","denial_no_effect","denial_audit","wipe_denial","inventory_scope_denial","refresh_rotation","logout","bounded_stop"],
                     shutdown_seconds=round(elapsed,3),limits=["disposable MDM PostgreSQL and TLS namespace","no real Windows or macOS device T3"])
         if deployed.web is not None:
             result["ui"] = deployed.web

@@ -1,6 +1,6 @@
 //! Authorization borrows the host-owned pool; it never exposes a connection owner.
 use crate::Error;
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::{Connection, PgPool, Postgres, Transaction};
 #[derive(Clone)]
 pub struct Store {
     pool: PgPool,
@@ -11,6 +11,59 @@ impl Store {
     }
     pub(crate) async fn acquire(&self) -> Result<sqlx::pool::PoolConnection<Postgres>, Error> {
         self.pool.acquire().await.map_err(db)
+    }
+    /// Startup validates the persisted recovery principal using the existing restricted pool.
+    pub async fn require_management_initializer(
+        &self,
+        policy: &crate::identity_management::IdentityManagementPolicy,
+    ) -> Result<(), Error> {
+        let mut connection = None;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            connection = Some(self.acquire().await?);
+            let connection = connection.as_mut().expect("acquired connection");
+            let mut tx = connection.begin().await.map_err(db)?;
+            let binding = crate::tenancy::InstallationTenants::load(&mut tx).await?;
+            Self::configure_transaction(&mut tx, binding.management_tenant()).await?;
+            let principal: Option<String> = sqlx::query_scalar("SELECT a.principal::text FROM mdm_access.authorization_initializations a JOIN public.mdm_installation i ON a.instance=i.instance_id AND a.tenant_id=i.management_tenant_id WHERE i.singleton")
+                .fetch_optional(&mut *tx).await.map_err(db)?;
+            let validation = policy.validate_initializer(binding.management_tenant(), principal.as_deref());
+            tx.rollback().await.map_err(db)?;
+            validation
+        }).await;
+        if !matches!(result, Ok(Ok(())))
+            && let Some(connection) = &mut connection
+        {
+            connection.close_on_drop();
+        }
+        result.map_err(|_| Error::Deadline)?
+    }
+    /// Purpose is installation-owned, even for routes requiring identity but no grants.
+    pub async fn require_tenant_purpose(
+        &self,
+        proof: &crate::context::AuthorizedPrincipal,
+        management: bool,
+    ) -> Result<(), Error> {
+        let mut connection = None;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            proof.check_live()?;
+            connection = Some(self.acquire().await?);
+            let binding = crate::tenancy::InstallationTenants::load(
+                connection.as_mut().expect("acquired connection"),
+            )
+            .await?;
+            binding.require(proof, crate::Permission::AuthorizationRead)?;
+            if binding.is_management(proof.tenant_id()) != management {
+                return Err(Error::Forbidden);
+            }
+            Ok(())
+        })
+        .await;
+        if !matches!(result, Ok(Ok(())))
+            && let Some(connection) = &mut connection
+        {
+            connection.close_on_drop();
+        }
+        result.map_err(|_| Error::Deadline)?
     }
     pub(crate) async fn configure_transaction(
         tx: &mut Transaction<'_, Postgres>,

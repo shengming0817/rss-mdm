@@ -229,12 +229,42 @@ async fn identity_context(
     if tenant != proof.tenant_id() {
         return Err(Error::Unauthorized);
     }
+    identity_context_response(&app, proof)
+}
+fn identity_context_response(
+    app: &IdentityContextState,
+    proof: &crate::authorization::context::AuthorizedPrincipal,
+) -> Result<Json<IdentityHostContext>, Error> {
     Ok(Json(IdentityHostContext {
         tenant_id: proof.tenant_id().to_owned(),
         principal_id: proof.principal_id().to_owned(),
         session_id: proof.session_id(),
         navigation: app.identity_management.identity_navigation(proof)?,
     }))
+}
+/// The installation management coordinate is an exact route, sharing the existing projection.
+pub(crate) fn management_identity_context(
+    authentication: Arc<crate::authorization::http::AuthenticationState>,
+    policy: Arc<crate::authorization::identity_management::IdentityManagementPolicy>,
+    tenant: &str,
+) -> Router {
+    Router::new()
+        .route(
+            &format!("/api/v1/identity-host/tenants/{tenant}/context"),
+            get(management_context).with_state(Arc::new(IdentityContextState {
+                identity_management: policy,
+            })),
+        )
+        .route_layer(middleware::from_fn_with_state(
+            authentication,
+            crate::authorization::http::management_identity_only,
+        ))
+}
+async fn management_context(
+    State(app): State<Arc<IdentityContextState>>,
+    Extension(auth): Extension<RequestAuth>,
+) -> Result<Json<IdentityHostContext>, Error> {
+    identity_context_response(&app, &auth.proof)
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

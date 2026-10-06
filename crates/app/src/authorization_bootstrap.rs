@@ -132,8 +132,7 @@ async fn initialize_owned(
             &config.identity_database,
             &config.installation.target,
             &config.installation.lineage,
-            config.expected_epoch,
-            tenant,
+            &[(tenant, config.expected_epoch)],
         )
         .await?,
     );
@@ -144,7 +143,6 @@ async fn initialize_owned(
     let authority = async {
         let policy = Arc::new(
             crate::authorization::identity_management::IdentityManagementPolicy::new(
-                &config.user.tenant_id,
                 &config.user.instance_id,
                 vec![],
             )?,
@@ -152,7 +150,7 @@ async fn initialize_owned(
         let authority = Authority::connect_runtime(
             runtime.clone(),
             owned.kdf.clone(),
-            identity::authority_config(instance, tenant)?,
+            identity::authority_config(instance, vec![tenant])?,
             policy,
             identity::deadline(),
         )

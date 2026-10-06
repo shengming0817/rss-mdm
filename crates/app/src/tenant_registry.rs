@@ -70,6 +70,8 @@ pub enum Action {
 #[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Tenant {
     pub tenant_id: String,
+    /// Reserved installation tenant; it cannot be updated, deleted or used for business.
+    pub management: bool,
     pub initial_epoch: i64,
     pub current_epoch: i64,
     pub name: Option<String>,
@@ -98,6 +100,8 @@ pub enum Reason {
     Conflict,
     #[error("tenant already used")]
     InUse,
+    #[error("reserved management tenant")]
+    Reserved,
     #[error("tenant limit reached")]
     Capacity,
     #[error("storage unavailable")]
@@ -425,7 +429,7 @@ async fn apply_on(tx: &mut PgConnection, input: &Mutation<'_>) -> Result<Outcome
                 return Err(Reason::Conflict);
             }
             let count: i64 =
-                sqlx::query_scalar("SELECT count(*) FROM public.mdm_tenants WHERE NOT deleted")
+                sqlx::query_scalar("SELECT count(*) FROM public.mdm_tenants WHERE NOT deleted AND tenant_id<>(SELECT management_tenant_id FROM public.mdm_installation)")
                     .fetch_one(&mut *tx)
                     .await
                     .map_err(|_| Reason::Storage)?;
@@ -440,6 +444,9 @@ async fn apply_on(tx: &mut PgConnection, input: &Mutation<'_>) -> Result<Outcome
         }
         Action::Update | Action::Delete => {
             let tenant = tenant_on(&mut *tx, input.tenant_id, false).await?;
+            if tenant.management {
+                return Err(Reason::Reserved);
+            }
             if Some(tenant.revision) != input.expected_revision || tenant.revision == i64::MAX {
                 return Err(Reason::Conflict);
             }
@@ -471,9 +478,10 @@ async fn scope(conn: &mut PgConnection, tenant: &str) -> Result<()> {
 }
 async fn tenant_on(conn: &mut PgConnection, tenant: &str, include_deleted: bool) -> Result<Tenant> {
     scope(conn, tenant).await?;
-    let row=sqlx::query("SELECT t.tenant_id::text,t.initial_epoch,e.epoch AS current_epoch,t.name,t.notes,t.revision,NOT(t.used OR t.deleted) AS deletable FROM public.mdm_tenants t JOIN rss_transactional_messaging.tenant_epoch e USING(tenant_id) WHERE t.tenant_id=$1::uuid AND ($2 OR NOT t.deleted)").bind(tenant).bind(include_deleted).fetch_optional(conn).await.map_err(|_| Reason::Storage)?.ok_or(Reason::NotFound)?;
+    let row=sqlx::query("SELECT t.tenant_id::text,t.tenant_id=i.management_tenant_id AS management,t.initial_epoch,e.epoch AS current_epoch,t.name,t.notes,t.revision,NOT(t.used OR t.deleted OR t.tenant_id=i.management_tenant_id) AS deletable FROM public.mdm_tenants t JOIN rss_transactional_messaging.tenant_epoch e USING(tenant_id) CROSS JOIN public.mdm_installation i WHERE t.tenant_id=$1::uuid AND ($2 OR NOT t.deleted)").bind(tenant).bind(include_deleted).fetch_optional(conn).await.map_err(|_| Reason::Storage)?.ok_or(Reason::NotFound)?;
     Ok(Tenant {
         tenant_id: row.try_get("tenant_id").map_err(|_| Reason::Storage)?,
+        management: row.try_get("management").map_err(|_| Reason::Storage)?,
         initial_epoch: row.try_get("initial_epoch").map_err(|_| Reason::Storage)?,
         current_epoch: row.try_get("current_epoch").map_err(|_| Reason::Storage)?,
         name: row.try_get("name").map_err(|_| Reason::Storage)?,

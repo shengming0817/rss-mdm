@@ -68,6 +68,7 @@ async fn exercise(ledger: bool) -> Result<()> {
         "/runtime_database/name",
         "/execution/database/name",
         "/flow/storage/database/name",
+        "/flow/publication/database/name",
     ] {
         *value.pointer_mut(pointer).unwrap() = database.clone().into();
     }
@@ -104,7 +105,6 @@ async fn exercise(ledger: bool) -> Result<()> {
         &config,
         Arc::new(
             crate::authorization::identity_management::IdentityManagementPolicy::new(
-                case_tenant(),
                 crate::test_support::identity::INSTANCE,
                 config.identity_management.clone(),
             )?,
@@ -134,17 +134,24 @@ async fn exercise(ledger: bool) -> Result<()> {
         .max_connections(3)
         .connect_with(admin_options.clone().database(&database))
         .await?;
+    let management_records = if ledger {
+        management_only_startup_integrity(&config, &value, &observer).await?;
+        1
+    } else {
+        0
+    };
     verify_ledger_privileges(&config, &observer, &options, &installation, ledger).await?;
     let before: i64 = sqlx::query_scalar("SELECT count(*) FROM rss_audit.records")
         .fetch_one(&observer)
         .await?;
-    ensure!(before == 0);
-    run_worker(&config, &observer, 2, true).await?;
+    ensure!(before == management_records);
+    let expected = management_records + 2;
+    run_worker(&config, &observer, expected, true).await?;
     let original: Vec<Vec<u8>> =
         sqlx::query_scalar("SELECT canonical FROM rss_audit.records ORDER BY position")
             .fetch_all(&observer)
             .await?;
-    ensure!(original.len() == 2);
+    ensure!(original.len() == expected as usize);
     let linked: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM rss_audit.records WHERE ledger_sequence IS NOT NULL",
     )
@@ -153,7 +160,7 @@ async fn exercise(ledger: bool) -> Result<()> {
     let entries: i64 = sqlx::query_scalar("SELECT count(*) FROM rss_ledger.entries")
         .fetch_one(&observer)
         .await?;
-    ensure!(linked == if ledger { 2 } else { 0 });
+    ensure!(linked == if ledger { expected } else { 0 });
     ensure!(entries == linked);
     // Disposable fault injection: source acknowledgement loss must retain bytes and IDs.
     manipulate(
@@ -161,7 +168,7 @@ async fn exercise(ledger: bool) -> Result<()> {
         "UPDATE rss_transactional_messaging.outbox SET status='pending' WHERE status='published'",
     )
     .await?;
-    run_worker(&config, &observer, 2, false).await?;
+    run_worker(&config, &observer, expected, false).await?;
     let replay: Vec<Vec<u8>> =
         sqlx::query_scalar("SELECT canonical FROM rss_audit.records ORDER BY position")
             .fetch_all(&observer)
@@ -216,6 +223,97 @@ async fn exercise(ledger: bool) -> Result<()> {
         .execute(&mut administrator)
         .await?;
     administrator.close().await?;
+    Ok(())
+}
+
+async fn management_only_startup_integrity(
+    config: &Config,
+    value: &serde_json::Value,
+    observer: &PgPool,
+) -> Result<()> {
+    use rss_mdm_audit_integration::{Fact, RequestAudit};
+    use std::os::unix::fs::PermissionsExt;
+
+    let management = crate::identity::management_tenant(
+        &config.identity.database,
+        rss_identity_core::InstanceId::parse(&config.identity.instance_id)?,
+    )
+    .await?;
+    let access = crate::Database::connect(config.access_database.options()?).await?;
+    let store = access.audit_store(&config.audit).await?;
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let control = budget.control();
+    let request = RequestAudit::new(management.to_string(), "management_startup_integrity");
+    let fact = Fact::business(
+        &request,
+        "integrity",
+        b"management-only",
+        200,
+        "success",
+        None,
+    )?;
+    let written = store
+        .write(
+            management,
+            &control,
+            (&store, &fact),
+            |(store, fact), tx| Box::pin(async move { store.append(tx, fact, false).await }),
+        )
+        .await;
+    ensure!(written.fold(
+        |_| true,
+        |_| false,
+        |_| false,
+        |_| false,
+        |_| false,
+        |_| false
+    ));
+    request.finalize(None);
+    access.close().await;
+    let business_records: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid")
+            .bind(case_tenant())
+            .fetch_one(observer)
+            .await?;
+    ensure!(
+        business_records == 0,
+        "business audit must be empty at startup probe"
+    );
+
+    let root = std::path::PathBuf::from(std::env::var("MDM_TEST_CONFIG")?);
+    let key = root.parent().unwrap().join("wrong-worker-ledger-key");
+    std::fs::write(&key, [24u8; 32])?;
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600))?;
+    let mut wrong = value.clone();
+    wrong["audit"]["key_file"] = serde_json::json!(key);
+    let wrong: Config = serde_json::from_value(wrong)?;
+    rejected(&wrong)
+        .await
+        .context("management-only Ledger must reject worker startup")?;
+    let host = tokio::time::timeout(
+        Duration::from_secs(25),
+        crate::lifecycle::serve(
+            wrong,
+            std::future::pending(),
+            crate::test_support::monotonic(),
+        ),
+    )
+    .await?;
+    ensure!(
+        matches!(
+            host,
+            Err(crate::ProcessError::Dependency {
+                stage: "startup.audit",
+                reason: crate::Failure::AuditIntegrity,
+            })
+        ),
+        "management-only Ledger must reject host audit admission: {host:?}"
+    );
+    let mut resources = Vec::new();
+    Worker::open(config, Arc::default(), |r| resources.push(r)).await?;
+    for resource in resources.into_iter().rev() {
+        resource.shutdown().await?;
+    }
     Ok(())
 }
 #[allow(

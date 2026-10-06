@@ -24,10 +24,8 @@ pub(crate) async fn identity(tenant: &str) -> Result<Identity> {
     identity_with(config(tenant)?).await
 }
 async fn identity_with(config: Config) -> Result<Identity> {
-    let tenant = &config.identity.tenant_id;
     let policy = Arc::new(
         crate::authorization::identity_management::IdentityManagementPolicy::new(
-            tenant,
             INSTANCE,
             config.identity_management.clone(),
         )?,
@@ -414,7 +412,6 @@ pub(crate) async fn session_authority(
 ) -> Result<std::sync::Arc<rss_mdm_authorization_service::session::SessionAuthority>> {
     let policy = Arc::new(
         crate::authorization::identity_management::IdentityManagementPolicy::new(
-            &config.identity.tenant_id,
             &config.identity.instance_id,
             config.identity_management.clone(),
         )?,

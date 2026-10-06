@@ -330,6 +330,18 @@ impl Client {
         }
         for (damage, restore) in [
             (
+                "GRANT SELECT ON public.mdm_installation TO mdm_command_runtime",
+                "REVOKE SELECT ON public.mdm_installation FROM mdm_command_runtime; GRANT SELECT(instance_id,management_tenant_id) ON public.mdm_installation TO mdm_command_runtime",
+            ),
+            (
+                "GRANT SELECT(management_tenant_id) ON public.mdm_installation TO mdm_command_runtime WITH GRANT OPTION",
+                "REVOKE GRANT OPTION FOR SELECT(management_tenant_id) ON public.mdm_installation FROM mdm_command_runtime",
+            ),
+            (
+                "REVOKE SELECT(instance_id) ON public.mdm_installation FROM mdm_command_runtime",
+                "GRANT SELECT(instance_id) ON public.mdm_installation TO mdm_command_runtime",
+            ),
+            (
                 "GRANT SELECT ON mdm_group.groups TO mdm_command_runtime",
                 "REVOKE SELECT ON mdm_group.groups FROM mdm_command_runtime",
             ),
@@ -392,7 +404,8 @@ impl Client {
                 self.call(Method::GET, &format!("/{}", self.operation), None)
                     .await?
                     .0
-                    == StatusCode::OK
+                    == StatusCode::OK,
+                "command admission did not recover after {damage}"
             );
         }
         sqlx::query("UPDATE rss_device_command.commands SET command_id=$2 WHERE command_id=$1")

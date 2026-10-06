@@ -17,7 +17,6 @@ impl Authority {
         let access = database(&base).await?;
         let policy = Arc::new(
             crate::authorization::identity_management::IdentityManagementPolicy::new(
-                case_tenant(),
                 INSTANCE,
                 config.identity_management.clone(),
             )?,

@@ -3,6 +3,7 @@ BEGIN;
 CREATE TABLE public.mdm_installation (
  singleton boolean PRIMARY KEY DEFAULT true CHECK(singleton),
  instance_id uuid NOT NULL CHECK(instance_id<>'00000000-0000-0000-0000-000000000000'),
+ management_tenant_id uuid NOT NULL UNIQUE CHECK(management_tenant_id<>'00000000-0000-0000-0000-000000000000'),
  target bytea NOT NULL CHECK(octet_length(target)=16),
  lineage bytea NOT NULL CHECK(octet_length(lineage)=16),
  audit_mode text NOT NULL CHECK(audit_mode IN ('plain','ledger'))
@@ -30,7 +31,11 @@ ALTER TABLE public.mdm_tenants ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.mdm_tenants FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON public.mdm_tenants USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 CREATE POLICY operator ON public.mdm_tenants TO mdm_owner USING(true) WITH CHECK(true);
+ALTER TABLE public.mdm_installation ADD CONSTRAINT management_tenant
+ FOREIGN KEY(management_tenant_id) REFERENCES public.mdm_tenants(tenant_id);
 REVOKE ALL ON public.mdm_installation,public.mdm_tenants,public.mdm_tenant_operations FROM PUBLIC;
+-- Transaction-bound authorization reads only the two immutable purpose coordinates.
+GRANT SELECT(instance_id,management_tenant_id) ON public.mdm_installation TO mdm_flow_runtime,mdm_command_runtime;
 GRANT SELECT ON public.mdm_installation,public.mdm_tenants TO mdm_access,mdm_identity_runtime,mdm_identity_maintenance;
 GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_access,mdm_identity_runtime,mdm_identity_maintenance;
 GRANT SELECT ON rss_transactional_messaging.tenant_epoch TO mdm_access,mdm_identity_runtime,mdm_identity_maintenance;

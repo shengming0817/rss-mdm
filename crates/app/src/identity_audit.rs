@@ -126,37 +126,47 @@ impl Worker {
         );
         let tenant = rss_request_context::TenantId::parse(&config.identity.tenant_id)
             .map_err(|_| Error::Configuration(ConfigIssue::Tenant))?;
+        let instance = rss_identity_core::InstanceId::parse(&config.identity.instance_id)
+            .map_err(|_| Error::Configuration(ConfigIssue::Instance))?;
+        let management_tenant =
+            crate::identity::management_tenant(&config.identity.database, instance).await?;
         if matches!(config.audit, crate::config::AuditConfig::Ledger { .. }) {
-            audit
-                .read_verified(
-                    tenant,
-                    rss_ledger::Sequence::new(0),
-                    rss_ledger_postgres::ReadLimit::new(1, 262144).map_err(|_| unavailable())?,
-                    &control,
-                )
-                .await
-                .fold(
-                    |_| Ok(()),
-                    |_| Err(unavailable()),
-                    |_| Err(unavailable()),
-                    |_| Err(Error::RollbackFailed),
-                    |_| Err(Error::CommitUnknown),
-                    |_| Err(unavailable()),
-                )?;
+            for admitted_tenant in [tenant, management_tenant] {
+                audit
+                    .read_verified(
+                        admitted_tenant,
+                        rss_ledger::Sequence::new(0),
+                        rss_ledger_postgres::ReadLimit::new(1, 262144)
+                            .map_err(|_| unavailable())?,
+                        &control,
+                    )
+                    .await
+                    .fold(
+                        |_| Ok(()),
+                        |_| Err(unavailable()),
+                        |_| Err(unavailable()),
+                        |_| Err(Error::RollbackFailed),
+                        |_| Err(Error::CommitUnknown),
+                        |_| Err(unavailable()),
+                    )?;
+            }
         }
         let runtime = crate::identity::open_consumer_runtime(
             database,
             &config.flow.storage.target,
             &config.flow.storage.lineage,
-            config.flow.storage.epoch,
-            tenant,
+            &[
+                (tenant, config.flow.storage.epoch),
+                (
+                    management_tenant,
+                    rss_mdm_authorization_service::tenancy::MANAGEMENT_EPOCH,
+                ),
+            ],
         )
         .await?;
         acquire(DynManagedResource::new_box(RuntimeResource(
             runtime.clone(),
         )));
-        let instance = rss_identity_core::InstanceId::parse(&config.identity.instance_id)
-            .map_err(|_| Error::Configuration(ConfigIssue::Instance))?;
         let budget = DeliveryBudget::new(
             Duration::from_secs(60),
             Duration::from_secs(5),
@@ -164,12 +174,18 @@ impl Worker {
             Duration::from_secs(1),
         )
         .map_err(|_| Error::Configuration(ConfigIssue::Budget))?;
-        let delivery = AuditDelivery::new(runtime, audit, instance, vec![tenant], budget)
-            .await
-            .map_err(|error| {
-                diagnose(error);
-                unavailable()
-            })?;
+        let delivery = AuditDelivery::new(
+            runtime,
+            audit,
+            instance,
+            vec![tenant, management_tenant],
+            budget,
+        )
+        .await
+        .map_err(|error| {
+            diagnose(error);
+            unavailable()
+        })?;
         Ok(Arc::new(Self {
             delivery,
             readiness,

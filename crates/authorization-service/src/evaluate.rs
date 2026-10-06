@@ -13,6 +13,8 @@ use uuid::Uuid;
 pub struct Snapshot {
     pub rules: Vec<Revision<Rule>>,
     pub groups: Vec<Revision<UserGroup>>,
+    #[serde(skip)]
+    pub(crate) installation: Option<crate::tenancy::InstallationTenants>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -88,6 +90,11 @@ impl Snapshot {
         operation: Permission,
         device: Option<&str>,
     ) -> Result<(), AuthorizationError> {
+        self.installation
+            .as_ref()
+            .ok_or(AuthorizationError::Corrupt)?
+            .require(proof, operation)
+            .map_err(|_| AuthorizationError::Forbidden)?;
         proof
             .check_live()
             .map_err(|_| AuthorizationError::Unauthorized)?;

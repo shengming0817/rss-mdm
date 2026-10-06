@@ -42,22 +42,22 @@ Audit 与 Ledger 的组件 SQL 分别由 `mdm_audit_owner`、`mdm_ledger_owner` 
 
 `migrate` 使用 mdm_owner；`initialize` / `recover-password` 使用 mdm_identity_maintenance；`initialize-authorization` 使用 mdm_access 显式初始化一次产品授权；`serve` 只使用对应运行角色。安装会检查实际 runtime/maintenance 和 audit worker 权限，脚本成功不代表角色准入成功。
 
-迁移输入含 database 和 installation；installation 只固定 instance_id、target、lineage 和 audit_mode（plain 或 ledger，与运行配置 audit.mode 一致）。安装创建空租户登记表；重放只核稳定安装身份、完整当前 schema 和运行权限，不比较租户全集，不改租户 epoch。安装按 audit mode 授予 Identity audit worker 权限，模式不能随重放改变。
+迁移输入含 database 和 installation；installation 只固定 instance_id、target、lineage 和 audit_mode（plain 或 ledger，与运行配置 audit.mode 一致）。安装创建唯一保留管理租户及 epoch=1，不创建账户、密码或权限；重放只核稳定安装身份、保留管理租户绑定、完整当前 schema 和运行权限，不比较租户全集，不改租户 epoch。安装按 audit mode 授予 Identity audit worker 权限，模式不能随重放改变。
 
 租户管理仅提供 CLI，由实际 `mdm_owner` 登录连接执行。六个命令均使用 `--config /absolute/private-config.json`，公共输入为 database 和稳定 installation：
 
 | 命令 | 其它输入 | 输出与约束 |
 |---|---|---|
 | `tenant-create` | tenant_id、initial_epoch、operation_id；可选 name、notes | 创建 revision=1，连同 RSS 初始 epoch、Agent 默认设置和操作回执原子提交 |
-| `tenant-get` | tenant_id | 当前租户详情，包括 initial_epoch、current_epoch、name、notes、revision、deletable |
-| `tenant-list` | 无 | 所有未删除租户详情，按 UUID 排序，最多 1024 个 |
+| `tenant-get` | tenant_id | 当前租户详情，包括 initial_epoch、current_epoch、name、notes、revision、deletable、management |
+| `tenant-list` | 无 | 所有未删除租户详情，按 UUID 排序，最多 1024 个业务租户与 1 个管理租户 |
 | `tenant-update` | tenant_id、expected_revision、operation_id；可选 name、notes | 全量替换元数据；省略或 null 清空字段；成功时 revision 加一，即使值未改变 |
 | `tenant-delete` | tenant_id、expected_revision、operation_id | 仅允许删除从未声明使用的租户，revision 加一；保留墓碑、epoch、默认设置和回执 |
 | `tenant-operation-status` | operation_id | 返回 committed 与原始 receipt，或 not_found 与 null |
 
 tenant_id 与 instance_id 须为非空规范小写 UUID；operation_id 须为非空 UUID；initial_epoch 和 expected_revision 须为正整数。name 可为 null，否则最多 128 个 Unicode 字符且不能全为空白；notes 可为 null，否则最多 2048 个字符。元数据不控制权限或宿主绑定。tenant_id、installation 和 epoch 不通过更新命令修改；current_epoch 由 RSS fencing 持有。
 
-容量按未删除租户计数，删除释放容量，但租户 ID 永不复用。删除后新 get/update/delete 返回 NotFound，列表隐藏墓碑；没有强制删除、恢复、数据清扫、旧命令别名或旧 schema 迁移。旧安装与当前安装清单不匹配时拒绝运行，必须重新安装当前契约。
+容量按未删除业务租户计数，管理租户不计入 1024 上限，且不能更新、删除或作为业务宿主租户。删除释放容量，但租户 ID 永不复用。删除后新 get/update/delete 返回 NotFound，列表隐藏墓碑；没有强制删除、恢复、数据清扫、旧命令别名或旧 schema 迁移。旧安装与当前安装清单不匹配时拒绝运行，必须重新安装当前契约。
 
 create/update/delete 的 operation_id 共用一个全局命名空间。同一操作、同一规范业务输入返回原始回执，包括删除后及后续元数据/epoch 改变后的重放；同操作异参、重复租户、过期版本或版本溢出拒绝。回执为 `{operation_id, action, tenant}` 的提交时快照；数据库凭据不进入持久化业务请求。
 
@@ -67,7 +67,17 @@ create/update/delete 的 operation_id 共用一个全局命名空间。同一操
 
 账户初始化输入另含 tenant_id、expected_epoch、principal_id、login、password_file；授权初始化沿用 user.tenantId 并显式提供 expectedEpoch。两者从数据库核验登记及当前 epoch，使用各自受限角色。日常账户与 IdP 管理使用受保护 HTTP 接口。
 
-每个宿主通过 identity.tenant_id 和 flow.storage.epoch 绑定一个已登记租户，启动核验安装身份、audit mode、登记和期望 epoch。同库其它租户使用各自合法绑定宿主；新增登记不自动切换已有宿主。
+通过 `tenant-list` 找到 `management=true` 的唯一管理租户。部署方沿用现有 `initialize` 配置，把 tenant_id 填为该 ID、expected_epoch 填 1，显式创建初始账户；随后用同一账户执行 `initialize-authorization`，其 user.tenantId 也填该 ID。初始规则授予四项租户 CRUD 与授权读写，不授予业务权限。
+
+运行配置复用 `identity_management`，追加管理租户的账户管理员资格，例如以下片段（ID 必须替换为该安装与显式初始化的真实坐标）：
+
+~~~json
+{"tenant_id":"管理租户 UUID","instance_id":"安装 UUID","principal_id":"初始账户 UUID","permissions":["accounts"]}
+~~~
+
+运行服务从数据库读取管理租户，使用既有 Identity Authority 同时接纳业务和管理两个租户；无需额外监听、origin、cookie 或数据库高权角色。管理账户通过标准租户 login/accounts/session 接口登录和维护账户；配置里的 accounts 资格与可委派 CRUD 规则相互独立。管理租户不支持 IdP/联合登录。初始管理主体的 authorization_read/write 受事务保护，四项 CRUD 可以分别撤销；密码恢复只轮换密码并撤销会话，不重置授权。管理授权初始化主体必须同时配置 accounts 资格，启动准入强制核验这一约束；配置管理账户资格前须完成授权初始化，错配或未初始化配置拒绝启动。
+
+每个宿主通过 identity.tenant_id 和 flow.storage.epoch 绑定一个已登记业务租户，启动核验安装身份、audit mode、登记和期望 epoch。同库其它租户使用各自合法绑定宿主；新增登记不自动切换已有宿主。
 
 ~~~sh
 docker load --input server.oci.tar

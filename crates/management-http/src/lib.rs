@@ -16,6 +16,7 @@ pub mod resource_catalog;
 mod response;
 pub mod software_catalog;
 pub mod software_publication;
+pub mod tenant_administration;
 pub use error::Error;
 use rss_mdm_flow_service::automation;
 mod diagnostic;

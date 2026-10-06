@@ -112,6 +112,13 @@ pub async fn serve(
                             .claim_tenant_use(&compiled.config)
                             .await
                             .map_err(|error| ProcessError::at("startup.tenant_binding", error))?;
+                        access
+                            .authorization_store()
+                            .require_management_initializer(&compiled.identity_management)
+                            .await
+                            .map_err(|error| {
+                                ProcessError::at("startup.identity_management", error.into())
+                            })?;
                         let notifications = crate::worker_wake::Listener::new(
                             compiled
                                 .config
@@ -158,27 +165,6 @@ pub async fn serve(
                             .audit_store(&compiled.config.audit)
                             .await
                             .map_err(|e| ProcessError::at("startup.audit", e))?;
-                        let audit_budget =
-                            rss_mdm_audit_integration::budget::AuditBudget::with_cancellation(
-                                Duration::from_secs(5),
-                                startup_cancel.clone(),
-                            );
-                        let audit_control = audit_budget.control();
-                        audit_store
-                            .validate_tenant(
-                                rss_request_context::TenantId::parse(
-                                    &compiled.config.identity.tenant_id,
-                                )
-                                .map_err(|_| {
-                                    ProcessError::at(
-                                        "startup.audit",
-                                        crate::Error::Unavailable(crate::Failure::Audit),
-                                    )
-                                })?,
-                                &audit_control,
-                            )
-                            .await
-                            .map_err(|error| ProcessError::at("startup.audit", error.into()))?;
                         let runtime = Arc::new(InventoryRuntime::new(
                             observation_store,
                             projection_store,
@@ -236,6 +222,18 @@ pub async fn serve(
                         )
                         .await
                         .map_err(|error| ProcessError::at("startup.identity", error))?;
+                        let audit_budget =
+                            rss_mdm_audit_integration::budget::AuditBudget::with_cancellation(
+                                Duration::from_secs(5),
+                                startup_cancel.clone(),
+                            );
+                        let audit_control = audit_budget.control();
+                        for admitted_tenant in [identity.tenant, identity.management_tenant] {
+                            audit_store
+                                .validate_tenant(admitted_tenant, &audit_control)
+                                .await
+                                .map_err(|error| ProcessError::at("startup.audit", error.into()))?;
+                        }
                         let execution = crate::execution_assembly::open(
                             &compiled.config,
                             protection,

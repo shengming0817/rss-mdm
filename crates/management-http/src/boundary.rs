@@ -199,14 +199,18 @@ fn route_action(route: &str) -> &'static str {
         "/api/v1/devices/{device}/timeline" => "timeline_read",
         "/api/v1/audit-events" => "audit_search",
         "/api/v1/runtime/diagnostics" => "runtime_diagnostics_read",
-        "/api/v1/authorization" => "authorization_effective_read",
-        "/api/v1/authorization/rules" => "authorization_rules_read",
+        "/api/v1/authorization" | "/api/v1/tenant-administration/authorization" => {
+            "authorization_effective_read"
+        }
+        "/api/v1/authorization/rules" | "/api/v1/tenant-administration/authorization/rules" => {
+            "authorization_rules_read"
+        }
         "/api/v1/authorization/user-groups" => "authorization_groups_read",
         "/api/v1/authorization/user-groups/{id}/members" => "authorization_members_read",
         "/api/v1/authorization/departments" => "authorization_departments_read",
-        "/api/v1/authorization/rules/{id}" | "/api/v1/authorization/user-groups/{id}" => {
-            "authorization_write"
-        }
+        "/api/v1/authorization/rules/{id}"
+        | "/api/v1/authorization/user-groups/{id}"
+        | "/api/v1/tenant-administration/authorization/rules/{id}" => "authorization_write",
         "/api/v1/enrollments" | "/api/v1/self-enrollments" => "enrollment_create",
         "/api/v1/self-enrollments/agent" => "agent_grant_create",
         "/api/v1/self-enrollments/agent/{id}/cancel" => "agent_grant_revoke",

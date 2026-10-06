@@ -11,14 +11,19 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 pub fn routes() -> Router<Arc<HttpState>> {
-    Router::new()
-        .route("/authorization", get(effective))
-        .route("/authorization/rules", get(rules))
-        .route("/authorization/rules/{id}", put(rule_write))
+    rule_routes()
         .route("/authorization/user-groups", get(groups))
         .route("/authorization/user-groups/{id}", put(group_write))
         .route("/authorization/user-groups/{id}/members", get(members))
         .route("/authorization/departments", get(departments))
+        .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
+}
+/// The same rule protocol is used within the installation management tenant.
+pub fn rule_routes() -> Router<Arc<HttpState>> {
+    Router::new()
+        .route("/authorization", get(effective))
+        .route("/authorization/rules", get(rules))
+        .route("/authorization/rules/{id}", put(rule_write))
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
 }
 #[derive(Deserialize)]
@@ -181,20 +186,35 @@ pub async fn protect(
     request: Request,
     next: Next,
 ) -> Response {
-    authenticate_and_run(app, request, next, true).await
+    authenticate_and_run(app, request, next, true, false).await
+}
+pub async fn protect_management(
+    State(app): State<Arc<AuthenticationState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    authenticate_and_run(app, request, next, true, true).await
 }
 pub async fn identity_only(
     State(app): State<Arc<AuthenticationState>>,
     request: Request,
     next: Next,
 ) -> Response {
-    authenticate_and_run(app, request, next, false).await
+    authenticate_and_run(app, request, next, false, false).await
+}
+pub async fn management_identity_only(
+    State(app): State<Arc<AuthenticationState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    authenticate_and_run(app, request, next, false, true).await
 }
 async fn authenticate_and_run(
     app: Arc<AuthenticationState>,
     request: Request,
     next: Next,
     authorization: bool,
+    management: bool,
 ) -> Response {
     let (mut parts, body) = request.into_parts();
     let activity =
@@ -230,6 +250,9 @@ async fn authenticate_and_run(
                 .extensions
                 .insert(crate::runtime_diagnostics::RequestDeadline(deadline));
             tokio::time::timeout_at(deadline.into(), async {
+                if let Err(error) = app.access.require_tenant_purpose(&proof, management).await {
+                    return Error::from(error).into_response();
+                }
                 let proof = if authorization {
                     match proof.load_authorization(&app.access).await {
                         Ok(proof) => proof,

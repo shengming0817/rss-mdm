@@ -197,6 +197,7 @@ fn model_capacity_limits_and_scope_categories_are_closed() {
             })
             .collect(),
         groups: vec![],
+        installation: None,
     };
     assert!(snapshot.validate(tenant, instance).is_ok());
     snapshot.rules.push(Revision {

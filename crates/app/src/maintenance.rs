@@ -52,8 +52,7 @@ pub async fn run(config: Config, initialize: bool) -> Result<(), Error> {
         &config.database,
         &config.installation.target,
         &config.installation.lineage,
-        config.expected_epoch,
-        tenant,
+        &[(tenant, config.expected_epoch)],
     )
     .await?;
     let kdf = Arc::new(PasswordKdf::new());
@@ -61,7 +60,7 @@ pub async fn run(config: Config, initialize: bool) -> Result<(), Error> {
         let authority = Authority::connect_maintenance(
             runtime.clone(),
             kdf.clone(),
-            crate::identity::authority_config(instance, tenant)?,
+            crate::identity::authority_config(instance, vec![tenant])?,
             crate::identity::deadline(),
         )
         .await

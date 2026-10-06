@@ -11,48 +11,86 @@ pub struct IdentityManagementGrant {
     pub permissions: BTreeSet<IdentityPermission>,
 }
 pub struct IdentityManagementPolicy {
-    tenant: String,
     instance: String,
-    grants: BTreeMap<String, IdentityManagementGrant>,
+    grants: BTreeMap<(String, String), IdentityManagementGrant>,
 }
 impl IdentityManagementPolicy {
-    pub fn new(
-        tenant: &str,
-        instance: &str,
-        grants: Vec<IdentityManagementGrant>,
-    ) -> Result<Self, Error> {
+    pub fn new(instance: &str, grants: Vec<IdentityManagementGrant>) -> Result<Self, Error> {
         let invalid = || Error::Configuration;
-        crate::canonical_uuid(tenant).map_err(|_| invalid())?;
         crate::canonical_uuid(instance).map_err(|_| invalid())?;
         if grants.len() > 10000 {
             return Err(invalid());
         }
         let mut entries = BTreeMap::new();
         for grant in grants {
+            crate::canonical_uuid(&grant.tenant_id).map_err(|_| invalid())?;
             crate::canonical_uuid(&grant.principal_id).map_err(|_| invalid())?;
-            if grant.tenant_id != tenant
-                || grant.instance_id != instance
+            if grant.instance_id != instance
                 || grant.permissions.is_empty()
-                || entries.insert(grant.principal_id.clone(), grant).is_some()
+                || entries
+                    .insert((grant.tenant_id.clone(), grant.principal_id.clone()), grant)
+                    .is_some()
             {
                 return Err(invalid());
             }
         }
         Ok(Self {
-            tenant: tenant.into(),
             instance: instance.into(),
             grants: entries,
         })
+    }
+    /// Runtime accepts exactly the business and installation management tenant.
+    pub fn validate_admission(&self, business: &str, management: &str) -> Result<(), Error> {
+        if business == management
+            || self.grants.values().any(|grant| {
+                (grant.tenant_id != business && grant.tenant_id != management)
+                    || (grant.tenant_id == management
+                        && grant.permissions.contains(&IdentityPermission::Providers))
+            })
+        {
+            return Err(Error::Configuration);
+        }
+        Ok(())
+    }
+    /// Every configured management account administrator requires a protected initializer.
+    pub(crate) fn validate_initializer(
+        &self,
+        management: &str,
+        principal: Option<&str>,
+    ) -> Result<(), Error> {
+        let accounts = |grant: &IdentityManagementGrant| {
+            grant.permissions.contains(&IdentityPermission::Accounts)
+        };
+        match principal {
+            Some(principal)
+                if self
+                    .grants
+                    .get(&(management.into(), principal.into()))
+                    .is_some_and(accounts) =>
+            {
+                Ok(())
+            }
+            None if !self
+                .grants
+                .values()
+                .any(|grant| grant.tenant_id == management && accounts(grant)) =>
+            {
+                Ok(())
+            }
+            _ => Err(Error::Configuration),
+        }
     }
     pub fn identity_navigation(
         &self,
         proof: &AuthorizedPrincipal,
     ) -> Result<IdentityNavigation, Error> {
         proof.check_live()?;
-        if proof.tenant_id() != self.tenant || proof.instance_id() != self.instance {
+        if proof.instance_id() != self.instance {
             return Err(Error::Unauthorized);
         }
-        let grant = self.grants.get(proof.principal_id());
+        let grant = self
+            .grants
+            .get(&(proof.tenant_id().into(), proof.principal_id().into()));
         Ok(IdentityNavigation {
             manage_accounts: grant
                 .is_some_and(|g| g.permissions.contains(&IdentityPermission::Accounts)),
@@ -86,7 +124,6 @@ impl rss_identity_postgres::ManagementPolicy for IdentityManagementPolicy {
             ManagementDenied, ManagementOperation as Op, ReauthenticationRequirement as Auth,
         };
         if context.instance().to_string() != self.instance
-            || context.actor().tenant.to_string() != self.tenant
             || context
                 .target()
                 .is_some_and(|target| target.tenant != context.actor().tenant)
@@ -102,7 +139,10 @@ impl rss_identity_postgres::ManagementPolicy for IdentityManagementPolicy {
         }
         let actor = self
             .grants
-            .get(&context.actor().principal.as_uuid().to_string())
+            .get(&(
+                context.actor().tenant.to_string(),
+                context.actor().principal.as_uuid().to_string(),
+            ))
             .ok_or(ManagementDenied)?;
         let permission = match context.operation() {
             Op::ListProviders
@@ -121,7 +161,7 @@ impl rss_identity_postgres::ManagementPolicy for IdentityManagementPolicy {
             Op::SetAccountEnabled(false) | Op::SetMembership(false)
         ) && context.target().is_some_and(|key| {
             self.grants
-                .get(&key.principal.as_uuid().to_string())
+                .get(&(key.tenant.to_string(), key.principal.as_uuid().to_string()))
                 .is_some_and(|binding| binding.permissions.contains(&IdentityPermission::Accounts))
         }) {
             return Err(ManagementDenied);

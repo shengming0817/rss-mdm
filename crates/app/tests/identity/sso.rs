@@ -182,7 +182,6 @@ async fn product_callback_link_step_up_and_provider_isolation() -> Result<()> {
     let config: Config = serde_json::from_value(base.clone())?;
     let policy = Arc::new(
         crate::authorization::identity_management::IdentityManagementPolicy::new(
-            case_tenant(),
             INSTANCE,
             config.identity_management.clone(),
         )?,

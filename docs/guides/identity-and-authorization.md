@@ -22,6 +22,14 @@ MDM 嵌入 rss-identity 公共组件，由 Identity 持有账户、认证与会�
 
 旧中央身份、会话与新实例不自动映射；历史审计保留原含义。授权设计原因见 [持久授权 ADR](../architecture/adr/202609200002-2363-persistent-authorization.md)，HTTP 形态由 [管理 HTTP](../../crates/management-http/src) 持有。
 
+## 安装管理租户
+
+安装拥有一个默认生成的保留管理租户，账户仍需显式初始化。管理租户与业务租户复用 Identity 的账户、认证、会话和 MDM 规则存储；只有管理租户用户能够获得租户管理资格。业务 grant、IdP 组、部门、本地用户组均不能跨越这一边界。
+
+管理租户规则入口为 `/api/v1/tenant-administration/authorization`、其 `/rules` 与 `/rules/{id}`，请求、分页、CAS、幂等回执和审计沿用既有协议。规则仅支持本租户直接用户与 tenant scope，允许 `tenant_create`、`tenant_read`、`tenant_update`、`tenant_delete` 四项独立权限，以及 `authorization_read/write`。tenant_read 覆盖详情、列表及操作回执读取；本期只交付资格与规则维护，租户 CRUD HTTP handler 由后续任务交付，当前元数据操作仍使用 CLI。
+
+初始管理用户始终保留授权读写；可以给其它管理用户委派其中任意权限。账户维护另外由配置中的 accounts 资格控制，新增账户不自动获得权限。管理用户不能进入任何业务接口，业务用户不能进入管理规则接口；管理租户不接纳联合身份或 provider 管理。每个产品 origin 复用一个 `__Host-identity-session` cookie，切换租户登录会切换当前会话。
+
 ## 管理审计检索
 
 `GET /api/v1/audit-events` 与设备时间线复用既有 `authorization_read` 管理入口及正常请求上下文，不新增权限项或分页授权读取。支持按设备、operation、主体、动作、结果和记录时间检索；租户/实例来自可信会话，客户端不能覆盖。响应仅包含安全事实投影，不返回凭据、原始 payload、任意 details 或执行输出。普通审计读取不表示已完成密码学账本验证。

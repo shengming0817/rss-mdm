@@ -84,7 +84,7 @@ async fn registration_replay_and_binding_preserve_existing_tenants() -> anyhow::
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM public.mdm_tenants")
             .fetch_one(&mut conn)
             .await?
-            == 0
+            == 1
     );
     let mut runtime = profile("mdm_access", "access-fixture").await?;
     let a = input(Uuid::new_v4());
@@ -257,7 +257,7 @@ async fn concurrent_registration_replays_once_and_respects_last_slot() -> anyhow
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM public.mdm_tenants")
             .fetch_one(&mut holder)
             .await?
-            == TENANT_LIMIT
+            == TENANT_LIMIT + 1
     );
     let rejected = if a.is_err() { &left } else { &right };
     ensure!(counts(&mut holder, &rejected.tenant_id).await? == (0, 0, 0, 0));
@@ -274,13 +274,13 @@ async fn concurrent_registration_replays_once_and_respects_last_slot() -> anyhow
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM public.mdm_tenants WHERE NOT deleted")
             .fetch_one(&mut holder)
             .await?
-            == TENANT_LIMIT
+            == TENANT_LIMIT + 1
     );
     ensure!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM public.mdm_tenants")
             .fetch_one(&mut holder)
             .await?
-            == TENANT_LIMIT + 1
+            == TENANT_LIMIT + 2
     );
     one.close().await?;
     two.close().await?;
