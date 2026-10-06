@@ -134,6 +134,10 @@ async fn registration_replay_and_binding_preserve_existing_tenants() -> anyhow::
     .execute(&mut conn)
     .await?;
     migration::migrate_on(&mut conn, &a.installation).await?;
+    // The CLI closes its migration connection; this fixture retains it for assertions.
+    sqlx::query("SELECT pg_advisory_unlock(2346)")
+        .execute(&mut conn)
+        .await?;
     ensure!(create_on(&mut conn, &a).await? == a_receipt);
     ensure!(
         claim_use(&mut runtime, &a.installation, &a.tenant_id, 1)
