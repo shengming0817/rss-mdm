@@ -33,6 +33,10 @@ pub fn routes(app: Option<Arc<Service>>) -> Router {
         .route("/agent-configurations", post(create_configuration))
         .route("/agent-configurations/{id}", get(read_configuration))
         .route(
+            "/agent-configuration-operations/{id}",
+            get(configuration_operation),
+        )
+        .route(
             "/agent-configurations/{id}/revoke",
             post(revoke_configuration),
         )
@@ -49,19 +53,20 @@ pub fn routes(app: Option<Arc<Service>>) -> Router {
 async fn settings(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
-) -> Result<Json<rss_mdm_registration_service::agent::settings::Settings>, HttpFailure> {
-    Ok(Json(service(&app)?.settings(&auth.proof).await?))
+) -> Result<Json<rss_mdm_registration_service::agent::settings::DeliverySettings>, HttpFailure> {
+    Ok(Json(service(&app)?.settings(&auth.proof).await?.into()))
 }
 async fn update_settings(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
     input: Body<rss_mdm_registration_service::agent::settings::Update>,
-) -> Result<Json<rss_mdm_registration_service::agent::settings::Settings>, HttpFailure> {
+) -> Result<Json<rss_mdm_registration_service::agent::settings::DeliverySettings>, HttpFailure> {
     Ok(Json(
         service(&app)?
             .update_settings(&auth.proof, &body(input)?, &a)
-            .await?,
+            .await?
+            .into(),
     ))
 }
 async fn approve(
@@ -161,12 +166,21 @@ async fn create_configuration(
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
     input: Body<rss_mdm_registration_service::agent::configurations::Create>,
-) -> Result<Json<wire::configuration::ConfigurationFile>, HttpFailure> {
-    Ok(Json(
+) -> Result<Response, HttpFailure> {
+    let file = Json(
         service(&app)?
             .create_configuration(&auth.proof, &body(input)?, &a)
             .await?,
-    ))
+    );
+    let disposition = format!(
+        "attachment; filename=\"{}\"",
+        rss_mdm_registration_service::agent::settings::CONFIGURATION_FILENAME
+    );
+    Ok((
+        [(axum::http::header::CONTENT_DISPOSITION, disposition)],
+        file,
+    )
+        .into_response())
 }
 async fn read_configuration(
     State(app): State<App>,
@@ -175,6 +189,17 @@ async fn read_configuration(
 ) -> Result<Json<rss_mdm_registration_service::agent::configurations::Read>, HttpFailure> {
     Ok(Json(
         service(&app)?.read_configuration(&auth.proof, id).await?,
+    ))
+}
+async fn configuration_operation(
+    State(app): State<App>,
+    Extension(auth): Extension<RequestAuth>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Option<rss_mdm_registration_service::agent::configurations::Read>>, HttpFailure> {
+    Ok(Json(
+        service(&app)?
+            .configuration_operation(&auth.proof, id)
+            .await?,
     ))
 }
 async fn revoke_configuration(

@@ -154,7 +154,7 @@ async fn publish_version(
             &f.router,
             Method::POST,
             "/api/v1/agent-packages",
-            Some(input)
+            Some(input.clone())
         )
         .await?
         .1 == document
@@ -198,6 +198,7 @@ async fn configuration(
         )
         .await?;
     ensure!(response.0 == StatusCode::OK, "configuration {response:?}");
+    let operation = input["operationId"].as_str().unwrap().to_owned();
     ensure!(
         user.call(
             &f.router,
@@ -207,6 +208,49 @@ async fn configuration(
         )
         .await?
         .1 == response.1
+    );
+    let found = user
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("/api/v1/agent-configuration-operations/{operation}"),
+            None,
+        )
+        .await?;
+    ensure!(
+        found.0 == StatusCode::OK && found.1["configuration"] == response.1["configuration"],
+        "operation lookup {found:?}"
+    );
+    ensure!(
+        found.1.get("secret").is_none() && found.1.get("signature").is_none(),
+        "operation disclosed file"
+    );
+    ensure!(found.1["remaining"] == quantity.get("count").cloned().unwrap_or(Value::Null));
+    let mut other = authority::Authority::open().await?.browser("other")?;
+    let forbidden = other
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("/api/v1/agent-configuration-operations/{operation}"),
+            None,
+        )
+        .await?;
+    ensure!(
+        forbidden.0 == StatusCode::FORBIDDEN,
+        "operation read bypassed management permission {forbidden:?}"
+    );
+
+    let unknown = user
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("/api/v1/agent-configuration-operations/{}", Uuid::new_v4()),
+            None,
+        )
+        .await?;
+    ensure!(
+        unknown.0 == StatusCode::OK && unknown.1.is_null(),
+        "missing operation must remain unknown"
     );
     let file = serde_json::from_value(response.1)?;
     Ok(file)
@@ -259,6 +303,17 @@ async fn read(f: &Fixture, user: &mut Browser, id: Uuid) -> Result<Value> {
         .await?;
     ensure!(out.0 == StatusCode::OK, "read {out:?}");
     ensure!(out.1.get("secret").is_none() && out.1["responsibleUser"].is_null());
+    let expected = out.1["configuration"]["quantity"]
+        .get("count")
+        .and_then(Value::as_u64)
+        .map(|n| {
+            json!(n - out.1["reserved"].as_u64().unwrap() - out.1["consumed"].as_u64().unwrap())
+        })
+        .unwrap_or(Value::Null);
+    ensure!(
+        out.1["remaining"] == expected,
+        "remaining disagrees with durable usage {out:?}"
+    );
     Ok(out.1)
 }
 struct Tls {
@@ -800,6 +855,7 @@ async fn backend_settings_are_the_only_grant_lifetime_authority() -> Result<()> 
         )
         .await?;
     ensure!(initial.0 == StatusCode::OK && initial.1["values"]["grantSeconds"] == 86400);
+    ensure!(initial.1["configurationFilename"] == "rss-agent-enrollment.json");
     for seconds in [0, 604801] {
         let out=user.call(&f.router,Method::PUT,"/api/v1/agent-enrollment-settings",Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":initial.1["revision"],"values":{"grantSeconds":seconds,"configurationDefaultSeconds":86400,"platforms":["windows","macos"]}}))).await?;
         ensure!(out.0 == StatusCode::BAD_REQUEST);

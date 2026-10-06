@@ -305,6 +305,14 @@ fn units() -> Vec<(&'static str, &'static str)> {
             "windows-entra-channel-v1",
             rss_mdm_windows_channel::ENTRA_SQL,
         ),
+        (
+            "windows-entra-web-v1",
+            rss_mdm_windows_channel::ENTRA_WEB_SQL,
+        ),
+        (
+            "windows-entra-policy-budget-v1",
+            rss_mdm_windows_channel::ENTRA_POLICY_BUDGET_SQL,
+        ),
     ]
 }
 

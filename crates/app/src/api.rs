@@ -432,6 +432,14 @@ pub(crate) fn from_state(
         requests: state.requests.clone(),
         tenant: state.identity.tenant.to_string(),
     };
+    let windows_browser_boundary = rss_mdm_windows_channel::boundary::Envelope {
+        admission: admission.clone(),
+        host: host.clone(),
+        clock: monotonic.clone(),
+        audit_store: state.audit_store.clone(),
+        requests: state.requests.clone(),
+        tenant: state.identity.tenant.to_string(),
+    };
     let agent_boundary = rss_mdm_agent_channel::boundary::Envelope {
         admission,
         host: host.clone(),
@@ -522,9 +530,11 @@ pub(crate) fn from_state(
         management_boundary,
     );
     let mut listeners = Vec::new();
-    if let Some((enrollment, planning)) =
-        crate::windows::routers(state.windows.as_deref(), windows_state, monotonic.clone())
-    {
+    if let Some((enrollment, planning)) = crate::windows::routers(
+        state.windows.as_deref(),
+        windows_state.clone(),
+        monotonic.clone(),
+    ) {
         listeners.push((
             crate::native::NativeListenerKind::WindowsEnrollment,
             enrollment,
@@ -614,6 +624,10 @@ pub(crate) fn from_state(
         .merge(rss_mdm_apple_channel::browser_routes(
             apple_state.clone(),
             apple_boundary,
+        ))
+        .merge(rss_mdm_windows_channel::entra::browser_routes(
+            windows_state,
+            windows_browser_boundary,
         ))
         .merge(authentication)
         .merge(host_routes)

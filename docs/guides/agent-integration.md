@@ -13,14 +13,14 @@
 三种来源统一进入独立 Agent 证书链路：
 
 1. 普通用户在 Agent 内登录企业会话。Agent 先通过 `POST /api/v1/agent/enroll/requests` 提交稳定 operationId、独立随机 secret、platform 与本机私钥签名的 base64 DER CSR；桌面会话调用 `POST /api/v1/agent-requests/{id}/authorize` 授权这一个请求。Agent 和网页消费由各自仓库交付；服务端不提供网页注册、确认页或深链接。所有新请求都必须绑定 CSR，客户端不能选择期限、数量或不限量。
-2. 管理员调用 `POST /api/v1/agent-configurations` 创建一个完整签名 JSON 文件，必须明确 `quantity:{"kind":"finite","count":N}`（N > 0）或 `quantity:{"kind":"unlimited"}`，指定 targets 与 channels；可选 lifetimeSeconds 最多 365 天，默认后台 24 小时。管理客户端生成并保留 32 字节随机 secret；响应文件包含 configuration 元数据、secret 与 signature。相同创建 operation 和完整输入可重新取得原文件，数据库与审计不保存 secret。文件遗失且未保留原请求时，新建配置并撤销旧配置。`GET /api/v1/agent-configurations/{id}` 只返回元数据、状态和计量；`POST .../{id}/revoke` 禁止新交换。独立权限为 `agent_enrollment_read` / `agent_enrollment_write`。
+2. 管理员调用 `POST /api/v1/agent-configurations` 创建一个完整签名 JSON 文件，必须明确 `quantity:{"kind":"finite","count":N}`（N > 0）或 `quantity:{"kind":"unlimited"}`，指定 targets 与 channels；可选 lifetimeSeconds 最多 365 天，默认后台 24 小时。管理客户端生成并保留 32 字节随机 secret；响应文件包含 configuration 元数据、secret 与 signature。相同创建 operation 和完整输入可重新取得原文件，数据库与审计不保存 secret。网页在请求提交后清除本地 secret；响应丢失时用原 operationId 调用 `GET /api/v1/agent-configuration-operations/{operationId}`，仅原创建主体和实例可读到无秘密元数据。返回 null 表示仍未知（原创建可能迟到提交），不得自动重新创建或恢复 secret；找到旧配置后先确认撤销成功，再创建新配置。`GET /api/v1/agent-configurations/{id}` 只返回元数据、状态、reserved、consumed 和 remaining；有限数量的 remaining 为 count−reserved−consumed，无限数量为 null，期限和撤销状态仍独立生效；`POST .../{id}/revoke` 禁止新交换。独立权限为 `agent_enrollment_read` / `agent_enrollment_write`。
 3. 原生 MDM 安装在原生管理 TLS 监听器调用 `POST /api/v1/agent/enroll/native-grants`，提交 installationOperation、operationId、secret、CSR、runtime profile。服务端验证真实原生客户端证书、当前来源注册、冻结安装/软件/策略授权、已下发事实与原期限，只返回 grant。
 
 管理员配置使用配置自身的租户额度，默认责任人为 null；创建者仅作为审计身份，不占用其普通用户 20 台额度，也不构成终端 ownership。每台设备独立生成私钥、CSR、operation 和 grant secret，调用 `POST /api/v1/agent/enroll/configurations/exchange`，提交完整 file、runtime 和 installation（releaseId、candidateSha256）。同一 operation 的精确重试只返回原授权；同一配置下换 operation 重用 CSR 公钥被拒绝。`POST .../configurations/status` 使用原 configurationId、operationId 和独立设备 secret 查回授权，不重新分配。
 
 有效、未签发 grant 预留配置名额；`POST /api/v1/agent/enroll/reservations/cancel` 以 grantId、原 creationOperationId、独立 secret 和稳定取消 operation 释放未消费名额。未签发授权到期也释放。第一次持久签发意图即永久计入 consumed，包含 Unknown，后续重装、撤销注册、重试或授权到期均不重置。配置到期或撤销只禁止新分配，已分配授权仍按冻结的短期 TTL 完成；已激活设备继续在线。
 
-后台 `GET /api/v1/agent-enrollment-settings` 与 CAS `PUT` 统一持有 grantSeconds（默认 86400，上限 604800）、configurationDefaultSeconds（默认 86400，上限 31536000）和启用 platforms；PUT 使用 operationId、expectedRevision、values。设置随数据库安装持久化，不从 `agent_pki.policy` 或客户端参数读取。新普通请求、配置交换、续期、恢复及原生 grant 都读取此设置；已有授权不延长、不因平台关闭而改写冻结期限。
+后台 `GET /api/v1/agent-enrollment-settings` 与 CAS `PUT` 统一持有 grantSeconds（默认 86400，上限 604800）、configurationDefaultSeconds（默认 86400，上限 31536000）和启用 platforms；PUT 使用 operationId、expectedRevision、values。GET／PUT 响应另提供 configurationFilename=`rss-agent-enrollment.json`，创建响应使用相同 Content-Disposition 文件名；将此 UTF-8 JSON 放在 EXE／PKG 同一目录供独立 Agent #2634 读取，不改签名文件或 Agent V1 schema。设置随数据库安装持久化，不从 `agent_pki.policy` 或客户端参数读取。新普通请求、配置交换、续期、恢复及原生 grant 都读取此设置；已有授权不延长、不因平台关闭而改写冻结期限。
 
 持有 grant 的客户端调用 `POST /api/v1/agent/enroll/certificates`，提交 `wireVersion:1`、operationId、grantId、secret、CSR 和 runtime profile。服务端先持久化唯一签发意图，绑定 operation/CSR/SPKI，再请求 CA，并持久化已验证的候选证书链。精确重试返回相同候选；不同 operation、CSR 或 profile 拒绝。签发结果未知时保持同一个 issuanceId，不自动二次签发。
 

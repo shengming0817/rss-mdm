@@ -6,6 +6,7 @@ pub struct Policy {
     pub all_users: bool,
     pub users: Vec<Uuid>,
     pub terms_version: String,
+    pub terms_text: String,
     /// Explicit administrator authority for noninteractive user-credential enrollment.
     pub allow_background: bool,
 }
@@ -20,10 +21,17 @@ impl Policy {
                 .len()
                 != self.users.len()
             || self.all_users && !self.users.is_empty()
+            || self.terms_text.len() > 32768
+            || self
+                .terms_text
+                .chars()
+                .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
             || self.terms_version.len() > 128
             || self.terms_version.chars().any(char::is_control)
             || self.enabled
-                && (self.terms_version.is_empty() || !self.all_users && self.users.is_empty())
+                && (self.terms_version.is_empty()
+                    || self.terms_text.trim().is_empty()
+                    || !self.all_users && self.users.is_empty())
         {
             return Err(Error::Malformed);
         }
@@ -139,7 +147,7 @@ impl Management {
                 let old=settings_in(c,p.tenant_id(),true).await?;
                 let op=crate::operations::Operation {actor:crate::operations::Actor::from_authorized(p),key:input.operation_id,digest};
                 if let Some(value)=crate::operations::replay(c,&op).await? {return Ok((serde_json::from_str(&value).map_err(|_|Error::Conflict)?,true));}
-                if old.revision!=input.expected_revision {return Err(Error::Conflict);}
+                if old.revision!=input.expected_revision || old.policy.terms_text != input.policy.terms_text && old.policy.terms_version == input.policy.terms_version {return Err(Error::Conflict);}
                 let value=Revision {revision:old.revision+1};
                 sqlx::query("INSERT INTO mdm_windows.entra_policy(tenant_id,revision,document) VALUES($1::uuid,$2,$3) ON CONFLICT(tenant_id) DO UPDATE SET revision=excluded.revision,document=excluded.document")
                     .bind(p.tenant_id()).bind(value.revision).bind(serde_json::to_value(&input.policy).map_err(|_|Error::Malformed)?).execute(&mut *c).await.map_err(db)?;

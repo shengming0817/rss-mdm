@@ -12,7 +12,12 @@ use std::sync::Arc;
 type App = Arc<Option<Arc<Management>>>;
 pub fn routes(service: Option<Arc<Management>>) -> Router {
     Router::new()
-        .route("/windows/entra-policy", get(read).put(update))
+        .route(
+            "/windows/entra-policy",
+            get(read)
+                .put(update)
+                .layer(axum::extract::DefaultBodyLimit::max(128 * 1024)),
+        )
         .with_state(Arc::new(service))
 }
 struct Failure(rss_mdm_windows_channel::Error);

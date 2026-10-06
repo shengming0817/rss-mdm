@@ -82,6 +82,231 @@ fn browser(host: &Host) -> crate::test_support::Browser {
         ..Default::default()
     }
 }
+async fn start_tou(
+    host: &Host,
+    token: &str,
+    join: bool,
+) -> anyhow::Result<(String, crate::test_support::Browser, Value)> {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+    let mut path = format!(
+        "/api/v1/windows/entra/terms?redirect_uri=ms-appx-web%3A%2F%2FMicrosoft.AAD.BrokerPlugin%2Fterms&client-request-id={}&api-version=1.0",
+        Uuid::new_v4()
+    );
+    if join {
+        path.push_str("&mode=azureadjoin");
+    }
+    let bad = host
+        .browser
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(path.replace("Microsoft.AAD.BrokerPlugin", "untrusted.test"))
+                .header("host", "mdm.example.test")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())?,
+        )
+        .await?;
+    ensure!(
+        bad.status() == StatusCode::BAD_REQUEST && bad.headers().get("location").is_none(),
+        "untrusted native callback accepted"
+    );
+    let start = host
+        .browser
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(path)
+                .header("host", "mdm.example.test")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())?,
+        )
+        .await?;
+    ensure!(
+        start.status() == StatusCode::FOUND,
+        "start {}",
+        start.status()
+    );
+    ensure!(start.headers()["location"] == "/enrollment/windows/entra/terms");
+    let cookie = start.headers()["set-cookie"]
+        .to_str()?
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let mut flow = crate::test_support::Browser::default();
+    let (key, value) = cookie.split_once('=').unwrap();
+    flow.cookies.insert(key.into(), value.into());
+    let (status, context) = flow
+        .call(
+            &host.browser,
+            Method::GET,
+            "/api/v1/windows/entra/terms/context",
+            None,
+        )
+        .await?;
+    ensure!(status == StatusCode::OK, "context {status} {context}");
+    ensure!(
+        context["termsVersion"] == "2026-10"
+            && context["termsText"] == "Fixture device management terms"
+    );
+    ensure!(
+        context.get("token").is_none()
+            && context.get("opaqueBlob").is_none()
+            && context.get("callback").is_none()
+    );
+    Ok((cookie, flow, context))
+}
+async fn consent_cleanup_fixture() -> anyhow::Result<(sqlx::PgConnection, String, String)> {
+    use sqlx::Connection;
+    let mut connection = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_tenant())
+        .execute(&mut connection)
+        .await?;
+    let expired_digest = format!("{:064x}", Uuid::new_v4().as_u128());
+    let live_digest = format!("{:064x}", Uuid::new_v4().as_u128());
+    for (digest, seconds) in [(&expired_digest, -1), (&live_digest, 300)] {
+        sqlx::query("INSERT INTO mdm_windows.entra_consents(tenant_id,digest,entra_tenant,entra_user,revision,expires_at) VALUES($1::uuid,$2,$3,$4,1,clock_timestamp()+$5*interval '1 second')")
+            .bind(case_tenant()).bind(digest).bind(Uuid::new_v4()).bind(Uuid::new_v4()).bind(seconds).execute(&mut connection).await?;
+    }
+    Ok((connection, expired_digest, live_digest))
+}
+async fn tou_flow(host: &Host, token: &str, join: bool) -> anyhow::Result<String> {
+    use axum::{
+        body::{Body, to_bytes},
+        http::Request,
+    };
+    use tower::ServiceExt;
+    let (cookie, mut flow, context) = start_tou(host, token, join).await?;
+    let (mut connection, expired_digest, live_digest) = consent_cleanup_fixture().await?;
+    let form = format!(
+        "csrfToken={}&accepted=true",
+        context["csrfToken"].as_str().unwrap()
+    );
+    let request = |origin: &str, body: String| {
+        Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/windows/entra/terms/finish")
+            .header("host", "mdm.example.test")
+            .header("cookie", &cookie)
+            .header("origin", origin)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+    };
+    let denied = host
+        .browser
+        .clone()
+        .oneshot(request("https://other.test", form.clone())?)
+        .await?;
+    ensure!(
+        denied.status() == StatusCode::FORBIDDEN,
+        "cross origin accepted"
+    );
+    let denied = host
+        .browser
+        .clone()
+        .oneshot(request(
+            "https://mdm.example.test",
+            "csrfToken=wrong&accepted=true".into(),
+        )?)
+        .await?;
+    ensure!(
+        denied.status() == StatusCode::FORBIDDEN,
+        "wrong CSRF accepted"
+    );
+    let accepted = host
+        .browser
+        .clone()
+        .oneshot(request("https://mdm.example.test", form.clone())?)
+        .await?;
+    let status = accepted.status();
+    let body = to_bytes(accepted.into_body(), 4096).await?;
+    ensure!(
+        status == StatusCode::FOUND,
+        "finish {status} {}",
+        String::from_utf8_lossy(&body)
+    );
+    // Finish retries return the exact native continuation, without a second consent.
+    let accepted = host
+        .browser
+        .clone()
+        .oneshot(request("https://mdm.example.test", form.clone())?)
+        .await?;
+    let location = accepted.headers()["location"].to_str()?.to_owned();
+    let refreshed = crate::api::from_state(
+        host.app.clone(),
+        "mdm.example.test".into(),
+        host.ingress_clock.clone(),
+    )
+    .browser;
+    let retry = refreshed
+        .clone()
+        .oneshot(request("https://mdm.example.test", form)?)
+        .await?;
+    ensure!(retry.status() == StatusCode::FOUND && retry.headers()["location"] == location);
+    let opposite = host
+        .browser
+        .clone()
+        .oneshot(request(
+            "https://mdm.example.test",
+            format!(
+                "csrfToken={}&accepted=false",
+                context["csrfToken"].as_str().unwrap()
+            ),
+        )?)
+        .await?;
+    ensure!(
+        opposite.status()
+            == if join {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::CONFLICT
+            },
+        "opposite decision replayed"
+    );
+    ensure!(context["canDecline"] == !join);
+    let expired_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM mdm_windows.entra_consents WHERE tenant_id=$1::uuid AND digest=$2",
+    )
+    .bind(case_tenant())
+    .bind(&expired_digest)
+    .fetch_one(&mut connection)
+    .await?;
+    let live_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM mdm_windows.entra_consents WHERE tenant_id=$1::uuid AND digest=$2",
+    )
+    .bind(case_tenant())
+    .bind(&live_digest)
+    .fetch_one(&mut connection)
+    .await?;
+    ensure!(
+        expired_count == 0 && live_count == 1,
+        "consent cleanup removed live authority or retained expired authority"
+    );
+    let id = Uuid::parse_str(cookie.split_once('=').unwrap().1.split('.').next().unwrap())?;
+    sqlx::query("UPDATE mdm_windows.entra_web_flows SET expires_at=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(id).execute(&mut connection).await?;
+    let expired = flow
+        .call(
+            &refreshed,
+            Method::GET,
+            "/api/v1/windows/entra/terms/context",
+            None,
+        )
+        .await?;
+    ensure!(
+        expired.0 == StatusCode::UNAUTHORIZED,
+        "expired flow remained usable"
+    );
+    Ok(location
+        .split_once("&OpaqueBlob=")
+        .unwrap()
+        .1
+        .split('&')
+        .next()
+        .unwrap()
+        .into())
+}
 fn issue(host: &Host, token: String, opaque: Option<&str>) -> anyhow::Result<soap::Message> {
     let mut message = soap::decode(
         include_bytes!("../../../windows-mdm/tests/fixtures/issue-request.xml"),
@@ -176,6 +401,7 @@ async fn consent_native_issuance_replay_scope_and_revocation() -> anyhow::Result
     let binding = rss_mdm_windows_channel::entra::Config {
         provider_id: Uuid::new_v4(),
         token: profile,
+        native_callbacks: vec!["ms-appx-web://Microsoft.AAD.BrokerPlugin/terms".into()],
     };
     let mut host = Host::with_entra(binding, verifier, true).await?;
     host.listen().await?;
@@ -201,7 +427,7 @@ async fn consent_native_issuance_replay_scope_and_revocation() -> anyhow::Result
         )
         .await?;
     ensure!(status == StatusCode::OK && read["policy"]["enabled"] == false);
-    let policy = json!({"enabled":true,"allUsers":false,"users":[user,scoped_other],"termsVersion":"2026-10","allowBackground":false});
+    let policy = json!({"enabled":true,"allUsers":false,"users":[user,scoped_other],"termsVersion":"2026-10","termsText":"Fixture device management terms","allowBackground":false});
     let (status, updated) = admin
         .call(
             &host.browser,
@@ -215,30 +441,22 @@ async fn consent_native_issuance_replay_scope_and_revocation() -> anyhow::Result
         send(&host, &initial).await?.0 == StatusCode::INTERNAL_SERVER_ERROR,
         "missing consent admitted enrollment"
     );
-    let terms_url = format!(
+    let native_terms = format!(
         "{}/api/v1/windows/entra/terms",
         host.app.windows()?.config.enrollment.origin
     );
-    let terms = host.client.get(&terms_url).bearer_auth(&tou).send().await?;
     ensure!(
-        terms.status() == StatusCode::OK,
-        "TOU must accept personnel token without deviceid"
+        host.client
+            .get(native_terms)
+            .bearer_auth(&tou)
+            .send()
+            .await?
+            .status()
+            == StatusCode::NOT_FOUND,
+        "retired native TOU route remains"
     );
-    ensure!(terms.json::<Value>().await?["termsVersion"] == "2026-10");
-    let accept = host
-        .client
-        .post(&terms_url)
-        .bearer_auth(&tou)
-        .json(&json!({"termsVersion":"2026-10","accepted":true}))
-        .send()
-        .await?;
-    ensure!(
-        accept.status() == StatusCode::OK,
-        "TOU accept {}",
-        accept.status()
-    );
-    let consent: Value = accept.json().await?;
-    let opaque = consent["opaqueBlob"].as_str().unwrap();
+    let opaque_owned = tou_flow(&host, &tou, false).await?;
+    let opaque = opaque_owned.as_str();
     ensure!(scalar(&host,"SELECT count(*) FROM identity_authority.accounts WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid").await?==accounts,"TOU or denied scope created account");
     let other = issue(
         &host,
@@ -421,20 +639,11 @@ async fn consent_native_issuance_replay_scope_and_revocation() -> anyhow::Result
         send(&host, &valid).await?.0 == StatusCode::OK,
         "personal quota zero denied an exact organization retry"
     );
-    let accept = host
-        .client
-        .post(&terms_url)
-        .bearer_auth(&tou)
-        .json(&json!({"termsVersion":"2026-10","accepted":true}))
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<Value>()
-        .await?;
+    let another_opaque = tou_flow(&host, &tou, true).await?;
     let another = issue(
         &host,
         jwt.token(user, Some(Uuid::new_v4()), &[])?,
-        accept["opaqueBlob"].as_str(),
+        Some(&another_opaque),
     )?;
     ensure!(
         send(&host, &another).await?.0 == StatusCode::OK,
@@ -459,11 +668,39 @@ async fn consent_native_issuance_replay_scope_and_revocation() -> anyhow::Result
         windows["used"] == 0 && windows["active"] == 0 && windows["reserved"] == 0,
         "new organization device consumed personal quota: {usage}"
     );
-    let (status,value)=admin.call(&host.browser,Method::PUT,"/api/v1/windows/entra-policy",Some(json!({"expectedRevision":1,"operationId":Uuid::new_v4(),"policy":{"enabled":false,"allUsers":false,"users":[user],"termsVersion":"2026-10","allowBackground":false}}))).await?;
+    let (status,value)=admin.call(&host.browser,Method::PUT,"/api/v1/windows/entra-policy",Some(json!({"expectedRevision":1,"operationId":Uuid::new_v4(),"policy":{"enabled":false,"allUsers":false,"users":[user],"termsVersion":"2026-10","termsText":"Fixture device management terms","allowBackground":false}}))).await?;
     ensure!(status == StatusCode::OK, "revoke {status} {value}");
     ensure!(
         send(&host, &valid).await?.0 == StatusCode::INTERNAL_SERVER_ERROR,
         "revoked policy allowed replay"
+    );
+    let mut revision = 2;
+    for text in ["x".repeat(20 * 1024), "\"".repeat(32768)] {
+        let policy = json!({"enabled":false,"allUsers":false,"users":[user],"termsVersion":format!("large-{revision}"),"termsText":text,"allowBackground":false});
+        let (status,value)=admin.call(&host.browser,Method::PUT,"/api/v1/windows/entra-policy",Some(json!({"expectedRevision":revision,"operationId":Uuid::new_v4(),"policy":policy}))).await?;
+        ensure!(
+            status == StatusCode::OK,
+            "valid large terms rejected {status} {value}"
+        );
+        revision += 1;
+        let (_, read) = admin
+            .call(
+                &host.browser,
+                Method::GET,
+                "/api/v1/windows/entra-policy",
+                None,
+            )
+            .await?;
+        ensure!(
+            read["policy"]["termsText"] == text,
+            "terms did not round trip"
+        );
+    }
+    let oversized = json!({"enabled":false,"allUsers":false,"users":[user],"termsVersion":"oversized","termsText":"x".repeat(32769),"allowBackground":false});
+    let (status,_)=admin.call(&host.browser,Method::PUT,"/api/v1/windows/entra-policy",Some(json!({"expectedRevision":revision,"operationId":Uuid::new_v4(),"policy":oversized}))).await?;
+    ensure!(
+        status == StatusCode::BAD_REQUEST,
+        "oversized terms admitted"
     );
     host.close().await?;
     server.abort();
@@ -503,6 +740,7 @@ async fn background_policy_does_not_enable_identity_jit() -> anyhow::Result<()> 
         rss_mdm_windows_channel::entra::Config {
             provider_id: Uuid::new_v4(),
             token: profile,
+            native_callbacks: vec!["ms-appx-web://Microsoft.AAD.BrokerPlugin/terms".into()],
         },
         verifier,
         false,
@@ -511,7 +749,7 @@ async fn background_policy_does_not_enable_identity_jit() -> anyhow::Result<()> 
     host.listen().await?;
     let user = Uuid::new_v4();
     let mut admin = browser(&host);
-    let (status,value)=admin.call(&host.browser,Method::PUT,"/api/v1/windows/entra-policy",Some(json!({"expectedRevision":0,"operationId":Uuid::new_v4(),"policy":{"enabled":true,"allUsers":false,"users":[user],"termsVersion":"2026-10","allowBackground":true}}))).await?;
+    let (status,value)=admin.call(&host.browser,Method::PUT,"/api/v1/windows/entra-policy",Some(json!({"expectedRevision":0,"operationId":Uuid::new_v4(),"policy":{"enabled":true,"allUsers":false,"users":[user],"termsVersion":"2026-10","termsText":"Fixture device management terms","allowBackground":true}}))).await?;
     ensure!(
         status == StatusCode::OK,
         "background policy {status} {value}"

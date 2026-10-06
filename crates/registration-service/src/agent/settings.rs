@@ -1,6 +1,25 @@
 //! Registration-owned tenant defaults; all new grants read the same persisted settings.
 use super::*;
 use rss_mdm_authorization_service::Permission;
+/// Installer consumer reads this exact UTF-8 JSON basename beside the EXE/PKG.
+pub const CONFIGURATION_FILENAME: &str = "rss-agent-enrollment.json";
+
+/// Presentation metadata stays outside persisted immutable settings receipts.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeliverySettings {
+    #[serde(flatten)]
+    pub settings: Settings,
+    pub configuration_filename: &'static str,
+}
+impl From<Settings> for DeliverySettings {
+    fn from(settings: Settings) -> Self {
+        Self {
+            settings,
+            configuration_filename: CONFIGURATION_FILENAME,
+        }
+    }
+}
 /// Maximum lifetime of an individual machine grant.
 pub const GRANT_MAX_SECONDS: u32 = 604800;
 /// Maximum lifetime of a reusable administrator configuration.

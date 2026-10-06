@@ -193,10 +193,6 @@ pub fn routers(
             "/EnrollmentServer/Discovery.svc",
             axum::routing::get(discovery_probe).post(discover),
         )
-        .route(
-            "/api/v1/windows/entra/terms",
-            axum::routing::get(entra::terms).post(entra::accept),
-        )
         .route("/EnrollmentServer/Policy.svc", post(policy))
         .route("/EnrollmentServer/Enrollment.svc", post(issue))
         .route("/EnrollmentConfiguration", post(linked::discover))
@@ -682,3 +678,9 @@ pub async fn retire_in(
 }
 
 pub const ENTRA_SQL: &str = include_str!("../schema/entra.sql");
+
+/// Durable browser TOU flows and explicit legacy policy upgrade.
+pub const ENTRA_WEB_SQL: &str = include_str!("../schema/entra-web.sql");
+
+/// Full policy document budget, including JSON escaping.
+pub const ENTRA_POLICY_BUDGET_SQL: &str = include_str!("../schema/entra-policy-budget.sql");

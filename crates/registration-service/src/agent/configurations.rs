@@ -115,6 +115,38 @@ pub struct Read {
     pub responsible_user: Option<rss_mdm_authorization_service::User>,
     pub reserved: u64,
     pub consumed: u64,
+    /// Quantity authority only; expiry and revocation remain separate admission checks.
+    pub remaining: Option<u64>,
+}
+async fn read_on(c: &mut PgConnection, tenant: &str, row: &PgRow) -> Result<Read, Error> {
+    let configuration = document(row)?;
+    let (reserved, consumed) = usage(c, tenant, configuration.configuration_id).await?;
+    let state = if row.try_get::<String, _>("state").map_err(db)? == "revoked" {
+        "revoked"
+    } else if configuration.expires_at <= now(c).await? {
+        "expired"
+    } else {
+        "available"
+    }
+    .into();
+    let remaining = match &configuration.quantity {
+        wire_config::Quantity::Finite { count } => Some(
+            u64::from(count.get())
+                .checked_sub(reserved)
+                .and_then(|n| n.checked_sub(consumed))
+                .ok_or(Error::Corrupt)?,
+        ),
+        wire_config::Quantity::Unlimited => None,
+    };
+    Ok(Read {
+        configuration,
+        state,
+        created_by: row.try_get("creator").map_err(db)?,
+        responsible_user: None,
+        reserved,
+        consumed,
+        remaining,
+    })
 }
 fn configuration_secret(tenant: &str, id: Uuid, secret: &runtime::Secret) -> String {
     let mut h = Sha256::new();
@@ -238,23 +270,37 @@ impl Service {
         let mut tx = self.store.begin(p.tenant_id()).await?;
         authorize_on(&mut tx, p, Permission::AgentEnrollmentRead).await?;
         let row = row(&mut tx, p.tenant_id(), id).await?;
-        let (reserved, consumed) = usage(&mut tx, p.tenant_id(), id).await?;
-        let state = if row.try_get::<String, _>("state").map_err(db)? == "revoked" {
-            "revoked"
-        } else if document(&row)?.expires_at <= now(&mut tx).await? {
-            "expired"
-        } else {
-            "available"
+        let out = read_on(&mut tx, p.tenant_id(), &row).await?;
+        p.check_live()?;
+        tx.commit().await.map_err(db)?;
+        Ok(out)
+    }
+    /// Resolve a possibly committed create without recovering its transferable secret.
+    /// Absence is an unknown outcome: a concurrent create can still commit later.
+    pub async fn configuration_operation(
+        &self,
+        p: &AuthorizedPrincipal,
+        operation: Uuid,
+    ) -> Result<Option<Read>, Failure> {
+        p.manage(Permission::AgentEnrollmentRead)?;
+        if p.tenant_id() != self.tenant.to_string() {
+            return Err(Error::Forbidden.into());
         }
-        .into();
-        let out = Read {
-            configuration: document(&row)?,
-            state,
-            created_by: row.try_get("creator").map_err(db)?,
-            responsible_user: None,
-            reserved,
-            consumed,
+        if operation.is_nil() {
+            return Err(Error::Malformed.into());
+        }
+        let mut tx = self.store.begin(p.tenant_id()).await?;
+        authorize_on(&mut tx, p, Permission::AgentEnrollmentRead).await?;
+        let id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM mdm_access.agent_configurations WHERE tenant_id=$1::uuid AND operation_id=$2 AND creator=$3 AND instance=$4")
+            .bind(p.tenant_id()).bind(operation).bind(p.principal_id()).bind(p.instance_id())
+            .fetch_optional(&mut *tx).await.map_err(db)?;
+        let out = if let Some(id) = id {
+            let row = row(&mut tx, p.tenant_id(), id).await?;
+            Some(read_on(&mut tx, p.tenant_id(), &row).await?)
+        } else {
+            None
         };
+        p.check_live()?;
         tx.commit().await.map_err(db)?;
         Ok(out)
     }

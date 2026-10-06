@@ -25,6 +25,8 @@ use zeroize::Zeroizing;
 pub struct Config {
     pub provider_id: Uuid,
     pub token: EntraTokenProfile,
+    /// Exact native TOU continuation URIs configured for this deployment.
+    pub native_callbacks: Vec<String>,
 }
 pub struct Entra {
     pub authority: EntraAuthority,
@@ -35,6 +37,28 @@ impl Entra {
     pub fn new(authority: EntraAuthority, tenant: TenantId, config: Config) -> Result<Self, Error> {
         config.token.validate().map_err(|_| Error::Malformed)?;
         if config.provider_id.is_nil() || config.token.required_scopes.is_empty() {
+            return Err(Error::Malformed);
+        }
+        if config.native_callbacks.is_empty()
+            || config.native_callbacks.len() > 16
+            || config
+                .native_callbacks
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != config.native_callbacks.len()
+            || config.native_callbacks.iter().any(|uri| {
+                if uri.len() > 2048 || uri.contains('#') {
+                    return true;
+                }
+                let Ok(uri) = uri.parse::<axum::http::Uri>() else {
+                    return true;
+                };
+                !matches!(uri.scheme_str(), Some("https" | "ms-appx-web"))
+                    || uri.authority().is_none()
+                    || uri.query().is_some()
+            })
+        {
             return Err(Error::Malformed);
         }
         Ok(Self {
@@ -74,7 +98,8 @@ mod policy;
 mod protocol;
 use admission::admit;
 use consent::consent;
-pub use consent::{Accept, accept, terms};
+mod web;
 use policy::settings_in;
 pub use policy::{Management, Policy, Revision, Settings, Update};
 pub(crate) use protocol::enrollment;
+pub use web::browser_routes;

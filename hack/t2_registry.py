@@ -380,7 +380,7 @@ app_family('windows',
            fixtures=('windows',), namespace='windows::t2')
 MODULES['windows.declared'] = replace(MODULES['windows.declared'], support_inputs=(*MODULES['windows.declared'].support_inputs, 'crates/app/tests/windows/support.rs', 'crates/app/tests/device/support.rs', 'crates/app/tests/enrollment/support.rs', 'crates/app/tests/execution/support.rs', 'crates/app/tests/execution/support/native.rs', 'crates/app/tests/execution/support/configuration.rs'), db_mode='fresh', scope='objects')
 add('windows.entra', selectors=('windows::t2::entra::',), profile='product',fixtures=('windows','identity','local_worker'),
-    sources=('crates/windows-channel/src/entra/*','crates/windows-channel/schema/entra.sql','crates/registration-service/schema/windows-entra.sql','crates/authorization-service/src/entra.rs','crates/management-http/src/windows_entra.rs'),
+    sources=('crates/windows-channel/src/entra/*','crates/windows-channel/schema/entra.sql','crates/windows-channel/schema/entra-web.sql','crates/windows-channel/schema/entra-policy-budget.sql','crates/registration-service/schema/windows-entra.sql','crates/authorization-service/src/entra.rs','crates/management-http/src/windows_entra.rs'),
     support=('crates/app/tests/windows/support.rs','crates/app/tests/windows/mod.rs'),tests=('crates/app/tests/windows/entra.rs',))
 MODULES['windows.entra']=replace(MODULES['windows.entra'],scope='tenant',policies=(CasePolicy('windows::t2::entra::consent_native_issuance_replay_scope_and_revocation','fresh','objects'),))
 for name in ('windows.issuance','windows.enrollment','windows.management','windows.commands','windows.retention','windows.limits','execution.commands.windows','execution.commands.configuration','execution.commands.onboarding'):

@@ -146,6 +146,15 @@
       "read_write": true,
       "updates": [],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_windows",
+      "table": "entra_web_flows",
+      "read_write": true,
+      "updates": [
+        "accepted"
+      ],
+      "delete_policy": "expires_at<clock_timestamp"
     }
   ],
   "functions": [],
