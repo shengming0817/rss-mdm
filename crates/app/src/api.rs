@@ -97,6 +97,10 @@ pub(crate) async fn application_fixture(
         )
         .await?;
     let compiled = config.compile()?;
+    access
+        .authorization_store()
+        .require_management_initializer(&compiled.identity_management)
+        .await?;
     let identity = match identity {
         Some(identity) => identity,
         None => {

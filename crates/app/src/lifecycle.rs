@@ -112,6 +112,13 @@ pub async fn serve(
                             .claim_tenant_use(&compiled.config)
                             .await
                             .map_err(|error| ProcessError::at("startup.tenant_binding", error))?;
+                        access
+                            .authorization_store()
+                            .require_management_initializer(&compiled.identity_management)
+                            .await
+                            .map_err(|error| {
+                                ProcessError::at("startup.identity_management", error.into())
+                            })?;
                         let notifications = crate::worker_wake::Listener::new(
                             compiled
                                 .config
