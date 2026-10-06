@@ -1,5 +1,4 @@
 //! The product owns one bounded installer; immutable SQL units retain their component owners.
-pub mod pki;
 use sha2::{Digest, Sha256};
 use sqlx::{Connection, PgConnection, Row, postgres::PgConnectOptions};
 use std::time::Duration;
@@ -33,38 +32,12 @@ pub struct Installation {
     pub instance_id: String,
     pub target: [u8; 16],
     pub lineage: [u8; 16],
-    pub epoch: i64,
-    pub tenants: Vec<String>,
 }
 impl Installation {
-    fn configuration(&self) -> serde_json::Value {
-        let mut value =
-            serde_json::to_value(self).expect("installation contains only scalar values");
-        let mut tenants = self.tenants.clone();
-        tenants.sort();
-        value["tenants"] = serde_json::json!(tenants);
-        value
-    }
     pub(crate) fn validate(&self) -> Result<rss_identity_core::InstanceId> {
-        use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};
         let invalid = || MigrationError::at("installation", "invalid instance or storage binding");
-        let mut tenants = Vec::new();
-        for value in &self.tenants {
-            let tenant = rss_request_context::TenantId::parse(value).map_err(|_| invalid())?;
-            if tenant.to_string() != *value || tenants.contains(&tenant) {
-                return Err(invalid());
-            }
-            tenants.push(tenant);
-        }
-        if tenants.is_empty() || tenants.len() > 1024 {
-            return Err(invalid());
-        }
-        let epoch = Epoch::new(self.epoch).map_err(|_| invalid())?;
-        ExecutionBinding::new(
-            StorageIdentity::new(self.target, self.lineage).map_err(|_| invalid())?,
-            tenants.into_iter().map(|t| (t, epoch)).collect(),
-        )
-        .map_err(|_| invalid())?;
+        rss_transactional_messaging::fence::StorageIdentity::new(self.target, self.lineage)
+            .map_err(|_| invalid())?;
         let instance =
             rss_identity_core::InstanceId::parse(&self.instance_id).map_err(|_| invalid())?;
         if instance.to_string() != self.instance_id {
@@ -101,7 +74,7 @@ pub async fn migrate(options: &PgConnectOptions, installation: &Installation) ->
         )),
     }
 }
-fn baseline_units() -> Vec<(&'static str, &'static str)> {
+fn units() -> Vec<(&'static str, &'static str)> {
     vec![
         ("audit-v1", rss_audit_postgres::MIGRATION_SQL),
         ("audit-ledger-v1", rss_ledger_postgres::MIGRATION_SQL),
@@ -291,58 +264,55 @@ fn baseline_units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_certificate_archive_service::INSTALL_SQL,
         ),
         ("device-pki-v1", rss_mdm_pki_service::INSTALL_SQL),
+        (
+            "self-service-access-v1",
+            include_str!("../schema/self-service-access.sql"),
+        ),
+        (
+            "enrollment-progress-v1",
+            rss_mdm_registration_service::ENROLLMENT_PROGRESS_SQL,
+        ),
+        (
+            "apple-account-authority-v1",
+            rss_mdm_registration_service::APPLE_ACCOUNT_SQL,
+        ),
+        (
+            "apple-account-channel-v1",
+            rss_mdm_apple_channel::ACCOUNT_ENROLLMENT_SQL,
+        ),
+        (
+            "registration-agent-configurations-v1",
+            rss_mdm_registration_service::AGENT_CONFIGURATIONS_SQL,
+        ),
+        (
+            "software-agent-packages-v1",
+            rss_mdm_software_service::agent_packages::INSTALL_SQL,
+        ),
+        (
+            "apple-organizations-v1",
+            rss_mdm_apple_channel::ORGANIZATIONS_SQL,
+        ),
+        (
+            "apple-ade-authority-v1",
+            rss_mdm_registration_service::APPLE_ADE_SQL,
+        ),
+        ("apple-ade-channel-v1", rss_mdm_apple_channel::ADE_SQL),
+        (
+            "windows-entra-authority-v1",
+            rss_mdm_registration_service::WINDOWS_ENTRA_SQL,
+        ),
+        (
+            "windows-entra-channel-v1",
+            rss_mdm_windows_channel::ENTRA_SQL,
+        ),
     ]
 }
-fn units() -> Vec<(&'static str, &'static str)> {
-    let mut units = baseline_units();
-    units.push((
-        "self-service-access-v1",
-        include_str!("../schema/self-service-access.sql"),
-    ));
-    units.push((
-        "enrollment-progress-v1",
-        rss_mdm_registration_service::ENROLLMENT_PROGRESS_SQL,
-    ));
-    units.push((
-        "apple-account-authority-v1",
-        rss_mdm_registration_service::APPLE_ACCOUNT_SQL,
-    ));
-    units.push((
-        "apple-account-channel-v1",
-        rss_mdm_apple_channel::ACCOUNT_ENROLLMENT_SQL,
-    ));
-    units.push((
-        "registration-agent-configurations-v1",
-        rss_mdm_registration_service::AGENT_CONFIGURATIONS_SQL,
-    ));
-    units.push((
-        "software-agent-packages-v1",
-        rss_mdm_software_service::agent_packages::INSTALL_SQL,
-    ));
-    units.push((
-        "apple-organizations-v1",
-        rss_mdm_apple_channel::ORGANIZATIONS_SQL,
-    ));
-    units.push((
-        "apple-ade-authority-v1",
-        rss_mdm_registration_service::APPLE_ADE_SQL,
-    ));
-    units.push(("apple-ade-channel-v1", rss_mdm_apple_channel::ADE_SQL));
-    units.push((
-        "windows-entra-authority-v1",
-        rss_mdm_registration_service::WINDOWS_ENTRA_SQL,
-    ));
-    units.push((
-        "windows-entra-channel-v1",
-        rss_mdm_windows_channel::ENTRA_SQL,
-    ));
-    units
-}
+
 /// Exact immutable migration units embedded in this executable, without database access.
 pub fn manifest() -> serde_json::Value {
     serde_json::json!({"units":units().into_iter().map(|(name, sql)| serde_json::json!({"name":name,"sha256":format!("{:x}", Sha256::digest(sql))})).collect::<Vec<_>>()})
 }
-async fn migrate_on(conn: &mut PgConnection, installation: &Installation) -> Result<()> {
+pub(crate) async fn migrate_on(conn: &mut PgConnection, installation: &Installation) -> Result<()> {
     migrate_units(conn, installation, &units()).await
 }
 async fn migrate_units(
@@ -355,14 +325,7 @@ async fn migrate_units(
         .execute(&mut *conn)
         .await
         .map_err(|_| MigrationError::at("installation", "session setup"))?;
-    let owner:bool=sqlx::query_scalar(r#"
-SELECT current_user='mdm_owner' AND session_user='mdm_owner'
- AND has_database_privilege(current_user,current_database(),'CREATE')
- AND has_schema_privilege(current_user,'public','CREATE')
- AND NOT EXISTS(SELECT 1 FROM pg_roles r WHERE (r.rolname=current_user OR pg_has_role(current_user,r.oid,'MEMBER'))
- AND (r.rolsuper OR r.rolbypassrls OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication))
-"#).fetch_one(&mut *conn).await.map_err(|_|MigrationError::at("installation","owner probe unavailable"))?;
-    if !owner {
+    if !owner_admitted(conn).await? {
         return Err(MigrationError::at(
             "installation",
             "mdm_owner admission rejected",
@@ -385,7 +348,7 @@ SELECT current_user='mdm_owner' AND session_user='mdm_owner'
             "existing ledger differs or is incomplete",
         ));
     }
-    // An upgrade must not mutate an installation addressed by different coordinates.
+    // Replay never changes an installation addressed by different coordinates.
     if !installed.is_empty() {
         verify_installation(conn, installation, instance).await?;
     }
@@ -519,39 +482,54 @@ fn accepted_ledger(
     if matches(&candidate) {
         return true;
     }
-    // Only complete, explicitly released predecessors may upgrade; arbitrary prefixes fail.
-    if current != units() {
-        return false;
+    false
+}
+
+pub(crate) async fn verify_current_manifest(
+    conn: &mut PgConnection,
+) -> std::result::Result<(), sqlx::Error> {
+    let installed: Vec<(String, String, bool)> =
+        sqlx::query_as("SELECT name,digest,complete FROM public.mdm_migrations")
+            .fetch_all(conn)
+            .await?;
+    if installed.is_empty() || !accepted_ledger(&installed, &units()) {
+        return Err(sqlx::Error::Protocol("incomplete installation".into()));
     }
-    let predecessor = baseline_units()
-        .into_iter()
-        .map(|(name, sql)| (name, format!("{:x}", Sha256::digest(sql))))
-        .collect::<BTreeMap<_, _>>();
-    let previous = current
-        .iter()
-        .take_while(|(name, _)| *name != "enrollment-progress-v1")
-        .map(|(name, sql)| (*name, format!("{:x}", Sha256::digest(sql))))
-        .collect::<BTreeMap<_, _>>();
-    let before_account = current
-        .iter()
-        .take_while(|(name, _)| *name != "apple-account-authority-v1")
-        .map(|(name, sql)| (*name, format!("{:x}", Sha256::digest(sql))))
-        .collect::<BTreeMap<_, _>>();
-    let before_configurations = current
-        .iter()
-        .take_while(|(name, _)| *name != "registration-agent-configurations-v1")
-        .map(|(name, sql)| (*name, format!("{:x}", Sha256::digest(sql))))
-        .collect::<BTreeMap<_, _>>();
-    let before_ade = current
-        .iter()
-        .take_while(|(name, _)| *name != "apple-organizations-v1")
-        .map(|(name, sql)| (*name, format!("{:x}", Sha256::digest(sql))))
-        .collect::<BTreeMap<_, _>>();
-    matches(&predecessor)
-        || matches(&previous)
-        || matches(&before_account)
-        || matches(&before_configurations)
-        || matches(&before_ade)
+    Ok(())
+}
+
+impl AuditMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Plain => "plain",
+            Self::Ledger => "ledger",
+        }
+    }
+}
+/// Database-authenticated installation operator; runtime profiles never inherit it.
+pub(crate) async fn owner_admitted(conn: &mut PgConnection) -> Result<bool> {
+    sqlx::query_scalar(r#"
+SELECT current_user='mdm_owner' AND session_user='mdm_owner'
+ AND has_database_privilege(current_user,current_database(),'CREATE')
+ AND has_schema_privilege(current_user,'public','CREATE')
+ AND NOT EXISTS(SELECT 1 FROM pg_roles r WHERE (r.rolname=current_user OR pg_has_role(current_user,r.oid,'MEMBER'))
+ AND (r.rolsuper OR r.rolbypassrls OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication))
+"#).fetch_one(conn).await.map_err(|_| MigrationError::at("installation", "owner probe unavailable"))
+}
+/// The one stable attestation consumed by installer, operator and runtime.
+pub(crate) async fn verify_identity(
+    conn: &mut PgConnection,
+    installation: &Installation,
+) -> std::result::Result<(), sqlx::Error> {
+    let matched: bool = sqlx::query_scalar("SELECT count(*)=1 AND coalesce(bool_and(instance_id=$1::uuid AND target=$2 AND lineage=$3 AND audit_mode=$4),false) FROM public.mdm_installation")
+        .bind(&installation.instance_id).bind(installation.target.as_slice()).bind(installation.lineage.as_slice()).bind(installation.audit_mode.as_str())
+        .fetch_one(conn).await?;
+    if !matched {
+        return Err(sqlx::Error::Protocol(
+            "installation identity mismatch".into(),
+        ));
+    }
+    Ok(())
 }
 
 async fn install_identity(
@@ -588,18 +566,13 @@ async fn install_identity(
         .bind(installation.lineage.as_slice())
         .execute(&mut *tx)
         .await?;
-        sqlx::query("INSERT INTO public.mdm_installation(configuration) VALUES($1)")
-            .bind(installation.configuration())
+        sqlx::query("INSERT INTO public.mdm_installation(instance_id,target,lineage,audit_mode) VALUES($1::uuid,$2,$3,$4)")
+            .bind(&installation.instance_id)
+            .bind(installation.target.as_slice())
+            .bind(installation.lineage.as_slice())
+            .bind(installation.audit_mode.as_str())
             .execute(&mut *tx)
             .await?;
-        for tenant in &installation.tenants {
-            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-                .bind(tenant)
-                .execute(&mut *tx)
-                .await?;
-            sqlx::query("INSERT INTO rss_transactional_messaging.tenant_epoch(tenant_id,epoch) VALUES($1::uuid,$2)")
-                .bind(tenant).bind(installation.epoch).execute(&mut *tx).await?;
-        }
         verify_profiles(&mut tx, instance, installation.audit_mode).await?;
         tx.commit().await
     }
@@ -654,27 +627,10 @@ async fn verify_installation(
         )
         .fetch_all(&mut *tx)
         .await?;
-        let installed: Vec<serde_json::Value> =
-            sqlx::query_scalar("SELECT configuration FROM public.mdm_installation")
-                .fetch_all(&mut *tx)
-                .await?;
-        if storage != [(installation.target.to_vec(), installation.lineage.to_vec())]
-            || installed != [installation.configuration()]
-        {
-            return Err(sqlx::Error::Protocol(
-                "installation binding mismatch".into(),
-            ));
+        if storage != [(installation.target.to_vec(), installation.lineage.to_vec())] {
+            return Err(sqlx::Error::Protocol("storage binding mismatch".into()));
         }
-        for tenant in &installation.tenants {
-            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-                .bind(tenant)
-                .execute(&mut *tx)
-                .await?;
-            let epoch: Option<i64> = sqlx::query_scalar("SELECT epoch FROM rss_transactional_messaging.tenant_epoch WHERE tenant_id=$1::uuid").bind(tenant).fetch_optional(&mut *tx).await?;
-            if epoch != Some(installation.epoch) {
-                return Err(sqlx::Error::Protocol("tenant epoch mismatch".into()));
-            }
-        }
+        verify_identity(&mut tx, installation).await?;
         verify_profiles(&mut tx, instance, installation.audit_mode).await?;
         tx.rollback().await
     }

@@ -13,15 +13,14 @@ pub struct Config {
     pub database: config::Database,
     pub installation: crate::migration::Installation,
     pub tenant_id: String,
+    pub expected_epoch: i64,
     pub principal_id: String,
     pub login: Option<String>,
     pub password_file: PathBuf,
 }
 pub async fn run(config: Config, initialize: bool) -> Result<(), Error> {
     let invalid = || Error::Configuration(ConfigIssue::IdentityConfiguration);
-    if config.database.user != "mdm_identity_maintenance"
-        || !config.installation.tenants.contains(&config.tenant_id)
-    {
+    if config.database.user != "mdm_identity_maintenance" {
         return Err(invalid());
     }
     config.installation.validate().map_err(|_| invalid())?;
@@ -42,11 +41,18 @@ pub async fn run(config: Config, initialize: bool) -> Result<(), Error> {
     if initialize != login.is_some() {
         return Err(invalid());
     }
+    crate::tenant_registry::verify_database_binding(
+        &config.database,
+        &config.installation,
+        &config.tenant_id,
+        config.expected_epoch,
+    )
+    .await?;
     let runtime = crate::identity::open_runtime(
         &config.database,
         &config.installation.target,
         &config.installation.lineage,
-        config.installation.epoch,
+        config.expected_epoch,
         tenant,
     )
     .await?;

@@ -205,21 +205,13 @@ MODULES['agent.pki'] = replace(MODULES['agent.pki'], scope='tenant', policies=(
     CasePolicy('agent_pki_tests::unknown_original_ca_result_blocks_retirement_after_rotation', 'reuse', 'tenant',('identity','agent_pki','pki_rotation')),
 ))
 
-add('installation.migration', selectors=('migration::tests::released_installation_adds_configurations_without_rewriting_units','migration::tests::released_installation_adds_account_authority_without_rewriting_units','migration::tests::previous_release_adds_enrollment_progress_without_rewriting_units','migration::tests::complete_predecessor_withdraws_old_authority_and_preserves_started_evidence','migration::tests::fresh_installation_replay_and_mismatch_rejection','migration::pki::tests::'), profile='empty',
-    sources=('crates/app/src/migration.rs','crates/app/src/migration/pki.rs'),
-    tests=('crates/app/tests/migration/mod.rs','crates/app/tests/migration/pki.rs'),
+add('installation.migration', selectors=('migration::tests::fresh_installation_replay_and_mismatch_rejection','tenant_registry::tests::'), profile='empty',
+    sources=('crates/app/src/migration.rs','crates/app/src/tenant_registry.rs'), tests=('crates/app/tests/migration/mod.rs','crates/app/tests/tenant_registry/mod.rs',),
     python='installation', support=('hack/t2_modules/installation.py',))
-MODULES['installation.migration'] = replace(MODULES['installation.migration'], policies=(CasePolicy('migration::pki::tests::explicit_upgrade_prepares_from_old_manifest_and_rejects_wrong_target_before_writes','fresh','objects',('windows',)),))
-add('installation.upgrade_runtime', selectors=('migration::tests::runtime::',),
-    fixtures=('identity','local_worker','apple','scep','windows','agent_pki'),
-    sources=('crates/app/src/migration.rs','crates/app/schema/self-service-access.sql'),
-    tests=('crates/app/tests/migration/runtime.rs',),
-    support=('crates/app/tests/migration/mod.rs','crates/app/tests/support/agent_execution.rs',
-             'crates/app/tests/support/software_execution.rs','crates/app/tests/support/software.rs',
-             'crates/app/tests/support/agent.rs'))
-MODULES['installation.upgrade_runtime'] = replace(MODULES['installation.upgrade_runtime'], db_mode='fresh', scope='tenant', policies=(
-    CasePolicy('migration::tests::runtime::started_self_service_software_rejects_withdrawn_approval_before_recovery_marks_cancellation', 'reuse', 'tenant'),
-))
+add('installation.tenants', build=None, profile='empty', python='tenants',
+    sources=('crates/app/src/tenant_registry.rs','crates/app/src/migration.rs','crates/app/src/maintenance.rs','crates/app/src/authorization_bootstrap.rs','crates/app/src/lifecycle.rs'),
+    support=('hack/t2_modules/tenants.py',))
+MODULES['installation.tenants'] = replace(MODULES['installation.tenants'], db_mode='fresh', scope='objects', replaces=('installation.upgrade_runtime',))
 add('certificate-archive.http',fixtures=('identity',),selectors=('certificate_archive_tests::',),
     sources=('crates/certificate-archive-service/src/*','crates/certificate-archive-service/schema/*','crates/management-http/src/certificate_archive/*','crates/app/src/certificate_archive.rs'),
     tests=('crates/app/tests/certificate_archive/mod.rs',),support=('crates/app/tests/support/authority.rs','crates/app/tests/support/planning_http.rs','crates/app/tests/device/support.rs'))
@@ -704,7 +696,7 @@ consume(('crates/execution-service/src/input_preparation.rs',
         'execution.commands.configuration')
 consume(('crates/execution-service/src/freeze_inputs.rs', 'crates/flow-service/src/resource_catalog/mod.rs'),
         'planning.agent_policy planning.remote planning.onboarding')
-TASK_CONSUMERS = 'installation.upgrade_runtime planning.self_service planning.onboarding planning.policy planning.agent_policy planning.frequency planning.remote planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
+TASK_CONSUMERS = 'planning.self_service planning.onboarding planning.policy planning.agent_policy planning.frequency planning.remote planning.software execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.history execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery'
 consume(('crates/agent-wire/src/collection.rs', 'crates/agent-channel/src/inventory_wire.rs'),
         TASK_CONSUMERS + ' agent.registration agent.reports')
 for name in ('execution.agent.delivery', 'execution.software.offer'):
@@ -1052,6 +1044,7 @@ TOOL_INPUTS = {
     'hack/auth_t3_browser.mjs': ('test_auth_t3',),
     'hack/release.py': ('test_release',),
     'hack/candidate_runtime.py': ('test_candidate_smoke',),
+    'hack/candidate_fixture.py': ('test_candidate_smoke', 'test_t2_context'),
     'hack/candidate_smoke.py': ('test_candidate_smoke',),
 }
 T1_INPUTS = ('crates/content-s3/tests/unit.rs',) + ('crates/app/tests/agent_pki/health.rs','crates/certificate/tests/agent.rs','crates/certificate/tests/apple.rs','crates/certificate-archive-service/tests/behavior.rs','crates/authorization-service/tests/unit.rs','crates/inventory-service/tests/runtime.rs','crates/software-service/tests/management/*') + tuple(f'crates/{name}/tests/*' for name in (
@@ -1527,6 +1520,7 @@ TOOL_ONLY_INPUTS = (
     'hack/t2_fixtures.py',
     'hack/t2_database.py',
     'hack/t2_context.py',
+    'hack/candidate_fixture.py',
     'hack/t2_hosts.py',
     'hack/verification_result.py',
 )
@@ -1543,6 +1537,7 @@ REPRESENTATIVE_INPUTS = {
     'hack/t2_fixtures.py': (*PG_REPRESENTATIVES, 'host.lifecycle', 'gateway.admission'),
     'hack/t2_database.py': PG_REPRESENTATIVES,
     'hack/t2_context.py': PG_REPRESENTATIVES,
+    'hack/candidate_fixture.py': (*PG_REPRESENTATIVES, 'installation.tenants'),
     'hack/t2_hosts.py': ('host.lifecycle',),
 }
 
@@ -1592,11 +1587,7 @@ consume(('crates/agent-wire/src/self_service.rs','crates/agent-wire/schema/runti
 consume(('crates/policy/src/self_service.rs','crates/execution-service/src/script_eligibility.rs'), TASK_CONSUMERS)
 
 consume(('crates/execution-service/src/self_service/*', 'crates/execution-service/src/actions/evidence.rs'), TASK_CONSUMERS)
-consume(('crates/app/schema/self-service-access.sql',), 'installation.migration installation.upgrade_runtime catalog.contract planning.self_service execution.software.recovery')
-consume(('crates/execution-service/src/actions/agent.rs','crates/execution-service/src/actions/storage.rs',
-         'crates/execution-service/src/actions/recovery.rs','crates/execution-service/src/actions/software.rs',
-         'crates/execution-service/src/remote_operations/*','crates/execution-service/src/sources/software.rs',
-         'crates/authorization-service/src/*.rs','crates/registration-service/src/device/*'), 'installation.upgrade_runtime')
+consume(('crates/app/schema/self-service-access.sql',), 'installation.migration catalog.contract planning.self_service execution.software.recovery')
 consume(('crates/registration-service/src/enrollment.rs','crates/registration-service/src/enrollment/*','crates/registration-service/src/agent/grants.rs','crates/management-http/src/agent_enrollment.rs','crates/authorization-service/src/context.rs'), 'enrollment.quotas')
 
 consume(('crates/windows-channel/src/protocol_device.rs',), 'windows.issuance windows.enrollment windows.management windows.declared')
@@ -1633,7 +1624,7 @@ for name, module in tuple(MODULES.items()):
 consume(('deployment/windows-leaf.tpl',), ' '.join(name for name, module in MODULES.items() if 'windows' in module.fixtures))
 
 consume(('crates/app/src/enrollment_progress.rs',), 'enrollment.http windows.enrollment windows.management apple.scep apple.identity')
-consume(('crates/registration-service/schema/enrollment-progress.sql',), 'installation.migration installation.upgrade_runtime catalog.contract enrollment.http windows.enrollment windows.management')
+consume(('crates/registration-service/schema/enrollment-progress.sql',), 'installation.migration catalog.contract enrollment.http windows.enrollment windows.management')
 consume(('crates/registration-service/src/database.rs',), 'enrollment.http enrollment.recovery enrollment.quotas device.binding device.revocation device.recovery agent.registration agent.pki')
 
 MODULES['agent.configurations'] = replace(MODULES['agent.configurations'], fixtures=('identity','agent_pki'), scope='tenant', support_inputs=(*MODULES['agent.configurations'].support_inputs,*AGENT_FIXTURE_INPUTS,'crates/app/tests/support/software.rs','crates/app/tests/agent_pki/mod.rs','tests/support/software/mod.rs'))

@@ -97,6 +97,22 @@ impl Database {
             .map(std::sync::Arc::new)
             .map_err(|_| Error::Unavailable(Failure::Database))
     }
+    pub(crate) async fn verify_tenant(&self, config: &crate::config::Config) -> Result<(), Error> {
+        let identity = crate::migration::Installation {
+            instance_id: config.identity.instance_id.clone(),
+            target: config.flow.storage.target,
+            lineage: config.flow.storage.lineage,
+            audit_mode: config.audit.mode(),
+        };
+        let mut conn = self.pool.acquire().await.map_err(db)?;
+        crate::tenant_registry::verify_binding(
+            &mut conn,
+            &identity,
+            &config.identity.tenant_id,
+            config.flow.storage.epoch,
+        )
+        .await
+    }
     pub async fn close(&self) {
         self.pool.close().await;
     }
@@ -135,6 +151,7 @@ async fn admission(pool: &PgPool) -> Result<(), Error> {
         .await
         .map_err(db)?;
     let contracts = [
+        crate::tenant_registry::ACCESS_CONTRACT,
         rss_mdm_authorization_service::ACCESS_CONTRACT,
         rss_mdm_registration_service::ACCESS_CONTRACT,
         rss_mdm_software_service::agent_packages::ACCESS_CONTRACT,
@@ -156,6 +173,7 @@ async fn admission(pool: &PgPool) -> Result<(), Error> {
     )
     .await
     .map_err(db)?;
+    crate::tenant_registry::verify_read_profile(&mut tx).await?;
     rss_mdm_inventory_postgres::verify_collections(&mut tx)
         .await
         .map_err(|error| {

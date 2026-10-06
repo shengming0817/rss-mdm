@@ -53,6 +53,14 @@ pub struct Update {
     pub expected_revision: u64,
     pub values: Values,
 }
+/// Seed one newly registered tenant inside the installation operator's transaction.
+/// The caller owns tenant scoping and commit; existing settings are never replaced.
+pub async fn initialize_on(c: &mut PgConnection, tenant: &str) -> Result<(), Error> {
+    sqlx::query("INSERT INTO mdm_access.agent_enrollment_settings(tenant_id,revision,document) VALUES($1::uuid,1,$2)")
+        .bind(tenant).bind(serde_json::to_value(Values::default()).map_err(|_| Error::Malformed)?)
+        .execute(c).await.map_err(db)?;
+    Ok(())
+}
 pub async fn read_on(c: &mut PgConnection, tenant: &str) -> Result<Settings, Error> {
     let row = sqlx::query("SELECT revision,document FROM mdm_access.agent_enrollment_settings WHERE tenant_id=$1::uuid")
         .bind(tenant).fetch_one(c).await.map_err(db)?;

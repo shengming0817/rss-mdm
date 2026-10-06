@@ -14,7 +14,7 @@ python3 hack/build_run.py -- python3 hack/candidate_smoke.py --candidate artifac
 
 授权头文件须为 owner 独占普通文件，只以 BuildKit secret 供依赖获取使用。构建从一次源码副本生成正式 OCI，复用正常缓存；失败不发布候选目录，已有输出不覆盖。
 
-V4 候选包含 server.oci.tar、candidate.json、示例配置、deployment 下的角色 SQL、nginx 配置与 Agent 叶证书模板，以及普通构建记录。传入 `--web-image` 时另包含 identity-ui.image.tar 和 manifest 的 `ui` 信息，并保留前端镜像身份、运行用户和归档完整性检查；省略时不检查或归档前端。已有包含前端的 V4 候选仍可消费。manifest 固定实际镜像身份、归档摘要、平台、依赖提供者及全部部署输入摘要。恢复时先核验归档与部署输入，再 docker load；不从 tag 拉取替代品。V2 必须重新构建，没有兼容解析或转换器。
+V4 候选包含 server.oci.tar、candidate.json、示例配置、deployment 下的角色 SQL、nginx 配置与 Agent 叶证书模板，以及普通构建记录。传入 `--web-image` 时另包含 identity-ui.image.tar 和 manifest 的 `ui` 信息，并保留前端镜像身份、运行用户和归档完整性检查；省略时不检查或归档前端。V4 候选必须包含当前服务端登记命令及部署输入；缺少当前契约的旧二进制候选必须重新构建。manifest 固定实际镜像身份、归档摘要、平台、依赖提供者及全部部署输入摘要。恢复时先核验归档与部署输入，再 docker load；不从 tag 拉取替代品。V2 必须重新构建，没有兼容解析或转换器。
 
 安装、smoke 与认证验收不要求 matching checkout、Git 元数据或 clean HEAD。把运行工具与候选放到独立目录也可执行，工具从候选目录读取角色和网关文件。候选摘要保护所交付内容的一致性，不替代分发渠道信任。
 
@@ -32,7 +32,7 @@ MDM 宿主使用同一份运行配置生成两份公开 bootstrap 输入：`ui.j
 Identity callback 固定 `/api/v1/identity/oidc/callback`，其它 API 保留后端路由和错误，不能落入 SPA。
 这些宿主配置和 HTTP 接缝由后端验证；前端消费和页面验收由前端 owner 负责。
 
-使用 candidate.json 固定的依赖和二进制 --describe 声明的安装单元。接受空库或完全一致的当前安装记录；唯一前驱转换见[自助访问前驱升级](#自助访问前驱升级)，失败恢复见[运维](operations.md)。
+使用 candidate.json 固定的依赖和二进制 --describe 声明的安装单元。接受空库或完全一致的当前安装记录；失败恢复见[运维](operations.md)。
 
 由数据库管理员创建专用数据库和 `mdm_owner`、`mdm_runtime`、`mdm_api`、`mdm_access` 基础角色。所有产品角色均禁止 SUPERUSER、BYPASSRLS 和高权继承；`mdm_owner` 需要该数据库与 public schema 的 CREATE 权限，但不持有 CREATEROLE。`mdm_api` 是组件 reader 的验证角色，不进入 serve 配置。
 
@@ -42,25 +42,26 @@ Audit 与 Ledger 的组件 SQL 分别由 `mdm_audit_owner`、`mdm_ledger_owner` 
 
 `migrate` 使用 mdm_owner；`initialize` / `recover-password` 使用 mdm_identity_maintenance；`initialize-authorization` 使用 mdm_access 显式初始化一次产品授权；`serve` 只使用对应运行角色。安装会检查实际 runtime/maintenance 和 audit worker 权限，脚本成功不代表角色准入成功。
 
-迁移输入含 database 和 installation；installation 固定 instance_id、target、lineage、epoch、所有租户及 audit_mode（plain 或 ledger，与运行配置 audit.mode 一致）。初始安装名单支持 1–1024 个不同租户；已有安装重放要求名单一致。安装按该模式授予 Identity audit worker 权限；Plain 不授予 Ledger 权限，Ledger 仅授予公开追加与验证所需权限。模式纳入安装记录，重放不得改变。初始化输入另含 tenant_id、principal_id、login、password_file；通过组件维护接口初始化，日常账户与 IdP 管理使用受保护公共 HTTP 接口。
+迁移输入含 database 和 installation；installation 只固定 instance_id、target、lineage 和 audit_mode（plain 或 ledger，与运行配置 audit.mode 一致）。安装创建空租户登记表；重放只核稳定安装身份、完整当前 schema 和运行权限，不比较租户全集，不改租户 epoch。安装按 audit mode 授予 Identity audit worker 权限，模式不能随重放改变。
+
+首次租户和后续新增租户都由 `register-tenant` 显式登记，使用 mdm_owner。登记输入包含 database、稳定 installation、tenant_id、initial_epoch 和非空 operation_id；上限为 1024 个不同租户。同一操作、同一输入返回原回执，同操作异参或新操作重复租户产生冲突。登记、初始 epoch、Agent 默认设置和回执同事务提交；不初始化账户或业务授权。
+
+提交确认丢失、命令超时或成功后连接清理失败时，保留 operation_id，使用 `tenant-registration-status` 的 database、稳定 installation 和 operation_id 查询回执，或用原输入重放。查询与登记共用安装级锁；锁等待失败不能解释成没有提交。回执中的 initial_epoch 是登记事实，当前 epoch 仍以 RSS fencing 为准，重放不会重置它。
+
+账户初始化输入另含 tenant_id、expected_epoch、principal_id、login、password_file；授权初始化沿用 user.tenantId 并显式提供 expectedEpoch。两者从数据库核验登记及当前 epoch，使用各自受限角色。日常账户与 IdP 管理使用受保护 HTTP 接口。
+
+每个宿主通过 identity.tenant_id 和 flow.storage.epoch 绑定一个已登记租户，启动核验安装身份、audit mode、登记和期望 epoch。同库其它租户使用各自合法绑定宿主；新增登记不自动切换已有宿主。
 
 ~~~sh
 docker load --input server.oci.tar
 docker run --rm --network host --mount type=bind,src=/private/mdm-operator,dst=/run/mdm,readonly IMAGE migrate --config /run/mdm/migrate.json
+docker run --rm --network host --mount type=bind,src=/private/mdm-operator,dst=/run/mdm,readonly IMAGE register-tenant --config /run/mdm/register.json
 docker run --rm --network host --mount type=bind,src=/private/mdm-operator,dst=/run/mdm,readonly IMAGE initialize --config /run/mdm/initialize.json
 docker run --rm --network host --mount type=bind,src=/private/mdm-operator,dst=/run/mdm,readonly IMAGE initialize-authorization --config /run/mdm/authorization.json
 docker run --name rss-mdm --network host --mount type=bind,src=/private/mdm-runtime,dst=/run/mdm,readonly IMAGE serve --config /run/mdm/config.json
 ~~~
 
 IMAGE 替换为 candidate.json 固定镜像身份。秘密和配置文件由 UID 10001 持有且权限 0600。安装目录与运行目录分开准备；镜像不嵌入配置或私钥。
-
-## 自助访问前驱升级
-
-`self-service-access-v1` 只允许[迁移源码](../../crates/app/src/migration.rs)的 `baseline_units()` 所定义的唯一完整前驱安装升级。前驱的所有单元名称、SQL 摘要和完成标记必须精确一致；任意更早版本、部分前缀、缺失或未知单元、摘要漂移及未完成账本均拒绝。安装器在执行任何新增单元前，先校验原安装的 instance、target、lineage、epoch、租户名单与 audit mode 绑定，不能以新安装坐标转换旧库。当前完整账本重放不再次转换数据。
-
-升级先停止旧服务写入口，保留一致的数据库、内容与密钥备份，再使用候选的 `migrate` 和原 installation 输入。转换将缺少 `access` 的自助配置暂停发布并显式设为 null；管理员须填写访问依据后重新发布。旧自助调用依据永久撤回，未启动的旧自助任务终止。后台自动 Policy 与 RemoteOperation 尚未签发 Offer 的 queued Run 保留；已签发但未启动的旧后台 Offer 退休，在同一 Run 下按当前协议重新领取，不新建业务执行坐标。
-
-已启动任务按原 attempt 和不可变执行材料安全收尾，软件材料一次性规范化供结果关联校验。新 Start 仍核对当前注册、权限和确切 OS/helper；缺少新执行能力本身不撤回已启动任务，真实撤回、世代与期限等边界继续适用。原 signed Offer/permit 保留为审计证据，不重签，也不引入旧 signed DTO decoder、兼容路由或别名。Agent 后续领取和新 Start 必须消费当前协议及指纹，见[企业任务](../guides/enterprise-tasks.md#自助任务与调用参数)。失败或回退须恢复匹配的数据库、制品、内容与密钥，不能仅降级二进制或改写迁移账本。
 
 ## 桌面与 Agent 入口及服务器证书信任
 
@@ -94,17 +95,17 @@ docker run --rm --network host --mount type=bind,src=/private/mdm-operator,dst=/
 
 Linux host 网络使回环浏览器监听与同机 HTTPS 网关配合；Windows 协议由产品直接终止 TLS/mTLS。采用 `deployment/nginx.conf`，替换产品域名和证书路径；覆盖 X-Forwarded-For 为真实 peer，清空 Forwarded，限制真实 peer 的登录频率、连接数、正文与读取时间。后端只在真实 TCP peer 匹配 trusted_gateway 后采用覆盖后的单一来源地址。不能把浏览器监听直接暴露或接到未受控转发器。
 
-资源/计划/执行使用当前全新安装结构。产品配置中的 `flow.storage` 持有数据库连接及 target/lineage/epoch，`flow.publication` 持有发布数据库与 sources，`execution.database` 持有执行数据库连接；具体字段以[配置示例](../../fixtures/mdm-config.example.json)为准。旧综合 `management` 和混合 `tasks` 配置不再接受。`content.storage` 显式选择 `volume` 或启用版本控制的 HTTPS `s3`（[S3 配置示例](../../fixtures/mdm-content-s3.example.json)）；PostgreSQL 持有内容控制状态，`content` 配置共享内容仓，`task_signing` 单独配置任务签名；脚本任务要求两者齐备，软件入库/批准不需要任务私钥，原生协议的 `management` 监听配置保持独立。历史转换仅限下述停写后的显式 `upgrade-pki` 和[自助访问前驱升级](#自助访问前驱升级)，其它安装单元保持准确清单准入，不提供通用旧库升级。
+资源/计划/执行使用当前全新安装结构。产品配置中的 `flow.storage` 持有数据库连接及 target/lineage/epoch，`flow.publication` 持有发布数据库与 sources，`execution.database` 持有执行数据库连接；具体字段以[配置示例](../../fixtures/mdm-config.example.json)为准。旧综合 `management` 和混合 `tasks` 配置不再接受。`content.storage` 显式选择 `volume` 或启用版本控制的 HTTPS `s3`（[S3 配置示例](../../fixtures/mdm-content-s3.example.json)）；PostgreSQL 持有内容控制状态，`content` 配置共享内容仓，`task_signing` 单独配置任务签名；脚本任务要求两者齐备，软件入库/批准不需要任务私钥，原生协议的 `management` 监听配置保持独立。本版本按全新安装交付，安装清单只持有当前完整 schema。
 
 内容与网关的大小及时间预算必须一致配置。随附 nginx 配置仅为精确上传路由关闭 request buffering，示例正文上限 8GiB；普通请求继续保留原限制。内容目录须以可写持久卷提供给服务，签名秘密仍使用独立只读挂载。
 
 ## 时间线索引恢复
 
-时间线索引是产品派生数据，`rss_audit` 持久事实仍是唯一来源。安装包含 timeline-service schema；旧 schema 的接受集合遵循[自助访问前驱升级](#自助访问前驱升级)，不支持部分前缀升级。后台任务自动从 checkpoint 追赶，故障可见，恢复后继续读取原事实。
+时间线索引是产品派生数据，`rss_audit` 持久事实仍是唯一来源。安装包含 timeline-service schema。后台任务自动从 checkpoint 追赶，故障可见，恢复后继续读取原事实。
 
 需要重建时先停止本安装的所有服务实例，由数据库 owner 在一个事务内设置目标租户上下文，删除该租户的 `mdm_timeline.facts`，将其 checkpoint 的 `position`、`source_through` 置为 -1、`healthy` 置为 true，并为 `generation` 设置新的 UUID。保留既有游标签名秘密和全部 Audit/Ledger 数据，再启动服务。旧游标因世代变化被拒绝；历史追赶完成前，API 明确返回覆盖进度。不得删除 Audit 事实、修补审计回执或改写迁移清单来恢复索引。
 
-安装包含 `certificate-archive-schema-v1`；包含该单元的完整前驱是否可升级，以[自助访问前驱升级](#自助访问前驱升级)为准，不为缺少该单元的旧候选补装。运行不需要存档主密码；存档通过现有租户授权管理授予独立权限，详见[证书目录](../../crates/certificate-archive-service/README.md)。
+安装包含 `certificate-archive-schema-v1`。运行不需要存档主密码；存档通过现有租户授权管理授予独立权限，详见[证书目录](../../crates/certificate-archive-service/README.md)。
 
 ## Agent 专用 PKI
 
@@ -157,11 +158,3 @@ step ca provisioner add rss-windows --type JWK --public-key windows-provisioner.
 ```
 
 其私钥按同一受保护 PKCS#8 流程配置到 Windows provider。模板只从已验签令牌的 `.Token.sub` 生成登记 CN，不复制 CSR 的主体、SAN 或扩展；服务端冻结原 CSR/SPKI 和授权登记，并校验签发结果。令牌中的 CSR 输入名称仅供 step-ca 的前置校验，原 CSR 指纹绑定仍必须验证。不要替换为默认模板或 `.Insecure.CR`。生产叶证书完整 90 天；开发时同步配置明确的有效期和 CA max/default。Docker 候选将 Windows 与 Agent 模板一并哈希交付，运行夹具也消费这份模板。
-
-## 设备 PKI 升级
-
-旧部署不能直接运行新 `migrate` 或继续使用旧配置。停止旧签发入口，先用旧可执行文件处理 Agent、Windows 与 Apple 的未知签发、待激活结果及续期；确认这些工作已完成，再停止所有旧写入实例。保存原 CA 公共链和仍需验证的 legacy issuer，并在 CA 运维侧用原密钥产生可验签的当前 CRL；旧 Windows 私钥退出宿主，只在受控离线 CRL 操作中保管。准备新的 active step-ca 代次及公开 trust，旧代次为 verify_only。
-
-使用新镜像的 `upgrade-pki --config /run/operator/upgrade-pki.json`，输入包含 database、原完整 installation、target_config_file、profiles 和 trusts。先以相同字段（不含 profiles）写入受保护 prepare.json，执行 `umask 077; rss-mdm prepare-pki-upgrade --config /run/operator/prepare.json > /run/operator/upgrade-pki.json`。准备命令只读原数据库，从完整旧 manifest 和实际历史记录获取 previous，由 Windows/Apple 运行时同一 canonical 函数计算目标 current；操作员检查生成的集合。升级在连接和写入前重新读取 target_config_file，核对 tenant/instance、公开 trust 与全部 current，目标错误直接拒绝。profiles 是 Windows/Apple 旧稳定配置 hash 到新配置 hash 的显式替换集合；同 purpose 的目标配置必须一致，覆盖所有旧记录。trusts 覆盖每个实际使用的租户/purpose 及历史 issuer。升级只接受 exact 已完成的整个 pre-PKI 安装 manifest，检查并导入历史证书的签名、用途、登记映射和续期，原子写入新 PKI schema 和安装记录。过期/撤销证书可保留为历史记录，不能获得在线认证资格。未知提交后重跑会验证已完成的当前 manifest，不重复转换。
-
-普通 `migrate` 的完整 manifest 准入保持不变；没有旧格式运行时解析、自动重签、备用本地 CA 或混合版本写入。迁移成功后更新各公开 trust/provider 输入，启动新宿主并通过[运维路径](operations.md#设备-pki-轮换与撤销)处理后续轮换。

@@ -63,7 +63,7 @@ class ModuleImpactTests(unittest.TestCase):
         cases={
             'crates/execution-service/src/actions/output.rs': {'execution.agent.delivery'},
             'crates/execution-service/src/actions/native_collection.rs': {'windows.management','apple.collection'},
-            'crates/execution-service/src/actions/recovery.rs': {'windows.management','apple.collection','execution.agent.recovery','execution.software.recovery','installation.upgrade_runtime'},
+            'crates/execution-service/src/actions/recovery.rs': {'windows.management','apple.collection','execution.agent.recovery','execution.software.recovery'},
         }
         for path,expected in cases.items():
             selected=select_inputs([path])
@@ -300,7 +300,7 @@ class ModuleImpactTests(unittest.TestCase):
 
     def test_shared_registration_fixture_selects_only_direct_consumers(self):
         self.assertEqual(self.selected('crates/app/tests/support/agent.rs'),
-                         {'agent.configurations','installation.upgrade_runtime','planning.self_service','agent.registration','agent.reports','planning.remote','execution.agent.poll','execution.agent.recovery','planning.onboarding','execution.commands.onboarding','execution.agent.delivery','execution.software.recovery','planning.agent_policy','execution.software.offer','execution.agent.history','assets.http','execution.agent.content','apple.onboarding','planning.software','planning.http','execution.software.content','planning.frequency','execution.commands.windows','software.http'})
+                         {'agent.configurations','planning.self_service','agent.registration','agent.reports','planning.remote','execution.agent.poll','execution.agent.recovery','planning.onboarding','execution.commands.onboarding','execution.agent.delivery','execution.software.recovery','planning.agent_policy','execution.software.offer','execution.agent.history','assets.http','execution.agent.content','apple.onboarding','planning.software','planning.http','execution.software.content','planning.frequency','execution.commands.windows','software.http'})
 
     def test_content_range_selects_real_download_consumers(self):
         self.assertEqual(self.selected('crates/content-service/src/range.rs'),

@@ -21,7 +21,7 @@ async fn execute() -> Result<(), ProcessError> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args == ["--help"] {
         println!(
-            "rss-mdm serve|migrate|prepare-pki-upgrade|upgrade-pki|initialize|initialize-authorization|recover-password --config /absolute/private-config.json\nrss-mdm --version|--describe"
+            "rss-mdm serve|migrate|register-tenant|tenant-registration-status|initialize|initialize-authorization|recover-password --config /absolute/private-config.json\nrss-mdm --version|--describe"
         );
         return Ok(());
     }
@@ -53,16 +53,21 @@ async fn execute() -> Result<(), ProcessError> {
             rss_mdm_app::migration::migrate(&options, &config.installation).await?;
             Ok(())
         }
-        "prepare-pki-upgrade" => {
-            let prepared = rss_mdm_app::migration::pki::prepare(config::load(path)?).await?;
+        "register-tenant" => {
+            let receipt = rss_mdm_app::tenant_registry::register(config::load(path)?).await?;
             println!(
                 "{}",
-                serde_json::to_string_pretty(&prepared).expect("public upgrade mapping")
+                serde_json::to_string(&receipt).expect("public receipt")
             );
             Ok(())
         }
-        "upgrade-pki" => {
-            rss_mdm_app::migration::pki::run(config::load(path)?).await?;
+        "tenant-registration-status" => {
+            let receipt =
+                rss_mdm_app::tenant_registry::query_operation(config::load(path)?).await?;
+            println!(
+                "{}",
+                serde_json::json!({"status": if receipt.is_some() { "committed" } else { "not_found" }, "receipt":receipt})
+            );
             Ok(())
         }
         "initialize-authorization" => {

@@ -383,14 +383,16 @@ class Environment:
         if not password.exists():private(password,secrets.token_urlsafe(32))
         private(operator/'account-password',password.read_text())
         private(operator/'migrate.json',dict(installation=installation(),database=database(operator,'mdm_owner')))
+        private(operator/'register.json',dict(installation=installation(),database=database(operator,'mdm_owner'),
+                tenant_id=TENANTS[0],initial_epoch=1,operation_id=str(uuid.uuid5(uuid.NAMESPACE_URL,self.project+'/'+TENANTS[0]))))
         private(operator/'initialize.json',dict(installation=installation(),database=database(operator,'mdm_identity_maintenance'),
-                tenant_id=TENANTS[0],principal_id=ADMIN,login='admin',password_file=path(operator,'account-password')))
+                tenant_id=TENANTS[0],expected_epoch=1,principal_id=ADMIN,login='admin',password_file=path(operator,'account-password')))
         auth=operator/'authorization.json'
         operation_file=self.root/'authorization-operation'
         if not operation_file.exists():private(operation_file,str(uuid.uuid4()))
         operation=operation_file.read_text()
         private(auth,dict(audit={'mode':'plain'},database=database(operator,'mdm_access'),identityDatabase=database(operator,'mdm_identity_runtime'),
-                         installation=installation(),login='admin',passwordFile=path(operator,'account-password'),operationId=operation,
+                         installation=installation(),expectedEpoch=1,login='admin',passwordFile=path(operator,'account-password'),operationId=operation,
                          user=dict(instanceId=INSTANCE,tenantId=TENANTS[0],principalId=ADMIN)))
         if self.sql("SELECT count(*) FROM pg_database WHERE datname='mdm_dev'")=='0':self.sql('CREATE DATABASE mdm_dev OWNER mdm_owner')
         self.sql('GRANT CREATE ON DATABASE mdm_dev TO mdm_owner,mdm_audit_owner,mdm_ledger_owner; GRANT CREATE ON SCHEMA public TO mdm_owner','mdm_dev')
@@ -416,7 +418,7 @@ class Environment:
             result=run(['cargo','build','--locked','-p','rss-mdm-app','--bin','rss-mdm','--message-format=json'],cwd=ROOT,capture_output=True)
             binaries=[x['executable'] for line in result.stdout.splitlines() if (x:=json.loads(line)).get('reason')=='compiler-artifact' and x.get('executable') and x['target']['name']=='rss-mdm']
             if len(binaries)!=1:raise RuntimeError('product binary unavailable')
-        for verb,file in [('migrate','migrate.json'),('initialize','initialize.json'),('initialize-authorization','authorization.json')]:
+        for verb,file in [('migrate','migrate.json'),('register-tenant','register.json'),('initialize','initialize.json'),('initialize-authorization','authorization.json')]:
             if verb=='initialize' and self.sql(f"SELECT count(*) FROM identity_authority.accounts WHERE tenant_id='{TENANTS[0]}' AND principal_id='{ADMIN}'",'mdm_dev')=='1':
                 with self.phase('initialize',reused=True):pass
                 continue

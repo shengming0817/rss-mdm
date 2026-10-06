@@ -108,6 +108,10 @@ pub async fn serve(
                         startup.stage_resource(DynManagedResource::new_box(AccessResource(
                             access.clone(),
                         )));
+                        access
+                            .verify_tenant(&compiled.config)
+                            .await
+                            .map_err(|error| ProcessError::at("startup.tenant_binding", error))?;
                         let notifications = crate::worker_wake::Listener::new(
                             compiled
                                 .config

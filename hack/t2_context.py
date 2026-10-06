@@ -25,12 +25,15 @@ def contexts(run_id, jobs):
     return result
 
 
-def installation(values):
-    config = product_installation()
-    config['tenants'] = sorted({value[key] for value in values for key in ('tenant', 'peer')})
-    if not 0 < len(config['tenants']) <= 1024:
-        raise ValueError('T2 installation requires between 1 and 1024 planned tenants')
-    return config
+def installation():
+    return product_installation()
+
+
+def registration_tenants(values):
+    tenants = sorted({value[key] for value in values for key in ('tenant', 'peer')})
+    if not 0 < len(tenants) <= 1024:
+        raise ValueError('T2 registration requires between 1 and 1024 planned tenants')
+    return tenants
 
 
 def validate(value, *, ready=False):

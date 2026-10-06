@@ -15,6 +15,7 @@ pub struct Initialize {
     pub audit: config::AuditConfig,
     pub identity_database: config::Database,
     pub installation: crate::migration::Installation,
+    pub expected_epoch: i64,
     pub login: String,
     pub password_file: PathBuf,
     pub operation_id: uuid::Uuid,
@@ -110,7 +111,6 @@ async fn initialize_owned(
         || config.identity_database.port != config.database.port
         || config.identity_database.name != config.database.name
         || config.installation.instance_id != config.user.instance_id
-        || !config.installation.tenants.contains(&config.user.tenant_id)
     {
         return Err(invalid());
     }
@@ -120,12 +120,19 @@ async fn initialize_owned(
     let login = LoginKey::parse(&config.login).map_err(|_| invalid())?;
     let password =
         Password::new(config::secret(&config.password_file)?.to_string()).map_err(|_| invalid())?;
+    crate::tenant_registry::verify_database_binding(
+        &config.identity_database,
+        &config.installation,
+        &config.user.tenant_id,
+        config.expected_epoch,
+    )
+    .await?;
     owned.runtime = Some(
         identity::open_runtime(
             &config.identity_database,
             &config.installation.target,
             &config.installation.lineage,
-            config.installation.epoch,
+            config.expected_epoch,
             tenant,
         )
         .await?,

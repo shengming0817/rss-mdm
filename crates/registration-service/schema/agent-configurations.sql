@@ -4,9 +4,6 @@ CREATE TABLE mdm_access.agent_enrollment_settings (
  tenant_id uuid PRIMARY KEY, revision bigint NOT NULL CHECK(revision>0),
  document jsonb NOT NULL CHECK(octet_length(document::text)<=4096)
 );
-INSERT INTO mdm_access.agent_enrollment_settings
- SELECT value::uuid,1,'{"grantSeconds":86400,"configurationDefaultSeconds":86400,"platforms":["windows","macos"]}'::jsonb
- FROM public.mdm_installation i CROSS JOIN LATERAL jsonb_array_elements_text(i.configuration->'tenants');
 CREATE TABLE mdm_access.agent_configurations (
  tenant_id uuid NOT NULL, id uuid NOT NULL, operation_id uuid NOT NULL,
  creator text NOT NULL, instance text NOT NULL,
