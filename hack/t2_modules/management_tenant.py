@@ -78,6 +78,10 @@ def execute(fixture):
     foreign['identity_management'] = [foreign['identity_management'][-1]]
     foreign['listen'] = '127.0.0.1:0'
     command('serve', foreign, accepted=False)
+    mismatch = json.loads(json.dumps(config))
+    mismatch['identity_management'][-1]['principal_id'] = str(uuid.uuid4())
+    mismatch['listen'] = '127.0.0.1:0'
+    command('serve', mismatch, accepted=False)
     api = '/api/v1/identity/tenants/' + management
     business_api = '/api/v1/identity/tenants/' + business
 
@@ -109,6 +113,12 @@ def execute(fixture):
         login(normal, business)
         require(normal.call('GET', EFFECTIVE)[0] == 401, 'business session gained installation admission')
         login(admin, management)
+        status, host_context = admin.call('GET', '/api/v1/identity-host/tenants/' + management + '/context')
+        require(status == 200 and host_context['tenantId'] == management and host_context['principalId'] == ADMIN
+                and host_context['navigation']['manageAccounts'] and not host_context['navigation']['manageProviders'],
+                'management identity host context unavailable')
+        require(normal.call('GET', '/api/v1/identity-host/tenants/' + management + '/context')[0] == 401,
+                'business session obtained management identity host context')
         require(operations(admin) == CRUD | {'authorization_read', 'authorization_write'}, 'bootstrap granted unexpected powers')
         for route in ['/api/v1/authorization', '/api/v1/authorization/user-groups', '/api/v1/resources',
                       '/api/v1/devices', '/api/v1/runtime/diagnostics']:
@@ -159,6 +169,8 @@ def execute(fixture):
         login(admin, management)
         require(admin.call('POST', api + '/accounts/' + ADMIN + '/enabled', dict(enabled=False))[0] == 403,
                 'initial account manager could be disabled')
+        require(admin.call('POST', api + '/accounts/' + ADMIN + '/membership', dict(enabled=False))[0] == 403,
+                'initial account manager membership could be removed')
         new_password = 'Fixture-only-recovered-management-2026!'
         recovery = dict(initialization[management], login=None, password_file=str(private(root / 'recovered-password', new_password)))
         command('recover-password', recovery)

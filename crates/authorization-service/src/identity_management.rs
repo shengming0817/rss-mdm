@@ -52,6 +52,34 @@ impl IdentityManagementPolicy {
         }
         Ok(())
     }
+    /// Every configured management account administrator requires a protected initializer.
+    pub(crate) fn validate_initializer(
+        &self,
+        management: &str,
+        principal: Option<&str>,
+    ) -> Result<(), Error> {
+        let accounts = |grant: &IdentityManagementGrant| {
+            grant.permissions.contains(&IdentityPermission::Accounts)
+        };
+        match principal {
+            Some(principal)
+                if self
+                    .grants
+                    .get(&(management.into(), principal.into()))
+                    .is_some_and(accounts) =>
+            {
+                Ok(())
+            }
+            None if !self
+                .grants
+                .values()
+                .any(|grant| grant.tenant_id == management && accounts(grant)) =>
+            {
+                Ok(())
+            }
+            _ => Err(Error::Configuration),
+        }
+    }
     pub fn identity_navigation(
         &self,
         proof: &AuthorizedPrincipal,

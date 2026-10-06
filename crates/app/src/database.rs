@@ -116,6 +116,15 @@ impl Database {
         if management == config.identity.tenant_id {
             return Err(Error::Configuration(crate::ConfigIssue::Tenant));
         }
+        let policy = crate::authorization::identity_management::IdentityManagementPolicy::new(
+            &config.identity.instance_id,
+            config.identity_management.clone(),
+        )
+        .map_err(|_| Error::Configuration(crate::ConfigIssue::IdentityConfiguration))?;
+        self.authorization
+            .require_management_initializer(&policy)
+            .await
+            .map_err(Error::from)?;
         crate::tenant_registry::claim_use(
             &mut conn,
             &identity,

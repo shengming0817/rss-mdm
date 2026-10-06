@@ -261,13 +261,13 @@ pub(crate) async fn management_tenant(
         sqlx::PgConnection::connect_with(&database.options()?),
     )
     .await
-    .map_err(|_| invalid())?
-    .map_err(|_| invalid())?;
+    .map_err(|_| Error::Unavailable(Failure::IdentityStorage))?
+    .map_err(|_| Error::Unavailable(Failure::IdentityStorage))?;
     let result = tokio::time::timeout(Duration::from_secs(5), async {
-        let raw: String = sqlx::query_scalar("SELECT management_tenant_id::text FROM public.mdm_installation WHERE singleton AND instance_id=$1::uuid")
-            .bind(instance.to_string()).fetch_one(&mut connection).await.map_err(|_| invalid())?;
-        TenantId::parse(&raw).map_err(|_| invalid())
-    }).await.map_err(|_| invalid()).and_then(|r| r);
+        let raw: Option<String> = sqlx::query_scalar("SELECT management_tenant_id::text FROM public.mdm_installation WHERE singleton AND instance_id=$1::uuid")
+            .bind(instance.to_string()).fetch_optional(&mut connection).await.map_err(|_| Error::Unavailable(Failure::IdentityStorage))?;
+        TenantId::parse(&raw.ok_or_else(invalid)?).map_err(|_| invalid())
+    }).await.map_err(|_| Error::Unavailable(Failure::IdentityStorage)).and_then(|r| r);
     let closed = matches!(
         tokio::time::timeout(Duration::from_secs(5), connection.close()).await,
         Ok(Ok(()))

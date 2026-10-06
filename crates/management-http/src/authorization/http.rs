@@ -202,6 +202,13 @@ pub async fn identity_only(
 ) -> Response {
     authenticate_and_run(app, request, next, false, false).await
 }
+pub async fn management_identity_only(
+    State(app): State<Arc<AuthenticationState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    authenticate_and_run(app, request, next, false, true).await
+}
 async fn authenticate_and_run(
     app: Arc<AuthenticationState>,
     request: Request,

@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 pub fn router(
     authentication: Arc<AuthenticationState>,
+    policy: Arc<crate::authorization::identity_management::IdentityManagementPolicy>,
     envelope: crate::boundary::Envelope,
 ) -> Router {
     let routes = Router::new()
@@ -16,8 +17,10 @@ pub fn router(
             })),
         )
         .route_layer(middleware::from_fn_with_state(
-            authentication,
+            authentication.clone(),
             http::protect_management,
         ));
-    crate::boundary::wrap(routes, envelope)
+    let context =
+        crate::router::management_identity_context(authentication, policy, &envelope.tenant);
+    crate::boundary::wrap(routes.merge(context), envelope)
 }

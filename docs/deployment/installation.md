@@ -75,7 +75,7 @@ create/update/delete 的 operation_id 共用一个全局命名空间。同一操
 {"tenant_id":"管理租户 UUID","instance_id":"安装 UUID","principal_id":"初始账户 UUID","permissions":["accounts"]}
 ~~~
 
-运行服务从数据库读取管理租户，使用既有 Identity Authority 同时接纳业务和管理两个租户；无需额外监听、origin、cookie 或数据库高权角色。管理账户通过标准租户 login/accounts/session 接口登录和维护账户；配置里的 accounts 资格与可委派 CRUD 规则相互独立。管理租户不支持 IdP/联合登录。初始管理主体的 authorization_read/write 受事务保护，四项 CRUD 可以分别撤销；密码恢复只轮换密码并撤销会话，不重置授权。账户管理配置中的首个管理主体应与授权初始化主体一致，以保留受保护的恢复路径。
+运行服务从数据库读取管理租户，使用既有 Identity Authority 同时接纳业务和管理两个租户；无需额外监听、origin、cookie 或数据库高权角色。管理账户通过标准租户 login/accounts/session 接口登录和维护账户；配置里的 accounts 资格与可委派 CRUD 规则相互独立。管理租户不支持 IdP/联合登录。初始管理主体的 authorization_read/write 受事务保护，四项 CRUD 可以分别撤销；密码恢复只轮换密码并撤销会话，不重置授权。管理授权初始化主体必须同时配置 accounts 资格，启动准入强制核验这一约束；配置管理账户资格前须完成授权初始化，错配或未初始化配置拒绝启动。
 
 每个宿主通过 identity.tenant_id 和 flow.storage.epoch 绑定一个已登记业务租户，启动核验安装身份、audit mode、登记和期望 epoch。同库其它租户使用各自合法绑定宿主；新增登记不自动切换已有宿主。
 

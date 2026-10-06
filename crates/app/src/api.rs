@@ -450,6 +450,7 @@ pub(crate) fn from_state(
                 requests: state.requests.clone(),
             },
         ),
+        state.identity_management.clone(),
         rss_mdm_management_http::boundary::Envelope {
             tenant: state.identity.management_tenant.to_string(),
             ..management_boundary.clone()
