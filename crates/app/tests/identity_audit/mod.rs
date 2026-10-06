@@ -295,7 +295,7 @@ async fn management_only_startup_integrity(
         crate::lifecycle::serve(
             wrong,
             std::future::pending(),
-            Arc::new(crate::Monotonic(std::time::Instant::now)),
+            crate::test_support::monotonic(),
         ),
     )
     .await?;
