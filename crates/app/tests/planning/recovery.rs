@@ -10,7 +10,7 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
     for (change, restore) in [
         (
             "GRANT SELECT ON public.mdm_installation TO mdm_flow_runtime",
-            "REVOKE SELECT ON public.mdm_installation FROM mdm_flow_runtime",
+            "REVOKE SELECT ON public.mdm_installation FROM mdm_flow_runtime; GRANT SELECT(instance_id,management_tenant_id) ON public.mdm_installation TO mdm_flow_runtime",
         ),
         (
             "GRANT SELECT(instance_id) ON public.mdm_installation TO mdm_flow_runtime WITH GRANT OPTION",
@@ -118,6 +118,12 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
             .is_err();
         sql(restore);
         assert!(rejected, "accepted privilege drift: {change}");
+        crate::flow::admit_storage(&service.runtime, tenant())
+            .await
+            .expect("restored flow admission");
+        rss_mdm_policy_postgres::PolicyStore::new(service.runtime.clone(), tenant(), deadline())
+            .await
+            .expect("restored policy admission");
     }
     for (table, column) in [
         ("mdm_access.devices", "id"),
