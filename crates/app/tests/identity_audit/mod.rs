@@ -68,6 +68,7 @@ async fn exercise(ledger: bool) -> Result<()> {
         "/runtime_database/name",
         "/execution/database/name",
         "/flow/storage/database/name",
+        "/flow/publication/database/name",
     ] {
         *value.pointer_mut(pointer).unwrap() = database.clone().into();
     }
