@@ -35,6 +35,7 @@ WITH tables AS (
  ('mdm_apple.attempts','native_outcome'),('mdm_apple.attempts','accepted'),('mdm_apple.attempts','state'),('mdm_apple.attempts','response'),('mdm_apple.attempts','response_digest'),('mdm_apple.attempts','received_at'),('mdm_apple.attempts','next_attempt'),
  ('mdm_apple.declarations','retired_at'),('mdm_apple.declarations','legacy_released_at'),('mdm_apple.declarations','projection'),('mdm_apple.profiles','manifest'),('mdm_apple.profiles','dispatched_at'),('mdm_apple.profiles','observed_at'),('mdm_apple.profiles','retired_at'),('mdm_apple.devices','state'),('mdm_apple.channels','state'),('mdm_apple.channels','material'),('mdm_apple.channels','material_digest'),('mdm_apple.channels','push_id'),('mdm_apple.channels','push_lease_until'),('mdm_apple.channels','next_push'),('mdm_apple.channels','push_status'),('mdm_apple.channels','push_outcome'),('mdm_apple.channels','push_configuration'),('mdm_apple.channels','push_failures')
 ), read_columns(relation,col) AS (VALUES
+ ('public.mdm_installation','instance_id'),('public.mdm_installation','management_tenant_id'),
  ('mdm_access.agent_issuances','tenant_id'),('mdm_access.agent_issuances','credential'),('mdm_access.agent_issuances','not_after')
 ), allowed(relation,sel,ins,del) AS (VALUES
  ('mdm_pki.trust',true,false,false),('mdm_pki.rotations',true,false,false),('mdm_pki.installations',true,true,false),('mdm_pki.acknowledgements',true,true,false),
@@ -99,3 +100,11 @@ SELECT current_user='mdm_command_runtime' AND session_user=current_user
  AND p.oid NOT IN('rss_audit.reserve(uuid)'::regprocedure,'rss_audit.append(uuid,text,text,bigint,bytea,bigint)'::regprocedure,'rss_ledger.prepare_append(uuid,text,text,smallint)'::regprocedure,'rss_ledger.insert_entry(uuid,text,text,bigint,bytea,bytea,bytea,text,smallint)'::regprocedure,'mdm_planning.scope_admission(uuid,text)'::regprocedure,'mdm_planning.policy_lock(uuid)'::regprocedure,'rss_transactional_messaging.check_execution()'::regprocedure,'rss_transactional_messaging.prepare_outbox_partitions(jsonb)'::regprocedure,'rss_transactional_messaging.append_outbox(bytea,jsonb)'::regprocedure,'rss_transactional_messaging.claim_outbox(uuid,text,integer,bigint)'::regprocedure,'rss_transactional_messaging.outbox_lease(uuid,bigint,uuid,bigint,bigint,uuid)'::regprocedure,'rss_transactional_messaging.settle_outbox(uuid,bigint,uuid,bigint,text,uuid)'::regprocedure)
   AND has_function_privilege(current_user,p.oid,'EXECUTE'))
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind='S' AND n.nspname NOT LIKE 'pg_%' AND has_sequence_privilege(current_user,c.oid,'SELECT,USAGE,UPDATE'))
+
+ -- The reader must actually have the global purpose coordinates, without grant options.
+ AND EXISTS(SELECT 1 FROM pg_class c WHERE c.oid='public.mdm_installation'::regclass AND c.relkind='r'
+ AND has_schema_privilege(current_user,c.relnamespace,'USAGE')
+ AND has_column_privilege(current_user,c.oid,'instance_id','SELECT')
+ AND has_column_privilege(current_user,c.oid,'management_tenant_id','SELECT')
+ AND NOT EXISTS(SELECT 1 FROM pg_attribute col,LATERAL aclexplode(col.attacl) a WHERE col.attrelid=c.oid
+ AND (a.grantee=0 OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND a.is_grantable))))

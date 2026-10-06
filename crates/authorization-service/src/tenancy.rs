@@ -11,8 +11,12 @@ pub struct InstallationTenants {
 impl InstallationTenants {
     /// Load immutable coordinates from the installation, on the caller's scoped connection.
     pub async fn load(connection: &mut PgConnection) -> Result<Self, Error> {
-        let row = sqlx::query("SELECT instance_id::text,management_tenant_id::text FROM public.mdm_installation WHERE singleton")
-            .fetch_one(connection).await.map_err(crate::database::db)?;
+        let row = sqlx::query(
+            "SELECT instance_id::text,management_tenant_id::text FROM public.mdm_installation",
+        )
+        .fetch_one(connection)
+        .await
+        .map_err(crate::database::db)?;
         Ok(Self {
             instance: row.try_get("instance_id").map_err(crate::database::db)?,
             management: row

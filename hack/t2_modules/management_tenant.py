@@ -72,6 +72,13 @@ def execute(fixture):
     config['agent_pki'] = {'mode': 'disabled'}
     config['identity_management'].append(dict(tenant_id=management, instance_id=INSTANCE,
                                                principal_id=ADMIN, permissions=['accounts']))
+    # Install business federation routes so management denial cannot be a missing-route 404.
+    state_key = private(root / 'oidc-state-key', 'ab' * 32)
+    credential_key = private(root / 'oidc-credential-key', 'cd' * 32)
+    config['identity']['oidc'] = dict(group_facts_max_age_seconds=300, state_key_file=str(state_key),
+        active_credential_key='current', credential_keys={'current':str(credential_key)},
+        return_targets={'home':'https://mdm.example.test/done'}, private_providers=[],
+        assurance_profiles=[dict(tenant_id=business,issuer='https://idp.example.invalid',client_id='mdm',keycloak_totp=False)])
     path = private(root / 'runtime.json', config)
     foreign = json.loads(json.dumps(config))
     foreign['identity']['tenant_id'] = management
@@ -121,9 +128,12 @@ def execute(fixture):
                 'business session obtained management identity host context')
         require(operations(admin) == CRUD | {'authorization_read', 'authorization_write'}, 'bootstrap granted unexpected powers')
         for route in ['/api/v1/authorization', '/api/v1/authorization/user-groups', '/api/v1/resources',
-                      '/api/v1/devices', '/api/v1/runtime/diagnostics']:
+                      '/api/v1/devices/device-1/inventory', '/api/v1/runtime/diagnostics']:
             require(admin.call('GET', route)[0] in (401, 403), 'management session entered business route: ' + route)
         require(admin.call('GET', business_api + '/accounts')[0] in (401, 403), 'management session managed business accounts')
+        require(normal.call('GET', business_api + '/providers')[0] == 200, 'business provider route is not installed')
+        require(admin.call('POST', api + '/oidc/' + str(uuid.uuid4()) + '/login', dict(returnTarget='home'))[0] == 403,
+                'management tenant started federation')
         require(admin.call('GET', api + '/providers')[0] == 403, 'management session managed IdPs')
         status, account = admin.call('POST', api + '/accounts', dict(login='delegate', password=password))
         require(status == 201, 'existing account API could not add a management user')
