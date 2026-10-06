@@ -566,11 +566,18 @@ async fn install_identity(
         .bind(installation.lineage.as_slice())
         .execute(&mut *tx)
         .await?;
-        sqlx::query("INSERT INTO public.mdm_installation(instance_id,target,lineage,audit_mode) VALUES($1::uuid,$2,$3,$4)")
+        // Installation allocates the reserved authentication/authorization tenant, never accounts.
+        let management = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO public.mdm_tenants(tenant_id,initial_epoch,name,used) VALUES($1,1,'Installation management',true)")
+            .bind(management).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO rss_transactional_messaging.tenant_epoch(tenant_id,epoch) VALUES($1,1)")
+            .bind(management).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO public.mdm_installation(instance_id,target,lineage,audit_mode,management_tenant_id) VALUES($1::uuid,$2,$3,$4,$5)")
             .bind(&installation.instance_id)
             .bind(installation.target.as_slice())
             .bind(installation.lineage.as_slice())
             .bind(installation.audit_mode.as_str())
+            .bind(management)
             .execute(&mut *tx)
             .await?;
         verify_profiles(&mut tx, instance, installation.audit_mode).await?;
@@ -631,6 +638,11 @@ async fn verify_installation(
             return Err(sqlx::Error::Protocol("storage binding mismatch".into()));
         }
         verify_identity(&mut tx, installation).await?;
+        let management_valid: bool = sqlx::query_scalar("SELECT count(*)=1 AND coalesce(bool_and(t.initial_epoch=1 AND t.used AND NOT t.deleted AND t.revision=1 AND e.epoch=1),false) FROM public.mdm_installation i JOIN public.mdm_tenants t ON t.tenant_id=i.management_tenant_id JOIN rss_transactional_messaging.tenant_epoch e USING(tenant_id)")
+            .fetch_one(&mut *tx).await?;
+        if !management_valid {
+            return Err(sqlx::Error::Protocol("management tenant binding mismatch".into()));
+        }
         verify_profiles(&mut tx, instance, installation.audit_mode).await?;
         tx.rollback().await
     }
