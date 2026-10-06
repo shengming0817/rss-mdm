@@ -104,7 +104,6 @@ async fn exercise(ledger: bool) -> Result<()> {
         &config,
         Arc::new(
             crate::authorization::identity_management::IdentityManagementPolicy::new(
-                case_tenant(),
                 crate::test_support::identity::INSTANCE,
                 config.identity_management.clone(),
             )?,

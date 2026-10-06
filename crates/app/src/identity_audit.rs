@@ -126,6 +126,9 @@ impl Worker {
         );
         let tenant = rss_request_context::TenantId::parse(&config.identity.tenant_id)
             .map_err(|_| Error::Configuration(ConfigIssue::Tenant))?;
+        let instance = rss_identity_core::InstanceId::parse(&config.identity.instance_id)
+            .map_err(|_| Error::Configuration(ConfigIssue::Instance))?;
+        let management_tenant = crate::identity::management_tenant(&config.identity.database, instance).await?;
         if matches!(config.audit, crate::config::AuditConfig::Ledger { .. }) {
             audit
                 .read_verified(
@@ -148,15 +151,12 @@ impl Worker {
             database,
             &config.flow.storage.target,
             &config.flow.storage.lineage,
-            config.flow.storage.epoch,
-            tenant,
+            &[(tenant, config.flow.storage.epoch), (management_tenant, rss_mdm_authorization_service::tenancy::MANAGEMENT_EPOCH)],
         )
         .await?;
         acquire(DynManagedResource::new_box(RuntimeResource(
             runtime.clone(),
         )));
-        let instance = rss_identity_core::InstanceId::parse(&config.identity.instance_id)
-            .map_err(|_| Error::Configuration(ConfigIssue::Instance))?;
         let budget = DeliveryBudget::new(
             Duration::from_secs(60),
             Duration::from_secs(5),
@@ -164,7 +164,7 @@ impl Worker {
             Duration::from_secs(1),
         )
         .map_err(|_| Error::Configuration(ConfigIssue::Budget))?;
-        let delivery = AuditDelivery::new(runtime, audit, instance, vec![tenant], budget)
+        let delivery = AuditDelivery::new(runtime, audit, instance, vec![tenant, management_tenant], budget)
             .await
             .map_err(|error| {
                 diagnose(error);

@@ -183,6 +183,13 @@ async fn change_authorization_on<T: serde::Serialize + Sync>(
     // The tenant/instance lock serializes writes; authorize the version now locked.
     let current = read_snapshot(tx, proof).await?;
     authorize_change(&current, proof, table)?;
+    if matches!(table, Table::Rules)
+        && let Some(value) = value
+    {
+        let rule: Rule = decode(value)?;
+        current.installation.as_ref().ok_or(Error::Corrupt)?
+            .validate_rule(proof.tenant_id(), &rule)?;
+    }
     if let Some(result) = replay {
         return Ok((decode(&result)?, true));
     }
@@ -240,7 +247,9 @@ async fn change_authorization_on<T: serde::Serialize + Sync>(
     if !bounded {
         return Err(Error::Conflict);
     }
-    authorize_change(&current, proof, table)?;
+    if current.installation.as_ref().ok_or(Error::Corrupt)?.is_management(proof.tenant_id()) {
+        protect_management_initializer(tx, proof).await?;
+    }
     let receipt = Receipt {
         id,
         revision: (revision + 1) as u64,
@@ -271,9 +280,30 @@ pub async fn snapshot_on(
 ) -> Result<Snapshot, Error> {
     let json: String = sqlx::query_scalar("WITH rules AS MATERIALIZED (SELECT * FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND instance=$2::uuid ORDER BY id LIMIT 10001), groups AS MATERIALIZED (SELECT * FROM mdm_access.user_groups WHERE tenant_id=$1::uuid AND instance=$2::uuid ORDER BY id LIMIT 10001) SELECT CASE WHEN (SELECT coalesce(sum(octet_length(document::text)),0) FROM rules)+(SELECT coalesce(sum(octet_length(document::text)),0) FROM groups)<=8388608 THEN jsonb_build_object('rules',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'revision',revision,'value',document)) FROM rules),'[]'::jsonb),'groups',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'revision',revision,'value',document)) FROM groups),'[]'::jsonb)) ELSE NULL END::text")
             .bind(tenant).bind(instance).fetch_one(&mut *tx).await.map_err(db)?;
-    let snapshot: Snapshot = decode(&json)?;
+    let mut snapshot: Snapshot = decode(&json)?;
     snapshot.validate(tenant, instance)?;
+    let installation = crate::tenancy::InstallationTenants::load(tx).await?;
+    for rule in snapshot.rules.iter().filter_map(|r| r.value.as_ref()) {
+        installation.validate_rule(tenant, rule).map_err(|_| Error::Corrupt)?;
+    }
+    snapshot.installation = Some(installation);
     Ok(snapshot)
+}
+
+/// The first management account keeps rule administration; its CRUD grants remain revocable.
+async fn protect_management_initializer(tx: &mut sqlx::PgConnection, proof: &AuthorizedPrincipal) -> Result<(), Error> {
+    let projected = read_snapshot(tx, proof).await?;
+    let principal: String = sqlx::query_scalar("SELECT principal::text FROM mdm_access.authorization_initializations WHERE tenant_id=$1::uuid AND instance=$2::uuid")
+        .bind(proof.tenant_id()).bind(proof.instance_id()).fetch_one(tx).await.map_err(db)?;
+    for permission in [Permission::AuthorizationRead, Permission::AuthorizationWrite] {
+        if !projected.rules.iter().filter_map(|r| r.value.as_ref()).any(|rule| {
+            matches!(&rule.subject, Subject::User { user } if user.principal_id == principal)
+                && rule.grants.iter().any(|g| g.covers(permission, None))
+        }) {
+            return Err(Error::Forbidden);
+        }
+    }
+    Ok(())
 }
 
 fn authorize_change(
@@ -416,16 +446,17 @@ async fn initialize_on(
         return Err(Error::Conflict);
     }
     let id = Uuid::new_v4();
+    let installation = crate::tenancy::InstallationTenants::load(tx).await?;
+    let permissions: &[Permission] = if installation.is_management(&user.tenant_id) {
+        &[Permission::AuthorizationRead, Permission::AuthorizationWrite,
+          Permission::TenantCreate, Permission::TenantRead, Permission::TenantUpdate, Permission::TenantDelete]
+    } else {
+        &[Permission::AuthorizationRead, Permission::AuthorizationWrite,
+          Permission::UserGroupRead, Permission::UserGroupWrite, Permission::DepartmentRead]
+    };
     let rule = Rule {
         subject: Subject::User { user: user.clone() },
-        grants: [
-            Permission::AuthorizationRead,
-            Permission::AuthorizationWrite,
-            Permission::UserGroupRead,
-            Permission::UserGroupWrite,
-            Permission::DepartmentRead,
-        ]
-        .into_iter()
+        grants: permissions.iter().copied()
         .map(|operation| Grant {
             operation,
             scope: Scope::Tenant,

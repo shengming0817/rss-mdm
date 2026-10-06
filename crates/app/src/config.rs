@@ -237,7 +237,6 @@ impl Config {
         }
         let identity_management =
             crate::authorization::identity_management::IdentityManagementPolicy::new(
-                &self.identity.tenant_id,
                 &self.identity.instance_id,
                 std::mem::take(&mut self.identity_management),
             )?;

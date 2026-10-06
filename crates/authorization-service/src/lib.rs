@@ -21,6 +21,7 @@ pub use store::{lock as lock_on, snapshot_on};
 mod tests;
 
 pub mod session;
+pub mod tenancy;
 
 /// Fresh product schema owned by this capability.
 pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
