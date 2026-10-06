@@ -131,22 +131,25 @@ impl Worker {
         let management_tenant =
             crate::identity::management_tenant(&config.identity.database, instance).await?;
         if matches!(config.audit, crate::config::AuditConfig::Ledger { .. }) {
-            audit
-                .read_verified(
-                    tenant,
-                    rss_ledger::Sequence::new(0),
-                    rss_ledger_postgres::ReadLimit::new(1, 262144).map_err(|_| unavailable())?,
-                    &control,
-                )
-                .await
-                .fold(
-                    |_| Ok(()),
-                    |_| Err(unavailable()),
-                    |_| Err(unavailable()),
-                    |_| Err(Error::RollbackFailed),
-                    |_| Err(Error::CommitUnknown),
-                    |_| Err(unavailable()),
-                )?;
+            for admitted_tenant in [tenant, management_tenant] {
+                audit
+                    .read_verified(
+                        admitted_tenant,
+                        rss_ledger::Sequence::new(0),
+                        rss_ledger_postgres::ReadLimit::new(1, 262144)
+                            .map_err(|_| unavailable())?,
+                        &control,
+                    )
+                    .await
+                    .fold(
+                        |_| Ok(()),
+                        |_| Err(unavailable()),
+                        |_| Err(unavailable()),
+                        |_| Err(Error::RollbackFailed),
+                        |_| Err(Error::CommitUnknown),
+                        |_| Err(unavailable()),
+                    )?;
+            }
         }
         let runtime = crate::identity::open_consumer_runtime(
             database,
