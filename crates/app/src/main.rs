@@ -21,7 +21,7 @@ async fn execute() -> Result<(), ProcessError> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args == ["--help"] {
         println!(
-            "rss-mdm serve|migrate|register-tenant|tenant-registration-status|initialize|initialize-authorization|recover-password --config /absolute/private-config.json\nrss-mdm --version|--describe"
+            "rss-mdm serve|migrate|tenant-create|tenant-get|tenant-list|tenant-update|tenant-delete|tenant-operation-status|initialize|initialize-authorization|recover-password --config /absolute/private-config.json\nrss-mdm --version|--describe"
         );
         return Ok(());
     }
@@ -53,15 +53,44 @@ async fn execute() -> Result<(), ProcessError> {
             rss_mdm_app::migration::migrate(&options, &config.installation).await?;
             Ok(())
         }
-        "register-tenant" => {
-            let receipt = rss_mdm_app::tenant_registry::register(config::load(path)?).await?;
+        "tenant-create" => {
+            let receipt = rss_mdm_app::tenant_registry::create(config::load(path)?).await?;
             println!(
                 "{}",
                 serde_json::to_string(&receipt).expect("public receipt")
             );
             Ok(())
         }
-        "tenant-registration-status" => {
+        "tenant-get" => {
+            let tenant = rss_mdm_app::tenant_registry::get(config::load(path)?).await?;
+            println!("{}", serde_json::to_string(&tenant).expect("public tenant"));
+            Ok(())
+        }
+        "tenant-list" => {
+            let tenants = rss_mdm_app::tenant_registry::list(config::load(path)?).await?;
+            println!(
+                "{}",
+                serde_json::to_string(&tenants).expect("public tenants")
+            );
+            Ok(())
+        }
+        "tenant-update" => {
+            let receipt = rss_mdm_app::tenant_registry::update(config::load(path)?).await?;
+            println!(
+                "{}",
+                serde_json::to_string(&receipt).expect("public receipt")
+            );
+            Ok(())
+        }
+        "tenant-delete" => {
+            let receipt = rss_mdm_app::tenant_registry::delete(config::load(path)?).await?;
+            println!(
+                "{}",
+                serde_json::to_string(&receipt).expect("public receipt")
+            );
+            Ok(())
+        }
+        "tenant-operation-status" => {
             let receipt =
                 rss_mdm_app::tenant_registry::query_operation(config::load(path)?).await?;
             println!(

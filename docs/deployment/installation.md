@@ -44,9 +44,26 @@ Audit 与 Ledger 的组件 SQL 分别由 `mdm_audit_owner`、`mdm_ledger_owner` 
 
 迁移输入含 database 和 installation；installation 只固定 instance_id、target、lineage 和 audit_mode（plain 或 ledger，与运行配置 audit.mode 一致）。安装创建空租户登记表；重放只核稳定安装身份、完整当前 schema 和运行权限，不比较租户全集，不改租户 epoch。安装按 audit mode 授予 Identity audit worker 权限，模式不能随重放改变。
 
-首次租户和后续新增租户都由 `register-tenant` 显式登记，使用 mdm_owner。登记输入包含 database、稳定 installation、tenant_id、initial_epoch 和非空 operation_id；上限为 1024 个不同租户。同一操作、同一输入返回原回执，同操作异参或新操作重复租户产生冲突。登记、初始 epoch、Agent 默认设置和回执同事务提交；不初始化账户或业务授权。
+租户管理仅提供 CLI，由实际 `mdm_owner` 登录连接执行。六个命令均使用 `--config /absolute/private-config.json`，公共输入为 database 和稳定 installation：
 
-提交确认丢失、命令超时或成功后连接清理失败时，保留 operation_id，使用 `tenant-registration-status` 的 database、稳定 installation 和 operation_id 查询回执，或用原输入重放。查询与登记共用安装级锁；锁等待失败不能解释成没有提交。回执中的 initial_epoch 是登记事实，当前 epoch 仍以 RSS fencing 为准，重放不会重置它。
+| 命令 | 其它输入 | 输出与约束 |
+|---|---|---|
+| `tenant-create` | tenant_id、initial_epoch、operation_id；可选 name、notes | 创建 revision=1，连同 RSS 初始 epoch、Agent 默认设置和操作回执原子提交 |
+| `tenant-get` | tenant_id | 当前租户详情，包括 initial_epoch、current_epoch、name、notes、revision、deletable |
+| `tenant-list` | 无 | 所有未删除租户详情，按 UUID 排序，最多 1024 个 |
+| `tenant-update` | tenant_id、expected_revision、operation_id；可选 name、notes | 全量替换元数据；省略或 null 清空字段；成功时 revision 加一，即使值未改变 |
+| `tenant-delete` | tenant_id、expected_revision、operation_id | 仅允许删除从未声明使用的租户，revision 加一；保留墓碑、epoch、默认设置和回执 |
+| `tenant-operation-status` | operation_id | 返回 committed 与原始 receipt，或 not_found 与 null |
+
+tenant_id 与 instance_id 须为非空规范小写 UUID；operation_id 须为非空 UUID；initial_epoch 和 expected_revision 须为正整数。name 可为 null，否则最多 128 个 Unicode 字符且不能全为空白；notes 可为 null，否则最多 2048 个字符。元数据不控制权限或宿主绑定。tenant_id、installation 和 epoch 不通过更新命令修改；current_epoch 由 RSS fencing 持有。
+
+容量按未删除租户计数，删除释放容量，但租户 ID 永不复用。删除后新 get/update/delete 返回 NotFound，列表隐藏墓碑；没有强制删除、恢复、数据清扫、旧命令别名或旧 schema 迁移。旧安装与当前安装清单不匹配时拒绝运行，必须重新安装当前契约。
+
+create/update/delete 的 operation_id 共用一个全局命名空间。同一操作、同一规范业务输入返回原始回执，包括删除后及后续元数据/epoch 改变后的重放；同操作异参、重复租户、过期版本或版本溢出拒绝。回执为 `{operation_id, action, tenant}` 的提交时快照；数据库凭据不进入持久化业务请求。
+
+提交确认丢失、命令超时或成功后连接清理失败时，保留 operation_id，使用 `tenant-operation-status` 查询回执，或用原输入重放。查询与写入共用安装级锁；锁等待失败不能解释成没有提交。`not_found` 仅表示查询取得锁后未发现已提交回执，不取消后来发起的操作。
+
+账户初始化、授权初始化和 serve 在后续工作前，通过受限数据库能力核验安装身份、当前期望 epoch 和租户状态，并提交永久 used 标记。标记不改变元数据版本，后续初始化或启动失败也不会恢复可删除性。删除与首次使用共用安装锁；先删除则使用被拒绝，先声明使用则删除返回 InUse。运行角色仅有该固定函数 EXECUTE，不能直接更新租户表。
 
 账户初始化输入另含 tenant_id、expected_epoch、principal_id、login、password_file；授权初始化沿用 user.tenantId 并显式提供 expectedEpoch。两者从数据库核验登记及当前 epoch，使用各自受限角色。日常账户与 IdP 管理使用受保护 HTTP 接口。
 
@@ -55,7 +72,7 @@ Audit 与 Ledger 的组件 SQL 分别由 `mdm_audit_owner`、`mdm_ledger_owner` 
 ~~~sh
 docker load --input server.oci.tar
 docker run --rm --network host --mount type=bind,src=/private/mdm-operator,dst=/run/mdm,readonly IMAGE migrate --config /run/mdm/migrate.json
-docker run --rm --network host --mount type=bind,src=/private/mdm-operator,dst=/run/mdm,readonly IMAGE register-tenant --config /run/mdm/register.json
+docker run --rm --network host --mount type=bind,src=/private/mdm-operator,dst=/run/mdm,readonly IMAGE tenant-create --config /run/mdm/tenant-create.json
 docker run --rm --network host --mount type=bind,src=/private/mdm-operator,dst=/run/mdm,readonly IMAGE initialize --config /run/mdm/initialize.json
 docker run --rm --network host --mount type=bind,src=/private/mdm-operator,dst=/run/mdm,readonly IMAGE initialize-authorization --config /run/mdm/authorization.json
 docker run --name rss-mdm --network host --mount type=bind,src=/private/mdm-runtime,dst=/run/mdm,readonly IMAGE serve --config /run/mdm/config.json

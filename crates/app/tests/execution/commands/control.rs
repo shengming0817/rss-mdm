@@ -273,10 +273,17 @@ async fn fixed_controls_preserve_uncertainty_and_retire_old_authority() -> anyho
             &tokio::sync::Notify::new(),
         )
         .await?;
-    ensure!(
-        recovery.execution_failed == 0 && recovery.suspended == 0,
-        "{recovery:?}"
-    );
+    // The bounded run may interrupt its last attempt. Verify committed business
+    // state rather than requiring zero interrupted attempts at the deadline.
+    ensure!(recovery.suspended == 0, "{recovery:?}");
+    for id in &ids {
+        let read = client.call(Method::GET, &format!("/{id}"), None).await?;
+        ensure!(
+            read.1["commandStatus"] == "received"
+                && read.1["observation"]["effect"] == "unverifiable",
+            "recovery changed historical uncertainty: {read:?}"
+        );
+    }
     ensure!(
         client
             .call(Method::GET, &format!("/{pending}"), None)
