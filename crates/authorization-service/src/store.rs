@@ -187,7 +187,10 @@ async fn change_authorization_on<T: serde::Serialize + Sync>(
         && let Some(value) = value
     {
         let rule: Rule = decode(value)?;
-        current.installation.as_ref().ok_or(Error::Corrupt)?
+        current
+            .installation
+            .as_ref()
+            .ok_or(Error::Corrupt)?
             .validate_rule(proof.tenant_id(), &rule)?;
     }
     if let Some(result) = replay {
@@ -247,7 +250,12 @@ async fn change_authorization_on<T: serde::Serialize + Sync>(
     if !bounded {
         return Err(Error::Conflict);
     }
-    if current.installation.as_ref().ok_or(Error::Corrupt)?.is_management(proof.tenant_id()) {
+    if current
+        .installation
+        .as_ref()
+        .ok_or(Error::Corrupt)?
+        .is_management(proof.tenant_id())
+    {
         protect_management_initializer(tx, proof).await?;
     }
     let receipt = Receipt {
@@ -284,22 +292,35 @@ pub async fn snapshot_on(
     snapshot.validate(tenant, instance)?;
     let installation = crate::tenancy::InstallationTenants::load(tx).await?;
     for rule in snapshot.rules.iter().filter_map(|r| r.value.as_ref()) {
-        installation.validate_rule(tenant, rule).map_err(|_| Error::Corrupt)?;
+        installation
+            .validate_rule(tenant, rule)
+            .map_err(|_| Error::Corrupt)?;
     }
     snapshot.installation = Some(installation);
     Ok(snapshot)
 }
 
 /// The first management account keeps rule administration; its CRUD grants remain revocable.
-async fn protect_management_initializer(tx: &mut sqlx::PgConnection, proof: &AuthorizedPrincipal) -> Result<(), Error> {
+async fn protect_management_initializer(
+    tx: &mut sqlx::PgConnection,
+    proof: &AuthorizedPrincipal,
+) -> Result<(), Error> {
     let projected = read_snapshot(tx, proof).await?;
     let principal: String = sqlx::query_scalar("SELECT principal::text FROM mdm_access.authorization_initializations WHERE tenant_id=$1::uuid AND instance=$2::uuid")
         .bind(proof.tenant_id()).bind(proof.instance_id()).fetch_one(tx).await.map_err(db)?;
-    for permission in [Permission::AuthorizationRead, Permission::AuthorizationWrite] {
-        if !projected.rules.iter().filter_map(|r| r.value.as_ref()).any(|rule| {
-            matches!(&rule.subject, Subject::User { user } if user.principal_id == principal)
-                && rule.grants.iter().any(|g| g.covers(permission, None))
-        }) {
+    for permission in [
+        Permission::AuthorizationRead,
+        Permission::AuthorizationWrite,
+    ] {
+        if !projected
+            .rules
+            .iter()
+            .filter_map(|r| r.value.as_ref())
+            .any(|rule| {
+                matches!(&rule.subject, Subject::User { user } if user.principal_id == principal)
+                    && rule.grants.iter().any(|g| g.covers(permission, None))
+            })
+        {
             return Err(Error::Forbidden);
         }
     }
@@ -448,20 +469,33 @@ async fn initialize_on(
     let id = Uuid::new_v4();
     let installation = crate::tenancy::InstallationTenants::load(tx).await?;
     let permissions: &[Permission] = if installation.is_management(&user.tenant_id) {
-        &[Permission::AuthorizationRead, Permission::AuthorizationWrite,
-          Permission::TenantCreate, Permission::TenantRead, Permission::TenantUpdate, Permission::TenantDelete]
+        &[
+            Permission::AuthorizationRead,
+            Permission::AuthorizationWrite,
+            Permission::TenantCreate,
+            Permission::TenantRead,
+            Permission::TenantUpdate,
+            Permission::TenantDelete,
+        ]
     } else {
-        &[Permission::AuthorizationRead, Permission::AuthorizationWrite,
-          Permission::UserGroupRead, Permission::UserGroupWrite, Permission::DepartmentRead]
+        &[
+            Permission::AuthorizationRead,
+            Permission::AuthorizationWrite,
+            Permission::UserGroupRead,
+            Permission::UserGroupWrite,
+            Permission::DepartmentRead,
+        ]
     };
     let rule = Rule {
         subject: Subject::User { user: user.clone() },
-        grants: permissions.iter().copied()
-        .map(|operation| Grant {
-            operation,
-            scope: Scope::Tenant,
-        })
-        .collect(),
+        grants: permissions
+            .iter()
+            .copied()
+            .map(|operation| Grant {
+                operation,
+                scope: Scope::Tenant,
+            })
+            .collect(),
     };
     sqlx::query("INSERT INTO mdm_access.authorization_initializations(tenant_id,instance,operation_id,principal) VALUES($1::uuid,$2::uuid,$3::uuid,$4::uuid)").bind(&user.tenant_id).bind(&user.instance_id).bind(key.to_string()).bind(&user.principal_id).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) VALUES($1::uuid,$2::uuid,$3::uuid,1,$4::jsonb)").bind(&user.tenant_id).bind(&user.instance_id).bind(id.to_string()).bind(serde_json::to_string(&rule).map_err(|_| Error::Malformed)?).execute(&mut *tx).await.map_err(db)?;

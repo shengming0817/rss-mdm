@@ -90,7 +90,13 @@ impl Identity {
             &config.identity.database,
             &config.flow.storage.target,
             &config.flow.storage.lineage,
-            &[(tenant, config.flow.storage.epoch), (management_tenant, rss_mdm_authorization_service::tenancy::MANAGEMENT_EPOCH)],
+            &[
+                (tenant, config.flow.storage.epoch),
+                (
+                    management_tenant,
+                    rss_mdm_authorization_service::tenancy::MANAGEMENT_EPOCH,
+                ),
+            ],
         )
         .await?;
         acquire(rss_runtime::DynManagedResource::new_box(RuntimeResource(
@@ -117,6 +123,7 @@ impl Identity {
         let mut routes =
             rss_identity_http_axum::router(authority.clone(), http.clone()).map_err(failure)?;
         if let Some(oidc) = &config.identity.oidc {
+            oidc.require_business_tenant(&config.identity.tenant_id)?;
             let federation = federation(
                 oidc,
                 authority.clone(),
@@ -126,7 +133,11 @@ impl Identity {
             )?;
             routes = routes.merge(
                 rss_identity_http_axum::federated_router(federation, http.clone())
-                    .map_err(failure)?,
+                    .map_err(failure)?
+                    .route_layer(axum::middleware::from_fn_with_state(
+                        config.identity.tenant_id.clone(),
+                        business_federation,
+                    )),
             );
         }
         Ok(Self {
@@ -221,7 +232,10 @@ fn runtime_inputs(
 ) -> Result<(PgConfig, ExecutionBinding), Error> {
     let binding = ExecutionBinding::new(
         StorageIdentity::new(*target, *lineage).map_err(|_| invalid())?,
-        tenants.iter().map(|(tenant, epoch)| Ok((*tenant, Epoch::new(*epoch).map_err(|_| invalid())?))).collect::<Result<Vec<_>, Error>>()?,
+        tenants
+            .iter()
+            .map(|(tenant, epoch)| Ok((*tenant, Epoch::new(*epoch).map_err(|_| invalid())?)))
+            .collect::<Result<Vec<_>, Error>>()?,
     )
     .map_err(|_| invalid())?;
     let pg = PgConfig::new(
@@ -237,16 +251,27 @@ fn runtime_inputs(
 }
 
 /// Read installation-owned admission coordinates; this connection never owns application state.
-pub(crate) async fn management_tenant(database: &config::Database, instance: InstanceId) -> Result<TenantId, Error> {
+pub(crate) async fn management_tenant(
+    database: &config::Database,
+    instance: InstanceId,
+) -> Result<TenantId, Error> {
     use sqlx::Connection;
-    let mut connection = tokio::time::timeout(Duration::from_secs(5), sqlx::PgConnection::connect_with(&database.options()?))
-        .await.map_err(|_| invalid())?.map_err(|_| invalid())?;
+    let mut connection = tokio::time::timeout(
+        Duration::from_secs(5),
+        sqlx::PgConnection::connect_with(&database.options()?),
+    )
+    .await
+    .map_err(|_| invalid())?
+    .map_err(|_| invalid())?;
     let result = tokio::time::timeout(Duration::from_secs(5), async {
         let raw: String = sqlx::query_scalar("SELECT management_tenant_id::text FROM public.mdm_installation WHERE singleton AND instance_id=$1::uuid")
             .bind(instance.to_string()).fetch_one(&mut connection).await.map_err(|_| invalid())?;
         TenantId::parse(&raw).map_err(|_| invalid())
     }).await.map_err(|_| invalid()).and_then(|r| r);
-    let closed = matches!(tokio::time::timeout(Duration::from_secs(5), connection.close()).await, Ok(Ok(())));
+    let closed = matches!(
+        tokio::time::timeout(Duration::from_secs(5), connection.close()).await,
+        Ok(Ok(()))
+    );
     match result {
         Err(error) => Err(error),
         Ok(tenant) if closed => Ok(tenant),
@@ -310,6 +335,20 @@ pub struct PrivateProvider {
     pub cidrs: Vec<String>,
 }
 impl OidcConfig {
+    fn require_business_tenant(&self, tenant: &str) -> Result<(), Error> {
+        if self
+            .assurance_profiles
+            .iter()
+            .any(|profile| profile.tenant_id != tenant)
+            || self
+                .private_providers
+                .iter()
+                .any(|provider| provider.tenant_id != tenant)
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
     fn private_access(
         &self,
         tenant: TenantId,
@@ -409,6 +448,21 @@ impl OidcConfig {
         )
         .map_err(failure)
     }
+}
+async fn business_federation(
+    State(tenant): State<String>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if let Some(path) = request
+        .uri()
+        .path()
+        .strip_prefix("/api/v1/identity/tenants/")
+        && path.split('/').next() != Some(tenant.as_str())
+    {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    next.run(request).await
 }
 fn key(path: &std::path::Path) -> Result<zeroize::Zeroizing<[u8; 32]>, Error> {
     let text = config::secret(path)?;

@@ -15,7 +15,9 @@ impl InstallationTenants {
             .fetch_one(connection).await.map_err(crate::database::db)?;
         Ok(Self {
             instance: row.try_get("instance_id").map_err(crate::database::db)?,
-            management: row.try_get("management_tenant_id").map_err(crate::database::db)?,
+            management: row
+                .try_get("management_tenant_id")
+                .map_err(crate::database::db)?,
         })
     }
     pub fn management_tenant(&self) -> &str {
@@ -24,7 +26,11 @@ impl InstallationTenants {
     pub fn is_management(&self, tenant: &str) -> bool {
         tenant == self.management
     }
-    pub fn require(&self, proof: &AuthorizedPrincipal, permission: Permission) -> Result<(), Error> {
+    pub fn require(
+        &self,
+        proof: &AuthorizedPrincipal,
+        permission: Permission,
+    ) -> Result<(), Error> {
         proof.check_live()?;
         if proof.instance_id() != self.instance
             || (self.is_management(proof.tenant_id()) && !permission.management_allowed())

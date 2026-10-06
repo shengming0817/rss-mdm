@@ -70,10 +70,14 @@ pub enum Permission {
 }
 impl Permission {
     pub fn tenant_management(self) -> bool {
-        matches!(self, Self::TenantCreate | Self::TenantRead | Self::TenantUpdate | Self::TenantDelete)
+        matches!(
+            self,
+            Self::TenantCreate | Self::TenantRead | Self::TenantUpdate | Self::TenantDelete
+        )
     }
     pub(crate) fn management_allowed(self) -> bool {
-        self.tenant_management() || matches!(self, Self::AuthorizationRead | Self::AuthorizationWrite)
+        self.tenant_management()
+            || matches!(self, Self::AuthorizationRead | Self::AuthorizationWrite)
     }
     /// Whether this permission is granted for devices rather than the tenant.
     pub fn device(self) -> bool {

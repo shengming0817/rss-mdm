@@ -442,6 +442,19 @@ pub(crate) fn from_state(
     };
     let authentication =
         rss_mdm_management_http::authentication_routes(authentication, management_boundary.clone());
+    let tenant_administration = rss_mdm_management_http::tenant_administration::router(
+        Arc::new(
+            rss_mdm_management_http::authorization::http::AuthenticationState {
+                identity: state.identity.management_browser(),
+                access: state.access.authorization_store(),
+                requests: state.requests.clone(),
+            },
+        ),
+        rss_mdm_management_http::boundary::Envelope {
+            tenant: state.identity.management_tenant.to_string(),
+            ..management_boundary.clone()
+        },
+    );
     let management = rss_mdm_management_http::router(
         rss_mdm_management_http::Services {
             windows_entra: state
@@ -610,6 +623,7 @@ pub(crate) fn from_state(
             crate::http_host::guard,
         ));
     let browser = Router::new()
+        .merge(tenant_administration)
         .merge(management)
         .merge(rss_mdm_apple_channel::browser_routes(
             apple_state.clone(),

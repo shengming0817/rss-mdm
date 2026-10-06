@@ -108,8 +108,11 @@ impl Database {
             audit_mode: config.audit.mode(),
         };
         let mut conn = self.pool.acquire().await.map_err(db)?;
-        let management: String = sqlx::query_scalar("SELECT management_tenant_id::text FROM public.mdm_installation")
-            .fetch_one(&mut *conn).await.map_err(db)?;
+        let management: String =
+            sqlx::query_scalar("SELECT management_tenant_id::text FROM public.mdm_installation")
+                .fetch_one(&mut *conn)
+                .await
+                .map_err(db)?;
         if management == config.identity.tenant_id {
             return Err(Error::Configuration(crate::ConfigIssue::Tenant));
         }

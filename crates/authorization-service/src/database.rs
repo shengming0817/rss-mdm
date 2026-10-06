@@ -12,6 +12,34 @@ impl Store {
     pub(crate) async fn acquire(&self) -> Result<sqlx::pool::PoolConnection<Postgres>, Error> {
         self.pool.acquire().await.map_err(db)
     }
+    /// Purpose is installation-owned, even for routes requiring identity but no grants.
+    pub async fn require_tenant_purpose(
+        &self,
+        proof: &crate::context::AuthorizedPrincipal,
+        management: bool,
+    ) -> Result<(), Error> {
+        let mut connection = None;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            proof.check_live()?;
+            connection = Some(self.acquire().await?);
+            let binding = crate::tenancy::InstallationTenants::load(
+                connection.as_mut().expect("acquired connection"),
+            )
+            .await?;
+            binding.require(proof, crate::Permission::AuthorizationRead)?;
+            if binding.is_management(proof.tenant_id()) != management {
+                return Err(Error::Forbidden);
+            }
+            Ok(())
+        })
+        .await;
+        if !matches!(result, Ok(Ok(())))
+            && let Some(connection) = &mut connection
+        {
+            connection.close_on_drop();
+        }
+        result.map_err(|_| Error::Deadline)?
+    }
     pub(crate) async fn configure_transaction(
         tx: &mut Transaction<'_, Postgres>,
         tenant: &str,

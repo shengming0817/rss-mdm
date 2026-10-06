@@ -90,8 +90,11 @@ impl Snapshot {
         operation: Permission,
         device: Option<&str>,
     ) -> Result<(), AuthorizationError> {
-        self.installation.as_ref().ok_or(AuthorizationError::Corrupt)?
-            .require(proof, operation).map_err(|_| AuthorizationError::Forbidden)?;
+        self.installation
+            .as_ref()
+            .ok_or(AuthorizationError::Corrupt)?
+            .require(proof, operation)
+            .map_err(|_| AuthorizationError::Forbidden)?;
         proof
             .check_live()
             .map_err(|_| AuthorizationError::Unauthorized)?;

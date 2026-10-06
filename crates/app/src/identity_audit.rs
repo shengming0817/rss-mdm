@@ -128,7 +128,8 @@ impl Worker {
             .map_err(|_| Error::Configuration(ConfigIssue::Tenant))?;
         let instance = rss_identity_core::InstanceId::parse(&config.identity.instance_id)
             .map_err(|_| Error::Configuration(ConfigIssue::Instance))?;
-        let management_tenant = crate::identity::management_tenant(&config.identity.database, instance).await?;
+        let management_tenant =
+            crate::identity::management_tenant(&config.identity.database, instance).await?;
         if matches!(config.audit, crate::config::AuditConfig::Ledger { .. }) {
             audit
                 .read_verified(
@@ -151,7 +152,13 @@ impl Worker {
             database,
             &config.flow.storage.target,
             &config.flow.storage.lineage,
-            &[(tenant, config.flow.storage.epoch), (management_tenant, rss_mdm_authorization_service::tenancy::MANAGEMENT_EPOCH)],
+            &[
+                (tenant, config.flow.storage.epoch),
+                (
+                    management_tenant,
+                    rss_mdm_authorization_service::tenancy::MANAGEMENT_EPOCH,
+                ),
+            ],
         )
         .await?;
         acquire(DynManagedResource::new_box(RuntimeResource(
@@ -164,12 +171,18 @@ impl Worker {
             Duration::from_secs(1),
         )
         .map_err(|_| Error::Configuration(ConfigIssue::Budget))?;
-        let delivery = AuditDelivery::new(runtime, audit, instance, vec![tenant, management_tenant], budget)
-            .await
-            .map_err(|error| {
-                diagnose(error);
-                unavailable()
-            })?;
+        let delivery = AuditDelivery::new(
+            runtime,
+            audit,
+            instance,
+            vec![tenant, management_tenant],
+            budget,
+        )
+        .await
+        .map_err(|error| {
+            diagnose(error);
+            unavailable()
+        })?;
         Ok(Arc::new(Self {
             delivery,
             readiness,
