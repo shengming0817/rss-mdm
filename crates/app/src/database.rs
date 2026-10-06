@@ -97,7 +97,7 @@ impl Database {
             .map(std::sync::Arc::new)
             .map_err(|_| Error::Unavailable(Failure::Database))
     }
-    pub(crate) async fn verify_tenant(&self, config: &crate::config::Config) -> Result<(), Error> {
+    pub(crate) async fn claim_tenant_use(&self, config: &crate::config::Config) -> Result<(), Error> {
         let identity = crate::migration::Installation {
             instance_id: config.identity.instance_id.clone(),
             target: config.flow.storage.target,
@@ -105,7 +105,7 @@ impl Database {
             audit_mode: config.audit.mode(),
         };
         let mut conn = self.pool.acquire().await.map_err(db)?;
-        crate::tenant_registry::verify_binding(
+        crate::tenant_registry::claim_use(
             &mut conn,
             &identity,
             &config.identity.tenant_id,

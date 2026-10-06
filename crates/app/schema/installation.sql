@@ -34,4 +34,25 @@ REVOKE ALL ON public.mdm_installation,public.mdm_tenants,public.mdm_tenant_opera
 GRANT SELECT ON public.mdm_installation,public.mdm_tenants TO mdm_access,mdm_identity_runtime,mdm_identity_maintenance;
 GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_access,mdm_identity_runtime,mdm_identity_maintenance;
 GRANT SELECT ON rss_transactional_messaging.tenant_epoch TO mdm_access,mdm_identity_runtime,mdm_identity_maintenance;
+-- Narrow capability: marking use never changes metadata, revisions, or epochs.
+CREATE FUNCTION public.claim_tenant_use(tenant uuid, expected_epoch bigint, instance uuid, expected_target bytea, expected_lineage bytea, expected_audit_mode text)
+RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+AS $tenant_use$
+BEGIN
+ IF current_setting('transaction_isolation') <> 'read committed' THEN
+  RAISE EXCEPTION 'tenant use requires read committed';
+ END IF;
+ PERFORM pg_catalog.pg_advisory_xact_lock(2346);
+ PERFORM pg_catalog.set_config('rss.tenant_id', tenant::text, true);
+ IF NOT EXISTS(SELECT 1 FROM public.mdm_installation i WHERE i.singleton AND i.instance_id=instance AND i.target=expected_target AND i.lineage=expected_lineage AND i.audit_mode=expected_audit_mode)
+ OR NOT EXISTS(SELECT 1 FROM public.mdm_tenants t JOIN rss_transactional_messaging.tenant_epoch e USING(tenant_id) WHERE t.tenant_id=tenant AND NOT t.deleted AND e.epoch=expected_epoch) THEN
+  RETURN false;
+ END IF;
+ UPDATE public.mdm_tenants SET used=true WHERE tenant_id=tenant AND NOT used;
+ RETURN true;
+END
+$tenant_use$;
+ALTER FUNCTION public.claim_tenant_use(uuid,bigint,uuid,bytea,bytea,text) OWNER TO mdm_owner;
+REVOKE ALL ON FUNCTION public.claim_tenant_use(uuid,bigint,uuid,bytea,bytea,text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.claim_tenant_use(uuid,bigint,uuid,bytea,bytea,text) TO mdm_access,mdm_identity_runtime,mdm_identity_maintenance;
 COMMIT;

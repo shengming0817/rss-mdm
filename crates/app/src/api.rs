@@ -71,7 +71,7 @@ pub(crate) async fn application_fixture(
     ),
     Error,
 > {
-    access.verify_tenant(&config).await?;
+    access.claim_tenant_use(&config).await?;
     let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
         config.runtime_database.options()?,
         access.inventory(),

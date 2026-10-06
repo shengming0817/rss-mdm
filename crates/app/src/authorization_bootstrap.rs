@@ -120,7 +120,7 @@ async fn initialize_owned(
     let login = LoginKey::parse(&config.login).map_err(|_| invalid())?;
     let password =
         Password::new(config::secret(&config.password_file)?.to_string()).map_err(|_| invalid())?;
-    crate::tenant_registry::verify_database_binding(
+    crate::tenant_registry::claim_database_use(
         &config.identity_database,
         &config.installation,
         &config.user.tenant_id,

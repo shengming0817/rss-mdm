@@ -41,7 +41,7 @@ pub async fn run(config: Config, initialize: bool) -> Result<(), Error> {
     if initialize != login.is_some() {
         return Err(invalid());
     }
-    crate::tenant_registry::verify_database_binding(
+    crate::tenant_registry::claim_database_use(
         &config.database,
         &config.installation,
         &config.tenant_id,

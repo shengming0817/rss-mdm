@@ -109,7 +109,7 @@ pub async fn serve(
                             access.clone(),
                         )));
                         access
-                            .verify_tenant(&compiled.config)
+                            .claim_tenant_use(&compiled.config)
                             .await
                             .map_err(|error| ProcessError::at("startup.tenant_binding", error))?;
                         let notifications = crate::worker_wake::Listener::new(
