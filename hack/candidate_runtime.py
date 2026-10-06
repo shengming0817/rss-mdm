@@ -423,6 +423,21 @@ class Candidate:
             self.operator('initialize','initialize.json',Stage.INITIALIZE)
             self.operator('initialize-authorization','authorization.json',Stage.AUTHORIZATION_INITIALIZE)
             self.operator('initialize-authorization','authorization.json',Stage.AUTHORIZATION_REPLAY)
+            # Candidate fixture explicitly bootstraps the reserved tenant through existing commands.
+            self.management_tenant=self.sql('SELECT management_tenant_id FROM public.mdm_installation')
+            management_account=json.loads((self.operator_root/'initialize.json').read_text())
+            management_account['tenant_id']=self.management_tenant
+            private(self.operator_root/'management-initialize.json',management_account)
+            management_auth=json.loads((self.operator_root/'authorization.json').read_text())
+            management_auth['user']['tenantId']=self.management_tenant
+            management_auth['operationId']=str(uuid.uuid4())
+            private(self.operator_root/'management-authorization.json',management_auth)
+            self.config['identity_management'].append(dict(tenant_id=self.management_tenant,instance_id=self.instance,
+                principal_id=ADMIN,permissions=['accounts']))
+            private(self.runtime/'config.json',self.config)
+            self.copy_runtime()
+            self.operator('initialize','management-initialize.json',Stage.INITIALIZE)
+            self.operator('initialize-authorization','management-authorization.json',Stage.AUTHORIZATION_INITIALIZE)
             self.start_server();self.start_gateway()
             self.port=int(self.compose('port','runtime-netns','8445',stage=Stage.PORT).rsplit(':',1)[1])
             self.ready()

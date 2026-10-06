@@ -54,27 +54,28 @@ class Browser:
             conn.close()
 
 
+# Descendants inherit the Python scenario's runner-owned process group.
+class HostProcesses:
+    def __init__(self):
+        self.failed = threading.Event()
+    def spawn(self, args, **kwargs):
+        return subprocess.Popen([str(a) for a in args], pass_fds=lease_fds(), **kwargs)
+    def release(self, child):
+        if child.poll() is None:
+            child.terminate()
+            try:
+                child.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                child.kill(); child.wait(timeout=5)
+    def check(self):
+        require(not self.failed.is_set(), 'tenant host exited unexpectedly')
+    def cancel(self):
+        self.failed.set()
+
 def execute(fixture):
     root = fixture.root
     pool = SimpleNamespace(owner=fixture.owner)
     pool.database_config = lambda *args: DatabasePool.database_config(pool, *args)
-    # Descendants inherit the Python scenario's runner-owned process group.
-    class HostProcesses:
-        def __init__(self):
-            self.failed = threading.Event()
-        def spawn(self, args, **kwargs):
-            return subprocess.Popen([str(a) for a in args], pass_fds=lease_fds(), **kwargs)
-        def release(self, child):
-            if child.poll() is None:
-                child.terminate()
-                try:
-                    child.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    child.kill(); child.wait(timeout=5)
-        def check(self):
-            require(not self.failed.is_set(), 'tenant host exited unexpectedly')
-        def cancel(self):
-            self.failed.set()
     builds = SimpleNamespace(processes=HostProcesses(), executables={'rss-mdm':fixture.binary})
     context = SimpleNamespace(native_key=os.environ['MDM_NATIVE_PROTECTION_KEY_FILE'])
     a, b = str(uuid.uuid4()), str(uuid.uuid4())
@@ -95,7 +96,8 @@ def execute(fixture):
             require(reason in result.stderr, 'unexpected tenant failure: ' + result.stderr)
         return json.loads(result.stdout) if result.stdout.strip() else None
     command('migrate', dict(database=database, installation=installation()))
-    require(sql('SELECT count(*) FROM public.mdm_tenants') == '0', 'installer seeded a tenant')
+    management = sql('SELECT management_tenant_id FROM public.mdm_installation')
+    require(sql('SELECT count(*) FROM public.mdm_tenants') == '1', 'installer did not reserve one management tenant')
     def create(tenant):
         request = dict(database=database, installation=installation(), tenant_id=tenant,
                        initial_epoch=1, operation_id=str(uuid.uuid4()))
@@ -106,7 +108,7 @@ def execute(fixture):
                 'registration query did not recover durable result')
         return receipt
     create(a)
-    require(sql('SELECT count(*) FROM public.mdm_tenants') == '1', 'first registration changed tenant count')
+    require(sql('SELECT count(*) FROM public.mdm_tenants') == '2', 'first registration changed tenant count')
     def snapshot():
         return sql(f"SELECT jsonb_build_object('epoch',(SELECT epoch FROM rss_transactional_messaging.tenant_epoch WHERE tenant_id='{a}'),'settings',(SELECT to_jsonb(s) FROM mdm_access.agent_enrollment_settings s WHERE tenant_id='{a}'))")
     before = snapshot()
@@ -136,7 +138,12 @@ def execute(fixture):
     command('tenant-get', dict(**common, tenant_id=c), accepted=False, reason='tenant not found')
     command('tenant-create', dict(created, operation_id=str(uuid.uuid4())), accepted=False, reason='conflict')
     listed = command('tenant-list', common)
-    require([t['tenant_id'] for t in listed] == sorted([a,b]), 'list leaked tombstone or changed ordering')
+    require([t['tenant_id'] for t in listed] == sorted([a,b,management]), 'list leaked tombstone or changed ordering')
+    reserved = command('tenant-get', dict(**common,tenant_id=management))
+    require(reserved['management'] and not reserved['deletable'], 'reserved tenant is not marked')
+    for verb in ('tenant-update','tenant-delete'):
+        command(verb,dict(**common,tenant_id=management,expected_revision=1,operation_id=str(uuid.uuid4())),
+                accepted=False,reason='reserved management tenant')
     # An authorization initialization failure still permanently claims tenant use.
     d = str(uuid.uuid4())
     create(d)
