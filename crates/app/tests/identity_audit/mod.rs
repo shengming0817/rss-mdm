@@ -302,9 +302,9 @@ async fn management_only_startup_integrity(
     ensure!(
         matches!(
             host,
-            Err(crate::ProcessError::Stage {
+            Err(crate::ProcessError::Dependency {
                 stage: "startup.audit",
-                ..
+                reason: crate::Failure::AuditIntegrity,
             })
         ),
         "management-only Ledger must reject host audit admission: {host:?}"
