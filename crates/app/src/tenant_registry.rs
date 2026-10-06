@@ -123,7 +123,17 @@ fn error(operation_id: Option<Uuid>, reason: Reason) -> RegistryError {
         cleanup_failed: false,
     }
 }
+impl From<Reason> for RegistryError {
+    fn from(reason: Reason) -> Self {
+        error(None, reason)
+    }
+}
 type Result<T> = std::result::Result<T, Reason>;
+type RegistryResult<T> = std::result::Result<T, RegistryError>;
+enum Outcome {
+    Replay(Receipt),
+    Changed(Receipt),
+}
 
 struct Mutation<'a> {
     installation: &'a Installation,
@@ -222,7 +232,7 @@ async fn mutate(
     let mut conn = connect(database, operation).await?;
     let result = tokio::time::timeout(Duration::from_secs(30), mutate_on(&mut conn, &input))
         .await
-        .unwrap_or(Err(Reason::Deadline));
+        .unwrap_or(Err(Reason::Deadline.into()));
     settle(conn, operation, result).await
 }
 pub async fn get(input: Get) -> std::result::Result<Tenant, RegistryError> {
@@ -230,12 +240,11 @@ pub async fn get(input: Get) -> std::result::Result<Tenant, RegistryError> {
     let mut conn = connect(&input.database, None).await?;
     let result = tokio::time::timeout(Duration::from_secs(30), async {
         let mut tx = operator_transaction(&mut conn, &input.installation).await?;
-        let tenant = tenant_on(&mut tx, &input.tenant_id, false).await?;
-        tx.rollback().await.map_err(|_| Reason::Storage)?;
-        Ok(tenant)
+        let result = tenant_on(&mut tx, &input.tenant_id, false).await;
+        rollback(tx, result, None).await
     })
     .await
-    .unwrap_or(Err(Reason::Deadline));
+    .unwrap_or(Err(Reason::Deadline.into()));
     settle(conn, None, result).await
 }
 pub async fn list(input: List) -> std::result::Result<Vec<Tenant>, RegistryError> {
@@ -245,21 +254,24 @@ pub async fn list(input: List) -> std::result::Result<Vec<Tenant>, RegistryError
     let mut conn = connect(&input.database, None).await?;
     let result = tokio::time::timeout(Duration::from_secs(30), async {
         let mut tx = operator_transaction(&mut conn, &input.installation).await?;
-        let ids: Vec<String> = sqlx::query_scalar(
+        let result: Result<Vec<Tenant>> = async {
+            let ids: Vec<String> = sqlx::query_scalar(
             "SELECT tenant_id::text FROM public.mdm_tenants WHERE NOT deleted ORDER BY tenant_id",
         )
         .fetch_all(&mut *tx)
         .await
         .map_err(|_| Reason::Storage)?;
-        let mut tenants = Vec::with_capacity(ids.len());
-        for id in ids {
-            tenants.push(tenant_on(&mut tx, &id, false).await?);
+            let mut tenants = Vec::with_capacity(ids.len());
+            for id in ids {
+                tenants.push(tenant_on(&mut tx, &id, false).await?);
+            }
+            Ok(tenants)
         }
-        tx.rollback().await.map_err(|_| Reason::Storage)?;
-        Ok(tenants)
+        .await;
+        rollback(tx, result, None).await
     })
     .await
-    .unwrap_or(Err(Reason::Deadline));
+    .unwrap_or(Err(Reason::Deadline.into()));
     settle(conn, None, result).await
 }
 /// Wait behind in-flight mutations before observing an absent receipt.
@@ -274,18 +286,19 @@ pub async fn query_operation(input: Query) -> std::result::Result<Option<Receipt
         query_on(&mut conn, &input.installation, input.operation_id),
     )
     .await
-    .unwrap_or(Err(Reason::Deadline));
+    .unwrap_or(Err(Reason::Deadline.into()));
     settle(conn, operation, result).await
 }
 async fn query_on(
     conn: &mut PgConnection,
     installation: &Installation,
     operation: Uuid,
-) -> Result<Option<Receipt>> {
+) -> RegistryResult<Option<Receipt>> {
     let mut tx = operator_transaction(conn, installation).await?;
-    let row = receipt_on(&mut tx, operation).await?;
-    tx.rollback().await.map_err(|_| Reason::Storage)?;
-    Ok(row.map(|(receipt, _)| receipt))
+    let result = receipt_on(&mut tx, operation)
+        .await
+        .map(|row| row.map(|(receipt, _)| receipt));
+    rollback(tx, result, Some(operation)).await
 }
 async fn connect(
     database: &config::Database,
@@ -305,18 +318,39 @@ async fn connect(
 async fn settle<T>(
     conn: PgConnection,
     operation: Option<Uuid>,
-    result: Result<T>,
-) -> std::result::Result<T, RegistryError> {
+    result: RegistryResult<T>,
+) -> RegistryResult<T> {
     let closed = matches!(
         tokio::time::timeout(Duration::from_secs(5), conn.close()).await,
         Ok(Ok(()))
     );
     match result {
+        Err(mut error) => {
+            error.operation_id = operation;
+            error.cleanup_failed |= !closed;
+            Err(error)
+        }
+        Ok(value) if closed => Ok(value),
+        Ok(_) => Err(RegistryError {
+            cleanup_failed: true,
+            ..error(operation, Reason::Cleanup)
+        }),
+    }
+}
+// Transaction::drop queues rollback; callers must not retain a locked connection on rejection.
+// ref: sqlx v0.9.0 sqlx-core/src/transaction.rs:269; sqlx-postgres/src/transaction.rs:64
+async fn rollback<T>(
+    tx: sqlx::Transaction<'_, sqlx::Postgres>,
+    result: Result<T>,
+    operation: Option<Uuid>,
+) -> RegistryResult<T> {
+    let failed = tx.rollback().await.is_err();
+    match result {
         Err(reason) => Err(RegistryError {
-            cleanup_failed: !closed,
+            cleanup_failed: failed,
             ..error(operation, reason)
         }),
-        Ok(value) if closed => Ok(value),
+        Ok(value) if !failed => Ok(value),
         Ok(_) => Err(RegistryError {
             cleanup_failed: true,
             ..error(operation, Reason::Cleanup)
@@ -326,45 +360,64 @@ async fn settle<T>(
 async fn operator_transaction<'a>(
     conn: &'a mut PgConnection,
     installation: &Installation,
-) -> Result<sqlx::Transaction<'a, sqlx::Postgres>> {
+) -> RegistryResult<sqlx::Transaction<'a, sqlx::Postgres>> {
     if !migration::owner_admitted(conn)
         .await
         .map_err(|_| Reason::Storage)?
     {
-        return Err(Reason::Forbidden);
+        return Err(Reason::Forbidden.into());
     }
     let mut tx = conn.begin().await.map_err(|_| Reason::Storage)?;
     // Lock waiters must observe the preceding commit even with a session default of RR.
     // ref: https://www.postgresql.org/docs/17/transaction-iso.html#XACT-READ-COMMITTED
-    sqlx::raw_sql("SET TRANSACTION ISOLATION LEVEL READ COMMITTED; SET LOCAL statement_timeout='10s'; SET LOCAL lock_timeout='10s'").execute(&mut *tx).await.map_err(|_| Reason::Storage)?;
-    sqlx::query("SELECT pg_advisory_xact_lock(2346)")
-        .execute(&mut *tx)
-        .await
-        .map_err(|_| Reason::Storage)?;
-    migration::verify_current_manifest(&mut tx)
-        .await
-        .map_err(|_| Reason::Storage)?;
-    migration::verify_identity(&mut tx, installation)
-        .await
-        .map_err(|_| Reason::Binding)?;
+    let check: Result<()> = async {
+        sqlx::raw_sql("SET TRANSACTION ISOLATION LEVEL READ COMMITTED; SET LOCAL statement_timeout='10s'; SET LOCAL lock_timeout='10s'").execute(&mut *tx).await.map_err(|_| Reason::Storage)?;
+        sqlx::query("SELECT pg_advisory_xact_lock(2346)")
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| Reason::Storage)?;
+        migration::verify_current_manifest(&mut tx)
+            .await
+            .map_err(|_| Reason::Storage)?;
+        migration::verify_identity(&mut tx, installation)
+            .await
+            .map_err(|_| Reason::Binding)?;
+        Ok(())
+    }
+    .await;
+    if let Err(reason) = check {
+        return rollback(tx, Err(reason), None).await;
+    }
     Ok(tx)
 }
 #[cfg(test)]
 pub(crate) async fn create_on(conn: &mut PgConnection, input: &Create) -> Result<Receipt> {
-    mutate_on(conn, &input.mutation()).await
+    mutate_on(conn, &input.mutation())
+        .await
+        .map_err(|error| error.reason)
 }
-async fn mutate_on(conn: &mut PgConnection, input: &Mutation<'_>) -> Result<Receipt> {
+async fn mutate_on(conn: &mut PgConnection, input: &Mutation<'_>) -> RegistryResult<Receipt> {
     validate(input)?;
     let mut tx = operator_transaction(conn, input.installation).await?;
+    let operation = Some(input.operation_id);
+    match apply_on(&mut tx, input).await {
+        Ok(Outcome::Changed(receipt)) => {
+            tx.commit().await.map_err(|_| Reason::CommitUnknown)?;
+            Ok(receipt)
+        }
+        Ok(Outcome::Replay(receipt)) => rollback(tx, Ok(receipt), operation).await,
+        Err(reason) => rollback(tx, Err(reason), operation).await,
+    }
+}
+async fn apply_on(tx: &mut PgConnection, input: &Mutation<'_>) -> Result<Outcome> {
     let request = serde_json::json!({"installation":input.installation,"action":input.action,"tenant_id":input.tenant_id,"initial_epoch":input.initial_epoch,"expected_revision":input.expected_revision,"name":input.name,"notes":input.notes});
-    if let Some((receipt, original)) = receipt_on(&mut tx, input.operation_id).await? {
+    if let Some((receipt, original)) = receipt_on(&mut *tx, input.operation_id).await? {
         if original != request {
             return Err(Reason::Conflict);
         }
-        tx.rollback().await.map_err(|_| Reason::Storage)?;
-        return Ok(receipt);
+        return Ok(Outcome::Replay(receipt));
     }
-    scope(&mut tx, input.tenant_id).await?;
+    scope(&mut *tx, input.tenant_id).await?;
     match input.action {
         Action::Create => {
             let duplicate:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public.mdm_tenants WHERE tenant_id=$1::uuid) OR EXISTS(SELECT 1 FROM rss_transactional_messaging.tenant_epoch WHERE tenant_id=$1::uuid)").bind(input.tenant_id).fetch_one(&mut *tx).await.map_err(|_| Reason::Storage)?;
@@ -381,12 +434,12 @@ async fn mutate_on(conn: &mut PgConnection, input: &Mutation<'_>) -> Result<Rece
             }
             sqlx::query("INSERT INTO public.mdm_tenants(tenant_id,initial_epoch,name,notes) VALUES($1::uuid,$2,$3,$4)").bind(input.tenant_id).bind(input.initial_epoch).bind(input.name).bind(input.notes).execute(&mut *tx).await.map_err(|_| Reason::Storage)?;
             sqlx::query("INSERT INTO rss_transactional_messaging.tenant_epoch(tenant_id,epoch) VALUES($1::uuid,$2)").bind(input.tenant_id).bind(input.initial_epoch).execute(&mut *tx).await.map_err(|_| Reason::Storage)?;
-            rss_mdm_registration_service::agent::settings::initialize_on(&mut tx, input.tenant_id)
+            rss_mdm_registration_service::agent::settings::initialize_on(&mut *tx, input.tenant_id)
                 .await
                 .map_err(|_| Reason::Storage)?;
         }
         Action::Update | Action::Delete => {
-            let tenant = tenant_on(&mut tx, input.tenant_id, false).await?;
+            let tenant = tenant_on(&mut *tx, input.tenant_id, false).await?;
             if Some(tenant.revision) != input.expected_revision || tenant.revision == i64::MAX {
                 return Err(Reason::Conflict);
             }
@@ -403,11 +456,10 @@ async fn mutate_on(conn: &mut PgConnection, input: &Mutation<'_>) -> Result<Rece
     let receipt = Receipt {
         operation_id: input.operation_id,
         action: input.action,
-        tenant: tenant_on(&mut tx, input.tenant_id, true).await?,
+        tenant: tenant_on(&mut *tx, input.tenant_id, true).await?,
     };
     sqlx::query("INSERT INTO public.mdm_tenant_operations(operation_id,tenant_id,action,request,receipt) VALUES($1,$2::uuid,$3,$4,$5)").bind(input.operation_id).bind(input.tenant_id).bind(serde_json::to_value(input.action).map_err(|_| Reason::Storage)?.as_str().ok_or(Reason::Storage)?).bind(request).bind(serde_json::to_value(&receipt).map_err(|_| Reason::Storage)?).execute(&mut *tx).await.map_err(|_| Reason::Storage)?;
-    tx.commit().await.map_err(|_| Reason::CommitUnknown)?;
-    Ok(receipt)
+    Ok(Outcome::Changed(receipt))
 }
 async fn scope(conn: &mut PgConnection, tenant: &str) -> Result<()> {
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")

@@ -15,41 +15,51 @@ pub(crate) async fn claim_use(
         .begin()
         .await
         .map_err(|_| Error::Unavailable(Failure::Database))?;
-    sqlx::raw_sql("SET TRANSACTION ISOLATION LEVEL READ COMMITTED; SET LOCAL statement_timeout='2s'; SET LOCAL lock_timeout='2s'")
-        .execute(&mut *tx).await.map_err(|_| Error::Unavailable(Failure::Database))?;
-    sqlx::query("SELECT pg_advisory_xact_lock(2346)")
-        .execute(&mut *tx)
-        .await
-        .map_err(|_| Error::Unavailable(Failure::Database))?;
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-        .bind(tenant)
-        .execute(&mut *tx)
-        .await
-        .map_err(|_| Error::Unavailable(Failure::Database))?;
-    verify_read_profile(&mut tx).await?;
-    migration::verify_identity(&mut tx, installation)
-        .await
-        .map_err(|_| Error::Configuration(ConfigIssue::IdentityConfiguration))?;
-    let instance = installation
-        .validate()
-        .map_err(|_| Error::Configuration(ConfigIssue::IdentityConfiguration))?;
-    let mode = match installation.audit_mode {
-        migration::AuditMode::Plain => "plain",
-        migration::AuditMode::Ledger => "ledger",
-    };
-    let valid: bool =
-        sqlx::query_scalar("SELECT public.claim_tenant_use($1::uuid,$2,$3::uuid,$4,$5,$6)")
-            .bind(tenant)
-            .bind(expected_epoch)
-            .bind(instance.to_string())
-            .bind(&installation.target[..])
-            .bind(&installation.lineage[..])
-            .bind(mode)
-            .fetch_one(&mut *tx)
+    let result: std::result::Result<(), Error> = async {
+        sqlx::raw_sql("SET TRANSACTION ISOLATION LEVEL READ COMMITTED; SET LOCAL statement_timeout='2s'; SET LOCAL lock_timeout='2s'")
+            .execute(&mut *tx).await.map_err(|_| Error::Unavailable(Failure::Database))?;
+        sqlx::query("SELECT pg_advisory_xact_lock(2346)")
+            .execute(&mut *tx)
             .await
             .map_err(|_| Error::Unavailable(Failure::Database))?;
-    if !valid {
-        return Err(Error::Configuration(ConfigIssue::IdentityConfiguration));
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(tenant)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| Error::Unavailable(Failure::Database))?;
+        verify_read_profile(&mut tx).await?;
+        migration::verify_identity(&mut tx, installation)
+            .await
+            .map_err(|_| Error::Configuration(ConfigIssue::IdentityConfiguration))?;
+        let instance = installation
+            .validate()
+            .map_err(|_| Error::Configuration(ConfigIssue::IdentityConfiguration))?;
+        let mode = match installation.audit_mode {
+            migration::AuditMode::Plain => "plain",
+            migration::AuditMode::Ledger => "ledger",
+        };
+        let valid: bool =
+            sqlx::query_scalar("SELECT public.claim_tenant_use($1::uuid,$2,$3::uuid,$4,$5,$6)")
+                .bind(tenant)
+                .bind(expected_epoch)
+                .bind(instance.to_string())
+                .bind(&installation.target[..])
+                .bind(&installation.lineage[..])
+                .bind(mode)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|_| Error::Unavailable(Failure::Database))?;
+        if !valid {
+            return Err(Error::Configuration(ConfigIssue::IdentityConfiguration));
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(error) = result {
+        tx.rollback()
+            .await
+            .map_err(|_| Error::Unavailable(Failure::Database))?;
+        return Err(error);
     }
     tx.commit()
         .await

@@ -405,13 +405,23 @@ async fn crud_replays_original_snapshots_and_never_reuses_deleted_ids() -> anyho
         ..a.mutation()
     };
     edit.operation_id = original.operation_id;
-    ensure!(mutate_on(&mut conn, &edit).await == Err(Reason::Conflict));
+    ensure!(
+        mutate_on(&mut conn, &edit)
+            .await
+            .map_err(|error| error.reason)
+            == Err(Reason::Conflict)
+    );
     edit.operation_id = Uuid::new_v4();
     let edited = mutate_on(&mut conn, &edit).await?;
     ensure!(edited.tenant.revision == 2 && edited.tenant.name.as_deref() == Some("租户"));
     ensure!(mutate_on(&mut conn, &edit).await? == edited);
     edit.operation_id = Uuid::new_v4();
-    ensure!(mutate_on(&mut conn, &edit).await == Err(Reason::Conflict));
+    ensure!(
+        mutate_on(&mut conn, &edit)
+            .await
+            .map_err(|error| error.reason)
+            == Err(Reason::Conflict)
+    );
     edit.expected_revision = Some(2);
     let same_value = mutate_on(&mut conn, &edit).await?;
     ensure!(same_value.tenant.revision == 3);
@@ -433,13 +443,23 @@ async fn crud_replays_original_snapshots_and_never_reuses_deleted_ids() -> anyho
         operation_id: Uuid::new_v4(),
         ..removed
     };
-    ensure!(mutate_on(&mut conn, &fresh_delete).await == Err(Reason::NotFound));
+    ensure!(
+        mutate_on(&mut conn, &fresh_delete)
+            .await
+            .map_err(|error| error.reason)
+            == Err(Reason::NotFound)
+    );
     let fresh_update = Mutation {
         action: Action::Update,
         operation_id: Uuid::new_v4(),
         ..fresh_delete
     };
-    ensure!(mutate_on(&mut conn, &fresh_update).await == Err(Reason::NotFound));
+    ensure!(
+        mutate_on(&mut conn, &fresh_update)
+            .await
+            .map_err(|error| error.reason)
+            == Err(Reason::NotFound)
+    );
     let mut tx = operator_transaction(&mut conn, &a.installation).await?;
     ensure!(tenant_on(&mut tx, &a.tenant_id, false).await == Err(Reason::NotFound));
     tx.rollback().await?;
@@ -475,7 +495,12 @@ async fn crud_replays_original_snapshots_and_never_reuses_deleted_ids() -> anyho
         operation_id: Uuid::new_v4(),
         ..b.mutation()
     };
-    ensure!(mutate_on(&mut conn, &delete_b).await == Err(Reason::InUse));
+    ensure!(
+        mutate_on(&mut conn, &delete_b)
+            .await
+            .map_err(|error| error.reason)
+            == Err(Reason::InUse)
+    );
     let edit_b = Mutation {
         action: Action::Update,
         name: Some("still live"),
@@ -492,7 +517,12 @@ async fn crud_replays_original_snapshots_and_never_reuses_deleted_ids() -> anyho
         expected_revision: Some(i64::MAX),
         ..edit_b
     };
-    ensure!(mutate_on(&mut conn, &overflow).await == Err(Reason::Conflict));
+    ensure!(
+        mutate_on(&mut conn, &overflow)
+            .await
+            .map_err(|error| error.reason)
+            == Err(Reason::Conflict)
+    );
     runtime.close().await?;
     conn.close().await?;
     Ok(())
@@ -518,7 +548,12 @@ async fn receipt_failure_never_partially_changes_metadata_or_deletes() -> anyhow
             },
             ..a.mutation()
         };
-        ensure!(mutate_on(&mut conn, &change).await == Err(Reason::Storage));
+        ensure!(
+            mutate_on(&mut conn, &change)
+                .await
+                .map_err(|error| error.reason)
+                == Err(Reason::Storage)
+        );
         ensure!(receipt_on(&mut conn, change.operation_id).await?.is_none());
         let mut tx = operator_transaction(&mut conn, &a.installation).await?;
         ensure!(tenant_on(&mut tx, &a.tenant_id, false).await? == original.tenant);
@@ -560,7 +595,7 @@ async fn first_use_commit_blocks_a_concurrent_delete_without_bumping_revision() 
         Ok::<_, anyhow::Error>(())
     });
     committed?;
-    ensure!(deleted == Err(Reason::InUse));
+    ensure!(deleted.map_err(|error| error.reason) == Err(Reason::InUse));
     let mut tx = operator_transaction(&mut observer, &a.installation).await?;
     let tenant = tenant_on(&mut tx, &a.tenant_id, false).await?;
     ensure!(tenant.revision == 1 && !tenant.deletable);
@@ -654,7 +689,10 @@ async fn concurrent_updates_with_one_revision_commit_only_once() -> anyhow::Resu
     );
     released?;
     ensure!(matches!(
-        (&l, &r),
+        (
+            &l.map_err(|error| error.reason),
+            &r.map_err(|error| error.reason)
+        ),
         (Ok(_), Err(Reason::Conflict)) | (Err(Reason::Conflict), Ok(_))
     ));
     let mut tx = operator_transaction(&mut holder, &a.installation).await?;
@@ -664,5 +702,32 @@ async fn concurrent_updates_with_one_revision_commit_only_once() -> anyhow::Resu
     one.close().await?;
     two.close().await?;
     holder.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "MODULE=installation.migration: failed rollback retains primary reason and cleanup evidence"]
+async fn rollback_failure_preserves_primary_reason_and_cleanup_evidence() -> anyhow::Result<()> {
+    use anyhow::ensure;
+    let mut conn = installed().await?;
+    let mut admin = profile("postgres", "local-fixture").await?;
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut conn)
+        .await?;
+    let tx = conn.begin().await?;
+    let terminated: bool = sqlx::query_scalar("SELECT pg_terminate_backend($1)")
+        .bind(pid)
+        .fetch_one(&mut admin)
+        .await?;
+    ensure!(terminated);
+    let operation = Some(Uuid::new_v4());
+    let result: RegistryResult<()> = rollback(tx, Err(Reason::Conflict), operation).await;
+    let failure = settle(conn, operation, result).await.unwrap_err();
+    ensure!(
+        failure.reason == Reason::Conflict
+            && failure.cleanup_failed
+            && failure.operation_id == operation
+    );
+    admin.close().await?;
     Ok(())
 }

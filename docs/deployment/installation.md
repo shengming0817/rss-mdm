@@ -55,7 +55,7 @@ Audit 与 Ledger 的组件 SQL 分别由 `mdm_audit_owner`、`mdm_ledger_owner` 
 | `tenant-delete` | tenant_id、expected_revision、operation_id | 仅允许删除从未声明使用的租户，revision 加一；保留墓碑、epoch、默认设置和回执 |
 | `tenant-operation-status` | operation_id | 返回 committed 与原始 receipt，或 not_found 与 null |
 
-UUID 须为非空规范小写形式；initial_epoch 和 expected_revision 须为正整数。name 可为 null，否则最多 128 个 Unicode 字符且不能全为空白；notes 可为 null，否则最多 2048 个字符。元数据不控制权限或宿主绑定。tenant_id、installation 和 epoch 不通过更新命令修改；current_epoch 由 RSS fencing 持有。
+tenant_id 与 instance_id 须为非空规范小写 UUID；operation_id 须为非空 UUID；initial_epoch 和 expected_revision 须为正整数。name 可为 null，否则最多 128 个 Unicode 字符且不能全为空白；notes 可为 null，否则最多 2048 个字符。元数据不控制权限或宿主绑定。tenant_id、installation 和 epoch 不通过更新命令修改；current_epoch 由 RSS fencing 持有。
 
 容量按未删除租户计数，删除释放容量，但租户 ID 永不复用。删除后新 get/update/delete 返回 NotFound，列表隐藏墓碑；没有强制删除、恢复、数据清扫、旧命令别名或旧 schema 迁移。旧安装与当前安装清单不匹配时拒绝运行，必须重新安装当前契约。
 
