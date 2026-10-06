@@ -121,6 +121,18 @@ def inputs(root, example, gateway_file, *, database_host="postgres"):
     native_key.write_bytes(os.urandom(32))
     config=json.loads(example.read_text())
     config["native_protection_key_file"]="/run/mdm/native-data.key"
+    # Agent registration consumes the same explicit signing input as runtime tasks.
+    key_file=runtime/'task-signing.pk8';key_file.touch(mode=0o600)
+    openssl('genpkey','-algorithm','ED25519','-outform','DER','-out',key_file)
+    public=subprocess.check_output(['openssl','pkey','-inform','DER','-in',str(key_file),'-pubout','-outform','DER'],timeout=30)
+    private=key_file.read_bytes()
+    require(private[:16]==bytes.fromhex('302e020100300506032b657004220420') and len(private)==48
+            and public[:12]==bytes.fromhex('302a300506032b6570032100') and len(public)==44,
+            'candidate Ed25519 key encoding')
+    # ref: ring 0.17.14 ed25519/signing.rs: from_pkcs8 requires v2 with the public key.
+    key_file.write_bytes(bytes.fromhex('3051020101300506032b657004220420')+private[-32:]+bytes.fromhex('812100')+public[-32:])
+    config['task_signing']=dict(private_key_file='/run/mdm/task-signing.pk8',key_id='candidate',
+                                trusted_keys={'candidate':base64.urlsafe_b64encode(public[-32:]).decode().rstrip('=')})
     config["native_protocols"]={}
     config["device_pki"]=[]
     for field,role in [("access_database","mdm_access"),("runtime_database","mdm_runtime")]:

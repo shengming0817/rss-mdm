@@ -57,9 +57,7 @@ def native_pki_journey(deployed,browser):
     csr=base64.b64encode((fixture/'agent.der').read_bytes()).decode()
     secret=secrets.token_urlsafe(32);deployed.private_values.append(secret)
     operation=str(uuid.uuid4())
-    request=dict(wireVersion=1,operationId=operation,secret=secret,platform='macos',lifetimeSeconds=None,csr=csr)
-    status,grant=browser.call('POST','/api/v1/agent-grants',request)
-    require(status==200,'candidate Agent authorization failed')
+    request=dict(wireVersion=1,operationId=operation,secret=secret,platform='macos',csr=csr)
     context=ssl.create_default_context(cafile=str(root/'ca.crt'))
     def connection():return http.client.HTTPSConnection('localhost',deployed.agent_port,context=context,timeout=15)
     def call(client,method,path,body=None):
@@ -70,6 +68,11 @@ def native_pki_journey(deployed,browser):
         return response.status,json.loads(data) if data else None
     client=connection()
     try:
+        status,pending=call(client,'POST','/api/v1/agent/enroll/requests',request)
+        require(status==200 and pending['state']=='pending','candidate CSR request failed')
+        status,grant=browser.call('POST','/api/v1/agent-requests/'+pending['grantId']+'/authorize',
+                                  dict(operationId=str(uuid.uuid4())))
+        require(status==200 and grant['state']=='available','candidate Agent authorization failed')
         status,trust=call(client,'GET','/api/v1/agent/enroll/trust')
         require(status==200 and trust['origin']==deployed.agent_origin and trust['purpose']=='agent','candidate public trust authority mismatch')
         profile=dict(capabilities=['inventory.collect.v1'],platform='macos',architecture='aarch64',
