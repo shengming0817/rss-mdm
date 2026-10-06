@@ -134,7 +134,7 @@ def inputs(root, example, gateway_file, *, database_host="postgres"):
     write(operator,"authorization.json",dict(audit={"mode":"plain"},database=database(operator,"mdm_access"),identityDatabase=database(operator,"mdm_identity_runtime"),installation=installation(),expectedEpoch=1,login="admin",passwordFile="/run/mdm/account-password",operationId=str(uuid.uuid4()),user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=ADMIN)))
     write(runtime,"config.json",config)
     write(operator,"migrate.json",dict(database=database(operator,"mdm_owner"),installation=installation()))
-    write(operator,"register.json",dict(database=database(operator,"mdm_owner"),installation=installation(),tenant_id=TENANT,initial_epoch=1,operation_id=str(uuid.uuid4())))
+    write(operator,"tenant-create.json",dict(database=database(operator,"mdm_owner"),installation=installation(),tenant_id=TENANT,initial_epoch=1,operation_id=str(uuid.uuid4())))
     write(operator,"initialize.json",dict(database=database(operator,"mdm_identity_maintenance"),installation=installation(),tenant_id=TENANT,expected_epoch=1,principal_id=ADMIN,
                                           login="admin",password_file=write(operator,"account-password",PASSWORD)))
     gateway=gateway_file.read_text().replace("listen 443 ssl;","listen 8445 ssl;")
@@ -398,9 +398,9 @@ class Candidate:
             self.prepare_pki()
             self.register_private_files()
             private(self.runtime/'config.json',self.config)
-            for file in ['migrate.json','register.json','initialize.json']:
+            for file in ['migrate.json','tenant-create.json','initialize.json']:
                 path=self.operator_root/file;value=json.loads(path.read_text());value['installation']['instance_id']=self.instance
-                if file in ('register.json','initialize.json'):value['tenant_id']=self.tenant
+                if file in ('tenant-create.json','initialize.json'):value['tenant_id']=self.tenant
                 private(path,value)
             path=self.operator_root/'authorization.json';authorization=json.loads(path.read_text())
             authorization['user'].update(instanceId=self.instance,tenantId=self.tenant)
@@ -419,7 +419,7 @@ class Candidate:
             self.copy_runtime()
             self.runtime_volume=self.name+'_runtime';self.operator_volume=self.name+'_operator';self.gateway_inputs=self.name+'_gateway'
             for stage in [Stage.MIGRATION,Stage.REPLAY]:self.operator('migrate','migrate.json',stage)
-            self.operator('register-tenant','register.json',Stage.REGISTRATION)
+            self.operator('tenant-create','tenant-create.json',Stage.REGISTRATION)
             self.operator('initialize','initialize.json',Stage.INITIALIZE)
             self.operator('initialize-authorization','authorization.json',Stage.AUTHORIZATION_INITIALIZE)
             self.operator('initialize-authorization','authorization.json',Stage.AUTHORIZATION_REPLAY)

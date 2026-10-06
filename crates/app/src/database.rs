@@ -97,7 +97,10 @@ impl Database {
             .map(std::sync::Arc::new)
             .map_err(|_| Error::Unavailable(Failure::Database))
     }
-    pub(crate) async fn claim_tenant_use(&self, config: &crate::config::Config) -> Result<(), Error> {
+    pub(crate) async fn claim_tenant_use(
+        &self,
+        config: &crate::config::Config,
+    ) -> Result<(), Error> {
         let identity = crate::migration::Installation {
             instance_id: config.identity.instance_id.clone(),
             target: config.flow.storage.target,

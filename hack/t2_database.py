@@ -203,11 +203,11 @@ class DatabasePool:
                         run([self.builds.executables['rss-mdm'], 'migrate', '--config', config],
                             cwd=ROOT, capture_output=True, timeout=90)
                         for tenant in self.tenants:
-                            registration = private(root / 'register.json', dict(
+                            registration = private(root / 'tenant-create.json', dict(
                                 database=self.database_config(root, name), installation=self.installation,
                                 tenant_id=tenant, initial_epoch=1,
                                 operation_id=str(uuid.uuid5(uuid.NAMESPACE_URL, name + '/' + tenant))))
-                            run([self.builds.executables['rss-mdm'], 'register-tenant', '--config', registration],
+                            run([self.builds.executables['rss-mdm'], 'tenant-create', '--config', registration],
                                 cwd=ROOT, capture_output=True, timeout=45)
                     else:
                         executable = 'migrations' if profile == 'group' else 'policy_migrations'

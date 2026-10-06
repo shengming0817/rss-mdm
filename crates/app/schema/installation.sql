@@ -10,7 +10,7 @@ CREATE TABLE public.mdm_installation (
 CREATE TABLE public.mdm_tenants (
  tenant_id uuid PRIMARY KEY CHECK(tenant_id<>'00000000-0000-0000-0000-000000000000'),
  initial_epoch bigint NOT NULL CHECK(initial_epoch>0),
- name text CHECK(name IS NULL OR (char_length(name)<=128 AND btrim(name,E' \t\n\r\v\f' || U&'\0085\00a0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200a\2028\2029\202f\205f\3000')<>'')),
+ name text CHECK(name IS NULL OR (char_length(name)<=128 AND btrim(name,E' \t\n\r\013\f' || U&'\0085\00a0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200a\2028\2029\202f\205f\3000')<>'')),
  notes text CHECK(notes IS NULL OR char_length(notes)<=2048),
  revision bigint NOT NULL DEFAULT 1 CHECK(revision>0),
  used boolean NOT NULL DEFAULT false,
