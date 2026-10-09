@@ -1,0 +1,60 @@
+{
+  "tables": [
+    {
+      "schema": "mdm_devices",
+      "table": "associations",
+      "read_write": true,
+      "updates": [
+        "version",
+        "state",
+        "evidence",
+        "confirmed_by",
+        "confirmed_at",
+        "revoked_by",
+        "revoked_at",
+        "reason",
+        "hardware"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "members",
+      "read_write": true,
+      "updates": [
+        "registration_id",
+        "generation",
+        "released"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "operations",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "checkpoints",
+      "read_write": true,
+      "updates": [
+        "watermark"
+      ],
+      "delete_policy": null
+    }
+  ],
+  "functions": [
+    {
+      "name": "mdm.lock_asset_watermark",
+      "search_path": "search_path=pg_catalog, mdm"
+    }
+  ],
+  "external_relations": [
+    "mdm.asset_clock",
+    "mdm.inventory_history",
+    "mdm.manual_history"
+  ],
+  "verified_schemas": []
+}

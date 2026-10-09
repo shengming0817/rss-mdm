@@ -34,6 +34,7 @@ pub enum Permission {
     WindowsMiExecute,
     DeviceControl,
     DeviceUpdate,
+    DeviceAssociationWrite,
     AccountWrite,
     SecurityOperate,
     DeviceDiagnostics,
@@ -90,6 +91,7 @@ impl Permission {
             | Self::Credentials
             | Self::DeviceWipe
             | Self::DeviceControl
+            | Self::DeviceAssociationWrite
             | Self::DeviceUpdate
             | Self::AccountWrite
             | Self::SecurityOperate

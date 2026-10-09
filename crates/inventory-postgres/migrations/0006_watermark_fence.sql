@@ -11,4 +11,4 @@ BEGIN
  RETURN v;
 END $$;
 REVOKE ALL ON FUNCTION mdm.lock_asset_watermark(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm.lock_asset_watermark(uuid) TO mdm_flow_runtime;
+GRANT EXECUTE ON FUNCTION mdm.lock_asset_watermark(uuid) TO mdm_flow_runtime,mdm_access;

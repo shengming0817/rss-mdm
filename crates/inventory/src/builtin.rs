@@ -96,6 +96,7 @@ pub fn fields() -> Vec<FieldDefinition> {
     ];
     for (name, kind, unit) in [
         ("device.serial_number", string(), None),
+        ("device.hardware_uuid", string(), None),
         ("device.manufacturer", string(), None),
         ("device.cpu.model", string(), None),
         ("device.cpu.logical_cores", ValueType::Integer, None),

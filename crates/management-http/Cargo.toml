@@ -6,6 +6,7 @@ rust-version.workspace=true
 publish.workspace=true
 autotests=false
 [dependencies]
+rss-mdm-device-service.workspace = true
 rss-mdm-windows-channel.workspace=true
 rss-mdm-pki-service.workspace = true
 rss-mdm-policy.workspace=true

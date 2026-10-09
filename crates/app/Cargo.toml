@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+rss-mdm-device-service.workspace = true
 rss-mdm-device-trust.workspace = true
 rss-mdm-pki-service.workspace = true
 rss-mdm-content-s3.workspace = true

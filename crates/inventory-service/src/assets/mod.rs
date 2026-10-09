@@ -356,20 +356,6 @@ pub async fn catalog_in(
     .await
     .map_err(Into::into)
 }
-async fn datasets_in(
-    tx: &mut PgTransaction<'_>,
-    tenant: TenantId,
-) -> Result<BTreeMap<rss_mdm_inventory::Source, Vec<String>>> {
-    tx.with_connection(move |c| {
-        Box::pin(async move {
-            rss_mdm_inventory_postgres::datasets_in(c, tenant)
-                .await
-                .map_err(|_| sqlx::Error::Protocol("asset datasets unavailable".into()))
-        })
-    })
-    .await
-    .map_err(Into::into)
-}
 
 fn restrict_fields(device: &mut DeviceView, catalog: &rss_mdm_inventory::Catalog, sensitive: bool) {
     let allowed = |key: &FieldKey| {

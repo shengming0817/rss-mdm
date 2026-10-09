@@ -194,6 +194,14 @@ fn project(error: Error) -> Response {
 }
 fn route_action(route: &str) -> &'static str {
     match route {
+        "/api/v1/device-associations" => "device_association_confirm",
+        "/api/v1/device-associations/{id}/revoke" => "device_association_revoke",
+        "/api/v1/device-associations/changes"
+        | "/api/v1/device-associations/{id}"
+        | "/api/v1/devices/{device}/association-candidates" => "device_association_read",
+        "/api/v1/device-views"
+        | "/api/v1/device-views/{kind}/{id}"
+        | "/api/v1/device-views/{kind}/{id}/inventory-lists/{field}" => "device_view_read",
         "/api/v1/certificate-archive/vault/unlock" => "certificate_archive_unlock",
         "/api/v1/certificate-archive/vault/lock" => "certificate_archive_lock",
         "/api/v1/devices/{device}/timeline" => "timeline_read",

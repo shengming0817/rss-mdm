@@ -160,8 +160,93 @@ pub fn resolve(
     if sources.len() > 128 {
         return Err(Invalid::SourceLimit);
     }
+    sources.sort_by(|a, b| {
+        (a.evidence.source, &a.evidence.dataset).cmp(&(b.evidence.source, &b.evidence.dataset))
+    });
+    if sources.windows(2).any(|s| {
+        (s[0].evidence.source, &s[0].evidence.dataset)
+            == (s[1].evidence.source, &s[1].evidence.dataset)
+    }) {
+        return Err(Invalid::DuplicateSource);
+    }
+    let state = resolve_state(definition, &sources.iter().collect::<Vec<_>>())?;
+    Ok(ResolvedField {
+        field: definition.key,
+        state,
+        sources,
+    })
+}
+/// A fact's endpoint is part of its source identity, including Manual facts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EndpointSourceFact {
+    /// Owning endpoint identifier.
+    pub endpoint: String,
+    /// Unmodified fact and provenance.
+    pub fact: SourceFact,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+/// Resolved multi-endpoint field with distinct source identities.
+pub struct ResolvedDeviceField {
+    /// Catalog field key.
+    pub field: FieldKey,
+    /// Canonical state across selected endpoints.
+    pub state: State,
+    /// Every endpoint source retained for explanation.
+    pub sources: Vec<EndpointSourceFact>,
+}
+/// The same field policy applied across explicitly selected endpoints.
+pub fn resolve_device(
+    definition: &FieldDefinition,
+    mut sources: Vec<EndpointSourceFact>,
+) -> Result<ResolvedDeviceField> {
+    if sources.iter().any(|s| {
+        s.endpoint.is_empty() || s.endpoint.len() > 256 || s.endpoint.chars().any(char::is_control)
+    }) {
+        return Err(Invalid::Evidence);
+    }
+    sources.sort_by(|a, b| {
+        (
+            &a.endpoint,
+            a.fact.evidence.source,
+            &a.fact.evidence.dataset,
+        )
+            .cmp(&(
+                &b.endpoint,
+                b.fact.evidence.source,
+                &b.fact.evidence.dataset,
+            ))
+    });
+    if sources.windows(2).any(|s| {
+        (
+            &s[0].endpoint,
+            s[0].fact.evidence.source,
+            &s[0].fact.evidence.dataset,
+        ) == (
+            &s[1].endpoint,
+            s[1].fact.evidence.source,
+            &s[1].fact.evidence.dataset,
+        )
+    }) {
+        return Err(Invalid::DuplicateSource);
+    }
+    let state = resolve_state(
+        definition,
+        &sources.iter().map(|s| &s.fact).collect::<Vec<_>>(),
+    )?;
+    Ok(ResolvedDeviceField {
+        field: definition.key,
+        state,
+        sources,
+    })
+}
+fn resolve_state(definition: &FieldDefinition, sources: &[&SourceFact]) -> Result<State> {
+    if sources.len() > 256 {
+        return Err(Invalid::SourceLimit);
+    }
     definition.validate()?;
-    for fact in &sources {
+    for fact in sources {
         validate_evidence(definition, &fact.evidence)?;
         match &fact.state {
             State::Known(v) => definition.validate_scalar(v)?,
@@ -195,15 +280,6 @@ pub fn resolve(
             }
         }
     }
-    sources.sort_by(|a, b| {
-        (a.evidence.source, &a.evidence.dataset).cmp(&(b.evidence.source, &b.evidence.dataset))
-    });
-    if sources.windows(2).any(|s| {
-        (s[0].evidence.source, &s[0].evidence.dataset)
-            == (s[1].evidence.source, &s[1].evidence.dataset)
-    }) {
-        return Err(Invalid::DuplicateSource);
-    }
     let selected_priority = sources
         .iter()
         .filter(|s| matches!(s.state, State::Known(_) | State::Null))
@@ -228,11 +304,7 @@ pub fn resolve(
         None if sources.iter().any(|s| s.state == State::Unsupported) => State::Unsupported,
         None => State::Missing,
     };
-    Ok(ResolvedField {
-        field: definition.key,
-        state,
-        sources,
-    })
+    Ok(state)
 }
 
 fn validate_evidence(definition: &FieldDefinition, e: &Evidence) -> Result<()> {

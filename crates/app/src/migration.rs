@@ -263,6 +263,10 @@ fn units() -> Vec<(&'static str, &'static str)> {
             "certificate-archive-schema-v1",
             rss_mdm_certificate_archive_service::INSTALL_SQL,
         ),
+        (
+            "device-associations-v1",
+            rss_mdm_device_service::INSTALL_SQL,
+        ),
         ("device-pki-v1", rss_mdm_pki_service::INSTALL_SQL),
         (
             "self-service-access-v1",

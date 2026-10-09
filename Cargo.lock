@@ -3453,6 +3453,7 @@ dependencies = [
  "rss-mdm-compliance-postgres",
  "rss-mdm-content-s3",
  "rss-mdm-content-service",
+ "rss-mdm-device-service",
  "rss-mdm-device-trust",
  "rss-mdm-execution-service",
  "rss-mdm-flow-service",
@@ -3781,6 +3782,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "rss-mdm-device-service"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "ring",
+ "rss-audit-core",
+ "rss-audit-postgres",
+ "rss-mdm-audit-integration",
+ "rss-mdm-authorization-service",
+ "rss-mdm-inventory",
+ "rss-mdm-inventory-postgres",
+ "rss-mdm-inventory-service",
+ "rss-mdm-registration-service",
+ "rss-request-context",
+ "rss-runtime",
+ "rss-transactional-messaging",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "thiserror 2.0.20",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "rss-mdm-device-trust"
 version = "0.1.0"
 dependencies = [
@@ -4031,6 +4058,7 @@ dependencies = [
  "rss-mdm-authorization-service",
  "rss-mdm-certificate-archive-service",
  "rss-mdm-content-service",
+ "rss-mdm-device-service",
  "rss-mdm-execution-service",
  "rss-mdm-flow-service",
  "rss-mdm-inventory",

@@ -3,6 +3,7 @@
 //! ref: sqlx v0.9.0 sqlx-core/src/transaction.rs
 pub mod coordinates;
 pub mod directory;
+pub mod endpoints;
 pub mod linked;
 mod management;
 pub mod read;

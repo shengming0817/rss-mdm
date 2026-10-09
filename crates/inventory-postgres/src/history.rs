@@ -23,9 +23,10 @@ pub async fn read_at_in(
     tenant: TenantId,
     scopes: &[Scope],
     watermark: i64,
+    fields: &[rss_mdm_inventory::FieldKey],
 ) -> Result<Vec<crate::InventoryField>> {
     ensure!(
-        watermark >= 0 && scopes.len() <= 2000,
+        watermark >= 0 && scopes.len() <= 2000 && fields.len() <= 1024,
         "invalid history page"
     );
     ensure!(
@@ -48,7 +49,7 @@ pub async fn read_at_in(
       ), latest AS (
         SELECT DISTINCT ON(h.scope_digest,h.field) h.scope_digest,h.field,h.document
         FROM mdm.inventory_history h JOIN requested q ON q.digest=h.scope_digest
-        WHERE h.tenant_id=$1::uuid AND h.revision<=$5
+        WHERE h.tenant_id=$1::uuid AND h.revision<=$5 AND h.field=ANY($6)
         ORDER BY h.scope_digest,h.field,h.revision DESC
       )
       SELECT DISTINCT ON(r.scope,r.field) r.*,d.definition::text AS definition FROM latest h
@@ -63,6 +64,7 @@ pub async fn read_at_in(
     .bind(projection.generation())
     .bind(scopes)
     .bind(watermark)
+    .bind(fields.iter().map(|f|f.as_str()).collect::<Vec<_>>())
     .fetch_all(c)
     .await?;
     crate::reader::decode_rows(rows)

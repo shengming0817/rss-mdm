@@ -221,3 +221,47 @@ fn keyed_list_consensus_ignores_provider_row_order() {
         State::Known(Scalar::Array(vec![item("a"), item("b")]))
     );
 }
+
+#[test]
+fn two_endpoint_manual_values_keep_identity_and_conflict_at_equal_priority() {
+    use rss_mdm_inventory::{EndpointSourceFact, resolve_device};
+    let manual = |endpoint: &str, value: &str| {
+        let mut source = fact(value, "manual");
+        source.evidence.dataset = None;
+        source.evidence.registration = None;
+        source.evidence.registration_generation = None;
+        source.evidence.epoch = None;
+        source.evidence.actor = Some("operator".into());
+        EndpointSourceFact {
+            endpoint: endpoint.into(),
+            fact: source,
+        }
+    };
+    let a = manual("mdm-endpoint", "asset-1");
+    let b = manual("agent-endpoint", "asset-2");
+    let result =
+        resolve_device(&definition(builtin::ASSET_TAG), vec![a.clone(), b.clone()]).unwrap();
+    assert_eq!(result.state, State::Conflict);
+    assert_eq!(result.sources.len(), 2);
+    assert_eq!(
+        resolve_device(
+            &definition(builtin::ASSET_TAG),
+            vec![a.clone(), manual("agent-endpoint", "asset-1")]
+        )
+        .unwrap()
+        .state,
+        State::Known(Scalar::String("asset-1".into()))
+    );
+    assert_eq!(
+        resolve_device(&definition(builtin::ASSET_TAG), vec![a.clone(), a]),
+        Err(rss_mdm_inventory::Invalid::DuplicateSource)
+    );
+    let mut deleted = b.clone();
+    deleted.fact.state = State::Deleted;
+    let result = resolve_device(
+        &definition(builtin::ASSET_TAG),
+        vec![manual("mdm-endpoint", "asset-1"), deleted],
+    )
+    .unwrap();
+    assert_eq!(result.state, State::Known(Scalar::String("asset-1".into())));
+}

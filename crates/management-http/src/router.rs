@@ -11,6 +11,7 @@ use rss_mdm_registration_service::device::coordinates::Coordinates;
 use serde::Deserialize;
 use std::sync::Arc;
 pub struct Services {
+    pub associations: Arc<rss_mdm_device_service::Associations>,
     pub windows_entra: Option<Arc<rss_mdm_windows_channel::entra::Management>>,
     pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
     pub pki_clock: Arc<dyn rss_mdm_registration_service::agent_pki::Clock>,
@@ -147,7 +148,8 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         .merge(crate::content::http::routes().with_state(state.content))
         .merge(crate::enrollment::http::routes().with_state(enrollment))
         .merge(crate::enrollment::directory::routes().with_state(directory))
-        .merge(crate::timeline::routes().with_state(state.timeline));
+        .merge(crate::timeline::routes().with_state(state.timeline))
+        .merge(crate::device_views::routes().with_state(state.associations));
     let host_context = Router::new()
         .route(
             "/api/v1/identity-host/tenants/{tenant}/context",

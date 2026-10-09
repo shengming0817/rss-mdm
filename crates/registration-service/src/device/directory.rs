@@ -70,7 +70,7 @@ WITH targets AS (
 SELECT jsonb_build_object('items',coalesce((SELECT jsonb_agg(jsonb_build_object('id',d.id,'status',d.status,
  'primaryMdmRegistration',(SELECT jsonb_build_object('registrationId',r.id,'generation',r.generation,'source',q.source) FROM mdm_access.registrations r JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=$1::uuid AND r.device=d.id AND r.channel='mdm' AND r.purpose='primary' AND r.state='active'),
  'channels',coalesce((SELECT jsonb_agg(jsonb_build_object('registrationId',r.id,'channel',r.channel,'generation',r.generation,'status',r.state,'source',r.source) ORDER BY r.channel) FROM
- (SELECT DISTINCT ON(r.channel) r.id,r.channel,r.generation,r.state,coalesce(q.source,'agent.builtin') AS source FROM mdm_access.registrations r LEFT JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=$1::uuid AND r.device=d.id ORDER BY r.channel,r.generation DESC) r),'[]'::jsonb),
+ (SELECT DISTINCT ON(r.channel) r.id,r.channel,r.generation,r.state,coalesce(q.source,'agent.builtin') AS source FROM mdm_access.registrations r LEFT JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=$1::uuid AND r.device=d.id AND r.purpose='primary' ORDER BY r.channel,r.generation DESC) r),'[]'::jsonb),
  'enrollments',coalesce((SELECT jsonb_agg(jsonb_build_object('enrollmentId',q.id,'source',q.source,'status',CASE WHEN q.state='pending' AND q.expires_at<=statement_timestamp() THEN 'expired' ELSE q.state END,'expiresAt',floor(extract(epoch FROM q.expires_at))::bigint) ORDER BY q.source) FROM
  (SELECT DISTINCT ON(q.source) q.id,q.source,q.state,q.expires_at FROM mdm_access.requests q JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE q.tenant_id=$1::uuid AND g.device=d.id AND q.issuance_operation IS NOT NULL ORDER BY q.source,q.expires_at DESC,q.id DESC) q),'[]'::jsonb))
  ORDER BY CASE WHEN NOT $7 THEN d.id END COLLATE "C" ASC, CASE WHEN $7 THEN d.id END COLLATE "C" DESC) FROM page d),'[]'::jsonb),
@@ -146,4 +146,25 @@ impl DeviceService {
             .cloned()
             .ok_or(Error::NotFound)
     }
+}
+
+/// Current directory rows inside a consumer-owned tenant transaction. Caller supplies live scope.
+pub async fn page_on(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    allowed: Option<Vec<String>>,
+    after: Option<String>,
+) -> Result<Value, Error> {
+    sqlx::query_scalar(DIRECTORY)
+        .bind(tenant)
+        .bind(allowed)
+        .bind(Option::<String>::None)
+        .bind(Option::<String>::None)
+        .bind(Option::<String>::None)
+        .bind(after)
+        .bind(false)
+        .bind(1000_i64)
+        .fetch_one(c)
+        .await
+        .map_err(db)
 }
