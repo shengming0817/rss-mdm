@@ -17,6 +17,75 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
     crate::device::t2::associations::seed(alone, "agent", "2714-other").unwrap();
     associations.reconcile().await.unwrap();
     let service = Arc::new(planning(tenant()).await);
+    // A committed builder coordinate survives a rolled back page; incomplete data is hidden.
+    use sqlx::Connection;
+    let mut connection = sqlx::PgConnection::connect_with(
+        &crate::device::test_support::options("mdm_flow_runtime")
+            .unwrap()
+            .password("runtime-fixture"),
+    )
+    .await
+    .unwrap();
+    let mut transaction = connection.begin().await.unwrap();
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant().to_string())
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    let snapshot = service
+        .objects
+        .freeze(&mut transaction, tenant())
+        .await
+        .unwrap();
+    assert!(
+        !service
+            .objects
+            .current(&mut transaction, tenant(), &snapshot)
+            .await
+            .unwrap()
+    );
+    assert!(
+        service
+            .objects
+            .page(&mut transaction, tenant(), snapshot.id, None, 64)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    transaction.commit().await.unwrap();
+    let mut transaction = connection.begin().await.unwrap();
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant().to_string())
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    assert!(matches!(
+        service
+            .objects
+            .advance(&mut transaction, tenant(), &snapshot)
+            .await
+            .unwrap(),
+        rss_mdm_inventory_service::objects::SnapshotProgress::Building
+    ));
+    transaction.rollback().await.unwrap();
+    let mut transaction = connection.begin().await.unwrap();
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant().to_string())
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    let count: i64 = sqlx::query_scalar(
+        "SELECT object_count FROM mdm_devices.input_snapshots WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(tenant().to_string())
+    .bind(snapshot.id)
+    .fetch_one(&mut *transaction)
+    .await
+    .unwrap();
+    transaction.commit().await.unwrap();
+    // Tenant RLS is applied inside each transaction.
+    assert_eq!(count, 0);
+    connection.close().await.unwrap();
     let running = RunningAutomation::start(service.clone()).await;
     let group = Uuid::new_v4();
     let accepted = execute(
@@ -104,6 +173,8 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
     )
     .await;
     let objects = |channel| {
+        let source =
+            crate::planning::execution_source::ExecutionSource::new(service.objects.clone());
         let runtime = service.runtime.clone();
         async move {
             runtime
@@ -111,7 +182,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
                     Box::pin(async move {
                         tx.with_connection(move |c| {
                             Box::pin(async move {
-                                Ok(crate::planning::execution_source::ExecutionSource
+                                Ok(source
                                     .assignment_objects_on(c, tenant(), scope, channel, None)
                                     .await)
                             })
@@ -218,7 +289,10 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
     })
     .await
     .unwrap();
-    let before = sql("SELECT count(*) FROM mdm_commands.operations");
+    let before = sql(&format!(
+        "SELECT count(*) FROM mdm_commands.operations WHERE tenant_id='{}'",
+        tenant()
+    ));
     associations
         .revoke(
             &admin,
@@ -246,7 +320,13 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
     })
     .await
     .unwrap();
-    assert_eq!(before, sql("SELECT count(*) FROM mdm_commands.operations"));
+    assert_eq!(
+        before,
+        sql(&format!(
+            "SELECT count(*) FROM mdm_commands.operations WHERE tenant_id='{}'",
+            tenant()
+        ))
+    );
     running.stop().await;
     service.runtime.close().await;
     access.close().await;
@@ -332,7 +412,7 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
                     .as_array()
                     .unwrap()
                     .iter()
-                    .any(|m| m["registration"] == registration.to_string()))
+                    .any(|m| m["registrationId"] == registration.to_string()))
     );
     call(&mut browser,&router,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}})).await?;
     native_configuration_resource(
@@ -368,7 +448,7 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
             .as_array()
             .unwrap()
             .iter()
-            .any(|m| m["device"] == agent && m["registration"] == registration.to_string()),
+            .any(|m| m["device"] == agent && m["registrationId"] == registration.to_string()),
         "{page}"
     );
     let old_route = browser

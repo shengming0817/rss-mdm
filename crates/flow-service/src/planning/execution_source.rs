@@ -5,7 +5,16 @@ use serde_json::Value;
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 
-pub struct ExecutionSource;
+pub struct ExecutionSource {
+    pub objects: std::sync::Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
+}
+impl ExecutionSource {
+    pub fn new(
+        objects: std::sync::Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
+    ) -> Self {
+        Self { objects }
+    }
+}
 impl SourceAuthority for ExecutionSource {
     fn preview_scope_on<'a>(
         &'a self,
@@ -39,7 +48,14 @@ impl SourceAuthority for ExecutionSource {
         channel: Channel,
         after: Option<&'a str>,
     ) -> Pending<'a, Vec<AssignmentObject>> {
-        Box::pin(super::targets::objects_on(c, tenant, scope, channel, after))
+        Box::pin(super::targets::objects_on(
+            self.objects.as_ref(),
+            c,
+            tenant,
+            scope,
+            channel,
+            after,
+        ))
     }
     fn evidence_on<'a>(
         &'a self,
@@ -50,7 +66,12 @@ impl SourceAuthority for ExecutionSource {
         device: &'a str,
     ) -> Pending<'a, Vec<DeviceObject>> {
         Box::pin(super::targets::evidence_on(
-            c, tenant, scope, channel, device,
+            self.objects.as_ref(),
+            c,
+            tenant,
+            scope,
+            channel,
+            device,
         ))
     }
     fn evidence_valid_on<'a>(
@@ -62,7 +83,12 @@ impl SourceAuthority for ExecutionSource {
         evidence: &'a [DeviceObject],
     ) -> Pending<'a, bool> {
         Box::pin(super::targets::evidence_valid_on(
-            c, tenant, channel, device, evidence,
+            self.objects.as_ref(),
+            c,
+            tenant,
+            channel,
+            device,
+            evidence,
         ))
     }
     fn policy_readable_on<'a>(
@@ -113,55 +139,58 @@ impl SourceAuthority for ExecutionSource {
         device: &'a str,
     ) -> Pending<'a, ScopeAdmission> {
         Box::pin(super::targets::admission_on(
-            c, tenant, scope, channel, device,
+            self.objects.as_ref(),
+            c,
+            tenant,
+            scope,
+            channel,
+            device,
         ))
     }
     fn candidates_on<'a>(
         &'a self,
-        connection: &'a mut PgConnection,
+        c: &'a mut PgConnection,
         tenant: TenantId,
         device: &'a str,
         kind: CandidateKind,
         after: Uuid,
-    ) -> Pending<'a, Vec<PolicyCandidate>> {
+    ) -> Pending<'a, CandidatePage> {
         Box::pin(async move {
-            let mut cursor = after;
-            let mut result = Vec::new();
-            while result.len() < 64 {
-                let rows=sqlx::query("SELECT id,current_version,(definition->>'scope')::uuid AS scope FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND enabled AND id>$2 AND definition->'action'->>'kind'=$3 ORDER BY id LIMIT 64").bind(tenant.to_string()).bind(cursor).bind(kind.as_str()).fetch_all(&mut *connection).await?;
-                if rows.is_empty() {
-                    break;
-                }
-                for row in rows {
-                    cursor = row.try_get("id")?;
-                    let version = row.try_get("current_version")?;
-                    let scope = row.try_get("scope")?;
-                    let admission = if self.policy_readable_on(connection, tenant, version).await? {
-                        super::targets::admission_on(
-                            connection,
-                            tenant,
-                            scope,
-                            Channel::Mdm,
-                            device,
-                        )
-                        .await?
-                    } else {
-                        ScopeAdmission::Pending
-                    };
-                    if admission != ScopeAdmission::Excluded {
-                        result.push(PolicyCandidate {
-                            policy: cursor,
-                            version,
-                            scope,
-                            admission,
-                        });
-                        if result.len() == 64 {
-                            break;
-                        }
-                    }
+            let rows=sqlx::query("SELECT id,current_version,(definition->>'scope')::uuid AS scope FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND enabled AND id>$2 AND definition->'action'->>'kind'=$3 ORDER BY id LIMIT 17").bind(tenant.to_string()).bind(after).bind(kind.as_str()).fetch_all(&mut *c).await?;
+            let has_more = rows.len() > 16;
+            let mut scanned_after = after;
+            let mut items = Vec::new();
+            for row in rows.into_iter().take(16) {
+                scanned_after = row.try_get("id")?;
+                let version = row.try_get("current_version")?;
+                let scope = row.try_get("scope")?;
+                let admission = if self.policy_readable_on(c, tenant, version).await? {
+                    super::targets::admission_on(
+                        self.objects.as_ref(),
+                        c,
+                        tenant,
+                        scope,
+                        Channel::Mdm,
+                        device,
+                    )
+                    .await?
+                } else {
+                    ScopeAdmission::Pending
+                };
+                if admission != ScopeAdmission::Excluded {
+                    items.push(PolicyCandidate {
+                        policy: scanned_after,
+                        version,
+                        scope,
+                        admission,
+                    });
                 }
             }
-            Ok(result)
+            Ok(CandidatePage {
+                items,
+                scanned_after,
+                has_more,
+            })
         })
     }
 }

@@ -188,12 +188,12 @@ impl ExecutionService {
                     })
                 })
                 .await??;
-            if rows.is_empty() {
-                break;
-            }
-            for row in rows {
+            let more = rows.has_more;
+            after = rows.scanned_after;
+
+            for row in rows.items {
                 let id = row.policy;
-                after = id;
+
                 let version = row.version;
                 let (_, Frozen::AgentInstall { action }) =
                     policies::storage::version_in(&self.policy_reader, tx, version).await?
@@ -258,6 +258,9 @@ impl ExecutionService {
                 if deadline > now && candidate.is_none() {
                     candidate = Some((id, version, package.clone(), deadline));
                 }
+            }
+            if !more {
+                break;
             }
         }
         Ok(candidate)

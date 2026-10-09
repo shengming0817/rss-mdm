@@ -498,11 +498,10 @@ pub async fn dispatch_ready_on(
                 after,
             )
             .await?;
-        if rows.is_empty() {
-            break;
-        }
-        for row in rows {
-            after = row.policy;
+        let more = rows.has_more;
+        after = rows.scanned_after;
+
+        for row in rows.items {
             let Frozen::AgentInstall { action: other } =
                 serde_json::from_value(sqlx::query_scalar("SELECT frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2 AND policy=$3").bind(tenant).bind(row.version).bind(row.policy).fetch_one(&mut *c).await.map_err(db)?)
                     .map_err(|_| Error::Malformed)?
@@ -517,6 +516,9 @@ pub async fn dispatch_ready_on(
             {
                 return Ok(false);
             }
+        }
+        if !more {
+            break;
         }
     }
     Ok(true)

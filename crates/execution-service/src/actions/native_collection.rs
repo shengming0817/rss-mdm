@@ -350,6 +350,21 @@ pub(crate) async fn delivery_eligible_target_on(
     if retired {
         return Ok(false);
     }
+    let version: Option<Uuid> = sqlx::query_scalar(
+        "SELECT policy_version FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(tenant.to_string())
+    .bind(id)
+    .fetch_optional(&mut *c)
+    .await
+    .map_err(crate::database::db)?
+    .flatten();
+    let Some(version) = version else {
+        return Ok(false);
+    };
+    if !source.policy_readable_on(c, tenant, version).await? {
+        return Ok(false);
+    }
     eligible_target_on(source, c, tenant, target, id).await
 }
 

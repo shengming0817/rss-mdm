@@ -923,7 +923,7 @@ async fn derived_result_authorization(
     }
     for kind in ["members", "decisions"] {
         paths.push(format!(
-            "/api/v1/scopes/{scope}/results/{scope_result}/{kind}?limit=1"
+            "/api/v1/scopes/{scope}/results/{scope_result}/{kind}?channel=mdm&limit=1"
         ));
     }
     // Keep an actually issued cursor, then shrink the subject's device access.

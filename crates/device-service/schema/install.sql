@@ -49,7 +49,7 @@ GRANT SELECT,INSERT ON mdm_devices.associations,mdm_devices.members,mdm_devices.
 GRANT UPDATE(version,state,evidence,hardware,confirmed_by,confirmed_at,revoked_by,revoked_at,reason) ON mdm_devices.associations TO mdm_access;
 GRANT UPDATE(registration_id,generation,released) ON mdm_devices.members TO mdm_access;
 CREATE TABLE mdm_devices.checkpoints (
- tenant_id uuid PRIMARY KEY REFERENCES public.mdm_tenants(tenant_id), watermark bigint NOT NULL CHECK(watermark>=0)
+ tenant_id uuid PRIMARY KEY REFERENCES public.mdm_tenants(tenant_id), watermark bigint NOT NULL CHECK(watermark>=0), relation_revision bigint NOT NULL DEFAULT 0 CHECK(relation_revision>=0)
 );
 ALTER TABLE mdm_devices.checkpoints ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_devices.checkpoints FORCE ROW LEVEL SECURITY;
@@ -59,15 +59,29 @@ GRANT SELECT,INSERT ON mdm_devices.checkpoints TO mdm_access;
 GRANT UPDATE(watermark) ON mdm_devices.checkpoints TO mdm_access;
 GRANT USAGE ON SCHEMA mdm TO mdm_access;
 GRANT SELECT ON mdm.asset_clock,mdm.inventory_history,mdm.manual_history,mdm.field_versions,mdm.collection_definitions TO mdm_access;
+CREATE FUNCTION mdm_devices.advance_relation_revision() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+BEGIN
+ INSERT INTO mdm_devices.checkpoints(tenant_id,watermark,relation_revision) VALUES(NEW.tenant_id,0,1)
+ ON CONFLICT(tenant_id) DO UPDATE SET relation_revision=mdm_devices.checkpoints.relation_revision+1;
+ RETURN NEW;
+END $$;
+REVOKE ALL ON FUNCTION mdm_devices.advance_relation_revision() FROM PUBLIC;
+CREATE TRIGGER association_revision AFTER INSERT OR UPDATE ON mdm_devices.associations FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_relation_revision();
+CREATE TRIGGER association_member_revision AFTER INSERT OR UPDATE ON mdm_devices.members FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_relation_revision();
 CREATE TABLE mdm_devices.input_snapshots (
  tenant_id uuid NOT NULL REFERENCES public.mdm_tenants(tenant_id), id uuid NOT NULL,
  watermark bigint NOT NULL CHECK(watermark>=0), version text NOT NULL CHECK(length(version)=64),
+ relation_revision bigint NOT NULL CHECK(relation_revision>=0), phase text NOT NULL CHECK(phase IN('endpoints','associations','standalone','sealed')), cursor text COLLATE "C" NOT NULL DEFAULT '',
+ object_count bigint NOT NULL DEFAULT 0 CHECK(object_count BETWEEN 0 AND 1000000), byte_count bigint NOT NULL DEFAULT 0 CHECK(byte_count BETWEEN 0 AND 1073741824),
  PRIMARY KEY(tenant_id,id), UNIQUE(tenant_id,watermark,version)
 );
 CREATE TABLE mdm_devices.input_objects (
- tenant_id uuid NOT NULL, snapshot uuid NOT NULL, object text COLLATE "C" NOT NULL, input jsonb NOT NULL,
+ tenant_id uuid NOT NULL, snapshot uuid NOT NULL, object text COLLATE "C" NOT NULL, input jsonb NOT NULL CHECK(octet_length(input::text)<=1048576), hardware jsonb NOT NULL DEFAULT '[]'::jsonb, devices text[] NOT NULL,
  PRIMARY KEY(tenant_id,snapshot,object), FOREIGN KEY(tenant_id,snapshot) REFERENCES mdm_devices.input_snapshots(tenant_id,id)
 );
+CREATE INDEX input_hardware_serial ON mdm_devices.input_objects USING gin((hardware->'serial'));
+CREATE INDEX input_hardware_uuid ON mdm_devices.input_objects USING gin((hardware->'uuid'));
+CREATE INDEX input_devices ON mdm_devices.input_objects USING gin(devices);
 ALTER TABLE mdm_devices.input_snapshots ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_devices.input_snapshots FORCE ROW LEVEL SECURITY;
 ALTER TABLE mdm_devices.input_objects ENABLE ROW LEVEL SECURITY;
@@ -76,6 +90,7 @@ CREATE POLICY tenant ON mdm_devices.input_snapshots USING(tenant_id=nullif(curre
 CREATE POLICY tenant ON mdm_devices.input_objects USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_devices.input_snapshots,mdm_devices.input_objects FROM PUBLIC;
 GRANT USAGE ON SCHEMA mdm_devices TO mdm_flow_runtime,mdm_command_runtime;
-GRANT SELECT ON mdm_devices.associations,mdm_devices.members,mdm_devices.input_snapshots,mdm_devices.input_objects TO mdm_flow_runtime,mdm_command_runtime;
+GRANT SELECT ON mdm_devices.associations,mdm_devices.members,mdm_devices.checkpoints,mdm_devices.input_snapshots,mdm_devices.input_objects TO mdm_flow_runtime,mdm_command_runtime;
 GRANT INSERT ON mdm_devices.input_snapshots,mdm_devices.input_objects TO mdm_flow_runtime;
+GRANT UPDATE(phase,cursor,object_count,byte_count) ON mdm_devices.input_snapshots TO mdm_flow_runtime;
 COMMIT;

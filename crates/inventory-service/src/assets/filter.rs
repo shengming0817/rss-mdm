@@ -302,21 +302,32 @@ pub fn associated_page(
     for input in inputs {
         let mut resolved = BTreeMap::new();
         for definition in catalog.fields() {
-            let sources = input
-                .members
+            let endpoints: std::collections::BTreeSet<_> =
+                input.members.iter().map(|m| m.device.as_str()).collect();
+            let sources = devices
                 .iter()
-                .flat_map(|m| devices.iter().filter(move |d| d.device == m.device))
+                .filter(|d| endpoints.contains(d.device.as_str()))
                 .flat_map(|d| {
                     d.fields
                         .get(&definition.key)
                         .into_iter()
                         .flat_map(move |f| {
-                            f.sources.iter().cloned().map(move |fact| {
-                                rss_mdm_inventory::EndpointSourceFact {
+                            f.sources
+                                .iter()
+                                .filter(move |fact| {
+                                    input.members.iter().any(|m| {
+                                        m.device == d.device
+                                            && fact.evidence.registration.as_deref()
+                                                == Some(m.registration_id.to_string().as_str())
+                                            && fact.evidence.registration_generation
+                                                == Some(m.generation as u64)
+                                    })
+                                })
+                                .cloned()
+                                .map(move |fact| rss_mdm_inventory::EndpointSourceFact {
                                     endpoint: d.device.clone(),
                                     fact,
-                                }
-                            })
+                                })
                         })
                 })
                 .collect();

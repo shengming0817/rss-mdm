@@ -173,7 +173,7 @@ async fn typed_and_collected_facts_become_group_input() -> Result<()> {
         ok(&mut browser,router,Method::POST,&group,Some(request(0,json!({"action":"create","assetContext":"endpoint","name":field,"description":"asset input","criteria":predicate(field,kind,value)})))).await?;
         ensure!(
             preview(&mut browser, router, &group).await?.members["page"]["items"]
-                == json!(["asset-a"])
+                == json!([{"kind":"endpoint","id":"asset-a"}])
         );
     }
     seed_source("asset-b", "mdm", "mdm.windows", "Same")?;
@@ -242,7 +242,7 @@ async fn script_health_projection_is_queryable_group_input() -> Result<()> {
         preview(&mut browser, &fixture.router, &group)
             .await?
             .members["page"]["items"]
-            == json!(["asset-a"])
+            == json!([{"kind":"endpoint","id":"asset-a"}])
     );
     fixture.close().await
 }

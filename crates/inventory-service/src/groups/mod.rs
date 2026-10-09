@@ -12,6 +12,7 @@ mod mutation;
 pub mod pages;
 pub use model::{GroupChange, GroupStart};
 pub struct Groups {
+    pub objects: Arc<dyn crate::objects::ObjectReader>,
     pub tenant: TenantId,
     pub groups: Arc<rss_mdm_group_postgres::GroupStore>,
     pub cursor_key: ring::hmac::Key,

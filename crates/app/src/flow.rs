@@ -127,6 +127,7 @@ impl Config {
                     Arc::new(crate::automation::inventory_tasks::InventoryTasks),
                 ));
                 let groups = Arc::new(rss_mdm_inventory_service::groups::Groups {
+                    objects: service.objects.clone(),
                     tenant,
                     groups: service.groups.clone(),
                     cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),

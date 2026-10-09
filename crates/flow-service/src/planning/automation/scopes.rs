@@ -94,11 +94,15 @@ impl Planning {
     ) -> Result<()> {
         let (revision, definition) = self.scope_definition(tx, scope).await?;
         let tenant = self.tenant;
-        let reader = self.objects.clone();
-        let endpoint_snapshot = tx
-            .with_connection(move |c| Box::pin(async move { reader.freeze(c, tenant).await }))
+        let watermark = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    rss_mdm_inventory_postgres::lock_watermark_in(c, tenant)
+                        .await
+                        .map_err(|_| sqlx::Error::Protocol("asset coordinate unavailable".into()))
+                })
+            })
             .await?;
-        let watermark = endpoint_snapshot.watermark;
         let mut sources = Vec::new();
         for reference in definition.references() {
             let mut source = SourceSet {
@@ -173,9 +177,6 @@ impl Planning {
                     )?;
                 }
             }
-            if source.asset_context == rss_mdm_group_postgres::AssetContext::Endpoint {
-                source.snapshot = Some(endpoint_snapshot.clone());
-            }
             sources.push(source);
         }
         let frozen = ScopeInput {
@@ -219,6 +220,21 @@ impl Planning {
         let watermark: i64 = row.try_get("asset_watermark")?;
         match row.try_get::<&str, _>("phase")? {
             "sources" => {
+                let tenant = self.tenant;
+                let current = tx
+                    .with_connection(move |c| {
+                        Box::pin(async move {
+                            rss_mdm_inventory_postgres::lock_watermark_in(c, tenant)
+                                .await
+                                .map_err(|_| {
+                                    sqlx::Error::Protocol("asset coordinate unavailable".into())
+                                })
+                        })
+                    })
+                    .await?;
+                if current != watermark {
+                    return Err(Error::Conflict.into());
+                }
                 let index = row.try_get::<i32, _>("source_index")? as usize;
                 let after: Option<String> = row.try_get("source_cursor")?;
                 if index == frozen.sources.len() {
@@ -278,47 +294,24 @@ impl Planning {
                             source.asset_context,
                             &key,
                         ))?;
+                    let reader = self.objects.clone();
+                    let tenant = self.tenant;
+                    let key = object.clone();
                     let input = if let Some(snapshot) = &source.snapshot {
-                        let tenant = self.tenant.to_string();
                         let snapshot = snapshot.id;
-                        let key = if source.asset_context
-                            == rss_mdm_group_postgres::AssetContext::Endpoint
-                        {
-                            let rss_mdm_inventory_service::objects::ObjectRef::Endpoint(
-                                ref endpoint,
-                            ) = object
-                            else {
-                                return Err(Error::Conflict.into());
-                            };
-                            format!("source-endpoint:{endpoint}")
-                        } else {
-                            object.key()
-                        };
-                        let value: Value = tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT input FROM mdm_devices.input_objects WHERE tenant_id=$1::uuid AND snapshot=$2 AND object=$3").bind(tenant).bind(snapshot).bind(key).fetch_one(c).await})).await?;
-                        stored(serde_json::from_value::<
-                            rss_mdm_inventory_service::objects::DeviceObject,
-                        >(value))?
+                        tx.with_connection(move |c| {
+                            Box::pin(async move { reader.lookup(c, tenant, snapshot, &key).await })
+                        })
+                        .await?
                     } else {
-                        let rss_mdm_inventory_service::objects::ObjectRef::Endpoint(ref endpoint) =
-                            object
+                        let rss_mdm_inventory_service::objects::ObjectRef::Endpoint(endpoint) = key
                         else {
                             return Err(Error::Conflict.into());
                         };
-                        let tenant = self.tenant.to_string();
-                        let endpoint = endpoint.clone();
-                        let members = tx.with_connection(move|c|Box::pin(async move {
-                            let mut members=Vec::new();
-                            for channel in [rss_mdm_inventory::Channel::Mdm,rss_mdm_inventory::Channel::Agent] {
-                                if let Some(member)=rss_mdm_registration_service::device::endpoints::current_in(c,&tenant,&endpoint,channel).await.map_err(|_|sqlx::Error::Protocol("registration unavailable".into()))? {members.push(member);}
-                            }
-                            Ok(members)
-                        })).await?;
-                        rss_mdm_inventory_service::objects::DeviceObject {
-                            object: object.clone(),
-                            association_version: None,
-                            verified: true,
-                            members,
-                        }
+                        tx.with_connection(move |c| {
+                            Box::pin(async move { reader.endpoint(c, tenant, &endpoint).await })
+                        })
+                        .await?
                     };
                     devices.push(object.key());
                     unknown.push(uncertain);

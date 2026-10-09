@@ -85,8 +85,14 @@ impl ExecutionAuthority {
                 device,
                 source_objects,
                 remove,
+                version,
                 ..
             } => {
+                let tenant_id =
+                    rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
+                if !source.policy_readable_on(c, tenant_id, *version).await? {
+                    return Ok(false);
+                }
                 if *remove {
                     return Ok(true);
                 }
@@ -312,11 +318,10 @@ impl ExecutionAuthority {
                             after,
                         )
                         .await?;
-                    if rows.is_empty() {
-                        break;
-                    }
-                    for row in rows {
-                        after = row.policy;
+                    let more = rows.has_more;
+                    after = rows.scanned_after;
+
+                    for row in rows.items {
                         let current_frozen: serde_json::Value = sqlx::query_scalar("SELECT frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2 AND policy=$3").bind(tenant).bind(row.version).bind(row.policy).fetch_one(&mut *conn).await.map_err(db)?;
                         let current: crate::frozen::Frozen =
                             serde_json::from_value(current_frozen.clone())
@@ -358,6 +363,9 @@ impl ExecutionAuthority {
                         {
                             live = true;
                         }
+                    }
+                    if !more {
+                        break;
                     }
                 }
                 Ok(*remove || live || retained_grant)

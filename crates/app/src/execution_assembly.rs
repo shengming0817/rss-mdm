@@ -196,7 +196,11 @@ pub(crate) async fn open(
         config.agent_installation.validate()?;
         config.enrollment_entries.validate()?;
         let source: Arc<dyn rss_mdm_execution_service::source_authority::SourceAuthority> =
-            Arc::new(rss_mdm_flow_service::planning::execution_source::ExecutionSource);
+            Arc::new(
+                rss_mdm_flow_service::planning::execution_source::ExecutionSource::new(Arc::new(
+                    rss_mdm_device_service::planning::PlanningObjects::new(audit_store.clone()),
+                )),
+            );
         let agent_store: Arc<dyn rss_mdm_execution_service::channels::Agent> =
             Arc::new(rss_mdm_agent_channel::Bindings);
         let apple_store = Arc::new(rss_mdm_apple_channel::flow_store::Store {

@@ -13,7 +13,7 @@ impl super::super::Planning {
         use rss_mdm_execution_service::source_authority::{Availability, SourceAuthority};
         let channel =
             rss_mdm_execution_service::source_authority::action_channel(p.definition.action.kind());
-        let source = crate::planning::execution_source::ExecutionSource;
+        let source = crate::planning::execution_source::ExecutionSource::new(self.objects.clone());
         let tenant = tx.tenant_id();
         let scope = p.definition.scope;
         let mut assignments = tx
@@ -26,7 +26,7 @@ impl super::super::Planning {
             })
             .await?
             .map_err(rss_mdm_execution_service::Error::from)?;
-        let reader = crate::planning::execution_source::ExecutionSource;
+        let reader = crate::planning::execution_source::ExecutionSource::new(self.objects.clone());
         let version = p.version;
         let readable = tx
             .with_connection(move |c| {
@@ -80,7 +80,9 @@ impl super::super::Planning {
         devices.dedup();
         for device in &devices {
             rss_mdm_execution_service::wake::wake_native_in(
-                std::sync::Arc::new(crate::planning::execution_source::ExecutionSource),
+                std::sync::Arc::new(crate::planning::execution_source::ExecutionSource::new(
+                    self.objects.clone(),
+                )),
                 tx,
                 device,
             )
@@ -94,7 +96,9 @@ impl super::super::Planning {
         let removed=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Option<String>>("UPDATE mdm_planning.policy_assignments a SET input=jsonb_set(jsonb_set(jsonb_set(a.input,'{availability}','\"unavailable\"'),'{reason}','\"source_removed\"'),'{admission}','{\"state\":\"excluded\"}'),availability='unavailable',reason='source_removed',entry_revision=0 WHERE a.tenant_id=$1::uuid AND a.policy=$2 AND a.version=$3 AND NOT EXISTS(SELECT 1 FROM mdm_planning.scopes s JOIN mdm_planning.scope_results r ON(r.tenant_id,r.run)=(s.tenant_id,s.resolution) WHERE s.tenant_id=a.tenant_id AND s.id=$4 AND r.device=a.object) AND a.reason IS DISTINCT FROM 'source_removed' RETURNING target->>'device'").bind(tenant).bind(policy).bind(version).bind(scope).fetch_all(c).await})).await?;
         for device in removed.into_iter().flatten() {
             rss_mdm_execution_service::wake::wake_native_in(
-                std::sync::Arc::new(crate::planning::execution_source::ExecutionSource),
+                std::sync::Arc::new(crate::planning::execution_source::ExecutionSource::new(
+                    self.objects.clone(),
+                )),
                 tx,
                 &device,
             )

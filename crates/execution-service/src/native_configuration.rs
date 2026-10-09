@@ -697,12 +697,12 @@ async fn desired_in(
                 })
             })
             .await??;
-        if ids.is_empty() {
-            break;
-        }
-        for candidate in ids {
+        let more = ids.has_more;
+        after = ids.scanned_after;
+
+        for candidate in ids.items {
             let id = candidate.policy;
-            after = id;
+
             let p = policies::storage::read_in(&service.policy_reader, tx, id)
                 .await?
                 .ok_or(Error::NotFound)?;
@@ -719,6 +719,9 @@ async fn desired_in(
             } else {
                 waiting.push((p, frozen));
             }
+        }
+        if !more {
+            break;
         }
     }
     Ok((desired, waiting))

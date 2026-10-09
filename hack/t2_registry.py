@@ -1665,7 +1665,7 @@ consume(('crates/execution-service/src/queries.rs',), 'apple.commands apple.poli
 
 consume(('crates/execution-service/src/wake.rs', 'crates/execution-service/src/recovery.rs'), 'apple.commands apple.policy apple.account_enrollment')
 
-consume(('crates/inventory-service/src/objects.rs','crates/device-service/src/planning.rs'), 'planning.group_scope planning.scope planning.policy planning.frequency planning.agent_policy planning.software planning.onboarding execution.commands.configuration execution.commands.onboarding device.associations device.views')
+consume(('crates/inventory-service/src/objects.rs','crates/device-service/src/planning.rs','crates/device-service/src/planning/snapshots.rs'), 'planning.group_scope planning.scope planning.policy planning.frequency planning.agent_policy planning.software planning.onboarding execution.commands.configuration execution.commands.onboarding device.associations device.views')
 consume(('crates/flow-service/src/planning/targets.rs','crates/flow-service/src/planning/automation/relations.rs'), 'planning.group_scope planning.scope planning.policy planning.frequency planning.agent_policy planning.software planning.onboarding execution.commands.configuration execution.commands.onboarding')
 MODULES['planning.group_scope'] = replace(MODULES['planning.group_scope'],
     test_inputs=(*MODULES['planning.group_scope'].test_inputs,'crates/app/tests/planning/associated.rs'),
@@ -1677,3 +1677,7 @@ consume(('crates/flow-service/src/planning/automation/model.rs',), 'planning.gro
 T1_INPUTS += ('crates/flow-service/tests/planning/pages_unit.rs',)
 consume(('crates/inventory-service/src/compliance/mod.rs','crates/inventory-service/src/compliance/evaluation.rs'), 'compliance.group_input')
 consume(('crates/inventory-service/src/lib.rs',), 'planning.group_scope planning.scope assets.group_input compliance.group_input')
+
+MODULES['planning.group_scope']=replace(MODULES['planning.group_scope'],support_inputs=tuple(dict.fromkeys((*MODULES['planning.group_scope'].support_inputs,'crates/app/tests/support/planning_http.rs','crates/app/tests/support/agent_execution.rs','crates/app/tests/support/software.rs'))))
+
+MODULES['execution.commands.configuration'] = replace(MODULES['execution.commands.configuration'], support_inputs=(*MODULES['execution.commands.configuration'].support_inputs, 'crates/app/tests/device/associations.rs', 'crates/app/tests/support/planning_http.rs'))

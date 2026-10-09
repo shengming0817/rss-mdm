@@ -254,61 +254,98 @@ impl Planning {
         } else if let Some(snapshot) = object_snapshot(&build.request.input_version)? {
             let reader = self.objects.clone();
             let tenant = self.tenant;
-            let after = build.cursor.clone();
-            let inputs = tx
+            let state = snapshot.clone();
+            let progress = tx
                 .with_connection(move |c| {
-                    Box::pin(async move { reader.page(c, tenant, snapshot.id, after, 250).await })
+                    Box::pin(async move { reader.advance(c, tenant, &state).await })
                 })
                 .await?;
-            let ids: Vec<_> = inputs
-                .iter()
-                .flat_map(|o| o.members.iter().map(|m| m.device.clone()))
-                .collect::<std::collections::BTreeSet<_>>()
-                .into_iter()
-                .collect();
-            let reader = assets::planning::SnapshotReader { tenant };
-            let catalog = tx
-                .with_connection(move |c| {
-                    Box::pin(async move {
-                        rss_mdm_inventory_postgres::catalog_at_in(c, tenant, watermark)
-                            .await
-                            .map_err(|_| sqlx::Error::Protocol("catalog unavailable".into()))
+            use rss_mdm_inventory_service::objects::SnapshotProgress;
+            match progress {
+                SnapshotProgress::Building => return Ok(()),
+                SnapshotProgress::Ready => {}
+                SnapshotProgress::Superseded => return Err(Error::Conflict.into()),
+                SnapshotProgress::ObjectLimit => {
+                    return Err(Error::Unavailable(Failure::AssetObjectLimit).into());
+                }
+                SnapshotProgress::ByteLimit => {
+                    return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
+                }
+            }
+            let mut limit = 250;
+            loop {
+                let reader = self.objects.clone();
+                let tenant = self.tenant;
+                let after = build.cursor.clone();
+                let snapshot_id = snapshot.id;
+                let inputs = tx
+                    .with_connection(move |c| {
+                        Box::pin(
+                            async move { reader.page(c, tenant, snapshot_id, after, limit).await },
+                        )
                     })
-                })
-                .await?;
-            let read_catalog = catalog.clone();
-            let raw = tx
-                .with_connection(move |c| {
-                    Box::pin(async move {
-                        Ok(reader
-                            .devices_on(c, watermark, &ids, &read_catalog, true)
-                            .await)
+                    .await?;
+                let ids: Vec<_> = inputs
+                    .iter()
+                    .flat_map(|o| o.members.iter().map(|m| m.device.clone()))
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                let reader = assets::planning::SnapshotReader { tenant };
+                let catalog = tx
+                    .with_connection(move |c| {
+                        Box::pin(async move {
+                            rss_mdm_inventory_postgres::catalog_at_in(c, tenant, watermark)
+                                .await
+                                .map_err(|_| sqlx::Error::Protocol("catalog unavailable".into()))
+                        })
                     })
-                })
-                .await??;
-            let rule = group_checked(
-                self.groups
-                    .rule_in(
-                        tx,
-                        build.request.group,
-                        build
-                            .request
-                            .rule_version
-                            .as_deref()
-                            .ok_or(Error::Conflict)?,
-                    )
-                    .await?,
-            )?
-            .ok_or(Error::Conflict)?;
-            let data = assets::filter::associated_page(tenant, &inputs, &raw, &catalog, &rule)?;
-            let after = build
-                .cursor
-                .as_ref()
-                .map(|s| checked_input(g::core::ObjectKey::new(tenant, s)))
-                .transpose()?;
-            if !data.objects.is_empty() {
-                group_checked(
+                    .await?;
+                let read_catalog = catalog.clone();
+                let raw_result = tx
+                    .with_connection(move |c| {
+                        Box::pin(async move {
+                            Ok(reader
+                                .devices_on(c, watermark, &ids, &read_catalog, true)
+                                .await)
+                        })
+                    })
+                    .await?;
+                let raw = match raw_result {
+                    Err(rss_mdm_inventory_service::transaction::Fault::Request(
+                        rss_mdm_inventory_service::Error::Unavailable(
+                            rss_mdm_inventory_service::Failure::AssetBytesLimit
+                            | rss_mdm_inventory_service::Failure::AssetSourceLimit,
+                        ),
+                    )) if limit > 1 => {
+                        limit = (limit / 2).max(1);
+                        continue;
+                    }
+                    result => result?,
+                };
+                let rule = group_checked(
                     self.groups
+                        .rule_in(
+                            tx,
+                            build.request.group,
+                            build
+                                .request
+                                .rule_version
+                                .as_deref()
+                                .ok_or(Error::Conflict)?,
+                        )
+                        .await?,
+                )?
+                .ok_or(Error::Conflict)?;
+                let data = assets::filter::associated_page(tenant, &inputs, &raw, &catalog, &rule)?;
+                let after = build
+                    .cursor
+                    .as_ref()
+                    .map(|s| checked_input(g::core::ObjectKey::new(tenant, s)))
+                    .transpose()?;
+                if !data.objects.is_empty() {
+                    match self
+                        .groups
                         .append_build_page_in(
                             tx,
                             operation,
@@ -322,15 +359,25 @@ impl Planning {
                                 after: after.as_ref(),
                             },
                         )
-                        .await?,
-                )?;
-            }
-            if inputs.len() < 250 {
-                group_checked(
-                    self.groups
-                        .seal_build_in(tx, operation, build.processed + inputs.len())
-                        .await?,
-                )?;
+                        .await?
+                    {
+                        Err(g::Rejection::PageBudgetExceeded) if limit > 1 => {
+                            limit = (limit / 2).max(1);
+                            continue;
+                        }
+                        result => {
+                            group_checked(result)?;
+                        }
+                    }
+                }
+                if inputs.len() < limit {
+                    group_checked(
+                        self.groups
+                            .seal_build_in(tx, operation, build.processed + inputs.len())
+                            .await?,
+                    )?;
+                }
+                break;
             }
         } else {
             let after = build

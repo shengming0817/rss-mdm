@@ -34,6 +34,32 @@ pub trait ObjectReader: Send + Sync {
         c: &'a mut PgConnection,
         tenant: TenantId,
     ) -> Pending<'a, ObjectSnapshot>;
+    fn advance<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        snapshot: &'a ObjectSnapshot,
+    ) -> Pending<'a, SnapshotProgress>;
+    fn lookup<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        snapshot: Uuid,
+        object: &'a ObjectRef,
+    ) -> Pending<'a, DeviceObject>;
+    fn endpoint<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        device: &'a str,
+    ) -> Pending<'a, DeviceObject>;
+    fn validate<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        input: &'a DeviceObject,
+        channel: rss_mdm_inventory::Channel,
+    ) -> Pending<'a, Option<PrimaryRegistration>>;
     fn current<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -126,4 +152,13 @@ impl ObjectSnapshot {
             version: parts[3].into(),
         }))
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SnapshotProgress {
+    Building,
+    Ready,
+    Superseded,
+    ObjectLimit,
+    ByteLimit,
 }

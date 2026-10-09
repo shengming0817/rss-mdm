@@ -42,6 +42,12 @@ pub struct PolicyCandidate {
     pub scope: Uuid,
     pub admission: ScopeAdmission,
 }
+/// A bounded scan page. Empty items do not mean completion while has_more is true.
+pub struct CandidatePage {
+    pub items: Vec<PolicyCandidate>,
+    pub scanned_after: Uuid,
+    pub has_more: bool,
+}
 #[derive(Debug, thiserror::Error)]
 pub enum SourceError {
     #[error("source missing")]
@@ -123,7 +129,7 @@ pub trait SourceAuthority: Send + Sync {
         device: &'a str,
         kind: CandidateKind,
         after: Uuid,
-    ) -> Pending<'a, Vec<PolicyCandidate>>;
+    ) -> Pending<'a, CandidatePage>;
 }
 
 /// Derived source-object assignment; unavailable rows do not represent an operation.

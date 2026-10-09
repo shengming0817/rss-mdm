@@ -32,17 +32,21 @@ pub async fn assignments(
         for value in retired {let row:crate::source_authority::AssignmentObject=serde_json::from_value(value).map_err(|_|Error::Malformed)?;if !objects.iter().any(|o|o.object==row.object){objects.push(row);}}
         objects.sort_by_key(|o|o.object.key());
         let more=objects.len()>64;objects.truncate(64);let next=if more {objects.last().map(|o|o.object.key())}else{None};
+        let source=s.source.clone();let version=p.version;
+        let readable=tx.with_connection(move|c|Box::pin(async move {Ok(source.policy_readable_on(c,tenant,version).await)})).await??;
         let mut items=Vec::new();
         for mut object in objects {
             let mut operations=Vec::new();let mut task_admission=None;
+            if !readable {object.availability=crate::source_authority::Availability::Unavailable;object.reason=Some("source_forbidden".into());}
+            if !p.enabled {object.availability=crate::source_authority::Availability::Unavailable;object.reason=Some("policy_disabled".into());}
             if let Some(target)=&object.target {
                 let device=&target.device;
                 let eligible=crate::sources::storage::eligible_in(&s.source,tx,&p,device).await?.is_some();
-                if !eligible {object.availability=crate::source_authority::Availability::Unavailable;object.reason=Some(if !p.enabled {"policy_disabled"}else{"source_pending"}.into());}
+                if !eligible && object.availability==crate::source_authority::Availability::Ready {object.availability=crate::source_authority::Availability::Unavailable;object.reason=Some("source_pending".into());}
                 task_admission=if let Some(software)=&software {let now=crate::storage::now(tx).await?;Some(software.assignment.management_state_in(&s.admission,tx,device,now).await?)}else if let Some(frozen)=&onboarding {Some(onboarding::state_in(&s.admission,tx,device,frozen).await?)}else{None};
-                if task_admission.as_ref().is_some_and(|a|!software::TaskAdmission::is_eligible(a)) {object.availability=crate::source_authority::Availability::Unavailable;object.reason=Some("target_unavailable".into());}
-                let tenant=tenant.to_string();let device=device.clone();
-                operations=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Uuid>("SELECT id FROM mdm_commands.operations o JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(o.tenant_id,o.policy_version) WHERE o.tenant_id=$1::uuid AND v.policy=$2 AND o.device=$3 UNION SELECT r.id FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.device=$3 ORDER BY id").bind(tenant).bind(id).bind(device).fetch_all(c).await})).await?;
+                if object.availability==crate::source_authority::Availability::Ready && task_admission.as_ref().is_some_and(|a|!software::TaskAdmission::is_eligible(a)) {object.availability=crate::source_authority::Availability::Unavailable;object.reason=Some("target_unavailable".into());}
+                let tenant=tenant.to_string();let device=device.clone();let registration=target.registration_id;let generation=target.generation;let channel_name=channel.as_str();
+                operations=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Uuid>("SELECT id FROM mdm_commands.operations o JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(o.tenant_id,o.policy_version) WHERE o.tenant_id=$1::uuid AND v.policy=$2 AND o.device=$3 AND o.registration=$4 AND o.registration_generation=$5 AND $6='mdm' UNION SELECT r.id FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.device=$3 AND r.registration=$4 AND r.generation=$5 AND v.action_kind=ANY(CASE WHEN $6='mdm' THEN ARRAY['configuration','native_collection','ensure_agent_installed'] ELSE ARRAY['execution','software','request_mdm_enrollment'] END) ORDER BY id").bind(tenant).bind(id).bind(device).bind(registration).bind(generation).bind(channel_name).fetch_all(c).await})).await?;
             }
             items.push(json!({"object":object.object,"channel":object.channel,"availability":object.availability,"reason":object.reason,"target":object.target,"qualification":object.admission,"sources":object.sources,"scopeResult":object.scope_result,"taskAdmission":task_admission,"operationIds":operations}));
         }

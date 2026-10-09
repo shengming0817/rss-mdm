@@ -54,7 +54,7 @@ pub(crate) fn seed(device: &str, channel: &str, serial: &str) -> anyhow::Result<
     hardware(device, registration, epoch, source, serial)?;
     Ok(registration)
 }
-fn hardware(
+pub(crate) fn hardware(
     _device: &str,
     registration: Uuid,
     epoch: Uuid,

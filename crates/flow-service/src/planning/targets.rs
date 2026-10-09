@@ -56,56 +56,17 @@ async fn rows_for(
         .collect()
 }
 async fn current(
+    reader: &dyn rss_mdm_inventory_service::objects::ObjectReader,
     c: &mut PgConnection,
     tenant: TenantId,
     input: &DeviceObject,
     channel: Channel,
 ) -> Result<Option<rss_mdm_registration_service::device::endpoints::PrimaryRegistration>, SourceError>
 {
-    if !input.verified {
-        return Ok(None);
-    }
-    if let ObjectRef::Association(id) = input.object {
-        let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_devices.associations a WHERE a.tenant_id=$1::uuid AND a.id=$2 AND a.version=$3 AND a.state='confirmed' AND NOT EXISTS(SELECT 1 FROM mdm_devices.members m WHERE (m.tenant_id,m.association_id)=(a.tenant_id,a.id) AND m.released))")
-            .bind(tenant.to_string()).bind(id).bind(input.association_version).fetch_one(&mut *c).await?;
-        if !valid {
-            return Ok(None);
-        }
-    }
-    // Recheck both source endpoints, then return exactly the selected endpoint.
-    let mut selected = None;
-    let mut members: Vec<_> = input.members.iter().collect();
-    members.sort_by(|a, b| (&a.device, a.channel.as_str()).cmp(&(&b.device, b.channel.as_str())));
-    for m in members {
-        rss_mdm_registration_service::device::endpoints::lock_in(
-            c,
-            &tenant.to_string(),
-            &m.device,
-            m.channel,
-        )
-        .await
-        .map_err(|_| SourceError::Conflict)?;
-        let live = rss_mdm_registration_service::device::endpoints::current_in(
-            c,
-            &tenant.to_string(),
-            &m.device,
-            m.channel,
-        )
-        .await
-        .map_err(|_| SourceError::Conflict)?;
-        if live.as_ref() != Some(m) {
-            return Ok(None);
-        }
-        if m.channel == channel {
-            if selected.is_some() {
-                return Err(SourceError::Invariant);
-            }
-            selected = Some(m.clone());
-        }
-    }
-    Ok(selected)
+    Ok(reader.validate(c, tenant, input, channel).await?)
 }
 pub async fn admission_on(
+    reader: &dyn rss_mdm_inventory_service::objects::ObjectReader,
     c: &mut PgConnection,
     tenant: TenantId,
     scope: Uuid,
@@ -116,9 +77,13 @@ pub async fn admission_on(
     if !fresh {
         return Ok(ScopeAdmission::Pending);
     }
-    evaluate_on(c, tenant, run, entry, &frozen, channel, device, true).await
+    evaluate_on(
+        reader, c, tenant, run, entry, &frozen, channel, device, true,
+    )
+    .await
 }
 async fn evaluate_on(
+    reader: &dyn rss_mdm_inventory_service::objects::ObjectReader,
     c: &mut PgConnection,
     tenant: TenantId,
     run: Uuid,
@@ -128,7 +93,8 @@ async fn evaluate_on(
     device: &str,
     live: bool,
 ) -> Result<ScopeAdmission, SourceError> {
-    let result = explanation_on(c, tenant, run, frozen, channel, device, live).await?;
+    let result =
+        explanation_on(c, tenant, run, frozen, channel, device, Some(reader), live).await?;
     Ok(match result {
         None => ScopeAdmission::Excluded,
         Some(result) if result.reasons.is_empty() => ScopeAdmission::Eligible { entry },
@@ -154,6 +120,7 @@ async fn explanation_on(
     frozen: &ScopeInput,
     channel: Channel,
     device: &str,
+    reader: Option<&dyn rss_mdm_inventory_service::objects::ObjectReader>,
     live: bool,
 ) -> Result<Option<s::MemberExplanation>, SourceError> {
     let rows = rows_for(c, tenant, run, channel, device).await?;
@@ -163,7 +130,16 @@ async fn explanation_on(
     for row in &rows {
         if row.unknown
             || !row.input.verified
-            || (live && current(c, tenant, &row.input, channel).await?.is_none())
+            || (live
+                && current(
+                    reader.ok_or(SourceError::Invariant)?,
+                    c,
+                    tenant,
+                    &row.input,
+                    channel,
+                )
+                .await?
+                .is_none())
         {
             uncertain.insert(row.source);
         } else {
@@ -255,6 +231,7 @@ pub async fn devices_page(
     })
 }
 pub async fn objects_on(
+    reader: &dyn rss_mdm_inventory_service::objects::ObjectReader,
     c: &mut PgConnection,
     tenant: TenantId,
     scope: Uuid,
@@ -275,18 +252,26 @@ pub async fn objects_on(
     for row in rows {
         let input: DeviceObject =
             serde_json::from_value(row.try_get("input")?).map_err(|_| SourceError::Invariant)?;
-        let target = current(c, tenant, &input, channel).await?;
+        let target = current(reader, c, tenant, &input, channel).await?;
         let uncertain = row.try_get::<bool, _>("unknown")?;
         let admission = if !fresh || uncertain {
             ScopeAdmission::Pending
         } else if let Some(target) = &target {
-            admission_on(c, tenant, scope, channel, &target.device).await?
+            admission_on(reader, c, tenant, scope, channel, &target.device).await?
         } else {
             ScopeAdmission::Pending
         };
         let ready = target.is_some() && matches!(admission, ScopeAdmission::Eligible { .. });
         let sources = if ready {
-            evidence_on(c, tenant, scope, channel, &target.as_ref().unwrap().device).await?
+            evidence_on(
+                reader,
+                c,
+                tenant,
+                scope,
+                channel,
+                &target.as_ref().unwrap().device,
+            )
+            .await?
         } else {
             vec![input.clone()]
         };
@@ -324,6 +309,7 @@ pub async fn objects_on(
 }
 
 pub async fn evidence_on(
+    reader: &dyn rss_mdm_inventory_service::objects::ObjectReader,
     c: &mut PgConnection,
     tenant: TenantId,
     scope: Uuid,
@@ -333,7 +319,7 @@ pub async fn evidence_on(
     let (run, _, _, fresh) = resolution(c, tenant, scope).await?;
     if !fresh
         || !matches!(
-            admission_on(c, tenant, scope, channel, device).await?,
+            admission_on(reader, c, tenant, scope, channel, device).await?,
             ScopeAdmission::Eligible { .. }
         )
     {
@@ -347,6 +333,7 @@ pub async fn evidence_on(
         .collect())
 }
 pub async fn evidence_valid_on(
+    reader: &dyn rss_mdm_inventory_service::objects::ObjectReader,
     c: &mut PgConnection,
     tenant: TenantId,
     channel: Channel,
@@ -357,7 +344,7 @@ pub async fn evidence_valid_on(
         return Ok(false);
     }
     for input in evidence {
-        if current(c, tenant, input, channel)
+        if current(reader, c, tenant, input, channel)
             .await?
             .is_none_or(|m| m.device != device)
         {
@@ -385,7 +372,23 @@ pub async fn result_admission_on(
     device: &str,
 ) -> Result<ScopeAdmission, SourceError> {
     let frozen = historical(c, tenant, scope, run).await?;
-    evaluate_on(c, tenant, run, 1, &frozen, channel, device, false).await
+    let result = explanation_on(c, tenant, run, &frozen, channel, device, None, false).await?;
+    Ok(match result {
+        Some(result) if result.reasons.is_empty() => ScopeAdmission::Eligible { entry: 1 },
+        Some(result)
+            if result.reasons.iter().any(|r| {
+                matches!(
+                    r,
+                    s::ExclusionReason::UnknownTarget
+                        | s::ExclusionReason::UnknownLimitation
+                        | s::ExclusionReason::UnknownExclusion
+                )
+            }) =>
+        {
+            ScopeAdmission::Pending
+        }
+        _ => ScopeAdmission::Excluded,
+    })
 }
 pub async fn result_devices_on(
     c: &mut PgConnection,
@@ -420,5 +423,5 @@ pub async fn result_explanation_on(
     device: &str,
 ) -> Result<Option<s::MemberExplanation>, SourceError> {
     let frozen = historical(c, tenant, scope, run).await?;
-    explanation_on(c, tenant, run, &frozen, channel, device, false).await
+    explanation_on(c, tenant, run, &frozen, channel, device, None, false).await
 }

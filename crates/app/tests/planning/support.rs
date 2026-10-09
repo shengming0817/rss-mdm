@@ -152,6 +152,7 @@ pub(crate) async fn groups(m: &Planning) -> rss_mdm_inventory_service::groups::G
         .await
         .unwrap();
     rss_mdm_inventory_service::groups::Groups {
+        objects: m.objects.clone(),
         tenant: m.tenant,
         groups: m.groups.clone(),
         runtime: m.runtime.clone(),
@@ -512,6 +513,7 @@ pub(crate) async fn scope_admission(
     device: &str,
 ) -> rss_mdm_execution_service::source_authority::ScopeAdmission {
     use rss_mdm_execution_service::source_authority::SourceAuthority;
+    let source = crate::planning::execution_source::ExecutionSource::new(service.objects.clone());
     let tenant = service.tenant;
     let device = device.to_owned();
     service
@@ -520,7 +522,7 @@ pub(crate) async fn scope_admission(
             Box::pin(async move {
                 tx.with_connection(move |c| {
                     Box::pin(async move {
-                        Ok(crate::planning::execution_source::ExecutionSource
+                        Ok(source
                             .admission_on(c, tenant, scope, channel, &device)
                             .await)
                     })

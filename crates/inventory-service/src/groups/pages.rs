@@ -148,10 +148,18 @@ impl Groups {
                 for d in items {
                     let reference = object(&d.device)?;
                     let sources = if let Some(snapshot) = &snapshot {
-                        let t = self.tenant.to_string();
+                        let reader = self.objects.clone();
+                        let tenant = self.tenant;
                         let snapshot = snapshot.id;
-                        let key = reference.key();
-                        let input:Value=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT input FROM mdm_devices.input_objects WHERE tenant_id=$1::uuid AND snapshot=$2 AND object=$3").bind(t).bind(snapshot).bind(key).fetch_one(c).await})).await?;
+                        let key = reference.clone();
+                        let input = tx
+                            .with_connection(move |c| {
+                                Box::pin(
+                                    async move { reader.lookup(c, tenant, snapshot, &key).await },
+                                )
+                            })
+                            .await?;
+                        let input = checked_input(serde_json::to_value(input))?;
                         vec![input]
                     } else {
                         vec![]
