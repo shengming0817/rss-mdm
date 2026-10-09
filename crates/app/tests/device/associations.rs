@@ -125,6 +125,8 @@ async fn automatic_match_duplicate_detection_and_revocation_suppression() -> any
     assert_eq!(s.reconcile().await?, 1);
     let pending = s.get(&admin, id).await?;
     assert_eq!(pending.state, State::NeedsVerification);
+    assert_eq!(pending.evidence, old.evidence);
+    assert_eq!(pending.confirmed_at, old.confirmed_at);
     let request = Revoke {
         operation_id: Uuid::new_v4(),
         expected_version: pending.version,
@@ -245,10 +247,27 @@ async fn competing_confirmations_have_one_receipt_and_no_orphan_relation() -> an
     second.agent = member(&mut c, two, Channel::Agent).await?;
     let a = audit("device_association_confirm");
     let b = audit("device_association_confirm");
-    let (a, b) = tokio::join!(
+    let mut hold = c.begin().await?;
+    rss_mdm_inventory_postgres::lock_watermark_in(&mut hold, TenantId::parse(case_a())?).await?;
+    let release = async {
+        let observed=tokio::time::timeout(Duration::from_secs(3),async {
+            loop {
+                let waiting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity business JOIN pg_stat_activity audit ON business.pid=ANY(pg_blocking_pids(audit.pid)) WHERE business.datname=current_database() AND audit.datname=current_database() AND business.usename='mdm_access' AND audit.usename='mdm_access' AND business.wait_event_type='Lock' AND audit.wait_event_type='Lock' AND business.query LIKE '%mdm.lock_asset_watermark%' AND audit.query LIKE '%rss_audit.reserve%' AND pg_backend_pid()=ANY(pg_blocking_pids(business.pid)))").fetch_one(&mut *hold).await?;
+                if waiting {return Ok::<_,sqlx::Error>(());}
+                sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *hold).await?;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await;
+        hold.rollback().await?;
+        observed.context("both membership contenders must overlap at the publication fence")??;
+        Ok::<_, anyhow::Error>(())
+    };
+    let (a, b, released) = tokio::join!(
         s.confirm(&admin, &first, &a),
-        s.confirm(&admin, &second, &b)
+        s.confirm(&admin, &second, &b),
+        release
     );
+    released?;
     assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
     assert!(matches!(
         a.as_ref().err().or(b.as_ref().err()),
@@ -269,6 +288,93 @@ async fn competing_confirmations_have_one_receipt_and_no_orphan_relation() -> an
         }
     }
     assert_eq!(found, 1);
+    access.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "MODULE=device.associations: recovery preserves association, membership, receipt and audit"]
+async fn confirmation_and_worker_recover_unknown_commit_without_duplicate_facts()
+-> anyhow::Result<()> {
+    let (access, _, admin, mut c) = setup().await?;
+    let store = access
+        .audit_store(&crate::config::AuditConfig::Plain)
+        .await?;
+    let s = Associations::new(store.clone(), TenantId::parse(case_a())?, &[7; 32])?;
+    let mdm = crate::test_support::case::name("recovery-mdm");
+    let agent = crate::test_support::case::name("recovery-agent");
+    seed(mdm, "mdm", "recovery-serial")?;
+    seed(agent, "agent", "RECOVERY-SERIAL")?;
+    let request = Confirm {
+        operation_id: Uuid::new_v4(),
+        association_id: None,
+        expected_version: 0,
+        mdm: member(&mut c, mdm, Channel::Mdm).await?,
+        agent: member(&mut c, agent, Channel::Agent).await?,
+        evidence: "physically verified".into(),
+    };
+    store.inject_next_fault(rss_audit_postgres::PgFault::BeforeCommitPending);
+    assert!(
+        s.confirm(&admin, &request, &audit("device_association_confirm"))
+            .await
+            .is_err()
+    );
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM mdm_devices.associations WHERE tenant_id=$1::uuid",
+    )
+    .bind(case_a())
+    .fetch_one(&mut c)
+    .await?;
+    assert_eq!(count, 0);
+    let receipts: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM mdm_devices.operations WHERE tenant_id=$1::uuid")
+            .bind(case_a())
+            .fetch_one(&mut c)
+            .await?;
+    assert_eq!(receipts, 0);
+    store.inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+    assert!(matches!(
+        s.confirm(&admin, &request, &audit("device_association_confirm"))
+            .await,
+        Err(rss_mdm_device_service::Error::CommitUnknown)
+    ));
+    let recovered = s
+        .confirm(&admin, &request, &audit("device_association_confirm"))
+        .await?;
+    let mut stale = request.clone();
+    stale.operation_id = Uuid::new_v4();
+    stale.association_id = Some(recovered.id);
+    stale.expected_version = recovered.version + 1;
+    assert!(matches!(
+        s.confirm(&admin, &stale, &audit("device_association_confirm"))
+            .await,
+        Err(rss_mdm_device_service::Error::Conflict)
+    ));
+    let other_mdm = crate::test_support::case::name("worker-recovery-mdm");
+    let other_agent = crate::test_support::case::name("worker-recovery-agent");
+    seed(other_mdm, "mdm", "worker-serial")?;
+    seed(other_agent, "agent", "WORKER-SERIAL")?;
+    store.inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+    assert!(matches!(
+        s.reconcile().await,
+        Err(rss_mdm_device_service::Error::CommitUnknown)
+    ));
+    assert_eq!(s.reconcile().await?, 0);
+    let counts:(i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_devices.associations WHERE tenant_id=$1::uuid),(SELECT count(*) FROM mdm_devices.members WHERE tenant_id=$1::uuid),(SELECT count(*) FROM mdm_devices.operations WHERE tenant_id=$1::uuid)").bind(case_a()).fetch_one(&mut c).await?;
+    assert_eq!(counts, (2, 4, 2));
+    let checkpoint:bool=sqlx::query_scalar("SELECT c.watermark=a.revision FROM mdm_devices.checkpoints c JOIN mdm.asset_clock a USING(tenant_id) WHERE tenant_id=$1::uuid").bind(case_a()).fetch_one(&mut c).await?;
+    assert!(checkpoint);
+    let mut changes = s.changes(&admin, None).await?;
+    let mut found = 0;
+    loop {
+        found += changes["items"].as_array().context("changes")?.len();
+        if let Some(cursor) = changes["nextCursor"].as_str() {
+            changes = s.changes(&admin, Some(cursor)).await?;
+        } else {
+            break;
+        }
+    }
+    assert_eq!(found, 2);
     access.close().await;
     Ok(())
 }

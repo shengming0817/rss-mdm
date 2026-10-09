@@ -252,7 +252,7 @@ pub(crate) async fn persist(
         {
             return Err(Error::Conflict);
         }
-        let changed=sqlx::query("UPDATE mdm_devices.associations SET version=version+1,state=$7,evidence=$4,hardware=$8,confirmed_by=$5,confirmed_at=$6,revoked_by=NULL,revoked_at=NULL,reason=NULL WHERE tenant_id=$1::uuid AND id=$2 AND version=$3")
+        let changed=sqlx::query("UPDATE mdm_devices.associations SET version=version+1,state=$7,evidence=CASE WHEN $7='confirmed' THEN $4 ELSE evidence END,hardware=$8,confirmed_by=CASE WHEN $7='confirmed' THEN $5 ELSE confirmed_by END,confirmed_at=CASE WHEN $7='confirmed' THEN $6 ELSE confirmed_at END,revoked_by=NULL,revoked_at=NULL,reason=NULL WHERE tenant_id=$1::uuid AND id=$2 AND version=$3")
             .bind(tenant).bind(id).bind(r.expected_version).bind(&r.evidence).bind(actor).bind(now).bind(state).bind(&hardware).execute(&mut *c).await?.rows_affected();
         if changed != 1 {
             return Err(Error::Conflict);

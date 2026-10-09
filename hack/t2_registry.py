@@ -250,7 +250,15 @@ for part in ('binding', 'revocation', 'recovery', 'admission', 'associations', '
     MODULES[key] = replace(MODULES[key], support_inputs=('crates/app/tests/device/mod.rs',))
 MODULES['device.views'] = replace(MODULES['device.views'], support_inputs=(*MODULES['device.views'].support_inputs, 'crates/app/tests/device/associations.rs'))
 for name in ('device.associations','device.views'):
-    MODULES[name]=replace(MODULES[name],scope='tenant')
+    MODULES[name]=replace(MODULES[name],scope='tenant',
+        production_inputs=(*MODULES[name].production_inputs,
+            'crates/inventory/src/assets.rs','crates/inventory/src/builtin.rs',
+            'crates/inventory-postgres/src/history.rs','crates/inventory-postgres/src/catalog.rs',
+            'crates/inventory-service/src/assets/planning.rs',
+            'crates/registration-service/src/device/endpoints.rs',
+            'crates/registration-service/src/device/directory.rs'),
+        support_inputs=(*MODULES[name].support_inputs,'crates/app/tests/support/inventory.rs',
+            'crates/app/tests/device/support.rs','crates/app/tests/support/identity.rs'))
 app_family('agent')
 for name in ('agent.registration', 'agent.reports'):
     MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs, 'crates/app/tests/support/agent.rs'))

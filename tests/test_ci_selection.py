@@ -363,3 +363,20 @@ class EntryModes(unittest.TestCase):
         command.assert_not_called()
         self.assertEqual(decision['t2']['mode'], 'all')
         self.assertEqual(set(decision['t2']['modules']), set(ci.MODULES))
+
+class DeviceConsumerInputs(unittest.TestCase):
+    def test_shared_device_inputs_select_their_actual_consumers(self):
+        from fnmatch import fnmatchcase
+        from t2_registry import MODULES
+        for name in ('device.associations', 'device.views'):
+            module = MODULES[name]
+            inputs = (*module.production_inputs, *module.support_inputs)
+            for path in ('crates/inventory/src/assets.rs',
+                         'crates/inventory-postgres/src/history.rs',
+                         'crates/inventory-service/src/assets/planning.rs',
+                         'crates/registration-service/src/device/endpoints.rs',
+                         'crates/registration-service/src/device/directory.rs',
+                         'crates/app/tests/support/inventory.rs',
+                         'crates/app/tests/device/support.rs'):
+                with self.subTest(module=name, path=path):
+                    self.assertTrue(any(fnmatchcase(path, pattern) for pattern in inputs))

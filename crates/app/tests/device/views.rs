@@ -229,3 +229,61 @@ async fn http_lists_manual_conflicts_and_signed_source_pagination() -> anyhow::R
     access.close().await;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "MODULE=device.views: pending targets and higher-generation child registrations"]
+async fn pending_targets_filter_by_source_and_child_never_replaces_primary() -> anyhow::Result<()> {
+    let (access, s, admin, mut c) = setup().await?;
+    let device = crate::test_support::case::name("pending-view");
+    let registration = DeviceService::new(
+        access.registration(),
+        case_a().into(),
+        access
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?,
+    );
+    let request = registration
+        .fixture_request(&admin, device, Channel::Mdm)
+        .await?;
+    let mut filter = query(64);
+    filter.status = Some("pending".into());
+    filter.channel = Some("mdm".into());
+    filter.source = Some("mdm.windows".into());
+    let page = s.views(&admin, &filter).await?;
+    assert_eq!(
+        page["statistics"],
+        json!({"endpointCount":1,"deviceViewCount":1})
+    );
+    assert_eq!(page["items"][0]["endpoints"][0]["id"], device);
+    filter.channel = Some("agent".into());
+    assert_eq!(
+        s.views(&admin, &filter).await?["statistics"]["deviceViewCount"],
+        0
+    );
+    let _ = request;
+    let registered = crate::test_support::case::name("primary-view");
+    let parent = seed(registered, "mdm", "primary-serial")?;
+    let child = Uuid::new_v4();
+    let child_request = Uuid::new_v4();
+    sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source,windows_profile) SELECT tenant_id,$3,grant_id,source,windows_profile FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=(SELECT request_id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2)").bind(case_a()).bind(parent).bind(child_request).execute(&mut c).await?;
+    sqlx::query("INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state,purpose,epoch,parent_id,parent_generation) SELECT tenant_id,$3,device,channel,99,$4,'active','windows_declared',$5,id,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2").bind(case_a()).bind(parent).bind(child).bind(child_request).bind(Uuid::new_v4()).execute(&mut c).await?;
+    assert_eq!(
+        member(&mut c, registered, Channel::Mdm)
+            .await?
+            .registration_id,
+        parent
+    );
+    let detail = s
+        .view(&admin, &ViewRef::Endpoint(registered.into()))
+        .await?;
+    assert_eq!(
+        detail["endpoints"][0]["primaryMdmRegistration"]["registrationId"],
+        parent.to_string()
+    );
+    assert_eq!(
+        detail["endpoints"][0]["channels"][0]["registrationId"],
+        parent.to_string()
+    );
+    access.close().await;
+    Ok(())
+}

@@ -160,11 +160,7 @@ impl Associations {
                 let version=cursor::digest(&groups.iter().map(|g|g.summary()).collect::<Vec<_>>())?;
                 let context=json!({"kind":"device-directory","tenant":proof.tenant_id(),"instance":proof.instance_id(),"principal":proof.principal_id(),"scope":grants,"watermark":world.watermark,"version":version,"query":{"status":query.status,"channel":query.channel,"source":query.source,"descending":query.descending}});
                 let offset=if let Some(cursor)=&query.cursor {let cursor=service.decode(cursor)?;if cursor.context!=context{return Err(Error::CursorInvalidated);}cursor.offset}else{0};
-                groups.retain(|g|g.endpoints.iter().any(|e|{
-                    query.status.as_deref().is_none_or(|s|e["status"]==s)
-                    && query.channel.as_deref().is_none_or(|s|e["channels"].as_array().is_some_and(|v|v.iter().any(|v|v["channel"]==s)))
-                    && query.source.as_deref().is_none_or(|s|e["channels"].as_array().is_some_and(|v|v.iter().any(|v|v["source"]==s)))
-                }));
+                groups.retain(|g|g.endpoints.iter().any(|e|matches_query(e,query)));
                 if query.descending{groups.reverse();}
                 let count=groups.len();let endpoints:usize=groups.iter().map(|g|g.endpoints.len()).sum();
                 if offset>count{return Err(Error::CursorInvalidated);}
@@ -258,4 +254,28 @@ fn list_state(state: &FieldState) -> Result<Value> {
         FieldState::Known(_) => return Err(Error::Storage),
         s => serde_json::to_value(s).map_err(|_| Error::Storage)?,
     })
+}
+
+fn matches_query(endpoint: &Value, query: &ViewQuery) -> bool {
+    let sources = endpoint["channels"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(endpoint["enrollments"].as_array().into_iter().flatten())
+        .filter_map(|item| item["source"].as_str())
+        .collect::<Vec<_>>();
+    query
+        .status
+        .as_deref()
+        .is_none_or(|status| endpoint["status"] == status)
+        && query
+            .source
+            .as_deref()
+            .is_none_or(|source| sources.contains(&source))
+        && query.channel.as_deref().is_none_or(|channel| {
+            sources.iter().any(|source| {
+                rss_mdm_inventory::ReportSource::parse(source)
+                    .is_ok_and(|source| source.channel().as_str() == channel)
+            })
+        })
 }

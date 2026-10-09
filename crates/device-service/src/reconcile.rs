@@ -30,7 +30,8 @@ impl Associations {
                 let world=identity::world(c,service.tenant).await?;
                 let mut results=Vec::new();
                 let mut occupied=BTreeSet::new();
-                for old in &world.associations {
+                for (index,old) in world.associations.iter().enumerate() {
+                    if index%128==0{tokio::task::yield_now().await;}
                     if old.state==State::Revoked {continue;}
                     occupied.extend(old.members.iter().map(|m|m.device.clone()));
                     let effective=world.effective(old.clone());
@@ -41,15 +42,14 @@ impl Associations {
                     let result=write::persist(c,&tenant,"device-associations",&request,&hardware,effective.state).await?;
                     results.push((request.operation_id,result));
                 }
-                for mdm in world.endpoints.iter().filter(|e|e.member.channel==Channel::Mdm) {
+                for (index,mdm) in world.endpoints.iter().filter(|e|e.member.channel==Channel::Mdm).enumerate() {
+                    if index%128==0{tokio::task::yield_now().await;}
                     if occupied.contains(&mdm.member.device){continue;}
-                    let candidates:Vec<_>=world.endpoints.iter().filter(|e|e.member.channel==Channel::Agent && e.member.device!=mdm.member.device && mdm.hardware.matches(&e.hardware)).collect();
-                    if candidates.len()!=1 {continue;}
-                    let agent=candidates[0];
+                    let Some(agent)=world.peer(mdm) else {continue;};
                     let members=vec![mdm.member.clone(),agent.member.clone()];
                     if occupied.contains(&agent.member.device) || !world.unique(&members,&mdm.hardware) || !world.unique(&members,&agent.hardware) {continue;}
                     // A revoked pair is an explicit user decision, even if later generations match.
-                    if world.associations.iter().any(|a|a.state==State::Revoked && a.members.iter().all(|m|members.iter().any(|n|n.device==m.device))) {continue;}
+                    if world.revoked(&members) {continue;}
                     let request=command(None,&members,"automatic unique hardware match");
                     let result=write::persist(c,&tenant,"device-associations",&request,&identity::evidence(&world,&members),State::Confirmed).await?;
                     occupied.extend(members.iter().map(|m|m.device.clone()));
@@ -57,7 +57,7 @@ impl Associations {
                 }
                 for (operation,result) in &results {
                     let value=serde_json::to_value(result).map_err(|_|Error::Storage)?;
-                    let digest=Sha256::digest(serde_json::to_vec(&value).map_err(|_|Error::Storage)?).to_vec();
+                    let digest=Sha256::digest(serde_json::to_vec(result).map_err(|_|Error::Storage)?).to_vec();
                     sqlx::query("INSERT INTO mdm_devices.operations(tenant_id,operation_id,actor,instance,digest,result) VALUES($1::uuid,$2,'device-associations','system',$3,$4)")
                         .bind(&tenant).bind(operation).bind(digest).bind(value).execute(&mut *c).await?;
                 }

@@ -79,15 +79,23 @@ impl Associations {
                     tx.with_connection_context(proof, |proof, c| {
                         Box::pin(async move {
                             let snapshot = authorization(c, proof).await?;
-                            let a = load(c, proof.tenant_id(), id).await?;
-                            authorize(&snapshot, proof, &a.members, false)
-                                .map_err(|_| Error::NotFound)?;
-                            let a = load(c, proof.tenant_id(), id).await?;
                             let world = identity::world(
                                 c,
                                 TenantId::parse(proof.tenant_id()).map_err(|_| Error::Malformed)?,
                             )
                             .await?;
+                            let a = world
+                                .associations
+                                .iter()
+                                .find(|a| a.id == id)
+                                .cloned()
+                                .ok_or(Error::NotFound)?;
+                            authorize(&snapshot, proof, &a.members, false).map_err(
+                                |e| match e {
+                                    Error::Forbidden => Error::NotFound,
+                                    other => other,
+                                },
+                            )?;
                             let a = world.effective(a);
                             proof.check_live()?;
                             Ok(a)

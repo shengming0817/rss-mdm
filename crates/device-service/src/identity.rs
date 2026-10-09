@@ -15,6 +15,12 @@ pub struct Hardware {
     pub sources: Vec<Evidence>,
 }
 impl Hardware {
+    fn keys(&self) -> impl Iterator<Item = (&'static str, &String)> {
+        self.serial
+            .iter()
+            .map(|v| ("serial", v))
+            .chain(self.uuid.iter().map(|v| ("uuid", v)))
+    }
     fn same_values(&self, other: &Self) -> bool {
         self.serial == other.serial
             && self.uuid == other.uuid
@@ -30,8 +36,7 @@ impl Hardware {
         self.consistent()
             && other.consistent()
             && !self.contradicts(other)
-            && ((!self.serial.is_empty() && self.serial == other.serial)
-                || (!self.uuid.is_empty() && self.uuid == other.uuid))
+            && self.shares_key(other)
     }
     pub(crate) fn contradicts(&self, other: &Self) -> bool {
         !self.consistent()
@@ -84,24 +89,73 @@ pub(crate) struct EndpointIdentity {
     pub member: Member,
     pub hardware: Hardware,
 }
+#[derive(Default)]
 pub(crate) struct World {
     pub watermark: i64,
     pub endpoints: Vec<EndpointIdentity>,
     pub associations: Vec<Association>,
+    by_device: BTreeMap<String, BTreeMap<&'static str, usize>>,
+    by_hardware: BTreeMap<&'static str, BTreeMap<String, BTreeSet<String>>>,
+    revoked_pairs: BTreeSet<(String, String)>,
 }
 impl World {
-    pub fn current(&self, member: &Member) -> Option<&EndpointIdentity> {
-        self.endpoints
-            .iter()
-            .find(|e| e.member.device == member.device && e.member.channel == member.channel)
+    fn insert(&mut self, endpoint: EndpointIdentity) {
+        let index = self.endpoints.len();
+        self.by_device
+            .entry(endpoint.member.device.clone())
+            .or_default()
+            .insert(endpoint.member.channel.as_str(), index);
+        for (kind, value) in endpoint.hardware.keys() {
+            self.by_hardware
+                .entry(kind)
+                .or_default()
+                .entry(value.clone())
+                .or_default()
+                .insert(endpoint.member.device.clone());
+        }
+        self.endpoints.push(endpoint);
     }
-    /// Already associated endpoints represent one instance for uniqueness, not two competitors.
+    pub fn current(&self, member: &Member) -> Option<&EndpointIdentity> {
+        self.by_device
+            .get(&member.device)?
+            .get(member.channel.as_str())
+            .and_then(|i| self.endpoints.get(*i))
+    }
+    /// Already associated endpoints represent one instance, not two competitors.
     pub fn unique(&self, members: &[Member], hardware: &Hardware) -> bool {
-        let own: BTreeSet<_> = members.iter().map(|m| m.device.as_str()).collect();
-        !self
-            .endpoints
-            .iter()
-            .any(|e| !own.contains(e.member.device.as_str()) && hardware.shares_key(&e.hardware))
+        hardware.keys().all(|(kind, value)| {
+            self.by_hardware
+                .get(kind)
+                .and_then(|m| m.get(value))
+                .is_none_or(|devices| {
+                    devices.len() <= members.len()
+                        && devices
+                            .iter()
+                            .all(|device| members.iter().any(|m| &m.device == device))
+                })
+        })
+    }
+    /// Read only key buckets of at most two endpoints; a larger bucket is ambiguous.
+    pub fn peer(&self, endpoint: &EndpointIdentity) -> Option<&EndpointIdentity> {
+        let mut candidates = BTreeSet::new();
+        for (kind, value) in endpoint.hardware.keys() {
+            let devices = self.by_hardware.get(kind)?.get(value)?;
+            if devices.len() > 2 {
+                return None;
+            }
+            candidates.extend(devices.iter().filter(|d| **d != endpoint.member.device));
+        }
+        if candidates.len() != 1 {
+            return None;
+        }
+        let device = *candidates.first()?;
+        let index = self.by_device.get(device)?.get(Channel::Agent.as_str())?;
+        let peer = self.endpoints.get(*index)?;
+        endpoint.hardware.matches(&peer.hardware).then_some(peer)
+    }
+    pub fn revoked(&self, members: &[Member]) -> bool {
+        self.revoked_pairs
+            .contains(&pair(&members[0].device, &members[1].device))
     }
     pub fn effective(&self, mut a: Association) -> Association {
         if a.state == State::Revoked {
@@ -168,7 +222,10 @@ pub(crate) async fn world(c: &mut PgConnection, tenant: TenantId) -> Result<Worl
     .map_err(|_| Error::Storage)?;
     let reader = rss_mdm_inventory_service::assets::planning::SnapshotReader { tenant };
     let mut after = String::new();
-    let mut identities = Vec::new();
+    let mut world = World {
+        watermark,
+        ..World::default()
+    };
     loop {
         let ids = endpoints::page_in(c, &tenant.to_string(), &after, 250).await?;
         if ids.is_empty() {
@@ -225,27 +282,40 @@ pub(crate) async fn world(c: &mut PgConnection, tenant: TenantId) -> Result<Worl
                         }
                     }
                 }
-                identities.push(EndpointIdentity { member, hardware });
+                world.insert(EndpointIdentity { member, hardware });
             }
         }
         after = ids.last().ok_or(Error::Storage)?.clone();
+        tokio::task::yield_now().await;
     }
-    let ids: Vec<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT id FROM mdm_devices.associations WHERE tenant_id=$1::uuid ORDER BY id",
-    )
-    .bind(tenant.to_string())
-    .fetch_all(&mut *c)
-    .await?;
-    let mut associations = Vec::new();
-    for id in ids {
-        associations.push(read::load(c, &tenant.to_string(), id).await?);
+    let mut after = uuid::Uuid::nil();
+    loop {
+        let ids:Vec<uuid::Uuid>=sqlx::query_scalar("SELECT id FROM mdm_devices.associations WHERE tenant_id=$1::uuid AND id>$2 ORDER BY id LIMIT 250").bind(tenant.to_string()).bind(after).fetch_all(&mut *c).await?;
+        if ids.is_empty() {
+            break;
+        }
+        after = *ids.last().ok_or(Error::Storage)?;
+        for id in ids {
+            let a = read::load(c, &tenant.to_string(), id).await?;
+            if a.state == State::Revoked {
+                world
+                    .revoked_pairs
+                    .insert(pair(&a.members[0].device, &a.members[1].device));
+            }
+            world.associations.push(a);
+        }
+        tokio::task::yield_now().await;
     }
-    Ok(World {
-        watermark,
-        endpoints: identities,
-        associations,
-    })
+    Ok(world)
 }
+fn pair(a: &str, b: &str) -> (String, String) {
+    if a < b {
+        (a.into(), b.into())
+    } else {
+        (b.into(), a.into())
+    }
+}
+
 pub(crate) fn evidence(world: &World, members: &[Member]) -> BTreeMap<String, Hardware> {
     members
         .iter()
@@ -266,6 +336,39 @@ mod tests {
             uuid: normalized(uuid, true).into_iter().collect(),
             ..Hardware::default()
         }
+    }
+    #[test]
+    fn indexed_matching_counts_a_pair_once_and_keeps_conflicting_competitors() {
+        let endpoint = |device: &str, channel: Channel, hardware: Hardware| EndpointIdentity {
+            member: Member {
+                device: device.into(),
+                channel,
+                registration_id: uuid::Uuid::new_v4(),
+                generation: 1,
+            },
+            hardware,
+        };
+        let mut world = World::default();
+        world.insert(endpoint(
+            "mdm",
+            Channel::Mdm,
+            hardware("SERIAL", "6ba7b810-9dad-11d1-80b4-00c04fd430c8"),
+        ));
+        world.insert(endpoint(
+            "agent",
+            Channel::Agent,
+            hardware("SERIAL", "6ba7b810-9dad-11d1-80b4-00c04fd430c8"),
+        ));
+        let mdm = world.endpoints[0].clone();
+        let agent = world.peer(&mdm).unwrap().clone();
+        assert!(world.unique(&[mdm.member.clone(), agent.member.clone()], &mdm.hardware));
+        world.insert(endpoint(
+            "third",
+            Channel::Mdm,
+            hardware("SERIAL", "6ba7b811-9dad-11d1-80b4-00c04fd430c8"),
+        ));
+        assert!(world.peer(&mdm).is_none());
+        assert!(!world.unique(&[mdm.member, agent.member], &mdm.hardware));
     }
     #[test]
     fn serial_or_uuid_matches_without_requiring_both() {
