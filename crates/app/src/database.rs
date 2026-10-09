@@ -175,6 +175,7 @@ async fn admission(pool: &PgPool) -> Result<(), Error> {
         rss_mdm_audit_integration::ACCESS_CONTRACT,
         rss_mdm_flow_service::ACCESS_CONTRACT,
         rss_mdm_timeline_service::ACCESS_CONTRACT,
+        rss_mdm_device_service::ACCESS_CONTRACT,
         rss_mdm_certificate_archive_service::ACCESS_CONTRACT,
     ];
     let valid = rss_mdm_backend_postgres_support::access_admission::verify(
@@ -193,6 +194,9 @@ async fn admission(pool: &PgPool) -> Result<(), Error> {
             let _ = error;
             Error::Unavailable(Failure::Database)
         })?;
+    rss_mdm_inventory_postgres::verify_watermark_fence(&mut tx)
+        .await
+        .map_err(db)?;
     let apple: bool = sqlx::query_scalar(rss_mdm_apple_channel::ACCESS_ADMISSION_SQL)
         .fetch_one(&mut *tx)
         .await

@@ -46,6 +46,8 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
                      'crates/registration-service/src/enrollment/read.rs'),
  'enrollment.quotas': ('crates/registration-service/src/quotas.rs', 'crates/registration-service/src/quotas/*', 'crates/registration-service/schema/quotas.sql', 'crates/registration-service/schema/quota-usage.sql', 'crates/management-http/src/enrollment/quotas.rs'),
  'enrollment.recovery': ('crates/registration-service/src/enrollment/store.rs',),
+ 'device.associations': ('crates/device-service/src/*','crates/device-service/schema/*','crates/registration-service/src/device/endpoints.rs'),
+ 'device.views': ('crates/device-service/src/*','crates/management-http/src/device_views.rs','crates/inventory-service/src/assets/planning.rs'),
  'device.binding': ('crates/registration-service/src/device.rs',
                     'crates/registration-service/src/device/store.rs'),
  'device.revocation': ('crates/registration-service/src/device.rs',
@@ -243,9 +245,20 @@ for name in ('rules', 'membership', 'capacity', 'initialization', 'admission'):
 app_family('enrollment')
 MODULES['enrollment.quotas'] = replace(MODULES['enrollment.quotas'], scope='tenant', support_inputs=(*MODULES['enrollment.quotas'].support_inputs, 'crates/app/tests/support/authority.rs', 'crates/app/tests/support/software.rs', 'crates/app/tests/device/support.rs'))
 app_family('device')
-for part in ('binding', 'revocation', 'recovery', 'admission'):
+for part in ('binding', 'revocation', 'recovery', 'admission', 'associations', 'views'):
     key = 'device.' + part
     MODULES[key] = replace(MODULES[key], support_inputs=('crates/app/tests/device/mod.rs',))
+MODULES['device.views'] = replace(MODULES['device.views'], support_inputs=(*MODULES['device.views'].support_inputs, 'crates/app/tests/device/associations.rs'))
+for name in ('device.associations','device.views'):
+    MODULES[name]=replace(MODULES[name],scope='tenant',
+        production_inputs=(*MODULES[name].production_inputs,
+            'crates/inventory/src/assets.rs','crates/inventory/src/builtin.rs',
+            'crates/inventory-postgres/src/history.rs','crates/inventory-postgres/src/catalog.rs',
+            'crates/inventory-service/src/assets/planning.rs',
+            'crates/registration-service/src/device/endpoints.rs',
+            'crates/registration-service/src/device/directory.rs'),
+        support_inputs=(*MODULES[name].support_inputs,'crates/app/tests/support/inventory.rs',
+            'crates/app/tests/support/identity.rs'))
 app_family('agent')
 for name in ('agent.registration', 'agent.reports'):
     MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs, 'crates/app/tests/support/agent.rs'))
@@ -773,7 +786,7 @@ consume(('crates/execution-service/src/actions/history.rs',), 'execution.agent.h
 consume(('crates/execution-service/src/actions/software.rs',), 'execution.software.offer execution.software.content execution.software.recovery')
 consume(('crates/execution-service/src/actions/agent.rs',), 'execution.agent.delivery execution.agent.content execution.agent.recovery')
 consume(('crates/execution-service/src/actions/recovery.rs',), 'execution.agent.recovery execution.software.recovery')
-AUDITED_MODULES = 'apple.ade apple.account_enrollment agent.pki certificate-archive.http diagnostics.http audit.receipts audit.integrity audit.recovery audit.budget authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission identity.audit enrollment.http enrollment.recovery device.binding device.revocation device.recovery device.admission agent.registration agent.reports assets.http planning.http planning.policy planning.agent_policy planning.frequency planning.remote planning.software planning.onboarding planning.group_scope planning.recovery planning.resource_archive compliance.http compliance.recovery software.catalog software.http content.http content.mirror content.gc execution.agent.delivery execution.agent.content execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery execution.commands.admission execution.commands.dispatch execution.commands.recovery execution.commands.windows execution.commands.configuration execution.commands.onboarding windows.issuance windows.management windows.commands apple.scep apple.collection apple.profile apple.policy apple.onboarding apple.renewal apple.identity apple.push apple.ddm apple.status publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery'
+AUDITED_MODULES = 'device.associations device.views apple.ade apple.account_enrollment agent.pki certificate-archive.http diagnostics.http audit.receipts audit.integrity audit.recovery audit.budget authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission identity.audit enrollment.http enrollment.recovery device.binding device.revocation device.recovery device.admission agent.registration agent.reports assets.http planning.http planning.policy planning.agent_policy planning.frequency planning.remote planning.software planning.onboarding planning.group_scope planning.recovery planning.resource_archive compliance.http compliance.recovery software.catalog software.http content.http content.mirror content.gc execution.agent.delivery execution.agent.content execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery execution.commands.admission execution.commands.dispatch execution.commands.recovery execution.commands.windows execution.commands.configuration execution.commands.onboarding windows.issuance windows.management windows.commands apple.scep apple.collection apple.profile apple.policy apple.onboarding apple.renewal apple.identity apple.push apple.ddm apple.status publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery'
 consume(('crates/audit-integration/src/*',), AUDITED_MODULES)
 consume(('crates/flow-service/src/transaction.rs',), 'planning.http planning.policy planning.agent_policy planning.frequency planning.group_scope planning.recovery planning.resource_archive planning.scope planning.assets planning.software planning.onboarding')
 consume(('crates/audit-integration/src/budget.rs',), 'audit.budget enrollment.http enrollment.recovery device.binding device.revocation device.recovery agent.registration windows.issuance windows.management apple.scep apple.profile apple.renewal content.http content.mirror content.gc')
@@ -964,7 +977,7 @@ APP_HELPER_CONSUMERS = {
         'execution.commands.admission','execution.commands.dispatch','execution.commands.recovery',
         'execution.commands.windows','execution.commands.configuration','execution.commands.onboarding','windows.commands','windows.declared'),
     'device/support.rs': (
-        'diagnostics.http',
+        'device.associations','device.views','diagnostics.http',
         'device.binding','device.revocation','device.recovery','device.admission',
         'agent.reports','inventory.runtime','assets.group_input','assets.sources','compliance.evaluation',
         'execution.agent.delivery','authorization.admission','enrollment.recovery','native.tls',

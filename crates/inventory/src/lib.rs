@@ -19,7 +19,10 @@ mod catalog;
 mod collection;
 pub use collection::{CollectionDefinition, CollectionReference};
 mod source;
-pub use assets::{Evidence, KnownValue, ResolvedField, Scalar, SourceFact, State, resolve};
+pub use assets::{
+    EndpointSourceFact, Evidence, KnownValue, ResolvedDeviceField, ResolvedField, Scalar,
+    SourceFact, State, resolve, resolve_device,
+};
 pub use catalog::{
     Catalog, DICTIONARY, FieldDefinition, FieldKey, FieldPath, Kind, Operator, Platform,
     Sensitivity, ValueType,

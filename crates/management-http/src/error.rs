@@ -23,6 +23,8 @@ pub enum Error {
     CertificateRequest,
     #[error("operation identity or enrollment/registration state conflict")]
     Conflict,
+    #[error("device view changed; restart pagination")]
+    DeviceViewCursorInvalidated,
     #[error("self-service registration quota reached")]
     RegistrationLimit,
     #[error("Windows declared enrollment is not ready")]

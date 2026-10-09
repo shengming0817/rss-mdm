@@ -10,6 +10,9 @@ impl IntoResponse for Error {
             Error::Archive(e) => archive_error(e),
             Error::RegistrationLimit => (StatusCode::TOO_MANY_REQUESTS, "registration_limit"),
             Error::Conflict => (StatusCode::CONFLICT, "operation_conflict"),
+            Error::DeviceViewCursorInvalidated => {
+                (StatusCode::CONFLICT, "device_view_cursor_invalidated")
+            }
             Error::WindowsDeclaredEnrollmentNotReady => (
                 StatusCode::CONFLICT,
                 "windows_declared_enrollment_not_ready",

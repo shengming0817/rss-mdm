@@ -34,3 +34,6 @@ mod admission;
 mod binding;
 mod recovery;
 pub(crate) mod revocation;
+
+mod associations;
+mod views;

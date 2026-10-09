@@ -1,0 +1,164 @@
+use crate::*;
+use rss_mdm_audit_integration::budget::AuditBudget;
+use rss_mdm_authorization_service::{Permission, Snapshot, context::AuthorizedPrincipal};
+use rss_mdm_inventory::Channel;
+use rss_mdm_registration_service::device::endpoints;
+use sqlx::PgConnection;
+use std::time::Duration;
+use uuid::Uuid;
+
+pub(crate) async fn authorization(
+    c: &mut PgConnection,
+    proof: &AuthorizedPrincipal,
+) -> Result<Snapshot> {
+    proof.check_live()?;
+    rss_mdm_authorization_service::lock_on(c, proof.tenant_id(), proof.instance_id()).await?;
+    Ok(
+        rss_mdm_authorization_service::snapshot_on(c, proof.tenant_id(), proof.instance_id())
+            .await?,
+    )
+}
+pub(crate) fn authorize(
+    snapshot: &Snapshot,
+    proof: &AuthorizedPrincipal,
+    members: &[Member],
+    write: bool,
+) -> Result<()> {
+    for m in members {
+        snapshot.require(proof, Permission::InventoryRead, Some(&m.device))?;
+        if write {
+            snapshot.require(proof, Permission::DeviceAssociationWrite, Some(&m.device))?;
+        }
+    }
+    Ok(())
+}
+pub(crate) async fn load(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<Association> {
+    let value: Option<String> = sqlx::query_scalar(r#"SELECT jsonb_build_object(
+        'id',a.id,'version',a.version,'state',a.state,'evidence',a.evidence,
+        'hardware',a.hardware,'confirmedBy',a.confirmed_by,'confirmedAt',a.confirmed_at,
+        'revokedBy',a.revoked_by,'revokedAt',a.revoked_at,'reason',a.reason,
+        'members',(SELECT jsonb_agg(jsonb_build_object('device',m.device,'channel',m.channel,'registrationId',m.registration_id,'generation',m.generation) ORDER BY m.channel) FROM mdm_devices.members m WHERE (m.tenant_id,m.association_id)=(a.tenant_id,a.id)))::text
+        FROM mdm_devices.associations a WHERE a.tenant_id=$1::uuid AND a.id=$2"#)
+        .bind(tenant).bind(id).fetch_optional(c).await?;
+    let value: Association =
+        serde_json::from_str(&value.ok_or(Error::NotFound)?).map_err(|_| Error::Storage)?;
+    if value.members.len() != 2
+        || value.members[0].device == value.members[1].device
+        || value.members[0].channel == value.members[1].channel
+    {
+        return Err(Error::Storage);
+    }
+    Ok(value)
+}
+pub(crate) async fn lock_members(
+    c: &mut PgConnection,
+    tenant: &str,
+    members: &[Member],
+) -> Result<()> {
+    let mut ordered: Vec<_> = members.iter().collect();
+    ordered.sort_by(|a, b| {
+        a.device
+            .cmp(&b.device)
+            .then(a.channel.as_str().cmp(b.channel.as_str()))
+    });
+    for m in ordered {
+        endpoints::lock_in(c, tenant, &m.device, m.channel).await?;
+    }
+    Ok(())
+}
+impl Associations {
+    /// Requires visibility of both members, including for revoked history.
+    pub async fn get(&self, proof: &AuthorizedPrincipal, id: Uuid) -> Result<Association> {
+        if proof.tenant_id() != self.tenant.to_string() {
+            return Err(Error::Forbidden);
+        }
+        let budget = AuditBudget::new(Duration::from_secs(5));
+        // The shared asset fence takes a row lock and may initialize its clock.
+        self.audit
+            .write(self.tenant, &budget.control(), proof, |proof, tx| {
+                Box::pin(async move {
+                    tx.with_connection_context(proof, |proof, c| {
+                        Box::pin(async move {
+                            let snapshot = authorization(c, proof).await?;
+                            let world = identity::world(
+                                c,
+                                TenantId::parse(proof.tenant_id()).map_err(|_| Error::Malformed)?,
+                            )
+                            .await?;
+                            let a = world
+                                .associations
+                                .iter()
+                                .find(|a| a.id == id)
+                                .cloned()
+                                .ok_or(Error::NotFound)?;
+                            authorize(&snapshot, proof, &a.members, false).map_err(
+                                |e| match e {
+                                    Error::Forbidden => Error::NotFound,
+                                    other => other,
+                                },
+                            )?;
+                            let a = world.effective(a);
+                            proof.check_live()?;
+                            Ok(a)
+                        })
+                    })
+                    .await
+                })
+            })
+            .await
+            .fold(
+                |v| Ok(v.into_value()),
+                |e| Err(model::transaction_error(e)),
+                |e| Err(model::transaction_error(e)),
+                |_| Err(Error::RollbackFailed),
+                |_| Err(Error::CommitUnknown),
+                |e| Err(model::transaction_error(e)),
+            )
+    }
+    /// Candidate identities support explicit exception handling alongside automatic reconciliation.
+    /// Searches only endpoints for which both read and association-management grants are current.
+    pub async fn candidates(
+        &self,
+        proof: &AuthorizedPrincipal,
+        device: &str,
+        selected: Channel,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<CandidatePage> {
+        if !(1..=100).contains(&limit) || !model::text(device) {
+            return Err(Error::Malformed);
+        }
+        if proof.tenant_id() != self.tenant.to_string() {
+            return Err(Error::Forbidden);
+        }
+        let budget = AuditBudget::new(Duration::from_secs(5));
+        self.audit.read(self.tenant,&budget.control(),(proof,device,after,selected),|(proof,device,after,selected),tx|Box::pin(async move {
+            tx.with_connection_context(&mut (*proof,*device,*after,*selected),|(proof,device,after,selected),c|Box::pin(async move {
+                let snapshot=authorization(c,proof).await?;
+                snapshot.require(proof,Permission::InventoryRead,Some(device))?;
+                snapshot.require(proof,Permission::DeviceAssociationWrite,Some(device))?;
+                if endpoints::current_in(c,proof.tenant_id(),device,*selected).await?.is_none(){return Err(Error::Conflict);}
+                let channel=if *selected==Channel::Mdm{Channel::Agent}else{Channel::Mdm};
+                let allowed=snapshot.inventory_devices(proof)?.map(|s|s.into_iter().collect::<Vec<_>>());
+                let mut position=after.unwrap_or("").to_string();
+                let mut items=Vec::new();
+                loop {
+                    let ids=endpoints::candidate_page_in(c,proof.tenant_id(),channel,&position,allowed.clone(),250).await?;
+                    let done=ids.len()<250;
+                    for id in ids {
+                        position=id.clone();
+                        if id==*device || snapshot.require(proof,Permission::DeviceAssociationWrite,Some(&id)).is_err(){continue;}
+                        let occupied:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_devices.members WHERE tenant_id=$1::uuid AND device=$2 AND NOT released)").bind(proof.tenant_id()).bind(&id).fetch_one(&mut *c).await?;
+                        if !occupied && let Some(member)=endpoints::current_in(c,proof.tenant_id(),&id,channel).await?{items.push(member);}
+                        if items.len()>limit{break;}
+                    }
+                    if done||items.len()>limit{break;}
+                }
+                let more=items.len()>limit;items.truncate(limit);
+                let next_cursor=more.then(||items.last().expect("lookahead").device.clone());
+                proof.check_live()?;
+                Ok(CandidatePage {items,next_cursor})
+            })).await
+        })).await.fold(|v|Ok(v.into_value()),|e|Err(model::transaction_error(e)),|e|Err(model::transaction_error(e)),|_|Err(Error::RollbackFailed),|_|Err(Error::CommitUnknown),|e|Err(model::transaction_error(e)))
+    }
+}

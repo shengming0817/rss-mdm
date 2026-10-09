@@ -92,6 +92,30 @@ impl SnapshotReader {
         ids: &[String],
         catalog: &rss_mdm_inventory::Catalog,
     ) -> Result<Vec<DeviceView>> {
+        let reader = SnapshotReader {
+            tenant: self.tenant,
+        };
+        let ids = ids.to_vec();
+        let catalog = catalog.clone();
+        tx.with_connection(move |c| {
+            Box::pin(async move { Ok(reader.devices_on(c, watermark, &ids, &catalog, true).await) })
+        })
+        .await?
+    }
+
+    /// Authoritative endpoint sources borrowed by device views and identity reconciliation.
+    /// Sensitive fields are excluded before field resolution.
+    pub async fn devices_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        watermark: i64,
+        ids: &[String],
+        catalog: &rss_mdm_inventory::Catalog,
+        sensitive: bool,
+    ) -> Result<Vec<DeviceView>> {
+        if ids.len() > 1000 {
+            return Err(Error::Unavailable(Failure::AssetSourceLimit).into());
+        }
         let mut devices: BTreeMap<_, _> = ids
             .iter()
             .map(|id| {
@@ -110,17 +134,13 @@ impl SnapshotReader {
             .collect();
         let tenant = self.tenant.to_string();
         let selected = ids.to_vec();
-        let rows = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    crate::device::read::sources_at(c, tenant, selected, watermark).await
-                })
-            })
-            .await?;
+        let rows = crate::device::read::sources_at(c, tenant, selected, watermark).await?;
         if rows.len() > 2000 {
             return Err(Error::Unavailable(Failure::AssetSourceLimit).into());
         }
-        let datasets = datasets_in(tx, self.tenant).await?;
+        let datasets = rss_mdm_inventory_postgres::datasets_in(c, self.tenant)
+            .await
+            .map_err(|_| Error::Unavailable(Failure::AssetsStorage))?;
         let mut scopes = Vec::new();
         let mut subjects = BTreeMap::new();
         for row in rows {
@@ -150,25 +170,14 @@ impl SnapshotReader {
         }
         let tenant = self.tenant;
         let selected = ids.to_vec();
-        let (observed, manual) = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    let observed =
-                        rss_mdm_inventory_postgres::read_at_in(c, tenant, &scopes, watermark)
-                            .await
-                            .map_err(|_| {
-                                sqlx::Error::Protocol("frozen inventory unavailable".into())
-                            })?;
-                    let manual =
-                        rss_mdm_inventory_postgres::manual_at_in(c, tenant, &selected, watermark)
-                            .await
-                            .map_err(|_| {
-                                sqlx::Error::Protocol("frozen manual unavailable".into())
-                            })?;
-                    Ok((observed, manual))
-                })
-            })
-            .await?;
+        let fields = catalog.fields().map(|f| f.key).collect::<Vec<_>>();
+        let observed =
+            rss_mdm_inventory_postgres::read_at_in(c, tenant, &scopes, watermark, &fields)
+                .await
+                .map_err(|_| Error::Unavailable(Failure::AssetsStorage))?;
+        let manual = rss_mdm_inventory_postgres::manual_at_in(c, tenant, &selected, watermark)
+            .await
+            .map_err(|_| Error::Unavailable(Failure::AssetsStorage))?;
         let mut facts: BTreeMap<(String, FieldKey), Vec<SourceFact>> = BTreeMap::new();
         for mut row in observed {
             let (device, generation) = subjects
@@ -196,13 +205,7 @@ impl SnapshotReader {
         }
         let tenant = self.tenant.to_string();
         let keys: Vec<_> = subjects.keys().cloned().collect();
-        let quality = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    crate::collection::read::quality_at(c, tenant, keys, watermark).await
-                })
-            })
-            .await?;
+        let quality = crate::collection::read::quality_at(c, tenant, keys, watermark).await?;
         for row in quality {
             let scope: String = row.try_get("scope")?;
             let (device, generation) = subjects
@@ -215,7 +218,7 @@ impl SnapshotReader {
                 .push(quality::decode(&row, *generation)?);
         }
         for (id, device) in &mut devices {
-            for definition in catalog.fields() {
+            for definition in catalog.fields().filter(|f| fields::visible(f, sensitive)) {
                 let field = definition.key;
                 device.fields.insert(
                     field,
@@ -230,6 +233,9 @@ impl SnapshotReader {
                     ))?,
                 );
             }
+        }
+        for device in devices.values_mut() {
+            restrict_fields(device, catalog, sensitive);
         }
         let result: Vec<_> = devices.into_values().collect();
         if stored(serde_json::to_vec(&result))?.len() > 64 * 1024 * 1024 {

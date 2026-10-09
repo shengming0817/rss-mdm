@@ -23,6 +23,7 @@ pub(crate) struct Assembly {
     pub(crate) agent_pki: Option<Arc<crate::agent_pki::AgentPki>>,
     pub(crate) certificate_archive: Arc<rss_mdm_certificate_archive_service::Archive>,
     pub(crate) timeline: Arc<rss_mdm_timeline_service::Timeline>,
+    pub(crate) associations: Arc<rss_mdm_device_service::Associations>,
     pub(crate) content_writer: Option<Arc<rss_mdm_content_service::Store>>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
@@ -127,6 +128,14 @@ pub(crate) async fn application_fixture(
         ),
     )
     .await?;
+    let associations = Arc::new(
+        rss_mdm_device_service::Associations::new(
+            audit_store.clone(),
+            identity.tenant,
+            &planning.cursor_key,
+        )
+        .map_err(|_| Error::Unavailable(crate::Failure::Database))?,
+    );
     let timeline = access.timeline(audit_store.clone(), identity.tenant, &planning.cursor_key)?;
     timeline
         .initialize()
@@ -143,6 +152,7 @@ pub(crate) async fn application_fixture(
                 clock.clone(),
             ),
             timeline,
+            associations,
             audit_store,
             execution,
             clock,
@@ -165,6 +175,7 @@ pub(crate) async fn application_fixture(
 pub(crate) struct AssemblyDependencies {
     pub(crate) certificate_archive: Arc<rss_mdm_certificate_archive_service::Archive>,
     pub(crate) timeline: Arc<rss_mdm_timeline_service::Timeline>,
+    pub(crate) associations: Arc<rss_mdm_device_service::Associations>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) execution: crate::execution_assembly::Assembly,
     pub(crate) clock: Arc<dyn Clock>,
@@ -185,6 +196,7 @@ pub(crate) async fn from_compiled(
     let AssemblyDependencies {
         certificate_archive,
         timeline,
+        associations,
         audit_store,
         execution,
         clock,
@@ -325,6 +337,7 @@ pub(crate) async fn from_compiled(
         agent_pki,
         certificate_archive,
         timeline,
+        associations,
         content_writer,
         inputs,
         queries,
@@ -486,6 +499,7 @@ pub(crate) fn from_state(
             pki_clock: Arc::new(crate::agent_pki::PkiClock(state.clock.clone())),
             certificate_archive: state.certificate_archive.clone(),
             timeline: state.timeline.clone(),
+            associations: state.associations.clone(),
             diagnostics: diagnostics.clone(),
             identity: state.identity.browser(),
             authorization: state.access.authorization_store(),

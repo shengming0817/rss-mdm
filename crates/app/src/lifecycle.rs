@@ -94,6 +94,7 @@ pub async fn serve(
                         identity_audit,
                         archive,
                         timeline,
+                        associations,
                         notifications,
                     ) = tokio::time::timeout(compiled.config.flow.startup_budget(), async {
                         let access = Arc::new(
@@ -280,6 +281,19 @@ pub async fn serve(
                         )
                         .await
                         .map_err(|error| ProcessError::at("startup.identity_audit", error))?;
+                        let associations = Arc::new(
+                            rss_mdm_device_service::Associations::new(
+                                audit_store.clone(),
+                                identity.tenant,
+                                &planning.cursor_key,
+                            )
+                            .map_err(|_| {
+                                ProcessError::at(
+                                    "startup.associations",
+                                    Error::Unavailable(Failure::Database),
+                                )
+                            })?,
+                        );
                         let timeline = access
                             .timeline(audit_store.clone(), identity.tenant, &planning.cursor_key)
                             .map_err(|e| ProcessError::at("startup.timeline", e))?;
@@ -299,6 +313,7 @@ pub async fn serve(
                             crate::api::AssemblyDependencies {
                                 certificate_archive: archive.clone(),
                                 timeline: timeline.clone(),
+                                associations: associations.clone(),
                                 audit_store: audit_store.clone(),
                                 clock: Arc::new(crate::clock::SystemClock),
                                 monotonic,
@@ -352,6 +367,7 @@ pub async fn serve(
                             identity_audit,
                             archive,
                             timeline,
+                            associations,
                             notifications,
                         ))
                     })
@@ -394,6 +410,7 @@ pub async fn serve(
                     launch.stage_deferred_task_with_token(publications.registration().critical());
                     launch.stage_deferred_task_with_token(identity_audit.registration().critical());
                     launch.stage_deferred_task_with_token(timeline.registration().critical());
+                    launch.stage_deferred_task_with_token(associations.registration());
                     launch.stage_deferred_task_with_token(archive.registration().critical());
                     launch.stage_deferred_task_with_token(
                         execution

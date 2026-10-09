@@ -35,7 +35,7 @@ GRANT USAGE ON SCHEMA mdm_access TO mdm_command_runtime;
 
 REVOKE ALL ON FUNCTION mdm_access.capture_asset_authority() FROM PUBLIC;
 
-GRANT SELECT ON TABLE mdm_access.asset_authority_history TO mdm_flow_runtime;
+GRANT SELECT ON TABLE mdm_access.asset_authority_history TO mdm_flow_runtime,mdm_access;
 
 GRANT SELECT,INSERT ON TABLE mdm_access.credentials TO mdm_access;
 GRANT SELECT ON TABLE mdm_access.credentials TO mdm_command_runtime;

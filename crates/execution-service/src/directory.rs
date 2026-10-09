@@ -126,7 +126,15 @@ impl crate::queries::Queries {
                     let current=crate::action_admission::current(tx,proof).await?;
                     current.require(proof,Permission::InventoryRead,Some(device))?;
                     let tenant=tx.tenant_id().to_string();let name=device.to_owned();
-                    let registrations=tx.with_connection(move|c|Box::pin(async move { sqlx::query_scalar::<_,Value>("SELECT jsonb_build_object('registrationId',id,'channel',channel,'status',state) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2").bind(tenant).bind(name).fetch_all(c).await })).await?;
+                    let registrations=tx.with_connection(move|c|Box::pin(async move {
+                        let mut values=Vec::new();
+                        for channel in [rss_mdm_inventory::Channel::Mdm,rss_mdm_inventory::Channel::Agent] {
+                            if let Some(primary)=rss_mdm_registration_service::device::endpoints::current_in(c,&tenant,&name,channel).await.map_err(|_|sqlx::Error::Protocol("primary registration unavailable".into()))? {
+                                values.push(json!({"registrationId":primary.registration_id,"channel":primary.channel,"status":"active"}));
+                            }
+                        }
+                        Ok(values)
+                    })).await?;
                     let agent = registrations
                         .iter()
                         .find(|v| v["channel"] == "agent" && v["status"] == "active");

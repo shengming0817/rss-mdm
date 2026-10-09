@@ -111,7 +111,7 @@ GRANT UPDATE(fact) ON TABLE mdm.manual_assignments TO mdm_flow_runtime;
 
 GRANT SELECT ON TABLE mdm.manual_history TO mdm_flow_runtime;
 
-GRANT SELECT ON TABLE mdm_access.collection_history TO mdm_flow_runtime;
+GRANT SELECT ON TABLE mdm_access.collection_history TO mdm_flow_runtime,mdm_access;
 
 GRANT SELECT,INSERT ON TABLE mdm_access.collection_runs TO mdm_access;
 GRANT SELECT ON TABLE mdm_access.collection_runs TO mdm_flow_runtime;

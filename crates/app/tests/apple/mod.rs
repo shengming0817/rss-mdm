@@ -227,7 +227,15 @@ impl Fixture {
             crate::clock::SystemClock.unix_seconds()?,
         )
         .await?;
+        let associations = Arc::new(rss_mdm_device_service::Associations::new(
+            access
+                .audit_store(&crate::config::AuditConfig::Plain)
+                .await?,
+            rss_request_context::TenantId::parse(case_tenant())?,
+            &[7; 32],
+        )?);
         let app = Arc::new(Assembly {
+            associations,
             pki,
             agent_enrollment,
             agent_pki,

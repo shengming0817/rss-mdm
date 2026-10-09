@@ -1,10 +1,10 @@
 WITH contract AS (
- SELECT * FROM jsonb_to_recordset($2->'tables') AS t(schema text,"table" text,read_write boolean,updates jsonb,delete_policy text,insert_policy text)
+ SELECT * FROM jsonb_to_recordset($2->'tables') AS t(schema text,"table" text,read_write boolean,read_only boolean,updates jsonb,delete_policy text,insert_policy text)
 ), schemas AS (SELECT DISTINCT schema FROM contract), relations AS (
  SELECT c.*, n.nspname AS schema FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
  WHERE n.nspname IN (SELECT schema FROM schemas)
 ), owned AS (
- SELECT c.*,t.read_write,t.updates,t.delete_policy,t.insert_policy FROM relations c JOIN contract t ON t.schema=c.schema AND t."table"=c.relname WHERE c.relkind='r'
+ SELECT c.*,t.read_write,coalesce(t.read_only,false) AS read_only,t.updates,t.delete_policy,t.insert_policy FROM relations c JOIN contract t ON t.schema=c.schema AND t."table"=c.relname WHERE c.relkind='r'
 ), functions AS (
  SELECT * FROM jsonb_to_recordset($2->'functions') AS f(name text, search_path text)
 )
@@ -17,8 +17,8 @@ SELECT current_user=$1 AND session_user=current_user
  AND (SELECT count(*) FROM owned)=(SELECT count(*) FROM contract)
  AND NOT EXISTS(SELECT 1 FROM relations WHERE relkind NOT IN('r','i') OR relkind='r' AND oid NOT IN(SELECT oid FROM owned))
  AND NOT EXISTS(SELECT 1 FROM owned WHERE NOT relrowsecurity OR NOT relforcerowsecurity OR relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)
-  OR has_table_privilege(current_user,oid,'SELECT')<>read_write
-  OR NOT read_write AND has_any_column_privilege(current_user,oid,'SELECT')
+  OR has_table_privilege(current_user,oid,'SELECT')<>(read_write OR read_only)
+  OR NOT (read_write OR read_only) AND has_any_column_privilege(current_user,oid,'SELECT')
   OR has_table_privilege(current_user,oid,'INSERT')<>read_write
   OR NOT read_write AND has_any_column_privilege(current_user,oid,'INSERT')
   OR has_table_privilege(current_user,oid,'UPDATE,TRUNCATE,REFERENCES,TRIGGER')
