@@ -48,12 +48,7 @@ BEGIN
  OR EXISTS(SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=tenant AND c.revision>s.asset_watermark AND (p_device IS NULL OR c.identity->>'device'=p_device OR EXISTS(SELECT 1 FROM mdm_access.asset_authority_history h WHERE h.tenant_id=tenant AND h.kind='registration' AND h.identity=c.identity->>'registration' AND h.device=p_device))
   AND EXISTS(SELECT 1 FROM jsonb_array_elements(s.input->'sources') src JOIN mdm_assets.group_fields f ON f.tenant_id=tenant AND f.group_id=CASE WHEN src->'reference'->>'kind'='group' THEN (src->'reference'->>'id')::uuid END WHERE f.field=ANY(c.fields)))
  THEN RETURN jsonb_build_object('state','pending'); END IF;
- IF p_device IS NULL THEN RETURN jsonb_build_object('state','fresh'); END IF;
- SELECT m.matched,m.explanation,m.entry_revision INTO member FROM mdm_planning.scope_results m WHERE m.tenant_id=tenant AND m.run=s.resolution AND m.device=p_device;
- IF NOT FOUND THEN RETURN jsonb_build_object('state','excluded'); END IF;
- IF member.matched THEN RETURN jsonb_build_object('state','eligible','entry',member.entry_revision); END IF;
- IF member.explanation->'reasons' ?| ARRAY['unknown_target','unknown_limitation','unknown_exclusion'] THEN RETURN jsonb_build_object('state','pending'); END IF;
- RETURN jsonb_build_object('state','excluded');
+ RETURN jsonb_build_object('state','fresh');
 END;
 $$;
 
@@ -88,6 +83,10 @@ CREATE TABLE mdm_flow.cursor_keys (
 ALTER TABLE ONLY mdm_flow.cursor_keys FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_planning.asset_dispatch (
+    relation_after bigint DEFAULT 0 NOT NULL CHECK(relation_after>=0),
+    relation_through bigint, relation_cursor uuid,
+    relation_page_after bigint, relation_page_through bigint,
+
     tenant_id uuid NOT NULL,
     consumed bigint DEFAULT 0 NOT NULL,
     watermark bigint DEFAULT 0 NOT NULL,
@@ -147,12 +146,13 @@ CREATE TABLE mdm_planning.scope_runs (
 ALTER TABLE ONLY mdm_planning.scope_runs FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_planning.scope_source_members (
+    input jsonb NOT NULL,
     unknown boolean DEFAULT false NOT NULL,
     tenant_id uuid NOT NULL,
     run uuid NOT NULL,
     source integer NOT NULL,
     device text NOT NULL COLLATE pg_catalog."C",
-    CONSTRAINT scope_source_members_device_check CHECK (((octet_length(device) >= 1) AND (octet_length(device) <= 256))),
+    CONSTRAINT scope_source_members_device_check CHECK (((octet_length(device) >= 1) AND (octet_length(device) <= 300))),
     CONSTRAINT scope_source_members_source_check CHECK (((source >= 0) AND (source <= 999)))
 );
 

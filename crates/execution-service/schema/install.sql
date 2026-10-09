@@ -113,6 +113,7 @@ CREATE TABLE mdm_commands.action_receipts (
 ALTER TABLE ONLY mdm_commands.action_receipts FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_commands.action_runs (
+    source_objects jsonb NOT NULL,
     tenant_id uuid NOT NULL,
     id uuid NOT NULL,
     source_kind text DEFAULT 'policy'::text NOT NULL,

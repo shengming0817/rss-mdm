@@ -173,6 +173,15 @@
     ],
     [
       "action_runs",
+      "source_objects",
+      "jsonb",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "action_runs",
       "tenant_id",
       "uuid",
       true,
