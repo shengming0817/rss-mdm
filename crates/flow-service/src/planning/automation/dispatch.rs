@@ -230,7 +230,7 @@ impl Planning {
                 .await
         }
     }
-    async fn dispatch_group_in(
+    pub(super) async fn dispatch_group_in(
         &self,
         tx: &mut PgTransaction<'_>,
         group: rss_mdm_group_postgres::GroupId,

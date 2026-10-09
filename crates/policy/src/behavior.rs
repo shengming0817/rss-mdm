@@ -38,6 +38,13 @@ impl ActionKind {
         Self::EnsureAgentInstalled,
         Self::RequestMdmEnrollment,
     ];
+    /// Original endpoint channel selected by this action; no peer broadcast is permitted.
+    pub const fn target_channel(self) -> &'static str {
+        match self {
+            Self::Execution | Self::Software | Self::RequestMdmEnrollment => "agent",
+            Self::NativeCollection | Self::Configuration | Self::EnsureAgentInstalled => "mdm",
+        }
+    }
     /// Persisted discriminator.
     pub const fn as_str(self) -> &'static str {
         match self {

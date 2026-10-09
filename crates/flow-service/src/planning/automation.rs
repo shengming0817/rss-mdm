@@ -6,6 +6,7 @@ mod dispatch;
 mod groups;
 pub mod jobs;
 mod model;
+mod relations;
 
 mod scopes;
 use crate::automation::{JobInput, TaskKind};
@@ -58,6 +59,7 @@ impl Planning {
     /// A discovery read is only a hint. Wake and forwarding happen atomically;
     /// forwarded history stays until the business checkpoint consumes it.
     pub async fn forward_asset_changes(&self) -> std::result::Result<u64, Error> {
+        let relations = self.forward_relation_changes().await?;
         let timer = Timer::new();
         let cancel = CancellationToken::new();
         let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
@@ -69,7 +71,7 @@ impl Planning {
             })).await
         })).await.fold(Ok, |_| Err(Error::Unavailable(Failure::PlanningStorage)), |_| Err(Error::Unavailable(Failure::PlanningStorage)), |_| Err(Error::CommitUnknown), |_| Err(Error::CommitUnknown), |_| Err(Error::Unavailable(Failure::PlanningStorage)))?;
         if !pending {
-            return Ok(0);
+            return Ok(relations);
         }
         self.runtime
             .local_tx_with_context(

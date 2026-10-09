@@ -2,6 +2,51 @@
   "columns": [
     [
       "asset_dispatch",
+      "relation_after",
+      "bigint",
+      true,
+      "0",
+      "",
+      ""
+    ],
+    [
+      "asset_dispatch",
+      "relation_through",
+      "bigint",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_dispatch",
+      "relation_cursor",
+      "uuid",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_dispatch",
+      "relation_page_after",
+      "bigint",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_dispatch",
+      "relation_page_through",
+      "bigint",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "asset_dispatch",
       "tenant_id",
       "uuid",
       true,
@@ -301,6 +346,132 @@
       "operations",
       "actor",
       "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "policy_assignments",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "policy_assignments",
+      "policy",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "policy_assignments",
+      "version",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "policy_assignments",
+      "entry_revision",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "policy_assignments",
+      "object",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "policy_assignments",
+      "channel",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "policy_assignments",
+      "input",
+      "jsonb",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "policy_assignments",
+      "availability",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "policy_assignments",
+      "reason",
+      "text",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "policy_assignments",
+      "target",
+      "jsonb",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "policy_assignments",
+      "scope_result",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "policy_source_grants",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "policy_source_grants",
+      "version",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "policy_source_grants",
+      "read_grant",
+      "jsonb",
       true,
       null,
       "",
@@ -686,6 +857,15 @@
     ],
     [
       "scope_source_members",
+      "input",
+      "jsonb",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_source_members",
       "unknown",
       "boolean",
       true,
@@ -947,6 +1127,13 @@
       true
     ],
     [
+      "asset_dispatch",
+      "asset_dispatch_relation_after_check",
+      "c",
+      "CHECK ((relation_after >= 0))",
+      true
+    ],
+    [
       "configuration_claims",
       "configuration_claims_pkey",
       "p",
@@ -1063,6 +1250,90 @@
       "operations_response_check",
       "c",
       "CHECK ((octet_length((response)::text) <= 8388608))",
+      true
+    ],
+    [
+      "policy_assignments",
+      "policy_assignments_availability_check",
+      "c",
+      "CHECK ((availability = ANY (ARRAY['ready'::text, 'unavailable'::text])))",
+      true
+    ],
+    [
+      "policy_assignments",
+      "policy_assignments_channel_check",
+      "c",
+      "CHECK ((channel = ANY (ARRAY['agent'::text, 'mdm'::text])))",
+      true
+    ],
+    [
+      "policy_assignments",
+      "policy_assignments_check",
+      "c",
+      "CHECK (((availability = 'ready'::text) = (reason IS NULL)))",
+      true
+    ],
+    [
+      "policy_assignments",
+      "policy_assignments_check1",
+      "c",
+      "CHECK (((availability <> 'ready'::text) OR (target IS NOT NULL)))",
+      true
+    ],
+    [
+      "policy_assignments",
+      "policy_assignments_entry_revision_check",
+      "c",
+      "CHECK ((entry_revision >= 0))",
+      true
+    ],
+    [
+      "policy_assignments",
+      "policy_assignments_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, policy, version, object, channel)",
+      true
+    ],
+    [
+      "policy_assignments",
+      "policy_assignments_tenant_id_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id) REFERENCES public.mdm_tenants(tenant_id)",
+      true
+    ],
+    [
+      "policy_assignments",
+      "policy_assignments_tenant_id_scope_result_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, scope_result) REFERENCES mdm_planning.scope_runs(tenant_id, id)",
+      true
+    ],
+    [
+      "policy_assignments",
+      "policy_assignments_tenant_id_version_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, version) REFERENCES mdm_policy.versions(tenant_id, id)",
+      true
+    ],
+    [
+      "policy_source_grants",
+      "policy_source_grants_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, version)",
+      true
+    ],
+    [
+      "policy_source_grants",
+      "policy_source_grants_tenant_id_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id) REFERENCES public.mdm_tenants(tenant_id)",
+      true
+    ],
+    [
+      "policy_source_grants",
+      "policy_source_grants_tenant_id_version_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, version) REFERENCES mdm_policy.versions(tenant_id, id)",
       true
     ],
     [
@@ -1223,7 +1494,7 @@
       "scope_source_members",
       "scope_source_members_device_check",
       "c",
-      "CHECK (((octet_length(device) >= 1) AND (octet_length(device) <= 256)))",
+      "CHECK (((octet_length(device) >= 1) AND (octet_length(device) <= 300)))",
       true
     ],
     [
@@ -1402,6 +1673,22 @@
       true
     ],
     [
+      "policy_assignments",
+      "policy_assignments_pkey",
+      "CREATE UNIQUE INDEX policy_assignments_pkey ON mdm_planning.policy_assignments USING btree (tenant_id, policy, version, object, channel)",
+      true,
+      true,
+      true
+    ],
+    [
+      "policy_source_grants",
+      "policy_source_grants_pkey",
+      "CREATE UNIQUE INDEX policy_source_grants_pkey ON mdm_planning.policy_source_grants USING btree (tenant_id, version)",
+      true,
+      true,
+      true
+    ],
+    [
       "remote_operation_targets",
       "remote_operation_targets_pkey",
       "CREATE UNIQUE INDEX remote_operation_targets_pkey ON mdm_planning.remote_operation_targets USING btree (tenant_id, operation, device)",
@@ -1499,5 +1786,5 @@
     ]
   ],
   "policyLock": "CREATE OR REPLACE FUNCTION mdm_planning.policy_lock(p_policy uuid)\n RETURNS void\n LANGUAGE sql\n SECURITY DEFINER\n SET search_path TO 'pg_catalog'\nAS $function$\n SELECT FROM mdm_policy.policies WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND id=p_policy FOR SHARE;\n$function$\n",
-  "scopeAdmission": "CREATE OR REPLACE FUNCTION mdm_planning.scope_admission(p_scope uuid, p_device text)\n RETURNS jsonb\n LANGUAGE plpgsql\n SECURITY DEFINER\n SET search_path TO 'pg_catalog'\nAS $function$\nDECLARE s record; token record; head record; member record; tenant uuid:=nullif(current_setting('rss.tenant_id',true),'')::uuid;\nBEGIN\n SELECT x.deleted,x.revision,x.resolution,r.phase,r.definition_revision,r.asset_watermark,r.input INTO s\n FROM mdm_planning.scopes x LEFT JOIN mdm_planning.scope_runs r ON(r.tenant_id,r.id)=(x.tenant_id,x.resolution)\n WHERE x.tenant_id=tenant AND x.id=p_scope FOR SHARE OF x;\n IF NOT FOUND OR s.deleted THEN RETURN jsonb_build_object('state','excluded'); END IF;\n IF s.phase IS DISTINCT FROM 'published' OR s.definition_revision IS DISTINCT FROM s.revision THEN RETURN jsonb_build_object('state','pending'); END IF;\n FOR token IN\n  SELECT 'group-'||v.kind||'.'||(src->'reference'->>'id') AS id,(src->>v.field)::bigint AS revision\n  FROM jsonb_array_elements(s.input->'sources') src\n  CROSS JOIN (VALUES('definition','definitionVersion'),('members','memberVersion'),('authority','authorityVersion')) v(kind,field)\n  WHERE src->'reference'->>'kind'='group' ORDER BY id\n LOOP\n  SELECT h.revision,h.required_input,h.observed_input INTO head FROM mdm_planning.source_heads h WHERE h.tenant_id=tenant AND h.id=token.id FOR SHARE;\n  IF NOT FOUND OR head.revision<>token.revision OR head.observed_input<head.required_input THEN RETURN jsonb_build_object('state','pending'); END IF;\n  IF token.id LIKE 'group-members.%' AND EXISTS(\n   SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=tenant AND c.revision>head.observed_input\n   AND (p_device IS NULL OR c.identity->>'device'=p_device OR EXISTS(SELECT 1 FROM mdm_access.asset_authority_history h WHERE h.tenant_id=tenant AND h.kind='registration' AND h.identity=c.identity->>'registration' AND h.device=p_device))\n   AND (c.kind IN('device','registration','source','credential') OR EXISTS(SELECT 1 FROM mdm_assets.group_fields f WHERE f.tenant_id=tenant AND f.group_id=substring(token.id FROM 15)::uuid AND f.field=ANY(c.fields)))\n  ) THEN RETURN jsonb_build_object('state','pending'); END IF;\n END LOOP;\n IF EXISTS(SELECT 1 FROM mdm_access.asset_authority_history h WHERE h.tenant_id=tenant AND (h.device=p_device OR (p_device IS NULL AND EXISTS(SELECT 1 FROM jsonb_array_elements(s.input->'sources') src WHERE src->'reference'->>'kind'='group' OR src->'reference'->>'id'=h.device))) AND h.revision>s.asset_watermark)\n OR EXISTS(SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=tenant AND c.revision>s.asset_watermark AND (p_device IS NULL OR c.identity->>'device'=p_device OR EXISTS(SELECT 1 FROM mdm_access.asset_authority_history h WHERE h.tenant_id=tenant AND h.kind='registration' AND h.identity=c.identity->>'registration' AND h.device=p_device))\n  AND EXISTS(SELECT 1 FROM jsonb_array_elements(s.input->'sources') src JOIN mdm_assets.group_fields f ON f.tenant_id=tenant AND f.group_id=CASE WHEN src->'reference'->>'kind'='group' THEN (src->'reference'->>'id')::uuid END WHERE f.field=ANY(c.fields)))\n THEN RETURN jsonb_build_object('state','pending'); END IF;\n IF p_device IS NULL THEN RETURN jsonb_build_object('state','fresh'); END IF;\n SELECT m.matched,m.explanation,m.entry_revision INTO member FROM mdm_planning.scope_results m WHERE m.tenant_id=tenant AND m.run=s.resolution AND m.device=p_device;\n IF NOT FOUND THEN RETURN jsonb_build_object('state','excluded'); END IF;\n IF member.matched THEN RETURN jsonb_build_object('state','eligible','entry',member.entry_revision); END IF;\n IF member.explanation->'reasons' ?| ARRAY['unknown_target','unknown_limitation','unknown_exclusion'] THEN RETURN jsonb_build_object('state','pending'); END IF;\n RETURN jsonb_build_object('state','excluded');\nEND;\n$function$\n"
+  "scopeAdmission": "CREATE OR REPLACE FUNCTION mdm_planning.scope_admission(p_scope uuid, p_device text)\n RETURNS jsonb\n LANGUAGE plpgsql\n SECURITY DEFINER\n SET search_path TO 'pg_catalog'\nAS $function$\nDECLARE s record; token record; head record; member record; tenant uuid:=nullif(current_setting('rss.tenant_id',true),'')::uuid;\nBEGIN\n SELECT x.deleted,x.revision,x.resolution,r.phase,r.definition_revision,r.asset_watermark,r.input INTO s\n FROM mdm_planning.scopes x LEFT JOIN mdm_planning.scope_runs r ON(r.tenant_id,r.id)=(x.tenant_id,x.resolution)\n WHERE x.tenant_id=tenant AND x.id=p_scope FOR SHARE OF x;\n IF NOT FOUND OR s.deleted THEN RETURN jsonb_build_object('state','excluded'); END IF;\n IF s.phase IS DISTINCT FROM 'published' OR s.definition_revision IS DISTINCT FROM s.revision THEN RETURN jsonb_build_object('state','pending'); END IF;\n FOR token IN\n  SELECT 'group-'||v.kind||'.'||(src->'reference'->>'id') AS id,(src->>v.field)::bigint AS revision\n  FROM jsonb_array_elements(s.input->'sources') src\n  CROSS JOIN (VALUES('definition','definitionVersion'),('members','memberVersion'),('authority','authorityVersion')) v(kind,field)\n  WHERE src->'reference'->>'kind'='group' ORDER BY id\n LOOP\n  SELECT h.revision,h.required_input,h.observed_input INTO head FROM mdm_planning.source_heads h WHERE h.tenant_id=tenant AND h.id=token.id FOR SHARE;\n  IF NOT FOUND OR head.revision<>token.revision OR head.observed_input<head.required_input THEN RETURN jsonb_build_object('state','pending'); END IF;\n  IF token.id LIKE 'group-members.%' AND EXISTS(\n   SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=tenant AND c.revision>head.observed_input\n   AND (p_device IS NULL OR c.identity->>'device'=p_device OR EXISTS(SELECT 1 FROM mdm_access.asset_authority_history h WHERE h.tenant_id=tenant AND h.kind='registration' AND h.identity=c.identity->>'registration' AND h.device=p_device))\n   AND (c.kind IN('device','registration','source','credential') OR EXISTS(SELECT 1 FROM mdm_assets.group_fields f WHERE f.tenant_id=tenant AND f.group_id=substring(token.id FROM 15)::uuid AND f.field=ANY(c.fields)))\n  ) THEN RETURN jsonb_build_object('state','pending'); END IF;\n END LOOP;\n IF EXISTS(SELECT 1 FROM mdm_access.asset_authority_history h WHERE h.tenant_id=tenant AND (h.device=p_device OR (p_device IS NULL AND EXISTS(SELECT 1 FROM jsonb_array_elements(s.input->'sources') src WHERE src->'reference'->>'kind'='group' OR src->'reference'->>'id'=h.device))) AND h.revision>s.asset_watermark)\n OR EXISTS(SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=tenant AND c.revision>s.asset_watermark AND (p_device IS NULL OR c.identity->>'device'=p_device OR EXISTS(SELECT 1 FROM mdm_access.asset_authority_history h WHERE h.tenant_id=tenant AND h.kind='registration' AND h.identity=c.identity->>'registration' AND h.device=p_device))\n  AND EXISTS(SELECT 1 FROM jsonb_array_elements(s.input->'sources') src JOIN mdm_assets.group_fields f ON f.tenant_id=tenant AND f.group_id=CASE WHEN src->'reference'->>'kind'='group' THEN (src->'reference'->>'id')::uuid END WHERE f.field=ANY(c.fields)))\n THEN RETURN jsonb_build_object('state','pending'); END IF;\n RETURN jsonb_build_object('state','fresh');\nEND;\n$function$\n"
 }

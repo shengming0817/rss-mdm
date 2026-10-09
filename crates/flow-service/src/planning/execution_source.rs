@@ -6,71 +6,90 @@ use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 
 pub struct ExecutionSource;
-fn admission(value: Value) -> Result<ScopeAdmission, SourceError> {
-    match value["state"].as_str() {
-        Some("eligible") => Ok(ScopeAdmission::Eligible {
-            entry: value["entry"]
-                .as_i64()
-                .filter(|entry| *entry >= 0)
-                .ok_or(SourceError::Invariant)?,
-        }),
-        Some("pending") => Ok(ScopeAdmission::Pending),
-        Some("excluded") => Ok(ScopeAdmission::Excluded),
-        _ => Err(SourceError::Invariant),
-    }
-}
-// The source owner grants locking through this SECURITY DEFINER function;
-// Execution keeps SELECT-only authority on Scope tables.
-async fn lock_scope_on(connection: &mut PgConnection, scope: Uuid) -> Result<Value, SourceError> {
-    Ok(
-        sqlx::query_scalar("SELECT mdm_planning.scope_admission($1,NULL)")
-            .bind(scope)
-            .fetch_one(connection)
-            .await?,
-    )
-}
 impl SourceAuthority for ExecutionSource {
     fn preview_scope_on<'a>(
         &'a self,
-        connection: &'a mut PgConnection,
+        c: &'a mut PgConnection,
         tenant: TenantId,
         scope: Uuid,
+        channel: Channel,
         after: Option<&'a str>,
     ) -> Pending<'a, ScopePreview> {
-        Box::pin(async move {
-            lock_scope_on(&mut *connection, scope).await?;
-            let result = sqlx::query_scalar::<_, Option<Uuid>>("SELECT resolution FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted")
-                .bind(tenant.to_string()).bind(scope).fetch_optional(&mut *connection).await?
-                .ok_or(SourceError::Missing)?.ok_or(SourceError::Conflict)?;
-            let devices = sqlx::query_scalar("SELECT device FROM mdm_planning.scope_results WHERE tenant_id=$1::uuid AND run=$2 AND device>coalesce($3,'') COLLATE \"C\" ORDER BY device COLLATE \"C\" LIMIT 65")
-                .bind(tenant.to_string()).bind(result).bind(after).fetch_all(connection).await?;
-            Ok(ScopePreview { result, devices })
-        })
+        Box::pin(super::targets::devices_on(c, tenant, scope, channel, after))
     }
     fn assignment_devices_on<'a>(
         &'a self,
-        connection: &'a mut PgConnection,
+        c: &'a mut PgConnection,
         tenant: TenantId,
         scope: Uuid,
+        channel: Channel,
         after: Option<&'a str>,
     ) -> Pending<'a, Vec<String>> {
         Box::pin(async move {
-            // A locked immutable resolution lets Execution merge this bounded source page
-            // with its own claims without observing a different Scope resolution.
-            lock_scope_on(&mut *connection, scope).await?;
-            let result = sqlx::query_scalar::<_, Option<Uuid>>(
-                "SELECT resolution FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2",
-            )
-            .bind(tenant.to_string())
-            .bind(scope)
-            .fetch_optional(&mut *connection)
-            .await?
-            .flatten();
-            let Some(result) = result else {
-                return Ok(Vec::new());
+            Ok(super::targets::devices_on(c, tenant, scope, channel, after)
+                .await?
+                .devices)
+        })
+    }
+    fn assignment_objects_on<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        scope: Uuid,
+        channel: Channel,
+        after: Option<&'a str>,
+    ) -> Pending<'a, Vec<AssignmentObject>> {
+        Box::pin(super::targets::objects_on(c, tenant, scope, channel, after))
+    }
+    fn evidence_on<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        scope: Uuid,
+        channel: Channel,
+        device: &'a str,
+    ) -> Pending<'a, Vec<DeviceObject>> {
+        Box::pin(super::targets::evidence_on(
+            c, tenant, scope, channel, device,
+        ))
+    }
+    fn evidence_valid_on<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        channel: Channel,
+        device: &'a str,
+        evidence: &'a [DeviceObject],
+    ) -> Pending<'a, bool> {
+        Box::pin(super::targets::evidence_valid_on(
+            c, tenant, channel, device, evidence,
+        ))
+    }
+    fn policy_readable_on<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        version: Uuid,
+    ) -> Pending<'a, bool> {
+        Box::pin(async move {
+            let value:Option<Value>=sqlx::query_scalar("SELECT read_grant FROM mdm_planning.policy_source_grants WHERE tenant_id=$1::uuid AND version=$2").bind(tenant.to_string()).bind(version).fetch_optional(&mut *c).await?;
+            let Some(value) = value else {
+                return Ok(false);
             };
-            Ok(sqlx::query_scalar("SELECT device FROM mdm_planning.scope_results WHERE tenant_id=$1::uuid AND run=$2 AND device>coalesce($3,'') COLLATE \"C\" ORDER BY device COLLATE \"C\" LIMIT 65")
-                .bind(tenant.to_string()).bind(result).bind(after).fetch_all(connection).await?)
+            let grant: rss_mdm_authorization_service::UserGrant =
+                serde_json::from_value(value).map_err(|_| SourceError::Invariant)?;
+            let now: i64 =
+                sqlx::query_scalar("SELECT extract(epoch FROM clock_timestamp())::bigint")
+                    .fetch_one(&mut *c)
+                    .await?;
+            grant
+                .valid(
+                    c,
+                    rss_mdm_authorization_service::Permission::InventoryRead,
+                    now,
+                )
+                .await
+                .map_err(|_| SourceError::Invariant)
         })
     }
     fn native_interest_on<'a>(
@@ -87,20 +106,15 @@ impl SourceAuthority for ExecutionSource {
     }
     fn admission_on<'a>(
         &'a self,
-        connection: &'a mut PgConnection,
-        _tenant: TenantId,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
         scope: Uuid,
+        channel: Channel,
         device: &'a str,
     ) -> Pending<'a, ScopeAdmission> {
-        Box::pin(async move {
-            admission(
-                sqlx::query_scalar("SELECT mdm_planning.scope_admission($1,$2)")
-                    .bind(scope)
-                    .bind(device)
-                    .fetch_one(connection)
-                    .await?,
-            )
-        })
+        Box::pin(super::targets::admission_on(
+            c, tenant, scope, channel, device,
+        ))
     }
     fn candidates_on<'a>(
         &'a self,
@@ -111,19 +125,43 @@ impl SourceAuthority for ExecutionSource {
         after: Uuid,
     ) -> Pending<'a, Vec<PolicyCandidate>> {
         Box::pin(async move {
-            // Excluded is removed before ORDER/LIMIT; Pending remains an unresolved claim.
-            let rows = sqlx::query("SELECT p.id,p.current_version,(p.definition->>'scope')::uuid AS scope,mdm_planning.scope_admission((p.definition->>'scope')::uuid,$2) AS admission FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.enabled AND p.id>$3 AND p.definition->'action'->>'kind'=$4 AND mdm_planning.scope_admission((p.definition->>'scope')::uuid,$2)->>'state'<>'excluded' ORDER BY p.id LIMIT 64")
-                .bind(tenant.to_string()).bind(device).bind(after).bind(kind.as_str()).fetch_all(connection).await?;
-            rows.into_iter()
-                .map(|row| {
-                    Ok(PolicyCandidate {
-                        policy: row.try_get("id")?,
-                        version: row.try_get("current_version")?,
-                        scope: row.try_get("scope")?,
-                        admission: admission(row.try_get("admission")?)?,
-                    })
-                })
-                .collect()
+            let mut cursor = after;
+            let mut result = Vec::new();
+            while result.len() < 64 {
+                let rows=sqlx::query("SELECT id,current_version,(definition->>'scope')::uuid AS scope FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND enabled AND id>$2 AND definition->'action'->>'kind'=$3 ORDER BY id LIMIT 64").bind(tenant.to_string()).bind(cursor).bind(kind.as_str()).fetch_all(&mut *connection).await?;
+                if rows.is_empty() {
+                    break;
+                }
+                for row in rows {
+                    cursor = row.try_get("id")?;
+                    let version = row.try_get("current_version")?;
+                    let scope = row.try_get("scope")?;
+                    let admission = if self.policy_readable_on(connection, tenant, version).await? {
+                        super::targets::admission_on(
+                            connection,
+                            tenant,
+                            scope,
+                            Channel::Mdm,
+                            device,
+                        )
+                        .await?
+                    } else {
+                        ScopeAdmission::Pending
+                    };
+                    if admission != ScopeAdmission::Excluded {
+                        result.push(PolicyCandidate {
+                            policy: cursor,
+                            version,
+                            scope,
+                            admission,
+                        });
+                        if result.len() == 64 {
+                            break;
+                        }
+                    }
+                }
+            }
+            Ok(result)
         })
     }
 }

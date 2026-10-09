@@ -1,47 +1,24 @@
 use super::*;
-use sqlx::Row;
+use rss_mdm_execution_service::source_authority::ScopeAdmission;
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScopePage {
     result: Uuid,
     scope: Uuid,
     current: bool,
-    total_objects: u64,
-    total_members: u64,
-    sources: Vec<automation::SourceSet>,
+    channel: rss_mdm_inventory::Channel,
     page: ScopeItems,
     next_cursor: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum ScopeItems {
-    Members { items: Vec<String> },
-    Decisions { items: Vec<ScopeDecision> },
-}
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ScopeDecision {
-    device: String,
-    identity: Identity,
-    #[serde(rename = "identityRevision")]
-    identity_revision: i64,
-    reasons: Vec<Reason>,
-    sources: Vec<usize>,
-}
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum Identity {
-    Active,
-    Inactive,
-}
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum Reason {
-    MissingLimitationMatch,
-    ExplicitExclusion,
-    UnknownTarget,
-    UnknownLimitation,
-    UnknownExclusion,
+    Members {
+        items: Vec<rss_mdm_inventory_service::objects::ObjectRef>,
+    },
+    Decisions {
+        items: Vec<Value>,
+    },
 }
 impl Planning {
     pub async fn scope_page_in(
@@ -55,88 +32,152 @@ impl Planning {
         if !(1..=1000).contains(&query.limit) {
             return Err(Error::Malformed.into());
         }
-        let tenant = self.tenant.to_string();
-        let binding = ResultBinding::Scope { scope, kind };
+        let channel = query.channel;
+        let binding = ResultBinding::Scope {
+            scope,
+            kind,
+            channel,
+        };
         let after = query
             .cursor
             .as_ref()
-            .map(|token| decode(&self.cursor_key, token, &tenant, result, &binding))
-            .transpose()?;
-        let row=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT r.phase,r.object_count,r.member_count,r.input::text,(NOT s.deleted AND s.resolution=r.id) AS current FROM mdm_planning.scope_runs r JOIN mdm_planning.scopes s ON (s.tenant_id,s.id)=(r.tenant_id,r.scope) WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid AND r.scope=$3::uuid")
-                .bind(tenant).bind(result.to_string()).bind(scope.to_string()).fetch_optional(c).await
-        })).await?.ok_or(Error::Planning(crate::planning::error::PlanningError::Missing(crate::planning::error::Missing::Scope)))?;
-        if row.try_get::<&str, _>("phase")? != "published" {
-            return Err(Error::Conflict.into());
-        }
-        let frozen: automation::ScopeInput = stored(serde_json::from_str(row.try_get("input")?))?;
-        let tenant = self.tenant.to_string();
-        let members = kind == ScopePageKind::Members;
-        let limit = query.limit as i64;
-        let metadata=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT device,octet_length(explanation::text) AS bytes FROM mdm_planning.scope_results WHERE tenant_id=$1::uuid AND run=$2::uuid AND (NOT $3 OR matched) AND device>coalesce($4::text,'') COLLATE \"C\" ORDER BY device LIMIT $5")
-                .bind(tenant).bind(result.to_string()).bind(members).bind(after).bind(limit).fetch_all(c).await
-        })).await?;
-        let mut devices = Vec::new();
-        let mut bytes = 0usize;
-        for item in metadata {
-            let size = if members {
-                1024
-            } else {
-                item.try_get::<i32, _>("bytes")? as usize + 1024
-            };
-            if bytes + size > 14 * 1024 * 1024 {
-                break;
-            }
-            bytes += size;
-            devices.push(item.try_get::<String, _>("device")?);
-        }
-        let next_cursor = devices
-            .last()
-            .cloned()
-            .map(|after| {
-                encode(
+            .map(|token| {
+                decode(
                     &self.cursor_key,
-                    Cursor {
-                        tenant: self.tenant.to_string(),
-                        result,
-                        binding,
-                        after,
-                    },
+                    token,
+                    &self.tenant.to_string(),
+                    result,
+                    &binding,
                 )
             })
             .transpose()?;
-        let page = if members {
-            ScopeItems::Members { items: devices }
+        let tenant = self.tenant;
+        let limit = query.limit;
+        let page = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(super::super::targets::result_devices_on(
+                        c,
+                        tenant,
+                        scope,
+                        result,
+                        channel,
+                        after.as_deref(),
+                        limit,
+                    )
+                    .await)
+                })
+            })
+            .await?
+            .map_err(rss_mdm_execution_service::Error::from)?;
+        if page.result != result {
+            return Err(Error::Conflict.into());
+        }
+        let more = page.devices.len() > query.limit;
+        let devices: Vec<_> = page.devices.into_iter().take(query.limit).collect();
+        let next_cursor = if more {
+            devices
+                .last()
+                .map(|after| {
+                    encode(
+                        &self.cursor_key,
+                        Cursor {
+                            tenant: self.tenant.to_string(),
+                            result,
+                            binding,
+                            after: after.clone(),
+                        },
+                    )
+                })
+                .transpose()?
         } else {
-            let tenant = self.tenant.to_string();
-            let rows:Vec<(String,String)>=tx.with_connection(move |c|Box::pin(async move {
-                sqlx::query_as("SELECT device,explanation::text FROM mdm_planning.scope_results WHERE tenant_id=$1::uuid AND run=$2::uuid AND device=ANY($3) ORDER BY device")
-                    .bind(tenant).bind(result.to_string()).bind(devices).fetch_all(c).await
-            })).await?;
-            let mut items = Vec::new();
-            for (device, raw) in rows {
-                let item: ScopeDecision = stored(serde_json::from_str(&raw))?;
-                if item.device != device
-                    || item
-                        .sources
-                        .iter()
-                        .any(|index| *index >= frozen.sources.len())
-                {
-                    return Err(Error::Unavailable(Failure::PlanningStorage).into());
-                }
-                items.push(item);
-            }
-            ScopeItems::Decisions { items }
+            None
         };
+        let mut items = Vec::new();
+        let mut decisions = Vec::new();
+        for device in devices {
+            let tenant = self.tenant;
+            let key = device.clone();
+            let admission = tx
+                .with_connection(move |c| {
+                    Box::pin(async move {
+                        Ok(super::super::targets::result_admission_on(
+                            c, tenant, scope, result, channel, &key,
+                        )
+                        .await)
+                    })
+                })
+                .await?
+                .map_err(rss_mdm_execution_service::Error::from)?;
+            let object = rss_mdm_inventory_service::objects::ObjectRef::Endpoint(device);
+            if matches!(admission, ScopeAdmission::Eligible { .. }) {
+                items.push(object.clone());
+            }
+            let key = match &object {
+                rss_mdm_inventory_service::objects::ObjectRef::Endpoint(id) => id.clone(),
+                _ => return Err(Error::Conflict.into()),
+            };
+            let explanation = tx
+                .with_connection(move |c| {
+                    Box::pin(async move {
+                        Ok(super::super::targets::result_explanation_on(
+                            c, tenant, scope, result, channel, &key,
+                        )
+                        .await)
+                    })
+                })
+                .await?
+                .map_err(rss_mdm_execution_service::Error::from)?;
+            let reasons = explanation
+                .as_ref()
+                .map(|e| {
+                    e.reasons
+                        .iter()
+                        .map(|r| match r {
+                            rss_mdm_scope::ExclusionReason::ExplicitExclusion => {
+                                "explicit_exclusion"
+                            }
+                            rss_mdm_scope::ExclusionReason::MissingLimitationMatch => {
+                                "missing_limitation_match"
+                            }
+                            rss_mdm_scope::ExclusionReason::UnknownTarget => "unknown_target",
+                            rss_mdm_scope::ExclusionReason::UnknownLimitation => {
+                                "unknown_limitation"
+                            }
+                            rss_mdm_scope::ExclusionReason::UnknownExclusion => "unknown_exclusion",
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let sources = |refs: &[rss_mdm_scope::SourceRef]| {
+                refs.iter()
+                    .map(|r| {
+                        let reference = match r.id() {
+                            rss_mdm_scope::SourceId::Direct(id) => {
+                                Reference::Device(id.value().into())
+                            }
+                            rss_mdm_scope::SourceId::Group(id) => {
+                                Reference::Group(Uuid::parse_str(id.value()).unwrap())
+                            }
+                        };
+                        serde_json::json!({"reference":reference,"version":r.version()})
+                    })
+                    .collect::<Vec<_>>()
+            };
+            decisions.push(serde_json::json!({"object":object,"qualification":admission,"reasons":reasons,"targets":explanation.as_ref().map(|e|sources(&e.targets)),"limitations":explanation.as_ref().map(|e|sources(&e.limitations)),"exclusions":explanation.as_ref().map(|e|sources(&e.exclusions))}));
+        }
+        let tenant = self.tenant.to_string();
+        let current=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,bool>("SELECT NOT deleted AND resolution=$3 FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(scope).bind(result).fetch_one(c).await})).await?;
         json(&ScopePage {
             result,
             scope,
-            current: row.try_get::<Option<bool>, _>("current")?.unwrap_or(false),
-            total_objects: row.try_get::<i64, _>("object_count")? as u64,
-            total_members: row.try_get::<i64, _>("member_count")? as u64,
-            sources: frozen.sources,
-            page,
+            current,
+            channel,
+            page: if kind == ScopePageKind::Members {
+                ScopeItems::Members { items }
+            } else {
+                ScopeItems::Decisions { items: decisions }
+            },
             next_cursor,
         })
     }

@@ -75,17 +75,12 @@ pub async fn enqueue_change_in(
     policy: &Policy,
     old: Option<&Policy>,
 ) -> Result<()> {
-    let native = rss_mdm_policy::AssignmentBehavior::NativeDesired;
-    if policy.definition.action.kind().assignment_behavior() == native
-        || old.is_some_and(|p| p.definition.action.kind().assignment_behavior() == native)
-    {
-        crate::automation::jobs::enqueue_job_in(
-            tx,
-            Uuid::new_v4(),
-            &crate::automation::JobInput::PolicyReconcile { policy: policy.id },
-        )
-        .await?;
-    }
+    crate::automation::jobs::enqueue_job_in(
+        tx,
+        Uuid::new_v4(),
+        &crate::automation::JobInput::PolicyReconcile { policy: policy.id },
+    )
+    .await?;
     // Native templates reuse this Policy recovery owner for due reads and pending-run recovery.
     if old.is_some()
         || policy.definition.action.kind().assignment_behavior()

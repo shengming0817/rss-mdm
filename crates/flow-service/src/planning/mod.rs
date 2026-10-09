@@ -3,6 +3,7 @@ use crate::assets;
 pub mod automation;
 
 pub mod execution_source;
+pub mod targets;
 
 pub mod directory;
 pub mod model;
@@ -32,6 +33,7 @@ pub struct Planning {
     pub runtime: Arc<PgRuntime>,
     cursor_key: ring::hmac::Key,
     pub asset_reader: assets::planning::SnapshotReader,
+    pub objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
     pub tenant: TenantId,
     pub clock: Arc<dyn crate::clock::Clock>,
     pub groups: Arc<rss_mdm_group_postgres::GroupStore>,
@@ -47,6 +49,7 @@ impl Planning {
         tenant: TenantId,
         clock: Arc<dyn crate::clock::Clock>,
         cursor_key: &[u8],
+        objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
     ) -> std::result::Result<Self, Error> {
         let groups = rss_mdm_group_postgres::GroupStore::new(runtime.clone(), tenant, deadline())
             .await
@@ -61,6 +64,7 @@ impl Planning {
             automation_task: std::sync::OnceLock::new(),
             cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, cursor_key),
             asset_reader: assets::planning::SnapshotReader { tenant },
+            objects,
             runtime,
             tenant,
             clock,

@@ -111,6 +111,9 @@ impl Config {
             tenant,
             Arc::new(crate::clock::FlowClock(clock.clone())),
             &key,
+            Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
+                audit_store.clone(),
+            )),
         )
         .await
         {
