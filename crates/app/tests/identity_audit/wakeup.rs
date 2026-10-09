@@ -52,6 +52,9 @@ pub(super) async fn event_driven_delivery(
         TotalDrainBudget::new(Duration::from_secs(40))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
+    let listener_task = listener.clone().registration().critical();
+    let worker_task = worker.clone().registration().critical();
+    let listener_resource = rss_runtime::DynManagedResource::new_box(listener.clone());
     let check = async {
         wait_delivered(observer, &readiness, expected).await?;
         tokio::time::timeout(
@@ -116,11 +119,10 @@ pub(super) async fn event_driven_delivery(
                     for resource in resources {
                         startup.stage_resource(resource);
                     }
-                    startup
-                        .stage_resource(rss_runtime::DynManagedResource::new_box(listener.clone()));
+                    startup.stage_resource(listener_resource);
                     let mut launch = startup.commit();
-                    launch.stage_task_with_token(listener.clone().registration().critical());
-                    launch.stage_deferred_task_with_token(worker.clone().registration().critical());
+                    launch.stage_task_with_token(listener_task);
+                    launch.stage_deferred_task_with_token(worker_task);
                     launch.finish();
                     std::future::pending().await
                 })
