@@ -371,6 +371,25 @@ async fn admit_storage_in(
     tx: &mut PgTransaction<'_>,
 ) -> std::result::Result<(), rss_transactional_messaging_postgres::PgError> {
     let tenant = tx.tenant_id();
+    // All owner catalogs are rendered under the same fixed namespace as migration capture.
+    let original_path: String = tx
+        .with_connection(|c| {
+            Box::pin(async move {
+                sqlx::query_scalar("SELECT current_setting('search_path')")
+                    .fetch_one(c)
+                    .await
+            })
+        })
+        .await?;
+    tx.with_connection(|c| {
+        Box::pin(async move {
+            sqlx::query("SELECT set_config('search_path','pg_catalog',true)")
+                .execute(c)
+                .await?;
+            Ok(())
+        })
+    })
+    .await?;
     tx.with_connection(move |c| {
         Box::pin(async move { rss_mdm_inventory_service::admit_storage_in(c, tenant).await })
     })
@@ -475,5 +494,15 @@ async fn admit_storage_in(
             return Err(sqlx::Error::Protocol("host capability admission".into()).into());
         }
     }
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query("SELECT set_config('search_path',$1,true)")
+                .bind(original_path)
+                .execute(c)
+                .await?;
+            Ok(())
+        })
+    })
+    .await?;
     Ok(())
 }
