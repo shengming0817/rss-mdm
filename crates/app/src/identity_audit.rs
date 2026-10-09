@@ -2,11 +2,12 @@
 //! ref: sqlx sqlx-core/src/transaction.rs@v0.9.0 (await the original settlement owner).
 use crate::{ConfigIssue, Error, Failure, config::Config};
 use rss_identity_postgres::audit::{AuditDelivery, AuditDeliveryError};
+use rss_request_context::{Clock, Deadline};
 use rss_runtime::{
     DynManagedResource, ManagedResource, ManagedTask, ManagedTaskRegistration, ShutdownError,
     TaskStatus,
 };
-use rss_transactional_messaging::policy::DeliveryBudget;
+use rss_transactional_messaging::policy::{DeliveryBudget, OperationDeadline};
 use rss_transactional_messaging_postgres::PgRuntime;
 use rss_transactional_messaging_runtime::relay::RelayBatchLimit;
 use sqlx::{PgPool, postgres::PgPoolOptions};
@@ -18,9 +19,12 @@ use std::{
     },
     time::Duration,
 };
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 pub(crate) const ROLE: &str = "mdm_identity_audit";
+const RECOVERY: Duration = Duration::from_secs(30);
+const BACKOFF: Duration = Duration::from_secs(1);
 #[derive(Default)]
 pub(crate) struct Readiness {
     phase: std::sync::Mutex<AuditPhase>,
@@ -71,6 +75,7 @@ impl AuditHealth {
 pub(crate) struct Worker {
     delivery: AuditDelivery,
     readiness: Arc<Readiness>,
+    wake: Arc<Notify>,
 }
 fn unavailable() -> Error {
     Error::Unavailable(Failure::IdentityStorage)
@@ -100,6 +105,7 @@ impl Worker {
     pub(crate) async fn open(
         config: &Config,
         readiness: Arc<Readiness>,
+        wake: Arc<Notify>,
         mut acquire: impl FnMut(Box<DynManagedResource<'static>>),
     ) -> Result<Arc<Self>, Error> {
         let database = &config.identity.audit_worker;
@@ -189,6 +195,7 @@ impl Worker {
         Ok(Arc::new(Self {
             delivery,
             readiness,
+            wake,
         }))
     }
     pub(crate) fn registration(self: Arc<Self>) -> ManagedTaskRegistration {
@@ -207,36 +214,90 @@ impl Worker {
         })
     }
     async fn work(&self, stop: &CancellationToken) -> Result<(), AuditDeliveryError> {
+        let mut idle = Idle::default();
         while !stop.is_cancelled() {
-            // Do not race this call with cancellation: the component owns commit/rollback.
-            let retry = match self
-                .delivery
-                .run_once(
-                    RelayBatchLimit::new(NonZeroUsize::new(2).expect("audit pool capacity"))
-                        .expect("bounded batch"),
-                )
-                .await
-            {
-                Ok(report) => {
-                    let retry = should_wait(report.claimed(), report.retried(), report.fenced())?;
-                    self.readiness.progress(report.claimed(), report.retried());
-                    retry
-                }
+            match self.cycle(stop, &mut idle).await {
+                Ok(()) => {}
                 Err(error) if error.is_retryable() => {
                     self.readiness.transient_failure();
                     diagnose(error);
-                    true
+                    // Hints never bypass infrastructure error backoff.
+                    tokio::select! { biased;
+                        () = stop.cancelled() => {},
+                        () = tokio::time::sleep(idle.delay(BACKOFF)) => {},
+                    }
+                    idle.rescanned = false;
                 }
                 Err(error) => return Err(error),
-            };
-            if retry {
-                tokio::select! {
-                    () = stop.cancelled() => break,
-                    () = tokio::time::sleep(Duration::from_secs(1)) => {},
-                }
             }
         }
         Ok(())
+    }
+    async fn cycle(
+        &self,
+        stop: &CancellationToken,
+        idle: &mut Idle,
+    ) -> Result<(), AuditDeliveryError> {
+        // Await the original component settlement owner; cancellation stops the next batch.
+        let report = self
+            .delivery
+            .run_once(
+                RelayBatchLimit::new(NonZeroUsize::new(2).expect("audit pool capacity"))
+                    .expect("bounded batch"),
+            )
+            .await?;
+        let wait = should_wait(report.claimed(), report.retried(), report.fenced())?;
+        self.readiness.progress(report.claimed(), report.retried());
+        if !wait {
+            idle.rescanned = false;
+            return Ok(());
+        }
+        if stop.is_cancelled() {
+            return Ok(());
+        }
+        let hint = self
+            .delivery
+            .next_wakeup(OperationDeadline::from_remaining(Duration::from_secs(1)))
+            .await?;
+        idle.nearest = hint.next_deadline();
+        if idle.rescan(hint.due_now()) {
+            return Ok(());
+        }
+        tokio::select! { biased;
+            () = stop.cancelled() => {},
+            () = self.wake.notified() => {},
+            () = tokio::time::sleep(idle.delay(RECOVERY)) => {},
+        }
+        idle.rescanned = false;
+        Ok(())
+    }
+}
+/// At most one immediate rescan follows an empty claim, even for a locked due row.
+#[derive(Default)]
+struct Idle {
+    rescanned: bool,
+    nearest: Option<Deadline>,
+}
+impl Idle {
+    fn rescan(&mut self, due: bool) -> bool {
+        let elapsed = self.nearest.is_some_and(|d| {
+            d.remaining(crate::lifecycle::RuntimeTimer.now())
+                .unwrap_or_default()
+                .is_zero()
+        });
+        if (due || elapsed) && !self.rescanned {
+            self.rescanned = true;
+            true
+        } else {
+            false
+        }
+    }
+    fn delay(&self, cap: Duration) -> Duration {
+        self.nearest
+            .and_then(|d| d.remaining(crate::lifecycle::RuntimeTimer.now()))
+            .filter(|d| !d.is_zero())
+            .unwrap_or(cap)
+            .min(cap)
     }
 }
 fn should_wait(claimed: usize, retried: usize, fenced: usize) -> Result<bool, AuditDeliveryError> {

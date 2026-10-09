@@ -236,8 +236,8 @@ MODULES['audit.recovery'] = replace(MODULES['audit.recovery'], children=('audit_
 app_family('identity', fixtures=())
 MODULES['identity.sso'] = replace(MODULES['identity.sso'], fixtures=('identity', 'idp'))
 add('identity.audit', selectors=('identity_audit::tests::',), fixtures=('identity',),
-    sources=('crates/app/src/identity_audit.rs',),
-    tests=('crates/app/tests/identity_audit/mod.rs',))
+    sources=('crates/app/src/identity_audit.rs','crates/app/src/worker_wake.rs'),
+    tests=('crates/app/tests/identity_audit/mod.rs','crates/app/tests/identity_audit/wakeup.rs',))
 app_family('authorization')
 for name in ('rules', 'membership', 'capacity', 'initialization', 'admission'):
     key = 'authorization.' + name
