@@ -9,7 +9,7 @@ SELECT jsonb_build_object(
  LEFT JOIN pg_attrdef d ON d.adrelid=t.oid AND d.adnum=a.attnum
  WHERE a.attnum>0 AND NOT a.attisdropped),
  'constraints', (SELECT jsonb_agg(jsonb_build_array(t.relname,c.conname,c.contype,
-   pg_get_constraintdef(c.oid),c.convalidated) ORDER BY t.relname COLLATE "C",c.conname COLLATE "C")
+   CASE WHEN c.contype='f' THEN replace(pg_get_constraintdef(c.oid),'REFERENCES '||c.confrelid::regclass::text,'REFERENCES '||(SELECT format('%I.%I',n.nspname,r.relname) FROM pg_class r JOIN pg_namespace n ON n.oid=r.relnamespace WHERE r.oid=c.confrelid)) ELSE pg_get_constraintdef(c.oid) END,c.convalidated) ORDER BY t.relname COLLATE "C",c.conname COLLATE "C")
  FROM tables t JOIN pg_constraint c ON c.conrelid=t.oid),
  'indexes', (SELECT jsonb_agg(jsonb_build_array(t.relname,c.relname,pg_get_indexdef(i.indexrelid),
    i.indisvalid,i.indisready,i.indislive) ORDER BY t.relname COLLATE "C",c.relname COLLATE "C")
