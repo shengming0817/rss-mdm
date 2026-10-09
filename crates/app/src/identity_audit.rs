@@ -77,7 +77,9 @@ pub(crate) struct Worker {
     readiness: Arc<Readiness>,
     wake: Arc<Notify>,
     #[cfg(test)]
-    idle_count: std::sync::atomic::AtomicUsize,
+    wake_generation: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    idle_generation: std::sync::atomic::AtomicUsize,
 }
 fn unavailable() -> Error {
     Error::Unavailable(Failure::IdentityStorage)
@@ -199,7 +201,9 @@ impl Worker {
             readiness,
             wake,
             #[cfg(test)]
-            idle_count: std::sync::atomic::AtomicUsize::new(0),
+            wake_generation: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            idle_generation: std::sync::atomic::AtomicUsize::new(0),
         }))
     }
     pub(crate) fn registration(self: Arc<Self>) -> ManagedTaskRegistration {
@@ -242,6 +246,8 @@ impl Worker {
         stop: &CancellationToken,
         idle: &mut Idle,
     ) -> Result<(), AuditDeliveryError> {
+        #[cfg(test)]
+        let generation = self.wake_generation.load(Ordering::Acquire);
         // Await the original component settlement owner; cancellation stops the next batch.
         let report = self
             .delivery
@@ -272,7 +278,7 @@ impl Worker {
         // Tests observe only a registered, pending waiter, after all early permits are consumed.
         #[cfg(test)]
         if !notified.as_mut().enable() {
-            self.idle_count.fetch_add(1, Ordering::Release);
+            self.idle_generation.store(generation, Ordering::Release);
         }
         tokio::select! { biased;
             () = stop.cancelled() => {},

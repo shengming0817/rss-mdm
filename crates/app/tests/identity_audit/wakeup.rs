@@ -169,10 +169,10 @@ async fn durable_retry(
 }
 
 async fn wait_idle(worker: &Worker) -> Result<()> {
-    let before = worker.idle_count.load(Ordering::Acquire);
+    let requested = worker.wake_generation.fetch_add(1, Ordering::AcqRel) + 1;
     worker.wake.notify_one();
     tokio::time::timeout(Duration::from_secs(5), async {
-        while worker.idle_count.load(Ordering::Acquire) == before {
+        while worker.idle_generation.load(Ordering::Acquire) < requested {
             tokio::task::yield_now().await;
         }
     })
