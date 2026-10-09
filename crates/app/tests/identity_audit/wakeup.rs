@@ -54,15 +54,24 @@ pub(super) async fn event_driven_delivery(
     )?;
     let check = async {
         wait_delivered(observer, &readiness, expected).await?;
-        // Allow the post-LISTEN initial scan to settle before committing new work.
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            listener
+                .signals
+                .get(crate::worker_wake::Work::Inventory)
+                .notified(),
+        )
+        .await?;
+        wait_idle(&worker).await?;
         login(identity).await?;
         tokio::time::timeout(
             Duration::from_secs(5),
             wait_delivered(observer, &readiness, expected + 1),
         )
         .await??;
+        wait_idle(&worker).await?;
         durable_retry(identity, observer, &readiness, expected + 1).await?;
+        wait_idle(&worker).await?;
         // Lose the wake hint entirely: reconnect must discover durable work.
         manipulate(observer, "UPDATE rss_transactional_messaging.outbox SET status='pending',retry_after=clock_timestamp() WHERE seq=(SELECT max(seq) FROM rss_transactional_messaging.outbox WHERE tenant_id=current_setting('rss.tenant_id')::uuid AND domain='identity.security')").await?;
         // Reconnection of the same listener must scan and retain every subscription.
@@ -72,20 +81,20 @@ pub(super) async fn event_driven_delivery(
             .bind(pid)
             .execute(observer)
             .await?;
-        tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                let connected: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name=$1 AND datname=current_database() AND pid<>$2)")
-                    .bind(&name).bind(pid).fetch_one(observer).await?;
-                if connected { break Ok::<(), anyhow::Error>(()); }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        }).await??;
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            listener
+                .signals
+                .get(crate::worker_wake::Work::Inventory)
+                .notified(),
+        )
+        .await?;
         tokio::time::timeout(
             Duration::from_secs(5),
             wait_delivered(observer, &readiness, expected + 1),
         )
         .await??;
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        wait_idle(&worker).await?;
         login(identity).await?;
         tokio::time::timeout(
             Duration::from_secs(5),
@@ -110,8 +119,8 @@ pub(super) async fn event_driven_delivery(
                     startup
                         .stage_resource(rss_runtime::DynManagedResource::new_box(listener.clone()));
                     let mut launch = startup.commit();
-                    launch.stage_task_with_token(listener.registration().critical());
-                    launch.stage_deferred_task_with_token(worker.registration().critical());
+                    launch.stage_task_with_token(listener.clone().registration().critical());
+                    launch.stage_deferred_task_with_token(worker.clone().registration().critical());
                     launch.finish();
                     std::future::pending().await
                 })
@@ -154,5 +163,17 @@ async fn durable_retry(
         wait_delivered(observer, readiness, expected),
     )
     .await??;
+    Ok(())
+}
+
+async fn wait_idle(worker: &Worker) -> Result<()> {
+    let before = worker.idle_count.load(Ordering::Acquire);
+    worker.wake.notify_one();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while worker.idle_count.load(Ordering::Acquire) == before {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
     Ok(())
 }

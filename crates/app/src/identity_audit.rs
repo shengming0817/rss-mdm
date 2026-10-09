@@ -76,6 +76,8 @@ pub(crate) struct Worker {
     delivery: AuditDelivery,
     readiness: Arc<Readiness>,
     wake: Arc<Notify>,
+    #[cfg(test)]
+    idle_count: std::sync::atomic::AtomicUsize,
 }
 fn unavailable() -> Error {
     Error::Unavailable(Failure::IdentityStorage)
@@ -196,6 +198,8 @@ impl Worker {
             delivery,
             readiness,
             wake,
+            #[cfg(test)]
+            idle_count: std::sync::atomic::AtomicUsize::new(0),
         }))
     }
     pub(crate) fn registration(self: Arc<Self>) -> ManagedTaskRegistration {
@@ -263,9 +267,16 @@ impl Worker {
         if idle.rescan(hint.due_now()) {
             return Ok(());
         }
+        let notified = self.wake.notified();
+        tokio::pin!(notified);
+        // Tests observe only a registered, pending waiter, after all early permits are consumed.
+        #[cfg(test)]
+        if !notified.as_mut().enable() {
+            self.idle_count.fetch_add(1, Ordering::Release);
+        }
         tokio::select! { biased;
             () = stop.cancelled() => {},
-            () = self.wake.notified() => {},
+            () = &mut notified => {},
             () = tokio::time::sleep(idle.delay(RECOVERY)) => {},
         }
         idle.rescanned = false;
