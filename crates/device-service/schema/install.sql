@@ -90,21 +90,27 @@ CREATE POLICY tenant ON mdm_devices.input_snapshots USING(tenant_id=nullif(curre
 CREATE POLICY tenant ON mdm_devices.input_objects USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_devices.input_snapshots,mdm_devices.input_objects FROM PUBLIC;
 GRANT USAGE ON SCHEMA mdm_devices TO mdm_flow_runtime,mdm_command_runtime;
-GRANT SELECT ON mdm_devices.associations,mdm_devices.members,mdm_devices.checkpoints,mdm_devices.input_snapshots,mdm_devices.input_objects TO mdm_flow_runtime,mdm_command_runtime;
+GRANT SELECT ON mdm_devices.associations,mdm_devices.members,mdm_devices.checkpoints,mdm_devices.input_snapshots,mdm_devices.input_objects TO mdm_flow_runtime;
+GRANT SELECT ON mdm_devices.checkpoints,mdm_devices.input_snapshots,mdm_devices.input_objects TO mdm_command_runtime;
 GRANT INSERT ON mdm_devices.input_snapshots,mdm_devices.input_objects TO mdm_flow_runtime;
 GRANT UPDATE(phase,cursor,object_count,byte_count) ON mdm_devices.input_snapshots TO mdm_flow_runtime;
-COMMIT;
 
 -- Sealed publication is append-closed even for the bounded builder role.
 CREATE FUNCTION mdm_devices.guard_input_publication() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+DECLARE publication_phase text;
 BEGIN
  IF TG_TABLE_NAME='input_snapshots' THEN
   IF OLD.phase='sealed' THEN RAISE EXCEPTION 'object snapshot is sealed'; END IF;
- ELSIF EXISTS(SELECT 1 FROM mdm_devices.input_snapshots WHERE tenant_id=NEW.tenant_id AND id=NEW.snapshot AND phase='sealed') THEN
-  RAISE EXCEPTION 'object snapshot is sealed';
+ ELSE
+  SELECT phase INTO publication_phase FROM mdm_devices.input_snapshots WHERE tenant_id=NEW.tenant_id AND id=NEW.snapshot FOR SHARE;
+  IF publication_phase='sealed' THEN RAISE EXCEPTION 'object snapshot is sealed'; END IF;
  END IF;
  RETURN NEW;
 END $$;
 REVOKE ALL ON FUNCTION mdm_devices.guard_input_publication() FROM PUBLIC;
 CREATE TRIGGER immutable_publication BEFORE UPDATE ON mdm_devices.input_snapshots FOR EACH ROW EXECUTE FUNCTION mdm_devices.guard_input_publication();
 CREATE TRIGGER immutable_input BEFORE INSERT ON mdm_devices.input_objects FOR EACH ROW EXECUTE FUNCTION mdm_devices.guard_input_publication();
+
+-- Execution revalidates owner evidence under the same narrow tenant watermark fence.
+GRANT EXECUTE ON FUNCTION mdm.lock_asset_watermark(uuid) TO mdm_command_runtime;
+COMMIT;

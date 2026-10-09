@@ -1,5 +1,6 @@
 {
   "mdm.inventory": "7acf73cb80d92b8253aeabc0be452a4017dd0ae7fb984bbc26a25a543d3f3d0f",
+  "mdm.lock_asset_watermark(t uuid)": "814ad2ba85e25d45a55df14e2339b083ce4b8282e50cd5fa8685804e68385d8e",
   "mdm_access.agent_enrollment_settings": "672f0ee5f43cda4b36b250102effec4cf718cce8676843242ad117005933895a",
   "mdm_access.agent_grants": "5593c79a37379a5016a22fc86071d4a81183c69853bd8dd441ff1f634b20e358",
   "mdm_access.agent_issuances": "40329b3acaeb8829c7d2628da0408b475f7e63293c145bbae9d1b1786d085dd8",
@@ -38,8 +39,10 @@
   "mdm_audit.receipts": "0d172a216f6b49c36291975de92782d4f035ffad6bb29370588bf0b79f6affc5",
   "mdm_content.diagnostic_artifacts": "d5599497b2a09e9067c43ffe36eb316a1fccc27f54b68bd5ed65d0faebfadfc9",
   "mdm_content.manifests": "77e68efba01a0d18fb2375cb040605bce96fe773565834a7608a322974b54010",
+  "mdm_devices.advance_relation_revision()": "67526c34e6d3851595b0e147772bfefe7e909162ef7c83ff3b6a3885995529d2",
   "mdm_devices.associations": "d7ee2a82fa82545c25d07c23e97e0898bd180e25e4ae0ed0c96d779853883d98",
   "mdm_devices.checkpoints": "fb08a757a0164124ad19576b752fc1b46c527668449b2ec7b47031ae8ec4a090",
+  "mdm_devices.guard_input_publication()": "19c7b172b704cd1abf10a139137198ff2c637c4dc2ac88fee80d1382097ecc96",
   "mdm_devices.input_objects": "484a47e54fa308dad359dcd1967ce7175d0b14519557110af992259c7340f435",
   "mdm_devices.input_snapshots": "d7abdd9bb63f08b7193805cefa33129ded3d77281e8256ccbea9896fcec498c0",
   "mdm_devices.members": "707db94b508ea7eacb786d96af9ae610e2ea7b66dfc72c1552ea7172ec371ea5",

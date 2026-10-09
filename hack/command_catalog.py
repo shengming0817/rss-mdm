@@ -62,6 +62,15 @@ def capture(container, mode, database):
         result = subprocess.run(["docker", "exec", "-i", container, "psql", "-XqAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", database], input="SET SESSION AUTHORIZATION mdm_command_runtime; BEGIN;\n" + diagnostics + "\nROLLBACK;", text=True, capture_output=True, check=True, pass_fds=lease_fds())
         rejected = [terms[i][:200] for i, value in enumerate(result.stdout.strip().split('|')) if value != 't']
         raise RuntimeError('command runtime admission rejected: ' + repr(rejected))
+    # Consumers borrow connections with different safe search paths. Fingerprints must agree.
+    expected_dependencies = json.loads(paths['dependencies'].with_suffix('.json').read_text())
+    for role in ('mdm_command_runtime', 'mdm_flow_runtime'):
+        for search_path in ('pg_catalog', 'public'):
+            query = f"SET SESSION AUTHORIZATION {role}; BEGIN; SET LOCAL search_path={search_path};\n" + paths['dependencies'].read_text() + "; ROLLBACK;"
+            result = subprocess.run(["docker", "exec", "-i", container, "psql", "-XqAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", database], input=query, text=True, capture_output=True, check=True, pass_fds=lease_fds())
+            actual = json.loads(next(line for line in result.stdout.splitlines() if line.startswith('{')))
+            if actual != expected_dependencies:
+                raise RuntimeError(f"dependency catalog differs for {role}/{search_path}")
     print(f"command catalog {mode}: all contracts match isolated migrations", flush=True)
 
 if __name__ == "__main__":
