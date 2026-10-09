@@ -788,7 +788,7 @@ async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
-    let (mdm_registration, mdm_epoch):(Uuid,Uuid)=sqlx::query_as("SELECT r.id,s.epoch FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device_id=$2 AND r.channel='mdm' AND r.state='active' AND s.source='mdm.windows'").bind(case_tenant()).bind(case_device()).fetch_one(&mut pg).await?;
+    let (mdm_registration, mdm_epoch):(Uuid,Uuid)=sqlx::query_as("SELECT r.id,s.epoch FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel='mdm' AND r.state='active' AND s.source='mdm.windows'").bind(case_tenant()).bind(case_device()).fetch_one(&mut pg).await?;
     crate::device::t2::associations::hardware(
         case_device(),
         mdm_registration,
@@ -845,7 +845,10 @@ async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_
     .collect();
     let reply=client.browser.call(&client.router,Method::PUT,&format!("/api/v1/authorization/rules/{}",Uuid::new_v4()),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"value":{"subject":{"kind":"user","user":crate::test_support::identity::user(case_tenant(),crate::test_support::case::admin())},"grants":grants}}))).await?;
     ensure!(reply.0 == StatusCode::OK, "{reply:?}");
-    let automation = planning_http::start_automation(&serde_json::to_value(&config)?).await?;
+    let automation = crate::test_support::start_automation(&serde_json::from_slice(
+        &std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?,
+    )?)
+    .await?;
     let commands = client.command_worker(host.notifications.signals.clone())?;
     let mut values = BTreeMap::new();
     ensure!(exchange(&peer, 981, &mut values).await?.is_empty());
@@ -996,7 +999,7 @@ async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_
         "fresh owner proof rejected original target"
     );
     tx.rollback().await?;
-    planning_http::stop_worker(automation).await?;
+    crate::test_support::stop_worker(automation).await?;
     crate::device::t2::associations::seed(
         crate::test_support::case::name("native-health-duplicate"),
         "agent",
