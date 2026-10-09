@@ -106,7 +106,7 @@ pub(crate) async fn published(client: &mut Client, policy: Uuid) -> anyhow::Resu
                 .call(
                     &client.router,
                     Method::GET,
-                    &format!("/api/v1/policies/{policy}/devices"),
+                    &format!("/api/v1/policies/{policy}/assignments"),
                     None,
                 )
                 .await?;
@@ -150,7 +150,7 @@ pub(crate) async fn wait_diagnosis(
                 .call(
                     &client.router,
                     Method::GET,
-                    &format!("/api/v1/policies/{policy}/devices"),
+                    &format!("/api/v1/policies/{policy}/assignments"),
                     None,
                 )
                 .await?;

@@ -35,5 +35,5 @@ mod binding;
 mod recovery;
 pub(crate) mod revocation;
 
-mod associations;
+pub(crate) mod associations;
 mod views;

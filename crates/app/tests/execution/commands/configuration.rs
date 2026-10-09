@@ -374,7 +374,7 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
                 .call(
                     &client.router,
                     Method::GET,
-                    &format!("/api/v1/policies/{overlapping}/devices"),
+                    &format!("/api/v1/policies/{overlapping}/assignments"),
                     None,
                 )
                 .await?;
@@ -542,7 +542,7 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
         .call(
             &client.router,
             Method::GET,
-            &format!("/api/v1/policies/{shared}/devices"),
+            &format!("/api/v1/policies/{shared}/assignments"),
             None,
         )
         .await?;

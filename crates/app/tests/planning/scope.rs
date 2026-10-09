@@ -102,7 +102,11 @@ async fn scope_history_survives_deletion() {
             scope,
             result,
             projection,
-            query: pages::PageQuery { limit: 1, cursor },
+            query: pages::PageQuery {
+                channel: rss_mdm_inventory::Channel::Mdm,
+                limit: 1,
+                cursor,
+            },
         };
         let before = execute(&service, &query(None)).await.unwrap();
         if projection == pages::ScopePageKind::Members {

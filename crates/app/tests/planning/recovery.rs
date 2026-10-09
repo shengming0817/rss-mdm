@@ -214,6 +214,7 @@ async fn expired_guard_after_lock_rejects_mutation_and_replay() {
             change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
+                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                     name: "guarded".into(),
                     description: String::new(),
                     criteria: None,
@@ -284,6 +285,7 @@ async fn result_cursors_survive_instances_restart_and_group_deletion() {
             change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
+                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                     name: "cursor".into(),
                     description: String::new(),
                     criteria: None,
@@ -301,7 +303,11 @@ async fn result_cursors_survive_instances_restart_and_group_deletion() {
             change: Box::new(group_operation(
                 1,
                 GroupChange::Members {
-                    add: devices.clone(),
+                    add: devices
+                        .iter()
+                        .cloned()
+                        .map(rss_mdm_inventory_service::objects::ObjectRef::Endpoint)
+                        .collect(),
                     remove: vec![],
                 },
             )),

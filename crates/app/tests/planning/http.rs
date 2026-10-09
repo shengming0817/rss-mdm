@@ -338,7 +338,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
     let mut groups = [Uuid::new_v4(), Uuid::new_v4()];
     groups.sort();
     for (i, id) in groups.iter().enumerate() {
-        call(&mut browser,&router,&format!("/api/v1/groups/{id}"),0,json!({"action":"create","name":format!("console-{i}"),"description":"","criteria":null})).await?;
+        call(&mut browser,&router,&format!("/api/v1/groups/{id}"),0,json!({"action":"create","assetContext":"endpoint","name":format!("console-{i}"),"description":"","criteria":null})).await?;
     }
     let (_, first) = browser
         .call(
@@ -577,7 +577,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
     for token in [None, Some("incorrect-token".to_owned())] {
         browser.csrf = token;
         let blocked = uuid::Uuid::new_v4();
-        let response=browser.call(&router,Method::POST,&format!("/api/v1/groups/{blocked}"),Some(json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create","name":"csrf-must-not-write","description":"","criteria":null}}))).await?;
+        let response=browser.call(&router,Method::POST,&format!("/api/v1/groups/{blocked}"),Some(json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create","assetContext":"endpoint","name":"csrf-must-not-write","description":"","criteria":null}}))).await?;
         ensure!(
             response.0 == StatusCode::FORBIDDEN,
             "planning write accepted absent/incorrect csrf token: {}",
@@ -597,7 +597,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
     let policy = uuid::Uuid::new_v4();
     let resource = uuid::Uuid::new_v4();
     let group_path = format!("/api/v1/groups/{group}");
-    call(&mut browser,&router,&group_path,0,json!({"action":"create","name":"managed","description":"","criteria":{"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"Model-A"}}})).await?;
+    call(&mut browser,&router,&group_path,0,json!({"action":"create","assetContext":"endpoint","name":"managed","description":"","criteria":{"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"Model-A"}}})).await?;
     let (_, current) = browser
         .call(&router, Method::GET, &group_path, None)
         .await?;
@@ -619,7 +619,8 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
         .await?;
     ensure!(
         status == StatusCode::OK
-            && preview["page"]["items"] == json!([crate::test_support::case::name("device-1")]),
+            && preview["page"]["items"]
+                == json!([{"kind":"endpoint","id":crate::test_support::case::name("device-1")}]),
         "trusted inventory mapping: {preview}"
     );
     pg(
@@ -709,7 +710,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
             &router,
             &path,
             0,
-            json!({"action":"create","name":"set-algebra","description":"","criteria":null}),
+            json!({"action":"create","assetContext":"endpoint","name":"set-algebra","description":"","criteria":null}),
         )
         .await?;
         call(
@@ -717,7 +718,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
             &router,
             &path,
             1,
-            json!({"action":"members","add":members,"remove":[]}),
+            json!({"action":"members","add":members.as_array().unwrap().iter().map(|id|json!({"kind":"endpoint","id":id})).collect::<Vec<_>>(),"remove":[]}),
         )
         .await?;
     }
@@ -804,7 +805,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
             &router,
             Method::GET,
             &format!(
-                "/api/v1/scopes/{scope}/results/{}/decisions",
+                "/api/v1/scopes/{scope}/results/{}/decisions?channel=mdm",
                 scope_receipt["task"].as_str().unwrap()
             ),
             None,
@@ -812,14 +813,14 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
         .await?;
     let explanations = decisions["page"]["items"].as_array().unwrap();
     ensure!(explanations.iter().any(|e| {
-        e["device"] == second
+        e["object"]["id"] == second
             && e["reasons"]
                 .as_array()
                 .unwrap()
                 .contains(&json!("explicit_exclusion"))
     }));
     ensure!(explanations.iter().any(|e| {
-        e["device"] == third
+        e["object"]["id"] == third
             && e["reasons"]
                 .as_array()
                 .unwrap()
@@ -841,7 +842,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
     }
     set_management_grants(&member, json!(["group_write"])).await?;
     pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_flow_runtime")?;
-    let failed=browser.call(&router,Method::POST,&format!("/api/v1/groups/{}",uuid::Uuid::new_v4()),Some(json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create","name":"must-rollback","description":"","criteria":null}}))).await?;
+    let failed=browser.call(&router,Method::POST,&format!("/api/v1/groups/{}",uuid::Uuid::new_v4()),Some(json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create","assetContext":"endpoint","name":"must-rollback","description":"","criteria":null}}))).await?;
     pg("GRANT INSERT ON mdm_audit.receipts TO mdm_flow_runtime")?;
     ensure!(
         failed.0 == StatusCode::INTERNAL_SERVER_ERROR && failed.1["code"] == "audit_contract_error"
@@ -886,7 +887,7 @@ async fn derived_result_authorization(
     let absent = uuid::Uuid::new_v4();
     for (route, code) in [
         (
-            format!("/api/v1/policies/{absent}/devices"),
+            format!("/api/v1/policies/{absent}/assignments"),
             "policy_not_found",
         ),
         (
@@ -898,11 +899,11 @@ async fn derived_result_authorization(
             "group_not_found",
         ),
         (
-            format!("/api/v1/scopes/{absent}/results/{scope_result}/members"),
+            format!("/api/v1/scopes/{absent}/results/{scope_result}/members?channel=mdm"),
             "scope_not_found",
         ),
         (
-            format!("/api/v1/scopes/{scope}/results/{absent}/members"),
+            format!("/api/v1/scopes/{scope}/results/{absent}/members?channel=mdm"),
             "scope_not_found",
         ),
     ] {
@@ -915,7 +916,7 @@ async fn derived_result_authorization(
     let mut paths = vec![
         format!("{group}/tasks/{group_result}"),
         format!("/api/v1/scopes/{scope}/tasks/{scope_result}"),
-        format!("{policy}/devices"),
+        format!("{policy}/assignments"),
     ];
     for kind in ["members", "changes", "decisions"] {
         paths.push(format!("{group}/results/{group_result}/{kind}?limit=1"));
@@ -962,7 +963,7 @@ async fn derived_result_authorization(
             (
                 format!("/api/v1/groups/{}", uuid::Uuid::new_v4()),
                 0,
-                json!({"action":"create","name":"denied-dynamic","description":"","criteria":criteria}),
+                json!({"action":"create","assetContext":"endpoint","name":"denied-dynamic","description":"","criteria":criteria}),
             ),
             (
                 group.to_owned(),

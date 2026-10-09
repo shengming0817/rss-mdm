@@ -5,6 +5,7 @@ fn cursors_bind_tenant_owner_result_and_projection() {
     let group = Uuid::new_v4();
     let result = Uuid::new_v4();
     let binding = ResultBinding::Scope {
+        channel: rss_mdm_inventory::Channel::Mdm,
         scope: group,
         kind: ScopePageKind::Members,
     };
@@ -26,10 +27,12 @@ fn cursors_bind_tenant_owner_result_and_projection() {
     assert!(decode(&key, &token, "tenant-a", Uuid::new_v4(), &binding).is_err());
     for other in [
         ResultBinding::Scope {
+            channel: rss_mdm_inventory::Channel::Mdm,
             scope: Uuid::new_v4(),
             kind: ScopePageKind::Members,
         },
         ResultBinding::Scope {
+            channel: rss_mdm_inventory::Channel::Mdm,
             scope: group,
             kind: ScopePageKind::Decisions,
         },
@@ -56,6 +59,7 @@ fn signed_foreign_family_is_rejected() {
             "tenant-a",
             result,
             &ResultBinding::Scope {
+                channel: rss_mdm_inventory::Channel::Mdm,
                 scope: owner,
                 kind: ScopePageKind::Members
             }

@@ -62,7 +62,7 @@ async fn membership(
     present: bool,
     scope: Uuid,
 ) -> Result<()> {
-    let changed=post(author,router,&format!("/api/v1/groups/{group}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":{"action":"members","add":if present {vec![case_device_id()]}else{vec![]},"remove":if present {vec![]}else{vec![case_device_id()]}}})).await?;
+    let changed=post(author,router,&format!("/api/v1/groups/{group}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":{"action":"members","add":if present {vec![json!({"kind":"endpoint","id":case_device_id()})]}else{vec![]},"remove":if present {vec![]}else{vec![json!({"kind":"endpoint","id":case_device_id()})]}}})).await?;
     await_task(
         author,
         router,
@@ -72,19 +72,35 @@ async fn membership(
         ),
     )
     .await?;
-    tokio::time::timeout(Duration::from_secs(30), async {
+    let service = crate::planning::test_support::planning(rss_request_context::TenantId::parse(
+        case_tenant(),
+    )?)
+    .await;
+    let result = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            let state = pg(&format!(
-                "SELECT mdm_planning.scope_admission('{scope}','{DEVICE_ID}')->>'state'",
-                DEVICE_ID = case_device_id()
-            ))?;
-            if state.trim() == if present { "eligible" } else { "excluded" } {
+            let state = crate::planning::test_support::scope_admission(
+                &service,
+                scope,
+                rss_mdm_inventory::Channel::Agent,
+                case_device_id(),
+            )
+            .await;
+            if if present {
+                matches!(
+                    state,
+                    rss_mdm_execution_service::source_authority::ScopeAdmission::Eligible { .. }
+                )
+            } else {
+                state == rss_mdm_execution_service::source_authority::ScopeAdmission::Excluded
+            } {
                 return Ok::<_, anyhow::Error>(());
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
-    .await?
+    .await?;
+    service.runtime.close().await;
+    result
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.frequency"]
@@ -99,8 +115,8 @@ async fn once_per_entry_tracks_membership_epochs() -> Result<()> {
     let automation = start_automation(base).await?;
     let group = Uuid::new_v4();
     let scope = Uuid::new_v4();
-    post(author,router,&format!("/api/v1/groups/{group}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create","name":"entry-frequency","description":"","criteria":null}})).await?;
-    let added=post(author,router,&format!("/api/v1/groups/{group}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"members","add":[case_device_id()],"remove":[]}})).await?;
+    post(author,router,&format!("/api/v1/groups/{group}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create","assetContext":"endpoint","name":"entry-frequency","description":"","criteria":null}})).await?;
+    let added=post(author,router,&format!("/api/v1/groups/{group}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"members","add":[{"kind":"endpoint","id":case_device_id()}],"remove":[]}})).await?;
     await_task(
         author,
         router,

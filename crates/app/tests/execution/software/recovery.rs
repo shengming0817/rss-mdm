@@ -690,7 +690,7 @@ async fn withdrawn_software_does_not_poison_claims_for_other_policies_or_outside
         .call(
             &f.router,
             Method::GET,
-            &format!("/api/v1/policies/{}/devices", ids[0]),
+            &format!("/api/v1/policies/{}/assignments", ids[0]),
             None,
         )
         .await?;

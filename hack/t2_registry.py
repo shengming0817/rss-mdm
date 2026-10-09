@@ -1664,3 +1664,16 @@ consume(('crates/apple-channel/src/collection.rs',), 'apple.collection')
 consume(('crates/execution-service/src/queries.rs',), 'apple.commands apple.policy')
 
 consume(('crates/execution-service/src/wake.rs', 'crates/execution-service/src/recovery.rs'), 'apple.commands apple.policy apple.account_enrollment')
+
+consume(('crates/inventory-service/src/objects.rs','crates/device-service/src/planning.rs'), 'planning.group_scope planning.scope planning.policy planning.frequency planning.agent_policy planning.software planning.onboarding execution.commands.configuration execution.commands.onboarding device.associations device.views')
+consume(('crates/flow-service/src/planning/targets.rs','crates/flow-service/src/planning/automation/relations.rs'), 'planning.group_scope planning.scope planning.policy planning.frequency planning.agent_policy planning.software planning.onboarding execution.commands.configuration execution.commands.onboarding')
+MODULES['planning.group_scope'] = replace(MODULES['planning.group_scope'],
+    test_inputs=(*MODULES['planning.group_scope'].test_inputs,'crates/app/tests/planning/associated.rs'),
+    selectors=(*MODULES['planning.group_scope'].selectors,'planning::t2::associated::'),
+    support_inputs=(*MODULES['planning.group_scope'].support_inputs,'crates/app/tests/device/associations.rs','crates/app/tests/device/mod.rs','crates/app/tests/device/support.rs'))
+consume(('crates/app/src/flow.rs',), 'planning.group_scope planning.scope planning.policy planning.frequency planning.agent_policy planning.software planning.onboarding catalog.contract')
+
+consume(('crates/flow-service/src/planning/automation/model.rs',), 'planning.group_scope planning.scope planning.policy planning.frequency planning.agent_policy planning.software planning.onboarding')
+T1_INPUTS += ('crates/flow-service/tests/planning/pages_unit.rs',)
+consume(('crates/inventory-service/src/compliance/mod.rs','crates/inventory-service/src/compliance/evaluation.rs'), 'compliance.group_input')
+consume(('crates/inventory-service/src/lib.rs',), 'planning.group_scope planning.scope assets.group_input compliance.group_input')

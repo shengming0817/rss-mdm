@@ -179,7 +179,7 @@ async fn windows_variant_content() -> Result<()> {
         .call(
             &router,
             Method::GET,
-            &format!("/api/v1/policies/{windows_policy}/devices"),
+            &format!("/api/v1/policies/{windows_policy}/assignments"),
             None,
         )
         .await?;

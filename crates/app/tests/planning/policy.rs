@@ -68,7 +68,7 @@ async fn large_assignment_uses_published_scope_without_eager_execution() -> Resu
         router,
         &group_path,
         0,
-        json!({"action":"create","name":"scale","description":"","criteria":null}),
+        json!({"action":"create","assetContext":"endpoint","name":"scale","description":"","criteria":null}),
     )
     .await?;
     let devices = (1..=1001)
@@ -80,7 +80,7 @@ async fn large_assignment_uses_published_scope_without_eager_execution() -> Resu
             router,
             &group_path,
             index as u64 + 1,
-            json!({"action":"members","add":batch,"remove":[]}),
+            json!({"action":"members","add":batch.iter().map(|id|json!({"kind":"endpoint","id":id})).collect::<Vec<_>>(),"remove":[]}),
         )
         .await?;
     }
@@ -126,8 +126,8 @@ async fn large_assignment_uses_published_scope_without_eager_execution() -> Resu
     let mut count = 0;
     loop {
         let path = match &cursor {
-            Some(after) => format!("{policy}/devices?after={after}"),
-            None => format!("{policy}/devices"),
+            Some(after) => format!("{policy}/assignments?after={after}"),
+            None => format!("{policy}/assignments"),
         };
         let (status, page) = browser.call(router, Method::GET, &path, None).await?;
         ensure!(status == StatusCode::OK, "assignment page {page}");

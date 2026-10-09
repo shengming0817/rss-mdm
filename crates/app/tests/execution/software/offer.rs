@@ -236,7 +236,7 @@ async fn windows_variant_delivery_and_detection() -> Result<()> {
         .call(
             &router,
             Method::GET,
-            &format!("/api/v1/policies/{windows_policy}/devices"),
+            &format!("/api/v1/policies/{windows_policy}/assignments"),
             None,
         )
         .await?;

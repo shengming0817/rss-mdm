@@ -92,9 +92,9 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
             "query lost frozen collection quality"
         );
         let group = format!("/api/v1/groups/{}", Uuid::new_v4());
-        ok(browser,router,Method::POST,&group,Some(request(0,json!({"action":"create","name":result,"description":"collection proof","criteria":criteria})))).await?;
+        ok(browser,router,Method::POST,&group,Some(request(0,json!({"action":"create","assetContext":"endpoint","name":result,"description":"collection proof","criteria":criteria})))).await?;
         let preview = preview(browser, router, &group).await?;
-        ensure!(preview.members["page"]["items"] == json!(["tie-a"]));
+        ensure!(preview.members["page"]["items"] == json!([{"kind":"endpoint","id":"tie-a"}]));
         ensure!(ok(browser, router, Method::GET, &group, None).await?["group"]["memberCount"] == 1);
     }
     let unsupported = crate::inventory_runtime::test_support::report_statuses(
@@ -130,7 +130,7 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
             && query["asset"]["summary"]["unknown"].as_u64().unwrap() > 0
     );
     let group = format!("/api/v1/groups/{}", Uuid::new_v4());
-    ok(browser,router,Method::POST,&group,Some(request(0,json!({"action":"create","name":"unsupported","description":"explicit source status","criteria":criteria})))).await?;
+    ok(browser,router,Method::POST,&group,Some(request(0,json!({"action":"create","assetContext":"endpoint","name":"unsupported","description":"explicit source status","criteria":criteria})))).await?;
     let preview = preview(browser, router, &group).await?;
     ensure!(preview.members["page"]["items"] == json!([]));
     ensure!(
@@ -170,7 +170,7 @@ async fn typed_and_collected_facts_become_group_input() -> Result<()> {
         )
         .await?;
         let group = format!("/api/v1/groups/{}", Uuid::new_v4());
-        ok(&mut browser,router,Method::POST,&group,Some(request(0,json!({"action":"create","name":field,"description":"asset input","criteria":predicate(field,kind,value)})))).await?;
+        ok(&mut browser,router,Method::POST,&group,Some(request(0,json!({"action":"create","assetContext":"endpoint","name":field,"description":"asset input","criteria":predicate(field,kind,value)})))).await?;
         ensure!(
             preview(&mut browser, router, &group).await?.members["page"]["items"]
                 == json!(["asset-a"])
@@ -180,7 +180,7 @@ async fn typed_and_collected_facts_become_group_input() -> Result<()> {
     seed_source("asset-b", "agent", "agent.builtin", "Different")?;
     let query = json!({"criteria":predicate("device.model","string",json!("Same"))});
     let group = format!("/api/v1/groups/{}", Uuid::new_v4());
-    ok(&mut browser,router,Method::POST,&group,Some(request(0,json!({"action":"create","name":"conflict","description":"","criteria":query["criteria"]})))).await?;
+    ok(&mut browser,router,Method::POST,&group,Some(request(0,json!({"action":"create","assetContext":"endpoint","name":"conflict","description":"","criteria":query["criteria"]})))).await?;
     let preview = preview(&mut browser, router, &group).await?;
     ensure!(
         preview.members["page"]["items"] == json!([])
@@ -237,7 +237,7 @@ async fn script_health_projection_is_queryable_group_input() -> Result<()> {
     ensure!(query["asset"]["items"][0]["device"] == "asset-a");
     let group = format!("/api/v1/groups/{}", Uuid::new_v4());
     ok(&mut browser, &fixture.router, Method::POST, &group,
-        Some(request(0,json!({"action":"create","name":"healthy-script","description":"projected Agent input","criteria":criteria})))).await?;
+        Some(request(0,json!({"action":"create","assetContext":"endpoint","name":"healthy-script","description":"projected Agent input","criteria":criteria})))).await?;
     ensure!(
         preview(&mut browser, &fixture.router, &group)
             .await?

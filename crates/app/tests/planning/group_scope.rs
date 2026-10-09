@@ -60,6 +60,7 @@ async fn durable_asset_group_scope_pipeline() {
             change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
+                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                     name: "automation".into(),
                     description: String::new(),
                     criteria: Some(assets::Criteria::Predicate {
@@ -113,7 +114,10 @@ async fn durable_asset_group_scope_pipeline() {
         },
     };
     let page = execute(&service, &page_command).await.unwrap();
-    assert_eq!(page["page"]["items"], serde_json::json!([device]));
+    assert_eq!(
+        page["page"]["items"],
+        serde_json::json!([{"kind":"endpoint","id":device}])
+    );
     assert_eq!(page["current"], true);
     assert!(rss_mdm_inventory_service::groups::response::Response::decode(page.clone()).is_ok());
     let continuation = execute(
@@ -281,6 +285,7 @@ async fn durable_asset_group_scope_pipeline() {
                 result: scope_task,
                 projection,
                 query: pages::PageQuery {
+                    channel: rss_mdm_inventory::Channel::Mdm,
                     limit: 1000,
                     cursor: None,
                 },
@@ -288,7 +293,7 @@ async fn durable_asset_group_scope_pipeline() {
         )
         .await
         .unwrap();
-        assert_eq!(page["totalMembers"], 1);
+        assert_eq!(page["page"]["items"].as_array().unwrap().len(), 1);
         assert!(wire::Response::decode(page).is_ok());
     }
     assert!(stack.shutdown().join().await.unwrap().is_clean());
@@ -311,6 +316,7 @@ async fn group_scope_replay_and_audit_atomicity() {
         change: Box::new(group_operation(
             0,
             GroupChange::Create {
+                asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                 name: "fleet".into(),
                 description: String::new(),
                 criteria: None,
@@ -328,7 +334,9 @@ async fn group_scope_replay_and_audit_atomicity() {
             change: Box::new(group_operation(
                 1,
                 GroupChange::Members {
-                    add: vec![device.clone()],
+                    add: vec![rss_mdm_inventory_service::objects::ObjectRef::Endpoint(
+                        device.clone(),
+                    )],
                     remove: vec![],
                 },
             )),
@@ -369,6 +377,7 @@ async fn group_scope_replay_and_audit_atomicity() {
             change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
+                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                     name: "denied".into(),
                     description: String::new(),
                     criteria: None,
@@ -412,6 +421,7 @@ async fn initial_empty_group_scope_and_revision_competition() {
             change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
+                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                     name: "empty".into(),
                     description: "".into(),
                     criteria: None,
@@ -474,6 +484,7 @@ async fn registration_replacement_invalidates_direct_and_group_admission() {
             change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
+                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                     name: "registration".into(),
                     description: "".into(),
                     criteria: None,
@@ -491,7 +502,9 @@ async fn registration_replacement_invalidates_direct_and_group_admission() {
             change: Box::new(group_operation(
                 1,
                 GroupChange::Members {
-                    add: vec![device.clone()],
+                    add: vec![rss_mdm_inventory_service::objects::ObjectRef::Endpoint(
+                        device.clone(),
+                    )],
                     remove: vec![],
                 },
             )),
@@ -546,10 +559,8 @@ async fn registration_replacement_invalidates_direct_and_group_admission() {
     ));
     for id in pending {
         assert_eq!(
-            sql(&format!(
-                "SELECT mdm_planning.scope_admission('{id}','{device}')->>'state'"
-            )),
-            "pending"
+            scope_admission(&m, id, rss_mdm_inventory::Channel::Mdm, &device).await,
+            rss_mdm_execution_service::source_authority::ScopeAdmission::Pending
         );
     }
     m.runtime.close().await;
@@ -571,6 +582,7 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
                 change: Box::new(group_operation(
                     0,
                     GroupChange::Create {
+                        asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                         name: "reference-race".into(),
                         description: "".into(),
                         criteria: None,
@@ -637,6 +649,7 @@ async fn ingress_batches_reuse_published_group_coverage() {
             change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
+                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                     name: "bounded-ingress".into(),
                     description: String::new(),
                     criteria: Some(assets::Criteria::Predicate {
@@ -750,6 +763,7 @@ async fn superseded_group_links_reused_successor() {
             change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
+                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                     name: "successor".into(),
                     description: String::new(),
                     criteria: Some(assets::Criteria::Predicate {

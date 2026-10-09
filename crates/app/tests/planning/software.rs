@@ -30,7 +30,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
         .call(
             &router,
             Method::GET,
-            &format!("/api/v1/policies/{future}/devices"),
+            &format!("/api/v1/policies/{future}/assignments"),
             None,
         )
         .await?;

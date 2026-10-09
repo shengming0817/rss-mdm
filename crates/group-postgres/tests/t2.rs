@@ -661,7 +661,7 @@ async fn admitted_input_and_command_commit_unknown_recover_by_original_identity(
     let id = group_id();
     let operation = op();
     let command = Command::Create {
-                asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+        asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
         group: id,
         name: "unknown".into(),
         description: String::new(),

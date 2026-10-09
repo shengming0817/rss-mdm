@@ -383,7 +383,7 @@ async fn static_commands_replay_and_borrowed_rollback() {
     let s = store(runtime.clone(), tenant()).await;
     let id = group_id();
     let create = Command::Create {
-                asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+        asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
         group: id,
         name: "研发".into(),
         description: String::new(),
