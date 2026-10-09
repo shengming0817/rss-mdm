@@ -21,7 +21,9 @@ impl Associations {
     /// A committed checkpoint covers registration/source/credential and raw inventory changes.
     pub async fn reconcile(&self) -> Result<usize> {
         let budget = AuditBudget::new(Duration::from_secs(15));
-        self.audit.write(self.tenant,&budget.control(),self,|service,tx|Box::pin(async move {
+        let audit = RequestAudit::new(self.tenant.to_string(), "device_association_automatic");
+        audit.identify_service("device-associations");
+        let attempt = self.audit.write(self.tenant,&budget.control(),(self,&audit),|(service,audit),tx|Box::pin(async move {
             let results=tx.with_connection_context(service,|service,c|Box::pin(async move {
                 let tenant=service.tenant.to_string();
                 let watermark=rss_mdm_inventory_postgres::lock_watermark_in(c,service.tenant).await?;
@@ -66,14 +68,39 @@ impl Associations {
                 Ok(results)
             })).await?;
             for (operation,result) in &results {
-                let audit=RequestAudit::new(service.tenant.to_string(),"device_association_automatic");
-                audit.identify_service("device-associations"); audit.operation(*operation,"device_association_automatic");audit.target(&result.id.to_string());
+                let fact_audit=audit.fact_copy("device_association_automatic");
+                fact_audit.operation(*operation,"device_association_automatic");fact_audit.target(&result.id.to_string());
                 let digest=Sha256::digest(serde_json::to_vec(result).map_err(|_|Error::Storage)?);
-                let fact=Fact::business(&audit,&format!("device_association:{operation}"),&digest,200,"success",None)?.with_details(serde_json::json!({"association":result}))?;
+                let fact=Fact::business(&fact_audit,&format!("device_association:{operation}"),&digest,200,"success",None)?.with_details(serde_json::json!({"association":result}))?;
                 service.audit.append(tx,&fact,false).await?;
             }
+            audit.mark_commit_started();
             Ok(results.len())
-        })).await.fold(|v|Ok(v.into_value()),|e|Err(model::transaction_error(e)),|e|Err(model::transaction_error(e)),|_|Err(Error::RollbackFailed),|_|Err(Error::CommitUnknown),|e|Err(model::transaction_error(e)))
+        })).await;
+        let result = attempt.fold(
+            |v| {
+                audit.mark_committed();
+                Ok(v.into_value())
+            },
+            |e| Err(model::transaction_error(e)),
+            |e| {
+                audit.mark_rolled_back();
+                Err(model::transaction_error(e))
+            },
+            |_| {
+                audit.mark_rollback_failed();
+                Err(Error::RollbackFailed)
+            },
+            |_| Err(Error::CommitUnknown),
+            |e| Err(model::transaction_error(e)),
+        );
+        audit.finalize(
+            result
+                .as_ref()
+                .err()
+                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+        );
+        result
     }
 }
 fn command(old: Option<&Association>, members: &[Member], evidence: &str) -> Confirm {

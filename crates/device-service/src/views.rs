@@ -151,7 +151,7 @@ impl Associations {
             return Err(Error::Malformed);
         }
         let budget = AuditBudget::new(Duration::from_secs(15));
-        self.audit.read(self.tenant,&budget.control(),(self,proof,query),|(service,proof,query),tx|Box::pin(async move {
+        self.audit.write(self.tenant,&budget.control(),(self,proof,query),|(service,proof,query),tx|Box::pin(async move {
             tx.with_connection_context(&mut (*service,*proof,*query),|(service,proof,query),c|Box::pin(async move {
                 let snapshot=read::authorization(c,proof).await?;
                 let (_,grants)=scope(&snapshot,proof)?;
@@ -198,7 +198,7 @@ impl Associations {
             return Err(Error::Forbidden);
         }
         let budget = AuditBudget::new(Duration::from_secs(15));
-        self.audit.read(self.tenant,&budget.control(),(self,proof,reference,list),|(service,proof,reference,list),tx|Box::pin(async move {
+        self.audit.write(self.tenant,&budget.control(),(self,proof,reference,list),|(service,proof,reference,list),tx|Box::pin(async move {
             tx.with_connection_context(&mut (*service,*proof,*reference,*list),|(service,proof,reference,list),c|Box::pin(async move {
                 let snapshot=read::authorization(c,proof).await?;
                 let (sensitive,grants)=scope(&snapshot,proof)?;

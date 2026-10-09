@@ -93,9 +93,9 @@ pub(super) async fn member(
     device: &str,
     channel: Channel,
 ) -> anyhow::Result<PrimaryRegistration> {
-    Ok(endpoints::current_in(c, case_a(), device, channel)
+    endpoints::current_in(c, case_a(), device, channel)
         .await?
-        .context("primary")?)
+        .context("primary")
 }
 fn audit(action: &'static str) -> RequestAudit {
     RequestAudit::new(case_a().into(), action)
@@ -109,9 +109,9 @@ async fn automatic_match_duplicate_detection_and_revocation_suppression() -> any
     let agent = crate::test_support::case::name("association-agent");
     seed(mdm, "mdm", " 00-test.serial ")?;
     seed(agent, "agent", "00-TEST.SERIAL")?;
-    assert_eq!(s.reconcile().await?, 1);
-    assert_eq!(s.reconcile().await?, 0);
-    let page = s.views(&admin, &query(64)).await?;
+    assert_eq!(s.reconcile().await.context("reconcile changed")?, 1);
+    assert_eq!(s.reconcile().await.context("reconcile unchanged")?, 0);
+    let page = s.views(&admin, &query(64)).await.context("device views")?;
     assert_eq!(
         page["statistics"],
         json!({"endpointCount":2,"deviceViewCount":1})
@@ -122,7 +122,7 @@ async fn automatic_match_duplicate_detection_and_revocation_suppression() -> any
     let duplicate = crate::test_support::case::name("association-duplicate");
     seed(duplicate, "mdm", "00-test.serial")?;
     assert_eq!(s.get(&admin, id).await?.state, State::NeedsVerification);
-    assert_eq!(s.reconcile().await?, 1);
+    assert_eq!(s.reconcile().await.context("reconcile changed")?, 1);
     let pending = s.get(&admin, id).await?;
     assert_eq!(pending.state, State::NeedsVerification);
     assert_eq!(pending.evidence, old.evidence);
@@ -143,9 +143,9 @@ async fn automatic_match_duplicate_detection_and_revocation_suppression() -> any
         revoked.version
     );
     sqlx::query("UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id=$1::uuid AND device=$2").bind(case_a()).bind(duplicate).execute(&mut c).await?;
-    assert_eq!(s.reconcile().await?, 0);
+    assert_eq!(s.reconcile().await.context("reconcile unchanged")?, 0);
     assert_eq!(
-        s.views(&admin, &query(64)).await?["statistics"]["deviceViewCount"],
+        s.views(&admin, &query(64)).await.context("device views")?["statistics"]["deviceViewCount"],
         3
     );
     let restore = Confirm {
@@ -161,11 +161,11 @@ async fn automatic_match_duplicate_detection_and_revocation_suppression() -> any
         .await?;
     assert_eq!(result.state, State::Confirmed);
     assert_eq!(s.get(&admin, id).await?.state, State::Confirmed);
-    assert!(matches!(
+    assert!(
         s.revoke(&admin, id, &request, &audit("device_association_revoke"))
-            .await,
-        Ok(_)
-    )); // exact replay returns its immutable receipt
+            .await
+            .is_ok()
+    ); // exact replay returns its immutable receipt
     let mut wrong = restore.clone();
     wrong.evidence = "changed operation".into();
     assert!(matches!(
@@ -187,7 +187,7 @@ async fn generation_continues_after_delayed_report_and_keeps_members_pending() -
     seed(mdm, "mdm", "generation-serial")?;
     let old = seed(agent, "agent", "GENERATION-SERIAL")?;
     s.reconcile().await?;
-    let page = s.views(&admin, &query(64)).await?;
+    let page = s.views(&admin, &query(64)).await.context("device views")?;
     let id: Uuid = serde_json::from_value(page["items"][0]["reference"]["id"].clone())?;
     let new = Uuid::new_v4();
     let epoch = Uuid::new_v4();
@@ -206,11 +206,11 @@ async fn generation_continues_after_delayed_report_and_keeps_members_pending() -
     let pending = s.get(&admin, id).await?;
     assert!(pending.members.iter().any(|m| m.registration_id == old));
     assert_eq!(
-        s.views(&admin, &query(64)).await?["statistics"]["deviceViewCount"],
+        s.views(&admin, &query(64)).await.context("device views")?["statistics"]["deviceViewCount"],
         1
     );
     hardware(agent, new, epoch, "agent.builtin", "generation-serial")?;
-    assert_eq!(s.reconcile().await?, 1);
+    assert_eq!(s.reconcile().await.context("reconcile changed")?, 1);
     let continued = s.get(&admin, id).await?;
     assert_eq!(continued.state, State::Confirmed);
     assert!(
@@ -219,7 +219,7 @@ async fn generation_continues_after_delayed_report_and_keeps_members_pending() -
             .iter()
             .any(|m| m.registration_id == new && m.generation == 2)
     );
-    assert_eq!(s.reconcile().await?, 0);
+    assert_eq!(s.reconcile().await.context("reconcile unchanged")?, 0);
     access.close().await;
     Ok(())
 }
@@ -276,7 +276,13 @@ async fn competing_confirmations_have_one_receipt_and_no_orphan_relation() -> an
     let count:(i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_devices.associations WHERE tenant_id=$1::uuid),(SELECT count(*) FROM mdm_devices.members WHERE tenant_id=$1::uuid),(SELECT count(*) FROM mdm_devices.operations WHERE tenant_id=$1::uuid)").bind(case_a()).fetch_one(&mut c).await?;
     assert_eq!(count, (1, 2, 1));
     let result = a.or(b)?;
-    assert_eq!(s.get(&admin, result.id).await?.state, State::Confirmed);
+    assert_eq!(
+        s.get(&admin, result.id)
+            .await
+            .context("get committed association")?
+            .state,
+        State::Confirmed
+    );
     let mut changes = s.changes(&admin, None).await?;
     let mut found = 0;
     loop {
@@ -359,7 +365,7 @@ async fn confirmation_and_worker_recover_unknown_commit_without_duplicate_facts(
         s.reconcile().await,
         Err(rss_mdm_device_service::Error::CommitUnknown)
     ));
-    assert_eq!(s.reconcile().await?, 0);
+    assert_eq!(s.reconcile().await.context("reconcile unchanged")?, 0);
     let counts:(i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_devices.associations WHERE tenant_id=$1::uuid),(SELECT count(*) FROM mdm_devices.members WHERE tenant_id=$1::uuid),(SELECT count(*) FROM mdm_devices.operations WHERE tenant_id=$1::uuid)").bind(case_a()).fetch_one(&mut c).await?;
     assert_eq!(counts, (2, 4, 2));
     let checkpoint:bool=sqlx::query_scalar("SELECT c.watermark=a.revision FROM mdm_devices.checkpoints c JOIN mdm.asset_clock a USING(tenant_id) WHERE tenant_id=$1::uuid").bind(case_a()).fetch_one(&mut c).await?;

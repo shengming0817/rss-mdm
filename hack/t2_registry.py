@@ -258,7 +258,7 @@ for name in ('device.associations','device.views'):
             'crates/registration-service/src/device/endpoints.rs',
             'crates/registration-service/src/device/directory.rs'),
         support_inputs=(*MODULES[name].support_inputs,'crates/app/tests/support/inventory.rs',
-            'crates/app/tests/device/support.rs','crates/app/tests/support/identity.rs'))
+            'crates/app/tests/support/identity.rs'))
 app_family('agent')
 for name in ('agent.registration', 'agent.reports'):
     MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs, 'crates/app/tests/support/agent.rs'))
@@ -977,7 +977,7 @@ APP_HELPER_CONSUMERS = {
         'execution.commands.admission','execution.commands.dispatch','execution.commands.recovery',
         'execution.commands.windows','execution.commands.configuration','execution.commands.onboarding','windows.commands','windows.declared'),
     'device/support.rs': (
-        'diagnostics.http',
+        'device.associations','device.views','diagnostics.http',
         'device.binding','device.revocation','device.recovery','device.admission',
         'agent.reports','inventory.runtime','assets.group_input','assets.sources','compliance.evaluation',
         'execution.agent.delivery','authorization.admission','enrollment.recovery','native.tls',

@@ -265,7 +265,9 @@ async fn pending_targets_filter_by_source_and_child_never_replaces_primary() -> 
     let parent = seed(registered, "mdm", "primary-serial")?;
     let child = Uuid::new_v4();
     let child_request = Uuid::new_v4();
-    sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source,windows_profile) SELECT tenant_id,$3,grant_id,source,windows_profile FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=(SELECT request_id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2)").bind(case_a()).bind(parent).bind(child_request).execute(&mut c).await?;
+    let child_grant = Uuid::new_v4();
+    sqlx::query("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,created_at,expires_at) SELECT g.tenant_id,$3,g.actor,g.instance,g.device,g.purpose,g.state,g.created_at,g.expires_at FROM mdm_access.grants g JOIN mdm_access.requests q ON (q.tenant_id,q.grant_id)=(g.tenant_id,g.id) JOIN mdm_access.registrations r ON (r.tenant_id,r.request_id)=(q.tenant_id,q.id) WHERE r.tenant_id=$1::uuid AND r.id=$2").bind(case_a()).bind(parent).bind(child_grant).execute(&mut c).await?;
+    sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source,windows_profile) SELECT tenant_id,$3,$4,source,windows_profile FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=(SELECT request_id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2)").bind(case_a()).bind(parent).bind(child_request).bind(child_grant).execute(&mut c).await?;
     sqlx::query("INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state,purpose,epoch,parent_id,parent_generation) SELECT tenant_id,$3,device,channel,99,$4,'active','windows_declared',$5,id,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2").bind(case_a()).bind(parent).bind(child).bind(child_request).bind(Uuid::new_v4()).execute(&mut c).await?;
     assert_eq!(
         member(&mut c, registered, Channel::Mdm)

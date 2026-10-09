@@ -73,8 +73,9 @@ impl Associations {
             return Err(Error::Forbidden);
         }
         let budget = AuditBudget::new(Duration::from_secs(5));
+        // The shared asset fence takes a row lock and may initialize its clock.
         self.audit
-            .read(self.tenant, &budget.control(), proof, |proof, tx| {
+            .write(self.tenant, &budget.control(), proof, |proof, tx| {
                 Box::pin(async move {
                     tx.with_connection_context(proof, |proof, c| {
                         Box::pin(async move {
