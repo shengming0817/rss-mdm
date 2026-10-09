@@ -330,11 +330,22 @@ pub(crate) async fn authorized_on(
     {
         return Ok(false);
     }
+    if !source
+        .policy_readable_on(
+            c,
+            rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
+            *version,
+        )
+        .await?
+    {
+        return Ok(false);
+    }
     let admission = source
         .admission_on(
             c,
             rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
             row.try_get("scope").map_err(db)?,
+            rss_mdm_inventory::Channel::Mdm,
             device,
         )
         .await?;
@@ -441,6 +452,7 @@ pub async fn dispatch_ready_on(
                 c,
                 rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
                 scope,
+                rss_mdm_inventory::Channel::Mdm,
                 device
             )
             .await?,

@@ -223,6 +223,24 @@ pub async fn queue_run_in(
     if !matches!(source, db::Source::Policy { .. }) {
         return Err(Error::Unsupported.into());
     }
+    let db::Source::Policy { version } = source else {
+        return Err(Error::Unsupported.into());
+    };
+    let (policy, _) =
+        crate::sources::storage::version_in(&service.policy_reader, tx, version).await?;
+    let reader = service.source.clone();
+    let tenant = tx.tenant_id();
+    let scope = policy.definition.scope;
+    let channel = crate::source_authority::action_channel(policy.definition.action.kind());
+    let device = target.device.clone();
+    let evidence = tx
+        .with_connection(move |c| {
+            Box::pin(
+                async move { Ok(reader.evidence_on(c, tenant, scope, channel, &device).await) },
+            )
+        })
+        .await??;
+    let evidence = checked_input(serde_json::to_value(evidence))?;
     let message = dispatch(tx.tenant_id(), source, id, target, now)?;
     let fingerprint = message.fingerprint().as_bytes().to_vec();
     let writer = rss_transactional_messaging_postgres::PgOutboxWriter::new(
@@ -244,8 +262,8 @@ pub async fn queue_run_in(
     let (kind, version, remote) = source.columns();
     let state = checked_input(serde_json::to_value(RunState::new(deadline, now)?))?;
     tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,source_kind,policy_version,remote_operation,device,registration,generation,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)")
-            .bind(tenant).bind(id).bind(kind).bind(version).bind(remote).bind(target.device).bind(target.registration).bind(target.generation).bind(occurrence).bind(available).bind(deadline).bind(state).bind(digest).bind(now).execute(c).await?;Ok(())
+        sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,source_kind,policy_version,remote_operation,device,registration,generation,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at,source_objects) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)")
+            .bind(tenant).bind(id).bind(kind).bind(version).bind(remote).bind(target.device).bind(target.registration).bind(target.generation).bind(occurrence).bind(available).bind(deadline).bind(state).bind(digest).bind(now).bind(evidence).execute(c).await?;Ok(())
     })).await?;
     let audit =
         rss_mdm_audit_integration::RequestAudit::new(tx.tenant_id().to_string(), "command_accept");

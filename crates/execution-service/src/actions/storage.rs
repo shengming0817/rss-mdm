@@ -37,10 +37,11 @@ pub struct Run {
     pub state: RunState,
     pub result: Option<Value>,
     pub invocation: Option<crate::self_service::Invocation>,
+    pub source_objects: Vec<crate::source_authority::DeviceObject>,
 }
 pub async fn load_run(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Run> {
     let tenant = tx.tenant_id().to_string();
-    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT source_kind,policy_version,remote_operation,device,registration::text,generation,available_at,deadline,state,result,invocation FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::missing::ExecutionError::MissingTask))?;
+    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT source_kind,policy_version,remote_operation,device,registration::text,generation,available_at,deadline,state,result,invocation,source_objects FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::missing::ExecutionError::MissingTask))?;
     Ok(Run {
         id,
         source: match row.try_get::<&str, _>("source_kind")? {
@@ -57,6 +58,7 @@ pub async fn load_run(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Run> {
             registration: stored(Uuid::parse_str(&row.try_get::<String, _>("registration")?))?,
             generation: row.try_get("generation")?,
         },
+        source_objects: stored(serde_json::from_value(row.try_get("source_objects")?))?,
         available_at: row.try_get("available_at")?,
         deadline: row.try_get("deadline")?,
         state: stored(serde_json::from_value(row.try_get("state")?))?,
@@ -216,6 +218,29 @@ impl ScheduledPolicy {
     ) -> Result<bool> {
         if matches!(run.source, Source::RemoteOperation { .. }) {
             return Ok(false);
+        }
+        if run.state.started_at.is_none() {
+            let channel = if matches!(self, Self::Native(_)) {
+                rss_mdm_inventory::Channel::Mdm
+            } else {
+                rss_mdm_inventory::Channel::Agent
+            };
+            let source = service.source.clone();
+            let tenant = tx.tenant_id();
+            let device = run.target.device.clone();
+            let evidence = run.source_objects.clone();
+            if !tx
+                .with_connection(move |c| {
+                    Box::pin(async move {
+                        Ok(source
+                            .evidence_valid_on(c, tenant, channel, &device, &evidence)
+                            .await)
+                    })
+                })
+                .await??
+            {
+                return Ok(false);
+            }
         }
         match &run.invocation {
             Some(invocation) => {

@@ -149,6 +149,28 @@ impl ExecutionService {
         if approval.retired() {
             return Err(Error::Unsupported.into());
         }
+        if let ExecutionAuthority::AgentInstall {
+            version,
+            source_objects,
+            ..
+        } = &mut approval
+        {
+            let (policy, _) =
+                crate::sources::storage::version_in(&self.policy_reader, tx, *version).await?;
+            let source = self.source.clone();
+            let tenant = tx.tenant_id();
+            let scope = policy.definition.scope;
+            let device = device.to_owned();
+            *source_objects = tx
+                .with_connection(move |c| {
+                    Box::pin(async move {
+                        Ok(source
+                            .evidence_on(c, tenant, scope, rss_mdm_inventory::Channel::Mdm, &device)
+                            .await)
+                    })
+                })
+                .await??;
+        }
         let now = self.store.now(tx).await? / 1_000_000;
         input.validate(now)?;
         let diagnostic_progress = if let Some(log) = crate::native::diagnostic::input(&input.task) {

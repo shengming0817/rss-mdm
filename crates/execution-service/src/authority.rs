@@ -8,6 +8,7 @@ use sqlx::PgConnection;
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExecutionAuthority {
     AgentInstall {
+        source_objects: Vec<crate::source_authority::DeviceObject>,
         required: Vec<Permission>,
         package: Box<crate::agent_install::Package>,
         tenant: String,
@@ -34,6 +35,7 @@ pub enum ExecutionAuthority {
         device: String,
     },
     Policy {
+        source_objects: Vec<crate::source_authority::DeviceObject>,
         unit: String,
         required: Vec<Permission>,
         tenant: String,
@@ -55,15 +57,50 @@ impl ExecutionAuthority {
                 version,
                 device,
                 operation,
+                source_objects,
                 ..
             } => {
+                if !source
+                    .evidence_valid_on(
+                        c,
+                        rss_request_context::TenantId::parse(tenant)
+                            .map_err(|_| Error::Malformed)?,
+                        rss_mdm_inventory::Channel::Mdm,
+                        device,
+                        source_objects,
+                    )
+                    .await?
+                {
+                    return Ok(false);
+                }
                 crate::agent_install::dispatch_ready_on(
                     source, c, tenant, *version, device, *operation,
                 )
                 .await
             }
             Self::User { .. } | Self::RemoteOperation { .. } => Ok(false),
-            Self::DeviceControl { .. } | Self::Policy { .. } => Ok(true),
+            Self::DeviceControl { .. } => Ok(true),
+            Self::Policy {
+                tenant,
+                device,
+                source_objects,
+                remove,
+                ..
+            } => {
+                if *remove {
+                    return Ok(true);
+                }
+                Ok(source
+                    .evidence_valid_on(
+                        c,
+                        rss_request_context::TenantId::parse(tenant)
+                            .map_err(|_| Error::Malformed)?,
+                        rss_mdm_inventory::Channel::Mdm,
+                        device,
+                        source_objects,
+                    )
+                    .await?)
+            }
         }
     }
     pub(crate) fn for_control(

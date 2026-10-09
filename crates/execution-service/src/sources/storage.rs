@@ -47,6 +47,7 @@ pub async fn admission_in(
     source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
     tx: &mut PgTransaction<'_>,
     scope: Uuid,
+    channel: rss_mdm_inventory::Channel,
     device: &str,
 ) -> Result<crate::source_authority::ScopeAdmission> {
     let tenant = tx.tenant_id();
@@ -54,7 +55,11 @@ pub async fn admission_in(
     let device = device.to_owned();
     Ok(tx
         .with_connection(move |c| {
-            Box::pin(async move { Ok(source.admission_on(c, tenant, scope, &device).await) })
+            Box::pin(async move {
+                Ok(source
+                    .admission_on(c, tenant, scope, channel, &device)
+                    .await)
+            })
         })
         .await??)
 }
@@ -64,12 +69,38 @@ pub async fn eligible_in(
     policy: &Policy,
     device: &str,
 ) -> Result<Option<i64>> {
-    if !policy.enabled {
+    let reader = source.clone();
+    let tenant = tx.tenant_id();
+    let version = policy.version;
+    let readable = tx
+        .with_connection(move |c| {
+            Box::pin(async move { Ok(reader.policy_readable_on(c, tenant, version).await) })
+        })
+        .await??;
+    if !policy.enabled || !readable {
         return Ok(None);
     }
     Ok(
-        match admission_in(source, tx, policy.definition.scope, device).await? {
-            crate::source_authority::ScopeAdmission::Eligible { entry } => Some(entry),
+        match admission_in(
+            source,
+            tx,
+            policy.definition.scope,
+            crate::source_authority::action_channel(policy.definition.action.kind()),
+            device,
+        )
+        .await?
+        {
+            crate::source_authority::ScopeAdmission::Eligible { entry } => {
+                let tenant = tx.tenant_id().to_string();
+                let id = policy.id;
+                let version = policy.version;
+                let device = device.to_owned();
+                let channel =
+                    crate::source_authority::action_channel(policy.definition.action.kind())
+                        .as_str();
+                let stable=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Option<i64>>("SELECT min(entry_revision) FROM mdm_planning.policy_assignments WHERE tenant_id=$1::uuid AND policy=$2 AND version=$3 AND channel=$4 AND target->>'device'=$5 AND entry_revision>0").bind(tenant).bind(id).bind(version).bind(channel).bind(device).fetch_one(c).await})).await?;
+                Some(stable.unwrap_or(entry))
+            }
             _ => None,
         },
     )
@@ -81,6 +112,27 @@ pub async fn withdrawn_in(
     device: &str,
 ) -> Result<bool> {
     Ok(!policy.enabled
-        || admission_in(source, tx, policy.definition.scope, device).await?
+        || admission_in(
+            source,
+            tx,
+            policy.definition.scope,
+            crate::source_authority::action_channel(policy.definition.action.kind()),
+            device,
+        )
+        .await?
             == crate::source_authority::ScopeAdmission::Excluded)
+}
+
+pub async fn readable_in(
+    source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
+    tx: &mut PgTransaction<'_>,
+    version: Uuid,
+) -> Result<bool> {
+    let source = source.clone();
+    let tenant = tx.tenant_id();
+    Ok(tx
+        .with_connection(move |c| {
+            Box::pin(async move { Ok(source.policy_readable_on(c, tenant, version).await) })
+        })
+        .await??)
 }
