@@ -126,7 +126,7 @@ impl SourceAuthority for ExecutionSource {
     ) -> Pending<'a, bool> {
         let kinds = rss_mdm_policy::AssignmentBehavior::NativeDesired.kinds();
         Box::pin(async move {
-            Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.enabled AND p.definition->'action'->>'kind' = ANY($3::text[]) AND mdm_planning.scope_admission((p.definition->>'scope')::uuid,$2)->>'state'<>'excluded')")
+            Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies p JOIN mdm_planning.policy_assignments a ON(a.tenant_id,a.policy,a.version)=(p.tenant_id,p.id,p.current_version) WHERE p.tenant_id=$1::uuid AND p.enabled AND p.definition->'action'->>'kind'=ANY($3::text[]) AND a.channel='mdm' AND a.target->>'device'=$2 AND a.input->'admission'->>'state'<>'excluded')")
                 .bind(tenant.to_string()).bind(device).bind(kinds).fetch_one(connection).await?)
         })
     }

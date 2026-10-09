@@ -246,7 +246,7 @@ pub async fn objects_on(
         .filter(|(_, s)| frozen.definition.targets.contains(&s.reference))
         .map(|(i, _)| i as i32)
         .collect();
-    let rows=sqlx::query("SELECT DISTINCT ON(device) device,input,unknown FROM mdm_planning.scope_source_members WHERE tenant_id=$1::uuid AND run=$2 AND source=ANY($3) AND device>coalesce($4,'') COLLATE \"C\" ORDER BY device,unknown LIMIT 65")
+    let rows=sqlx::query("SELECT DISTINCT ON(object_key) input,unknown FROM (SELECT input,unknown,CASE input->'object'->>'kind' WHEN 'endpoint' THEN 'endpoint:'||(input->'object'->>'id') ELSE 'association:'||(input->'object'->>'id') END COLLATE \"C\" AS object_key FROM mdm_planning.scope_source_members WHERE tenant_id=$1::uuid AND run=$2 AND source=ANY($3)) objects WHERE object_key>coalesce($4,'') COLLATE \"C\" ORDER BY object_key,unknown LIMIT 65")
         .bind(tenant.to_string()).bind(run).bind(targets).bind(after).fetch_all(&mut *c).await?;
     let mut result = Vec::new();
     for row in rows {

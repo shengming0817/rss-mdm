@@ -133,6 +133,36 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
     )
     .await
     .unwrap();
+    let mut connection = sqlx::PgConnection::connect_with(
+        &crate::device::test_support::options("mdm_flow_runtime")
+            .unwrap()
+            .password("runtime-fixture"),
+    )
+    .await
+    .unwrap();
+    for statement in [
+        "UPDATE mdm_devices.input_snapshots SET phase='endpoints' WHERE tenant_id=$1::uuid AND id=$2",
+        "INSERT INTO mdm_devices.input_objects(tenant_id,snapshot,object,input,hardware,devices) SELECT tenant_id,snapshot,object||'-tamper',input,hardware,devices FROM mdm_devices.input_objects WHERE tenant_id=$1::uuid AND snapshot=$2 LIMIT 1",
+    ] {
+        let mut transaction = connection.begin().await.unwrap();
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(tenant().to_string())
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+        let failure = sqlx::query(statement)
+            .bind(tenant().to_string())
+            .bind(snapshot.id)
+            .execute(&mut *transaction)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            failure.as_database_error().unwrap().code().as_deref(),
+            Some("P0001")
+        );
+        transaction.rollback().await.unwrap();
+    }
+    connection.close().await.unwrap();
     let members: Vec<ObjectRef> = serde_json::from_value(page["page"]["items"].clone()).unwrap();
     assert_eq!(members.len(), 2);
     assert!(members.contains(&ObjectRef::Endpoint(alone.into())));

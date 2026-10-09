@@ -94,3 +94,17 @@ GRANT SELECT ON mdm_devices.associations,mdm_devices.members,mdm_devices.checkpo
 GRANT INSERT ON mdm_devices.input_snapshots,mdm_devices.input_objects TO mdm_flow_runtime;
 GRANT UPDATE(phase,cursor,object_count,byte_count) ON mdm_devices.input_snapshots TO mdm_flow_runtime;
 COMMIT;
+
+-- Sealed publication is append-closed even for the bounded builder role.
+CREATE FUNCTION mdm_devices.guard_input_publication() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+BEGIN
+ IF TG_TABLE_NAME='input_snapshots' THEN
+  IF OLD.phase='sealed' THEN RAISE EXCEPTION 'object snapshot is sealed'; END IF;
+ ELSIF EXISTS(SELECT 1 FROM mdm_devices.input_snapshots WHERE tenant_id=NEW.tenant_id AND id=NEW.snapshot AND phase='sealed') THEN
+  RAISE EXCEPTION 'object snapshot is sealed';
+ END IF;
+ RETURN NEW;
+END $$;
+REVOKE ALL ON FUNCTION mdm_devices.guard_input_publication() FROM PUBLIC;
+CREATE TRIGGER immutable_publication BEFORE UPDATE ON mdm_devices.input_snapshots FOR EACH ROW EXECUTE FUNCTION mdm_devices.guard_input_publication();
+CREATE TRIGGER immutable_input BEFORE INSERT ON mdm_devices.input_objects FOR EACH ROW EXECUTE FUNCTION mdm_devices.guard_input_publication();
