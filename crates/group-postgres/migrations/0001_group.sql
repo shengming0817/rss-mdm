@@ -13,6 +13,8 @@ CREATE TABLE mdm_group.groups (
  member_count bigint NOT NULL CHECK(member_count BETWEEN 0 AND 10000),
  rule_version text CHECK(octet_length(rule_version) BETWEEN 1 AND 256),
  deleted boolean NOT NULL DEFAULT false,
+ asset_context text NOT NULL CONSTRAINT groups_asset_context_check CHECK(asset_context IN ('endpoint','associated_device')),
+ CONSTRAINT groups_context_kind_check CHECK(kind='dynamic' OR asset_context='endpoint'),
  PRIMARY KEY(tenant_id,id),
  CHECK((kind='static' AND rule_version IS NULL) OR (kind='dynamic' AND rule_version IS NOT NULL))
 );

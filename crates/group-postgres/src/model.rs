@@ -45,6 +45,50 @@ id!(
     "Tenant-scoped idempotency UUID shared by commands and recalculations."
 );
 
+/// Asset universe fixed when a group is created.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssetContext {
+    /// Original endpoint facts; association discovery never changes this universe.
+    Endpoint,
+    /// Unified device objects, including explicitly unassociated endpoints.
+    AssociatedDevice,
+}
+impl AssetContext {
+    /// Canonical persisted discriminator.
+    pub const fn as_str(self) -> &'static str {
+        match self { Self::Endpoint => "endpoint", Self::AssociatedDevice => "associated_device" }
+    }
+}
+/// A directory object, never an executable registration identity.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "id", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ObjectRef {
+    /// One original endpoint.
+    Endpoint(String),
+    /// One product association whose members must be resolved by its owner.
+    Association(Uuid),
+}
+impl ObjectRef {
+    /// Decode the adapter's opaque key under its fixed asset universe.
+    pub fn from_key(context: AssetContext, key: &str) -> Result<Self, Rejection> {
+        match context {
+            AssetContext::Endpoint => Ok(Self::Endpoint(key.into())),
+            AssetContext::AssociatedDevice => {
+                if let Some(id) = key.strip_prefix("endpoint:") { return Ok(Self::Endpoint(id.into())); }
+                let id = key.strip_prefix("association:").ok_or(Rejection::InvalidStoredDocument)?;
+                let id = Uuid::parse_str(id).map_err(|_| Rejection::InvalidStoredDocument)?;
+                if id.is_nil() { return Err(Rejection::InvalidStoredDocument); }
+                Ok(Self::Association(id))
+            }
+        }
+    }
+    /// Stable unified-universe key, kept separate from endpoint identity.
+    pub fn key(&self) -> String {
+        match self { Self::Endpoint(id) => format!("endpoint:{id}"), Self::Association(id) => format!("association:{id}") }
+    }
+}
+
 /// The sole compare-and-swap sequence for one group.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "i64", into = "i64")]
@@ -109,6 +153,8 @@ pub enum Command {
         name: String,
         /// Description, at most 4 KiB UTF-8; empty allowed, NUL forbidden.
         description: String,
+        /// Immutable asset universe.
+        asset_context: AssetContext,
         /// Initial authority and optional dynamic rule.
         definition: Definition,
     },
@@ -168,6 +214,8 @@ pub struct Group {
     pub id: GroupId,
     /// Immutable membership authority.
     pub kind: GroupKind,
+    /// Immutable input object universe.
+    pub asset_context: AssetContext,
     /// Nonempty, control-free display name, at most 4 KiB UTF-8.
     pub name: String,
     /// Description, at most 4 KiB UTF-8; empty allowed, NUL forbidden.

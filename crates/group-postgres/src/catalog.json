@@ -101,6 +101,15 @@
     ],
     [
       "groups",
+      "asset_context",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "groups",
       "member_set",
       "uuid",
       false,
@@ -668,6 +677,13 @@
   "constraints": [
     [
       "groups",
+      "groups_asset_context_check",
+      "c",
+      "CHECK ((asset_context = ANY (ARRAY['endpoint'::text, 'associated_device'::text])))",
+      true
+    ],
+    [
+      "groups",
       "groups_calculation_revision_check",
       "c",
       "CHECK ((calculation_revision >= 0))",
@@ -685,6 +701,13 @@
       "groups_check1",
       "c",
       "CHECK ((((kind = 'static'::text) AND (rule_version IS NULL)) OR ((kind = 'dynamic'::text) AND (rule_version IS NOT NULL))))",
+      true
+    ],
+    [
+      "groups",
+      "groups_context_kind_check",
+      "c",
+      "CHECK (((kind = 'dynamic'::text) OR (asset_context = 'endpoint'::text)))",
       true
     ],
     [

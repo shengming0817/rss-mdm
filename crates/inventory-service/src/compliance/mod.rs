@@ -260,7 +260,8 @@ impl Compliance {
         let groups = request.input.groups();
         for id in &groups {
             let g = checked_input(rss_mdm_group_postgres::GroupId::parse(&id.to_string()))?;
-            checked(self.groups.lock_reference_target_in(tx, g).await?)?;
+            let group = checked(self.groups.lock_reference_target_in(tx, g).await?)?;
+            if group.asset_context != rss_mdm_group_postgres::AssetContext::Endpoint { return Err(Error::Malformed.into()); }
         }
         let revision = i64::try_from(request.expected_revision)
             .ok()

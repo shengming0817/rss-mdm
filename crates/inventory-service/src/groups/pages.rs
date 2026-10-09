@@ -43,14 +43,14 @@ pub struct GroupPage {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum GroupPageItems {
     Members {
-        items: Vec<String>,
+        items: Vec<rss_mdm_group_postgres::ObjectRef>,
     },
     Changes {
-        added: Vec<String>,
-        removed: Vec<String>,
+        added: Vec<rss_mdm_group_postgres::ObjectRef>,
+        removed: Vec<rss_mdm_group_postgres::ObjectRef>,
     },
     Decisions {
-        items: Vec<rss_mdm_group_postgres::DecisionRecord>,
+        items: Vec<Value>,
     },
 }
 
@@ -111,6 +111,8 @@ impl Groups {
         if !build.ready {
             return Err(Error::Conflict.into());
         }
+        let context = group_checked(self.groups.lock_reference_target_in(tx, owner).await?)?.asset_context;
+        let object = |key: &str| group_checked(pg::ObjectRef::from_key(context, key));
         let (page, next) = match kind {
             GroupPageKind::Members => {
                 let items = checked(
@@ -123,7 +125,7 @@ impl Groups {
                 } else {
                     None
                 };
-                (GroupPageItems::Members { items }, next)
+                (GroupPageItems::Members { items: items.iter().map(|id|object(id)).collect::<Result<_>>()? }, next)
             }
             GroupPageKind::Decisions => {
                 let items = checked(
@@ -132,6 +134,10 @@ impl Groups {
                         .await?,
                 )?;
                 let next = items.last().map(|item| item.device.clone());
+                let items = items.into_iter().map(|d| {
+                    let reference = object(&d.device)?;
+                    Ok(serde_json::json!({"object":reference,"origin":d.origin,"decision":d.decision,"explanations":d.explanations,"provenance":d.provenance}))
+                }).collect::<Result<_>>()?;
                 (GroupPageItems::Decisions { items }, next)
             }
             GroupPageKind::Changes => {
@@ -142,8 +148,8 @@ impl Groups {
                 )?;
                 (
                     GroupPageItems::Changes {
-                        added: delta.added,
-                        removed: delta.removed,
+                        added: delta.added.iter().map(|id|object(id)).collect::<Result<_>>()?,
+                        removed: delta.removed.iter().map(|id|object(id)).collect::<Result<_>>()?,
                     },
                     delta.next,
                 )

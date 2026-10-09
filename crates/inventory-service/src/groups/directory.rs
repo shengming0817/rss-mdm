@@ -15,7 +15,7 @@ impl Groups {
             let (s,p,q,audit)=*ctx;p.manage(Permission::GroupRead)?;p.require_all_devices(Permission::InventoryRead)?;
             let mut groups=group_checked(s.groups.directory_in(tx,q).await?)?;
             let more=groups.len()>q.limit;groups.truncate(q.limit);let next=if more{groups.last().map(|g|g.id.to_string())}else{None};
-            let items=groups.iter().map(|g|serde_json::json!({"id":g.id,"kind":g.kind,"name":g.name,"description":g.description,"revision":g.revision,"calculationRevision":g.calculation_revision,"memberVersion":g.member_version,"memberCount":g.member_count,"ruleVersion":g.rule_version,"deleted":g.deleted})).collect::<Vec<_>>();
+            let items=groups.iter().map(|g|serde_json::json!({"id":g.id,"kind":g.kind,"assetContext":g.asset_context,"name":g.name,"description":g.description,"revision":g.revision,"calculationRevision":g.calculation_revision,"memberVersion":g.member_version,"memberCount":g.member_count,"ruleVersion":g.rule_version,"deleted":g.deleted})).collect::<Vec<_>>();
             p.check_live()?;s.audit_store.append_request_in(tx,audit,200,"success").await?;
             Ok(serde_json::json!({"items":items,"nextCursor":next}))
         }),crate::transaction::TransactionOwner::Assets).await

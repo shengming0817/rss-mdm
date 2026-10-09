@@ -59,6 +59,7 @@ impl crate::GroupStore {
                     kind: storage::data(serde_json::from_value(serde_json::json!(
                         r.try_get::<String, _>("kind")?
                     )))?,
+                    asset_context: storage::data(serde_json::from_value(serde_json::json!(r.try_get::<String,_>("asset_context")?)))?,
                     name: r.try_get("name")?,
                     description: r.try_get("description")?,
                     revision: storage::data(Revision::new(r.try_get("revision")?))?,
