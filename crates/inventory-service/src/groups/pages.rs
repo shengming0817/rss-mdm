@@ -43,11 +43,11 @@ pub struct GroupPage {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum GroupPageItems {
     Members {
-        items: Vec<rss_mdm_group_postgres::ObjectRef>,
+        items: Vec<crate::objects::ObjectRef>,
     },
     Changes {
-        added: Vec<rss_mdm_group_postgres::ObjectRef>,
-        removed: Vec<rss_mdm_group_postgres::ObjectRef>,
+        added: Vec<crate::objects::ObjectRef>,
+        removed: Vec<crate::objects::ObjectRef>,
     },
     Decisions {
         items: Vec<Value>,
@@ -111,8 +111,10 @@ impl Groups {
         if !build.ready {
             return Err(Error::Conflict.into());
         }
-        let context = group_checked(self.groups.lock_reference_target_in(tx, owner).await?)?.asset_context;
-        let object = |key: &str| group_checked(pg::ObjectRef::from_key(context, key));
+        let context = group_checked(self.groups.get_in(tx, owner).await?)?
+            .ok_or(Error::Group(GroupMissing::Group))?
+            .asset_context;
+        let object = |key: &str| group_checked(crate::objects::ObjectRef::from_key(context, key));
         let (page, next) = match kind {
             GroupPageKind::Members => {
                 let items = checked(
@@ -125,7 +127,12 @@ impl Groups {
                 } else {
                     None
                 };
-                (GroupPageItems::Members { items: items.iter().map(|id|object(id)).collect::<Result<_>>()? }, next)
+                (
+                    GroupPageItems::Members {
+                        items: items.iter().map(|id| object(id)).collect::<Result<_>>()?,
+                    },
+                    next,
+                )
             }
             GroupPageKind::Decisions => {
                 let items = checked(
@@ -134,10 +141,24 @@ impl Groups {
                         .await?,
                 )?;
                 let next = items.last().map(|item| item.device.clone());
-                let items = items.into_iter().map(|d| {
+                let snapshot = group_checked(crate::objects::ObjectSnapshot::from_group_input(
+                    &build.request.input_version,
+                ))?;
+                let mut decisions = Vec::new();
+                for d in items {
                     let reference = object(&d.device)?;
-                    Ok(serde_json::json!({"object":reference,"origin":d.origin,"decision":d.decision,"explanations":d.explanations,"provenance":d.provenance}))
-                }).collect::<Result<_>>()?;
+                    let sources = if let Some(snapshot) = &snapshot {
+                        let t = self.tenant.to_string();
+                        let snapshot = snapshot.id;
+                        let key = reference.key();
+                        let input:Value=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT input FROM mdm_devices.input_objects WHERE tenant_id=$1::uuid AND snapshot=$2 AND object=$3").bind(t).bind(snapshot).bind(key).fetch_one(c).await})).await?;
+                        vec![input]
+                    } else {
+                        vec![]
+                    };
+                    decisions.push(serde_json::json!({"object":reference,"origin":d.origin,"decision":d.decision,"explanations":d.explanations,"provenance":d.provenance,"sourceObjects":sources}));
+                }
+                let items = decisions;
                 (GroupPageItems::Decisions { items }, next)
             }
             GroupPageKind::Changes => {
@@ -148,8 +169,16 @@ impl Groups {
                 )?;
                 (
                     GroupPageItems::Changes {
-                        added: delta.added.iter().map(|id|object(id)).collect::<Result<_>>()?,
-                        removed: delta.removed.iter().map(|id|object(id)).collect::<Result<_>>()?,
+                        added: delta
+                            .added
+                            .iter()
+                            .map(|id| object(id))
+                            .collect::<Result<_>>()?,
+                        removed: delta
+                            .removed
+                            .iter()
+                            .map(|id| object(id))
+                            .collect::<Result<_>>()?,
                     },
                     delta.next,
                 )

@@ -57,38 +57,12 @@ pub enum AssetContext {
 impl AssetContext {
     /// Canonical persisted discriminator.
     pub const fn as_str(self) -> &'static str {
-        match self { Self::Endpoint => "endpoint", Self::AssociatedDevice => "associated_device" }
-    }
-}
-/// A directory object, never an executable registration identity.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "id", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ObjectRef {
-    /// One original endpoint.
-    Endpoint(String),
-    /// One product association whose members must be resolved by its owner.
-    Association(Uuid),
-}
-impl ObjectRef {
-    /// Decode the adapter's opaque key under its fixed asset universe.
-    pub fn from_key(context: AssetContext, key: &str) -> Result<Self, Rejection> {
-        match context {
-            AssetContext::Endpoint => Ok(Self::Endpoint(key.into())),
-            AssetContext::AssociatedDevice => {
-                if let Some(id) = key.strip_prefix("endpoint:") { return Ok(Self::Endpoint(id.into())); }
-                let id = key.strip_prefix("association:").ok_or(Rejection::InvalidStoredDocument)?;
-                let id = Uuid::parse_str(id).map_err(|_| Rejection::InvalidStoredDocument)?;
-                if id.is_nil() { return Err(Rejection::InvalidStoredDocument); }
-                Ok(Self::Association(id))
-            }
+        match self {
+            Self::Endpoint => "endpoint",
+            Self::AssociatedDevice => "associated_device",
         }
     }
-    /// Stable unified-universe key, kept separate from endpoint identity.
-    pub fn key(&self) -> String {
-        match self { Self::Endpoint(id) => format!("endpoint:{id}"), Self::Association(id) => format!("association:{id}") }
-    }
 }
-
 /// The sole compare-and-swap sequence for one group.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "i64", into = "i64")]

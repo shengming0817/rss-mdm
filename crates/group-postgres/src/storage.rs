@@ -75,7 +75,9 @@ pub(crate) async fn group(
         Ok(Group {
             id,
             kind,
-            asset_context: data(serde_json::from_value(serde_json::json!(r.try_get::<String,_>("asset_context")?)))?,
+            asset_context: data(serde_json::from_value(serde_json::json!(
+                r.try_get::<String, _>("asset_context")?
+            )))?,
             name: r.try_get("name")?,
             description: r.try_get("description")?,
             revision: data(Revision::new(r.try_get("revision")?))?,

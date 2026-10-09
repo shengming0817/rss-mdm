@@ -22,8 +22,8 @@ pub enum GroupChange {
         criteria: Criteria,
     },
     Members {
-        add: Vec<rss_mdm_group_postgres::ObjectRef>,
-        remove: Vec<rss_mdm_group_postgres::ObjectRef>,
+        add: Vec<crate::objects::ObjectRef>,
+        remove: Vec<crate::objects::ObjectRef>,
     },
     Delete,
     Recompute {},

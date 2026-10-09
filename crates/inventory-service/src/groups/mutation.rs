@@ -92,15 +92,22 @@ impl Groups {
                 if add.len() + remove.len() > 1000 {
                     return Err(Error::Malformed.into());
                 }
-                let endpoints = |objects: &[pg::ObjectRef]| -> Result<Vec<String>> {
-                    objects.iter().map(|object| match object {
-                        pg::ObjectRef::Endpoint(id) if !id.is_empty() => Ok(id.clone()),
-                        _ => Err(Error::Malformed.into()),
-                    }).collect()
+                let endpoints = |objects: &[crate::objects::ObjectRef]| -> Result<Vec<String>> {
+                    objects
+                        .iter()
+                        .map(|object| match object {
+                            crate::objects::ObjectRef::Endpoint(id) if !id.is_empty() => {
+                                Ok(id.clone())
+                            }
+                            _ => Err(Error::Malformed.into()),
+                        })
+                        .collect()
                 };
                 let add = endpoints(add)?;
                 let remove = endpoints(remove)?;
-                for device in &add { require_device(tx, device).await?; }
+                for device in &add {
+                    require_device(tx, device).await?;
+                }
                 return flow
                     .start(
                         tx,

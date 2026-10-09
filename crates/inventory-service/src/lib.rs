@@ -19,6 +19,7 @@ pub mod tasks;
 pub mod transaction;
 
 pub mod groups;
+pub mod objects;
 
 pub mod apple_collection;
 

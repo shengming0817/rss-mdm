@@ -59,4 +59,23 @@ GRANT SELECT,INSERT ON mdm_devices.checkpoints TO mdm_access;
 GRANT UPDATE(watermark) ON mdm_devices.checkpoints TO mdm_access;
 GRANT USAGE ON SCHEMA mdm TO mdm_access;
 GRANT SELECT ON mdm.asset_clock,mdm.inventory_history,mdm.manual_history,mdm.field_versions,mdm.collection_definitions TO mdm_access;
+CREATE TABLE mdm_devices.input_snapshots (
+ tenant_id uuid NOT NULL REFERENCES public.mdm_tenants(tenant_id), id uuid NOT NULL,
+ watermark bigint NOT NULL CHECK(watermark>=0), version text NOT NULL CHECK(length(version)=64),
+ PRIMARY KEY(tenant_id,id), UNIQUE(tenant_id,watermark,version)
+);
+CREATE TABLE mdm_devices.input_objects (
+ tenant_id uuid NOT NULL, snapshot uuid NOT NULL, object text COLLATE "C" NOT NULL, input jsonb NOT NULL,
+ PRIMARY KEY(tenant_id,snapshot,object), FOREIGN KEY(tenant_id,snapshot) REFERENCES mdm_devices.input_snapshots(tenant_id,id)
+);
+ALTER TABLE mdm_devices.input_snapshots ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_devices.input_snapshots FORCE ROW LEVEL SECURITY;
+ALTER TABLE mdm_devices.input_objects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_devices.input_objects FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_devices.input_snapshots USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+CREATE POLICY tenant ON mdm_devices.input_objects USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+REVOKE ALL ON mdm_devices.input_snapshots,mdm_devices.input_objects FROM PUBLIC;
+GRANT USAGE ON SCHEMA mdm_devices TO mdm_flow_runtime,mdm_command_runtime;
+GRANT SELECT ON mdm_devices.associations,mdm_devices.members,mdm_devices.input_snapshots,mdm_devices.input_objects TO mdm_flow_runtime,mdm_command_runtime;
+GRANT INSERT ON mdm_devices.input_snapshots,mdm_devices.input_objects TO mdm_flow_runtime;
 COMMIT;

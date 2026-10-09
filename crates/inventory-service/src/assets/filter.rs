@@ -213,61 +213,134 @@ pub fn criteria_view(c: &g::Criteria) -> Result<Criteria> {
         }
     })
 }
+fn object(
+    tenant: TenantId,
+    key: &str,
+    catalog: &Catalog,
+    rule: &g::Rule,
+    mut field: impl FnMut(FieldKey) -> Result<(rss_mdm_inventory::State, String, i64)>,
+) -> Result<g::ObjectSnapshot> {
+    let mut facts = BTreeMap::new();
+    for (name, expected) in rule.view().fields {
+        let key = checked_input(FieldKey::parse(name))?;
+        let path = checked_input(catalog.path(key))?;
+        if &dictionary_field(key, &path)? != expected {
+            return Err(Error::Malformed.into());
+        }
+        let (state, snapshot_id, observed_at) = field(path.root.key)?;
+        let state = match &state {
+            rss_mdm_inventory::State::Known(v) => {
+                let leaves = checked_input(path.values(v))?;
+                let value = if path.many {
+                    g::Value::Set {
+                        element: kind(path.value_type.kind())?,
+                        values: leaves.into_iter().map(scalar).collect::<Result<_>>()?,
+                    }
+                } else {
+                    g::Value::Scalar(scalar(leaves.first().ok_or(Error::Malformed)?)?)
+                };
+                g::FactState::Known(value)
+            }
+            rss_mdm_inventory::State::Null => g::FactState::Null,
+            rss_mdm_inventory::State::Missing => g::FactState::Missing,
+            rss_mdm_inventory::State::Unsupported => g::FactState::Unsupported,
+            rss_mdm_inventory::State::Deleted => g::FactState::Deleted,
+            rss_mdm_inventory::State::Conflict => g::FactState::Conflict,
+        };
+        facts.insert(
+            name.clone(),
+            g::Fact {
+                state,
+                source: "resolved-inventory".into(),
+                snapshot_id,
+                observed_at: checked_input(Timepoint::try_from(observed_at))?,
+            },
+        );
+    }
+    Ok(g::ObjectSnapshot {
+        key: checked_input(g::ObjectKey::new(tenant, key))?,
+        facts,
+    })
+}
 pub fn page(
     tenant: TenantId,
     devices: &[DeviceView],
     catalog: &Catalog,
     rule: &g::Rule,
 ) -> Result<FactPage> {
-    let mut objects = Vec::with_capacity(devices.len());
-    for device in devices {
-        let mut facts = BTreeMap::new();
-        for (name, expected) in rule.view().fields {
-            let key = checked_input(FieldKey::parse(name))?;
-            let path = checked_input(catalog.path(key))?;
-            if &dictionary_field(key, &path)? != expected {
-                return Err(Error::Malformed.into());
-            }
-            let f = device.fields.get(&path.root.key).ok_or(Error::Malformed)?;
-            let state = match &f.state {
-                rss_mdm_inventory::State::Known(v) => {
-                    let leaves = checked_input(path.values(v))?;
-                    let value = if path.many {
-                        g::Value::Set {
-                            element: kind(path.value_type.kind())?,
-                            values: leaves.into_iter().map(scalar).collect::<Result<_>>()?,
-                        }
-                    } else {
-                        g::Value::Scalar(scalar(leaves.first().ok_or(Error::Malformed)?)?)
-                    };
-                    g::FactState::Known(value)
-                }
-                rss_mdm_inventory::State::Null => g::FactState::Null,
-                rss_mdm_inventory::State::Missing => g::FactState::Missing,
-                rss_mdm_inventory::State::Unsupported => g::FactState::Unsupported,
-                rss_mdm_inventory::State::Deleted => g::FactState::Deleted,
-                rss_mdm_inventory::State::Conflict => g::FactState::Conflict,
-            };
-            facts.insert(
-                name.clone(),
-                g::Fact {
-                    state,
-                    source: "resolved-inventory".into(),
-                    snapshot_id: digest(f)?,
-                    observed_at: checked_input(Timepoint::try_from(
-                        f.sources
-                            .iter()
-                            .map(|s| s.evidence.observed_at)
-                            .max()
-                            .unwrap_or(0),
-                    ))?,
-                },
+    let objects = devices
+        .iter()
+        .map(|device| {
+            object(tenant, &device.device, catalog, rule, |key| {
+                let f = device.fields.get(&key).ok_or(Error::Malformed)?;
+                Ok((
+                    f.state.clone(),
+                    digest(f)?,
+                    f.sources
+                        .iter()
+                        .map(|s| s.evidence.observed_at)
+                        .max()
+                        .unwrap_or(0),
+                ))
+            })
+        })
+        .collect::<Result<_>>()?;
+    Ok(FactPage {
+        coverage: rule.view().fields.keys().cloned().collect(),
+        objects,
+    })
+}
+/// Resolve only the explicitly frozen endpoints; preserve their evidence in fact digests.
+pub fn associated_page(
+    tenant: TenantId,
+    inputs: &[crate::objects::DeviceObject],
+    devices: &[DeviceView],
+    catalog: &Catalog,
+    rule: &g::Rule,
+) -> Result<FactPage> {
+    let mut objects = Vec::new();
+    for input in inputs {
+        let mut resolved = BTreeMap::new();
+        for definition in catalog.fields() {
+            let sources = input
+                .members
+                .iter()
+                .flat_map(|m| devices.iter().filter(move |d| d.device == m.device))
+                .flat_map(|d| {
+                    d.fields
+                        .get(&definition.key)
+                        .into_iter()
+                        .flat_map(move |f| {
+                            f.sources.iter().cloned().map(move |fact| {
+                                rss_mdm_inventory::EndpointSourceFact {
+                                    endpoint: d.device.clone(),
+                                    fact,
+                                }
+                            })
+                        })
+                })
+                .collect();
+            resolved.insert(
+                definition.key,
+                checked_input(rss_mdm_inventory::resolve_device(definition, sources))?,
             );
         }
-        objects.push(g::ObjectSnapshot {
-            key: checked_input(g::ObjectKey::new(tenant, device.device.clone()))?,
-            facts,
-        });
+        objects.push(object(tenant, &input.object.key(), catalog, rule, |key| {
+            let f = resolved.get(&key).ok_or(Error::Malformed)?;
+            Ok((
+                if input.verified {
+                    f.state.clone()
+                } else {
+                    rss_mdm_inventory::State::Conflict
+                },
+                digest(&(input, f))?,
+                f.sources
+                    .iter()
+                    .map(|s| s.fact.evidence.observed_at)
+                    .max()
+                    .unwrap_or(0),
+            ))
+        })?);
     }
     Ok(FactPage {
         coverage: rule.view().fields.keys().cloned().collect(),
