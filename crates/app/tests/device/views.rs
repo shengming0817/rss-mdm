@@ -286,6 +286,34 @@ async fn pending_targets_filter_by_source_and_child_never_replaces_primary() -> 
         detail["endpoints"][0]["channels"][0]["registrationId"],
         parent.to_string()
     );
+    let child_state = &detail["endpoints"][0]["channels"][0]["children"][0];
+    assert_eq!(child_state["registrationId"], child.to_string());
+    assert_eq!(child_state["generation"], 99);
+    assert_eq!(child_state["parentRegistrationId"], parent.to_string());
+    assert_eq!(child_state["parentGeneration"], 1);
+    assert_eq!(child_state["status"], "active");
+    assert!(detail["endpoints"][0]["channels"][0]["userContext"].is_null());
+    sqlx::query(
+        "UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(case_a())
+    .bind(child)
+    .execute(&mut c)
+    .await?;
+    sqlx::query("UPDATE mdm_access.requests SET windows_profile='Full' WHERE tenant_id=$1::uuid AND id=(SELECT request_id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2)").bind(case_a()).bind(parent).execute(&mut c).await?;
+    let updated = s
+        .view(&admin, &ViewRef::Endpoint(registered.into()))
+        .await?;
+    let channel = &updated["endpoints"][0]["channels"][0];
+    assert_eq!(channel["registrationId"], parent.to_string());
+    assert_eq!(channel["status"], "active");
+    assert_eq!(channel["children"][0]["status"], "revoked");
+    assert_eq!(channel["userContext"]["id"], parent.to_string());
+    assert_eq!(channel["userContext"]["parentGeneration"], 1);
+    assert_eq!(channel["userContext"]["registrationStatus"], "active");
+    // The original endpoint directory consumes the same projection.
+    let endpoint = registration.directory_device(&admin, registered).await?;
+    assert_eq!(endpoint["channels"], updated["endpoints"][0]["channels"]);
     access.close().await;
     Ok(())
 }

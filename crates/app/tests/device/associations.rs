@@ -384,3 +384,124 @@ async fn confirmation_and_worker_recover_unknown_commit_without_duplicate_facts(
     access.close().await;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "MODULE=device.associations: signed checkpoints span empty and frozen audit windows"]
+async fn change_checkpoints_resume_after_empty_pages_and_restart() -> anyhow::Result<()> {
+    let (access, service, admin, mut c) = setup().await?;
+    async fn drain(
+        service: &Associations,
+        admin: &AuthorizedPrincipal,
+        mut page: serde_json::Value,
+    ) -> anyhow::Result<(Vec<serde_json::Value>, String)> {
+        let mut items = Vec::new();
+        loop {
+            items.extend(page["items"].as_array().context("items")?.iter().cloned());
+            if let Some(next) = page["nextCursor"].as_str() {
+                assert!(page["checkpoint"].is_null());
+                page = service.changes(admin, Some(next)).await?;
+            } else {
+                return Ok((
+                    items,
+                    page["checkpoint"]
+                        .as_str()
+                        .context("terminal checkpoint")?
+                        .into(),
+                ));
+            }
+        }
+    }
+    let (items, empty) = drain(&service, &admin, service.changes(&admin, None).await?).await?;
+    assert!(items.is_empty());
+    let idle = service.changes(&admin, Some(&empty)).await?;
+    assert_eq!(idle["items"], json!([]));
+    assert_eq!(idle["checkpoint"], empty);
+    let mdm = crate::test_support::case::name("checkpoint-mdm");
+    let agent = crate::test_support::case::name("checkpoint-agent");
+    seed(mdm, "mdm", "checkpoint-serial")?;
+    seed(agent, "agent", "checkpoint-serial")?;
+    let mut request = Confirm {
+        operation_id: Uuid::new_v4(),
+        association_id: None,
+        expected_version: 0,
+        mdm: member(&mut c, mdm, Channel::Mdm).await?,
+        agent: member(&mut c, agent, Channel::Agent).await?,
+        evidence: "verified by operator".into(),
+    };
+    for _ in 0..66 {
+        request.operation_id = Uuid::new_v4();
+        let event = audit("device_association_confirm");
+        let relation = service.confirm(&admin, &request, &event).await?;
+        event.finalize(None);
+        request.association_id = Some(relation.id);
+        request.expected_version = relation.version;
+    }
+    let first = service.changes(&admin, Some(&empty)).await?;
+    assert!(first["nextCursor"].is_string());
+    // A write after the first page must wait for the next polling window.
+    let event = audit("device_association_revoke");
+    service
+        .revoke(
+            &admin,
+            request.association_id.context("relation")?,
+            &Revoke {
+                operation_id: Uuid::new_v4(),
+                expected_version: request.expected_version,
+                reason: "verified separate instances".into(),
+            },
+            &event,
+        )
+        .await?;
+    event.finalize(None);
+    let (items, checkpoint) = drain(&service, &admin, first).await?;
+    assert_eq!(items.len(), 66);
+    assert!(
+        items
+            .iter()
+            .all(|item| item["action"] == "device_association_confirm")
+    );
+    let last = items.last().context("last event")?["position"]
+        .as_u64()
+        .context("position")?;
+    let restarted = Associations::new(
+        access
+            .audit_store(&crate::config::AuditConfig::Plain)
+            .await?,
+        TenantId::parse(case_a())?,
+        &[7; 32],
+    )?;
+    let (items, checkpoint) = drain(
+        &restarted,
+        &admin,
+        restarted.changes(&admin, Some(&checkpoint)).await?,
+    )
+    .await?;
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["action"], "device_association_revoke");
+    assert!(items[0]["position"].as_u64().context("position")? > last);
+    for _ in 0..2 {
+        let page = restarted.changes(&admin, Some(&checkpoint)).await?;
+        assert_eq!(page["items"], json!([]));
+        assert!(page["nextCursor"].is_null());
+        assert_eq!(page["checkpoint"], checkpoint);
+    }
+    crate::test_support::identity::set_grants(
+        case_a(),
+        admin.principal_id(),
+        crate::test_support::identity::device_grants(Some(mdm), &["inventory_read"])?,
+    )
+    .await?;
+    assert!(matches!(
+        restarted.changes(&admin, Some(&checkpoint)).await,
+        Err(rss_mdm_device_service::Error::CursorInvalidated)
+    ));
+    let (hidden, checkpoint) =
+        drain(&restarted, &admin, restarted.changes(&admin, None).await?).await?;
+    assert!(hidden.is_empty());
+    assert_eq!(
+        restarted.changes(&admin, Some(&checkpoint)).await?["items"],
+        json!([])
+    );
+    access.close().await;
+    Ok(())
+}
