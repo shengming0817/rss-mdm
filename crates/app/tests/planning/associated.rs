@@ -342,7 +342,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
             let current = execute(&service, &GroupCommand::GroupRead { id: group })
                 .await
                 .unwrap();
-            if current["group"]["memberCount"] == 3 {
+            if current["group"]["member_count"] == 3 {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;

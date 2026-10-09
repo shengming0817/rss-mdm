@@ -117,6 +117,16 @@ where
                     if let Err(e) = crate::storage::admit(tx).await {
                         return Err(rejection(e, failure));
                     }
+                    if let Err(error) = tx
+                        .with_connection(move |c| {
+                            Box::pin(async move {
+                                rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await
+                            })
+                        })
+                        .await
+                    {
+                        return Err(rejection(Fault::Storage(error), failure));
+                    }
                     let f = operation.take().expect("one callback");
                     match f(context, tx).await {
                         Ok(v) => {

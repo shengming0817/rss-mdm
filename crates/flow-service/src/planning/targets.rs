@@ -17,6 +17,8 @@ async fn resolution(
     tenant: TenantId,
     scope: Uuid,
 ) -> Result<(Uuid, i64, ScopeInput, bool), SourceError> {
+    // The owner fence precedes Scope/head locks, matching publication transactions.
+    rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
     let status: serde_json::Value =
         sqlx::query_scalar("SELECT mdm_planning.scope_admission($1,NULL)")
             .bind(scope)
@@ -77,24 +79,7 @@ pub async fn admission_on(
     if !fresh {
         return Ok(ScopeAdmission::Pending);
     }
-    evaluate_on(
-        reader, c, tenant, run, entry, &frozen, channel, device, true,
-    )
-    .await
-}
-async fn evaluate_on(
-    reader: &dyn rss_mdm_inventory_service::objects::ObjectReader,
-    c: &mut PgConnection,
-    tenant: TenantId,
-    run: Uuid,
-    entry: i64,
-    frozen: &ScopeInput,
-    channel: Channel,
-    device: &str,
-    live: bool,
-) -> Result<ScopeAdmission, SourceError> {
-    let result =
-        explanation_on(c, tenant, run, frozen, channel, device, Some(reader), live).await?;
+    let result = explanation_on(c, tenant, run, &frozen, channel, device, Some(reader)).await?;
     Ok(match result {
         None => ScopeAdmission::Excluded,
         Some(result) if result.reasons.is_empty() => ScopeAdmission::Eligible { entry },
@@ -121,26 +106,22 @@ async fn explanation_on(
     channel: Channel,
     device: &str,
     reader: Option<&dyn rss_mdm_inventory_service::objects::ObjectReader>,
-    live: bool,
 ) -> Result<Option<s::MemberExplanation>, SourceError> {
     let rows = rows_for(c, tenant, run, channel, device).await?;
     let at = Timepoint::try_from(frozen.as_of).map_err(|_| SourceError::Invariant)?;
     let mut known = BTreeSet::new();
     let mut uncertain = BTreeSet::new();
     for row in &rows {
-        if row.unknown
-            || !row.input.verified
-            || (live
-                && current(
-                    reader.ok_or(SourceError::Invariant)?,
-                    c,
-                    tenant,
-                    &row.input,
-                    channel,
-                )
+        let invalid = if row.unknown || !row.input.verified {
+            true
+        } else if let Some(reader) = reader {
+            current(reader, c, tenant, &row.input, channel)
                 .await?
-                .is_none())
-        {
+                .is_none()
+        } else {
+            false
+        };
+        if invalid {
             uncertain.insert(row.source);
         } else {
             known.insert(row.source);
@@ -372,7 +353,7 @@ pub async fn result_admission_on(
     device: &str,
 ) -> Result<ScopeAdmission, SourceError> {
     let frozen = historical(c, tenant, scope, run).await?;
-    let result = explanation_on(c, tenant, run, &frozen, channel, device, None, false).await?;
+    let result = explanation_on(c, tenant, run, &frozen, channel, device, None).await?;
     Ok(match result {
         Some(result) if result.reasons.is_empty() => ScopeAdmission::Eligible { entry: 1 },
         Some(result)
@@ -423,5 +404,5 @@ pub async fn result_explanation_on(
     device: &str,
 ) -> Result<Option<s::MemberExplanation>, SourceError> {
     let frozen = historical(c, tenant, scope, run).await?;
-    explanation_on(c, tenant, run, &frozen, channel, device, None, false).await
+    explanation_on(c, tenant, run, &frozen, channel, device, None).await
 }

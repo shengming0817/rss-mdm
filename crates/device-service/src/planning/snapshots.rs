@@ -9,9 +9,7 @@ const PAGE: usize = 64;
 const OBJECTS: i64 = 1_000_000;
 const BYTES: i64 = 1_073_741_824;
 async fn coordinates(c: &mut PgConnection, tenant: TenantId) -> Result<(i64, i64), sqlx::Error> {
-    let watermark = rss_mdm_inventory_postgres::lock_watermark_in(c, tenant)
-        .await
-        .map_err(|_| sqlx::Error::Protocol("asset coordinate unavailable".into()))?;
+    let watermark = rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
     let relation=sqlx::query_scalar("SELECT coalesce((SELECT relation_revision FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid),0)").bind(tenant.to_string()).fetch_one(c).await?;
     Ok((watermark, relation))
 }

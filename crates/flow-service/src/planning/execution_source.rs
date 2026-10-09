@@ -98,6 +98,7 @@ impl SourceAuthority for ExecutionSource {
         version: Uuid,
     ) -> Pending<'a, bool> {
         Box::pin(async move {
+            rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
             let value:Option<Value>=sqlx::query_scalar("SELECT read_grant FROM mdm_planning.policy_source_grants WHERE tenant_id=$1::uuid AND version=$2").bind(tenant.to_string()).bind(version).fetch_optional(&mut *c).await?;
             let Some(value) = value else {
                 return Ok(false);

@@ -343,10 +343,9 @@ impl SoftwareAssignment {
             sqlx::query_as("SELECT count(*) FILTER(WHERE latest.result IS NOT NULL),count(*) FILTER(WHERE $5 AND latest.state->>'execution'='not_started' AND latest.state->>'cancellation'='none' AND latest.state->'delivery'->>'kind' IN('claimed','received') AND (latest.state->'delivery'->>'leaseUntil')::bigint>$6),count(*) FILTER(WHERE latest.result->>'effect'='unknown' OR latest.state->>'execution'='unknown'),count(*) FILTER(WHERE latest.result->>'effect'='waiting_reboot'),count(*) FILTER(WHERE latest.result->>'effect'='failed'),count(*) FILTER(WHERE latest.result->>'effect'='verified') FROM unnest($2::text[]) targets(device) LEFT JOIN LATERAL (SELECT state,result FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND policy_version=$3 AND device=targets.device AND occurrence LIKE $4 ORDER BY created_at DESC,id DESC LIMIT 1) latest ON true").bind(tenant).bind(target_rows).bind(version).bind(prefix).bind(optional).bind(now).fetch_one(c).await
         })).await?;
         let total = selected.len() as i64;
-        let targets = Some(selected);
         let unsupported = if let Some(service) = service {
             let mut supported = std::collections::BTreeSet::new();
-            for devices in targets.unwrap_or_default().chunks(128) {
+            for devices in selected.chunks(128) {
                 for target in crate::channels::agent_targets_in(
                     tx,
                     service.agent_store.clone(),

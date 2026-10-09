@@ -257,79 +257,6 @@ pub(crate) fn evidence(world: &World, members: &[Member]) -> BTreeMap<String, Ha
         .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn hardware(serial: &str, uuid: &str) -> Hardware {
-        Hardware {
-            serial: normalized(serial, false).into_iter().collect(),
-            uuid: normalized(uuid, true).into_iter().collect(),
-            ..Hardware::default()
-        }
-    }
-    #[test]
-    fn indexed_matching_counts_a_pair_once_and_keeps_conflicting_competitors() {
-        let endpoint = |device: &str, channel: Channel, hardware: Hardware| EndpointIdentity {
-            member: Member {
-                device: device.into(),
-                channel,
-                registration_id: uuid::Uuid::new_v4(),
-                generation: 1,
-            },
-            hardware,
-        };
-        let mut world = World::default();
-        world.insert(endpoint(
-            "mdm",
-            Channel::Mdm,
-            hardware("SERIAL", "6ba7b810-9dad-11d1-80b4-00c04fd430c8"),
-        ));
-        world.insert(endpoint(
-            "agent",
-            Channel::Agent,
-            hardware("SERIAL", "6ba7b810-9dad-11d1-80b4-00c04fd430c8"),
-        ));
-        let mdm = world.endpoints[0].clone();
-        let agent = world.peer(&mdm).unwrap().clone();
-        assert!(world.unique(&[mdm.member.clone(), agent.member.clone()], &mdm.hardware));
-        world.insert(endpoint(
-            "third",
-            Channel::Mdm,
-            hardware("SERIAL", "6ba7b811-9dad-11d1-80b4-00c04fd430c8"),
-        ));
-        assert!(world.peer(&mdm).is_none());
-        assert!(!world.unique(&[mdm.member, agent.member], &mdm.hardware));
-    }
-    #[test]
-    fn serial_or_uuid_matches_without_requiring_both() {
-        assert!(hardware(" 00-ab.c ", "").matches(&hardware("00-AB.C", "")));
-        assert!(!hardware("00-AB.C", "").matches(&hardware("AB.C", "")));
-        assert!(
-            hardware("", "6ba7b810-9dad-11d1-80b4-00c04fd430c8")
-                .matches(&hardware("", "6BA7B8109DAD11D180B400C04FD430C8"))
-        );
-        for placeholder in ["", "0000", "unknown", "To Be Filled By O.E.M."] {
-            assert!(!hardware(placeholder, "").matches(&hardware(placeholder, "")));
-        }
-        assert!(normalized("ffffffff-ffff-ffff-ffff-ffffffffffff", true).is_none());
-    }
-    #[test]
-    fn contradictions_block_but_duplicate_keys_still_compete() {
-        let a = hardware("serial", "6ba7b810-9dad-11d1-80b4-00c04fd430c8");
-        let b = hardware("serial", "6ba7b811-9dad-11d1-80b4-00c04fd430c8");
-        assert!(!a.matches(&b));
-        assert!(a.shares_key(&b));
-        let mut bad = a.clone();
-        bad.serial.insert("other".into());
-        assert!(!bad.matches(&a));
-        let mut vendor_a = a.clone();
-        vendor_a.manufacturer.insert("ACME".into());
-        let mut vendor_b = a.clone();
-        vendor_b.manufacturer.insert("OTHER".into());
-        assert!(!vendor_a.matches(&vendor_b));
-    }
-}
-
 pub(crate) async fn endpoint_page(
     c: &mut PgConnection,
     tenant: TenantId,
@@ -418,4 +345,77 @@ pub(crate) fn endpoint_world(endpoints: Vec<EndpointIdentity>) -> World {
         world.insert(endpoint);
     }
     world
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn hardware(serial: &str, uuid: &str) -> Hardware {
+        Hardware {
+            serial: normalized(serial, false).into_iter().collect(),
+            uuid: normalized(uuid, true).into_iter().collect(),
+            ..Hardware::default()
+        }
+    }
+    #[test]
+    fn indexed_matching_counts_a_pair_once_and_keeps_conflicting_competitors() {
+        let endpoint = |device: &str, channel: Channel, hardware: Hardware| EndpointIdentity {
+            member: Member {
+                device: device.into(),
+                channel,
+                registration_id: uuid::Uuid::new_v4(),
+                generation: 1,
+            },
+            hardware,
+        };
+        let mut world = World::default();
+        world.insert(endpoint(
+            "mdm",
+            Channel::Mdm,
+            hardware("SERIAL", "6ba7b810-9dad-11d1-80b4-00c04fd430c8"),
+        ));
+        world.insert(endpoint(
+            "agent",
+            Channel::Agent,
+            hardware("SERIAL", "6ba7b810-9dad-11d1-80b4-00c04fd430c8"),
+        ));
+        let mdm = world.endpoints[0].clone();
+        let agent = world.peer(&mdm).unwrap().clone();
+        assert!(world.unique(&[mdm.member.clone(), agent.member.clone()], &mdm.hardware));
+        world.insert(endpoint(
+            "third",
+            Channel::Mdm,
+            hardware("SERIAL", "6ba7b811-9dad-11d1-80b4-00c04fd430c8"),
+        ));
+        assert!(world.peer(&mdm).is_none());
+        assert!(!world.unique(&[mdm.member, agent.member], &mdm.hardware));
+    }
+    #[test]
+    fn serial_or_uuid_matches_without_requiring_both() {
+        assert!(hardware(" 00-ab.c ", "").matches(&hardware("00-AB.C", "")));
+        assert!(!hardware("00-AB.C", "").matches(&hardware("AB.C", "")));
+        assert!(
+            hardware("", "6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+                .matches(&hardware("", "6BA7B8109DAD11D180B400C04FD430C8"))
+        );
+        for placeholder in ["", "0000", "unknown", "To Be Filled By O.E.M."] {
+            assert!(!hardware(placeholder, "").matches(&hardware(placeholder, "")));
+        }
+        assert!(normalized("ffffffff-ffff-ffff-ffff-ffffffffffff", true).is_none());
+    }
+    #[test]
+    fn contradictions_block_but_duplicate_keys_still_compete() {
+        let a = hardware("serial", "6ba7b810-9dad-11d1-80b4-00c04fd430c8");
+        let b = hardware("serial", "6ba7b811-9dad-11d1-80b4-00c04fd430c8");
+        assert!(!a.matches(&b));
+        assert!(a.shares_key(&b));
+        let mut bad = a.clone();
+        bad.serial.insert("other".into());
+        assert!(!bad.matches(&a));
+        let mut vendor_a = a.clone();
+        vendor_a.manufacturer.insert("ACME".into());
+        let mut vendor_b = a.clone();
+        vendor_b.manufacturer.insert("OTHER".into());
+        assert!(!vendor_a.matches(&vendor_b));
+    }
 }

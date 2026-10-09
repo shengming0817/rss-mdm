@@ -253,7 +253,7 @@ class ModuleImpactTests(unittest.TestCase):
     def test_app_helpers_select_all_actual_consumers(self):
         self.assertEqual(self.selected('crates/app/tests/support/software.rs'), {
             'agent.configurations','planning.self_service','software.http','content.http','content.mirror','content.gc','content.storage',
-            'planning.software','planning.policy','planning.http','apple.policy','execution.software.offer','execution.software.content','execution.software.recovery'})
+            'planning.software','planning.policy','planning.http','planning.group_scope','apple.policy','execution.software.offer','execution.software.content','execution.software.recovery'})
         self.assertEqual(self.selected('crates/app/tests/support/process.rs'),
                          {'inventory.runtime','execution.commands.recovery'})
         self.assertEqual(self.selected('crates/app/tests/execution/support.rs'),
