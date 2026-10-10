@@ -512,31 +512,30 @@ pub(crate) async fn ready_rollout(
     router: &Router,
     policy: Uuid,
 ) -> Result<(StatusCode, Value)> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
-    loop {
-        let reply = author
-            .call(
-                router,
-                Method::GET,
-                &format!("/api/v1/policies/{policy}/software/rollout"),
-                None,
-            )
-            .await?;
-        ensure!(reply.0 == StatusCode::OK, "rollout read failed: {reply:?}");
-        let stages = reply.1["stages"]
-            .as_array()
-            .ok_or_else(|| anyhow::anyhow!("rollout stages missing"))?;
-        if !stages.is_empty() && stages.iter().all(|stage| stage["ready"] == true) {
-            ensure!(
-                stages.iter().all(|stage| stage["asOf"].as_i64().is_some()),
-                "ready rollout has no timestamp: {reply:?}"
-            );
-            return Ok(reply);
+    tokio::time::timeout(Duration::from_secs(45), async {
+        loop {
+            let reply = author
+                .call(
+                    router,
+                    Method::GET,
+                    &format!("/api/v1/policies/{policy}/software/rollout"),
+                    None,
+                )
+                .await?;
+            ensure!(reply.0 == StatusCode::OK, "rollout read failed: {reply:?}");
+            let stages = reply.1["stages"]
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("rollout stages missing"))?;
+            if !stages.is_empty() && stages.iter().all(|stage| stage["ready"] == true) {
+                ensure!(
+                    stages.iter().all(|stage| stage["asOf"].as_i64().is_some()),
+                    "ready rollout has no timestamp: {reply:?}"
+                );
+                return Ok(reply);
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        ensure!(
-            tokio::time::Instant::now() < deadline,
-            "rollout statistics did not become ready: {reply:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("rollout statistics did not become ready for {policy}"))?
 }
