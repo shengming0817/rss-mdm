@@ -130,8 +130,11 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
         "AvailableInstall must never queue before an explicit request"
     );
     let awaiting = ready_rollout(&mut author, &router, available).await?;
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{}' AND policy_version IN(SELECT id FROM mdm_policy.versions WHERE policy='{available}')",case_tenant()))?.trim()=="0", "statistics created an Available execution");
     ensure!(
-        awaiting.1["stages"][0]["reported"] == 0 && awaiting.1["stages"][0]["waitingUser"] == 0
+        awaiting.1["stages"][0]["totalTargets"] == 1
+            && awaiting.1["stages"][0]["reported"] == 0
+            && awaiting.1["stages"][0]["waitingUser"] == 0
     );
     write(
         &mut author,

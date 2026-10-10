@@ -81,8 +81,9 @@ pub async fn enqueue_change_in(
         &crate::automation::JobInput::PolicyReconcile { policy: policy.id },
     )
     .await?;
-    // Native templates reuse this Policy recovery owner for due reads and pending-run recovery.
+    // Software statistics also need this owner before any execution exists.
     if old.is_some()
+        || policy.definition.action.kind() == rss_mdm_policy::ActionKind::Software
         || policy.definition.action.kind().assignment_behavior()
             == rss_mdm_policy::AssignmentBehavior::NativeCollectionRecovery
     {

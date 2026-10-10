@@ -772,7 +772,7 @@ consume(('crates/registration-service/src/enrollment.rs', 'crates/registration-s
 consume(('crates/execution-service/src/remote_operations/*',), 'planning.remote')
 consume(('crates/execution-service/src/sources/software.rs',),
         'planning.software execution.software.offer execution.software.recovery')
-consume(('crates/flow-service/src/planning/policies/*',), 'planning.policy planning.agent_policy planning.frequency')
+consume(('crates/flow-service/src/planning/policies/*',), 'planning.policy planning.agent_policy planning.frequency planning.software execution.software.offer planning.self_service')
 consume(('crates/flow-service/src/automation/jobs.rs',),
         'assets.queries assets.group_input compliance.http compliance.group_input planning.group_scope planning.scope planning.policy planning.agent_policy planning.frequency planning.recovery diagnostics.http')
 consume(('crates/management-http/src/planning/mod.rs',
