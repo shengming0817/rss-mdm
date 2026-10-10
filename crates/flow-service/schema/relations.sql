@@ -216,6 +216,8 @@ GRANT ALL ON FUNCTION rss_transactional_messaging.claim_outbox(p_tenant uuid, p_
 
 GRANT ALL ON FUNCTION rss_transactional_messaging.claim_outbox(p_tenant uuid, p_domain text, p_limit integer, p_ttl_ms bigint) TO mdm_command_runtime;
 
+GRANT EXECUTE ON FUNCTION rss_transactional_messaging.next_outbox_wakeup(uuid,text) TO mdm_command_runtime;
+
 REVOKE ALL ON FUNCTION rss_transactional_messaging.decode_outbox_message(data bytea) FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION rss_transactional_messaging.guard_archive_generation() FROM PUBLIC;

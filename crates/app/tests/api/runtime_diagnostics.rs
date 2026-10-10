@@ -550,11 +550,13 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let mut startup = stack.startup()?;
-    let audit =
-        crate::identity_audit::Worker::open(&config, fixture.source.identity_audit.clone(), |r| {
-            startup.stage_resource(r)
-        })
-        .await?;
+    let audit = crate::identity_audit::Worker::open(
+        &config,
+        fixture.source.identity_audit.clone(),
+        Arc::default(),
+        |r| startup.stage_resource(r),
+    )
+    .await?;
     let automation = crate::automation::Automation::connect(
         fixture.flow.planning.clone(),
         fixture.flow.assets.clone(),
