@@ -69,9 +69,7 @@ impl super::super::Planning {
                 }
                 _ => 0,
             };
-            let excluded = assignment.admission
-                == rss_mdm_execution_service::source_authority::ScopeAdmission::Excluded;
-            tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_planning.policy_assignments(tenant_id,policy,version,object,channel,input,availability,reason,target,scope_result,entry_revision) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT(tenant_id,policy,version,object,channel) DO UPDATE SET input=EXCLUDED.input,availability=EXCLUDED.availability,reason=EXCLUDED.reason,target=EXCLUDED.target,scope_result=EXCLUDED.scope_result,entry_revision=CASE WHEN $12 THEN 0 WHEN mdm_planning.policy_assignments.target IS DISTINCT FROM EXCLUDED.target THEN EXCLUDED.entry_revision ELSE greatest(mdm_planning.policy_assignments.entry_revision,CASE WHEN mdm_planning.policy_assignments.entry_revision=0 THEN EXCLUDED.entry_revision ELSE 0 END) END").bind(tenant).bind(policy).bind(version).bind(key).bind(channel).bind(input).bind(if available {"ready"}else{"unavailable"}).bind(reason).bind(target).bind(run).bind(entry).bind(excluded).execute(c).await?;Ok(())})).await?;
+            tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_planning.policy_assignments(tenant_id,policy,version,object,channel,input,availability,reason,target,scope_result,entry_revision) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT(tenant_id,policy,version,object,channel) DO UPDATE SET input=EXCLUDED.input,availability=EXCLUDED.availability,reason=EXCLUDED.reason,target=EXCLUDED.target,scope_result=EXCLUDED.scope_result,entry_revision=EXCLUDED.entry_revision").bind(tenant).bind(policy).bind(version).bind(key).bind(channel).bind(input).bind(if available {"ready"}else{"unavailable"}).bind(reason).bind(target).bind(run).bind(entry).execute(c).await?;Ok(())})).await?;
             if let Some(target) = assignment.target {
                 devices.push(target.device);
             }

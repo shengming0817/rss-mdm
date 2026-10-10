@@ -5,6 +5,10 @@ WITH tables AS (
  WHERE n.nspname='mdm_commands' AND c.relkind='r'
 )
 SELECT jsonb_build_object(
+ 'softwareResults',(SELECT pg_get_functiondef('mdm_commands.advance_software_results()'::regprocedure)),
+ 'softwareBindings',(SELECT pg_get_functiondef('mdm_commands.advance_software_bindings()'::regprocedure)),
+ 'softwareResultTrigger',(SELECT jsonb_build_array(tgenabled,pg_get_triggerdef(oid)) FROM pg_trigger WHERE tgrelid='mdm_commands.action_runs'::regclass AND tgname='software_results'),
+ 'softwareBindingTrigger',(SELECT jsonb_build_array(tgenabled,pg_get_triggerdef(oid)) FROM pg_trigger WHERE tgrelid='mdm_agent.bindings'::regclass AND tgname='software_bindings'),
  'columns', (SELECT jsonb_agg(jsonb_build_array(t.relname,a.attname,
    format_type(a.atttypid,a.atttypmod),a.attnotnull,pg_get_expr(d.adbin,d.adrelid),
    a.attidentity,a.attgenerated) ORDER BY t.relname COLLATE "C",a.attnum)

@@ -90,17 +90,7 @@ pub async fn eligible_in(
         )
         .await?
         {
-            crate::source_authority::ScopeAdmission::Eligible { entry } => {
-                let tenant = tx.tenant_id().to_string();
-                let id = policy.id;
-                let version = policy.version;
-                let device = device.to_owned();
-                let channel =
-                    crate::source_authority::action_channel(policy.definition.action.kind())
-                        .as_str();
-                let stable=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Option<i64>>("SELECT min(entry_revision) FROM mdm_planning.policy_assignments WHERE tenant_id=$1::uuid AND policy=$2 AND version=$3 AND channel=$4 AND target->>'device'=$5 AND entry_revision>0").bind(tenant).bind(id).bind(version).bind(channel).bind(device).fetch_one(c).await})).await?;
-                Some(stable.unwrap_or(entry))
-            }
+            crate::source_authority::ScopeAdmission::Eligible { entry } => Some(entry),
             _ => None,
         },
     )

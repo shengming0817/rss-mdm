@@ -295,7 +295,7 @@ GRANT SELECT,INSERT ON TABLE mdm_planning.scope_results TO mdm_flow_runtime;
 
 GRANT SELECT ON TABLE mdm_planning.scope_results TO mdm_command_runtime;
 
-GRANT UPDATE(entry_revision) ON TABLE mdm_planning.scope_results TO mdm_flow_runtime;
+
 
 GRANT SELECT,INSERT ON TABLE mdm_planning.scope_runs TO mdm_flow_runtime;
 
@@ -557,3 +557,12 @@ COMMIT;
 
 -- Native Agent registration rechecks only the frozen source read authority.
 GRANT SELECT ON mdm_planning.policy_source_grants TO mdm_access;
+
+ALTER TABLE mdm_planning.scope_channel_results ADD FOREIGN KEY(tenant_id,run) REFERENCES mdm_planning.scope_runs(tenant_id,id);
+GRANT SELECT,INSERT ON mdm_planning.scope_channel_results TO mdm_flow_runtime;
+GRANT SELECT ON mdm_planning.scope_channel_results TO mdm_command_runtime;
+GRANT UPDATE(projection_cursor) ON mdm_planning.scope_runs TO mdm_flow_runtime;
+GRANT UPDATE(matched,pending,target,entry_revision) ON mdm_planning.scope_channel_results TO mdm_flow_runtime;
+
+GRANT UPDATE(channel_hashes) ON mdm_planning.scope_runs TO mdm_flow_runtime;
+GRANT UPDATE(agent_resolution_revision,mdm_resolution_revision) ON mdm_planning.scopes TO mdm_flow_runtime;

@@ -2,6 +2,8 @@ WITH tables AS (SELECT c.oid,c.relname FROM pg_catalog.pg_class c JOIN pg_catalo
 SELECT jsonb_build_object(
  'policyLock',(SELECT pg_get_functiondef('mdm_planning.policy_lock(uuid)'::regprocedure)),
  'scopeAdmission',(SELECT pg_get_functiondef('mdm_planning.scope_admission(uuid,text)'::regprocedure)),
+ 'channelGuard',(SELECT pg_get_functiondef('mdm_planning.guard_scope_channel_result()'::regprocedure)),
+ 'channelGuardTrigger',(SELECT jsonb_build_array(tgenabled,pg_get_triggerdef(oid)) FROM pg_trigger WHERE tgrelid='mdm_planning.scope_channel_results'::regclass AND tgname='scope_channel_result_guard'),
  'columns', (SELECT jsonb_agg(jsonb_build_array(t.relname,a.attname,
    format_type(a.atttypid,a.atttypmod),a.attnotnull,pg_get_expr(d.adbin,d.adrelid),
    a.attidentity,a.attgenerated) ORDER BY t.relname COLLATE "C",a.attnum)

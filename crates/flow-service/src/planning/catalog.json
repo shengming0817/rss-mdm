@@ -1,4 +1,9 @@
 {
+  "channelGuard": "CREATE OR REPLACE FUNCTION mdm_planning.guard_scope_channel_result()\n RETURNS trigger\n LANGUAGE plpgsql\n SET search_path TO 'pg_catalog'\nAS $function$\nDECLARE p text;\nBEGIN\n SELECT phase INTO STRICT p FROM mdm_planning.scope_runs WHERE tenant_id=NEW.tenant_id AND id=NEW.run;\n IF p NOT IN('sources','project') THEN RAISE EXCEPTION 'scope channel result is immutable' USING ERRCODE='23514'; END IF;\n RETURN NEW;\nEND;$function$\n",
+  "channelGuardTrigger": [
+    "O",
+    "CREATE TRIGGER scope_channel_result_guard BEFORE INSERT OR UPDATE ON mdm_planning.scope_channel_results FOR EACH ROW EXECUTE FUNCTION mdm_planning.guard_scope_channel_result()"
+  ],
   "columns": [
     [
       "asset_dispatch",
@@ -649,6 +654,78 @@
       ""
     ],
     [
+      "scope_channel_results",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_channel_results",
+      "run",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_channel_results",
+      "channel",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_channel_results",
+      "device",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_channel_results",
+      "matched",
+      "boolean",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_channel_results",
+      "pending",
+      "boolean",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_channel_results",
+      "target",
+      "jsonb",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_channel_results",
+      "entry_revision",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
       "scope_results",
       "tenant_id",
       "uuid",
@@ -690,15 +767,6 @@
       "jsonb",
       true,
       null,
-      "",
-      ""
-    ],
-    [
-      "scope_results",
-      "entry_revision",
-      "bigint",
-      true,
-      "0",
       "",
       ""
     ],
@@ -834,6 +902,24 @@
       "text",
       false,
       null,
+      "",
+      ""
+    ],
+    [
+      "scope_runs",
+      "projection_cursor",
+      "text",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "scope_runs",
+      "channel_hashes",
+      "jsonb",
+      true,
+      "jsonb_build_object('agent', repeat('0'::text, 64), 'mdm', repeat('0'::text, 64))",
       "",
       ""
     ],
@@ -1032,6 +1118,24 @@
       "uuid",
       false,
       null,
+      "",
+      ""
+    ],
+    [
+      "scopes",
+      "agent_resolution_revision",
+      "bigint",
+      true,
+      "0",
+      "",
+      ""
+    ],
+    [
+      "scopes",
+      "mdm_resolution_revision",
+      "bigint",
+      true,
+      "0",
       "",
       ""
     ],
@@ -1393,10 +1497,45 @@
       true
     ],
     [
-      "scope_results",
-      "scope_results_entry_revision_check",
+      "scope_channel_results",
+      "scope_channel_results_channel_check",
+      "c",
+      "CHECK ((channel = ANY (ARRAY['agent'::text, 'mdm'::text])))",
+      true
+    ],
+    [
+      "scope_channel_results",
+      "scope_channel_results_device_check",
+      "c",
+      "CHECK ((octet_length(device) <= 256))",
+      true
+    ],
+    [
+      "scope_channel_results",
+      "scope_channel_results_entry_revision_check",
       "c",
       "CHECK ((entry_revision >= 0))",
+      true
+    ],
+    [
+      "scope_channel_results",
+      "scope_channel_results_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, run, channel, device)",
+      true
+    ],
+    [
+      "scope_channel_results",
+      "scope_channel_results_target_check",
+      "c",
+      "CHECK ((octet_length((target)::text) <= 1024))",
+      true
+    ],
+    [
+      "scope_channel_results",
+      "scope_channel_results_tenant_id_run_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, run) REFERENCES mdm_planning.scope_runs(tenant_id, id)",
       true
     ],
     [
@@ -1459,7 +1598,7 @@
       "scope_runs",
       "scope_runs_phase_check",
       "c",
-      "CHECK ((phase = ANY (ARRAY['sources'::text, 'evaluate'::text, 'ready'::text, 'published'::text, 'superseded'::text])))",
+      "CHECK ((phase = ANY (ARRAY['sources'::text, 'evaluate'::text, 'project'::text, 'ready'::text, 'published'::text, 'superseded'::text])))",
       true
     ],
     [
@@ -1565,6 +1704,20 @@
       "scope_versions_tenant_id_id_fkey",
       "f",
       "FOREIGN KEY (tenant_id, id) REFERENCES mdm_planning.scopes(tenant_id, id)",
+      true
+    ],
+    [
+      "scopes",
+      "scopes_agent_resolution_revision_check",
+      "c",
+      "CHECK ((agent_resolution_revision >= 0))",
+      true
+    ],
+    [
+      "scopes",
+      "scopes_mdm_resolution_revision_check",
+      "c",
+      "CHECK ((mdm_resolution_revision >= 0))",
       true
     ],
     [
@@ -1705,6 +1858,22 @@
       true
     ],
     [
+      "scope_channel_results",
+      "scope_channel_results_cursor",
+      "CREATE INDEX scope_channel_results_cursor ON mdm_planning.scope_channel_results USING btree (tenant_id, run, (((channel || ':'::text) || device)))",
+      true,
+      true,
+      true
+    ],
+    [
+      "scope_channel_results",
+      "scope_channel_results_pkey",
+      "CREATE UNIQUE INDEX scope_channel_results_pkey ON mdm_planning.scope_channel_results USING btree (tenant_id, run, channel, device)",
+      true,
+      true,
+      true
+    ],
+    [
       "scope_results",
       "scope_results_members",
       "CREATE INDEX scope_results_members ON mdm_planning.scope_results USING btree (tenant_id, run, device) WHERE matched",
@@ -1724,6 +1893,14 @@
       "scope_runs",
       "scope_runs_pkey",
       "CREATE UNIQUE INDEX scope_runs_pkey ON mdm_planning.scope_runs USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "scope_source_members",
+      "scope_source_members_channels",
+      "CREATE INDEX scope_source_members_channels ON mdm_planning.scope_source_members USING gin (((input -> 'members'::text)) jsonb_path_ops)",
       true,
       true,
       true

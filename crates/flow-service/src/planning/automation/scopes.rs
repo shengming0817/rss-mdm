@@ -206,7 +206,7 @@ impl Planning {
     ) -> Result<()> {
         let tenant = self.tenant.to_string();
         let row=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT phase,input::text,fingerprint,definition_revision,asset_watermark,source_index,source_cursor,evaluation_cursor,object_count,member_count FROM mdm_planning.scope_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE")
+            sqlx::query("SELECT phase,input::text,fingerprint,definition_revision,asset_watermark,source_index,source_cursor,evaluation_cursor,projection_cursor,object_count,member_count FROM mdm_planning.scope_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE")
                 .bind(tenant).bind(id.to_string()).fetch_optional(c).await
         })).await?;
         let Some(row) = row else {
@@ -317,8 +317,12 @@ impl Planning {
                     unknown.push(uncertain);
                     inputs.push(checked_input(serde_json::to_value(input))?);
                 }
+                let projection_target = frozen.definition.targets.contains(&source.reference);
                 let tenant = self.tenant.to_string();
                 tx.with_connection(move |c|Box::pin(async move {
+                    if projection_target {
+                        sqlx::query("INSERT INTO mdm_planning.scope_channel_results(tenant_id,run,channel,device,matched,pending,target,entry_revision) SELECT $1::uuid,$2::uuid,m->>'channel',m->>'device',false,false,m,0 FROM unnest($3::jsonb[]) i CROSS JOIN LATERAL jsonb_array_elements(i->'members') m GROUP BY m ON CONFLICT(tenant_id,run,channel,device) DO UPDATE SET pending=mdm_planning.scope_channel_results.pending OR mdm_planning.scope_channel_results.target IS DISTINCT FROM EXCLUDED.target").bind(&tenant).bind(id).bind(&inputs).execute(&mut *c).await?;
+                    }
                     sqlx::query("INSERT INTO mdm_planning.scope_source_members(tenant_id,run,source,device,unknown,input) SELECT $1::uuid,$2::uuid,$3,d,u,i FROM unnest($4::text[],$5::boolean[],$6::jsonb[]) AS p(d,u,i)")
                         .bind(&tenant).bind(id.to_string()).bind(index as i32).bind(devices).bind(unknown).bind(inputs).execute(&mut *c).await?;
                     sqlx::query("UPDATE mdm_planning.scope_runs SET source_index=$3,source_cursor=$4 WHERE tenant_id=$1::uuid AND id=$2::uuid")
@@ -334,6 +338,16 @@ impl Planning {
                     row.try_get("evaluation_cursor")?,
                     row.try_get::<i64, _>("object_count")? as usize,
                     watermark,
+                )
+                .await
+            }
+            "project" => {
+                self.project_scope_page_in(
+                    tx,
+                    id,
+                    scope,
+                    &frozen,
+                    row.try_get("projection_cursor")?,
                 )
                 .await
             }
@@ -404,10 +418,81 @@ impl Planning {
         tx.with_connection(move |c|Box::pin(async move {
             sqlx::query("INSERT INTO mdm_planning.scope_results(tenant_id,run,device,matched,explanation) SELECT $1::uuid,$2::uuid,d,m,e::jsonb FROM unnest($3::text[],$4::boolean[],$5::text[]) AS p(d,m,e)")
                 .bind(&tenant).bind(id.to_string()).bind(devices).bind(matched).bind(explanations).execute(&mut *c).await?;
-            sqlx::query("UPDATE mdm_planning.scope_runs SET object_count=object_count+$3,member_count=member_count+$4,evaluation_cursor=$5,phase=$6,identity_revision=greatest(identity_revision,$7),result_fingerprint=CASE WHEN $6='ready' THEN sha256(fingerprint||int8send(greatest(identity_revision,$7))) ELSE NULL END WHERE tenant_id=$1::uuid AND id=$2::uuid")
-                .bind(tenant).bind(id.to_string()).bind(count).bind(members).bind(last).bind(if more {"evaluate"}else{"ready"}).bind(identity).execute(c).await?;Ok(())
+            sqlx::query("UPDATE mdm_planning.scope_runs SET object_count=object_count+$3,member_count=member_count+$4,evaluation_cursor=$5,phase=$6,identity_revision=greatest(identity_revision,$7),result_fingerprint=CASE WHEN $6='project' THEN sha256(fingerprint||int8send(greatest(identity_revision,$7))) ELSE NULL END WHERE tenant_id=$1::uuid AND id=$2::uuid")
+                .bind(tenant).bind(id.to_string()).bind(count).bind(members).bind(last).bind(if more {"evaluate"}else{"project"}).bind(identity).execute(c).await?;Ok(())
         })).await?;
         Ok(())
+    }
+
+    // Fixed source evidence is projected before publication. Policy reconciliation cannot
+    // erase an intermediate published exit, even when it observes only the latest run.
+    async fn project_scope_page_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: Uuid,
+        scope: Uuid,
+        frozen: &ScopeInput,
+        after: Option<String>,
+    ) -> Result<()> {
+        let tenant = self.tenant;
+        let (previous, epoch) = self
+            .scope_projection_head_in(tx, id, scope, after.is_none())
+            .await?;
+        let page=tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query_as::<_,(String,String,String)>("SELECT channel,device,channel||':'||device AS key FROM mdm_planning.scope_channel_results WHERE tenant_id=$1::uuid AND run=$2 AND channel||':'||device>coalesce($3,'') COLLATE \"C\" ORDER BY (channel||':'||device) COLLATE \"C\" LIMIT 17").bind(tenant.to_string()).bind(id).bind(after).fetch_all(c).await
+        })).await?;
+        let hashes:serde_json::Value=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT channel_hashes FROM mdm_planning.scope_runs WHERE tenant_id=$1::uuid AND id=$2").bind(tenant.to_string()).bind(id).fetch_one(c).await})).await?;
+        let mut hashes: std::collections::BTreeMap<String, String> =
+            stored(serde_json::from_value(hashes))?;
+        for (channel, device, _) in page.iter().take(16) {
+            let channel = match channel.as_str() {
+                "agent" => rss_mdm_inventory::Channel::Agent,
+                "mdm" => rss_mdm_inventory::Channel::Mdm,
+                _ => return Err(Error::Malformed.into()),
+            };
+            let device = device.clone();
+            let frozen = frozen.clone();
+            let row_hash=tx.with_connection(move |c|Box::pin(async move {
+                let result=super::super::targets::explanation_on(c,tenant,id,&frozen,channel,&device,None).await.map_err(|_|sqlx::Error::Protocol("scope projection invalid".into()))?;
+                let identities:Vec<serde_json::Value>=sqlx::query_scalar("SELECT DISTINCT m FROM mdm_planning.scope_source_members s CROSS JOIN LATERAL jsonb_array_elements(s.input->'members') m WHERE s.tenant_id=$1::uuid AND s.run=$2 AND s.input->'members' @> jsonb_build_array(jsonb_build_object('device',$4::text,'channel',$3::text)) AND m->>'channel'=$3 AND m->>'device'=$4").bind(tenant.to_string()).bind(id).bind(channel.as_str()).bind(&device).fetch_all(&mut *c).await?;
+                let target=identities.first().ok_or_else(||sqlx::Error::Protocol("scope target missing".into()))?.clone();
+                let pending=identities.len()!=1 || result.as_ref().is_some_and(|r|r.reasons.iter().any(|r|matches!(r,rss_mdm_scope::ExclusionReason::UnknownTarget|rss_mdm_scope::ExclusionReason::UnknownLimitation|rss_mdm_scope::ExclusionReason::UnknownExclusion)));
+                let matched=!pending && result.as_ref().is_some_and(|r|r.reasons.is_empty());
+                let entry=if matched || pending {sqlx::query_scalar::<_,i64>("SELECT entry_revision FROM mdm_planning.scope_channel_results WHERE tenant_id=$1::uuid AND run=$2 AND channel=$3 AND device=$4 AND (matched OR pending) AND entry_revision>0 AND target=$5").bind(tenant.to_string()).bind(previous).bind(channel.as_str()).bind(&device).bind(&target).fetch_optional(&mut *c).await?.unwrap_or(if matched {epoch}else{0})}else{0};
+                sqlx::query("UPDATE mdm_planning.scope_channel_results SET matched=$5,pending=$6,target=$7,entry_revision=$8 WHERE tenant_id=$1::uuid AND run=$2 AND channel=$3 AND device=$4").bind(tenant.to_string()).bind(id).bind(channel.as_str()).bind(&device).bind(matched).bind(pending).bind(&target).bind(entry).execute(c).await?;
+                Ok(serde_json::json!([device,matched,pending,target]))
+            })).await?;
+            use sha2::Digest;
+            let key = channel.as_str();
+            let previous = hashes.get(key).ok_or(Error::Malformed)?;
+            let bytes = checked_input(serde_json::to_vec(&row_hash))?;
+            let mut digest = sha2::Sha256::new();
+            digest.update(previous.as_bytes());
+            digest.update((bytes.len() as u64).to_be_bytes());
+            digest.update(bytes);
+            hashes.insert(key.into(), format!("{:x}", digest.finalize()));
+        }
+        let hashes = checked_input(serde_json::to_value(hashes))?;
+        let tenant = tenant.to_string();
+        let next = page.iter().take(16).next_back().map(|r| r.2.clone());
+        let more = page.len() > 16;
+        tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_planning.scope_runs SET projection_cursor=$3,phase=$4,channel_hashes=$5 WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).bind(next).bind(if more{"project"}else{"ready"}).bind(hashes).execute(c).await?;Ok(())})).await?;
+        Ok(())
+    }
+    async fn scope_projection_head_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: Uuid,
+        scope: Uuid,
+        first: bool,
+    ) -> Result<(Option<Uuid>, i64)> {
+        let tenant = self.tenant.to_string();
+        Ok(tx.with_connection(move|c|Box::pin(async move {
+            let (previous,calculation)=sqlx::query_as::<_,(Option<Uuid>,i64)>("SELECT resolution,calculation_revision FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(&tenant).bind(scope).fetch_one(&mut *c).await?;
+            if first {sqlx::query("UPDATE mdm_planning.scope_runs SET previous_resolution=$3 WHERE tenant_id=$1::uuid AND id=$2").bind(&tenant).bind(id).bind(previous).execute(&mut *c).await?;}
+            else {let captured:Option<Uuid>=sqlx::query_scalar("SELECT previous_resolution FROM mdm_planning.scope_runs WHERE tenant_id=$1::uuid AND id=$2").bind(&tenant).bind(id).fetch_one(&mut *c).await?;if captured!=previous{return Err(sqlx::Error::Protocol("scope projection superseded".into()));}}
+            Ok((previous,calculation.checked_add(1).ok_or_else(||sqlx::Error::Protocol("scope entry overflow".into()))?))
+        })).await?)
     }
 
     async fn publish_scope_in(
@@ -435,12 +520,13 @@ impl Planning {
             let changed=sqlx::query_scalar::<_,bool>("WITH old AS (SELECT device,matched,explanation->'reasons' AS reasons,explanation->'identityRevision' AS identity FROM mdm_planning.scope_results WHERE tenant_id=$1::uuid AND run=$2), new AS (SELECT device,matched,explanation->'reasons' AS reasons,explanation->'identityRevision' AS identity FROM mdm_planning.scope_results WHERE tenant_id=$1::uuid AND run=$3) SELECT EXISTS((SELECT * FROM old EXCEPT SELECT * FROM new) UNION ALL (SELECT * FROM new EXCEPT SELECT * FROM old))")
                 .bind(&tenant).bind(previous).bind(id).fetch_one(&mut *c).await? || previous.is_none();
             let source_changed=sqlx::query_scalar::<_,bool>("WITH old AS (SELECT source,device,unknown,input FROM mdm_planning.scope_source_members WHERE tenant_id=$1::uuid AND run=$2), new AS (SELECT source,device,unknown,input FROM mdm_planning.scope_source_members WHERE tenant_id=$1::uuid AND run=$3) SELECT EXISTS((SELECT * FROM old EXCEPT SELECT * FROM new) UNION ALL (SELECT * FROM new EXCEPT SELECT * FROM old))").bind(&tenant).bind(previous).bind(id).fetch_one(&mut *c).await?;
-            let changed = changed || source_changed;
+            let (agent_changed,mdm_changed)=sqlx::query_as::<_,(bool,bool)>("SELECT o.id IS NULL OR n.channel_hashes->>'agent' IS DISTINCT FROM o.channel_hashes->>'agent',o.id IS NULL OR n.channel_hashes->>'mdm' IS DISTINCT FROM o.channel_hashes->>'mdm' FROM mdm_planning.scope_runs n LEFT JOIN mdm_planning.scope_runs o ON(o.tenant_id,o.id)=(n.tenant_id,$2) WHERE n.tenant_id=$1::uuid AND n.id=$3").bind(&tenant).bind(previous).bind(id).fetch_one(&mut *c).await?;
+            let changed = changed || source_changed || agent_changed || mdm_changed;
             let version=old_version.checked_add(i64::from(changed)).ok_or_else(||sqlx::Error::Protocol("scope revision overflow".into()))?;
-            sqlx::query("UPDATE mdm_planning.scope_results n SET entry_revision=coalesce((SELECT o.entry_revision FROM mdm_planning.scope_results o WHERE o.tenant_id=n.tenant_id AND o.run=$3 AND o.device=n.device AND o.matched),$4) WHERE n.tenant_id=$1::uuid AND n.run=$2 AND n.matched")
-                .bind(&tenant).bind(id).bind(previous).bind(version).execute(&mut *c).await?;
+            let captured:Option<Uuid>=sqlx::query_scalar("SELECT previous_resolution FROM mdm_planning.scope_runs WHERE tenant_id=$1::uuid AND id=$2").bind(&tenant).bind(id).fetch_one(&mut *c).await?;
+            if captured!=previous {return Err(sqlx::Error::Protocol("scope projection superseded".into()));}
             sqlx::query("UPDATE mdm_planning.scope_runs SET previous_resolution=$3,semantic_changed=$4 WHERE tenant_id=$1::uuid AND id=$2").bind(&tenant).bind(id).bind(previous).bind(changed).execute(&mut *c).await?;
-            sqlx::query("UPDATE mdm_planning.scopes SET resolution=$3,resolution_revision=$4,calculation_revision=calculation_revision+1 WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(scope).bind(id).bind(version).execute(c).await?;
+            sqlx::query("UPDATE mdm_planning.scopes SET resolution=$3,resolution_revision=$4,calculation_revision=calculation_revision+1,agent_resolution_revision=agent_resolution_revision+$5,mdm_resolution_revision=mdm_resolution_revision+$6 WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(scope).bind(id).bind(version).bind(i64::from(agent_changed)).bind(i64::from(mdm_changed)).execute(c).await?;
             Ok(version)
         })).await?;
         checked(

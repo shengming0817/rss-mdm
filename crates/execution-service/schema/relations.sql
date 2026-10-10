@@ -226,3 +226,15 @@ COMMIT;
 ALTER TABLE mdm_commands.attempt_frames ADD CONSTRAINT attempt_frames_attempt_fkey FOREIGN KEY(tenant_id,attempt) REFERENCES mdm_commands.attempts(tenant_id,id);
 GRANT SELECT,INSERT ON TABLE mdm_commands.attempt_frames TO mdm_command_runtime;
 GRANT UPDATE(status,accepted,received_at) ON TABLE mdm_commands.attempt_frames TO mdm_command_runtime;
+
+ALTER TABLE mdm_commands.software_stage_stats ADD FOREIGN KEY(tenant_id,version) REFERENCES mdm_policy.versions(tenant_id,id);
+GRANT SELECT,INSERT ON mdm_commands.software_stage_stats TO mdm_command_runtime;
+GRANT UPDATE(input,cursor,ready,counts,generation,membership_complete) ON mdm_commands.software_stage_stats TO mdm_command_runtime;
+GRANT SELECT ON mdm_commands.software_binding_revisions TO mdm_command_runtime;
+CREATE TRIGGER software_bindings AFTER INSERT OR UPDATE OR DELETE ON mdm_agent.bindings FOR EACH ROW EXECUTE FUNCTION mdm_commands.advance_software_bindings();
+
+ALTER TABLE mdm_commands.software_stats_members ADD FOREIGN KEY(tenant_id,version,stage) REFERENCES mdm_commands.software_stage_stats(tenant_id,version,stage);
+ALTER TABLE mdm_commands.software_result_changes ADD FOREIGN KEY(tenant_id,policy) REFERENCES mdm_policy.policies(tenant_id,id);
+GRANT SELECT,INSERT ON mdm_commands.software_stats_members TO mdm_command_runtime;
+GRANT UPDATE(generation,target,counts,waiting_until) ON mdm_commands.software_stats_members TO mdm_command_runtime;
+GRANT SELECT ON mdm_commands.software_result_changes,mdm_commands.software_binding_changes TO mdm_command_runtime;

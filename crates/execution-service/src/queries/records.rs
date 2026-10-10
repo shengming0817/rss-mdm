@@ -417,6 +417,8 @@ pub struct Rollout {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Stage {
+    ready: bool,
+    as_of: Option<i64>,
     scope: Uuid,
     opens_at: i64,
     minimum_verified_percent: Option<u8>,

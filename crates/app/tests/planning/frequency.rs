@@ -54,53 +54,58 @@ fn belongs_to(task: &Value, id: Uuid) -> Result<()> {
     ensure!(pg(&format!("SELECT policy FROM mdm_policy.versions WHERE id=(SELECT policy_version FROM mdm_commands.action_runs WHERE id='{task}')"))?.trim()==id.to_string());
     Ok(())
 }
-async fn membership(
+// Advance only Scope publication, leaving every PolicyReconcile job queued. This
+// reproduces exit/reentry before asynchronous assignment observes either transition.
+async fn publish_scope_without_assignments(
+    service: &crate::planning::Planning,
     author: &mut Browser,
     router: &Router,
+    scope: Uuid,
     group: Uuid,
     revision: u64,
-    present: bool,
-    scope: Uuid,
-) -> Result<()> {
-    let changed=post(author,router,&format!("/api/v1/groups/{group}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":{"action":"members","add":if present {vec![json!({"kind":"endpoint","id":case_device_id()})]}else{vec![]},"remove":if present {vec![]}else{vec![json!({"kind":"endpoint","id":case_device_id()})]}}})).await?;
-    await_task(
-        author,
-        router,
-        &format!(
-            "/api/v1/groups/{group}/tasks/{}",
-            changed["task"].as_str().unwrap()
-        ),
-    )
-    .await?;
-    let service = crate::planning::test_support::planning(rss_request_context::TenantId::parse(
-        case_tenant(),
-    )?)
-    .await;
-    let result = tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            let state = crate::planning::test_support::scope_admission(
-                &service,
-                scope,
-                rss_mdm_inventory::Channel::Agent,
-                case_device_id(),
-            )
-            .await;
-            if if present {
-                matches!(
-                    state,
-                    rss_mdm_execution_service::source_authority::ScopeAdmission::Eligible { .. }
-                )
-            } else {
-                state == rss_mdm_execution_service::source_authority::ScopeAdmission::Excluded
-            } {
-                return Ok::<_, anyhow::Error>(());
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+    exclude: bool,
+) -> Result<i64> {
+    let changed=post(author,router,&format!("/api/v1/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":{"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":if exclude{vec![json!({"kind":"device","id":case_device_id()})]}else{vec![]}}}})).await?;
+    let task = Uuid::parse_str(changed["task"].as_str().unwrap())?;
+    for _ in 0..32 {
+        let audit = rss_mdm_audit_integration::RequestAudit::new(
+            service.tenant.to_string(),
+            "management_write",
+        );
+        rss_mdm_flow_service::transaction::run(
+            &service.audit_store,
+            &service.runtime,
+            service.tenant,
+            &audit,
+            (service, task, scope),
+            |ctx, tx| {
+                Box::pin(async move { ctx.0.advance_scope_job_in(tx, ctx.1, ctx.2, None).await })
+            },
+            rss_mdm_flow_service::transaction::TransactionOwner::Planning,
+        )
+        .await?;
+        audit.finalize(None);
+        if pg(&format!(
+            "SELECT phase FROM mdm_planning.scope_runs WHERE id='{task}'"
+        ))?
+        .trim()
+            == "published"
+        {
+            let coordinate = pg(&format!(
+                "SELECT entry_revision FROM mdm_planning.scope_channel_results WHERE run='{task}' AND channel='agent' AND device='{}'",
+                case_device_id()
+            ))?;
+            ensure!(
+                !coordinate.trim().is_empty(),
+                "scope projection missing for revision {revision}, exclude={exclude}: {}",
+                pg(&format!(
+                    "SELECT input::text FROM mdm_planning.scope_runs WHERE id='{task}'; SELECT row_to_json(r)::text FROM mdm_planning.scope_channel_results r WHERE run='{task}'"
+                ))?
+            );
+            return Ok(coordinate.trim().parse()?);
         }
-    })
-    .await?;
-    service.runtime.close().await;
-    result
+    }
+    anyhow::bail!("scope publication did not complete")
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.frequency"]
@@ -141,20 +146,45 @@ async fn once_per_entry_tracks_membership_epochs() -> Result<()> {
     belongs_to(&first, entry)?;
     complete(router, &first).await?;
     no_repeat(router, entry, 1).await?;
-    membership(author, router, group, 2, false, scope).await?;
+    tokio::time::timeout(Duration::from_secs(30),async {
+        while pg(&format!("SELECT count(*) FROM mdm_planning.policy_assignments WHERE policy='{entry}' AND entry_revision>0"))?.trim()=="0" {tokio::time::sleep(Duration::from_millis(50)).await;}
+        Ok::<_,anyhow::Error>(())
+    }).await??;
+    crate::test_support::stop_worker(automation).await?;
+    let service = crate::planning::test_support::planning(rss_request_context::TenantId::parse(
+        case_tenant(),
+    )?)
+    .await;
+    let original=pg(&format!("SELECT min(entry_revision) FROM mdm_planning.policy_assignments WHERE policy='{entry}' AND entry_revision>0"))?.trim().parse::<i64>()?;
+    let continuous =
+        publish_scope_without_assignments(&service, author, router, scope, group, 1, false).await?;
+    ensure!(
+        continuous == original,
+        "continuous membership changed entry coordinate"
+    );
+    no_repeat(router, entry, 1).await?;
+    let exited =
+        publish_scope_without_assignments(&service, author, router, scope, group, 2, true).await?;
+    ensure!(exited == 0, "published exit retained eligible entry");
     // Move only the test's admission timestamp to represent an elapsed check-in interval.
     pg(&format!(
         "UPDATE mdm_commands.action_runs SET created_at=created_at-61 WHERE policy_version IN(SELECT id FROM mdm_policy.versions WHERE policy='{entry}')"
     ))?;
     no_repeat(router, entry, 1).await?;
-    membership(author, router, group, 3, true, scope).await?;
+    let reentered =
+        publish_scope_without_assignments(&service, author, router, scope, group, 3, false).await?;
+    ensure!(
+        reentered > original,
+        "reentry did not advance durable Scope entry"
+    );
+    ensure!(pg(&format!("SELECT min(entry_revision) FROM mdm_planning.policy_assignments WHERE policy='{entry}' AND entry_revision>0"))?.trim().parse::<i64>()?==original,"test allowed asynchronous assignment to observe transition");
     let second = claim(router).await?;
     belongs_to(&second, entry)?;
     complete(router, &second).await?;
     ensure!(count(entry)? == 2);
     ensure!(pg(&format!("SELECT count(DISTINCT occurrence) FROM mdm_commands.action_runs WHERE policy_version IN(SELECT id FROM mdm_policy.versions WHERE policy='{entry}')"))?.trim()=="2");
     disable(author, router, entry).await?;
-    crate::test_support::stop_worker(automation).await?;
+    service.runtime.close().await;
     crate::test_support::stop_worker(stack).await?;
     Ok(())
 }

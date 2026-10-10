@@ -108,8 +108,6 @@ CREATE TABLE mdm_planning.scope_results (
     device text NOT NULL COLLATE pg_catalog."C",
     matched boolean NOT NULL,
     explanation jsonb NOT NULL,
-    entry_revision bigint DEFAULT 0 NOT NULL,
-    CONSTRAINT scope_results_entry_revision_check CHECK ((entry_revision >= 0)),
     CONSTRAINT scope_results_explanation_check CHECK ((octet_length((explanation)::text) <= 1048576))
 );
 
@@ -131,6 +129,8 @@ CREATE TABLE mdm_planning.scope_runs (
     source_index integer DEFAULT 0 NOT NULL,
     source_cursor text,
     evaluation_cursor text,
+    projection_cursor text,
+    channel_hashes jsonb NOT NULL DEFAULT jsonb_build_object('agent',repeat('0',64),'mdm',repeat('0',64)),
     object_count bigint DEFAULT 0 NOT NULL,
     member_count bigint DEFAULT 0 NOT NULL,
     CONSTRAINT scope_runs_check CHECK (((member_count >= 0) AND (member_count <= object_count))),
@@ -138,7 +138,7 @@ CREATE TABLE mdm_planning.scope_runs (
     CONSTRAINT scope_runs_identity_revision_check CHECK ((identity_revision >= 0)),
     CONSTRAINT scope_runs_input_check CHECK ((octet_length((input)::text) <= 1048576)),
     CONSTRAINT scope_runs_object_count_check CHECK (((object_count >= 0) AND (object_count <= 1000000))),
-    CONSTRAINT scope_runs_phase_check CHECK ((phase = ANY (ARRAY['sources'::text, 'evaluate'::text, 'ready'::text, 'published'::text, 'superseded'::text]))),
+    CONSTRAINT scope_runs_phase_check CHECK ((phase = ANY (ARRAY['sources'::text, 'evaluate'::text, 'project'::text, 'ready'::text, 'published'::text, 'superseded'::text]))),
     CONSTRAINT scope_runs_result_fingerprint_check CHECK (((result_fingerprint IS NULL) OR (octet_length(result_fingerprint) = 32))),
     CONSTRAINT scope_runs_source_index_check CHECK (((source_index >= 0) AND (source_index <= 1000)))
 );
@@ -186,6 +186,8 @@ CREATE TABLE mdm_planning.scopes (
     deleted boolean DEFAULT false NOT NULL,
     calculation_revision bigint DEFAULT 0 NOT NULL,
     resolution uuid,
+    agent_resolution_revision bigint NOT NULL DEFAULT 0 CHECK(agent_resolution_revision>=0),
+    mdm_resolution_revision bigint NOT NULL DEFAULT 0 CHECK(mdm_resolution_revision>=0),
     resolution_revision bigint DEFAULT 0 NOT NULL,
     CONSTRAINT scopes_resolution_revision_check CHECK ((resolution_revision >= 0)),
     CONSTRAINT scopes_revision_check CHECK ((revision > 0))
@@ -326,3 +328,31 @@ ALTER TABLE mdm_resource_catalog.operations ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_resource_catalog.operations USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 
 COMMIT;
+
+CREATE TABLE mdm_planning.scope_channel_results (
+ tenant_id uuid NOT NULL,
+ run uuid NOT NULL,
+ channel text NOT NULL CHECK(channel IN('agent','mdm')),
+ device text COLLATE "C" NOT NULL CHECK(octet_length(device)<=256),
+ matched boolean NOT NULL,
+ pending boolean NOT NULL,
+ target jsonb NOT NULL CHECK(octet_length(target::text)<=1024),
+ entry_revision bigint NOT NULL CHECK(entry_revision>=0),
+ PRIMARY KEY(tenant_id,run,channel,device)
+);
+ALTER TABLE mdm_planning.scope_channel_results ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_planning.scope_channel_results FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_planning.scope_channel_results USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+
+CREATE INDEX scope_channel_results_cursor ON mdm_planning.scope_channel_results(tenant_id,run,((channel||':'||device) COLLATE "C"));
+CREATE INDEX scope_source_members_channels ON mdm_planning.scope_source_members USING gin((input->'members') jsonb_path_ops);
+
+CREATE FUNCTION mdm_planning.guard_scope_channel_result() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+DECLARE p text;
+BEGIN
+ SELECT phase INTO STRICT p FROM mdm_planning.scope_runs WHERE tenant_id=NEW.tenant_id AND id=NEW.run;
+ IF p NOT IN('sources','project') THEN RAISE EXCEPTION 'scope channel result is immutable' USING ERRCODE='23514'; END IF;
+ RETURN NEW;
+END;$$;
+REVOKE ALL ON FUNCTION mdm_planning.guard_scope_channel_result() FROM PUBLIC;
+CREATE TRIGGER scope_channel_result_guard BEFORE INSERT OR UPDATE ON mdm_planning.scope_channel_results FOR EACH ROW EXECUTE FUNCTION mdm_planning.guard_scope_channel_result();

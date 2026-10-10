@@ -44,7 +44,7 @@ async fn rows_for(
     channel: Channel,
     device: &str,
 ) -> Result<Vec<RowInput>, SourceError> {
-    let rows=sqlx::query("SELECT source,unknown,input FROM mdm_planning.scope_source_members WHERE tenant_id=$1::uuid AND run=$2 AND EXISTS(SELECT 1 FROM jsonb_array_elements(input->'members') m WHERE m->>'device'=$3 AND m->>'channel'=$4) ORDER BY source,device LIMIT 16001")
+    let rows=sqlx::query("SELECT source,unknown,input FROM mdm_planning.scope_source_members WHERE tenant_id=$1::uuid AND run=$2 AND input->'members' @> jsonb_build_array(jsonb_build_object('device',$3::text,'channel',$4::text)) ORDER BY source,device LIMIT 16001")
         .bind(tenant.to_string()).bind(run).bind(device).bind(channel.as_str()).fetch_all(c).await?;
     if rows.len() > 16000 {
         return Err(SourceError::Invariant);
@@ -91,7 +91,7 @@ pub async fn admission_on(
         Some("fresh") => {}
         _ => return Err(SourceError::Invariant),
     }
-    let (run, entry, frozen, fresh) = resolution(c, tenant, scope)
+    let (run, _, frozen, fresh) = resolution(c, tenant, scope)
         .await?
         .ok_or(SourceError::Invariant)?;
     if !fresh {
@@ -100,7 +100,9 @@ pub async fn admission_on(
     let result = explanation_on(c, tenant, run, &frozen, channel, device, Some(reader)).await?;
     Ok(match result {
         None => ScopeAdmission::Excluded,
-        Some(result) if result.reasons.is_empty() => ScopeAdmission::Eligible { entry },
+        Some(result) if result.reasons.is_empty() => {
+            published_admission(c, tenant, run, channel, device).await?
+        }
         Some(result)
             if result.reasons.iter().any(|r| {
                 matches!(
@@ -116,7 +118,7 @@ pub async fn admission_on(
         Some(_) => ScopeAdmission::Excluded,
     })
 }
-async fn explanation_on(
+pub(crate) async fn explanation_on(
     c: &mut PgConnection,
     tenant: TenantId,
     run: Uuid,
@@ -379,7 +381,9 @@ pub async fn result_admission_on(
     let frozen = historical(c, tenant, scope, run).await?;
     let result = explanation_on(c, tenant, run, &frozen, channel, device, None).await?;
     Ok(match result {
-        Some(result) if result.reasons.is_empty() => ScopeAdmission::Eligible { entry: 1 },
+        Some(result) if result.reasons.is_empty() => {
+            published_admission(c, tenant, run, channel, device).await?
+        }
         Some(result)
             if result.reasons.iter().any(|r| {
                 matches!(
@@ -429,4 +433,20 @@ pub async fn result_explanation_on(
 ) -> Result<Option<s::MemberExplanation>, SourceError> {
     let frozen = historical(c, tenant, scope, run).await?;
     explanation_on(c, tenant, run, &frozen, channel, device, None).await
+}
+
+async fn published_admission(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    run: Uuid,
+    channel: Channel,
+    device: &str,
+) -> Result<ScopeAdmission, SourceError> {
+    let row = sqlx::query_as::<_,(bool,bool,i64)>("SELECT matched,pending,entry_revision FROM mdm_planning.scope_channel_results WHERE tenant_id=$1::uuid AND run=$2 AND channel=$3 AND device=$4")
+  .bind(tenant.to_string()).bind(run).bind(channel.as_str()).bind(device).fetch_optional(c).await?;
+    Ok(match row {
+        Some((true, false, entry)) if entry > 0 => ScopeAdmission::Eligible { entry },
+        Some((_, true, _)) => ScopeAdmission::Pending,
+        _ => ScopeAdmission::Excluded,
+    })
 }

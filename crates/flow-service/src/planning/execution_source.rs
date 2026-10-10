@@ -16,6 +16,60 @@ impl ExecutionSource {
     }
 }
 impl SourceAuthority for ExecutionSource {
+    fn rollout_input_on<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        scopes: &'a [Uuid],
+    ) -> Pending<'a, Option<Vec<ScopeResult>>> {
+        Box::pin(async move {
+            rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
+            let mut runs = Vec::new();
+            for scope in scopes {
+                let status: Value =
+                    sqlx::query_scalar("SELECT mdm_planning.scope_admission($1,NULL)")
+                        .bind(scope)
+                        .fetch_one(&mut *c)
+                        .await?;
+                if status["state"] != "fresh" {
+                    return Ok(None);
+                }
+                let (run,revision)=sqlx::query_as::<_,(Uuid,i64)>("SELECT resolution,agent_resolution_revision FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted").bind(tenant.to_string()).bind(scope).fetch_one(&mut *c).await?;
+                runs.push(ScopeResult { run, revision });
+            }
+            Ok(Some(runs))
+        })
+    }
+    fn rollout_devices_on<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        runs: &'a [Uuid],
+        after: Option<&'a str>,
+    ) -> Pending<'a, RolloutPage> {
+        Box::pin(async move {
+            let (root, stage) = match runs {
+                [root, stage, ..] => (root, stage),
+                _ => return Err(SourceError::Invariant),
+            };
+            let mut rows=sqlx::query_as::<_,(String,Value,bool)>("WITH page AS (SELECT * FROM mdm_planning.scope_channel_results WHERE tenant_id=$1::uuid AND run=$3 AND channel='agent' AND device>coalesce($5,'') COLLATE \"C\" ORDER BY device LIMIT 17) SELECT s.device,s.target,s.matched AND NOT s.pending AND EXISTS(SELECT 1 FROM mdm_planning.scope_channel_results r WHERE r.tenant_id=s.tenant_id AND r.run=$2 AND r.device=s.device AND r.channel=s.channel AND r.target=s.target AND r.matched AND NOT r.pending) AND NOT EXISTS(SELECT 1 FROM mdm_planning.scope_channel_results e WHERE e.tenant_id=s.tenant_id AND e.run=ANY($4) AND e.channel=s.channel AND e.device=s.device AND (e.matched OR e.pending)) FROM page s ORDER BY s.device").bind(tenant.to_string()).bind(root).bind(stage).bind(&runs[2..]).bind(after).fetch_all(c).await?;
+            let has_more = rows.len() > 16;
+            rows.truncate(16);
+            let after = rows.last().map(|r| r.0.clone());
+            let scanned = rows.len() as u64;
+            let targets = rows
+                .into_iter()
+                .filter(|r| r.2)
+                .map(|r| serde_json::from_value(r.1).map_err(|_| SourceError::Invariant))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(RolloutPage {
+                targets,
+                after,
+                has_more,
+                scanned,
+            })
+        })
+    }
     fn preview_scope_on<'a>(
         &'a self,
         c: &'a mut PgConnection,

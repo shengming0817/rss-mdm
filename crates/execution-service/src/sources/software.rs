@@ -20,7 +20,11 @@ pub struct SoftwareAssignment {
     rollout: SoftwareRollout,
     version: Option<Uuid>,
 }
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct StageCounts {
+    pub(crate) scanned: u64,
+    pub ready: bool,
+    pub as_of: Option<i64>,
     pub total: u64,
     pub reported: u64,
     pub waiting_user: u64,
@@ -251,127 +255,21 @@ impl SoftwareAssignment {
         source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
         tx: &mut PgTransaction<'_>,
         index: usize,
-        service: Option<&crate::queries::Admission>,
+        _service: Option<&crate::queries::Admission>,
     ) -> Result<StageCounts> {
-        let stages = &self.rollout.stages;
-        let stage = stages.get(index).ok_or(Error::Malformed)?;
-        let scope = stage.scope;
-        let root = self.scope;
-        let earlier: Vec<Uuid> = stages[..index].iter().map(|s| s.scope).collect();
-        let mut selected = Vec::new();
-        let mut after = None;
-        loop {
-            let reader = source.clone();
-            let tenant = tx.tenant_id();
-            let cursor = after.clone();
-            let page = tx
-                .with_connection(move |c| {
-                    Box::pin(async move {
-                        Ok(reader
-                            .assignment_devices_on(
-                                c,
-                                tenant,
-                                scope,
-                                rss_mdm_inventory::Channel::Agent,
-                                cursor.as_deref(),
-                            )
-                            .await)
-                    })
-                })
-                .await??;
-            if page.is_empty() {
-                break;
-            }
-            let more = page.len() > 64;
-            for device in page.iter().take(64) {
-                let mut eligible = matches!(
-                    storage::admission_in(
-                        source,
-                        tx,
-                        scope,
-                        rss_mdm_inventory::Channel::Agent,
-                        device
-                    )
-                    .await?,
-                    crate::source_authority::ScopeAdmission::Eligible { .. }
-                ) && matches!(
-                    storage::admission_in(
-                        source,
-                        tx,
-                        root,
-                        rss_mdm_inventory::Channel::Agent,
-                        device
-                    )
-                    .await?,
-                    crate::source_authority::ScopeAdmission::Eligible { .. }
-                );
-                for prior in &earlier {
-                    if matches!(
-                        storage::admission_in(
-                            source,
-                            tx,
-                            *prior,
-                            rss_mdm_inventory::Channel::Agent,
-                            device
-                        )
-                        .await?,
-                        crate::source_authority::ScopeAdmission::Eligible { .. }
-                    ) {
-                        eligible = false;
-                        break;
-                    }
-                }
-                if eligible {
-                    selected.push(device.clone());
-                    if selected.len() > 1_000_000 {
-                        return Err(Error::Malformed.into());
-                    }
-                }
-            }
-            if !more {
-                break;
-            }
-            after = page.get(63).cloned();
-        }
-        let tenant = tx.tenant_id().to_string();
-        let version = self.version;
-        let prefix = format!("software:stage:{}:%", stage.scope);
-        let optional = matches!(self.intent(), SoftwareIntent::AvailableInstall);
-        let now = crate::storage::now(tx).await?;
-        let target_rows = selected.clone();
-        let (reported,waiting_user,unknown,waiting_reboot,failed,verified):(i64,i64,i64,i64,i64,i64)=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_as("SELECT count(*) FILTER(WHERE latest.result IS NOT NULL),count(*) FILTER(WHERE $5 AND latest.state->>'execution'='not_started' AND latest.state->>'cancellation'='none' AND latest.state->'delivery'->>'kind' IN('claimed','received') AND (latest.state->'delivery'->>'leaseUntil')::bigint>$6),count(*) FILTER(WHERE latest.result->>'effect'='unknown' OR latest.state->>'execution'='unknown'),count(*) FILTER(WHERE latest.result->>'effect'='waiting_reboot'),count(*) FILTER(WHERE latest.result->>'effect'='failed'),count(*) FILTER(WHERE latest.result->>'effect'='verified') FROM unnest($2::text[]) targets(device) LEFT JOIN LATERAL (SELECT state,result FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND policy_version=$3 AND device=targets.device AND occurrence LIKE $4 ORDER BY created_at DESC,id DESC LIMIT 1) latest ON true").bind(tenant).bind(target_rows).bind(version).bind(prefix).bind(optional).bind(now).fetch_one(c).await
-        })).await?;
-        let total = selected.len() as i64;
-        let unsupported = if let Some(service) = service {
-            let mut supported = std::collections::BTreeSet::new();
-            for devices in selected.chunks(128) {
-                for target in crate::channels::agent_targets_in(
-                    tx,
-                    service.agent_store.clone(),
-                    devices.to_vec(),
-                )
-                .await?
-                {
-                    if self.supported_in(service, tx, &target.binding).await? {
-                        supported.insert(target.device);
-                    }
-                }
-            }
-            total - i64::try_from(supported.len()).map_err(|_| Error::Malformed)?
-        } else {
-            0
+        let Some(version) = self.version else {
+            return Ok(StageCounts::default());
         };
-        Ok(StageCounts {
-            total: total.try_into().map_err(|_| Error::Malformed)?,
-            reported: reported.try_into().map_err(|_| Error::Malformed)?,
-            waiting_user: waiting_user.try_into().map_err(|_| Error::Malformed)?,
-            unknown: unknown.try_into().map_err(|_| Error::Malformed)?,
-            waiting_reboot: waiting_reboot.try_into().map_err(|_| Error::Malformed)?,
-            failed: failed.try_into().map_err(|_| Error::Malformed)?,
-            verified: verified.try_into().map_err(|_| Error::Malformed)?,
-            unsupported_capability: unsupported.try_into().map_err(|_| Error::Malformed)?,
-        })
+        let Some(input) = self.stats_input_in(source, tx, index).await? else {
+            return Ok(StageCounts::default());
+        };
+        let tenant = tx.tenant_id().to_string();
+        let document = crate::checked_input(serde_json::to_value(input))?;
+        let counts:Option<serde_json::Value>=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT counts FROM mdm_commands.software_stage_stats WHERE tenant_id=$1::uuid AND version=$2 AND stage=$3 AND input-'runs'=$4::jsonb-'runs' AND ready").bind(tenant).bind(version).bind(index as i32).bind(document).fetch_optional(c).await})).await?;
+        match counts {
+            Some(v) => crate::stored(serde_json::from_value(v)),
+            None => Ok(StageCounts::default()),
+        }
     }
     fn selection(&self, platform: Platform, architecture: Architecture) -> Option<Selection<'_>> {
         Some(Selection {
@@ -628,3 +526,5 @@ fn delivery(input: &rss_mdm_policy::SoftwareDelivery) -> Delivery<'_> {
         },
     }
 }
+
+mod stats;

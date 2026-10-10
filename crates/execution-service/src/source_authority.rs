@@ -16,6 +16,16 @@ pub enum ScopeAdmission {
     Pending,
     Excluded,
 }
+pub struct ScopeResult {
+    pub run: Uuid,
+    pub revision: i64,
+}
+pub struct RolloutPage {
+    pub targets: Vec<rss_mdm_registration_service::device::endpoints::PrimaryRegistration>,
+    pub after: Option<String>,
+    pub has_more: bool,
+    pub scanned: u64,
+}
 /// Existing immutable resolution, including unmatched rows used to explain a draft.
 #[derive(Clone, Debug)]
 pub struct ScopePreview {
@@ -61,6 +71,21 @@ pub enum SourceError {
 }
 /// Implementations use this connection's snapshot and locks; they never settle a transaction.
 pub trait SourceAuthority: Send + Sync {
+    /// Freeze current published root, selected stage and earlier stages, or wait.
+    fn rollout_input_on<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        scopes: &'a [Uuid],
+    ) -> Pending<'a, Option<Vec<ScopeResult>>>;
+    /// One durable statistics page from immutable channel results; no online owner revalidation.
+    fn rollout_devices_on<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        runs: &'a [Uuid],
+        after: Option<&'a str>,
+    ) -> Pending<'a, RolloutPage>;
     fn preview_scope_on<'a>(
         &'a self,
         connection: &'a mut PgConnection,

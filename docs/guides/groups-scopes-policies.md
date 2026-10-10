@@ -27,3 +27,5 @@ Scope 结果页必须指定 `channel=agent|mdm`，游标绑定该通道。每个
 策略分配使用 `GET /api/v1/policies/{id}/assignments`，返回 typed object、channel、availability、reason、可选原始 target、来源证据和执行记录身份。缺失通道只形成 unavailable 分配，不创建操作、尝试或 outbox；数据、通道和关联变更通过既有自动任务重算，通道可用后恢复。Agent 动作仅使用 Agent，配置、原生采集及安装 Agent 仅使用 MDM。派发前重新验证冻结来源，派发后的结果仍属于原任务的终端和注册世代。Compliance 只接受 endpoint 组。
 
 本次契约为新装切换，没有旧 DTO、缺省 assetContext 或 `/policies/{id}/devices` 路由。rss-web 需独立完成 Group/Scope/assignment 契约切换后才能联合发布。
+
+Scope 在发布固定结果前按目标通道完成集合运算，并持久化原始 DeviceId、注册世代与进入坐标。连续成员保留进入坐标；任何已发布的退出后重入都产生新坐标，即使 assignment 后台尚未处理退出。软件灰度统计由现有恢复 worker 按固定结果分批计算并保存游标，结果与能力更新按设备增量刷新，通道集合不变时保留分母。查询返回阶段 `ready` 与 `asOf`；输入过期或计算未完成时统计不可用于打开成功率门禁。
