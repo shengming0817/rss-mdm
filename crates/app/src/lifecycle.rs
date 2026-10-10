@@ -223,6 +223,10 @@ pub async fn serve(
                         )
                         .await
                         .map_err(|error| ProcessError::at("startup.identity", error))?;
+                        let notifications = notifications.with_identity(
+                            identity.instance,
+                            [identity.tenant, identity.management_tenant],
+                        );
                         let audit_budget =
                             rss_mdm_audit_integration::budget::AuditBudget::with_cancellation(
                                 Duration::from_secs(5),
@@ -277,6 +281,7 @@ pub async fn serve(
                         let identity_audit = crate::identity_audit::Worker::open(
                             &compiled.config,
                             identity.audit_readiness.clone(),
+                            notifications.signals.audit.clone(),
                             |resource| startup.stage_resource(resource),
                         )
                         .await

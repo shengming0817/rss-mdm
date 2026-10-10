@@ -112,24 +112,7 @@ async fn exercise(ledger: bool) -> Result<()> {
         |r| identity_resources.push(r),
     )
     .await?;
-    let request = Request::builder()
-        .method("POST")
-        .uri(format!("/api/v1/identity/tenants/{TENANT}/login", TENANT = case_tenant()))
-        .header("host", "mdm.example.test")
-        .header("origin", "https://mdm.example.test")
-        .header("x-identity-request", "1")
-        .header("content-type", "application/json")
-        .extension(rss_identity_http_axum::ClientAddress("127.0.0.1".parse()?))
-        .body(Body::from(serde_json::to_vec(
-            &serde_json::json!({"login":"admin","password":crate::test_support::identity::PASSWORD}),
-        )?))?;
-    let response = identity.routes().oneshot(request).await?;
-    ensure!(
-        response.status() == StatusCode::OK,
-        "login failed: {}",
-        response.status()
-    );
-    drop(response);
+    login(&identity).await?;
     let observer = PgPoolOptions::new()
         .max_connections(3)
         .connect_with(admin_options.clone().database(&database))
@@ -174,6 +157,7 @@ async fn exercise(ledger: bool) -> Result<()> {
             .fetch_all(&observer)
             .await?;
     ensure!(original == replay);
+    wakeup::event_driven_delivery(&config, &identity, &observer, expected).await?;
     fatal_worker(&config, &observer, false).await?;
     fatal_worker(&config, &observer, true).await?;
     if ledger {
@@ -310,7 +294,10 @@ async fn management_only_startup_integrity(
         "management-only Ledger must reject host audit admission: {host:?}"
     );
     let mut resources = Vec::new();
-    Worker::open(config, Arc::default(), |r| resources.push(r)).await?;
+    Worker::open(config, Arc::default(), Arc::default(), |r| {
+        resources.push(r)
+    })
+    .await?;
     for resource in resources.into_iter().rev() {
         resource.shutdown().await?;
     }
@@ -418,7 +405,10 @@ async fn verify_ledger_privileges(
 }
 async fn rejected(config: &Config) -> Result<()> {
     let mut resources = Vec::new();
-    let result = Worker::open(config, Arc::default(), |r| resources.push(r)).await;
+    let result = Worker::open(config, Arc::default(), Arc::default(), |r| {
+        resources.push(r)
+    })
+    .await;
     ensure!(result.is_err());
     for resource in resources.into_iter().rev() {
         resource.shutdown().await?;
@@ -433,7 +423,11 @@ async fn run_worker(
 ) -> Result<()> {
     let readiness = Arc::new(Readiness::default());
     let mut resources = Vec::new();
-    let worker = Worker::open(config, readiness.clone(), |r| resources.push(r)).await?;
+    let wake = Arc::new(Notify::new());
+    let worker = Worker::open(config, readiness.clone(), wake.clone(), |r| {
+        resources.push(r)
+    })
+    .await?;
     ensure!(!readiness.health().is_ready());
     let mut scope = LifecycleScope::<(), std::io::Error, std::io::Error>::try_new(
         TotalDrainBudget::new(Duration::from_secs(40))?,
@@ -449,6 +443,7 @@ async fn run_worker(
                 )
                 .execute(&mut *holder)
                 .await?;
+                wake.notify_one();
                 while readiness.health().is_ready() {
                     tokio::time::sleep(Duration::from_millis(20)).await;
                 }
@@ -516,7 +511,11 @@ async fn manipulate(pool: &PgPool, statement: &str) -> Result<()> {
 async fn fatal_worker(config: &Config, observer: &PgPool, fence: bool) -> Result<()> {
     let readiness = Arc::new(Readiness::default());
     let mut resources = Vec::new();
-    let worker = Worker::open(config, readiness.clone(), |r| resources.push(r)).await?;
+    let wake = Arc::new(Notify::new());
+    let worker = Worker::open(config, readiness.clone(), wake.clone(), |r| {
+        resources.push(r)
+    })
+    .await?;
     let mut scope = LifecycleScope::<(), std::io::Error, std::io::Error>::try_new(
         TotalDrainBudget::new(Duration::from_secs(40))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
@@ -534,6 +533,7 @@ async fn fatal_worker(config: &Config, observer: &PgPool, fence: bool) -> Result
             .execute(observer)
             .await
             .map_err(|_| std::io::Error::other("fixture revoke/fence"))?;
+        wake.notify_one();
         std::future::pending::<Result<(), std::io::Error>>().await
     };
     let outcome = tokio::time::timeout(
@@ -599,4 +599,28 @@ fn empty_success_recovers_claim_failure_without_a_pending_retry() {
     assert!(!matches!(readiness.health().phase, AuditPhase::Healthy));
     readiness.progress(0, 0);
     assert!(matches!(readiness.health().phase, AuditPhase::Healthy));
+}
+
+mod wakeup;
+
+async fn login(identity: &crate::identity::Identity) -> Result<()> {
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/identity/tenants/{TENANT}/login", TENANT = case_tenant()))
+        .header("host", "mdm.example.test")
+        .header("origin", "https://mdm.example.test")
+        .header("x-identity-request", "1")
+        .header("content-type", "application/json")
+        .extension(rss_identity_http_axum::ClientAddress("127.0.0.1".parse()?))
+        .body(Body::from(serde_json::to_vec(
+            &serde_json::json!({"login":"admin","password":crate::test_support::identity::PASSWORD}),
+        )?))?;
+    let response = identity.routes().oneshot(request).await?;
+    ensure!(
+        response.status() == StatusCode::OK,
+        "login failed: {}",
+        response.status()
+    );
+    drop(response);
+    Ok(())
 }
