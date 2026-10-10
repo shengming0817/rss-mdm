@@ -346,15 +346,7 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
             "software list exposed complete process output"
         );
     }
-    let rollout = f
-        .author
-        .call(
-            &f.router,
-            Method::GET,
-            &format!("/api/v1/policies/{policy}/software/rollout"),
-            None,
-        )
-        .await?;
+    let rollout = ready_rollout(&mut f.author, &f.router, policy).await?;
     ensure!(
         rollout.1["stages"][0]["verifiedSuccess"] == 1,
         "rollout: {rollout:?}"

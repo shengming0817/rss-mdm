@@ -53,14 +53,7 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
     )
     .await?;
     ensure!(result.0 == StatusCode::OK, "result: {result:?}");
-    let status = author
-        .call(
-            &router,
-            Method::GET,
-            &format!("/api/v1/policies/{policy}/software/rollout"),
-            None,
-        )
-        .await?;
+    let status = ready_rollout(&mut author, &router, policy).await?;
     ensure!(status.0 == StatusCode::OK, "rollout: {status:?}");
     ensure!(
         status.1["stages"][0]["totalTargets"] == 1
@@ -136,14 +129,7 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
         poll.0 == StatusCode::OK && poll.1["task"].is_null(),
         "AvailableInstall must never queue before an explicit request"
     );
-    let awaiting = author
-        .call(
-            &router,
-            Method::GET,
-            &format!("/api/v1/policies/{available}/software/rollout"),
-            None,
-        )
-        .await?;
+    let awaiting = ready_rollout(&mut author, &router, available).await?;
     ensure!(
         awaiting.1["stages"][0]["reported"] == 0 && awaiting.1["stages"][0]["waitingUser"] == 0
     );
@@ -191,14 +177,7 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
         .await?
         .0 == StatusCode::OK
     );
-    let removed = author
-        .call(
-            &router,
-            Method::GET,
-            &format!("/api/v1/policies/{uninstall}/software/rollout"),
-            None,
-        )
-        .await?;
+    let removed = ready_rollout(&mut author, &router, uninstall).await?;
     ensure!(
         removed.1["stages"][0]["verifiedSuccess"] == 1,
         "uninstall detection: {removed:?}"
@@ -283,14 +262,7 @@ async fn windows_variant_delivery_and_detection() -> Result<()> {
         .await?
         .0 == StatusCode::OK
     );
-    let windows_rollout = author
-        .call(
-            &router,
-            Method::GET,
-            &format!("/api/v1/policies/{windows_policy}/software/rollout"),
-            None,
-        )
-        .await?;
+    let windows_rollout = ready_rollout(&mut author, &router, windows_policy).await?;
     ensure!(
         windows_rollout.1["stages"][0]["verifiedSuccess"] == 1,
         "windows verification: {windows_rollout:?}"

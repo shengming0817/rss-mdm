@@ -596,14 +596,7 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
     )
     .await?;
     ensure!(replay == result, "result replay: {replay:?}");
-    let uncertainty = author
-        .call(
-            &router,
-            Method::GET,
-            &format!("/api/v1/policies/{policy}/software/rollout"),
-            None,
-        )
-        .await?;
+    let uncertainty = ready_rollout(&mut author, &router, policy).await?;
     ensure!(
         uncertainty.1["stages"][0]["reported"] == 1
             && uncertainty.1["stages"][0]["unknown"] == 1
@@ -627,14 +620,7 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
     )
     .await?;
     ensure!(late.0 == StatusCode::OK, "late detection: {late:?}");
-    let resolved = author
-        .call(
-            &router,
-            Method::GET,
-            &format!("/api/v1/policies/{policy}/software/rollout"),
-            None,
-        )
-        .await?;
+    let resolved = ready_rollout(&mut author, &router, policy).await?;
     ensure!(
         resolved.1["stages"][0]["unknown"] == 0 && resolved.1["stages"][0]["verifiedSuccess"] == 1,
         "late detection did not resolve unknown: {resolved:?}"
