@@ -345,8 +345,8 @@ pub(super) async fn validate(
         return Ok(None);
     }
     if matches!(input.object, ObjectRef::Association(_)) {
-        let (watermark, relation) = coordinates(c, tenant).await?;
-        let snapshot:Option<Uuid>=sqlx::query_scalar("SELECT id FROM mdm_devices.input_snapshots WHERE tenant_id=$1::uuid AND watermark=$2 AND version=$3 AND phase='sealed'").bind(tenant.to_string()).bind(watermark).bind(version(watermark,relation)).fetch_optional(&mut *c).await?;
+        rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
+        let snapshot:Option<Uuid>=sqlx::query_scalar("SELECT s.id FROM mdm_devices.input_snapshots s JOIN mdm_devices.checkpoints k USING(tenant_id) WHERE s.tenant_id=$1::uuid AND s.watermark>=k.identity_watermark AND s.relation_revision=k.relation_revision AND s.phase='sealed' ORDER BY s.watermark DESC LIMIT 1").bind(tenant.to_string()).fetch_optional(&mut *c).await?;
         let Some(snapshot) = snapshot else {
             return Ok(None);
         };

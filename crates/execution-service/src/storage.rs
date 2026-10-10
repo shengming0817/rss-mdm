@@ -66,6 +66,25 @@ pub async fn approval_valid(
     operation: &Operation,
     now: i64,
 ) -> Result<bool> {
+    check_approval(source, key, tx, operation, now, false).await
+}
+pub async fn receipt_valid(
+    source: &Arc<dyn crate::source_authority::SourceAuthority>,
+    key: &Arc<rss_mdm_native_protection::Protector>,
+    tx: &mut PgTransaction<'_>,
+    operation: &Operation,
+    now: i64,
+) -> Result<bool> {
+    check_approval(source, key, tx, operation, now, true).await
+}
+async fn check_approval(
+    source: &Arc<dyn crate::source_authority::SourceAuthority>,
+    key: &Arc<rss_mdm_native_protection::Protector>,
+    tx: &mut PgTransaction<'_>,
+    operation: &Operation,
+    now: i64,
+    receipt: bool,
+) -> Result<bool> {
     if matches!(operation.approval, ExecutionAuthority::DeviceControl { .. })
         && !operation.approval.control_matches(
             &operation.request,
@@ -89,9 +108,15 @@ pub async fn approval_valid(
     Ok(tx
         .with_connection(move |c| {
             Box::pin(async move {
-                Ok(approval
-                    .valid(source.as_ref(), c, &key, &permission, now)
-                    .await)
+                Ok(if receipt {
+                    approval
+                        .receipt_valid(source.as_ref(), c, &key, &permission, now)
+                        .await
+                } else {
+                    approval
+                        .valid(source.as_ref(), c, &key, &permission, now)
+                        .await
+                })
             })
         })
         .await??)

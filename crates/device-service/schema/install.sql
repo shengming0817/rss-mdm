@@ -49,7 +49,7 @@ GRANT SELECT,INSERT ON mdm_devices.associations,mdm_devices.members,mdm_devices.
 GRANT UPDATE(version,state,evidence,hardware,confirmed_by,confirmed_at,revoked_by,revoked_at,reason) ON mdm_devices.associations TO mdm_access;
 GRANT UPDATE(registration_id,generation,released) ON mdm_devices.members TO mdm_access;
 CREATE TABLE mdm_devices.checkpoints (
- tenant_id uuid PRIMARY KEY REFERENCES public.mdm_tenants(tenant_id), watermark bigint NOT NULL CHECK(watermark>=0), relation_revision bigint NOT NULL DEFAULT 0 CHECK(relation_revision>=0)
+ tenant_id uuid PRIMARY KEY REFERENCES public.mdm_tenants(tenant_id), watermark bigint NOT NULL CHECK(watermark>=0), relation_revision bigint NOT NULL DEFAULT 0 CHECK(relation_revision>=0), identity_watermark bigint NOT NULL DEFAULT 0 CHECK(identity_watermark>=0)
 );
 ALTER TABLE mdm_devices.checkpoints ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_devices.checkpoints FORCE ROW LEVEL SECURITY;
@@ -68,6 +68,17 @@ END $$;
 REVOKE ALL ON FUNCTION mdm_devices.advance_relation_revision() FROM PUBLIC;
 CREATE TRIGGER association_revision AFTER INSERT OR UPDATE ON mdm_devices.associations FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_relation_revision();
 CREATE TRIGGER association_member_revision AFTER INSERT OR UPDATE ON mdm_devices.members FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_relation_revision();
+-- Identity proof changes only for owner inputs; unrelated inventory must not block delivery.
+CREATE FUNCTION mdm_devices.capture_identity_watermark() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+BEGIN
+ IF NEW.kind IN('device','registration','source','credential') OR NEW.fields && ARRAY['device.serial_number','device.hardware_uuid','device.manufacturer']::text[] THEN
+  INSERT INTO mdm_devices.checkpoints(tenant_id,watermark,identity_watermark) VALUES(NEW.tenant_id,0,NEW.revision)
+  ON CONFLICT(tenant_id) DO UPDATE SET identity_watermark=NEW.revision;
+ END IF;
+ RETURN NEW;
+END $$;
+REVOKE ALL ON FUNCTION mdm_devices.capture_identity_watermark() FROM PUBLIC;
+CREATE TRIGGER device_identity_watermark AFTER INSERT ON mdm.asset_changes FOR EACH ROW EXECUTE FUNCTION mdm_devices.capture_identity_watermark();
 CREATE TABLE mdm_devices.input_snapshots (
  tenant_id uuid NOT NULL REFERENCES public.mdm_tenants(tenant_id), id uuid NOT NULL,
  watermark bigint NOT NULL CHECK(watermark>=0), version text NOT NULL CHECK(length(version)=64),
@@ -75,6 +86,7 @@ CREATE TABLE mdm_devices.input_snapshots (
  object_count bigint NOT NULL DEFAULT 0 CHECK(object_count BETWEEN 0 AND 1000000), byte_count bigint NOT NULL DEFAULT 0 CHECK(byte_count BETWEEN 0 AND 1073741824),
  PRIMARY KEY(tenant_id,id), UNIQUE(tenant_id,watermark,version)
 );
+CREATE INDEX current_identity_snapshot ON mdm_devices.input_snapshots(tenant_id,relation_revision,watermark DESC) WHERE phase='sealed';
 CREATE TABLE mdm_devices.input_objects (
  tenant_id uuid NOT NULL, snapshot uuid NOT NULL, object text COLLATE "C" NOT NULL, input jsonb NOT NULL CHECK(octet_length(input::text)<=1048576), hardware jsonb NOT NULL DEFAULT '[]'::jsonb, devices text[] NOT NULL,
  PRIMARY KEY(tenant_id,snapshot,object), FOREIGN KEY(tenant_id,snapshot) REFERENCES mdm_devices.input_snapshots(tenant_id,id)

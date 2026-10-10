@@ -216,6 +216,43 @@ impl ExecutionAuthority {
         }
         Ok(true)
     }
+    /// A correlated receipt settles the original task, independently of later Scope membership.
+    pub(crate) async fn receipt_valid(
+        &self,
+        source: &dyn crate::source_authority::SourceAuthority,
+        conn: &mut PgConnection,
+        key: &rss_mdm_native_protection::Protector,
+        permissions: &[Permission],
+        now: i64,
+    ) -> Result<bool, Error> {
+        let Self::Policy {
+            tenant,
+            policy,
+            version,
+            device,
+            ..
+        } = self
+        else {
+            return self.valid(source, conn, key, permissions, now).await;
+        };
+        if permissions.is_empty() {
+            return Ok(false);
+        }
+        let frozen=sqlx::query_scalar::<_,serde_json::Value>("SELECT frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2 AND policy=$3").bind(tenant).bind(version).bind(policy).fetch_optional(&mut *conn).await.map_err(db)?;
+        let Some(frozen) = frozen else {
+            return Ok(false);
+        };
+        let mut permissions = permissions.to_vec();
+        permissions.extend_from_slice(self.required());
+        permissions.sort();
+        permissions.dedup();
+        for permission in permissions {
+            if !native_grant(conn, frozen.clone(), device, permission, now).await? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
     async fn valid_one(
         &self,
         source: &dyn crate::source_authority::SourceAuthority,
@@ -334,7 +371,7 @@ impl ExecutionAuthority {
                             key,
                             tenant_id,
                             crate::configuration::Owner::Policy {
-                                policy: after,
+                                policy: row.policy,
                                 version: row.version,
                             },
                         )?;

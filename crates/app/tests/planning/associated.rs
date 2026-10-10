@@ -468,7 +468,8 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
     let assignments = page["items"].as_array().unwrap();
     ensure!(assignments.len() == 1, "{page}");
     ensure!(
-        assignments[0]["object"]["kind"] == "association"
+        assignments[0]["availability"] == "ready"
+            && assignments[0]["object"]["kind"] == "association"
             && assignments[0]["channel"] == "mdm"
             && assignments[0]["target"]["device"] == mdm,
         "{page}"

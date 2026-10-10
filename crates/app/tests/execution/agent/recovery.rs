@@ -5,6 +5,12 @@ use crate::test_support::*;
 async fn started_execution_becomes_unknown_and_disabled_policy_cancels() -> Result<()> {
     let mut fixture = Fixture::new().await?;
     fixture.register().await?;
+    crate::test_support::identity::independent_source_read(
+        case_tenant(),
+        &fixture.author_id,
+        fixture.grants.clone(),
+    )
+    .await?;
     let (id, _bytes, _definition) = fixture.resource().await?;
     fixture
         .scope(
@@ -20,8 +26,8 @@ async fn started_execution_becomes_unknown_and_disabled_policy_cancels() -> Resu
     let grants = fixture.grants;
     let unknown_policy = publish(&mut author, &router, id).await?;
     let pending = claim(&router).await?;
-    // Organization assignment survives its author's departure.
-    crate::test_support::identity::set_grants(case_tenant(), &author_id, vec![]).await?;
+    // Removing management grants leaves the independent source-read authority intact.
+    crate::test_support::identity::set_management_grants(case_tenant(), &author_id, vec![]).await?;
     task_event(&router, &pending, json!({"kind":"received"})).await?;
     task_event(&router, &pending, json!({"kind":"start"})).await?;
     let task_id = pending["payload"]["taskId"].as_str().unwrap();
@@ -44,7 +50,8 @@ async fn started_execution_becomes_unknown_and_disabled_policy_cancels() -> Resu
         run_count(unknown_policy)? == before,
         "unknown execution repeated"
     );
-    crate::test_support::identity::set_grants(case_tenant(), &author_id, grants.clone()).await?;
+    crate::test_support::identity::set_management_grants(case_tenant(), &author_id, grants.clone())
+        .await?;
     post(
         &mut author,
         &router,

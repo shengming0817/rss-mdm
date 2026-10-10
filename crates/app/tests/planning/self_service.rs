@@ -44,8 +44,15 @@ fn definition(resource: Uuid, inputs: bool) -> Value {
     value
 }
 async fn publish_definition(f: &mut Fixture, value: Value) -> Result<(Uuid, Value)> {
+    publish_definition_as(&mut f.author, &f.router, value).await
+}
+async fn publish_definition_as(
+    author: &mut Browser,
+    router: &Router,
+    value: Value,
+) -> Result<(Uuid, Value)> {
     let id = Uuid::new_v4();
-    let policy=post(&mut f.author,&f.router,&format!("/api/v1/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":value}})).await?;
+    let policy=post(author,router,&format!("/api/v1/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":value}})).await?;
     Ok((id, policy))
 }
 fn request(id: Uuid, policy: &Value, parameters: Value) -> Value {
@@ -310,6 +317,12 @@ async fn self_service_rechecks_config_and_capability_before_start() -> Result<()
 async fn grants_and_scope_are_rechecked_and_ai_switch_does_not_change_automation() -> Result<()> {
     let mut f = Fixture::new().await?;
     f.register().await?;
+    crate::test_support::identity::independent_source_read(
+        case_tenant(),
+        &f.author_id,
+        f.grants.clone(),
+    )
+    .await?;
     claim_request(&f.router, Uuid::new_v4()).await?;
     f.scope(
         case_task_scope(),
@@ -337,7 +350,8 @@ async fn grants_and_scope_are_rechecked_and_ai_switch_does_not_change_automation
         .filter(|g| g.operation != crate::authorization::Permission::ScriptExecute)
         .cloned()
         .collect();
-    crate::test_support::identity::set_grants(case_tenant(), &f.author_id, revoked).await?;
+    crate::test_support::identity::set_management_grants(case_tenant(), &f.author_id, revoked)
+        .await?;
     let mut start = json!({"kind":"start"});
     ensure!(
         task_event_request(&f.router, &task, Uuid::new_v4(), &mut start)
@@ -348,8 +362,12 @@ async fn grants_and_scope_are_rechecked_and_ai_switch_does_not_change_automation
     );
     ensure!(call(&f, Method::GET, DIRECTORY, None, true, true).await?.0 == StatusCode::OK);
     task_event(&f.router, &task, json!({"kind":"result","exitCode":0,"quality":"complete","output":{"ok":true},"diagnostics":{"stdout":"","stderr":"","durationMs":1,"executedAt":1,"failure":null}})).await?;
-    crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
-        .await?;
+    crate::test_support::identity::set_management_grants(
+        case_tenant(),
+        &f.author_id,
+        f.grants.clone(),
+    )
+    .await?;
     let (second, second_policy) = publish_definition(&mut f, value.clone()).await?;
     ensure!(
         call(
@@ -414,7 +432,8 @@ async fn grants_and_scope_are_rechecked_and_ai_switch_does_not_change_automation
         .filter(|g| g.operation != crate::authorization::Permission::ScriptExecute)
         .cloned()
         .collect();
-    crate::test_support::identity::set_grants(case_tenant(), &f.author_id, revoked).await?;
+    crate::test_support::identity::set_management_grants(case_tenant(), &f.author_id, revoked)
+        .await?;
     let identity = crate::test_support::identity::identity(case_tenant()).await?;
     let proof = identity
         .authority
@@ -997,6 +1016,8 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
             .0
             == StatusCode::OK
     );
+    let publisher = browser_subject(&admin, &f.router).await?;
+    crate::test_support::identity::set_grants(case_tenant(), &publisher, f.grants.clone()).await?;
     let mut published = Vec::new();
     for access in [
         json!({"kind":"device"}),
@@ -1006,7 +1027,7 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
     ] {
         let mut value = definition(resource, false);
         value["selfService"]["access"] = access;
-        published.push(publish_definition(&mut f, value).await?);
+        published.push(publish_definition_as(&mut admin, &f.router, value).await?);
     }
     for selector in [
         json!({"kind":"idp_group","source":{"providerId":Uuid::new_v4(),"issuer":"https://idp.example.invalid","configurationVersion":1},"id":"employees"}),
@@ -1014,7 +1035,7 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
     ] {
         let mut value = definition(resource, false);
         value["selfService"]["access"] = json!({"kind":"users","selectors":[selector]});
-        publish_definition(&mut f, value).await?;
+        publish_definition_as(&mut admin, &f.router, value).await?;
     }
     let mut cross_tenant = definition(resource, false);
     cross_tenant["selfService"]["access"] = json!({"kind":"users","selectors":[{"kind":"user","instanceId":crate::test_support::identity::INSTANCE,"tenantId":Uuid::new_v4(),"principalId":f.author_id}]});

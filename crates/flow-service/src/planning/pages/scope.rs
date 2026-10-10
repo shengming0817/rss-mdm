@@ -69,7 +69,15 @@ impl Planning {
                 })
             })
             .await?
-            .map_err(rss_mdm_execution_service::Error::from)?;
+            .map_err(|error| match error {
+                rss_mdm_execution_service::source_authority::SourceError::Missing => {
+                    Error::Planning(super::super::error::PlanningError::Missing(
+                        super::super::error::Missing::Scope,
+                    ))
+                    .into()
+                }
+                other => Fault::from(rss_mdm_execution_service::Error::from(other)),
+            })?;
         if page.result != result {
             return Err(Error::Conflict.into());
         }
@@ -108,7 +116,15 @@ impl Planning {
                     })
                 })
                 .await?
-                .map_err(rss_mdm_execution_service::Error::from)?;
+                .map_err(|error| match error {
+                    rss_mdm_execution_service::source_authority::SourceError::Missing => {
+                        Error::Planning(super::super::error::PlanningError::Missing(
+                            super::super::error::Missing::Scope,
+                        ))
+                        .into()
+                    }
+                    other => Fault::from(rss_mdm_execution_service::Error::from(other)),
+                })?;
             let object = rss_mdm_inventory_service::objects::ObjectRef::Endpoint(device);
             if matches!(admission, ScopeAdmission::Eligible { .. }) {
                 items.push(object.clone());
@@ -127,7 +143,15 @@ impl Planning {
                     })
                 })
                 .await?
-                .map_err(rss_mdm_execution_service::Error::from)?;
+                .map_err(|error| match error {
+                    rss_mdm_execution_service::source_authority::SourceError::Missing => {
+                        Error::Planning(super::super::error::PlanningError::Missing(
+                            super::super::error::Missing::Scope,
+                        ))
+                        .into()
+                    }
+                    other => Fault::from(rss_mdm_execution_service::Error::from(other)),
+                })?;
             let reasons = explanation
                 .as_ref()
                 .map(|e| {

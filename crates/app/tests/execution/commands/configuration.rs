@@ -187,13 +187,21 @@ async fn exchange(
     session: u32,
     values: &mut BTreeMap<String, String>,
 ) -> anyhow::Result<Vec<String>> {
+    exchange_with_readback(peer, session, values, None).await
+}
+async fn exchange_with_readback(
+    peer: &crate::windows::test_support::Peer,
+    session: u32,
+    values: &mut BTreeMap<String, String>,
+    readback: Option<&str>,
+) -> anyhow::Result<Vec<String>> {
     let opened = native::begin(
         &peer.mutual,
         &peer.url,
         &peer.message,
         &peer.ack,
         session,
-        None,
+        readback,
     )
     .await?;
     let mut sent = opened.response;
@@ -379,14 +387,13 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
                 )
                 .await?;
             ensure!(read.0 == StatusCode::OK);
-            if let Some(diagnoses) = read.1["items"][0]["diagnoses"].as_array() {
-                ensure!(
-                    !diagnoses.iter().any(|d| d == "configuration_conflict"),
-                    "equal object content was mislabeled as a value conflict: {read:?}"
-                );
-                if diagnoses.iter().any(|d| d == "native_group_conflict") {
-                    return Ok::<_, anyhow::Error>(());
-                }
+            ensure!(
+                read.1["items"][0]["reason"] != "configuration_conflict",
+                "equal object content was mislabeled as a value conflict: {read:?}"
+            );
+            if read.1["items"][0]["reason"] == "native_group_conflict" {
+                ensure!(read.1["items"][0]["availability"] == "unavailable");
+                return Ok::<_, anyhow::Error>(());
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -788,6 +795,10 @@ async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_tenant())
+        .execute(&mut pg)
+        .await?;
     let (mdm_registration, mdm_epoch):(Uuid,Uuid)=sqlx::query_as("SELECT r.id,s.epoch FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel='mdm' AND r.state='active' AND s.source='mdm.windows'").bind(case_tenant()).bind(case_device()).fetch_one(&mut pg).await?;
     crate::device::t2::associations::hardware(
         case_device(),
@@ -815,7 +826,7 @@ async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_
         )?
         .encode()?;
         sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES($1::uuid,$2,'agent.script',$3,true)").bind(case_tenant()).bind(registration).bind(epoch).execute(&mut pg).await?;
-        sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES($1::uuid,'mdm.observation.v1','inventory-v4',$2,$3,'custom.corporate_agent.healthy',$4,'health-fixture',1,2,'known',$4,'health-fixture',1,2,$5,'agent.script',$6,0)").bind(case_tenant()).bind(scope).bind(serde_json::to_value(definition.coverage()?)?).bind(serde_json::to_value(Scalar::Boolean(false))?).bind(registration).bind(epoch).execute(&mut pg).await?;
+        sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES($1::uuid,'mdm.observation.v1','inventory-v4',$2,$3,'custom.corporate_agent.healthy',$4,'health-fixture',1,2,'known',$4,'health-fixture',1,2,$5,'agent.script',$6,0)").bind(case_tenant()).bind(scope).bind(serde_json::to_string(&definition.coverage()?)?).bind(serde_json::to_value(Scalar::Boolean(false))?).bind(registration).bind(epoch).execute(&mut pg).await?;
     }
     let config = crate::test_support::identity::config(case_tenant())?;
     let associations = rss_mdm_device_service::Associations::new(
@@ -935,13 +946,31 @@ async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_
     ensure!(
         targets.len() == 1 && targets[0].0 == case_device() && targets[0].1 == mdm_registration
     );
-    ensure!(exchange(&peer, 982, &mut values).await? == vec![CORTANA.to_owned()]);
+    let mut writes = Vec::new();
+    for session in 982..987 {
+        writes.extend(
+            exchange_with_readback(
+                &peer,
+                session,
+                &mut values,
+                (!writes.is_empty()).then_some(CORTANA),
+            )
+            .await?,
+        );
+        let progress = client
+            .call(Method::GET, &format!("/{}", operations[0]), None)
+            .await?;
+        if progress.1["commandStatus"] == "applied" {
+            break;
+        }
+        planning_http::await_ingress().await?;
+    }
     let read = client
         .call(Method::GET, &format!("/{}", operations[0]), None)
         .await?;
     ensure!(
-        read.1["commandStatus"] == "applied",
-        "original native result: {read:?}"
+        writes == vec![CORTANA.to_owned()] && read.1["commandStatus"] == "applied",
+        "original native result: writes={writes:?}, operation={read:?}"
     );
     crate::test_support::inventory::seed_source(alone, "mdm", "mdm.windows", "model")?;
     planning_http::await_ingress().await?;

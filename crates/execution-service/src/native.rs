@@ -81,12 +81,7 @@ pub async fn result_eligible_on(
         &row,
         "request",
     )?;
-    let approval: ExecutionAuthority =
-        serde_json::from_str(&row.try_get::<String, _>("approval").map_err(db)?)
-            .map_err(|_| protocol())?;
-    Ok(approval.dispatch_ready(source, c).await?
-        && receipt_acceptance(source, c, protection, p, &input, &row, true, None).await?
-            == Some(true))
+    Ok(receipt_acceptance(source, c, protection, p, &input, &row, true, None).await? == Some(true))
 }
 async fn collection_result_eligible(
     source: &dyn crate::source_authority::SourceAuthority,
@@ -1159,7 +1154,7 @@ async fn receipt_acceptance(
                 "published" | "received"
             ),
             authority_valid: approval
-                .valid(source, c, protection, &request.task.permissions()?, at)
+                .receipt_valid(source, c, protection, &request.task.permissions()?, at)
                 .await?,
         }
         .allows(),

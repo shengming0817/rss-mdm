@@ -307,7 +307,7 @@ async fn settle_one(
     }
     let now = storage::now(tx).await?;
     if now >= op.request.deadline
-        || !storage::approval_valid(&s.source, &s.protection, tx, &op, now).await?
+        || !storage::receipt_valid(&s.source, &s.protection, tx, &op, now).await?
     {
         return Ok(());
     }

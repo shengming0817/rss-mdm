@@ -236,7 +236,7 @@ async fn published_scope_job_does_not_swallow_new_definition() {
         sql(&format!(
             "SELECT r.device FROM mdm_planning.scope_results r JOIN mdm_planning.scopes s ON(s.tenant_id,s.resolution)=(r.tenant_id,r.run) WHERE s.id='{id}' AND r.matched"
         )),
-        new
+        format!("endpoint:{new}")
     );
     worker.stop().await;
     service.runtime.close().await;

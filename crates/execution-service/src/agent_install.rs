@@ -340,23 +340,24 @@ pub(crate) async fn authorized_on(
     {
         return Ok(false);
     }
-    let admission = source
-        .admission_on(
-            c,
-            rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
-            row.try_get("scope").map_err(db)?,
-            rss_mdm_inventory::Channel::Mdm,
-            device,
-        )
-        .await?;
-    // Pending applicability pauses dispatch; it does not withdraw durable approval.
-    if !matches!(
-        admission,
-        crate::source_authority::ScopeAdmission::Eligible { .. }
-            | crate::source_authority::ScopeAdmission::Pending
-    ) && !dispatched_on(c, tenant, *operation).await?
-    {
-        return Ok(false);
+    // Original installation authority survives Scope exit after dispatch, until its deadline.
+    if !dispatched_on(c, tenant, *operation).await? {
+        let admission = source
+            .admission_on(
+                c,
+                rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
+                row.try_get("scope").map_err(db)?,
+                rss_mdm_inventory::Channel::Mdm,
+                device,
+            )
+            .await?;
+        if !matches!(
+            admission,
+            crate::source_authority::ScopeAdmission::Eligible { .. }
+                | crate::source_authority::ScopeAdmission::Pending
+        ) {
+            return Ok(false);
+        }
     }
     rss_mdm_software_service::catalog::admitted_on(
         c,

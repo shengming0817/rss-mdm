@@ -16,7 +16,7 @@ async fn resolution(
     c: &mut PgConnection,
     tenant: TenantId,
     scope: Uuid,
-) -> Result<(Uuid, i64, ScopeInput, bool), SourceError> {
+) -> Result<Option<(Uuid, i64, ScopeInput, bool)>, SourceError> {
     // The owner fence precedes Scope/head locks, matching publication transactions.
     rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
     let status: serde_json::Value =
@@ -24,15 +24,18 @@ async fn resolution(
             .bind(scope)
             .fetch_one(&mut *c)
             .await?;
-    let row=sqlx::query("SELECT s.resolution,s.resolution_revision,r.input FROM mdm_planning.scopes s JOIN mdm_planning.scope_runs r ON(r.tenant_id,r.id)=(s.tenant_id,s.resolution) WHERE s.tenant_id=$1::uuid AND s.id=$2 AND NOT s.deleted").bind(tenant.to_string()).bind(scope).fetch_optional(c).await?.ok_or(SourceError::Missing)?;
+    let row=sqlx::query("SELECT s.resolution,s.resolution_revision,r.input FROM mdm_planning.scopes s JOIN mdm_planning.scope_runs r ON(r.tenant_id,r.id)=(s.tenant_id,s.resolution) WHERE s.tenant_id=$1::uuid AND s.id=$2 AND NOT s.deleted").bind(tenant.to_string()).bind(scope).fetch_optional(c).await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
     let frozen =
         serde_json::from_value(row.try_get("input")?).map_err(|_| SourceError::Invariant)?;
-    Ok((
+    Ok(Some((
         row.try_get("resolution")?,
         row.try_get("resolution_revision")?,
         frozen,
         status["state"] == "fresh",
-    ))
+    )))
 }
 async fn rows_for(
     c: &mut PgConnection,
@@ -75,7 +78,22 @@ pub async fn admission_on(
     channel: Channel,
     device: &str,
 ) -> Result<ScopeAdmission, SourceError> {
-    let (run, entry, frozen, fresh) = resolution(c, tenant, scope).await?;
+    // Missing/deleted scopes exclude; an existing unpublished scope remains pending.
+    rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
+    let status: serde_json::Value =
+        sqlx::query_scalar("SELECT mdm_planning.scope_admission($1,NULL)")
+            .bind(scope)
+            .fetch_one(&mut *c)
+            .await?;
+    match status["state"].as_str() {
+        Some("excluded") => return Ok(ScopeAdmission::Excluded),
+        Some("pending") => return Ok(ScopeAdmission::Pending),
+        Some("fresh") => {}
+        _ => return Err(SourceError::Invariant),
+    }
+    let (run, entry, frozen, fresh) = resolution(c, tenant, scope)
+        .await?
+        .ok_or(SourceError::Invariant)?;
     if !fresh {
         return Ok(ScopeAdmission::Pending);
     }
@@ -196,7 +214,9 @@ pub async fn devices_page(
     if !(1..=1000).contains(&limit) {
         return Err(SourceError::Invariant);
     }
-    let (run, _, frozen, _) = resolution(c, tenant, scope).await?;
+    let (run, _, frozen, _) = resolution(c, tenant, scope)
+        .await?
+        .ok_or(SourceError::Conflict)?;
     let targets: Vec<i32> = frozen
         .sources
         .iter()
@@ -219,7 +239,9 @@ pub async fn objects_on(
     channel: Channel,
     after: Option<&str>,
 ) -> Result<Vec<AssignmentObject>, SourceError> {
-    let (run, _, frozen, fresh) = resolution(c, tenant, scope).await?;
+    let Some((run, _, frozen, fresh)) = resolution(c, tenant, scope).await? else {
+        return Ok(Vec::new());
+    };
     let targets: Vec<i32> = frozen
         .sources
         .iter()
@@ -297,7 +319,9 @@ pub async fn evidence_on(
     channel: Channel,
     device: &str,
 ) -> Result<Vec<DeviceObject>, SourceError> {
-    let (run, _, _, fresh) = resolution(c, tenant, scope).await?;
+    let (run, _, _, fresh) = resolution(c, tenant, scope)
+        .await?
+        .ok_or(SourceError::Conflict)?;
     if !fresh
         || !matches!(
             admission_on(reader, c, tenant, scope, channel, device).await?,

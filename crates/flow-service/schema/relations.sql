@@ -552,3 +552,6 @@ GRANT UPDATE(input,availability,reason,target,scope_result,entry_revision) ON md
 GRANT SELECT ON mdm_planning.policy_source_grants,mdm_planning.policy_assignments TO mdm_command_runtime;
 
 COMMIT;
+
+-- Native Agent registration rechecks only the frozen source read authority.
+GRANT SELECT ON mdm_planning.policy_source_grants TO mdm_access;

@@ -201,7 +201,7 @@ async fn prepare_identity() -> Result<()> {
                         .context("bootstrap authorization missing")?
                         .grants.clone();
                     phase = "grant-foundational";
-                    grant(&audit, &principal, tenant, &subject, foundational).await?;
+                    grant(&audit, &principal, tenant, &subject, foundational, false).await?;
                     phase = "grant-devices";
                     grant(
                         &audit,
@@ -209,6 +209,7 @@ async fn prepare_identity() -> Result<()> {
                         tenant,
                         &subject,
                         device_grants(None, &["inventory_read", "enrollment", "credentials"])?,
+                        false,
                     )
                     .await?;
                 }
@@ -312,6 +313,29 @@ pub(crate) async fn set_grants(
     subject: &str,
     grants: Vec<crate::authorization::Grant>,
 ) -> Result<()> {
+    set_grants_in(tenant, subject, grants, false).await
+}
+pub(crate) async fn independent_source_read(
+    tenant: &str,
+    subject: &str,
+    grants: Vec<crate::authorization::Grant>,
+) -> Result<()> {
+    set_grants(tenant, subject, device_grants(None, &["inventory_read"])?).await?;
+    set_management_grants(tenant, subject, grants).await
+}
+pub(crate) async fn set_management_grants(
+    tenant: &str,
+    subject: &str,
+    grants: Vec<crate::authorization::Grant>,
+) -> Result<()> {
+    set_grants_in(tenant, subject, grants, true).await
+}
+async fn set_grants_in(
+    tenant: &str,
+    subject: &str,
+    grants: Vec<crate::authorization::Grant>,
+    preserve_read: bool,
+) -> Result<()> {
     let identity = identity(tenant).await?;
     let access = crate::Database::connect(config(tenant)?.access_database.options()?).await?;
     let principal = crate::authorization::context::AuthorizedPrincipal::new(
@@ -332,6 +356,7 @@ pub(crate) async fn set_grants(
         tenant,
         subject,
         grants,
+        preserve_read,
     )
     .await?;
     access.close().await;
@@ -353,10 +378,19 @@ async fn grant(
     tenant: &str,
     subject: &str,
     grants: Vec<crate::authorization::Grant>,
+    preserve_read: bool,
 ) -> Result<()> {
     use crate::authorization::{Change, Permission, Rule, Subject};
     for record in &principal.authorization()?.rules {
         let Some(rule) = &record.value else { continue };
+        if preserve_read
+            && rule
+                .grants
+                .iter()
+                .all(|g| g.operation == Permission::InventoryRead)
+        {
+            continue;
+        }
         if matches!(&rule.subject, Subject::User { user } if user.principal_id == subject)
             && !rule
                 .grants
