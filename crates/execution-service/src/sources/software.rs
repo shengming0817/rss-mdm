@@ -20,7 +20,11 @@ pub struct SoftwareAssignment {
     rollout: SoftwareRollout,
     version: Option<Uuid>,
 }
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct StageCounts {
+    pub(crate) scanned: u64,
+    pub ready: bool,
+    pub as_of: Option<i64>,
     pub total: u64,
     pub reported: u64,
     pub waiting_user: u64,
@@ -112,11 +116,24 @@ impl SoftwareAssignment {
         tx: &mut PgTransaction<'_>,
         device: &str,
     ) -> Result<Option<i64>> {
+        if let Some(version) = self.version
+            && !storage::readable_in(source, tx, version).await?
+        {
+            return Ok(None);
+        }
         if !self.active {
             return Ok(None);
         }
         Ok(
-            match storage::admission_in(source, tx, self.scope, device).await? {
+            match storage::admission_in(
+                source,
+                tx,
+                self.scope,
+                rss_mdm_inventory::Channel::Agent,
+                device,
+            )
+            .await?
+            {
                 crate::source_authority::ScopeAdmission::Eligible { entry } => Some(entry),
                 _ => None,
             },
@@ -154,12 +171,18 @@ impl SoftwareAssignment {
         let stages = &self.rollout.stages;
         for (index, stage) in stages.iter().enumerate() {
             let scope = stage.scope;
-            let admission = storage::admission_in(source, tx, scope, device).await?;
+            let admission =
+                storage::admission_in(source, tx, scope, rss_mdm_inventory::Channel::Agent, device)
+                    .await?;
             match admission {
                 crate::source_authority::ScopeAdmission::Eligible { .. } => {
                     let (total, verified) = if stage.minimum_verified_percent.is_some() {
-                        self.stage_progress_in(tx, index.checked_sub(1).ok_or(Error::Malformed)?)
-                            .await?
+                        self.stage_progress_in(
+                            source,
+                            tx,
+                            index.checked_sub(1).ok_or(Error::Malformed)?,
+                        )
+                        .await?
                     } else {
                         (0, 0)
                     };
@@ -210,10 +233,11 @@ impl SoftwareAssignment {
     /// Current stage denominator and independently verified results; never infer from publication.
     pub async fn stage_progress_in(
         &self,
+        source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
         tx: &mut PgTransaction<'_>,
         index: usize,
     ) -> Result<(u64, u64)> {
-        let counts = self.counts_in(tx, index, None).await?;
+        let counts = self.counts_in(source, tx, index, None).await?;
         Ok((counts.total, counts.verified))
     }
     /// Live target denominator with the latest per-device result in this stage.
@@ -223,58 +247,29 @@ impl SoftwareAssignment {
         index: usize,
         service: &crate::queries::Admission,
     ) -> Result<StageCounts> {
-        self.counts_in(tx, index, Some(service)).await
+        self.counts_in(&service.source, tx, index, Some(service))
+            .await
     }
     async fn counts_in(
         &self,
+        source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
         tx: &mut PgTransaction<'_>,
         index: usize,
-        service: Option<&crate::queries::Admission>,
+        _service: Option<&crate::queries::Admission>,
     ) -> Result<StageCounts> {
-        let stages = &self.rollout.stages;
-        let stage = stages.get(index).ok_or(Error::Malformed)?;
-        let scope = stage.scope;
-        let root = self.scope;
-        let earlier: Vec<Uuid> = stages[..index].iter().map(|s| s.scope).collect();
-        let tenant = tx.tenant_id().to_string();
-        let version = self.version;
-        let prefix = format!("software:stage:{}:%", stage.scope);
-        let optional = matches!(self.intent(), SoftwareIntent::AvailableInstall);
-        let now = crate::storage::now(tx).await?;
-        let include_capabilities = service.is_some();
-        let (total, reported, waiting_user, unknown, waiting_reboot, failed, verified, targets): (i64, i64, i64, i64, i64, i64, i64, Option<Vec<String>>) = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query_as("WITH targets AS (SELECT r.device FROM mdm_planning.scopes s JOIN mdm_planning.scope_results r ON (r.tenant_id,r.run)=(s.tenant_id,s.resolution) JOIN mdm_planning.scopes root ON root.tenant_id=s.tenant_id AND root.id=$6::uuid AND NOT root.deleted JOIN mdm_planning.scope_results rr ON (rr.tenant_id,rr.run,rr.device)=(root.tenant_id,root.resolution,r.device) AND rr.matched WHERE s.tenant_id=$1::uuid AND s.id=$2::uuid AND NOT s.deleted AND r.matched AND NOT EXISTS (SELECT 1 FROM mdm_planning.scopes p JOIN mdm_planning.scope_results x ON (x.tenant_id,x.run)=(p.tenant_id,p.resolution) WHERE p.tenant_id=s.tenant_id AND p.id=ANY($3::uuid[]) AND x.device=r.device AND x.matched)) SELECT count(*),count(*) FILTER(WHERE latest.result IS NOT NULL),count(*) FILTER(WHERE $7::boolean AND latest.state->>'execution'='not_started' AND latest.state->>'cancellation'='none' AND latest.state->'delivery'->>'kind' IN ('claimed','received') AND (latest.state->'delivery'->>'leaseUntil')::bigint>$8),count(*) FILTER(WHERE latest.result->>'effect'='unknown' OR latest.state->>'execution'='unknown'),count(*) FILTER(WHERE latest.result->>'effect'='waiting_reboot'),count(*) FILTER(WHERE latest.result->>'effect'='failed'),count(*) FILTER(WHERE latest.result->>'effect'='verified'),array_agg(targets.device) FILTER(WHERE $9::boolean) FROM targets LEFT JOIN LATERAL (SELECT a.state,a.result FROM mdm_commands.action_runs a WHERE a.tenant_id=$1::uuid AND a.policy_version=$4::uuid AND a.device=targets.device AND a.occurrence LIKE $5 ORDER BY a.created_at DESC,a.id DESC LIMIT 1) latest ON true")
-                .bind(tenant).bind(scope).bind(earlier).bind(version).bind(prefix).bind(root).bind(optional).bind(now).bind(include_capabilities).fetch_one(c).await
-        })).await?;
-        let unsupported = if let Some(service) = service {
-            let mut supported = std::collections::BTreeSet::new();
-            for devices in targets.unwrap_or_default().chunks(128) {
-                for target in crate::channels::agent_targets_in(
-                    tx,
-                    service.agent_store.clone(),
-                    devices.to_vec(),
-                )
-                .await?
-                {
-                    if self.supported_in(service, tx, &target.binding).await? {
-                        supported.insert(target.device);
-                    }
-                }
-            }
-            total - i64::try_from(supported.len()).map_err(|_| Error::Malformed)?
-        } else {
-            0
+        let Some(version) = self.version else {
+            return Ok(StageCounts::default());
         };
-        Ok(StageCounts {
-            total: total.try_into().map_err(|_| Error::Malformed)?,
-            reported: reported.try_into().map_err(|_| Error::Malformed)?,
-            waiting_user: waiting_user.try_into().map_err(|_| Error::Malformed)?,
-            unknown: unknown.try_into().map_err(|_| Error::Malformed)?,
-            waiting_reboot: waiting_reboot.try_into().map_err(|_| Error::Malformed)?,
-            failed: failed.try_into().map_err(|_| Error::Malformed)?,
-            verified: verified.try_into().map_err(|_| Error::Malformed)?,
-            unsupported_capability: unsupported.try_into().map_err(|_| Error::Malformed)?,
-        })
+        let Some(input) = self.stats_input_in(source, tx, index).await? else {
+            return Ok(StageCounts::default());
+        };
+        let tenant = tx.tenant_id().to_string();
+        let document = crate::checked_input(serde_json::to_value(input))?;
+        let counts:Option<serde_json::Value>=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT counts FROM mdm_commands.software_stage_stats WHERE tenant_id=$1::uuid AND version=$2 AND stage=$3 AND input-'runs'=$4::jsonb-'runs' AND ready").bind(tenant).bind(version).bind(index as i32).bind(document).fetch_optional(c).await})).await?;
+        match counts {
+            Some(v) => crate::stored(serde_json::from_value(v)),
+            None => Ok(StageCounts::default()),
+        }
     }
     fn selection(&self, platform: Platform, architecture: Architecture) -> Option<Selection<'_>> {
         Some(Selection {
@@ -390,7 +385,14 @@ impl SoftwareAssignment {
         let mut stage_index = None;
         for (index, stage) in self.stages().iter().enumerate() {
             let scope = stage.scope;
-            let state = storage::admission_in(&service.source, tx, scope, device).await?;
+            let state = storage::admission_in(
+                &service.source,
+                tx,
+                scope,
+                rss_mdm_inventory::Channel::Agent,
+                device,
+            )
+            .await?;
             match state {
                 crate::source_authority::ScopeAdmission::Eligible { .. } => {
                     stage_index = Some(index);
@@ -417,7 +419,11 @@ impl SoftwareAssignment {
         }
         if stage.minimum_verified_percent.is_some() {
             let (total, verified) = self
-                .stage_progress_in(tx, index.checked_sub(1).ok_or(Error::Malformed)?)
+                .stage_progress_in(
+                    &service.source,
+                    tx,
+                    index.checked_sub(1).ok_or(Error::Malformed)?,
+                )
                 .await?;
             if !stage.open(now, total, verified) {
                 return Ok(TaskAdmission::new(
@@ -520,3 +526,5 @@ fn delivery(input: &rss_mdm_policy::SoftwareDelivery) -> Delivery<'_> {
         },
     }
 }
+
+mod stats;

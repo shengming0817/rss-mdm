@@ -36,15 +36,18 @@ impl Queries {
             let now=storage::now(tx).await?;
             let mut stages=Vec::new();
             let mut prior=(0,0);
+            let mut prior_ready=true;
             for (index,stage) in software.assignment.stages().iter().enumerate() {
                 let counts=software.assignment.stage_counts_in(tx,index,&service.admission).await?;
                 stages.push(json!({"scope":stage.scope,"opensAt":stage.opens_at,
                     "minimumVerifiedPercent":stage.minimum_verified_percent,
-                    "open":policy.enabled && stage.open(now,prior.0,prior.1),
+                    "open":policy.enabled && (stage.minimum_verified_percent.is_none() || prior_ready) && stage.open(now,prior.0,prior.1),
+                    "ready":counts.ready,"asOf":counts.as_of,
                     "totalTargets":counts.total,"reported":counts.reported,
                     "unknown":counts.unknown,"waitingUser":counts.waiting_user,"waitingReboot":counts.waiting_reboot,"failed":counts.failed,"verifiedSuccess":counts.verified,
                     "unsupportedCapability":counts.unsupported_capability}));
                 prior=(counts.total,counts.verified);
+                prior_ready=counts.ready;
             }
             service.audit_store.append_request_in(tx,audit,200,"success").await?;
             crate::queries::records::decode(json!({"policyId":id,"versionId":policy.version,"paused":!policy.enabled,"asOf":now,"stages":stages}))

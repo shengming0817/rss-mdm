@@ -3,7 +3,7 @@ use rss_mdm_device_service::{Associations, Confirm, Revoke, State, ViewQuery};
 use rss_mdm_registration_service::device::endpoints::{self, PrimaryRegistration};
 use serde_json::json;
 
-pub(super) async fn setup() -> anyhow::Result<(
+pub(crate) async fn setup() -> anyhow::Result<(
     Arc<Database>,
     Associations,
     AuthorizedPrincipal,
@@ -43,7 +43,7 @@ pub(super) fn query(limit: usize) -> ViewQuery {
         source: None,
     }
 }
-pub(super) fn seed(device: &str, channel: &str, serial: &str) -> anyhow::Result<Uuid> {
+pub(crate) fn seed(device: &str, channel: &str, serial: &str) -> anyhow::Result<Uuid> {
     let source = if channel == "mdm" {
         "mdm.windows"
     } else {
@@ -54,7 +54,7 @@ pub(super) fn seed(device: &str, channel: &str, serial: &str) -> anyhow::Result<
     hardware(device, registration, epoch, source, serial)?;
     Ok(registration)
 }
-fn hardware(
+pub(crate) fn hardware(
     _device: &str,
     registration: Uuid,
     epoch: Uuid,

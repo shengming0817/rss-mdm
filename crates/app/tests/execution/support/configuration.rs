@@ -106,11 +106,11 @@ pub(crate) async fn published(client: &mut Client, policy: Uuid) -> anyhow::Resu
                 .call(
                     &client.router,
                     Method::GET,
-                    &format!("/api/v1/policies/{policy}/devices"),
+                    &format!("/api/v1/policies/{policy}/assignments"),
                     None,
                 )
                 .await?;
-            ensure!(page.0 == StatusCode::OK, "configuration devices: {page:?}");
+            ensure!(page.0 == StatusCode::OK, "configuration assignments: {page:?}");
             let ids: Vec<Uuid> = page.1["items"]
                 .as_array()
                 .unwrap()
@@ -136,7 +136,10 @@ pub(crate) async fn published(client: &mut Client, policy: Uuid) -> anyhow::Resu
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
-    .await?
+    .await.map_err(|error| {
+        let evidence=crate::test_support::pg(&format!("SELECT jsonb_build_object('assignments',(SELECT jsonb_agg(to_jsonb(a)) FROM mdm_planning.policy_assignments a WHERE a.tenant_id='{tenant}' AND a.policy='{policy}'),'scope',(SELECT to_jsonb(s) FROM mdm_planning.scopes s JOIN mdm_policy.policies p ON(p.tenant_id,p.definition->>'scope')=(s.tenant_id,s.id::text) WHERE p.tenant_id='{tenant}' AND p.id='{policy}'),'admission',(SELECT mdm_planning.scope_admission((p.definition->>'scope')::uuid,NULL) FROM mdm_policy.policies p WHERE p.tenant_id='{tenant}' AND p.id='{policy}'),'runs',(SELECT jsonb_agg(to_jsonb(r)) FROM mdm_planning.scope_runs r WHERE r.tenant_id='{tenant}'),'sourceHeads',(SELECT jsonb_agg(to_jsonb(h)) FROM mdm_planning.source_heads h WHERE h.tenant_id='{tenant}'),'members',(SELECT jsonb_agg(to_jsonb(m)) FROM mdm_planning.scope_source_members m WHERE m.tenant_id='{tenant}'),'claims',(SELECT jsonb_agg(to_jsonb(c)) FROM mdm_planning.configuration_claims c WHERE c.tenant_id='{tenant}' AND c.policy='{policy}'),'objects',(SELECT jsonb_agg(to_jsonb(o)) FROM mdm_planning.configuration_objects o WHERE o.tenant_id='{tenant}'),'jobs',(SELECT jsonb_agg(jsonb_build_object('kind',j.kind,'target',j.target,'done',j.completed,'failure',j.failure,'detail',j.failure_detail)) FROM mdm_automation.automation_jobs j WHERE j.tenant_id='{tenant}'))",tenant=case_tenant())).unwrap_or_else(|_| "diagnostic unavailable".into());
+        anyhow::anyhow!("publication wait: {error}; {evidence}")
+    })?
 }
 pub(crate) async fn wait_diagnosis(
     client: &mut Client,
@@ -150,15 +153,12 @@ pub(crate) async fn wait_diagnosis(
                 .call(
                     &client.router,
                     Method::GET,
-                    &format!("/api/v1/policies/{policy}/devices"),
+                    &format!("/api/v1/policies/{policy}/assignments"),
                     None,
                 )
                 .await?;
             ensure!(read.0 == StatusCode::OK);
-            if read.1["items"][0]["diagnoses"]
-                .as_array()
-                .is_some_and(|d| d.iter().any(|value| value == expected))
-            {
+            if read.1["items"][0]["reason"] == expected {
                 return Ok::<_, anyhow::Error>(());
             }
             tokio::time::sleep(Duration::from_millis(50)).await;

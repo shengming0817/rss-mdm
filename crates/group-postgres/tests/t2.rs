@@ -116,6 +116,7 @@ async fn dynamic_group(s: &GroupStore) -> (GroupId, Receipt, FixturePage) {
             op(),
             at(),
             &Command::Create {
+                asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                 group,
                 name: "dynamic".into(),
                 description: String::new(),
@@ -397,6 +398,7 @@ async fn standalone_delete_requires_companion_transaction() {
             op(),
             at(),
             &Command::Create {
+                asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                 group: id,
                 name: "delete-boundary".into(),
                 description: String::new(),
@@ -577,6 +579,7 @@ async fn atomic_event_failure_rls_and_large_member_ids() {
             op(),
             at(),
             &Command::Create {
+                asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                 group: id,
                 name: "static".into(),
                 description: String::new(),
@@ -658,6 +661,7 @@ async fn admitted_input_and_command_commit_unknown_recover_by_original_identity(
     let id = group_id();
     let operation = op();
     let command = Command::Create {
+        asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
         group: id,
         name: "unknown".into(),
         description: String::new(),
@@ -727,6 +731,7 @@ async fn process_death_after_admission_recovers_without_caller_snapshot() {
             op(),
             at(),
             &Command::Create {
+                asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                 group: id,
                 name: "restart".into(),
                 description: String::new(),

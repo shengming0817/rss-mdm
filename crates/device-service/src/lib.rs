@@ -3,6 +3,7 @@
 mod changes;
 mod cursor;
 mod model;
+pub mod planning;
 mod views;
 pub use views::{ViewQuery, ViewRef};
 mod identity;

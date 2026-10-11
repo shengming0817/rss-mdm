@@ -16,7 +16,7 @@ pub async fn active(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
     let kinds = rss_mdm_policy::AssignmentBehavior::NativeCollectionRecovery.kinds();
     Ok(tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.id=$2::uuid AND p.enabled AND p.definition->'action'->>'kind'=ANY($3::text[])) OR EXISTS(SELECT 1 FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND v.policy=$2::uuid AND ((r.state->>'execution'='not_started' AND r.state->>'cancellation'<>'confirmed') OR r.state->>'execution'='running' OR (r.state->>'execution'='unknown' AND r.state->>'cancellation'='none' AND (NOT p.enabled OR p.current_version<>v.id))))").bind(tenant).bind(id.to_string()).bind(kinds).fetch_one(c).await
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.id=$2::uuid AND p.enabled AND (p.definition->'action'->>'kind'=ANY($3::text[]) OR p.definition->'action'->>'kind'='software')) OR EXISTS(SELECT 1 FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND v.policy=$2::uuid AND ((r.state->>'execution'='not_started' AND r.state->>'cancellation'<>'confirmed') OR r.state->>'execution'='running' OR (r.state->>'execution'='unknown' AND r.state->>'cancellation'='none' AND (NOT p.enabled OR p.current_version<>v.id))))").bind(tenant).bind(id.to_string()).bind(kinds).fetch_one(c).await
     })).await?)
 }
 pub async fn recover(
@@ -26,6 +26,16 @@ pub async fn recover(
 ) -> Result<()> {
     crate::sources::storage::lock(tx, id).await?;
     super::native_collection::admit_policy(service, tx, id).await?;
+    if let Some(policy) = crate::sources::storage::read_in(&service.policy_reader, tx, id).await?
+        && policy.definition.action.kind() == rss_mdm_policy::ActionKind::Software
+    {
+        let software =
+            crate::sources::software::read_in(&service.policy_reader, tx, policy.version).await?;
+        software
+            .assignment
+            .advance_stats_in(&service.admission(), tx, id)
+            .await?;
+    }
     let tenant = tx.tenant_id().to_string();
     let runs=tx.with_connection(move|c|Box::pin(async move {
         sqlx::query("INSERT INTO mdm_commands.policy_recovery(tenant_id,policy) VALUES($1::uuid,$2::uuid) ON CONFLICT DO NOTHING").bind(&tenant).bind(id.to_string()).execute(&mut *c).await?;

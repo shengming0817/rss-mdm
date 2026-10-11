@@ -226,6 +226,7 @@ pub fn authorize_policy_snapshot(
         snapshot.require_all_devices(proof, Permission::Enrollment)?;
     }
     snapshot.require(proof, Permission::ScopeRead, None)?;
+    snapshot.require_all_devices(proof, Permission::InventoryRead)?;
     snapshot.require_all_devices(proof, permission)?;
     Ok(())
 }

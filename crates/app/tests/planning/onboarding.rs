@@ -14,7 +14,7 @@ async fn fixture() -> Result<Fixture> {
         .await?;
     let setup = start_automation(&f.base).await?;
     let group = Uuid::new_v4();
-    planning_http::call(&mut f.author,&f.router,&format!("/api/v1/groups/{group}"),0,json!({"action":"create","name":"MDM missing","description":"","criteria":{"kind":"predicate","field":"channel.mdm.enrollment","op":"eq","value":{"kind":"string","value":"unenrolled"}}})).await?;
+    planning_http::call(&mut f.author,&f.router,&format!("/api/v1/groups/{group}"),0,json!({"action":"create","assetContext":"endpoint","name":"MDM missing","description":"","criteria":{"kind":"predicate","field":"channel.mdm.enrollment","op":"eq","value":{"kind":"string","value":"unenrolled"}}})).await?;
     stop_worker(setup).await?;
     f.scope(case_task_scope(), json!([{"kind":"group","id":group}]))
         .await?;

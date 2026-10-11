@@ -255,7 +255,7 @@ async fn group_page(
         Uuid,
         rss_mdm_inventory_service::groups::pages::GroupPageKind,
     )>,
-    Query(query): Query<pages::PageQuery>,
+    Query(query): Query<rss_mdm_inventory_service::groups::pages::PageQuery>,
 ) -> std::result::Result<Response, Error> {
     run_group(
         &app,

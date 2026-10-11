@@ -75,6 +75,9 @@ pub(crate) async fn group(
         Ok(Group {
             id,
             kind,
+            asset_context: data(serde_json::from_value(serde_json::json!(
+                r.try_get::<String, _>("asset_context")?
+            )))?,
             name: r.try_get("name")?,
             description: r.try_get("description")?,
             revision: data(Revision::new(r.try_get("revision")?))?,
@@ -149,12 +152,12 @@ pub(crate) async fn save_group(
     let tenant = tx.tenant_id().to_string();
     let n=tx.with_connection(move |c|Box::pin(async move {
         let query=if create {
-            "INSERT INTO mdm_group.groups(tenant_id,id,kind,name,description,revision,member_version,member_count,rule_version,deleted,calculation_revision) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,$7,$8,$9,$10,$11)"
+            "INSERT INTO mdm_group.groups(tenant_id,id,kind,name,description,revision,member_version,member_count,rule_version,deleted,calculation_revision,asset_context) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)"
         }else {
-            "UPDATE mdm_group.groups SET name=$4,description=$5,revision=$6,member_version=$7,member_count=$8,rule_version=$9,deleted=$10,calculation_revision=$11 WHERE tenant_id=$1::uuid AND id=$2::uuid AND kind=$3"
+            "UPDATE mdm_group.groups SET name=$4,description=$5,revision=$6,member_version=$7,member_count=$8,rule_version=$9,deleted=$10,calculation_revision=$11 WHERE tenant_id=$1::uuid AND id=$2::uuid AND kind=$3 AND asset_context=$12"
         };
         sqlx::query(query).bind(tenant).bind(g.id.to_string()).bind(match g.kind {GroupKind::Static=>"static",GroupKind::Dynamic=>"dynamic"})
-        .bind(g.name).bind(g.description).bind(g.revision.get()).bind(g.member_version).bind(g.member_count as i64).bind(g.rule_version).bind(g.deleted).bind(g.calculation_revision).execute(c).await.map(|r|r.rows_affected())
+        .bind(g.name).bind(g.description).bind(g.revision.get()).bind(g.member_version).bind(g.member_count as i64).bind(g.rule_version).bind(g.deleted).bind(g.calculation_revision).bind(g.asset_context.as_str()).execute(c).await.map(|r|r.rows_affected())
     })).await?;
     if n != 1 {
         return Err(StorageFault::RowCount.error());

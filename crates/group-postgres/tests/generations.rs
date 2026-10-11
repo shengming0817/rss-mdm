@@ -26,6 +26,7 @@ async fn staged_pages_publish_atomically_and_replay_without_duplicate_members() 
             op(),
             at(),
             &Command::Create {
+                asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                 group,
                 name: "paged".into(),
                 description: String::new(),
@@ -200,6 +201,7 @@ async fn static_patches_use_the_same_sealed_publication_and_preserve_old_sets() 
             op(),
             at(),
             &Command::Create {
+                asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                 group,
                 name: "static-paged".into(),
                 description: String::new(),
@@ -381,6 +383,7 @@ async fn static_commands_replay_and_borrowed_rollback() {
     let s = store(runtime.clone(), tenant()).await;
     let id = group_id();
     let create = Command::Create {
+        asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
         group: id,
         name: "研发".into(),
         description: String::new(),
@@ -490,6 +493,7 @@ async fn durable_recalculation_no_change_fences_stale_run() {
             op(),
             at(),
             &Command::Create {
+                asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                 group: id,
                 name: "dynamic".into(),
                 description: String::new(),
@@ -542,6 +546,7 @@ async fn delta_evaluates_only_changed_devices_and_preserves_old_results() {
             op(),
             at(),
             &Command::Create {
+                asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                 group: id,
                 name: "delta".into(),
                 description: String::new(),

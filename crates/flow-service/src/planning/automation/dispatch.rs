@@ -104,7 +104,9 @@ impl Planning {
                 })
             })
             .await?;
-        let source = std::sync::Arc::new(crate::planning::execution_source::ExecutionSource);
+        let source = std::sync::Arc::new(crate::planning::execution_source::ExecutionSource::new(
+            self.objects.clone(),
+        ));
         for device in devices.iter().take(32) {
             // Wake effects and the page cursor commit together. A retry reads
             // the durable cursor rather than repeating an acknowledged page.
@@ -211,6 +213,12 @@ impl Planning {
         for id in affected {
             groups.push(stored(g::GroupId::parse(&id))?);
         }
+        let tenant = self.tenant.to_string();
+        let cursor_after = after.map(|id| id.to_string());
+        let associated:Vec<String>=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT id::text FROM mdm_group.groups WHERE tenant_id=$1::uuid AND NOT deleted AND asset_context='associated_device' AND ($2::uuid IS NULL OR id>$2::uuid) ORDER BY id LIMIT 33").bind(tenant).bind(cursor_after).fetch_all(c).await})).await?;
+        for id in associated {
+            groups.push(stored(g::GroupId::parse(&id))?);
+        }
         groups.sort_unstable();
         groups.dedup();
         for group in groups.iter().take(32) {
@@ -230,7 +238,7 @@ impl Planning {
                 .await
         }
     }
-    async fn dispatch_group_in(
+    pub(super) async fn dispatch_group_in(
         &self,
         tx: &mut PgTransaction<'_>,
         group: rss_mdm_group_postgres::GroupId,

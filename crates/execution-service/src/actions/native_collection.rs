@@ -350,6 +350,21 @@ pub(crate) async fn delivery_eligible_target_on(
     if retired {
         return Ok(false);
     }
+    let version: Option<Uuid> = sqlx::query_scalar(
+        "SELECT policy_version FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(tenant.to_string())
+    .bind(id)
+    .fetch_optional(&mut *c)
+    .await
+    .map_err(crate::database::db)?
+    .flatten();
+    let Some(version) = version else {
+        return Ok(false);
+    };
+    if !source.policy_readable_on(c, tenant, version).await? {
+        return Ok(false);
+    }
     eligible_target_on(source, c, tenant, target, id).await
 }
 
@@ -361,7 +376,7 @@ pub(crate) async fn eligible_target_on(
     target: &crate::Target,
     id: Uuid,
 ) -> std::result::Result<bool, crate::Error> {
-    let row=sqlx::query("SELECT coalesce(v.frozen,o.frozen) AS frozen,r.device,r.deadline,r.state,(policy.definition->>'scope')::uuid AS scope FROM mdm_commands.action_runs r LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) LEFT JOIN mdm_policy.policies policy ON(policy.tenant_id,policy.id)=(v.tenant_id,v.policy) LEFT JOIN mdm_planning.remote_operations o ON(o.tenant_id,o.id)=(r.tenant_id,r.remote_operation) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.device=$3 AND r.registration=$4 AND r.generation=$5 AND r.deadline>floor(extract(epoch FROM clock_timestamp())) AND ((policy.enabled AND policy.current_version=r.policy_version) OR (o.deadline>floor(extract(epoch FROM clock_timestamp())) AND NOT o.cancelled))")
+    let row=sqlx::query("SELECT coalesce(v.frozen,o.frozen) AS frozen,r.device,r.deadline,r.state,r.source_objects,(policy.definition->>'scope')::uuid AS scope FROM mdm_commands.action_runs r LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) LEFT JOIN mdm_policy.policies policy ON(policy.tenant_id,policy.id)=(v.tenant_id,v.policy) LEFT JOIN mdm_planning.remote_operations o ON(o.tenant_id,o.id)=(r.tenant_id,r.remote_operation) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.device=$3 AND r.registration=$4 AND r.generation=$5 AND r.deadline>floor(extract(epoch FROM clock_timestamp())) AND ((policy.enabled AND policy.current_version=r.policy_version) OR (o.deadline>floor(extract(epoch FROM clock_timestamp())) AND NOT o.cancelled))")
         .bind(tenant.to_string()).bind(id).bind(target.device.as_str()).bind(target.registration).bind(target.generation).fetch_optional(&mut *c).await.map_err(crate::database::db)?;
     let Some(row) = row else {
         return Ok(false);
@@ -371,7 +386,13 @@ pub(crate) async fn eligible_target_on(
         .map_err(crate::database::db)?
         && !matches!(
             source
-                .admission_on(c, tenant, scope, target.device.as_str())
+                .admission_on(
+                    c,
+                    tenant,
+                    scope,
+                    rss_mdm_inventory::Channel::Mdm,
+                    target.device.as_str()
+                )
                 .await
                 .map_err(crate::Error::from)?,
             crate::source_authority::ScopeAdmission::Eligible { .. }
@@ -382,6 +403,23 @@ pub(crate) async fn eligible_target_on(
     let state: super::state::RunState =
         serde_json::from_value(row.try_get("state").map_err(crate::database::db)?)
             .map_err(|_| Error::Malformed)?;
+    if state.started_at.is_none() {
+        let evidence: Vec<crate::source_authority::DeviceObject> =
+            serde_json::from_value(row.try_get("source_objects").map_err(crate::database::db)?)
+                .map_err(|_| Error::Malformed)?;
+        if !source
+            .evidence_valid_on(
+                c,
+                tenant,
+                rss_mdm_inventory::Channel::Mdm,
+                &target.device,
+                &evidence,
+            )
+            .await?
+        {
+            return Ok(false);
+        }
+    }
     if state.cancellation != Cancellation::None
         || !matches!(state.execution, Execution::NotStarted | Execution::Running)
     {

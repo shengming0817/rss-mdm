@@ -173,6 +173,15 @@
     ],
     [
       "action_runs",
+      "source_objects",
+      "jsonb",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "action_runs",
       "tenant_id",
       "uuid",
       true,
@@ -1127,6 +1136,15 @@
     ],
     [
       "policy_recovery",
+      "stats_revision",
+      "bigint",
+      true,
+      "0",
+      "",
+      ""
+    ],
+    [
+      "policy_recovery",
       "target_after",
       "text",
       false,
@@ -1211,6 +1229,240 @@
       "response",
       "jsonb",
       true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "software_binding_changes",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "software_binding_changes",
+      "device",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "software_binding_changes",
+      "revision",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "software_binding_revisions",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "software_binding_revisions",
+      "revision",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "software_result_changes",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "software_result_changes",
+      "policy",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "software_result_changes",
+      "device",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "software_result_changes",
+      "revision",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "software_stage_stats",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "software_stage_stats",
+      "version",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "software_stage_stats",
+      "stage",
+      "integer",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "software_stage_stats",
+      "input",
+      "jsonb",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "software_stage_stats",
+      "cursor",
+      "text",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "software_stage_stats",
+      "generation",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "software_stage_stats",
+      "membership_complete",
+      "boolean",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "software_stage_stats",
+      "ready",
+      "boolean",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "software_stage_stats",
+      "counts",
+      "jsonb",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "software_stats_members",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "software_stats_members",
+      "version",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "software_stats_members",
+      "stage",
+      "integer",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "software_stats_members",
+      "device",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "software_stats_members",
+      "generation",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "software_stats_members",
+      "target",
+      "jsonb",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "software_stats_members",
+      "counts",
+      "jsonb",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "software_stats_members",
+      "waiting_until",
+      "bigint",
+      false,
       null,
       "",
       ""
@@ -1870,6 +2122,13 @@
     ],
     [
       "policy_recovery",
+      "policy_recovery_stats_revision_check",
+      "c",
+      "CHECK ((stats_revision >= 0))",
+      true
+    ],
+    [
+      "policy_recovery",
       "policy_recovery_tenant_id_policy_fkey",
       "f",
       "FOREIGN KEY (tenant_id, policy) REFERENCES mdm_policy.policies(tenant_id, id)",
@@ -1901,6 +2160,111 @@
       "requests_tenant_id_operation_fkey",
       "f",
       "FOREIGN KEY (tenant_id, operation) REFERENCES mdm_commands.operations(tenant_id, id)",
+      true
+    ],
+    [
+      "software_binding_changes",
+      "software_binding_changes_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, device)",
+      true
+    ],
+    [
+      "software_binding_changes",
+      "software_binding_changes_revision_check",
+      "c",
+      "CHECK ((revision > 0))",
+      true
+    ],
+    [
+      "software_binding_revisions",
+      "software_binding_revisions_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id)",
+      true
+    ],
+    [
+      "software_binding_revisions",
+      "software_binding_revisions_revision_check",
+      "c",
+      "CHECK ((revision >= 0))",
+      true
+    ],
+    [
+      "software_result_changes",
+      "software_result_changes_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, policy, device)",
+      true
+    ],
+    [
+      "software_result_changes",
+      "software_result_changes_revision_check",
+      "c",
+      "CHECK ((revision > 0))",
+      true
+    ],
+    [
+      "software_result_changes",
+      "software_result_changes_tenant_id_policy_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, policy) REFERENCES mdm_policy.policies(tenant_id, id)",
+      true
+    ],
+    [
+      "software_stage_stats",
+      "software_stage_stats_counts_check",
+      "c",
+      "CHECK ((octet_length((counts)::text) <= 4096))",
+      true
+    ],
+    [
+      "software_stage_stats",
+      "software_stage_stats_input_check",
+      "c",
+      "CHECK ((octet_length((input)::text) <= 65536))",
+      true
+    ],
+    [
+      "software_stage_stats",
+      "software_stage_stats_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, version, stage)",
+      true
+    ],
+    [
+      "software_stage_stats",
+      "software_stage_stats_stage_check",
+      "c",
+      "CHECK ((stage >= 0))",
+      true
+    ],
+    [
+      "software_stage_stats",
+      "software_stage_stats_tenant_id_version_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, version) REFERENCES mdm_policy.versions(tenant_id, id)",
+      true
+    ],
+    [
+      "software_stats_members",
+      "software_stats_members_counts_check",
+      "c",
+      "CHECK ((octet_length((counts)::text) <= 4096))",
+      true
+    ],
+    [
+      "software_stats_members",
+      "software_stats_members_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, version, stage, device)",
+      true
+    ],
+    [
+      "software_stats_members",
+      "software_stats_members_tenant_id_version_stage_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, version, stage) REFERENCES mdm_commands.software_stage_stats(tenant_id, version, stage)",
       true
     ]
   ],
@@ -2088,6 +2452,80 @@
       true,
       true,
       true
+    ],
+    [
+      "software_binding_changes",
+      "software_binding_changes_cursor",
+      "CREATE INDEX software_binding_changes_cursor ON mdm_commands.software_binding_changes USING btree (tenant_id, revision)",
+      true,
+      true,
+      true
+    ],
+    [
+      "software_binding_changes",
+      "software_binding_changes_pkey",
+      "CREATE UNIQUE INDEX software_binding_changes_pkey ON mdm_commands.software_binding_changes USING btree (tenant_id, device)",
+      true,
+      true,
+      true
+    ],
+    [
+      "software_binding_revisions",
+      "software_binding_revisions_pkey",
+      "CREATE UNIQUE INDEX software_binding_revisions_pkey ON mdm_commands.software_binding_revisions USING btree (tenant_id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "software_result_changes",
+      "software_result_changes_cursor",
+      "CREATE INDEX software_result_changes_cursor ON mdm_commands.software_result_changes USING btree (tenant_id, policy, revision)",
+      true,
+      true,
+      true
+    ],
+    [
+      "software_result_changes",
+      "software_result_changes_pkey",
+      "CREATE UNIQUE INDEX software_result_changes_pkey ON mdm_commands.software_result_changes USING btree (tenant_id, policy, device)",
+      true,
+      true,
+      true
+    ],
+    [
+      "software_stage_stats",
+      "software_stage_stats_pkey",
+      "CREATE UNIQUE INDEX software_stage_stats_pkey ON mdm_commands.software_stage_stats USING btree (tenant_id, version, stage)",
+      true,
+      true,
+      true
+    ],
+    [
+      "software_stats_members",
+      "software_stats_expirations",
+      "CREATE INDEX software_stats_expirations ON mdm_commands.software_stats_members USING btree (tenant_id, version, stage, generation, waiting_until, device) WHERE (waiting_until IS NOT NULL)",
+      true,
+      true,
+      true
+    ],
+    [
+      "software_stats_members",
+      "software_stats_members_pkey",
+      "CREATE UNIQUE INDEX software_stats_members_pkey ON mdm_commands.software_stats_members USING btree (tenant_id, version, stage, device)",
+      true,
+      true,
+      true
     ]
-  ]
+  ],
+  "softwareBindingTrigger": [
+    "O",
+    "CREATE TRIGGER software_bindings AFTER INSERT OR DELETE OR UPDATE ON mdm_agent.bindings FOR EACH ROW EXECUTE FUNCTION mdm_commands.advance_software_bindings()"
+  ],
+  "softwareBindings": "CREATE OR REPLACE FUNCTION mdm_commands.advance_software_bindings()\n RETURNS trigger\n LANGUAGE plpgsql\n SECURITY DEFINER\n SET search_path TO 'pg_catalog'\nAS $function$\nDECLARE t uuid; d text; v bigint;\nBEGIN\n IF TG_OP='UPDATE' AND NEW IS NOT DISTINCT FROM OLD THEN RETURN NEW; END IF;\n t=coalesce(NEW.tenant_id,OLD.tenant_id);\n INSERT INTO mdm_commands.software_binding_revisions VALUES(t,1) ON CONFLICT(tenant_id) DO UPDATE SET revision=mdm_commands.software_binding_revisions.revision+1 RETURNING revision INTO v;\n SELECT device INTO d FROM mdm_access.registrations WHERE tenant_id=t AND id=coalesce(NEW.registration,OLD.registration);\n IF d IS NOT NULL THEN INSERT INTO mdm_commands.software_binding_changes VALUES(t,d,v) ON CONFLICT(tenant_id,device) DO UPDATE SET revision=EXCLUDED.revision; END IF;\n RETURN coalesce(NEW,OLD);\nEND;$function$\n",
+  "softwareResultTrigger": [
+    "O",
+    "CREATE TRIGGER software_results AFTER INSERT OR UPDATE OF state, result ON mdm_commands.action_runs FOR EACH ROW EXECUTE FUNCTION mdm_commands.advance_software_results()"
+  ],
+  "softwareResults": "CREATE OR REPLACE FUNCTION mdm_commands.advance_software_results()\n RETURNS trigger\n LANGUAGE plpgsql\n SECURITY DEFINER\n SET search_path TO 'pg_catalog'\nAS $function$\nDECLARE p uuid; v bigint;\nBEGIN\n IF TG_OP='UPDATE' AND NEW.state IS NOT DISTINCT FROM OLD.state AND NEW.result IS NOT DISTINCT FROM OLD.result THEN RETURN NEW; END IF;\n INSERT INTO mdm_commands.policy_recovery(tenant_id,policy,stats_revision) SELECT NEW.tenant_id,policy,1 FROM mdm_policy.versions WHERE tenant_id=NEW.tenant_id AND id=NEW.policy_version AND frozen->>'kind'='software'\n ON CONFLICT(tenant_id,policy) DO UPDATE SET stats_revision=mdm_commands.policy_recovery.stats_revision+1 RETURNING policy,stats_revision INTO p,v;\n IF FOUND THEN INSERT INTO mdm_commands.software_result_changes VALUES(NEW.tenant_id,p,NEW.device,v) ON CONFLICT(tenant_id,policy,device) DO UPDATE SET revision=EXCLUDED.revision; END IF;\n RETURN NEW;\nEND;$function$\n"
 }

@@ -50,23 +50,25 @@ pub async fn preview(
         } else { None };
         let onboarding = if let PreviewInputs::Onboarding(frozen) = &prepared { Some(frozen) } else { None };
         authorization.require_all_devices(proof,Permission::InventoryRead)?;
-        let source=s.source.clone();let tenant=tx.tenant_id();let scope=input.definition.scope;let after=input.after.clone();
-        let page=tx.with_connection(move|c|Box::pin(async move {Ok(source.preview_scope_on(c,tenant,scope,after.as_deref()).await)})).await??;
-        let result=page.result;
+        let source=s.source.clone();let tenant=tx.tenant_id();let scope=input.definition.scope;let after=input.after.clone();let channel=crate::source_authority::action_channel(input.definition.action.kind());
+        let mut objects=tx.with_connection(move|c|Box::pin(async move {Ok(source.assignment_objects_on(c,tenant,scope,channel,after.as_deref()).await)})).await??;
+        let source=s.source.clone();let tenant=tx.tenant_id();
+        let result=tx.with_connection(move|c|Box::pin(async move {Ok(source.preview_scope_on(c,tenant,scope,channel,None).await)})).await??.result;
         if input.scope_result.is_some_and(|v|v!=result){return Err(Error::Conflict.into());}
-        let mut devices=page.devices;
-        let more=devices.len()>64;devices.truncate(64);let next=if more{devices.last().cloned()}else{None};let mut items=Vec::new();
-        for device in devices {
-            let eligibility=crate::sources::storage::admission_in(&s.source,tx,input.definition.scope,&device).await?;
-            let task_admission=if let Some(software)=&software {
-                let now=crate::storage::now(tx).await?;
-                Some(software.management_state_in(&s.admission,tx,&device,now).await?)
-            }else if let Some(frozen)=onboarding{Some(onboarding::state_in(&s.admission,tx,&device,frozen).await?)}else if let PreviewInputs::Script { platform, architecture, profile }=&prepared {
-                let agents=crate::channels::agent_targets_in(tx,s.agent_store.clone(),vec![device.clone()]).await?;
-                let state=if let Some(agent)=agents.first() { crate::script_eligibility::check_in(tx,s.agent_store.clone(),&crate::Target{device:device.clone(),registration:agent.registration,generation:agent.generation},*platform,*architecture,*profile).await? }else{crate::script_eligibility::Eligibility::Unknown};
-                Some(software::TaskAdmission::new(match state {crate::script_eligibility::Eligibility::Eligible=>software::TaskAdmissionState::Eligible,crate::script_eligibility::Eligibility::Ineligible=>software::TaskAdmissionState::UnsupportedCapability,crate::script_eligibility::Eligibility::Unknown=>software::TaskAdmissionState::ChannelUnknown},None))
+        let more=objects.len()>64;objects.truncate(64);let next=if more{objects.last().map(|o|o.object.key())}else{None};let mut items=Vec::new();
+        for mut object in objects {
+            let task_admission=if let Some(target)=&object.target {
+                let device=&target.device;
+                if let Some(software)=&software {let now=crate::storage::now(tx).await?;Some(software.management_state_in(&s.admission,tx,device,now).await?)}
+                else if let Some(frozen)=onboarding {Some(onboarding::state_in(&s.admission,tx,device,frozen).await?)}
+                else if let PreviewInputs::Script {platform,architecture,profile}=&prepared {
+                    let agents=crate::channels::agent_targets_in(tx,s.agent_store.clone(),vec![device.clone()]).await?;
+                    let state=if let Some(agent)=agents.first() {crate::script_eligibility::check_in(tx,s.agent_store.clone(),&crate::Target{device:device.clone(),registration:agent.registration,generation:agent.generation},*platform,*architecture,*profile).await?}else{crate::script_eligibility::Eligibility::Unknown};
+                    Some(software::TaskAdmission::new(match state {crate::script_eligibility::Eligibility::Eligible=>software::TaskAdmissionState::Eligible,crate::script_eligibility::Eligibility::Ineligible=>software::TaskAdmissionState::UnsupportedCapability,crate::script_eligibility::Eligibility::Unknown=>software::TaskAdmissionState::ChannelUnknown},None))
+                }else{None}
             }else{None};
-            items.push(json!({"device":device,"eligibility":eligibility,"taskAdmission":task_admission}));
+            if task_admission.as_ref().is_some_and(|a|!software::TaskAdmission::is_eligible(a)) {object.availability=crate::source_authority::Availability::Unavailable;object.reason=Some("target_unavailable".into());}
+            items.push(json!({"object":object.object,"channel":object.channel,"availability":object.availability,"reason":object.reason,"target":object.target,"eligibility":object.admission,"taskAdmission":task_admission}));
         }
         s.audit_store.append_request_in(tx,audit,200,"success").await?;
         super::records::decode(json!({"action":input.definition.action,"scopeResult":result,"items":items,"nextCursor":next}))

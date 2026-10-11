@@ -9,6 +9,7 @@ pub struct PageQuery {
     #[serde(default = "default_limit")]
     pub limit: usize,
     pub cursor: Option<String>,
+    pub channel: rss_mdm_inventory::Channel,
 }
 fn default_limit() -> usize {
     1000
@@ -53,7 +54,11 @@ fn decode(
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "family", rename_all = "snake_case", deny_unknown_fields)]
 enum ResultBinding {
-    Scope { scope: Uuid, kind: ScopePageKind },
+    Scope {
+        scope: Uuid,
+        kind: ScopePageKind,
+        channel: rss_mdm_inventory::Channel,
+    },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

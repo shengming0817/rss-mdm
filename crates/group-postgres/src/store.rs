@@ -100,6 +100,15 @@ impl GroupStore {
             None,
         )
     }
+    /// Read the immutable context and current metadata, including a tombstone, in the caller transaction.
+    pub async fn get_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: GroupId,
+    ) -> InTransaction<Option<Group>> {
+        input!(self.check_transaction(tx)?);
+        Ok(Ok(db::group(tx, id, false).await?))
+    }
     /// Read an immutable rule version, including history after logical deletion.
     /// Use `get().rule_version` for the rule belonging to an observed group revision.
     /// Missing or foreign-tenant versions return None; the host authorizes disclosure.
@@ -328,11 +337,12 @@ fn command_document(t: TenantId, c: &Command) -> CommandOutcome<Vec<u8>> {
             name,
             description,
             definition,
+            asset_context,
             ..
         } => {
             text(name, false)?;
             text(description, true)?;
-            json!({"kind":"create","name":name,"description":description,"rule":match definition {Definition::Static=>None,Definition::Dynamic(r)=>Some(rule_doc(t,r)?)}})
+            json!({"kind":"create","asset_context":asset_context,"name":name,"description":description,"rule":match definition {Definition::Static=>None,Definition::Dynamic(r)=>Some(rule_doc(t,r)?)}})
         }
         Command::Edit {
             name, description, ..
@@ -362,9 +372,15 @@ fn command_group(command: &Command, existing: Option<Group>) -> CommandOutcome<(
                 name,
                 description,
                 definition,
+                asset_context,
             },
             None,
         ) => {
+            if *asset_context == AssetContext::AssociatedDevice
+                && matches!(definition, Definition::Static)
+            {
+                return Err(Rejection::KindMismatch);
+            }
             let (kind, version) = match definition {
                 Definition::Static => (GroupKind::Static, None),
                 Definition::Dynamic(r) => (GroupKind::Dynamic, Some(r.view().version.into())),
@@ -373,6 +389,7 @@ fn command_group(command: &Command, existing: Option<Group>) -> CommandOutcome<(
                 Group {
                     id: *group,
                     kind,
+                    asset_context: *asset_context,
                     name: name.clone(),
                     description: description.clone(),
                     revision: Revision::new(1)?,

@@ -15,6 +15,9 @@ impl Compliance {
         for id in ids {
             let gid = stored(group::GroupId::parse(&id.to_string()))?;
             let g = checked(self.groups.lock_reference_target_in(tx, gid).await?)?;
+            if g.asset_context != group::AssetContext::Endpoint {
+                return Err(Error::Malformed.into());
+            }
             let set = checked(self.groups.current_member_set_in(tx, gid).await?)?;
             let mut ready = g.kind == group::GroupKind::Static;
             let mut asset_watermark = None;

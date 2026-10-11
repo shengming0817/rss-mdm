@@ -9,6 +9,13 @@ from ci_impact import select_inputs, SelectionError
 
 
 class ModuleImpactTests(unittest.TestCase):
+    def test_selected_channel_inputs_reach_native_and_self_service_consumers(self):
+        for path in ('crates/inventory-service/src/objects.rs','crates/device-service/src/planning.rs','crates/device-service/src/planning/snapshots.rs','crates/flow-service/src/planning/targets.rs','crates/flow-service/src/planning/automation/relations.rs'):
+            with self.subTest(path=path):
+                selected=set(select_inputs([path]).modules)
+                self.assertTrue({'apple.policy','apple.collection','apple.account_enrollment','apple.onboarding','planning.self_service','planning.onboarding','execution.commands.onboarding'} <= selected, selected)
+                self.assertTrue(selected.isdisjoint({'apple.apns','sources.brew_git','identity.oidc'}),selected)
+
     def test_shared_apple_organization_schema_selects_both_enrollment_consumers(self):
         selected=select_inputs(['crates/apple-channel/schema/organizations.sql'])
         self.assertTrue({'apple.ade','apple.account_enrollment'} <= set(selected.modules))
@@ -253,7 +260,7 @@ class ModuleImpactTests(unittest.TestCase):
     def test_app_helpers_select_all_actual_consumers(self):
         self.assertEqual(self.selected('crates/app/tests/support/software.rs'), {
             'agent.configurations','planning.self_service','software.http','content.http','content.mirror','content.gc','content.storage',
-            'planning.software','planning.policy','planning.http','apple.policy','execution.software.offer','execution.software.content','execution.software.recovery'})
+            'planning.software','planning.policy','planning.http','planning.group_scope','apple.policy','execution.software.offer','execution.software.content','execution.software.recovery'})
         self.assertEqual(self.selected('crates/app/tests/support/process.rs'),
                          {'inventory.runtime','execution.commands.recovery'})
         self.assertEqual(self.selected('crates/app/tests/execution/support.rs'),

@@ -2,6 +2,7 @@ pub(crate) mod http;
 
 mod assets;
 
+mod associated;
 mod group_scope;
 
 mod scope;

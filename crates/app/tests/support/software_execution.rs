@@ -504,3 +504,38 @@ pub(crate) async fn worker_for(
 pub(crate) fn authored(resource: Uuid, scope: Uuid, intent: &str, operation: &Value) -> Value {
     json!({"scope":scope,"action": {"resource": {"kind":"software","id":resource,"version":"v1","variants":{"macos_aarch64":"default"}},"kind":"software","intent":intent,"delivery":{"kind":"direct"},"admissionOperation":operation,"runLifetimeSeconds":600,"rollout":{"stages":[{"scope":scope,"opensAt":0}]}}})
 }
+
+// Statistics are published by policy recovery. Await readiness, then preserve each
+// caller's assertions over the actual reported effect and fixed membership denominator.
+pub(crate) async fn ready_rollout(
+    author: &mut Browser,
+    router: &Router,
+    policy: Uuid,
+) -> Result<(StatusCode, Value)> {
+    tokio::time::timeout(Duration::from_secs(45), async {
+        loop {
+            let reply = author
+                .call(
+                    router,
+                    Method::GET,
+                    &format!("/api/v1/policies/{policy}/software/rollout"),
+                    None,
+                )
+                .await?;
+            ensure!(reply.0 == StatusCode::OK, "rollout read failed: {reply:?}");
+            let stages = reply.1["stages"]
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("rollout stages missing"))?;
+            if !stages.is_empty() && stages.iter().all(|stage| stage["ready"] == true) {
+                ensure!(
+                    stages.iter().all(|stage| stage["asOf"].as_i64().is_some()),
+                    "ready rollout has no timestamp: {reply:?}"
+                );
+                return Ok(reply);
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("rollout statistics did not become ready for {policy}"))?
+}

@@ -106,7 +106,18 @@ pub(crate) async fn planning(t: TenantId) -> Planning {
     let key = rss_mdm_flow_service::storage::cursor_key(&runtime, t)
         .await
         .unwrap();
-    Planning::new(audit, runtime, t, clock, &key).await.unwrap()
+    Planning::new(
+        audit.clone(),
+        runtime,
+        t,
+        clock,
+        &key,
+        Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
+            audit,
+        )),
+    )
+    .await
+    .unwrap()
 }
 
 pub(super) trait FixtureCommand {
@@ -141,6 +152,7 @@ pub(crate) async fn groups(m: &Planning) -> rss_mdm_inventory_service::groups::G
         .await
         .unwrap();
     rss_mdm_inventory_service::groups::Groups {
+        objects: m.objects.clone(),
         tenant: m.tenant,
         groups: m.groups.clone(),
         runtime: m.runtime.clone(),
@@ -492,4 +504,39 @@ pub(crate) fn inventory_operation<T>(
         expected_revision,
         input,
     }
+}
+
+pub(crate) async fn scope_admission(
+    service: &Planning,
+    scope: Uuid,
+    channel: rss_mdm_inventory::Channel,
+    device: &str,
+) -> rss_mdm_execution_service::source_authority::ScopeAdmission {
+    use rss_mdm_execution_service::source_authority::SourceAuthority;
+    let source = crate::planning::execution_source::ExecutionSource::new(service.objects.clone());
+    let tenant = service.tenant;
+    let device = device.to_owned();
+    service
+        .runtime
+        .local_tx(tenant, deadline(), move |tx| {
+            Box::pin(async move {
+                tx.with_connection(move |c| {
+                    Box::pin(async move {
+                        Ok(source
+                            .admission_on(c, tenant, scope, channel, &device)
+                            .await)
+                    })
+                })
+                .await
+            })
+        })
+        .await
+        .fold(
+            |v| v.unwrap(),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |_| panic!("unknown"),
+            |_| panic!("unknown"),
+            |e| panic!("{e:?}"),
+        )
 }

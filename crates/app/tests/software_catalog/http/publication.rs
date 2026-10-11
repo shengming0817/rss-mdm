@@ -309,7 +309,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
             .bind(&catalog_lock)
             .execute(&mut owner)
             .await?;
-        let probe_path = format!("/api/v1/policies/{policy}/devices");
+        let probe_path = format!("/api/v1/policies/{policy}/assignments");
         let request = f.author.call(&f.router, Method::GET, &probe_path, None);
         tokio::pin!(request);
         tokio::select! {

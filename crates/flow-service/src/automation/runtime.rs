@@ -228,6 +228,13 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                                 .lock_in(tx)
                                 .await
                                 .map_err(PgError::from)?;
+                            let tenant = tx.tenant_id();
+                            tx.with_connection(move |c| {
+                                Box::pin(async move {
+                                    rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await
+                                })
+                            })
+                            .await?;
                             rss_reconcile_postgres::messaging::protect_in(
                                 tx,
                                 claim,
@@ -366,6 +373,13 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                                 .lock_in(tx)
                                 .await
                                 .map_err(PgError::from)?;
+                            let tenant = tx.tenant_id();
+                            tx.with_connection(move |c| {
+                                Box::pin(async move {
+                                    rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await
+                                })
+                            })
+                            .await?;
                             rss_reconcile_postgres::messaging::protect_in(
                                 tx,
                                 claim,

@@ -187,13 +187,21 @@ async fn exchange(
     session: u32,
     values: &mut BTreeMap<String, String>,
 ) -> anyhow::Result<Vec<String>> {
+    exchange_with_readback(peer, session, values, None).await
+}
+async fn exchange_with_readback(
+    peer: &crate::windows::test_support::Peer,
+    session: u32,
+    values: &mut BTreeMap<String, String>,
+    readback: Option<&str>,
+) -> anyhow::Result<Vec<String>> {
     let opened = native::begin(
         &peer.mutual,
         &peer.url,
         &peer.message,
         &peer.ack,
         session,
-        None,
+        readback,
     )
     .await?;
     let mut sent = opened.response;
@@ -374,19 +382,18 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
                 .call(
                     &client.router,
                     Method::GET,
-                    &format!("/api/v1/policies/{overlapping}/devices"),
+                    &format!("/api/v1/policies/{overlapping}/assignments"),
                     None,
                 )
                 .await?;
             ensure!(read.0 == StatusCode::OK);
-            if let Some(diagnoses) = read.1["items"][0]["diagnoses"].as_array() {
-                ensure!(
-                    !diagnoses.iter().any(|d| d == "configuration_conflict"),
-                    "equal object content was mislabeled as a value conflict: {read:?}"
-                );
-                if diagnoses.iter().any(|d| d == "native_group_conflict") {
-                    return Ok::<_, anyhow::Error>(());
-                }
+            ensure!(
+                read.1["items"][0]["reason"] != "configuration_conflict",
+                "equal object content was mislabeled as a value conflict: {read:?}"
+            );
+            if read.1["items"][0]["reason"] == "native_group_conflict" {
+                ensure!(read.1["items"][0]["availability"] == "unavailable");
+                return Ok::<_, anyhow::Error>(());
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -542,7 +549,7 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
         .call(
             &client.router,
             Method::GET,
-            &format!("/api/v1/policies/{shared}/devices"),
+            &format!("/api/v1/policies/{shared}/assignments"),
             None,
         )
         .await?;
@@ -770,6 +777,279 @@ async fn retired_generic_input_accepts_its_buffer_receipt_without_sending_anothe
         frames == 1 && accepted,
         "original buffer receipt lost or new frame created"
     );
+    pg.close().await?;
+    host.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=execution.commands.configuration"]
+async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_has_no_effects()
+-> anyhow::Result<()> {
+    use crate::test_support::{inventory, planning_http};
+    use rss_mdm_inventory::{Scalar, builtin::CORPORATE_AGENT_HEALTHY};
+    let mut host = crate::windows::test_support::Host::open().await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_tenant())
+        .execute(&mut pg)
+        .await?;
+    let (mdm_registration, mdm_epoch):(Uuid,Uuid)=sqlx::query_as("SELECT r.id,s.epoch FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel='mdm' AND r.state='active' AND s.source='mdm.windows'").bind(case_tenant()).bind(case_device()).fetch_one(&mut pg).await?;
+    crate::device::t2::associations::hardware(
+        case_device(),
+        mdm_registration,
+        mdm_epoch,
+        "mdm.windows",
+        "2714-NATIVE",
+    )?;
+    let agent = crate::test_support::case::name("native-health-agent");
+    let alone = crate::test_support::case::name("native-health-missing");
+    let agent_registration = crate::device::t2::associations::seed(agent, "agent", "2714-native")?;
+    let alone_registration =
+        crate::device::t2::associations::seed(alone, "agent", "2714-native-alone")?;
+    let field = CORPORATE_AGENT_HEALTHY;
+    let definition = inventory::definition(field.as_str(), "agent.script", &[field]);
+    inventory::register_definition(&definition)?;
+    for registration in [agent_registration, alone_registration] {
+        let epoch = Uuid::new_v4();
+        let scope = crate::device::scope_dataset(
+            client.app.identity.tenant,
+            registration,
+            "agent.script",
+            epoch,
+            field.as_str(),
+        )?
+        .encode()?;
+        sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES($1::uuid,$2,'agent.script',$3,true)").bind(case_tenant()).bind(registration).bind(epoch).execute(&mut pg).await?;
+        sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES($1::uuid,'mdm.observation.v1','inventory-v4',$2,$3,'custom.corporate_agent.healthy',$4,'health-fixture',1,2,'known',$4,'health-fixture',1,2,$5,'agent.script',$6,0)").bind(case_tenant()).bind(scope).bind(serde_json::to_string(&definition.coverage()?)?).bind(serde_json::to_value(Scalar::Boolean(false))?).bind(registration).bind(epoch).execute(&mut pg).await?;
+    }
+    let config = crate::test_support::identity::config(case_tenant())?;
+    let associations = rss_mdm_device_service::Associations::new(
+        crate::test_support::identity::audit_store(&config).await?,
+        client.app.identity.tenant,
+        &[7; 32],
+    )?;
+    associations.reconcile().await?;
+    let grants: Vec<_> = [
+        "resource_read",
+        "resource_write",
+        "policy_read",
+        "policy_write",
+        "scope_read",
+        "scope_write",
+        "group_read",
+        "group_write",
+        "group_recompute",
+    ]
+    .into_iter()
+    .map(|operation| json!({"operation":operation,"scope":{"kind":"tenant"}}))
+    .chain(
+        ["configuration_write", "inventory_read", "operation_read"]
+            .into_iter()
+            .map(|operation| json!({"operation":operation,"scope":{"kind":"all_devices"}})),
+    )
+    .collect();
+    let reply=client.browser.call(&client.router,Method::PUT,&format!("/api/v1/authorization/rules/{}",Uuid::new_v4()),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"value":{"subject":{"kind":"user","user":crate::test_support::identity::user(case_tenant(),crate::test_support::case::admin())},"grants":grants}}))).await?;
+    ensure!(reply.0 == StatusCode::OK, "{reply:?}");
+    let automation = crate::test_support::start_automation(&serde_json::from_slice(
+        &std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?,
+    )?)
+    .await?;
+    let commands = client.command_worker(host.notifications.signals.clone())?;
+    let mut values = BTreeMap::new();
+    ensure!(exchange(&peer, 981, &mut values).await?.is_empty());
+    let group = Uuid::new_v4();
+    let scope = Uuid::new_v4();
+    let policy = Uuid::new_v4();
+    planning_http::call(&mut client.browser,&client.router,&format!("/api/v1/groups/{group}"),0,json!({"action":"create","assetContext":"associated_device","name":"Agent health remediation","description":"","criteria":{"kind":"predicate","field":"custom.corporate_agent.healthy","op":"eq","value":{"kind":"boolean","value":false}}})).await?;
+    planning_http::call(&mut client.browser,&client.router,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}})).await?;
+    let resource = resource(&mut client, &[CORTANA]).await?;
+    let excluded_scope = Uuid::new_v4();
+    planning_http::call(&mut client.browser,&client.router,&format!("/api/v1/scopes/{excluded_scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":alone}],"limitations":null,"exclusions":[]}})).await?;
+    for index in 1..=17 {
+        let excluded_policy = Uuid::from_u128(index);
+        change(&mut client,&format!("/api/v1/policies/{excluded_policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":excluded_scope,"action":{"kind":"configuration","resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"retain"}}})).await?;
+    }
+    change(&mut client,&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"configuration","resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"retain"}}})).await?;
+    planning_http::await_ingress().await?;
+    use rss_mdm_execution_service::source_authority::{CandidateKind, SourceAuthority};
+    let source = crate::planning::execution_source::ExecutionSource::new(
+        client.app.flow.planning.objects.clone(),
+    );
+    let mut transaction = pg.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *transaction)
+        .await?;
+    let first_page = source
+        .candidates_on(
+            &mut transaction,
+            client.app.identity.tenant,
+            case_device(),
+            CandidateKind::Configuration,
+            Uuid::nil(),
+        )
+        .await?;
+    ensure!(
+        first_page.items.is_empty()
+            && first_page.has_more
+            && first_page.scanned_after == Uuid::from_u128(16),
+        "excluded candidates lost bounded scan progress"
+    );
+    let next_page = source
+        .candidates_on(
+            &mut transaction,
+            client.app.identity.tenant,
+            case_device(),
+            CandidateKind::Configuration,
+            first_page.scanned_after,
+        )
+        .await?;
+    ensure!(
+        next_page.items.iter().any(|c| c.policy == policy),
+        "eligible policy after empty page was skipped"
+    );
+    transaction.rollback().await?;
+    let operations = published(&mut client, policy).await?;
+    ensure!(
+        operations.len() == 1,
+        "associated target broadcast: {operations:?}"
+    );
+    let page = client
+        .browser
+        .call(
+            &client.router,
+            Method::GET,
+            &format!("/api/v1/policies/{policy}/assignments"),
+            None,
+        )
+        .await?
+        .1;
+    let missing = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["object"]["id"] == alone)
+        .unwrap();
+    ensure!(
+        missing["availability"] == "unavailable" && missing["target"].is_null(),
+        "{page}"
+    );
+    let effects:i64=sqlx::query_scalar("SELECT (SELECT count(*) FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND device=$2)+(SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND device=$2)").bind(case_tenant()).bind(alone).fetch_one(&mut pg).await?;
+    ensure!(effects == 0, "missing channel produced executable effects");
+    let targets:Vec<(String,Uuid,i64)>=sqlx::query_as("SELECT device,registration,registration_generation FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=ANY($2)").bind(case_tenant()).bind(&operations).fetch_all(&mut pg).await?;
+    ensure!(
+        targets.len() == 1 && targets[0].0 == case_device() && targets[0].1 == mdm_registration
+    );
+    let mut writes = Vec::new();
+    for session in 982..987 {
+        writes.extend(
+            exchange_with_readback(
+                &peer,
+                session,
+                &mut values,
+                (!writes.is_empty()).then_some(CORTANA),
+            )
+            .await?,
+        );
+        let progress = client
+            .call(Method::GET, &format!("/{}", operations[0]), None)
+            .await?;
+        if progress.1["commandStatus"] == "applied" {
+            break;
+        }
+        planning_http::await_ingress().await?;
+    }
+    let read = client
+        .call(Method::GET, &format!("/{}", operations[0]), None)
+        .await?;
+    ensure!(
+        writes == vec![CORTANA.to_owned()] && read.1["commandStatus"] == "applied",
+        "original native result: writes={writes:?}, operation={read:?}"
+    );
+    crate::test_support::inventory::seed_source(alone, "mdm", "mdm.windows", "model")?;
+    planning_http::await_ingress().await?;
+    let page = client
+        .browser
+        .call(
+            &client.router,
+            Method::GET,
+            &format!("/api/v1/policies/{policy}/assignments"),
+            None,
+        )
+        .await?
+        .1;
+    let recovered = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["object"]["id"] == alone)
+        .unwrap();
+    ensure!(
+        recovered["availability"] == "ready" && recovered["target"]["device"] == alone,
+        "automatic channel recovery: {page}"
+    );
+    let frozen: Value = sqlx::query_scalar(
+        "SELECT approval FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(case_tenant())
+    .bind(operations[0])
+    .fetch_one(&mut pg)
+    .await?;
+    ensure!(
+        frozen["source_objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|o| o["members"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m["registrationId"] == agent_registration.to_string())),
+        "original Agent evidence missing: {frozen}"
+    );
+    let authority: rss_mdm_execution_service::authority::ExecutionAuthority =
+        serde_json::from_value(frozen)?;
+    let source = crate::planning::execution_source::ExecutionSource::new(
+        client.app.flow.planning.objects.clone(),
+    );
+    let mut tx = pg.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
+    ensure!(
+        authority.dispatch_ready(&source, &mut tx).await?,
+        "fresh owner proof rejected original target"
+    );
+    tx.rollback().await?;
+    crate::test_support::stop_worker(automation).await?;
+    crate::device::t2::associations::seed(
+        crate::test_support::case::name("native-health-duplicate"),
+        "agent",
+        "2714-NATIVE",
+    )?;
+    let mut tx = pg.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
+    ensure!(
+        !authority.dispatch_ready(&source, &mut tx).await?,
+        "hardware contradiction before recomputation passed dispatch"
+    );
+    tx.rollback().await?;
+    let original:(String,Uuid,i64)=sqlx::query_as("SELECT device,registration,registration_generation FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(operations[0]).fetch_one(&mut pg).await?;
+    ensure!(
+        original == targets[0],
+        "channel restoration rewrote original task attribution"
+    );
+    ensure!(commands.shutdown().join().await?.is_clean());
     pg.close().await?;
     host.close().await?;
     Ok(())

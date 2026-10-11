@@ -45,6 +45,24 @@ id!(
     "Tenant-scoped idempotency UUID shared by commands and recalculations."
 );
 
+/// Asset universe fixed when a group is created.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssetContext {
+    /// Original endpoint facts; association discovery never changes this universe.
+    Endpoint,
+    /// Unified device objects, including explicitly unassociated endpoints.
+    AssociatedDevice,
+}
+impl AssetContext {
+    /// Canonical persisted discriminator.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Endpoint => "endpoint",
+            Self::AssociatedDevice => "associated_device",
+        }
+    }
+}
 /// The sole compare-and-swap sequence for one group.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "i64", into = "i64")]
@@ -109,6 +127,8 @@ pub enum Command {
         name: String,
         /// Description, at most 4 KiB UTF-8; empty allowed, NUL forbidden.
         description: String,
+        /// Immutable asset universe.
+        asset_context: AssetContext,
         /// Initial authority and optional dynamic rule.
         definition: Definition,
     },
@@ -168,6 +188,8 @@ pub struct Group {
     pub id: GroupId,
     /// Immutable membership authority.
     pub kind: GroupKind,
+    /// Immutable input object universe.
+    pub asset_context: AssetContext,
     /// Nonempty, control-free display name, at most 4 KiB UTF-8.
     pub name: String,
     /// Description, at most 4 KiB UTF-8; empty allowed, NUL forbidden.

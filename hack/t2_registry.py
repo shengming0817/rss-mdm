@@ -546,6 +546,7 @@ MODULES['planning.frequency'] = replace(MODULES['planning.frequency'], db_mode='
 MODULES['planning.remote'] = replace(MODULES['planning.remote'], db_mode='reuse', scope='tenant')
 MODULES['planning.software'] = replace(MODULES['planning.software'], db_mode='reuse', scope='objects', policies=(
     CasePolicy('planning::t2::software::rollout_time_success_gates_and_stage_evidence', 'reuse', 'tenant'),
+    CasePolicy('planning::t2::software::rollout_statistics_checkpoint_excluded_pages_and_reject_stale_inputs', 'fresh', 'tenant'),
 ))
 MODULES['policy.persistence'] = replace(MODULES['policy.persistence'], db_mode='reuse', scope='objects', policies=(
     CasePolicy('admission_rejects_schema_and_reachable_privilege_drift', 'instance', 'objects'),
@@ -652,6 +653,9 @@ case_fixtures('windows.issuance', 'windows::t2::issuance::native_renewal_preserv
 case_fixtures('diagnostics.http', 'api::t2::runtime_diagnostics::execution_first_scan_failure_recovers_only_after_real_success', None)
 case_fixtures('assets.http', 'assets::t2::http::manual::manual_types_replay_cas_and_rollback', 'shared_worker')
 case_fixtures('planning.http', 'planning::t2::http::console_scope_ready_tracks_current_admission', 'local_worker')
+case_fixtures('planning.frequency', 'planning::t2::frequency::once_per_entry_tracks_membership_epochs', 'local_worker')
+case_fixtures('planning.software', 'planning::t2::software::rollout_time_success_gates_and_stage_evidence', 'local_worker')
+case_fixtures('planning.software', 'planning::t2::software::rollout_statistics_checkpoint_excluded_pages_and_reject_stale_inputs', 'local_worker')
 case_fixtures('planning.remote', 'planning::t2::remote::creation_is_removed_and_existing_remote_history_still_settles', 'local_worker')
 case_fixtures('compliance.recovery', 'compliance::t2::recovery::mutation_unknown_commit_recovers_original_response', None)
 case_fixtures('compliance.recovery', 'compliance::t2::recovery::rule_and_fact_revisions_fence_stale_publication', 'local_worker')
@@ -768,7 +772,7 @@ consume(('crates/registration-service/src/enrollment.rs', 'crates/registration-s
 consume(('crates/execution-service/src/remote_operations/*',), 'planning.remote')
 consume(('crates/execution-service/src/sources/software.rs',),
         'planning.software execution.software.offer execution.software.recovery')
-consume(('crates/flow-service/src/planning/policies/*',), 'planning.policy planning.agent_policy planning.frequency')
+consume(('crates/flow-service/src/planning/policies/*',), 'planning.policy planning.agent_policy planning.frequency planning.software execution.software.offer planning.self_service')
 consume(('crates/flow-service/src/automation/jobs.rs',),
         'assets.queries assets.group_input compliance.http compliance.group_input planning.group_scope planning.scope planning.policy planning.agent_policy planning.frequency planning.recovery diagnostics.http')
 consume(('crates/management-http/src/planning/mod.rs',
@@ -1664,3 +1668,22 @@ consume(('crates/apple-channel/src/collection.rs',), 'apple.collection')
 consume(('crates/execution-service/src/queries.rs',), 'apple.commands apple.policy')
 
 consume(('crates/execution-service/src/wake.rs', 'crates/execution-service/src/recovery.rs'), 'apple.commands apple.policy apple.account_enrollment')
+
+consume(('crates/inventory-service/src/objects.rs','crates/device-service/src/planning.rs','crates/device-service/src/planning/snapshots.rs'), 'planning.group_scope planning.scope planning.policy planning.frequency planning.agent_policy planning.software planning.onboarding execution.commands.configuration execution.commands.onboarding device.associations device.views apple.policy apple.collection apple.account_enrollment apple.onboarding planning.self_service')
+consume(('crates/flow-service/src/planning/targets.rs','crates/flow-service/src/planning/automation/relations.rs'), 'planning.group_scope planning.scope planning.policy planning.frequency planning.agent_policy planning.software planning.onboarding execution.commands.configuration execution.commands.onboarding apple.policy apple.collection apple.account_enrollment apple.onboarding planning.self_service')
+MODULES['planning.group_scope'] = replace(MODULES['planning.group_scope'],
+    test_inputs=(*MODULES['planning.group_scope'].test_inputs,'crates/app/tests/planning/associated.rs'),
+    selectors=(*MODULES['planning.group_scope'].selectors,'planning::t2::associated::'),
+    support_inputs=(*MODULES['planning.group_scope'].support_inputs,'crates/app/tests/device/associations.rs','crates/app/tests/device/mod.rs','crates/app/tests/device/support.rs'))
+consume(('crates/app/src/flow.rs',), 'planning.group_scope planning.scope planning.policy planning.frequency planning.agent_policy planning.software planning.onboarding catalog.contract')
+
+consume(('crates/flow-service/src/planning/automation/model.rs',), 'planning.group_scope planning.scope planning.policy planning.frequency planning.agent_policy planning.software planning.onboarding')
+T1_INPUTS += ('crates/flow-service/tests/planning/pages_unit.rs',)
+consume(('crates/inventory-service/src/compliance/mod.rs','crates/inventory-service/src/compliance/evaluation.rs'), 'compliance.group_input')
+consume(('crates/inventory-service/src/lib.rs',), 'planning.group_scope planning.scope assets.group_input compliance.group_input')
+
+MODULES['planning.group_scope']=replace(MODULES['planning.group_scope'],support_inputs=tuple(dict.fromkeys((*MODULES['planning.group_scope'].support_inputs,'crates/app/tests/support/planning_http.rs','crates/app/tests/support/agent_execution.rs','crates/app/tests/support/software.rs'))))
+
+MODULES['execution.commands.configuration'] = replace(MODULES['execution.commands.configuration'], support_inputs=(*MODULES['execution.commands.configuration'].support_inputs, 'crates/app/tests/device/associations.rs', 'crates/app/tests/support/planning_http.rs'))
+
+consume(('crates/execution-service/src/sources/software/stats.rs',), 'planning.software execution.software.offer execution.software.recovery execution.software.content planning.self_service')

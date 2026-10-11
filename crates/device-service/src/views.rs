@@ -4,6 +4,7 @@ use rss_mdm_authorization_service::{Permission, Snapshot, context::AuthorizedPri
 use rss_mdm_inventory::{
     EndpointSourceFact, FieldKey, Scalar, Sensitivity, State as FieldState, ValueType,
 };
+pub use rss_mdm_inventory_service::objects::ObjectRef as ViewRef;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::PgConnection;
@@ -11,18 +12,6 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     time::Duration,
 };
-use uuid::Uuid;
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(
-    tag = "kind",
-    content = "id",
-    rename_all = "snake_case",
-    deny_unknown_fields
-)]
-pub enum ViewRef {
-    Endpoint(String),
-    Association(Uuid),
-}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ViewQuery {

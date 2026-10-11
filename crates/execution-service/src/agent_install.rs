@@ -330,22 +330,34 @@ pub(crate) async fn authorized_on(
     {
         return Ok(false);
     }
-    let admission = source
-        .admission_on(
+    if !source
+        .policy_readable_on(
             c,
             rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
-            row.try_get("scope").map_err(db)?,
-            device,
+            *version,
         )
-        .await?;
-    // Pending applicability pauses dispatch; it does not withdraw durable approval.
-    if !matches!(
-        admission,
-        crate::source_authority::ScopeAdmission::Eligible { .. }
-            | crate::source_authority::ScopeAdmission::Pending
-    ) && !dispatched_on(c, tenant, *operation).await?
+        .await?
     {
         return Ok(false);
+    }
+    // Original installation authority survives Scope exit after dispatch, until its deadline.
+    if !dispatched_on(c, tenant, *operation).await? {
+        let admission = source
+            .admission_on(
+                c,
+                rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
+                row.try_get("scope").map_err(db)?,
+                rss_mdm_inventory::Channel::Mdm,
+                device,
+            )
+            .await?;
+        if !matches!(
+            admission,
+            crate::source_authority::ScopeAdmission::Eligible { .. }
+                | crate::source_authority::ScopeAdmission::Pending
+        ) {
+            return Ok(false);
+        }
     }
     rss_mdm_software_service::catalog::admitted_on(
         c,
@@ -441,6 +453,7 @@ pub async fn dispatch_ready_on(
                 c,
                 rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
                 scope,
+                rss_mdm_inventory::Channel::Mdm,
                 device
             )
             .await?,
@@ -486,11 +499,10 @@ pub async fn dispatch_ready_on(
                 after,
             )
             .await?;
-        if rows.is_empty() {
-            break;
-        }
-        for row in rows {
-            after = row.policy;
+        let more = rows.has_more;
+        after = rows.scanned_after;
+
+        for row in rows.items {
             let Frozen::AgentInstall { action: other } =
                 serde_json::from_value(sqlx::query_scalar("SELECT frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2 AND policy=$3").bind(tenant).bind(row.version).bind(row.policy).fetch_one(&mut *c).await.map_err(db)?)
                     .map_err(|_| Error::Malformed)?
@@ -505,6 +517,9 @@ pub async fn dispatch_ready_on(
             {
                 return Ok(false);
             }
+        }
+        if !more {
+            break;
         }
     }
     Ok(true)

@@ -43,14 +43,14 @@ pub struct GroupPage {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum GroupPageItems {
     Members {
-        items: Vec<String>,
+        items: Vec<crate::objects::ObjectRef>,
     },
     Changes {
-        added: Vec<String>,
-        removed: Vec<String>,
+        added: Vec<crate::objects::ObjectRef>,
+        removed: Vec<crate::objects::ObjectRef>,
     },
     Decisions {
-        items: Vec<rss_mdm_group_postgres::DecisionRecord>,
+        items: Vec<Value>,
     },
 }
 
@@ -111,6 +111,10 @@ impl Groups {
         if !build.ready {
             return Err(Error::Conflict.into());
         }
+        let context = group_checked(self.groups.get_in(tx, owner).await?)?
+            .ok_or(Error::Group(GroupMissing::Group))?
+            .asset_context;
+        let object = |key: &str| group_checked(crate::objects::ObjectRef::from_key(context, key));
         let (page, next) = match kind {
             GroupPageKind::Members => {
                 let items = checked(
@@ -123,7 +127,12 @@ impl Groups {
                 } else {
                     None
                 };
-                (GroupPageItems::Members { items }, next)
+                (
+                    GroupPageItems::Members {
+                        items: items.iter().map(|id| object(id)).collect::<Result<_>>()?,
+                    },
+                    next,
+                )
             }
             GroupPageKind::Decisions => {
                 let items = checked(
@@ -132,6 +141,32 @@ impl Groups {
                         .await?,
                 )?;
                 let next = items.last().map(|item| item.device.clone());
+                let snapshot = group_checked(crate::objects::ObjectSnapshot::from_group_input(
+                    &build.request.input_version,
+                ))?;
+                let mut decisions = Vec::new();
+                for d in items {
+                    let reference = object(&d.device)?;
+                    let sources = if let Some(snapshot) = &snapshot {
+                        let reader = self.objects.clone();
+                        let tenant = self.tenant;
+                        let snapshot = snapshot.id;
+                        let key = reference.clone();
+                        let input = tx
+                            .with_connection(move |c| {
+                                Box::pin(
+                                    async move { reader.lookup(c, tenant, snapshot, &key).await },
+                                )
+                            })
+                            .await?;
+                        let input = checked_input(serde_json::to_value(input))?;
+                        vec![input]
+                    } else {
+                        vec![]
+                    };
+                    decisions.push(serde_json::json!({"object":reference,"origin":d.origin,"decision":d.decision,"explanations":d.explanations,"provenance":d.provenance,"sourceObjects":sources}));
+                }
+                let items = decisions;
                 (GroupPageItems::Decisions { items }, next)
             }
             GroupPageKind::Changes => {
@@ -142,8 +177,16 @@ impl Groups {
                 )?;
                 (
                     GroupPageItems::Changes {
-                        added: delta.added,
-                        removed: delta.removed,
+                        added: delta
+                            .added
+                            .iter()
+                            .map(|id| object(id))
+                            .collect::<Result<_>>()?,
+                        removed: delta
+                            .removed
+                            .iter()
+                            .map(|id| object(id))
+                            .collect::<Result<_>>()?,
                     },
                     delta.next,
                 )

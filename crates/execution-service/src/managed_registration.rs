@@ -115,6 +115,9 @@ impl ExecutionService {
         runtime: &enroll::RuntimeProfile,
     ) -> std::result::Result<rss_mdm_registration_service::enrollment::managed::Authority, Error>
     {
+        rss_mdm_inventory_postgres::lock_watermark_in(c, self.tenant)
+            .await
+            .map_err(crate::database::db)?;
         let tenant = self.tenant.to_string();
         crate::authorization::lock_on(c, &tenant, &self.instance).await?;
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2390))")

@@ -534,8 +534,7 @@ async fn execute(
                 let state =
                     setup::diagnosis(&mut client.browser, &client.router, policy, case_device())
                         .await?;
-                if state["assignment"] == "eligible"
-                    && state["taskAdmission"]["state"] == "eligible"
+                if state["availability"] == "ready" && state["taskAdmission"]["state"] == "eligible"
                 {
                     break;
                 }
@@ -765,6 +764,7 @@ async fn replacement_rejects_old_installation_and_requires_current_epoch_absence
     );
     ensure!(package_status(&client.router, operation).await? == StatusCode::FORBIDDEN);
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id='{}' AND channel='agent'",case_tenant()))?.trim()=="0");
+    crate::test_support::planning_http::await_ingress().await?;
     let state =
         setup::diagnosis(&mut client.browser, &client.router, policy, case_device()).await?;
     ensure!(
@@ -838,10 +838,11 @@ async fn scope_exit_preserves_dispatched_installation_authority_until_its_deadli
         ),
     )
     .await?;
+    crate::test_support::planning_http::await_ingress().await?;
     let state =
         setup::diagnosis(&mut client.browser, &client.router, policy, case_device()).await?;
     ensure!(
-        state["assignment"] != "eligible",
+        state["availability"] != "ready",
         "Scope exit not visible: {state}"
     );
     ensure!(package_status(&client.router, operation).await? == StatusCode::OK);

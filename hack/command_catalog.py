@@ -10,7 +10,7 @@ from build_run import lease_fds
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOGS = {'compliance': 'compliance-postgres/src/catalog', 'catalog': 'execution-service/src/catalog', 'dependencies': 'execution-service/src/dependencies', 'planning': 'flow-service/src/planning/catalog', 'assets': 'inventory-service/src/assets/catalog', 'automation': 'flow-service/src/automation/catalog', 'resources': 'flow-service/src/resource_catalog/catalog', 'publication': 'software-service/src/management/publication/http_catalog', 'software': 'software-service/src/catalog/catalog', 'content': 'content-service/src/catalog', 'flow': 'flow-service/src/storage/catalog'}
-COMPONENT_CATALOGS = {"resource_core": ("mdm_resource", "resource-postgres/src/catalog.json"),"policy_core":("mdm_policy","policy-postgres/src/catalog.json")}
+COMPONENT_CATALOGS = {"resource_core": ("mdm_resource", "resource-postgres/src/catalog.json"),"policy_core":("mdm_policy","policy-postgres/src/catalog.json"),"group_core":("mdm_group","group-postgres/src/catalog.json")}
 NAMES = tuple(CATALOGS)
 
 def capture(container, mode, database):
@@ -62,6 +62,17 @@ def capture(container, mode, database):
         result = subprocess.run(["docker", "exec", "-i", container, "psql", "-XqAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", database], input="SET SESSION AUTHORIZATION mdm_command_runtime; BEGIN;\n" + diagnostics + "\nROLLBACK;", text=True, capture_output=True, check=True, pass_fds=lease_fds())
         rejected = [terms[i][:200] for i, value in enumerate(result.stdout.strip().split('|')) if value != 't']
         raise RuntimeError('command runtime admission rejected: ' + repr(rejected))
+    # Consumers borrow connections with different safe search paths. Fingerprints must agree.
+    for role in ('mdm_command_runtime', 'mdm_flow_runtime'):
+        for search_path in ('pg_catalog', 'public'):
+            query = f"SET SESSION AUTHORIZATION {role}; BEGIN; SET LOCAL search_path={search_path};\n" + ";\n".join(paths[name].read_text() for name in NAMES) + "; ROLLBACK;"
+            result = subprocess.run(["docker", "exec", "-i", container, "psql", "-XqAt", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", database], input=query, text=True, capture_output=True, check=True, pass_fds=lease_fds())
+            actual = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
+            if len(actual) != len(NAMES):
+                raise RuntimeError(f"incomplete catalog for {role}/{search_path}")
+            for name, value in zip(NAMES, actual, strict=True):
+                if value != json.loads(paths[name].with_suffix('.json').read_text()):
+                    raise RuntimeError(f"{name} catalog differs for {role}/{search_path}")
     print(f"command catalog {mode}: all contracts match isolated migrations", flush=True)
 
 if __name__ == "__main__":

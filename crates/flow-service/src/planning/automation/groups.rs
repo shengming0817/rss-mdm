@@ -94,7 +94,20 @@ impl Planning {
         let tenant = self.tenant.to_string();
         let reference = format!("group-members.{}", current.id);
         let observed=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,i64>("SELECT observed_input FROM mdm_planning.source_heads WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(reference).fetch_one(c).await})).await?;
-        Ok(observed >= watermark && built.request.rule_version == current.rule_version)
+        let relation_current =
+            if let Some(snapshot) = object_snapshot(&built.request.input_version)? {
+                let reader = self.objects.clone();
+                let tenant = self.tenant;
+                tx.with_connection(move |c| {
+                    Box::pin(async move { reader.current(c, tenant, &snapshot).await })
+                })
+                .await?
+            } else {
+                true
+            };
+        Ok(relation_current
+            && observed >= watermark
+            && built.request.rule_version == current.rule_version)
     }
 
     pub async fn start_group_job_in(
@@ -128,7 +141,8 @@ impl Planning {
             .await?;
         let latest_watermark = watermark;
         let mut changed_devices = None;
-        if automatic
+        if current.asset_context == g::AssetContext::Endpoint
+            && automatic
             && patch.is_none()
             && let Some(previous) = checked(self.groups.current_member_set_in(tx, group).await?)?
         {
@@ -153,6 +167,24 @@ impl Planning {
                 }
             }
         }
+        let snapshot = if current.asset_context == g::AssetContext::AssociatedDevice {
+            let reader = self.objects.clone();
+            Some(
+                tx.with_connection(move |c| {
+                    Box::pin(async move { reader.freeze(c, tenant).await })
+                })
+                .await?,
+            )
+        } else {
+            None
+        };
+        let input_version = match &snapshot {
+            Some(snapshot) => format!(
+                "objects:{}:{}:{}",
+                snapshot.id, snapshot.watermark, snapshot.version
+            ),
+            None => format!("assets:{watermark}"),
+        };
         let job = JobInput::Group {
             group: id,
             base_revision: current.revision.get(),
@@ -162,7 +194,7 @@ impl Planning {
         };
         if patch.is_none()
             && let Some(existing) = self
-                .reusable_group_job_in(tx, &current, watermark, publish)
+                .reusable_group_job_in(tx, &current, &input_version, publish)
                 .await?
         {
             return Ok(crate::automation::jobs::accepted(existing, &job));
@@ -175,7 +207,7 @@ impl Planning {
             changed_devices,
             rule_version: current.rule_version,
             patch,
-            input_version: format!("assets:{watermark}"),
+            input_version,
             as_of: at,
         };
         checked(self.groups.begin_build_in(tx, &request).await?)?;
@@ -197,13 +229,13 @@ impl Planning {
         &self,
         tx: &mut PgTransaction<'_>,
         current: &g::Group,
-        watermark: i64,
+        input_version: &str,
         publish: bool,
     ) -> Result<Option<Uuid>> {
         let tenant = self.tenant.to_string();
         let id = current.id.to_string();
         let rule = current.rule_version.clone();
-        let version = format!("assets:{watermark}");
+        let version = input_version.to_owned();
         let calculation = current.calculation_revision;
         let result=tx.with_connection(move|c|Box::pin(async move {
             sqlx::query_scalar::<_,Uuid>("SELECT j.id FROM mdm_automation.automation_jobs j JOIN mdm_group.member_runs b ON(b.tenant_id,b.id)=(j.tenant_id,j.id) JOIN mdm_group.groups g ON(g.tenant_id,g.id)=(b.tenant_id,b.group_id) WHERE j.tenant_id=$1::uuid AND b.group_id=$2::uuid AND b.rule_version IS NOT DISTINCT FROM $3 AND b.input_version=$4 AND j.kind=$5 AND j.failure IS NULL AND (b.base_calculation=$6 OR g.member_set=b.id) ORDER BY j.completed DESC,j.id LIMIT 1").bind(tenant).bind(id).bind(rule).bind(version).bind(if publish {"group"}else{"group_preview"}).bind(calculation).fetch_optional(c).await
@@ -219,6 +251,134 @@ impl Planning {
     ) -> Result<()> {
         if build.request.patch.is_some() {
             group_checked(self.groups.advance_static_in(tx, operation).await?)?;
+        } else if let Some(snapshot) = object_snapshot(&build.request.input_version)? {
+            let reader = self.objects.clone();
+            let tenant = self.tenant;
+            let state = snapshot.clone();
+            let progress = tx
+                .with_connection(move |c| {
+                    Box::pin(async move { reader.advance(c, tenant, &state).await })
+                })
+                .await?;
+            use rss_mdm_inventory_service::objects::SnapshotProgress;
+            match progress {
+                SnapshotProgress::Building => return Ok(()),
+                SnapshotProgress::Ready => {}
+                SnapshotProgress::Superseded => return Err(Error::Conflict.into()),
+                SnapshotProgress::ObjectLimit => {
+                    return Err(Error::Unavailable(Failure::AssetObjectLimit).into());
+                }
+                SnapshotProgress::ByteLimit => {
+                    return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
+                }
+            }
+            let mut limit = 250;
+            loop {
+                let reader = self.objects.clone();
+                let tenant = self.tenant;
+                let after = build.cursor.clone();
+                let snapshot_id = snapshot.id;
+                let inputs = tx
+                    .with_connection(move |c| {
+                        Box::pin(
+                            async move { reader.page(c, tenant, snapshot_id, after, limit).await },
+                        )
+                    })
+                    .await?;
+                let ids: Vec<_> = inputs
+                    .iter()
+                    .flat_map(|o| o.members.iter().map(|m| m.device.clone()))
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                let reader = assets::planning::SnapshotReader { tenant };
+                let catalog = tx
+                    .with_connection(move |c| {
+                        Box::pin(async move {
+                            rss_mdm_inventory_postgres::catalog_at_in(c, tenant, watermark)
+                                .await
+                                .map_err(|_| sqlx::Error::Protocol("catalog unavailable".into()))
+                        })
+                    })
+                    .await?;
+                let read_catalog = catalog.clone();
+                let raw_result = tx
+                    .with_connection(move |c| {
+                        Box::pin(async move {
+                            Ok(reader
+                                .devices_on(c, watermark, &ids, &read_catalog, true)
+                                .await)
+                        })
+                    })
+                    .await?;
+                let raw = match raw_result {
+                    Err(rss_mdm_inventory_service::transaction::Fault::Request(
+                        rss_mdm_inventory_service::Error::Unavailable(
+                            rss_mdm_inventory_service::Failure::AssetBytesLimit
+                            | rss_mdm_inventory_service::Failure::AssetSourceLimit,
+                        ),
+                    )) if limit > 1 => {
+                        limit = (limit / 2).max(1);
+                        continue;
+                    }
+                    result => result?,
+                };
+                let rule = group_checked(
+                    self.groups
+                        .rule_in(
+                            tx,
+                            build.request.group,
+                            build
+                                .request
+                                .rule_version
+                                .as_deref()
+                                .ok_or(Error::Conflict)?,
+                        )
+                        .await?,
+                )?
+                .ok_or(Error::Conflict)?;
+                let data = assets::filter::associated_page(tenant, &inputs, &raw, &catalog, &rule)?;
+                let after = build
+                    .cursor
+                    .as_ref()
+                    .map(|s| checked_input(g::core::ObjectKey::new(tenant, s)))
+                    .transpose()?;
+                if !data.objects.is_empty() {
+                    match self
+                        .groups
+                        .append_build_page_in(
+                            tx,
+                            operation,
+                            &g::core::PageInput {
+                                tenant,
+                                id: "objects",
+                                version: &build.request.input_version,
+                                dictionary_version: rss_mdm_inventory::DICTIONARY,
+                                coverage: &data.coverage,
+                                objects: &data.objects,
+                                after: after.as_ref(),
+                            },
+                        )
+                        .await?
+                    {
+                        Err(g::Rejection::PageBudgetExceeded) if limit > 1 => {
+                            limit = (limit / 2).max(1);
+                            continue;
+                        }
+                        result => {
+                            group_checked(result)?;
+                        }
+                    }
+                }
+                if inputs.len() < limit {
+                    group_checked(
+                        self.groups
+                            .seal_build_in(tx, operation, build.processed + inputs.len())
+                            .await?,
+                    )?;
+                }
+                break;
+            }
         } else {
             let after = build
                 .cursor
@@ -321,7 +481,33 @@ impl Planning {
         let next = checked(self.groups.advance_difference_in(tx, operation).await?)?;
         if !next.devices.is_empty() {
             let tenant = self.tenant.to_string();
-            let devices = next.devices;
+            let mut devices = next.devices;
+            let frozen = checked(self.groups.build_in(tx, operation).await?)?;
+            if super::groups::object_snapshot(&frozen.request.input_version)?.is_some() {
+                let group = group_checked(
+                    self.groups
+                        .lock_reference_target_in(tx, frozen.request.group)
+                        .await?,
+                )?;
+                let mut snapshots = vec![
+                    super::groups::object_snapshot(&frozen.request.input_version)?
+                        .unwrap()
+                        .id,
+                ];
+                if let Some(previous) =
+                    checked(self.groups.current_member_set_in(tx, group.id).await?)?
+                {
+                    let previous = checked(self.groups.build_in(tx, previous).await?)?;
+                    if let Some(snapshot) =
+                        super::groups::object_snapshot(&previous.request.input_version)?
+                    {
+                        snapshots.push(snapshot.id);
+                    }
+                }
+                let keys = devices;
+                let t = self.tenant.to_string();
+                devices=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT DISTINCT member->>'device' FROM mdm_devices.input_objects o CROSS JOIN LATERAL jsonb_array_elements(o.input->'members') member WHERE o.tenant_id=$1::uuid AND o.snapshot=ANY($2) AND o.object=ANY($3)").bind(t).bind(snapshots).bind(keys).fetch_all(c).await})).await?;
+            }
             tx.with_connection(move |c|Box::pin(async move {
                     sqlx::query("WITH latest AS (SELECT (SELECT revision FROM mdm_access.asset_authority_history h WHERE h.tenant_id=$1::uuid AND h.device=d AND h.revision<=$4 ORDER BY revision DESC LIMIT 1) AS revision FROM unnest($3::text[]) d) UPDATE mdm_automation.automation_jobs SET authority_revision=greatest(authority_revision,coalesce((SELECT max(revision) FROM latest),0)) WHERE tenant_id=$1::uuid AND id=$2::uuid")
                         .bind(tenant).bind(task.to_string()).bind(devices).bind(watermark).execute(c).await?;Ok(())
@@ -390,6 +576,18 @@ impl Planning {
             sqlx::query_as::<_,(bool,i64)>("SELECT EXISTS(SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=$1::uuid AND c.revision>$2 AND (c.kind IN('device','registration','source','credential') OR EXISTS(SELECT 1 FROM mdm_assets.group_fields f WHERE f.tenant_id=c.tenant_id AND f.group_id=$3::uuid AND f.field=ANY(c.fields)))),coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid),0)")
                 .bind(tenant).bind(watermark).bind(id.to_string()).fetch_one(c).await
         })).await?;
+        if let Some(snapshot) = object_snapshot(&build.request.input_version)? {
+            let reader = self.objects.clone();
+            let tenant = self.tenant;
+            let current = tx
+                .with_connection(move |c| {
+                    Box::pin(async move { reader.current(c, tenant, &snapshot).await })
+                })
+                .await?;
+            if !current {
+                return Err(Error::Conflict.into());
+            }
+        }
         let receipt = checked(self.groups.publish_build_in(tx, operation).await?)?;
         crate::compliance::group_changed(tx, id).await?;
         checked(
@@ -519,4 +717,10 @@ impl Planning {
         }
         Ok(())
     }
+}
+
+pub(crate) fn object_snapshot(
+    version: &str,
+) -> Result<Option<rss_mdm_inventory_service::objects::ObjectSnapshot>> {
+    group_checked(rss_mdm_inventory_service::objects::ObjectSnapshot::from_group_input(version))
 }

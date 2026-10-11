@@ -12,6 +12,7 @@ pub enum GroupChange {
         name: String,
         description: String,
         criteria: Option<Criteria>,
+        asset_context: rss_mdm_group_postgres::AssetContext,
     },
     Edit {
         name: String,
@@ -21,8 +22,8 @@ pub enum GroupChange {
         criteria: Criteria,
     },
     Members {
-        add: Vec<String>,
-        remove: Vec<String>,
+        add: Vec<crate::objects::ObjectRef>,
+        remove: Vec<crate::objects::ObjectRef>,
     },
     Delete,
     Recompute {},

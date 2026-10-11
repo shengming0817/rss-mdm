@@ -12,7 +12,7 @@ pub fn routes(queries: Arc<rss_mdm_execution_service::queries::Queries>) -> Rout
         .merge(
             Router::new()
                 .route("/policies/previews", post(super::http_preview::preview))
-                .route("/policies/{id}/devices", get(devices))
+                .route("/policies/{id}/assignments", get(assignments))
                 .with_state(queries),
         )
         .route("/policies", get(list))
@@ -87,14 +87,14 @@ async fn rerun(
 struct DevicePage {
     after: Option<String>,
 }
-async fn devices(
+async fn assignments(
     State(service): State<Arc<rss_mdm_execution_service::queries::Queries>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     Query(page): Query<DevicePage>,
 ) -> std::result::Result<Json<Value>, Error> {
-    rss_mdm_execution_service::queries::assignments::devices(
+    rss_mdm_execution_service::queries::assignments::assignments(
         &service,
         &auth.proof,
         &audit,

@@ -214,6 +214,7 @@ async fn expired_guard_after_lock_rejects_mutation_and_replay() {
             change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
+                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                     name: "guarded".into(),
                     description: String::new(),
                     criteria: None,
@@ -284,6 +285,7 @@ async fn result_cursors_survive_instances_restart_and_group_deletion() {
             change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
+                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
                     name: "cursor".into(),
                     description: String::new(),
                     criteria: None,
@@ -301,7 +303,11 @@ async fn result_cursors_survive_instances_restart_and_group_deletion() {
             change: Box::new(group_operation(
                 1,
                 GroupChange::Members {
-                    add: devices.clone(),
+                    add: devices
+                        .iter()
+                        .cloned()
+                        .map(rss_mdm_inventory_service::objects::ObjectRef::Endpoint)
+                        .collect(),
                     remove: vec![],
                 },
             )),
@@ -325,12 +331,15 @@ async fn result_cursors_survive_instances_restart_and_group_deletion() {
         query: rss_mdm_inventory_service::groups::pages::PageQuery { limit: 1, cursor },
     };
     let initial = execute(&first, &page(None)).await.unwrap();
-    assert_eq!(initial["page"]["items"], json!([devices[0]]));
+    assert_eq!(
+        initial["page"]["items"],
+        json!([{"kind":"endpoint","id":devices[0]}])
+    );
     let cursor = initial["nextCursor"].as_str().unwrap().to_owned();
     let second = planning(tenant()).await;
     assert_eq!(
         execute(&second, &page(Some(cursor.clone()))).await.unwrap()["page"]["items"],
-        json!([devices[1]])
+        json!([{"kind":"endpoint","id":devices[1]}])
     );
     second.runtime.close().await;
     first.runtime.close().await;
@@ -339,7 +348,7 @@ async fn result_cursors_survive_instances_restart_and_group_deletion() {
         execute(&restarted, &page(Some(cursor.clone())))
             .await
             .unwrap()["page"]["items"],
-        json!([devices[1]])
+        json!([{"kind":"endpoint","id":devices[1]}])
     );
     execute(
         &restarted,
@@ -353,7 +362,7 @@ async fn result_cursors_survive_instances_restart_and_group_deletion() {
     .unwrap();
     assert_eq!(
         execute(&restarted, &page(Some(cursor))).await.unwrap()["page"]["items"],
-        json!([devices[1]])
+        json!([{"kind":"endpoint","id":devices[1]}])
     );
     restarted.runtime.close().await;
 }

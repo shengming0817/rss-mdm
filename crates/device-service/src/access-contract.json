@@ -43,6 +43,20 @@
         "watermark"
       ],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "input_snapshots",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "input_objects",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null
     }
   ],
   "functions": [

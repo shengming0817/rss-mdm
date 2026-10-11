@@ -113,6 +113,7 @@ CREATE TABLE mdm_commands.action_receipts (
 ALTER TABLE ONLY mdm_commands.action_receipts FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_commands.action_runs (
+    source_objects jsonb NOT NULL,
     tenant_id uuid NOT NULL,
     id uuid NOT NULL,
     source_kind text DEFAULT 'policy'::text NOT NULL,
@@ -258,6 +259,7 @@ END, false)),
 ALTER TABLE ONLY mdm_commands.operations FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_commands.policy_recovery (
+    stats_revision bigint NOT NULL DEFAULT 0 CHECK(stats_revision>=0),
     target_after text,
     tenant_id uuid NOT NULL,
     policy uuid NOT NULL,
@@ -541,3 +543,65 @@ $$;
 REVOKE ALL ON FUNCTION mdm_commands.windows_pending_operations(uuid,bigint,uuid) FROM PUBLIC;
 
 COMMIT;
+
+CREATE TABLE mdm_commands.software_stage_stats (
+ tenant_id uuid NOT NULL, version uuid NOT NULL, stage integer NOT NULL CHECK(stage>=0),
+ input jsonb NOT NULL CHECK(octet_length(input::text)<=65536), cursor text,
+ generation uuid NOT NULL, membership_complete boolean NOT NULL,
+ ready boolean NOT NULL, counts jsonb NOT NULL CHECK(octet_length(counts::text)<=4096),
+ PRIMARY KEY(tenant_id,version,stage)
+);
+CREATE TABLE mdm_commands.software_binding_revisions(tenant_id uuid PRIMARY KEY,revision bigint NOT NULL CHECK(revision>=0));
+ALTER TABLE mdm_commands.software_stage_stats ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_commands.software_stage_stats FORCE ROW LEVEL SECURITY;
+ALTER TABLE mdm_commands.software_binding_revisions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_commands.software_binding_revisions FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_commands.software_stage_stats USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+CREATE POLICY tenant ON mdm_commands.software_binding_revisions USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+CREATE TABLE mdm_commands.software_stats_members (
+ tenant_id uuid NOT NULL,version uuid NOT NULL,stage integer NOT NULL,
+ device text COLLATE "C" NOT NULL,generation uuid NOT NULL,target jsonb NOT NULL,
+ counts jsonb NOT NULL CHECK(octet_length(counts::text)<=4096),waiting_until bigint,
+ PRIMARY KEY(tenant_id,version,stage,device)
+);
+CREATE INDEX software_stats_expirations ON mdm_commands.software_stats_members(tenant_id,version,stage,generation,waiting_until,device) WHERE waiting_until IS NOT NULL;
+CREATE TABLE mdm_commands.software_result_changes (
+ tenant_id uuid NOT NULL,policy uuid NOT NULL,device text COLLATE "C" NOT NULL,revision bigint NOT NULL CHECK(revision>0),
+ PRIMARY KEY(tenant_id,policy,device)
+);
+CREATE INDEX software_result_changes_cursor ON mdm_commands.software_result_changes(tenant_id,policy,revision);
+CREATE TABLE mdm_commands.software_binding_changes (
+ tenant_id uuid NOT NULL,device text COLLATE "C" NOT NULL,revision bigint NOT NULL CHECK(revision>0),
+ PRIMARY KEY(tenant_id,device)
+);
+CREATE INDEX software_binding_changes_cursor ON mdm_commands.software_binding_changes(tenant_id,revision);
+ALTER TABLE mdm_commands.software_stats_members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_commands.software_stats_members FORCE ROW LEVEL SECURITY;
+ALTER TABLE mdm_commands.software_result_changes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_commands.software_result_changes FORCE ROW LEVEL SECURITY;
+ALTER TABLE mdm_commands.software_binding_changes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_commands.software_binding_changes FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_commands.software_stats_members USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+CREATE POLICY tenant ON mdm_commands.software_result_changes USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+CREATE POLICY tenant ON mdm_commands.software_binding_changes USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+CREATE FUNCTION mdm_commands.advance_software_results() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+DECLARE p uuid; v bigint;
+BEGIN
+ IF TG_OP='UPDATE' AND NEW.state IS NOT DISTINCT FROM OLD.state AND NEW.result IS NOT DISTINCT FROM OLD.result THEN RETURN NEW; END IF;
+ INSERT INTO mdm_commands.policy_recovery(tenant_id,policy,stats_revision) SELECT NEW.tenant_id,policy,1 FROM mdm_policy.versions WHERE tenant_id=NEW.tenant_id AND id=NEW.policy_version AND frozen->>'kind'='software'
+ ON CONFLICT(tenant_id,policy) DO UPDATE SET stats_revision=mdm_commands.policy_recovery.stats_revision+1 RETURNING policy,stats_revision INTO p,v;
+ IF FOUND THEN INSERT INTO mdm_commands.software_result_changes VALUES(NEW.tenant_id,p,NEW.device,v) ON CONFLICT(tenant_id,policy,device) DO UPDATE SET revision=EXCLUDED.revision; END IF;
+ RETURN NEW;
+END;$$;
+CREATE FUNCTION mdm_commands.advance_software_bindings() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+DECLARE t uuid; d text; v bigint;
+BEGIN
+ IF TG_OP='UPDATE' AND NEW IS NOT DISTINCT FROM OLD THEN RETURN NEW; END IF;
+ t=coalesce(NEW.tenant_id,OLD.tenant_id);
+ INSERT INTO mdm_commands.software_binding_revisions VALUES(t,1) ON CONFLICT(tenant_id) DO UPDATE SET revision=mdm_commands.software_binding_revisions.revision+1 RETURNING revision INTO v;
+ SELECT device INTO d FROM mdm_access.registrations WHERE tenant_id=t AND id=coalesce(NEW.registration,OLD.registration);
+ IF d IS NOT NULL THEN INSERT INTO mdm_commands.software_binding_changes VALUES(t,d,v) ON CONFLICT(tenant_id,device) DO UPDATE SET revision=EXCLUDED.revision; END IF;
+ RETURN coalesce(NEW,OLD);
+END;$$;
+REVOKE ALL ON FUNCTION mdm_commands.advance_software_results(),mdm_commands.advance_software_bindings() FROM PUBLIC;
+CREATE TRIGGER software_results AFTER INSERT OR UPDATE OF state,result ON mdm_commands.action_runs FOR EACH ROW EXECUTE FUNCTION mdm_commands.advance_software_results();

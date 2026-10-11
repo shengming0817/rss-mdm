@@ -8,6 +8,7 @@ use sqlx::PgConnection;
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExecutionAuthority {
     AgentInstall {
+        source_objects: Vec<crate::source_authority::DeviceObject>,
         required: Vec<Permission>,
         package: Box<crate::agent_install::Package>,
         tenant: String,
@@ -34,6 +35,7 @@ pub enum ExecutionAuthority {
         device: String,
     },
     Policy {
+        source_objects: Vec<crate::source_authority::DeviceObject>,
         unit: String,
         required: Vec<Permission>,
         tenant: String,
@@ -55,15 +57,56 @@ impl ExecutionAuthority {
                 version,
                 device,
                 operation,
+                source_objects,
                 ..
             } => {
+                if !source
+                    .evidence_valid_on(
+                        c,
+                        rss_request_context::TenantId::parse(tenant)
+                            .map_err(|_| Error::Malformed)?,
+                        rss_mdm_inventory::Channel::Mdm,
+                        device,
+                        source_objects,
+                    )
+                    .await?
+                {
+                    return Ok(false);
+                }
                 crate::agent_install::dispatch_ready_on(
                     source, c, tenant, *version, device, *operation,
                 )
                 .await
             }
             Self::User { .. } | Self::RemoteOperation { .. } => Ok(false),
-            Self::DeviceControl { .. } | Self::Policy { .. } => Ok(true),
+            Self::DeviceControl { .. } => Ok(true),
+            Self::Policy {
+                tenant,
+                device,
+                source_objects,
+                remove,
+                version,
+                ..
+            } => {
+                let tenant_id =
+                    rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
+                if !source.policy_readable_on(c, tenant_id, *version).await? {
+                    return Ok(false);
+                }
+                if *remove {
+                    return Ok(true);
+                }
+                Ok(source
+                    .evidence_valid_on(
+                        c,
+                        rss_request_context::TenantId::parse(tenant)
+                            .map_err(|_| Error::Malformed)?,
+                        rss_mdm_inventory::Channel::Mdm,
+                        device,
+                        source_objects,
+                    )
+                    .await?)
+            }
         }
     }
     pub(crate) fn for_control(
@@ -173,6 +216,43 @@ impl ExecutionAuthority {
         }
         Ok(true)
     }
+    /// A correlated receipt settles the original task, independently of later Scope membership.
+    pub(crate) async fn receipt_valid(
+        &self,
+        source: &dyn crate::source_authority::SourceAuthority,
+        conn: &mut PgConnection,
+        key: &rss_mdm_native_protection::Protector,
+        permissions: &[Permission],
+        now: i64,
+    ) -> Result<bool, Error> {
+        let Self::Policy {
+            tenant,
+            policy,
+            version,
+            device,
+            ..
+        } = self
+        else {
+            return self.valid(source, conn, key, permissions, now).await;
+        };
+        if permissions.is_empty() {
+            return Ok(false);
+        }
+        let frozen=sqlx::query_scalar::<_,serde_json::Value>("SELECT frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2 AND policy=$3").bind(tenant).bind(version).bind(policy).fetch_optional(&mut *conn).await.map_err(db)?;
+        let Some(frozen) = frozen else {
+            return Ok(false);
+        };
+        let mut permissions = permissions.to_vec();
+        permissions.extend_from_slice(self.required());
+        permissions.sort();
+        permissions.dedup();
+        for permission in permissions {
+            if !native_grant(conn, frozen.clone(), device, permission, now).await? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
     async fn valid_one(
         &self,
         source: &dyn crate::source_authority::SourceAuthority,
@@ -275,11 +355,10 @@ impl ExecutionAuthority {
                             after,
                         )
                         .await?;
-                    if rows.is_empty() {
-                        break;
-                    }
-                    for row in rows {
-                        after = row.policy;
+                    let more = rows.has_more;
+                    after = rows.scanned_after;
+
+                    for row in rows.items {
                         let current_frozen: serde_json::Value = sqlx::query_scalar("SELECT frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2 AND policy=$3").bind(tenant).bind(row.version).bind(row.policy).fetch_one(&mut *conn).await.map_err(db)?;
                         let current: crate::frozen::Frozen =
                             serde_json::from_value(current_frozen.clone())
@@ -292,7 +371,7 @@ impl ExecutionAuthority {
                             key,
                             tenant_id,
                             crate::configuration::Owner::Policy {
-                                policy: after,
+                                policy: row.policy,
                                 version: row.version,
                             },
                         )?;
@@ -321,6 +400,9 @@ impl ExecutionAuthority {
                         {
                             live = true;
                         }
+                    }
+                    if !more {
+                        break;
                     }
                 }
                 Ok(*remove || live || retained_grant)

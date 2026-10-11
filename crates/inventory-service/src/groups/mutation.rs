@@ -56,6 +56,7 @@ impl Groups {
                 name,
                 description,
                 criteria,
+                asset_context,
             } => {
                 if op.expected_revision != 0 {
                     return Err(Error::Conflict.into());
@@ -64,6 +65,7 @@ impl Groups {
                     group,
                     name: name.clone(),
                     description: description.clone(),
+                    asset_context: *asset_context,
                     definition: match criteria {
                         None => pg::Definition::Static,
                         Some(c) => pg::Definition::Dynamic(Box::new(rule(
@@ -90,7 +92,20 @@ impl Groups {
                 if add.len() + remove.len() > 1000 {
                     return Err(Error::Malformed.into());
                 }
-                for device in add {
+                let endpoints = |objects: &[crate::objects::ObjectRef]| -> Result<Vec<String>> {
+                    objects
+                        .iter()
+                        .map(|object| match object {
+                            crate::objects::ObjectRef::Endpoint(id) if !id.is_empty() => {
+                                Ok(id.clone())
+                            }
+                            _ => Err(Error::Malformed.into()),
+                        })
+                        .collect()
+                };
+                let add = endpoints(add)?;
+                let remove = endpoints(remove)?;
+                for device in &add {
                     require_device(tx, device).await?;
                 }
                 return flow

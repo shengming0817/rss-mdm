@@ -530,7 +530,7 @@ async fn child_dispatch_keeps_its_device_and_parent_search_link() -> anyhow::Res
         .bind(case_tenant()).bind(parent).execute(&mut pg).await?;
     sqlx::query("INSERT INTO mdm_planning.remote_operation_targets(tenant_id,operation,device,status,diagnosis) VALUES($1::uuid,$2,$3,'blocked','fixture'),($1::uuid,$2,$4,'blocked','fixture')")
         .bind(case_tenant()).bind(parent).bind(case_device()).bind(&other).execute(&mut pg).await?;
-    sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,source_kind,remote_operation,device,registration,generation,occurrence,created_at,available_at,deadline,state,dispatch_fingerprint) SELECT tenant_id,$2,'remote_operation',$3,device,registration,registration_generation,'fixture',1,1,10000000000,'{}',decode(repeat('00',32),'hex') FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$4")
+    sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,source_kind,remote_operation,device,registration,generation,occurrence,created_at,available_at,deadline,state,dispatch_fingerprint,source_objects) SELECT tenant_id,$2,'remote_operation',$3,device,registration,registration_generation,'fixture',1,1,10000000000,'{}',decode(repeat('00',32),'hex'),'[]'::jsonb FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$4")
         .bind(case_tenant()).bind(child).bind(parent).bind(client.operation).execute(&mut pg).await?;
     pg.close().await?;
     client

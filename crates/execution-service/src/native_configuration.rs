@@ -615,7 +615,24 @@ impl ExecutionService {
         let unit = desired
             .native
             .unit_key(&self.protection, self.tenant, device)?;
+        let source_objects = if remove {
+            vec![]
+        } else {
+            let source = self.source.clone();
+            let tenant = tx.tenant_id();
+            let scope = policy.definition.scope;
+            let device = device.to_owned();
+            tx.with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(source
+                        .evidence_on(c, tenant, scope, rss_mdm_inventory::Channel::Mdm, &device)
+                        .await)
+                })
+            })
+            .await??
+        };
         let authority = crate::authority::ExecutionAuthority::Policy {
+            source_objects,
             unit,
             required: input.task.permissions()?,
             tenant: tx.tenant_id().to_string(),
@@ -680,12 +697,12 @@ async fn desired_in(
                 })
             })
             .await??;
-        if ids.is_empty() {
-            break;
-        }
-        for candidate in ids {
+        let more = ids.has_more;
+        after = ids.scanned_after;
+
+        for candidate in ids.items {
             let id = candidate.policy;
-            after = id;
+
             let p = policies::storage::read_in(&service.policy_reader, tx, id)
                 .await?
                 .ok_or(Error::NotFound)?;
@@ -702,6 +719,9 @@ async fn desired_in(
             } else {
                 waiting.push((p, frozen));
             }
+        }
+        if !more {
+            break;
         }
     }
     Ok((desired, waiting))

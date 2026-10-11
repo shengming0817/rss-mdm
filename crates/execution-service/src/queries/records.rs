@@ -374,11 +374,16 @@ struct RemoteTarget {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Assignment {
-    device: String,
-    assignment: String,
+    object: crate::source_authority::ObjectRef,
+    channel: rss_mdm_inventory::Channel,
+    availability: crate::source_authority::Availability,
+    reason: Option<String>,
+    target: Option<rss_mdm_registration_service::device::endpoints::PrimaryRegistration>,
+    qualification: crate::source_authority::ScopeAdmission,
+    sources: Vec<crate::source_authority::DeviceObject>,
+    scope_result: Uuid,
     task_admission: Option<crate::sources::software::TaskAdmission>,
     operation_ids: Vec<Uuid>,
-    diagnoses: Vec<String>,
 }
 pub type AssignmentPage = Page<Assignment, String>;
 #[derive(Deserialize, Serialize)]
@@ -392,7 +397,11 @@ pub struct Preview {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PreviewTarget {
-    device: String,
+    object: crate::source_authority::ObjectRef,
+    channel: rss_mdm_inventory::Channel,
+    availability: crate::source_authority::Availability,
+    reason: Option<String>,
+    target: Option<rss_mdm_registration_service::device::endpoints::PrimaryRegistration>,
     eligibility: crate::source_authority::ScopeAdmission,
     task_admission: Option<crate::sources::software::TaskAdmission>,
 }
@@ -408,6 +417,8 @@ pub struct Rollout {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Stage {
+    ready: bool,
+    as_of: Option<i64>,
     scope: Uuid,
     opens_at: i64,
     minimum_verified_percent: Option<u8>,

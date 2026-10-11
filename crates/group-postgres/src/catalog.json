@@ -101,6 +101,15 @@
     ],
     [
       "groups",
+      "asset_context",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "groups",
       "member_set",
       "uuid",
       false,
@@ -559,113 +568,14 @@
       ""
     ]
   ],
-  "indexes": [
-    [
-      "groups",
-      "groups_dynamic",
-      "CREATE INDEX groups_dynamic ON mdm_group.groups USING btree (tenant_id, id) WHERE ((kind = 'dynamic'::text) AND (NOT deleted))",
-      true,
-      true,
-      true
-    ],
-    [
-      "groups",
-      "groups_pkey",
-      "CREATE UNIQUE INDEX groups_pkey ON mdm_group.groups USING btree (tenant_id, id)",
-      true,
-      true,
-      true
-    ],
-    [
-      "member_changes",
-      "member_changes_history",
-      "CREATE INDEX member_changes_history ON mdm_group.member_changes USING btree (tenant_id, group_id, object_id, revision DESC)",
-      true,
-      true,
-      true
-    ],
-    [
-      "member_changes",
-      "member_changes_object",
-      "CREATE INDEX member_changes_object ON mdm_group.member_changes USING btree (tenant_id, object_id, group_id, revision DESC)",
-      true,
-      true,
-      true
-    ],
-    [
-      "member_changes",
-      "member_changes_pkey",
-      "CREATE UNIQUE INDEX member_changes_pkey ON mdm_group.member_changes USING btree (tenant_id, run_id, object_id)",
-      true,
-      true,
-      true
-    ],
-    [
-      "member_pages",
-      "member_pages_pkey",
-      "CREATE UNIQUE INDEX member_pages_pkey ON mdm_group.member_pages USING btree (tenant_id, run_id, first_id)",
-      true,
-      true,
-      true
-    ],
-    [
-      "member_rows",
-      "member_rows_matched",
-      "CREATE INDEX member_rows_matched ON mdm_group.member_rows USING btree (tenant_id, run_id, object_id) WHERE matched",
-      true,
-      true,
-      true
-    ],
-    [
-      "member_rows",
-      "member_rows_pkey",
-      "CREATE UNIQUE INDEX member_rows_pkey ON mdm_group.member_rows USING btree (tenant_id, run_id, object_id)",
-      true,
-      true,
-      true
-    ],
-    [
-      "member_runs",
-      "member_runs_history",
-      "CREATE INDEX member_runs_history ON mdm_group.member_runs USING btree (tenant_id, group_id, base_calculation) WHERE (phase = 'published'::text)",
-      true,
-      true,
-      true
-    ],
-    [
-      "member_runs",
-      "member_runs_pkey",
-      "CREATE UNIQUE INDEX member_runs_pkey ON mdm_group.member_runs USING btree (tenant_id, id)",
-      true,
-      true,
-      true
-    ],
-    [
-      "member_runs",
-      "member_runs_tenant_id_group_id_id_key",
-      "CREATE UNIQUE INDEX member_runs_tenant_id_group_id_id_key ON mdm_group.member_runs USING btree (tenant_id, group_id, id)",
-      true,
-      true,
-      true
-    ],
-    [
-      "operations",
-      "operations_pkey",
-      "CREATE UNIQUE INDEX operations_pkey ON mdm_group.operations USING btree (tenant_id, id)",
-      true,
-      true,
-      true
-    ],
-    [
-      "rules",
-      "rules_pkey",
-      "CREATE UNIQUE INDEX rules_pkey ON mdm_group.rules USING btree (tenant_id, group_id, version)",
-      true,
-      true,
-      true
-    ]
-  ],
   "constraints": [
+    [
+      "groups",
+      "groups_asset_context_check",
+      "c",
+      "CHECK ((asset_context = ANY (ARRAY['endpoint'::text, 'associated_device'::text])))",
+      true
+    ],
     [
       "groups",
       "groups_calculation_revision_check",
@@ -685,6 +595,13 @@
       "groups_check1",
       "c",
       "CHECK ((((kind = 'static'::text) AND (rule_version IS NULL)) OR ((kind = 'dynamic'::text) AND (rule_version IS NOT NULL))))",
+      true
+    ],
+    [
+      "groups",
+      "groups_context_kind_check",
+      "c",
+      "CHECK (((kind = 'dynamic'::text) OR (asset_context = 'endpoint'::text)))",
       true
     ],
     [
@@ -1035,6 +952,112 @@
       "rules_version_check",
       "c",
       "CHECK (((octet_length(version) >= 1) AND (octet_length(version) <= 256)))",
+      true
+    ]
+  ],
+  "indexes": [
+    [
+      "groups",
+      "groups_dynamic",
+      "CREATE INDEX groups_dynamic ON mdm_group.groups USING btree (tenant_id, id) WHERE ((kind = 'dynamic'::text) AND (NOT deleted))",
+      true,
+      true,
+      true
+    ],
+    [
+      "groups",
+      "groups_pkey",
+      "CREATE UNIQUE INDEX groups_pkey ON mdm_group.groups USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "member_changes",
+      "member_changes_history",
+      "CREATE INDEX member_changes_history ON mdm_group.member_changes USING btree (tenant_id, group_id, object_id, revision DESC)",
+      true,
+      true,
+      true
+    ],
+    [
+      "member_changes",
+      "member_changes_object",
+      "CREATE INDEX member_changes_object ON mdm_group.member_changes USING btree (tenant_id, object_id, group_id, revision DESC)",
+      true,
+      true,
+      true
+    ],
+    [
+      "member_changes",
+      "member_changes_pkey",
+      "CREATE UNIQUE INDEX member_changes_pkey ON mdm_group.member_changes USING btree (tenant_id, run_id, object_id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "member_pages",
+      "member_pages_pkey",
+      "CREATE UNIQUE INDEX member_pages_pkey ON mdm_group.member_pages USING btree (tenant_id, run_id, first_id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "member_rows",
+      "member_rows_matched",
+      "CREATE INDEX member_rows_matched ON mdm_group.member_rows USING btree (tenant_id, run_id, object_id) WHERE matched",
+      true,
+      true,
+      true
+    ],
+    [
+      "member_rows",
+      "member_rows_pkey",
+      "CREATE UNIQUE INDEX member_rows_pkey ON mdm_group.member_rows USING btree (tenant_id, run_id, object_id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "member_runs",
+      "member_runs_history",
+      "CREATE INDEX member_runs_history ON mdm_group.member_runs USING btree (tenant_id, group_id, base_calculation) WHERE (phase = 'published'::text)",
+      true,
+      true,
+      true
+    ],
+    [
+      "member_runs",
+      "member_runs_pkey",
+      "CREATE UNIQUE INDEX member_runs_pkey ON mdm_group.member_runs USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "member_runs",
+      "member_runs_tenant_id_group_id_id_key",
+      "CREATE UNIQUE INDEX member_runs_tenant_id_group_id_id_key ON mdm_group.member_runs USING btree (tenant_id, group_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "operations",
+      "operations_pkey",
+      "CREATE UNIQUE INDEX operations_pkey ON mdm_group.operations USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "rules",
+      "rules_pkey",
+      "CREATE UNIQUE INDEX rules_pkey ON mdm_group.rules USING btree (tenant_id, group_id, version)",
+      true,
+      true,
       true
     ]
   ]

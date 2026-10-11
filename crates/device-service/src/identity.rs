@@ -84,7 +84,7 @@ fn normalized(value: &str, uuid: bool) -> Option<String> {
         Some(value)
     }
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct EndpointIdentity {
     pub member: Member,
     pub hardware: Hardware,
@@ -202,25 +202,6 @@ impl World {
 /// The caller holds Audit (for mutations) and the asset watermark before taking channel locks.
 pub(crate) async fn world(c: &mut PgConnection, tenant: TenantId) -> Result<World> {
     let watermark = rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
-    let catalog = rss_mdm_inventory_postgres::catalog_at_in(c, tenant, watermark)
-        .await
-        .map_err(|_| Error::Storage)?;
-    let catalog = rss_mdm_inventory::Catalog::new(
-        catalog
-            .fields()
-            .filter(|f| {
-                [
-                    "device.serial_number",
-                    "device.hardware_uuid",
-                    "device.manufacturer",
-                ]
-                .contains(&f.key.as_str())
-            })
-            .cloned()
-            .collect(),
-    )
-    .map_err(|_| Error::Storage)?;
-    let reader = rss_mdm_inventory_service::assets::planning::SnapshotReader { tenant };
     let mut after = String::new();
     let mut world = World {
         watermark,
@@ -231,59 +212,8 @@ pub(crate) async fn world(c: &mut PgConnection, tenant: TenantId) -> Result<Worl
         if ids.is_empty() {
             break;
         }
-        let devices = reader
-            .devices_on(c, watermark, &ids, &catalog, true)
-            .await
-            .map_err(|_| Error::Storage)?;
-        for device in devices {
-            for channel in [Channel::Mdm, Channel::Agent] {
-                let Some(member) =
-                    endpoints::current_in(c, &tenant.to_string(), &device.device, channel).await?
-                else {
-                    continue;
-                };
-                let mut hardware = Hardware::default();
-                for (field, resolved) in &device.fields {
-                    let name = field.as_str();
-                    if ![
-                        "device.serial_number",
-                        "device.hardware_uuid",
-                        "device.manufacturer",
-                    ]
-                    .contains(&name)
-                    {
-                        continue;
-                    }
-                    for fact in &resolved.sources {
-                        let e = &fact.evidence;
-                        if e.source == Source::Manual
-                            || e.source.channel() != Some(channel)
-                            || e.registration.as_deref()
-                                != Some(member.registration_id.to_string().as_str())
-                            || e.registration_generation != Some(member.generation as u64)
-                        {
-                            continue;
-                        }
-                        if let FieldState::Known(Scalar::String(value)) = &fact.state
-                            && let Some(value) = normalized(value, name == "device.hardware_uuid")
-                        {
-                            match name {
-                                "device.serial_number" => {
-                                    hardware.serial.insert(value);
-                                }
-                                "device.hardware_uuid" => {
-                                    hardware.uuid.insert(value);
-                                }
-                                _ => {
-                                    hardware.manufacturer.insert(value);
-                                }
-                            }
-                            hardware.sources.push(e.clone());
-                        }
-                    }
-                }
-                world.insert(EndpointIdentity { member, hardware });
-            }
+        for endpoint in endpoint_page(c, tenant, watermark, &ids).await? {
+            world.insert(endpoint);
         }
         after = ids.last().ok_or(Error::Storage)?.clone();
         tokio::task::yield_now().await;
@@ -325,6 +255,96 @@ pub(crate) fn evidence(world: &World, members: &[Member]) -> BTreeMap<String, Ha
                 .map(|e| (m.channel.as_str().to_string(), e.hardware.clone()))
         })
         .collect()
+}
+
+pub(crate) async fn endpoint_page(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    watermark: i64,
+    ids: &[String],
+) -> Result<Vec<EndpointIdentity>> {
+    let catalog = rss_mdm_inventory_postgres::catalog_at_in(c, tenant, watermark)
+        .await
+        .map_err(|_| Error::Storage)?;
+    let catalog = rss_mdm_inventory::Catalog::new(
+        catalog
+            .fields()
+            .filter(|f| {
+                [
+                    "device.serial_number",
+                    "device.hardware_uuid",
+                    "device.manufacturer",
+                ]
+                .contains(&f.key.as_str())
+            })
+            .cloned()
+            .collect(),
+    )
+    .map_err(|_| Error::Storage)?;
+    let reader = rss_mdm_inventory_service::assets::planning::SnapshotReader { tenant };
+    let devices = reader
+        .devices_on(c, watermark, ids, &catalog, true)
+        .await
+        .map_err(|_| Error::Storage)?;
+    let mut result = Vec::new();
+    for device in devices {
+        for channel in [Channel::Mdm, Channel::Agent] {
+            let Some(member) =
+                endpoints::current_in(c, &tenant.to_string(), &device.device, channel).await?
+            else {
+                continue;
+            };
+            let mut hardware = Hardware::default();
+            for (field, resolved) in &device.fields {
+                let name = field.as_str();
+                if ![
+                    "device.serial_number",
+                    "device.hardware_uuid",
+                    "device.manufacturer",
+                ]
+                .contains(&name)
+                {
+                    continue;
+                }
+                for fact in &resolved.sources {
+                    let e = &fact.evidence;
+                    if e.source == Source::Manual
+                        || e.source.channel() != Some(channel)
+                        || e.registration.as_deref()
+                            != Some(member.registration_id.to_string().as_str())
+                        || e.registration_generation != Some(member.generation as u64)
+                    {
+                        continue;
+                    }
+                    if let FieldState::Known(Scalar::String(value)) = &fact.state
+                        && let Some(value) = normalized(value, name == "device.hardware_uuid")
+                    {
+                        match name {
+                            "device.serial_number" => {
+                                hardware.serial.insert(value);
+                            }
+                            "device.hardware_uuid" => {
+                                hardware.uuid.insert(value);
+                            }
+                            _ => {
+                                hardware.manufacturer.insert(value);
+                            }
+                        }
+                        hardware.sources.push(e.clone());
+                    }
+                }
+            }
+            result.push(EndpointIdentity { member, hardware });
+        }
+    }
+    Ok(result)
+}
+pub(crate) fn endpoint_world(endpoints: Vec<EndpointIdentity>) -> World {
+    let mut world = World::default();
+    for endpoint in endpoints {
+        world.insert(endpoint);
+    }
+    world
 }
 
 #[cfg(test)]
