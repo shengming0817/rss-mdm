@@ -457,7 +457,7 @@ add('catalog.contract', build=None, python='catalog',
     sources=('crates/*-service/src/*/catalog.sql', 'crates/*-service/src/*/catalog.json',
              'crates/software-service/src/*/catalog.sql', 'crates/software-service/src/*/catalog.json'),
     support=('hack/command_catalog.py', 'hack/t2_modules/catalog.py'))
-add('gateway.admission', build=None, python='gateway', profile='none', fixtures=('gateway',),
+add('gateway.admission', build=None, python='gateway', fixtures=('gateway','identity'),
     sources=('deployment/nginx.conf',), support=('hack/t2_modules/gateway.py',))
 
 

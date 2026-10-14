@@ -27,7 +27,7 @@ def main(argv=None):
     if module.python == 'gateway':
         context = SimpleNamespace(gateway_owner=Environment(group='t2-gateway'))
         context.gateway = lambda config: RunFixtures.gateway(context, config)
-        scenario.main(context)
+        scenario.main(context, fixture)
     else:
         scenario.execute(fixture)
     print('PASS python/' + module_id, flush=True)
