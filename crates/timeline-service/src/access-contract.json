@@ -6,8 +6,7 @@
       "read_write": true,
       "updates": [
         "position",
-        "source_through",
-        "healthy"
+        "source_through"
       ],
       "delete_policy": null
     },

@@ -46,6 +46,19 @@ impl AuditBudget {
         budget.operation = Deadline::at(now + remaining.mul_f64(0.75));
         budget
     }
+    /// Borrow earlier absolute stage cutoffs; neither cutoff can extend this budget.
+    pub fn control_until(
+        &self,
+        total: Deadline,
+        operation: Deadline,
+    ) -> rss_audit_postgres::Control<'_, RuntimeTimer> {
+        rss_audit_postgres::Control::new(
+            &self.timer,
+            total.shortened_to(self.deadline.instant()),
+            operation.shortened_to(self.operation.instant()),
+            &self.cancel,
+        )
+    }
     /// Reborrowing does not start a new timeout or change the cancellation source.
     pub fn control(&self) -> rss_audit_postgres::Control<'_, RuntimeTimer> {
         rss_audit_postgres::Control::new(&self.timer, self.deadline, self.operation, &self.cancel)

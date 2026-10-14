@@ -93,7 +93,6 @@ pub async fn serve(
                         publications,
                         identity_audit,
                         archive,
-                        timeline,
                         associations,
                         notifications,
                     ) = tokio::time::timeout(compiled.config.flow.startup_budget(), async {
@@ -371,7 +370,6 @@ pub async fn serve(
                             planning.publications.clone(),
                             identity_audit,
                             archive,
-                            timeline,
                             associations,
                             notifications,
                         ))
@@ -414,7 +412,6 @@ pub async fn serve(
                     }
                     launch.stage_deferred_task_with_token(publications.registration().critical());
                     launch.stage_deferred_task_with_token(identity_audit.registration().critical());
-                    launch.stage_deferred_task_with_token(timeline.registration().critical());
                     launch.stage_deferred_task_with_token(associations.registration());
                     launch.stage_deferred_task_with_token(archive.registration().critical());
                     launch.stage_deferred_task_with_token(

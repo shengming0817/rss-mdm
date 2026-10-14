@@ -4333,7 +4333,6 @@ dependencies = [
  "rss-mdm-inventory-service",
  "rss-mdm-registration-service",
  "rss-request-context",
- "rss-runtime",
  "serde",
  "serde_json",
  "sha2 0.10.9",
