@@ -507,17 +507,16 @@ async fn template_flow(
         return Ok(());
     }
     if revoke_after_first.is_some() || completion == Completion::Expired {
-        let after_first = revoke_after_first.unwrap_or(false);
         let run:Uuid=sqlx::query_scalar("SELECT r.id FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2").bind(case_tenant()).bind(policy).fetch_one(&mut pg).await?;
-        revoked_template_result(
-            &peer,
-            &mut pg,
-            packet,
-            run,
-            after_first,
-            completion == Completion::Expired,
-        )
-        .await?;
+        if completion == Completion::Expired {
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+                .bind(case_tenant())
+                .execute(&mut pg)
+                .await?;
+            sqlx::query("UPDATE mdm_access.collection_runs SET deadline=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(case_tenant()).bind(run).execute(&mut pg).await?;
+        }
+        denied_template_result(&peer, &mut pg, packet, run, revoke_after_first).await?;
         crate::test_support::stop_worker(owner.take()).await?;
         host.close().await?;
         return Ok(());
@@ -671,13 +670,12 @@ async fn template_flow(
     host.close().await
 }
 
-async fn revoked_template_result(
+async fn denied_template_result(
     peer: &crate::windows::test_support::Peer,
     pg: &mut sqlx::PgConnection,
     mut packet: s::Message,
     run: Uuid,
-    after_first: bool,
-    expired: bool,
+    after_first: Option<bool>,
 ) -> anyhow::Result<()> {
     for command in &mut packet.commands {
         if let s::Command::Results(result) = command {
@@ -697,15 +695,12 @@ async fn revoked_template_result(
             vec![],
         )
     };
-    if expired {
-        sqlx::query("UPDATE mdm_access.collection_runs SET deadline=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND id=$2")
-            .bind(case_tenant()).bind(run).execute(&mut *pg).await?;
-    } else if !after_first {
+    if after_first == Some(false) {
         revoke().await?;
     }
     let mut response = native::post(&peer.mutual, &peer.url, &packet).await?;
     ensure!(response.status() == StatusCode::OK);
-    if after_first {
+    if after_first == Some(true) {
         let ack = s::decode(&response.bytes().await?, &CodecLimits::default())?;
         ensure!(
             ack.commands
