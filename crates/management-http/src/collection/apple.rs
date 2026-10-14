@@ -23,7 +23,7 @@ pub async fn create(
         &app.service,
         &auth.proof,
         device,
-        input.map_err(|_| Error::Malformed)?.0,
+        input.map_err(Error::from)?.0,
         &audit,
     )
     .await?;

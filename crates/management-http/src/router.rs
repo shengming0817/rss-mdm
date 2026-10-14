@@ -169,10 +169,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
             crate::authorization::http::protect,
         ));
     crate::boundary::wrap(
-        Router::new()
-            .merge(host_context)
-            .nest("/api/v1", protected)
-            .layer(axum::extract::DefaultBodyLimit::max(16384)),
+        Router::new().merge(host_context).nest("/api/v1", protected),
         envelope,
     )
 }
@@ -284,7 +281,7 @@ async fn action(
     }
     audit.set_action("device_action");
     let _grant = auth.proof.dangerous(&id)?;
-    if input.map_err(|_| Error::Malformed)?.0.action != "wipe" {
+    if input.map_err(Error::from)?.0.action != "wipe" {
         return Err(Error::Malformed);
     }
     Err(Error::Unsupported)

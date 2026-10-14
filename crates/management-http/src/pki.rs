@@ -20,7 +20,6 @@ pub(crate) fn routes() -> Router<Arc<HttpState>> {
         .route("/pki/signing/recover", post(recover))
         .route("/pki/crls", post(publish))
         .route("/pki/{purpose}/rotations", post(transition))
-        .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024))
 }
 fn purpose(value: &str) -> Result<Purpose, Error> {
     match value {
@@ -60,7 +59,7 @@ async fn prepare(
     Extension(audit): Extension<RequestAudit>,
     body: Result<Json<Rotation>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<Receipt>, Error> {
-    let input = body.map_err(|_| Error::Malformed)?.0;
+    let input = body.map_err(Error::from)?.0;
     let now = s
         .clock
         .unix_seconds()
@@ -78,7 +77,7 @@ async fn transition(
     Path(value): Path<String>,
     body: Result<Json<Transition>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<Receipt>, Error> {
-    let input = body.map_err(|_| Error::Malformed)?.0;
+    let input = body.map_err(Error::from)?.0;
     let now = s
         .clock
         .unix_seconds()
@@ -99,7 +98,7 @@ async fn recover(
         axum::extract::rejection::JsonRejection,
     >,
 ) -> Result<Json<rss_mdm_pki_service::recovery::Receipt>, Error> {
-    let input = body.map_err(|_| Error::Malformed)?.0;
+    let input = body.map_err(Error::from)?.0;
     let now = s
         .clock
         .unix_seconds()
@@ -120,7 +119,7 @@ async fn publish(
         axum::extract::rejection::JsonRejection,
     >,
 ) -> Result<axum::http::StatusCode, Error> {
-    let input = body.map_err(|_| Error::Malformed)?.0;
+    let input = body.map_err(Error::from)?.0;
     let now = s
         .clock
         .unix_seconds()

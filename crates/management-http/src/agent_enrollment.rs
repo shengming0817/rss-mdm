@@ -21,7 +21,7 @@ fn service(app: &App) -> Result<&Service, HttpFailure> {
 }
 fn body<T>(v: Body<T>) -> Result<T, HttpFailure> {
     v.map(|v| v.0)
-        .map_err(|_| rss_mdm_registration_service::Error::Malformed.into())
+        .map_err(|error| HttpFailure::Request(Error::from(error)))
 }
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -121,21 +121,28 @@ async fn recover_issuance(
             .await?,
     ))
 }
-struct HttpFailure(Failure);
+enum HttpFailure {
+    Agent(Failure),
+    Request(Error),
+}
 impl From<Failure> for HttpFailure {
     fn from(e: Failure) -> Self {
-        Self(e)
+        Self::Agent(e)
     }
 }
 impl From<rss_mdm_registration_service::Error> for HttpFailure {
     fn from(e: rss_mdm_registration_service::Error) -> Self {
-        Self(e.into())
+        Self::Agent(e.into())
     }
 }
 impl IntoResponse for HttpFailure {
     fn into_response(self) -> Response {
+        let failure = match self {
+            Self::Request(error) => return error.into_response(),
+            Self::Agent(failure) => failure,
+        };
         use wire::ErrorCode as C;
-        let status = match self.0.code {
+        let status = match failure.code {
             C::MalformedRequest => StatusCode::BAD_REQUEST,
             C::InvalidIdentity
             | C::CertificateExpired
@@ -149,12 +156,12 @@ impl IntoResponse for HttpFailure {
         let mut response = (
             status,
             Json(wire::ErrorBody {
-                code: self.0.code,
-                issuance_id: self.0.issuance_id,
+                code: failure.code,
+                issuance_id: failure.issuance_id,
             }),
         )
             .into_response();
-        if let Some(e) = self.0.source {
+        if let Some(e) = failure.source {
             response.extensions_mut().insert(Error::from(e));
         }
         response

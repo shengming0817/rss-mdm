@@ -11,7 +11,7 @@ use rss_mdm_audit_integration::{
     RequestAudit,
     completion::{Replacement, ResponseFailure},
 };
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 #[derive(Clone)]
 pub struct Envelope {
     pub admission: Arc<tokio::sync::Semaphore>,
@@ -164,31 +164,17 @@ async fn body(request: Request, next: Next, requests: Arc<tokio::sync::Semaphore
         .get::<axum::extract::MatchedPath>()
         .map(|p| p.as_str())
         .unwrap_or("");
-    if (route == "/api/v1/resources/{id}/content" && request.method() == axum::http::Method::POST)
-        || (route == "/api/v1/resources/{id}/uploads/{upload}"
-            && request.method() == axum::http::Method::PATCH)
-    {
+    let crate::body_policy::BodyPolicy::Buffered(limit) =
+        crate::body_policy::for_route(route, request.method())
+    else {
         return next.run(request).await;
-    }
-    let limit = if route == "/api/v1/devices/{device}/operations"
-        && request.method() == axum::http::Method::POST
-    {
-        16 * 1024 * 1024
-    } else if route == "/api/v1/resources/{id}" {
-        8 * 1024 * 1024
-    } else {
-        2 * 1024 * 1024
     };
-    let (parts, body) = request.into_parts();
-    match tokio::time::timeout(Duration::from_secs(8), axum::body::to_bytes(body, limit)).await {
-        Ok(Ok(bytes)) => {
-            next.run(Request::from_parts(parts, axum::body::Body::from(bytes)))
-                .await
-        }
-        Ok(Err(_)) => StatusCode::PAYLOAD_TOO_LARGE.into_response(),
-        Err(_) => project(Error::Unavailable(Failure::RequestDeadline)),
+    match crate::body_policy::buffer(request, limit).await {
+        Ok(request) => next.run(request).await,
+        Err(error) => project(error),
     }
 }
+
 fn project(error: Error) -> Response {
     error.into_response()
 }

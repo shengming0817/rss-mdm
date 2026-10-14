@@ -2,7 +2,7 @@ use super::*;
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json, Router,
-    extract::{DefaultBodyLimit, Path, Query, State},
+    extract::{Path, Query, State},
     routing::{get, put},
 };
 use serde::Deserialize;
@@ -16,7 +16,6 @@ pub fn routes() -> Router<Arc<HttpState>> {
         .route("/authorization/user-groups/{id}", put(group_write))
         .route("/authorization/user-groups/{id}/members", get(members))
         .route("/authorization/departments", get(departments))
-        .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
 }
 /// The same rule protocol is used within the installation management tenant.
 pub fn rule_routes() -> Router<Arc<HttpState>> {
@@ -24,7 +23,6 @@ pub fn rule_routes() -> Router<Arc<HttpState>> {
         .route("/authorization", get(effective))
         .route("/authorization/rules", get(rules))
         .route("/authorization/rules/{id}", put(rule_write))
-        .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -82,8 +80,9 @@ async fn rule_write(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
-    Json(change): Json<Change<Rule>>,
+    body: Result<Json<Change<Rule>>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<Receipt>, Error> {
+    let Json(change) = body.map_err(Error::from)?;
     audit.operation(change.operation_id, "authorization_write");
     audit.target(&id.to_string());
     crate::authorization::store::change_rule(&app.audit_store, &auth.proof, id, change, &audit)
@@ -96,8 +95,9 @@ async fn group_write(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
-    Json(change): Json<Change<UserGroup>>,
+    body: Result<Json<Change<UserGroup>>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<Receipt>, Error> {
+    let Json(change) = body.map_err(Error::from)?;
     audit.operation(change.operation_id, "authorization_write");
     audit.target(&id.to_string());
     crate::authorization::store::change_group(&app.audit_store, &auth.proof, id, change, &audit)
