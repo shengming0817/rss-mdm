@@ -2,7 +2,7 @@
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json, Router,
-    extract::{DefaultBodyLimit, Path, Query, State},
+    extract::{Path, Query, State},
     http::HeaderMap,
     routing::{get, post, put},
 };
@@ -28,10 +28,7 @@ pub fn routes() -> Router<Arc<archive::Archive>> {
             "/certificate-archive/entries/{entry}/metadata",
             put(metadata),
         )
-        .route(
-            "/certificate-archive/import",
-            post(import).layer(DefaultBodyLimit::max(2 * 1024 * 1024)),
-        )
+        .route("/certificate-archive/import", post(import))
         .route("/certificate-archive/generate", post(generate))
         .route("/certificate-archive/export", post(export))
         .route(
@@ -44,7 +41,7 @@ pub fn routes() -> Router<Arc<archive::Archive>> {
         )
 }
 fn input<T>(value: Result<Json<T>, axum::extract::rejection::JsonRejection>) -> Result<T, Error> {
-    value.map(|v| v.0).map_err(|_| Error::Malformed)
+    value.map(|v| v.0).map_err(Error::from)
 }
 async fn state(
     State(s): State<Arc<archive::Archive>>,

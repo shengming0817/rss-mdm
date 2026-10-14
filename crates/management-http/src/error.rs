@@ -9,6 +9,8 @@ pub enum Error {
     Configuration(ConfigIssue),
     #[error("invalid request")]
     Malformed,
+    #[error("request body too large")]
+    RequestTooLarge,
     #[error(transparent)]
     Group(#[from] rss_mdm_inventory_service::groups::GroupMissing),
     #[error(transparent)]
@@ -55,5 +57,15 @@ impl Error {
                 | Self::Execution(_)
                 | Self::Publication(_)
         )
+    }
+}
+
+impl From<axum::extract::rejection::JsonRejection> for Error {
+    fn from(error: axum::extract::rejection::JsonRejection) -> Self {
+        if error.status() == axum::http::StatusCode::PAYLOAD_TOO_LARGE {
+            Self::RequestTooLarge
+        } else {
+            Self::Malformed
+        }
     }
 }

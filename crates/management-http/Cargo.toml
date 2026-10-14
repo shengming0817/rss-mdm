@@ -7,7 +7,6 @@ publish.workspace=true
 autotests=false
 [dependencies]
 rss-mdm-device-service.workspace = true
-rss-mdm-windows-channel.workspace=true
 rss-mdm-pki-service.workspace = true
 rss-mdm-policy.workspace=true
 schemars.workspace=true
@@ -36,6 +35,7 @@ rss-identity-http-axum.workspace = true
 rss-observation.workspace = true
 rss-request-context.workspace = true
 axum.workspace = true
+http-body-util.workspace = true
 uuid.workspace = true
 thiserror.workspace = true
 time = { workspace = true, features = ["formatting"] }

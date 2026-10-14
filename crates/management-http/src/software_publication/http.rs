@@ -40,8 +40,9 @@ async fn write(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((source, id)): Path<(String, String)>,
-    Json(request): Json<Operation<Change>>,
+    body: Result<Json<Operation<Change>>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<wire::Candidate>, Error> {
+    let Json(request) = body.map_err(Error::from)?;
     rss_mdm_software_service::management::publication::service::write(
         &app.publications,
         &app.access,

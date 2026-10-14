@@ -20,23 +20,7 @@ impl EntraPolicyAuthority for Gate {
             if d.tenant != self.tenant || d.version != self.revision {
                 return Err(rss_mdm_registration_service::Error::Forbidden);
             }
-            let settings = settings_in(c, &self.tenant, true).await.map_err(|error| {
-                use crate::Failure;
-                use rss_mdm_registration_service::Error as R;
-                match error {
-                    Error::Malformed | Error::CertificateRequest => R::Malformed,
-                    Error::Unauthorized => R::Unauthorized,
-                    Error::Forbidden => R::Forbidden,
-                    Error::Conflict => R::Conflict,
-                    Error::CommitUnknown => R::CommitUnknown,
-                    Error::RollbackFailed => R::RollbackFailed,
-                    Error::Unavailable(Failure::RequestDeadline) => R::Deadline,
-                    Error::Unavailable(Failure::Capacity) => R::Capacity,
-                    Error::Unavailable(_) => R::Storage,
-                    Error::NotFound | Error::Missing(_) => R::NotFound,
-                    Error::Configuration(_) | Error::Unsupported => R::Configuration,
-                }
-            })?;
+            let settings = settings_in(c, &self.tenant, true).await?;
             if settings.revision != self.revision {
                 return Err(rss_mdm_registration_service::Error::Forbidden);
             }

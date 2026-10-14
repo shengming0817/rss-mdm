@@ -126,10 +126,13 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         )
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&old)?))?;
+    let rejected = f.router.clone().oneshot(malformed).await?;
     ensure!(
-        f.router.clone().oneshot(malformed).await?.status() == StatusCode::UNPROCESSABLE_ENTITY,
+        rejected.status() == StatusCode::BAD_REQUEST,
         "independent manifest input accepted"
     );
+    let body = axum::body::to_bytes(rejected.into_body(), 1024).await?;
+    ensure!(serde_json::from_slice::<Value>(&body)?["code"] == "malformed_request");
     let csrf = f.author.csrf.take();
     ensure!(
         f.author

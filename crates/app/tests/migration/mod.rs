@@ -23,6 +23,10 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
             .await?;
     ensure!(before.len() == units().len() && before.iter().all(|r| r.2));
     migrate_on(&mut owner, &installation).await?;
+    owner.execute("UPDATE public.mdm_migrations SET name='windows-channel-schema-v1' WHERE name='windows-channel-schema-v2'").await?;
+    ensure!(migrate_on(&mut owner, &installation).await.is_err());
+    owner.execute("UPDATE public.mdm_migrations SET name='windows-channel-schema-v2' WHERE name='windows-channel-schema-v1'").await?;
+    migrate_on(&mut owner, &installation).await?;
     for field in ["instance_id", "target", "lineage", "audit_mode"] {
         let mut changed = serde_json::to_value(&installation)?;
         changed[field] = match field {

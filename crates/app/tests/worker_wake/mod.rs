@@ -82,7 +82,7 @@ async fn stage(connection: &mut PgConnection, tenant: &str) -> Result<()> {
 #[ignore = "MODULE=worker.wake: PostgreSQL commit, LISTEN race, reconnect and two instances"]
 async fn committed_hints_reconnect_and_restart_preserve_durable_work() -> Result<()> {
     use crate::device::test_support::options;
-    let tenant = crate::test_support::case_tenant().to_owned();
+    let tenant = crate::test_support::case::tenant().to_owned();
     let mut writer = PgConnection::connect_with(&options("mdm_access")?).await?;
     let mut observer = PgConnection::connect_with(&options("mdm_access")?).await?;
     // Work committed before registration is discovered by the post-LISTEN initial scan.

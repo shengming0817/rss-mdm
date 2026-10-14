@@ -1,13 +1,9 @@
 //! Product-owned Entra scope, consent and registration authority. Identity owns personnel.
 use crate::{Error, HttpState, database::db};
-use rss_mdm_audit_integration::{AuditStore, Fact, RequestAudit};
-use rss_mdm_authorization_service::{
-    Permission,
-    context::AuthorizedPrincipal,
-    entra::{
-        self as identity, EntraAuthority, EntraTokenProfile, RevalidatedAccount,
-        VerifiedExternalSubject,
-    },
+use rss_mdm_audit_integration::{Fact, RequestAudit};
+use rss_mdm_authorization_service::entra::{
+    self as identity, EntraAuthority, EntraTokenProfile, RevalidatedAccount,
+    VerifiedExternalSubject,
 };
 use rss_mdm_registration_service::enrollment::{
     WindowsProfile,
@@ -94,12 +90,10 @@ fn hash(value: &str) -> String {
 
 mod admission;
 mod consent;
-mod policy;
 mod protocol;
 use admission::admit;
 use consent::consent;
 mod web;
-use policy::settings_in;
-pub use policy::{Management, Policy, Revision, Settings, Update};
 pub(crate) use protocol::enrollment;
+use rss_mdm_registration_service::windows_entra::{Settings, settings_in};
 pub use web::browser_routes;

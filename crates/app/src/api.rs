@@ -487,12 +487,14 @@ pub(crate) fn from_state(
                 .windows
                 .as_ref()
                 .and_then(|w| w.channel.entra.as_ref())
-                .map(|entra| {
-                    Arc::new(rss_mdm_windows_channel::entra::Management::new(
-                        state.access.windows_store(),
-                        state.audit_store.clone(),
-                        entra.clone(),
-                    ))
+                .map(|_| {
+                    Arc::new(
+                        rss_mdm_registration_service::windows_entra::Management::new(
+                            state.access.registration(),
+                            state.audit_store.clone(),
+                            state.identity.tenant,
+                        ),
+                    )
                 }),
             agent_enrollment: state.agent_enrollment.clone(),
             pki: state.pki.clone(),

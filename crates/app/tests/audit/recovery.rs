@@ -72,11 +72,11 @@ pub(super) async fn crash_write<T: rss_request_context::ExecutionTimer>(
 
 async fn process_interruption(pool: &PgPool, ledger: bool) -> Result<()> {
     use tokio::io::AsyncBufReadExt;
-    // The device write also reaches the product tenant FK; each mode needs an admitted tenant.
+    // Business rows require an installer-admitted product tenant, unlike neutral audit-only facts.
     let tenant = TenantId::parse(if ledger {
         crate::test_support::case::peer()
     } else {
-        crate::test_support::case_tenant()
+        crate::test_support::case::tenant()
     })?;
     let mut child = tokio::process::Command::new(std::env::current_exe()?)
         .args([

@@ -29,7 +29,6 @@ pub fn routes() -> Router<Arc<HttpState>> {
             "/software/resources/{id}/versions/{version}",
             get(read_version).post(write_version),
         )
-        .layer(axum::extract::DefaultBodyLimit::max(1_048_576))
 }
 
 async fn read_source(
@@ -54,8 +53,9 @@ async fn write_source(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((id, revision)): Path<(String, String)>,
-    Json(op): Json<Operation<SourceChange>>,
+    body: Result<Json<Operation<SourceChange>>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<Value>, Error> {
+    let Json(op) = body.map_err(Error::from)?;
     rss_mdm_software_service::management::catalog::write_source(
         &app,
         &auth.proof,
@@ -90,8 +90,9 @@ async fn write_version(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((id, version)): Path<(String, String)>,
-    Json(op): Json<Operation<VersionChange>>,
+    body: Result<Json<Operation<VersionChange>>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<Value>, Error> {
+    let Json(op) = body.map_err(Error::from)?;
     rss_mdm_software_service::management::catalog::write_version(
         &app,
         &auth.proof,
@@ -135,7 +136,7 @@ async fn import(
         axum::extract::rejection::JsonRejection,
     >,
 ) -> Result<Json<Value>, Error> {
-    let Json(op) = body.map_err(|_| Error::Malformed)?;
+    let Json(op) = body.map_err(Error::from)?;
     rss_mdm_software_service::management::catalog::import(&app, &auth.proof, &audit, op)
         .await
         .map(Json)
@@ -146,8 +147,12 @@ async fn publish_agent(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
-    Json(input): Json<rss_mdm_software_service::agent_packages::Publish>,
+    body: Result<
+        Json<rss_mdm_software_service::agent_packages::Publish>,
+        axum::extract::rejection::JsonRejection,
+    >,
 ) -> Result<Json<rss_mdm_agent_wire::enroll::configuration::Package>, Error> {
+    let Json(input) = body.map_err(Error::from)?;
     rss_mdm_software_service::agent_packages::publish(&app, &auth.proof, &input, &a)
         .await
         .map(Json)
@@ -163,8 +168,9 @@ async fn withdraw_agent(
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
     Path(id): Path<uuid::Uuid>,
-    Json(input): Json<AgentOperation>,
+    body: Result<Json<AgentOperation>, axum::extract::rejection::JsonRejection>,
 ) -> Result<axum::http::StatusCode, Error> {
+    let Json(input) = body.map_err(Error::from)?;
     rss_mdm_software_service::agent_packages::withdraw(
         &app,
         &auth.proof,

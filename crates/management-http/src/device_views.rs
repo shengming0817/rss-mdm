@@ -102,7 +102,7 @@ async fn confirm(
 ) -> Result<Json<rss_mdm_device_service::Association>, Error> {
     audit.set_action("device_association_confirm");
     Ok(Json(
-        s.confirm(&a.proof, &body.map_err(|_| Error::Malformed)?.0, &audit)
+        s.confirm(&a.proof, &body.map_err(Error::from)?.0, &audit)
             .await?,
     ))
 }
@@ -115,7 +115,7 @@ async fn revoke(
 ) -> Result<Json<rss_mdm_device_service::Association>, Error> {
     audit.set_action("device_association_revoke");
     Ok(Json(
-        s.revoke(&a.proof, id, &body.map_err(|_| Error::Malformed)?.0, &audit)
+        s.revoke(&a.proof, id, &body.map_err(Error::from)?.0, &audit)
             .await?,
     ))
 }
