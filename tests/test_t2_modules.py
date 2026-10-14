@@ -9,6 +9,16 @@ from ci_impact import select_inputs, SelectionError
 
 
 class ModuleImpactTests(unittest.TestCase):
+    def test_management_limits_and_moved_entra_owners_select_real_consumers(self):
+        for path, expected in {
+            'crates/management-http/src/body_policy.rs': {'windows.entra', 'agent.pki', 'planning.agent_policy', 'content.http'},
+            'crates/registration-service/src/windows_entra.rs': {'windows.entra'},
+            'crates/registration-service/src/windows_receipts.rs': {'windows.entra', 'windows.issuance', 'windows.declared'},
+            'crates/registration-service/schema/windows-receipts.sql': {'windows.entra', 'windows.issuance', 'windows.declared'},
+        }.items():
+            with self.subTest(path=path):
+                self.assertTrue(expected <= set(select_inputs([path]).modules))
+
     def test_selected_channel_inputs_reach_native_and_self_service_consumers(self):
         for path in ('crates/inventory-service/src/objects.rs','crates/device-service/src/planning.rs','crates/device-service/src/planning/snapshots.rs','crates/flow-service/src/planning/targets.rs','crates/flow-service/src/planning/automation/relations.rs'):
             with self.subTest(path=path):

@@ -628,3 +628,70 @@ async fn registered_script_eligibility_gates_preview_and_automatic() -> Result<(
     crate::test_support::stop_worker(stack).await?;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=planning.agent_policy"]
+async fn management_accepts_large_legal_policy_parameters() -> Result<()> {
+    use sha2::{Digest, Sha256};
+    let mut fixture = Fixture::new().await?;
+    fixture.register().await?;
+    fixture
+        .scope(
+            case_task_scope(),
+            json!([{"kind":"device","id":case_device_id()}]),
+        )
+        .await?;
+    let id = Uuid::new_v4();
+    let bytes = b"#!/bin/sh\nexit 0\n";
+    let digest: [u8; 32] = Sha256::digest(bytes).into();
+    resource(
+        &mut fixture.author,
+        &fixture.router,
+        id,
+        0,
+        json!({"action":"create","kind":"script"}),
+    )
+    .await?;
+    let definition = json!({"profile":"posix_sh","runAs":"system","encoding":"utf8", "parameters":{"type":"object","properties":{"text":{"type":"string","maxLength":65536}},"required":["text"],"additionalProperties":false},"bindings":{"text":{"kind":"environment","name":"RSS_POLICY_TEXT"}},"output":{"type":"object","properties":{},"additionalProperties":false},"purpose":{"kind":"action"},"timeoutSeconds":60,"outputBytes":4096,"maxRows":1});
+    resource(&mut fixture.author, &fixture.router, id, 1, json!({"action":"version","version":"v1","kind":"script","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"script","artifact":{"reference":"large-policy-script","length":bytes.len(),"sha256":digest},"definition":definition}}]})).await?;
+    ensure!(upload(&fixture.author, &fixture.router, id, bytes).await? == StatusCode::CREATED);
+    resource(
+        &mut fixture.author,
+        &fixture.router,
+        id,
+        2,
+        json!({"action":"activate","version":"v1"}),
+    )
+    .await?;
+    let mut definition = policy_definition(id, case_task_scope());
+    definition["action"]["parameters"] = json!({"text":"x".repeat(20 * 1024)});
+    let parsed: rss_mdm_policy::Definition = serde_json::from_value(definition.clone())?;
+    parsed.validate()?;
+    let policy = Uuid::new_v4();
+    let path = format!("/api/v1/policies/{policy}");
+    let body = json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":definition}});
+    ensure!(serde_json::to_vec(&body)?.len() > 16384);
+    let receipt = post(&mut fixture.author, &fixture.router, &path, body.clone()).await?;
+    ensure!(receipt["revision"] == 1);
+    ensure!(post(&mut fixture.author, &fixture.router, &path, body).await? == receipt);
+    let (status, read) = fixture
+        .author
+        .call(&fixture.router, Method::GET, &path, None)
+        .await?;
+    ensure!(
+        status == StatusCode::OK
+            && read["definition"]["action"]["parameters"]["text"] == "x".repeat(20 * 1024),
+        "policy read omitted authored parameters: {read}"
+    );
+    let (status, rejected) = fixture
+        .author
+        .call(
+            &fixture.router,
+            Method::POST,
+            &path,
+            Some(json!("wrong DTO")),
+        )
+        .await?;
+    ensure!(status == StatusCode::BAD_REQUEST && rejected["code"] == "malformed_request");
+    Ok(())
+}
