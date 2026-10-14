@@ -68,9 +68,9 @@ impl Fixture {
         .with_details(
             json!({"after":{"execution":"unknown"},"privateKey":"private-fixture-secret"}),
         )?;
-        let event = fact.event(rss_contract::Timepoint::try_from(observed as i64)?)?;
+        let event = fact.event(rss_contract::Timepoint::try_from(observed)?)?;
         let prepared =
-            rss_audit_core::prepare(event, rss_contract::Timepoint::try_from(recorded as i64)?)?;
+            rss_audit_core::prepare(event, rss_contract::Timepoint::try_from(recorded)?)?;
         let budget = AuditBudget::new(Duration::from_secs(3));
         let control = budget.control();
         let attempt = self

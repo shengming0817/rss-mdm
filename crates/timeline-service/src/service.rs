@@ -98,11 +98,10 @@ impl Timeline {
         if let Some((checkpoint, batch, through)) = self
             .prepare_batch(proof, family, query, token.as_ref(), &control)
             .await?
+            && (!batch.is_empty() || checkpoint.1 != through)
         {
-            if !batch.is_empty() || checkpoint.1 != through {
-                self.write_batch(checkpoint, &batch, through, total, operation)
-                    .await?;
-            }
+            self.write_batch(checkpoint, &batch, through, total, operation)
+                .await?;
         }
         let control = budget.control();
         self.audit
@@ -204,9 +203,9 @@ impl Timeline {
             |v| Ok(Some(v.into_value())),
             limited_transaction,
             limited_transaction,
-            |e| transaction_error(e),
-            |e| transaction_error(e),
-            |e| transaction_error(e),
+            transaction_error,
+            transaction_error,
+            transaction_error,
         )
     }
     async fn write_batch(
@@ -311,8 +310,8 @@ impl Timeline {
         generation: Uuid,
         indexed: i64,
     ) -> Result<(), Error> {
-        if let Some(token) = token {
-            if token.tenant != self.tenant.to_string()
+        if let Some(token) = token
+            && (token.tenant != self.tenant.to_string()
                 || token.instance != proof.instance_id()
                 || token.family != family
                 || token.query != query.binding()
@@ -321,10 +320,9 @@ impl Timeline {
                 || token.through < 0
                 || token.after_position < 0
                 || token.after_position > token.through
-                || token.after_at < 0
-            {
-                return Err(Error::Conflict);
-            }
+                || token.after_at < 0)
+        {
+            return Err(Error::Conflict);
         }
         Ok(())
     }
