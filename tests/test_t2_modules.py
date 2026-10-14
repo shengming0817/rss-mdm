@@ -13,6 +13,7 @@ class ModuleImpactTests(unittest.TestCase):
         for path, expected in {
             'crates/management-http/src/body_policy.rs': {'windows.entra', 'agent.pki', 'planning.agent_policy', 'content.http'},
             'crates/registration-service/src/windows_entra.rs': {'windows.entra'},
+            'crates/inventory-service/src/apple_collection_receipts.rs': {'apple.collection'},
             'crates/registration-service/src/windows_receipts.rs': {'windows.entra', 'windows.issuance', 'windows.declared'},
             'crates/registration-service/schema/windows-receipts.sql': {'windows.entra', 'windows.issuance', 'windows.declared'},
         }.items():

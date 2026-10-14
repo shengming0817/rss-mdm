@@ -1699,3 +1699,10 @@ consume(('crates/management-http/src/body_policy.rs',
 MODULES['windows.entra'] = replace(MODULES['windows.entra'], policies=(*MODULES['windows.entra'].policies, CasePolicy('windows::t2::entra::management_policy_body_replay_and_audit_faults', 'fresh', 'objects')))
 
 MODULES['agent.pki'] = replace(MODULES['agent.pki'], policies=(*MODULES['agent.pki'].policies, CasePolicy('agent_pki_tests::management_crl_publication_accepts_large_signed_material_and_rejects_overflow', 'reuse', 'tenant', ('identity','windows','agent_pki'))))
+
+# Git may select this unchanged receipt owner as a copy source; both endpoints need consumers.
+consume(('crates/inventory-service/src/apple_collection*.rs',), 'apple.collection')
+
+consume(('crates/management-http/src/collection/apple.rs',), 'apple.collection')
+consume(('crates/management-http/src/software_publication/http.rs',),
+        'publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery')
