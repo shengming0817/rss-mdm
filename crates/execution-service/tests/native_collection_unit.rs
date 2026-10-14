@@ -3,6 +3,7 @@ use rss_mdm_resource::{NativeAdapter, blueprints};
 #[test]
 fn every_windows_blueprint_compiles_and_maps_only_published_fields() {
     let fields = builtin::fields();
+    rss_mdm_inventory::Catalog::new(fields.clone()).unwrap();
     for blueprint in blueprints::catalog()
         .into_iter()
         .filter(|b| b.definition.spec().adapter == NativeAdapter::WindowsRead)
@@ -34,6 +35,7 @@ fn every_windows_blueprint_compiles_and_maps_only_published_fields() {
 fn security_codes_and_capacity_have_exact_native_meanings() {
     use rss_mdm_inventory::{CollectedValue, NativeValue, Scalar};
     let fields = builtin::fields();
+    rss_mdm_inventory::Catalog::new(fields.clone()).unwrap();
     let read = |pack: &str, key: &str, raw: &str| {
         let b = blueprints::get(pack, "2").unwrap();
         let field = fields.iter().find(|f| f.key.as_str() == key).unwrap();
@@ -99,6 +101,7 @@ fn every_standard_pack_replays_raw_syncml_and_matches_normalized_fixture() {
     let root =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/windows-collection");
     let fields = builtin::fields();
+    rss_mdm_inventory::Catalog::new(fields.clone()).unwrap();
     for b in blueprints::catalog()
         .into_iter()
         .filter(|b| b.definition.spec().adapter == NativeAdapter::WindowsRead)
@@ -177,4 +180,71 @@ fn every_standard_pack_replays_raw_syncml_and_matches_normalized_fixture() {
                 .unwrap();
         assert_eq!(serde_json::Value::Object(normalized), expected, "{}", b.id);
     }
+}
+
+#[test]
+fn authorization_targets_do_not_inherit_single_message_budget() {
+    use crate::action_contract::{ExecutionInput, FrozenNativeCollection};
+    use rss_mdm_policy::{
+        Architecture, Platform,
+        schedule::{Misfire, Schedule, Trigger},
+    };
+    let blueprint = blueprints::get("windows.software.store", "2").unwrap();
+    let mapping = blueprint
+        .definition
+        .spec()
+        .mappings
+        .values()
+        .next()
+        .unwrap()
+        .clone();
+    let field = builtin::fields()
+        .into_iter()
+        .find(|f| f.key.as_str() == "device.software.windows.store")
+        .unwrap();
+    let mut spec = blueprint.definition.spec().clone();
+    spec.mappings.clear();
+    let mut fields = Vec::new();
+    for i in 0..22 {
+        let key = format!("custom.store_{i}");
+        spec.mappings.insert(key.clone(), mapping.clone());
+        let mut field = field.clone();
+        field.key = FieldKey::parse(&key).unwrap();
+        fields.push(field);
+    }
+    let definition = rss_mdm_resource::NativeCollectionDefinition::new(spec).unwrap();
+    let plan = crate::input_preparation::windows_collection_plan(&definition).unwrap();
+    assert!(plan.requests().unwrap().len() > rss_mdm_windows_mdm::CodecLimits::default().commands);
+    let frozen = FrozenNativeCollection {
+        input: ExecutionInput {
+            platform: Platform::Windows,
+            architecture: Architecture::X86_64,
+            schedule: Schedule {
+                trigger: Trigger::Manual,
+                misfire: Misfire::CoalesceOne,
+                not_before: 0,
+                until: None,
+                jitter_seconds: 0,
+                window: None,
+            },
+            run_lifetime_seconds: 300,
+        },
+        definition,
+        windows_plan: Some(plan),
+        grants: Default::default(),
+        resource_digest: [0; 32],
+        collection: rss_mdm_inventory::CollectionDefinition::new(
+            "inventory",
+            "many-fields",
+            rss_mdm_inventory::Source::MdmWindows,
+            fields,
+        )
+        .unwrap(),
+    };
+    assert!(
+        frozen
+            .permissions()
+            .unwrap()
+            .contains(&crate::authorization::Permission::InventoryCollect)
+    );
 }

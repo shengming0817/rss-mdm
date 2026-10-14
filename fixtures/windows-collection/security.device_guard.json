@@ -1,4 +1,4 @@
 {
-  "device.security.windows.vbs.runtime": "running",
-  "device.security.windows.credential_guard.runtime": "running"
+  "device.security.windows.vbs_runtime": "running",
+  "device.security.windows.credential_guard_runtime": "running"
 }

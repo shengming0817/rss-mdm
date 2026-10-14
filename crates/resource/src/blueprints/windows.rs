@@ -258,7 +258,7 @@ pub(super) fn catalog() -> Vec<Blueprint> {
             17134,
             vec![
                 scalar(
-                    "device.security.windows.vbs.runtime",
+                    "device.security.windows.vbs_runtime",
                     "./Vendor/MSFT/DeviceStatus/DeviceGuard/VirtualizationBasedSecurityStatus",
                     codes(&[
                         ("0", "running"),
@@ -271,7 +271,7 @@ pub(super) fn catalog() -> Vec<Blueprint> {
                     ]),
                 ),
                 scalar(
-                    "device.security.windows.credential_guard.runtime",
+                    "device.security.windows.credential_guard_runtime",
                     "./Vendor/MSFT/DeviceStatus/DeviceGuard/LsaCfgCredGuardStatus",
                     codes(&[
                         ("0", "running"),
@@ -288,7 +288,7 @@ pub(super) fn catalog() -> Vec<Blueprint> {
             "security",
             22000,
             vec![scalar(
-                "device.security.windows.hvci.runtime",
+                "device.security.windows.hvci_runtime",
                 "./Vendor/MSFT/DeviceStatus/DeviceGuard/HypervisorEnforcedCodeIntegrityStatus",
                 codes(&[
                     ("0", "running"),

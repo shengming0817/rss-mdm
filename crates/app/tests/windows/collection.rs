@@ -68,11 +68,28 @@ async fn dynamic_inventory_reenumerates_and_projects() -> anyhow::Result<()> {
 async fn dynamic_inventory_missing_child_is_partial() -> anyhow::Result<()> {
     template_flow(None, 9, Completion::MissingChild).await
 }
+#[tokio::test]
+#[ignore = "MODULE=windows.management: confirmed empty replaces only native inventory"]
+async fn dynamic_empty_preserves_agent_software() -> anyhow::Result<()> {
+    template_flow(None, 9, Completion::EmptyInventory).await
+}
+#[tokio::test]
+#[ignore = "MODULE=windows.management: Final budget boundary preserves confirmed partial fields"]
+async fn dynamic_final_budget_preserves_partial_inventory() -> anyhow::Result<()> {
+    template_flow(
+        None,
+        CodecLimits::default().session_messages as u32 - 1,
+        Completion::FinalInventoryBudget,
+    )
+    .await
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Completion {
     Snapshot,
     Inventory,
     MissingChild,
+    EmptyInventory,
+    FinalInventoryBudget,
     Historical,
     SessionAbort,
     MessageBudget,
@@ -182,7 +199,13 @@ async fn template_flow(
         timeout_seconds: 120,
         output_bytes: 16384,
     })?;
-    let template = if matches!(completion, Completion::Inventory | Completion::MissingChild) {
+    let template = if matches!(
+        completion,
+        Completion::Inventory
+            | Completion::MissingChild
+            | Completion::EmptyInventory
+            | Completion::FinalInventoryBudget
+    ) {
         let mut spec = template.spec().clone();
         let builtin = rss_mdm_resource::blueprints::get("windows.software.win32", "2").unwrap();
         spec.mappings
@@ -364,7 +387,13 @@ async fn template_flow(
             == 1,
         "template Get missing: {gets:?}"
     );
-    if matches!(completion, Completion::Inventory | Completion::MissingChild) {
+    if matches!(
+        completion,
+        Completion::Inventory
+            | Completion::MissingChild
+            | Completion::EmptyInventory
+            | Completion::FinalInventoryBudget
+    ) {
         dynamic_result(&host, &mut f, &peer, &mut pg, policy, wire, completion).await?;
         crate::test_support::stop_worker(owner.take()).await?;
         host.close().await?;
@@ -703,6 +732,44 @@ async fn dynamic_result(
     completion: Completion,
 ) -> anyhow::Result<()> {
     let run:Uuid=sqlx::query_scalar("SELECT r.id FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2").bind(case_tenant()).bind(policy).fetch_one(&mut *pg).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_tenant())
+        .execute(&mut *pg)
+        .await?;
+    let saved = crate::collection::store::load_on(pg, case_tenant(), run).await?;
+    let key = rss_mdm_inventory::FieldKey::parse("device.software.windows.win32")?;
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/windows-collection/software.win32.json"
+    ))?;
+    let old = saved
+        .attempts
+        .definition()
+        .field(key)?
+        .value_type
+        .decode_json(&fixture[key.as_str()])?;
+    seed_prior_list(pg, &saved.scope, saved.attempts.definition(), key, &old).await?;
+    let (agent, epoch) = crate::test_support::inventory::seed_source(
+        case_device(),
+        "agent",
+        "agent.builtin",
+        "Agent model",
+    )?;
+    let agent_scope = crate::device::scope(saved.scope.tenant(), agent, "agent.builtin", epoch)?;
+    let agent_key = rss_mdm_inventory::FieldKey::parse("device.software.installations")?;
+    let field = rss_mdm_inventory::builtin::fields()
+        .into_iter()
+        .find(|f| f.key == agent_key)
+        .unwrap();
+    let agent_value=field.value_type.decode_json(&json!([{"id":"agent-app","name":"Agent application","version":"9","publisher":"Vendor","scope":"device","native_id":"agent-app","owner":"","origin":"agent","location":""}]))?;
+    let definition = rss_mdm_inventory::CollectionDefinition::new(
+        "inventory",
+        "prior-software",
+        rss_mdm_inventory::Source::AgentBuiltin,
+        vec![field],
+    )?;
+    rss_mdm_inventory_postgres::register_collection_in(pg, saved.scope.tenant(), &definition)
+        .await?;
+    seed_prior_list(pg, &agent_scope, &definition, agent_key, &agent_value).await?;
     let mut enumerations = 0;
     for _ in 0..6 {
         let gets: Vec<_> = wire
@@ -737,7 +804,11 @@ async fn dynamic_result(
                         let uri = item.source.as_deref().unwrap();
                         let value = if uri.ends_with("/Win32InstalledProgram") {
                             enumerations += 1;
-                            "program"
+                            if completion == Completion::EmptyInventory {
+                                ""
+                            } else {
+                                "program"
+                            }
                         } else if uri.ends_with("/Name") {
                             "Example"
                         } else if uri.ends_with("/Publisher") {
@@ -772,7 +843,10 @@ async fn dynamic_result(
     }
     let result:(String,String)=sqlx::query_as("SELECT result,attempts FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2 AND sealed_at IS NOT NULL").bind(case_tenant()).bind(run).fetch_one(&mut *pg).await?;
     let attempts: serde_json::Value = serde_json::from_str(&result.1)?;
-    if completion == Completion::MissingChild {
+    if matches!(
+        completion,
+        Completion::MissingChild | Completion::FinalInventoryBudget
+    ) {
         ensure!(result.0 == "partial", "{result:?}");
         ensure!(
             attempts["fields"]["device.software.windows.win32"]["value"].is_null(),
@@ -783,12 +857,20 @@ async fn dynamic_result(
             result.0 == "snapshot" && enumerations == 2,
             "{result:?}, enumerations={enumerations}"
         );
-        let row = &attempts["fields"]["device.software.windows.win32"]["value"]["value"]["value"]
-            [0]["value"];
-        ensure!(
-            row["name"]["value"] == "Example" && row["version"]["value"] == "1.2",
-            "{attempts}"
-        );
+        if completion == Completion::Inventory {
+            let row = &attempts["fields"]["device.software.windows.win32"]["value"]["value"]["value"]
+                [0]["value"];
+            ensure!(
+                row["name"]["value"] == "Example" && row["version"]["value"] == "1.2",
+                "{attempts}"
+            );
+        } else {
+            ensure!(
+                attempts["fields"]["device.software.windows.win32"]["value"]["value"]["value"]
+                    == json!([]),
+                "{attempts}"
+            );
+        }
         tokio::time::timeout(Duration::from_secs(15),async {
             loop {
                 let pending:bool=sqlx::query_scalar("SELECT delivery_pending FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(run).fetch_one(&mut *pg).await?;
@@ -800,12 +882,49 @@ async fn dynamic_result(
         let page=tokio::time::timeout(Duration::from_secs(15),async {
             loop {
                 let page=f.browser.call(&f.router,Method::GET,&format!("/api/v1/devices/{}/inventory-lists/device.software.windows.win32?limit=100",case_device()),None).await?;
-                if page.0==StatusCode::OK && page.1["asset"]["total"]==1 {break Ok::<_,anyhow::Error>(page);}
+                if page.0==StatusCode::OK && page.1["asset"]["total"]==if completion==Completion::EmptyInventory {0} else {1} {break Ok::<_,anyhow::Error>(page);}
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }).await??;
-        ensure!(page.1.to_string().contains("Example"), "{page:?}");
-        let _ = host;
+        if completion == Completion::Inventory {
+            ensure!(page.1.to_string().contains("Example"), "{page:?}");
+        }
     }
+    let sealed = crate::collection::store::load_on(pg, case_tenant(), run).await?;
+    crate::inventory_runtime::test_support::wait_ready_projection(&host.runtime, &sealed).await?;
+    let value:serde_json::Value=sqlx::query_scalar("SELECT value::jsonb FROM mdm.inventory WHERE tenant_id=$1::uuid AND scope=$2 AND field=$3 ORDER BY collection_sequence DESC LIMIT 1").bind(case_tenant()).bind(saved.scope.encode()?).bind(key.as_str()).fetch_one(&mut *pg).await?;
+    if matches!(
+        completion,
+        Completion::MissingChild | Completion::FinalInventoryBudget
+    ) {
+        ensure!(value == serde_json::to_value(&old)?);
+    }
+    if completion == Completion::EmptyInventory {
+        ensure!(value == json!({"kind":"array","value":[]}));
+    }
+    let retained: serde_json::Value = sqlx::query_scalar(
+        "SELECT value::jsonb FROM mdm.inventory WHERE tenant_id=$1::uuid AND scope=$2 AND field=$3",
+    )
+    .bind(case_tenant())
+    .bind(agent_scope.encode()?)
+    .bind(agent_key.as_str())
+    .fetch_one(&mut *pg)
+    .await?;
+    ensure!(
+        retained == serde_json::to_value(&agent_value)?,
+        "native collection modified Agent software"
+    );
+    Ok(())
+}
+
+async fn seed_prior_list(
+    pg: &mut sqlx::PgConnection,
+    scope: &rss_observation::Scope,
+    definition: &rss_mdm_inventory::CollectionDefinition,
+    key: rss_mdm_inventory::FieldKey,
+    value: &rss_mdm_inventory::Scalar,
+) -> anyhow::Result<()> {
+    sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES($1::uuid,'mdm.observation.v1','inventory-v5',$2,$3,$4,$5,'prior-list',1,2,'known',$5,'prior-list',1,2,$6::uuid,$7,$8::uuid,0)")
+        .bind(scope.tenant().to_string()).bind(scope.encode()?).bind(serde_json::to_string(&definition.coverage()?)?).bind(key.as_str()).bind(serde_json::to_string(value)?).bind(scope.registration().as_str()).bind(scope.source().as_str()).bind(scope.epoch().as_str()).execute(pg).await?;
     Ok(())
 }

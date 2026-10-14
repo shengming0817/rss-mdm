@@ -12,7 +12,19 @@ fn list(columns: &[(&str, ValueType)]) -> ValueType {
         items: Box::new(ValueType::Object {
             properties: columns
                 .iter()
-                .map(|(k, v)| ((*k).into(), v.clone()))
+                .map(|(k, v)| {
+                    (
+                        (*k).into(),
+                        if *k == "id" {
+                            ValueType::String {
+                                max_length: 65536,
+                                allow_empty: false,
+                            }
+                        } else {
+                            v.clone()
+                        },
+                    )
+                })
                 .collect(),
         }),
     }
@@ -77,7 +89,7 @@ pub(super) fn fields() -> Vec<FieldDefinition> {
             vec!["outdated_or_absent", "current", "not_applicable"],
         ),
         (
-            "device.security.windows.vbs.runtime",
+            "device.security.windows.vbs_runtime",
             vec![
                 "running",
                 "reboot_required",
@@ -89,7 +101,7 @@ pub(super) fn fields() -> Vec<FieldDefinition> {
             ],
         ),
         (
-            "device.security.windows.credential_guard.runtime",
+            "device.security.windows.credential_guard_runtime",
             vec![
                 "running",
                 "reboot_required",
@@ -99,7 +111,7 @@ pub(super) fn fields() -> Vec<FieldDefinition> {
             ],
         ),
         (
-            "device.security.windows.hvci.runtime",
+            "device.security.windows.hvci_runtime",
             vec![
                 "running",
                 "reboot_required",

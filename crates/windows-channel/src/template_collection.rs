@@ -277,15 +277,19 @@ pub async fn receive(
         if !state.pending() && run.attempts.complete() && message.final_message {
             facts.extend(store::seal(c, &mut run, "complete").await?);
         } else if message.header.message_id as usize >= CodecLimits::default().session_messages {
-            facts.extend(
-                rss_mdm_inventory_service::collection::channel::abandon_in(
-                    c,
-                    &tenant,
-                    id,
-                    "message_budget",
-                )
-                .await?,
-            );
+            if message.final_message {
+                facts.extend(store::seal(c, &mut run, "message_budget").await?);
+            } else {
+                facts.extend(
+                    rss_mdm_inventory_service::collection::channel::abandon_in(
+                        c,
+                        &tenant,
+                        id,
+                        "message_budget",
+                    )
+                    .await?,
+                );
+            }
         } else {
             store::save_attempts_in(c, &run).await?;
         }
