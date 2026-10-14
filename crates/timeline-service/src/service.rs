@@ -254,8 +254,8 @@ impl Timeline {
             .map_err(|_| Error::Deadline)??;
         let result=tokio::time::timeout_at(operation.instant().into(),async{
             let milliseconds=operation.remaining(RuntimeTimer.now()).unwrap_or_default().as_millis().saturating_add(1).to_string();
-            sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true)").bind(self.tenant.to_string()).bind(milliseconds).execute(&mut *tx).await?;
-            let current:(i64,Uuid)=sqlx::query_as("SELECT position,generation FROM mdm_timeline.checkpoints WHERE tenant_id=$1::uuid FOR UPDATE").bind(self.tenant.to_string()).fetch_one(&mut *tx).await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true)").bind(self.tenant.to_string()).bind(milliseconds).execute(&mut *tx).await.map_err(|e|projection_error(e,operation))?;
+            let current:(i64,Uuid)=sqlx::query_as("SELECT position,generation FROM mdm_timeline.checkpoints WHERE tenant_id=$1::uuid FOR UPDATE").bind(self.tenant.to_string()).fetch_one(&mut *tx).await.map_err(|e|projection_error(e,operation))?;
             if current!=(checkpoint.0,checkpoint.2) {return Ok(false)}
             for row in batch {
                 let doc=serde_json::to_value(&row.view).map_err(|_|Error::Integrity)?;
@@ -263,10 +263,10 @@ impl Timeline {
                 sqlx::query("INSERT INTO mdm_timeline.facts(tenant_id,position,source,event_id,recorded_at,instance_id,operation_id,actor,action,outcome,devices,operations,document,digest) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)")
                     .bind(self.tenant.to_string()).bind(row.view.position as i64).bind(&row.view.source).bind(&row.view.event_id)
                     .bind(row.view.recorded_at).bind(row.view.instance_id).bind(row.view.operation_id).bind(&row.view.actor).bind(&row.view.action)
-                    .bind(&row.view.audit_outcome).bind(&row.devices).bind(&row.view.related_operation_ids).bind(doc).bind(Sha256::digest(&bytes).to_vec()).execute(&mut *tx).await?;
+                    .bind(&row.view.audit_outcome).bind(&row.devices).bind(&row.view.related_operation_ids).bind(doc).bind(Sha256::digest(&bytes).to_vec()).execute(&mut *tx).await.map_err(|e|projection_error(e,operation))?;
             }
             let next=batch.last().map_or(checkpoint.0,|v|v.view.position as i64);
-            sqlx::query("UPDATE mdm_timeline.checkpoints SET position=$2,source_through=$3 WHERE tenant_id=$1::uuid").bind(self.tenant.to_string()).bind(next).bind(through).execute(&mut *tx).await?;
+            sqlx::query("UPDATE mdm_timeline.checkpoints SET position=$2,source_through=$3 WHERE tenant_id=$1::uuid").bind(self.tenant.to_string()).bind(next).bind(through).execute(&mut *tx).await.map_err(|e|projection_error(e,operation))?;
             Ok::<_,Error>(true)
         }).await;
         match result {
@@ -285,8 +285,8 @@ impl Timeline {
                 }
                 rollback.map_err(|_| Error::Deadline)??;
                 match primary {
+                    Some(Error::Deadline) | None => Ok(()),
                     Some(error) => Err(error),
-                    None => Ok(()),
                 }
             }
         }
@@ -490,6 +490,17 @@ async fn correlate(
     Ok(devices.into_iter().collect())
 }
 
+fn projection_error(error: sqlx::Error, operation: Deadline) -> Error {
+    let timed_out = error
+        .as_database_error()
+        .and_then(|e| e.code())
+        .is_some_and(|code| code == "57014" || code == "55P03");
+    if timed_out && operation.is_expired(RuntimeTimer.now()) {
+        Error::Deadline
+    } else {
+        Error::from(error)
+    }
+}
 fn audit_error(error: rss_audit_postgres::Error) -> Error {
     if error.is_interrupted() {
         return Error::Deadline;

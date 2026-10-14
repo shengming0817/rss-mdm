@@ -1080,6 +1080,7 @@ T1_INPUTS = ('crates/content-s3/tests/unit.rs',) + ('crates/app/tests/agent_pki/
     'crates/app/tests/assets/query_sort_unit.rs',
     'crates/app/tests/assets/unit.rs',
     'crates/app/tests/audit_budget/unit.rs',
+    'crates/audit-integration/tests/budget/unit.rs',
     'crates/app/tests/authorization/unit.rs',
     'crates/app/tests/collection/unit.rs',
     'crates/app/tests/compliance/evaluation_unit.rs',
