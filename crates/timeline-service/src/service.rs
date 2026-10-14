@@ -279,7 +279,18 @@ impl Timeline {
                     Ok(Err(error)) => Some(error),
                     _ => None,
                 };
-                let rollback = tokio::time::timeout_at(total.instant().into(), tx.rollback()).await;
+                let rollback = tokio::time::timeout_at(total.instant().into(), async {
+                    // ref: SQLx v0.9.0 connection/mod.rs: a dropped query can leave ErrorResponse unread.
+                    loop {
+                        match sqlx::Connection::flush(&mut *tx).await {
+                            Ok(()) => break,
+                            Err(sqlx::Error::Database(_)) => {}
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    tx.rollback().await
+                })
+                .await;
                 if matches!(primary, Some(Error::Integrity)) {
                     return Err(Error::Integrity);
                 }
