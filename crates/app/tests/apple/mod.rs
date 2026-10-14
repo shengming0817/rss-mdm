@@ -780,26 +780,103 @@ impl Fixture {
         peer.token().await?;
         Ok((peer, device))
     }
-    async fn pending_collections(&mut self, count: usize) -> Result<()> {
-        for _ in 0..count {
-            let reply = self
-                .browser
-                .call(
-                    &self.router,
-                    Method::POST,
-                    &format!(
-                        "/api/v1/devices/{DEVICE}/collection-runs",
-                        DEVICE = case_device()
-                    ),
-                    Some(json!({"source":"mdm.apple","requestId":Uuid::new_v4()})),
+}
+
+impl Fixture {
+    /// Publish ordinary tenant Resource/Scope through the same HTTP owners used by administrators.
+    pub(super) async fn collection_template(&mut self) -> Result<serde_json::Value> {
+        use crate::test_support::agent_execution::{resource, upload};
+        use rss_mdm_resource::{
+            NativeAdapter, NativeCollectionDefinition, NativeCollectionSpec, NativeMapping,
+        };
+        let template = NativeCollectionDefinition::new(NativeCollectionSpec {
+            scope: rss_mdm_resource::TemplateScope::Device,
+            applicability: Default::default(),
+            adapter: NativeAdapter::AppleDeviceInformation,
+            mappings: [
+                ("device.model", "Model"),
+                ("device.os.version", "OSVersion"),
+            ]
+            .map(|(field, query)| {
+                (
+                    field.into(),
+                    NativeMapping {
+                        query: query.into(),
+                        mapping: rss_mdm_resource::ValueMapping::identity(""),
+                    },
                 )
+            })
+            .into(),
+            timeout_seconds: 1800,
+            output_bytes: 16384,
+        })?;
+        let bytes = template.canonical();
+        let id = Uuid::new_v4();
+        let digest = rss_mdm_resource::Digest::of(&bytes).bytes();
+        resource(
+            &mut self.browser,
+            &self.router,
+            id,
+            0,
+            json!({"action":"create","kind":"native_collection"}),
+        )
+        .await?;
+        let variants = ["x86_64", "aarch64"].map(|architecture| json!({"platform":"macos","architecture":architecture,"key":"default","declaration":{"kind":"native_collection","artifact":{"reference":"native-template","length":bytes.len(),"sha256":digest},"definition":template}}));
+        resource(&mut self.browser, &self.router, id, 1, json!({"action":"version","version":"v1","kind":"native_collection","variants":variants})).await?;
+        ensure!(upload(&self.browser, &self.router, id, &bytes).await? == StatusCode::CREATED);
+        resource(
+            &mut self.browser,
+            &self.router,
+            id,
+            2,
+            json!({"action":"activate","version":"v1"}),
+        )
+        .await?;
+        let scope = Uuid::new_v4();
+        self.policy_post(&format!("/api/v1/scopes/{scope}"), 0, json!({"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}})).await?;
+        Ok(
+            json!({"scope":scope,"action":{"kind":"native_collection","resource":{"id":id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"runLifetimeSeconds":1800}}),
+        )
+    }
+
+    pub(super) async fn queue_collection(
+        &mut self,
+        definition: &serde_json::Value,
+    ) -> Result<(Uuid, Uuid)> {
+        use sqlx::Connection;
+        let policy = Uuid::new_v4();
+        self.policy_post(
+            &format!("/api/v1/policies/{policy}"),
+            0,
+            json!({"action":"put","enabled":true,"definition":definition}),
+        )
+        .await?;
+        let mut db =
+            sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
-            ensure!(
-                reply.0 == StatusCode::ACCEPTED,
-                "fixture collection intake: {reply:?}"
-            );
+        let run = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                self.app.execution.settle_native_fixture(case_device()).await?;
+                let run: Option<Uuid> = sqlx::query_scalar("SELECT r.id FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_access.collection_runs c ON(c.tenant_id,c.id)=(r.tenant_id,r.id) JOIN mdm_apple.attempts a ON(a.tenant_id,a.id)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.gateway_accepted AND c.sealed_at IS NULL AND a.phase='collect'")
+                    .bind(case_tenant()).bind(policy).fetch_optional(&mut db).await?;
+                if let Some(run) = run { return Ok::<_, anyhow::Error>(run); }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }).await??;
+        db.close().await?;
+        Ok((policy, run))
+    }
+
+    pub(super) async fn pending_collections(
+        &mut self,
+        definition: &serde_json::Value,
+        count: usize,
+    ) -> Result<Vec<Uuid>> {
+        let mut runs = Vec::new();
+        for _ in 0..count {
+            runs.push(self.queue_collection(definition).await?.1);
         }
-        Ok(())
+        Ok(runs)
     }
 }
 

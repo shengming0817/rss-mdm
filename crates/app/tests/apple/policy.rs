@@ -83,7 +83,7 @@ impl Fixture {
         }
         grants.extend(crate::test_support::identity::device_grants(
             None,
-            &["inventory_read", "configuration_write"],
+            &["inventory_read", "inventory_collect", "configuration_write"],
         )?);
         crate::test_support::identity::set_grants(
             case_tenant(),
@@ -253,23 +253,9 @@ use lifecycle::Peer;
 impl Fixture {
     async fn approval_and_timeout(&mut self, peer: &Peer) -> Result<()> {
         self.policy_cycle(peer).await?;
+        let definition = self.collection_template().await?;
         self.grant_native_actions(&["device_control"]).await?;
         let op = self.create_restart().await?;
-        let path = format!(
-            "/api/v1/devices/{DEVICE}/collection-runs",
-            DEVICE = case_device()
-        );
-        let reply = self
-            .browser
-            .call(
-                &self.router,
-                Method::POST,
-                &path,
-                Some(json!({"source":"mdm.apple","requestId":Uuid::new_v4()})),
-            )
-            .await?;
-        ensure!(reply.0 == StatusCode::ACCEPTED);
-        let run = reply.1["runId"].as_str().unwrap();
         crate::test_support::identity::set_grants(
             case_tenant(),
             crate::test_support::case::admin(),
@@ -279,6 +265,7 @@ impl Fixture {
                     "enrollment",
                     "credentials",
                     "inventory_read",
+                    "inventory_collect",
                     "operation_read",
                     "operation_cancel",
                 ],
@@ -290,16 +277,11 @@ impl Fixture {
             .call(
                 &self.router,
                 Method::POST,
-                &path,
-                Some(json!({"source":"mdm.apple","requestId":Uuid::new_v4()})),
+                &format!("/api/v1/policies/{}", Uuid::new_v4()),
+                Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":definition}})),
             )
             .await?;
         ensure!(refused.0 == StatusCode::FORBIDDEN);
-        let (accepted, _) = peer.next("DeviceInformation").await?;
-        ensure!(
-            accepted.to_string() == run,
-            "accepted collection changed after author permission update"
-        );
         ensure!(self.operation(op).await?["authorization"] == "blocked");
         ensure!(
             self.app
@@ -334,9 +316,16 @@ impl Fixture {
             .await?
             .iter()
             .any(|r| {
-                r.action() == "collection_start" && r.result() == "denied" && r.actor().is_some()
+                r.action() == "management_write" && r.result() == "denied" && r.actor().is_some()
             });
         ensure!(audited, "collection denial lost business action audit");
+        // Publish a new collection only after its own current authorization is restored.
+        self.policy_grants().await?;
+        let owner = self.policy_worker().await?;
+        let queued = self.queue_collection(&definition).await;
+        crate::test_support::stop_worker(Some(owner)).await?;
+        let (_, run) = queued?;
+        ensure!(peer.next("DeviceInformation").await?.0 == run);
         sqlx::query("UPDATE mdm_access.collection_runs SET deadline=clock_timestamp()-interval '1 second' WHERE id=$1::uuid").bind(run).execute(&mut pg).await?;
         let mut terminal = false;
         for _ in 0..100 {

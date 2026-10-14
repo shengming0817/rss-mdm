@@ -124,7 +124,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
         json!({"action":"create","kind":"native_collection"}),
     )
     .await?;
-    resource(&mut f.browser,&f.router,id,1,json!({"action":"version","version":"v1","kind":"native_collection","variants":["x86_64", "aarch64"].map(|architecture| json!({"platform":"macos","architecture":architecture,"key":"default","declaration":{"kind":"native_collection","artifact":{"reference":"native-template","length":bytes.len(),"sha256":digest},"definition":template}}))})).await?;
+    resource(&mut f.browser,&f.router,id,1,json!({"action":"version","version":"v1","kind":"native_collection","variants":(["x86_64", "aarch64"].map(|architecture| json!({"platform":"macos","architecture":architecture,"key":"default","declaration":{"kind":"native_collection","artifact":{"reference":"native-template","length":bytes.len(),"sha256":digest},"definition":template}})))})).await?;
     ensure!(upload(&f.browser, &f.router, id, &bytes).await? == StatusCode::CREATED);
     resource(
         &mut f.browser,
@@ -281,4 +281,102 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     result?;
     automation_shutdown?;
     fixture_shutdown
+}
+
+#[tokio::test]
+#[ignore = "MODULE=apple.collection: current grant before native dispatch"]
+async fn template_revocation_prevents_dispatch() -> Result<()> {
+    withdrawn_template(false, "grant").await
+}
+#[tokio::test]
+#[ignore = "MODULE=apple.collection: current grant before native receipt"]
+async fn template_revocation_rejects_first_report() -> Result<()> {
+    withdrawn_template(true, "grant").await
+}
+#[tokio::test]
+#[ignore = "MODULE=apple.collection: current Policy before native receipt"]
+async fn disabled_template_policy_rejects_first_report() -> Result<()> {
+    withdrawn_template(true, "policy").await
+}
+#[tokio::test]
+#[ignore = "MODULE=apple.collection: current applicability before native receipt"]
+async fn template_access_rights_change_rejects_first_report() -> Result<()> {
+    withdrawn_template(true, "rights").await
+}
+
+async fn withdrawn_template(dispatched: bool, withdrawal: &str) -> Result<()> {
+    let mut f = Fixture::start().await?;
+    let (peer, device) = f.ready_local_peer().await?;
+    f.policy_grants().await?;
+    let definition = f.collection_template().await?;
+    let owner = f.policy_worker().await?;
+    let queued = f.queue_collection(&definition).await;
+    crate::test_support::stop_worker(Some(owner)).await?;
+    let (policy, run) = queued?;
+    if dispatched {
+        ensure!(peer.next("DeviceInformation").await?.0 == run);
+    }
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    match withdrawal {
+        "grant" => {
+            crate::test_support::identity::set_grants(
+                case_tenant(),
+                crate::test_support::case::admin(),
+                crate::test_support::identity::device_grants(
+                    Some(case_device()),
+                    &["inventory_read"],
+                )?,
+            )
+            .await?
+        }
+        "policy" => {
+            f.policy_post(
+                &format!("/api/v1/policies/{policy}"),
+                1,
+                json!({"action":"put","enabled":false,"definition":definition}),
+            )
+            .await?;
+        }
+        "rights" => {
+            sqlx::query("UPDATE mdm_apple.devices SET access_rights=access_rights & ~16 WHERE tenant_id=$1::uuid AND registration=(SELECT registration FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2)").bind(case_tenant()).bind(run).execute(&mut pg).await?;
+        }
+        _ => unreachable!(),
+    }
+    let response = if dispatched {
+        peer.manage(
+            "Acknowledged",
+            Some(run),
+            Some((
+                "QueryResponses",
+                plist::Value::Dictionary(protocol::dictionary([
+                    ("Model", "unauthorized-model".into()),
+                    ("OSVersion", "99.0".into()),
+                ])),
+            )),
+        )
+        .await?
+    } else {
+        peer.manage("Idle", None, None).await?
+    };
+    ensure!(response.is_empty(), "withdrawn collection dispatched work");
+    let terminal: (bool, bool, String) = sqlx::query_as("SELECT sealed_at IS NOT NULL,batch IS NULL,reason FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(run).fetch_one(&mut pg).await?;
+    ensure!(
+        terminal == (true, true, "revoked".into()),
+        "withdrawn receipt reached Inventory: {terminal:?}"
+    );
+    let facts = crate::audit_test_support::read(&mut pg).await?;
+    ensure!(
+        facts
+            .iter()
+            .filter(|fact| fact.action() == "collection_finish"
+                && fact.operation() == Some(run.to_string().as_str()))
+            .count()
+            == 1,
+        "withdrawal lost exactly-once terminal audit"
+    );
+    pg.close().await?;
+    drop(device);
+    f.close().await
 }

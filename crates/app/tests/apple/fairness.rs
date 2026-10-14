@@ -3,27 +3,9 @@ use lifecycle::Peer;
 use sqlx::Connection;
 impl Fixture {
     pub(super) async fn queue_fairness(&mut self, peer: &Peer) -> Result<()> {
-        let path = format!(
-            "/api/v1/devices/{DEVICE}/collection-runs",
-            DEVICE = case_device()
-        );
-        self.pending_collections(65).await?;
-        // Expired queued reads cannot starve a current, authorized collection.
-        crate::test_support::pg(&format!(
-            "UPDATE mdm_access.collection_runs SET deadline=clock_timestamp()-interval '1 second' WHERE tenant_id='{}' AND source='mdm.apple' AND sealed_at IS NULL",
-            case_tenant()
-        ))?;
-        let fresh = self
-            .browser
-            .call(
-                &self.router,
-                Method::POST,
-                &path,
-                Some(json!({"source":"mdm.apple","requestId":Uuid::new_v4()})),
-            )
-            .await?;
-        ensure!(fresh.0 == StatusCode::ACCEPTED);
-        let run = Uuid::parse_str(fresh.1["runId"].as_str().unwrap())?;
+        self.policy_grants().await?;
+        let definition = self.collection_template().await?;
+        self.pending_collections(&definition, 65).await?;
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
@@ -31,6 +13,10 @@ impl Fixture {
             .bind(case_tenant())
             .execute(&mut pg)
             .await?;
+        // Yield while the running Flow worker finishes its transaction.
+        sqlx::query("UPDATE mdm_access.collection_runs SET deadline=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND source='mdm.apple' AND sealed_at IS NULL")
+            .bind(case_tenant()).execute(&mut pg).await?;
+        let (_, run) = self.queue_collection(&definition).await?;
         sqlx::query("UPDATE mdm_apple.channels SET next_push=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND registration IN (SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2)")
         .bind(case_tenant()).bind(case_device())
             .execute(&mut pg)
@@ -86,7 +72,10 @@ impl Fixture {
 async fn expired_queue_does_not_starve_current_collection() -> Result<()> {
     let mut f = Fixture::start().await?;
     let (peer, device) = f.ready_local_peer().await?;
-    f.queue_fairness(&peer).await?;
+    let owner = f.policy_worker().await?;
+    let result = f.queue_fairness(&peer).await;
+    crate::test_support::stop_worker(Some(owner)).await?;
+    result?;
     drop(device);
     f.close().await
 }

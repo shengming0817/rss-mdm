@@ -279,6 +279,7 @@ for name in ('projection', 'recovery', 'process'):
 add('worker.wake', selectors=('worker_wake::tests::',),
     sources=('crates/app/src/worker_wake.rs',),
     tests=('crates/app/tests/worker_wake/mod.rs',), support=())
+MODULES['worker.wake'] = replace(MODULES['worker.wake'], policies=(CasePolicy('worker_wake::tests::committed_hints_reconnect_and_restart_preserve_durable_work', 'reuse', 'pair'),))
 add('inventory.runtime', selectors=('inventory_runtime::tests::',), fixtures=('identity',),
     sources=('crates/inventory-service/src/inventory_runtime.rs',),
     tests=('crates/app/tests/inventory_runtime/mod.rs',), support=())
@@ -467,7 +468,7 @@ MODULES['audit.receipts'] = replace(MODULES['audit.receipts'], db_mode='reuse', 
 MODULES['audit.integrity'] = replace(MODULES['audit.integrity'], db_mode='instance', scope='objects', policies=(
     CasePolicy('audit_integration_tests::integrity::storage_integrity_is_enforced', 'fresh', 'objects'),
 ))
-MODULES['audit.recovery'] = replace(MODULES['audit.recovery'], db_mode='reuse', scope='tenant')
+MODULES['audit.recovery'] = replace(MODULES['audit.recovery'], db_mode='reuse', scope='pair')
 MODULES['audit.budget'] = replace(MODULES['audit.budget'], db_mode='reuse', scope='tenant')
 MODULES['identity.local'] = replace(MODULES['identity.local'], db_mode='instance', scope='objects')
 MODULES['identity.sso'] = replace(MODULES['identity.sso'], db_mode='reuse', scope='tenant')
@@ -491,7 +492,7 @@ MODULES['agent.registration'] = replace(MODULES['agent.registration'], policies=
     CasePolicy('agent::t2::registration::registration_recovery_preserves_credential_rotation', 'reuse', 'tenant'),
 ))
 MODULES['agent.reports'] = replace(MODULES['agent.reports'], db_mode='reuse', scope='tenant')
-MODULES['inventory.reader'] = replace(MODULES['inventory.reader'], db_mode='instance', scope='objects', policies=(
+MODULES['inventory.reader'] = replace(MODULES['inventory.reader'], db_mode='instance', scope='pair', policies=(
     CasePolicy('watermark_fence_rejects_unrelated_grantee', 'fresh', 'objects'),
 ))
 MODULES['inventory.projection'] = replace(MODULES['inventory.projection'], db_mode='reuse', scope='pair', policies=(
@@ -815,9 +816,7 @@ consume(('crates/agent-channel/src/boundary.rs', 'crates/agent-channel/src/bindi
 consume(('crates/agent-channel/src/content.rs',), 'execution.agent.content execution.software.content')
 consume(('crates/windows-channel/src/collection.rs', 'crates/windows-channel/src/boundary.rs'), 'windows.management windows.retention windows.limits inventory.runtime')
 consume(('crates/app/src/assembly/windows/*',), 'windows.enrollment windows.issuance windows.management windows.retention windows.limits native.tls')
-# Retired intake paths are covered by their template-based successor.
-consume(('crates/management-http/src/collection/*',), 'apple.collection')
-consume(('crates/inventory-service/src/collection*', 'crates/inventory-service/src/apple_collection.rs', 'crates/inventory-service/src/apple_collection_receipts.rs'), 'agent.reports windows.management windows.retention apple.collection apple.renewal inventory.runtime')
+consume(('crates/inventory-service/src/collection*', 'crates/inventory-service/src/apple_collection.rs', 'crates/inventory-service/src/collection/*'), 'agent.reports windows.management windows.retention apple.collection apple.renewal inventory.runtime')
 consume(('crates/inventory-service/src/groups/*',), 'planning.http planning.group_scope assets.group_input compliance.group_input')
 consume(('crates/content-service/src/lib.rs', 'crates/content-service/src/bindings.rs', 'crates/content-service/src/service*', 'crates/content-service/src/transaction.rs', 'crates/content-service/src/admission.sql'), 'content.storage content.http content.mirror content.gc execution.agent.content execution.software.content software.http')
 consume(('crates/content-service/src/catalog.sql', 'crates/content-service/src/catalog.json'),

@@ -168,6 +168,7 @@ impl ExecutionService {
                     .await??;
                     crate::transaction::lock(tx).await?;
                     storage::lock(tx, p.device()).await?;
+                    actions::native_collection::fence_apple_collections(service, tx, p).await?;
                     let exchange = exchange.take().ok_or(Error::Conflict)?;
                     let user_key = exchange.user_key().to_owned();
                     let principal = p.clone();
@@ -200,6 +201,7 @@ impl ExecutionService {
                         .reconcile_agent_install_in(tx, p.device(), audit)
                         .await?;
                     actions::native_collection::settle_device(service, tx, p.device()).await?;
+                    actions::native_collection::fence_apple_collections(service, tx, p).await?;
                     let response = send(service, tx, (*apple).clone(), p, &user_key, audit).await?;
                     super::protocol::settle_dispatch_failures(service, tx, p, audit).await?;
                     service
@@ -538,6 +540,7 @@ impl ExecutionService {
                     .await??;
                     crate::transaction::lock(tx).await?;
                     storage::lock(tx, p.device()).await?;
+                    actions::native_collection::fence_apple_collections(service, tx, p).await?;
                     let exchange = exchange.take().ok_or(Error::Conflict)?;
                     let principal = p.clone();
                     let (exchange, ids) = tx

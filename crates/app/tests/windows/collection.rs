@@ -154,7 +154,7 @@ async fn template_flow(
         json!({"action":"create","kind":"native_collection"}),
     )
     .await?;
-    resource(&mut f.browser,&f.router,id,1,json!({"action":"version","version":"v1","kind":"native_collection","variants":["x86_64", "aarch64"].map(|architecture| json!({"platform":"windows","architecture":architecture,"key":"default","declaration":{"kind":"native_collection","artifact":{"reference":"native-template","length":bytes.len(),"sha256":digest},"definition":template}}))})).await?;
+    resource(&mut f.browser,&f.router,id,1,json!({"action":"version","version":"v1","kind":"native_collection","variants":(["x86_64", "aarch64"].map(|architecture| json!({"platform":"windows","architecture":architecture,"key":"default","declaration":{"kind":"native_collection","artifact":{"reference":"native-template","length":bytes.len(),"sha256":digest},"definition":template}})))})).await?;
     ensure!(
         upload_for(&f.browser, &f.router, id, &bytes, "windows", "x86_64").await?
             == StatusCode::CREATED
@@ -198,35 +198,6 @@ async fn template_flow(
         )
         .await?;
     ensure!(invalid.0 == StatusCode::BAD_REQUEST, "{invalid:?}");
-    // The existing outbox accepts the action before its native read can be sent.
-    use sqlx::Connection;
-    let mut pg =
-        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
-            .await?;
-    let pending = tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            let ready: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND gateway_accepted AND state->>'execution'='not_started')")
-                .bind(case_tenant()).fetch_one(&mut pg).await?;
-            if ready { break; }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        Ok::<_, anyhow::Error>(())
-    }).await;
-    if pending.is_err() {
-        for query in [
-            "SELECT to_jsonb(t) FROM mdm_planning.scopes t WHERE tenant_id=$1::uuid",
-            "SELECT to_jsonb(t) FROM mdm_policy.policies t WHERE tenant_id=$1::uuid",
-            "SELECT to_jsonb(t) FROM mdm_commands.action_runs t WHERE tenant_id=$1::uuid",
-            "SELECT to_jsonb(t) FROM mdm_access.report_sources t WHERE tenant_id=$1::uuid",
-        ] {
-            let rows: Vec<serde_json::Value> = sqlx::query_scalar(query)
-                .bind(case_tenant())
-                .fetch_all(&mut pg)
-                .await?;
-            eprintln!("native wait {query}: {rows:?}");
-        }
-    }
-    pending??;
     ensure!(
         native::post(&peer.mutual, &peer.url, &peer.message)
             .await?
@@ -274,6 +245,36 @@ async fn template_flow(
     let mut delivery_request = report.clone();
     let mut ready = native::post(&peer.mutual, &peer.url, &report).await?;
     ensure!(ready.status() == StatusCode::OK);
+    // Applicability requires authenticated native capability facts before admission.
+    // The existing outbox accepts the action before its native read can be sent.
+    use sqlx::Connection;
+    let mut pg =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let pending = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let ready: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND gateway_accepted AND state->>'execution'='not_started')")
+                .bind(case_tenant()).fetch_one(&mut pg).await?;
+            if ready { break; }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        Ok::<_, anyhow::Error>(())
+    }).await;
+    if pending.is_err() {
+        for query in [
+            "SELECT to_jsonb(t) FROM mdm_planning.scopes t WHERE tenant_id=$1::uuid",
+            "SELECT to_jsonb(t) FROM mdm_policy.policies t WHERE tenant_id=$1::uuid",
+            "SELECT to_jsonb(t) FROM mdm_commands.action_runs t WHERE tenant_id=$1::uuid",
+            "SELECT to_jsonb(t) FROM mdm_access.report_sources t WHERE tenant_id=$1::uuid",
+        ] {
+            let rows: Vec<serde_json::Value> = sqlx::query_scalar(query)
+                .bind(case_tenant())
+                .fetch_all(&mut pg)
+                .await?;
+            eprintln!("native wait {query}: {rows:?}");
+        }
+    }
+    pending??;
     // Complete capability evidence may precede the package Final by many messages.
     for message_id in 4..=request_message {
         let mut end = report.clone();

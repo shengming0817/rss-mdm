@@ -472,6 +472,7 @@ async fn device_access_logged_in_user_requires_exact_os_session_and_helper_witho
     .await?;
     let (_, bytes, mut script) = f.resource().await?;
     script["runAs"] = json!("logged_in_user");
+    script["purpose"] = json!({"kind":"action"});
     let resource_id = Uuid::new_v4();
     let digest: [u8; 32] = Sha256::digest(bytes).into();
     resource(

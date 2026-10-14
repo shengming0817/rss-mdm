@@ -312,6 +312,44 @@ pub async fn sent(
     Ok(())
 }
 
+/// Revalidate every live Apple template before protocol receipt or delivery under device locks.
+/// Recovery's bounded work page is not an authorization boundary for a reported run.
+pub(crate) async fn fence_apple_collections(
+    service: &ExecutionService,
+    tx: &mut PgTransaction<'_>,
+    principal: &crate::device::DevicePrincipal,
+) -> Result<()> {
+    let mut after = None;
+    loop {
+        let tenant = tx.tenant_id().to_string();
+        let registration = principal.registration();
+        let generation = principal.generation();
+        let ids: Vec<Uuid> = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar("SELECT c.id FROM mdm_access.collection_runs c JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(c.tenant_id,c.registration) WHERE c.tenant_id=$1::uuid AND c.registration=$2 AND r.generation=$3 AND c.source='mdm.apple' AND c.evidence ? 'nativeTemplate' AND c.sealed_at IS NULL AND c.deadline>clock_timestamp() AND ($4::uuid IS NULL OR c.id>$4) ORDER BY c.id LIMIT 64")
+                .bind(tenant).bind(registration).bind(generation).bind(after).fetch_all(c).await
+        })).await?;
+        for id in &ids {
+            let source = service.source.clone();
+            let principal = principal.clone();
+            let id = *id;
+            let eligible = tx
+                .with_connection(move |c| {
+                    Box::pin(
+                        async move { Ok(eligible_on(source.as_ref(), c, &principal, id).await) },
+                    )
+                })
+                .await??;
+            if !eligible {
+                super::collection::abandon(service, tx, id, "revoked").await?;
+            }
+        }
+        if ids.len() < 64 {
+            return Ok(());
+        }
+        after = ids.last().copied();
+    }
+}
+
 /// Check current frozen operation grants on the same connection used by the protocol owner.
 /// Called before native dispatch and before accepting a report into Inventory.
 pub async fn eligible_on(

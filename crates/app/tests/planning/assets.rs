@@ -4,6 +4,8 @@ use crate::planning::test_support::*;
 #[ignore = "MODULE=planning.assets: real capability storage and transactions"]
 async fn asset_history_rollback_replay_and_frozen_watermark() {
     let t = tenant();
+    let service = planning(t).await;
+    while service.forward_asset_changes().await.unwrap() > 0 {}
     let device = format!("history-{}", Uuid::new_v4());
     let read = || {
         sql(&format!(
@@ -46,7 +48,6 @@ async fn asset_history_rollback_replay_and_frozen_watermark() {
         )),
         "t"
     );
-    let service = planning(t).await;
     let scope_device = device.clone();
     let frozen = service
         .runtime

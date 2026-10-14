@@ -409,7 +409,7 @@ pub async fn issue_in(
         );
         proof.self_enrollment(&device)?;
         let grant = Uuid::new_v4();
-        sqlx::query("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,created_at,expires_at) VALUES($1::uuid,$2,$3,$4,$5,'enrollment','consumed',clock_timestamp(),clock_timestamp()+interval '300 seconds')")
+        sqlx::query("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,created_at,expires_at) SELECT $1::uuid,$2,$3,$4,$5,'enrollment','consumed',now,now+interval '300 seconds' FROM (SELECT clock_timestamp() AS now) t")
             .bind(proof.tenant_id()).bind(grant).bind(proof.principal_id()).bind(proof.instance_id()).bind(&device).execute(&mut *c).await.map_err(db)?;
         sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,authority_kind,grant_id,state,source,expected_generation,issuance_operation,expires_at,self_service,account_version,account_reference,account_challenge) VALUES($1::uuid,$2,'apple_account',$3,'pending','mdm.apple',0,$4,clock_timestamp()+interval '300 seconds',true,1,$5,$6)")
             .bind(proof.tenant_id()).bind(id).bind(grant).bind(operation).bind(serde_json::to_value(&reference).map_err(|_|Error::Corrupt)?).bind(&hash).execute(&mut *c).await.map_err(db)?;
@@ -464,7 +464,7 @@ pub async fn issue_organization_in(
         .authorize_issue(c, tenant, organization, profile, machine)
         .await?;
     let grant = Uuid::new_v4();
-    sqlx::query("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,created_at,expires_at) VALUES($1::uuid,$2,'service:apple-ade','service',$3,'enrollment','consumed',clock_timestamp(),clock_timestamp()+interval '300 seconds')")
+    sqlx::query("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,created_at,expires_at) SELECT $1::uuid,$2,'service:apple-ade','service',$3,'enrollment','consumed',now,now+interval '300 seconds' FROM (SELECT clock_timestamp() AS now) t")
         .bind(tenant).bind(grant).bind(&device).execute(&mut *c).await.map_err(db)?;
     sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,authority_kind,grant_id,state,source,expected_generation,issuance_operation,expires_at,self_service,organization_version,organization_challenge) VALUES($1::uuid,$2,'apple_ade',$3,'pending','mdm.apple',0,$2,clock_timestamp()+interval '300 seconds',false,1,$4)")
         .bind(tenant).bind(id).bind(grant).bind(organization_challenge(tenant,id,challenge)).execute(c).await.map_err(db)?;

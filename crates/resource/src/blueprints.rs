@@ -34,7 +34,7 @@ impl Blueprint {
         Version::new(
             tenant,
             resource,
-            Id::new(&self.label())?,
+            Id::new(self.label())?,
             Kind::NativeCollection,
             [Architecture::X86_64, Architecture::Aarch64]
                 .into_iter()

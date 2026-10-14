@@ -64,9 +64,10 @@ pub async fn preview(
                 else if let PreviewInputs::Script {platform,architecture,profile,applicability}=&prepared {
                     let agents=crate::channels::agent_targets_in(tx,s.agent_store.clone(),vec![device.clone()]).await?;
                     let mut state=if let Some(agent)=agents.first() {crate::script_eligibility::check_in(tx,s.agent_store.clone(),&crate::Target{device:device.clone(),registration:agent.registration,generation:agent.generation},*platform,*architecture,*profile).await?}else{crate::script_eligibility::Eligibility::Unknown};
-                    if let (Some(requirements), Some(agent)) = (applicability, agents.first()) {
-                        if !crate::script_eligibility::collection_requirements_in(tx, &crate::Target{device:device.clone(),registration:agent.registration,generation:agent.generation}, requirements).await? { state = crate::script_eligibility::Eligibility::Ineligible; }
-                    }
+                    if state == crate::script_eligibility::Eligibility::Eligible
+                        && let (Some(requirements), Some(agent)) = (applicability, agents.first())
+                        && !crate::script_eligibility::collection_requirements_in(tx, &crate::Target{device:device.clone(),registration:agent.registration,generation:agent.generation}, requirements).await?
+                    { state = crate::script_eligibility::Eligibility::Ineligible; }
                     Some(software::TaskAdmission::new(match state {crate::script_eligibility::Eligibility::Eligible=>software::TaskAdmissionState::Eligible,crate::script_eligibility::Eligibility::Ineligible=>software::TaskAdmissionState::UnsupportedCapability,crate::script_eligibility::Eligibility::Unknown=>software::TaskAdmissionState::ChannelUnknown},None))
                 } else if let PreviewInputs::Native(template) = &prepared {
                     let template = template.clone(); let candidate = crate::Target { device: target.device.clone(), registration: target.registration_id, generation: target.generation }; let tenant = tx.tenant_id();
