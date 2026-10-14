@@ -3,7 +3,7 @@ CREATE SCHEMA mdm_timeline;
 REVOKE ALL ON SCHEMA mdm_timeline FROM PUBLIC;
 CREATE TABLE mdm_timeline.checkpoints (
  tenant_id uuid PRIMARY KEY, generation uuid NOT NULL, position bigint NOT NULL DEFAULT -1 CHECK(position>=-1),
- source_through bigint NOT NULL DEFAULT -1 CHECK(source_through>=position), healthy boolean NOT NULL DEFAULT true
+ source_through bigint NOT NULL DEFAULT -1 CHECK(source_through>=position)
 );
 CREATE TABLE mdm_timeline.facts (
  tenant_id uuid NOT NULL, position bigint NOT NULL CHECK(position>=0), source text NOT NULL, event_id text NOT NULL,
@@ -25,7 +25,7 @@ CREATE POLICY tenant ON mdm_timeline.facts USING(tenant_id=nullif(current_settin
 REVOKE ALL ON mdm_timeline.checkpoints,mdm_timeline.facts FROM PUBLIC;
 GRANT USAGE ON SCHEMA mdm_timeline,mdm_planning,mdm_assets TO mdm_access;
 GRANT SELECT,INSERT ON mdm_timeline.checkpoints,mdm_timeline.facts TO mdm_access;
-GRANT UPDATE(position,source_through,healthy) ON mdm_timeline.checkpoints TO mdm_access;
+GRANT UPDATE(position,source_through) ON mdm_timeline.checkpoints TO mdm_access;
 -- Read-only correlation belongs to Flow and remains tenant-filtered by RLS.
 GRANT SELECT ON mdm_commands.action_runs,mdm_assets.operations,mdm_commands.requests TO mdm_access;
 COMMIT;

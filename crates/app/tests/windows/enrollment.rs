@@ -61,11 +61,6 @@ async fn discovery_wstep_replay_and_tls_identity() -> anyhow::Result<()> {
         anyhow::bail!("missing issuance replay");
     };
     ensure!(replay.provisioning.0 == peer.provisioning);
-    for _ in 0..100 {
-        if app.timeline.catch_up().await? == 0 {
-            break;
-        }
-    }
     let mut admin = crate::test_support::Browser {
         cookies: std::collections::BTreeMap::from([(
             "__Host-identity-session".into(),

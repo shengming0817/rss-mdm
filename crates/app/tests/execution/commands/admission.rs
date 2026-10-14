@@ -125,11 +125,6 @@ impl Client {
         )
         .await?;
         persisted.close().await?;
-        for _ in 0..100 {
-            if self.app.timeline.catch_up().await? == 0 {
-                break;
-            }
-        }
         let path = format!(
             "/api/v1/devices/{}/timeline?operationId={}",
             case_device(),
@@ -488,7 +483,6 @@ async fn cancellation_request_identity_does_not_claim_another_device() -> anyhow
         )
         .await?;
     ensure!(cancelled.0 == StatusCode::OK, "cancel: {cancelled:?}");
-    client.drain_timeline().await?;
     let path = format!(
         "/api/v1/devices/{other}/timeline?action=command_cancel&operationId={other_operation}"
     );
@@ -538,7 +532,6 @@ async fn child_dispatch_keeps_its_device_and_parent_search_link() -> anyhow::Res
         .execution
         .accept_action_dispatch(child, vec![0; 32])
         .await?;
-    client.drain_timeline().await?;
     let path =
         format!("/api/v1/devices/{other}/timeline?action=command_dispatch&operationId={child}");
     let (_, page) = client
@@ -615,14 +608,6 @@ impl Client {
                 == StatusCode::ACCEPTED
         );
         Ok((other, id))
-    }
-    async fn drain_timeline(&self) -> anyhow::Result<()> {
-        for _ in 0..100 {
-            if self.app.timeline.catch_up().await? == 0 {
-                return Ok(());
-            }
-        }
-        anyhow::bail!("fixture projection did not drain")
     }
 }
 

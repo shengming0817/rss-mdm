@@ -112,6 +112,7 @@ pub struct FactView {
 pub struct Coverage {
     pub indexed_through: Option<u64>,
     pub source_through: Option<u64>,
+    /// Each authorized request advances at most 64 records / 8 MiB within one five-second budget.
     /// Source positions are indexed; this does not prove lifecycle or association completeness.
     pub complete: bool,
 }

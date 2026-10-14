@@ -14,7 +14,6 @@ rss-mdm-inventory-service.workspace = true
 rss-mdm-flow-service.workspace = true
 rss-mdm-authorization-service.workspace = true
 rss-request-context.workspace = true
-rss-runtime.workspace = true
 sqlx.workspace = true
 serde.workspace = true
 serde_json.workspace = true
