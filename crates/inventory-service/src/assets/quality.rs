@@ -27,6 +27,7 @@ pub(super) fn decode(row: &sqlx::postgres::PgRow, generation: u64) -> Result<Qua
         })
         .collect();
     Ok(QualityRun {
+        collection_scope: attempts.definition().collection_scope().clone(),
         source,
         channel: source.channel().ok_or(Error::Malformed)?,
         registration: stored(Uuid::parse_str(coordinate.registration().as_str()))?,

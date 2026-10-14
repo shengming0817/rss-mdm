@@ -138,7 +138,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     post(&mut f.browser,&f.router,&format!("/api/v1/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}}})).await?;
     let policy = Uuid::new_v4();
     post(&mut f.browser,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"native_collection","resource":{"id":id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"runLifetimeSeconds":300}}}})).await?;
-    let (run, payload) = peer.next("DeviceInformation").await?;
+    let (run, payload) = peer.next_collection().await?;
     ensure!(
         payload["Queries"].as_array().unwrap()
             == &vec![
@@ -202,7 +202,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     );
     let refresh_policy = Uuid::new_v4();
     post(&mut f.browser,&f.router,&format!("/api/v1/policies/{refresh_policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"native_collection","resource":{"id":id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"runLifetimeSeconds":300}}}})).await?;
-    let (refresh, _) = peer.next("DeviceInformation").await?;
+    let (refresh, _) = peer.next_collection().await?;
     let mut historical = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
     let parent = Uuid::new_v4();
     crate::test_support::agent_execution::historical_remote_run(&mut historical,case_tenant(),refresh,parent).await?;
@@ -314,7 +314,7 @@ async fn withdrawn_template(dispatched: bool, withdrawal: &str) -> Result<()> {
     crate::test_support::stop_worker(Some(owner)).await?;
     let (policy, run) = queued?;
     if dispatched {
-        ensure!(peer.next("DeviceInformation").await?.0 == run);
+        ensure!(peer.next_collection().await?.0 == run);
     }
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
@@ -377,6 +377,135 @@ async fn withdrawn_template(dispatched: bool, withdrawal: &str) -> Result<()> {
         "withdrawal lost exactly-once terminal audit"
     );
     pg.close().await?;
+    drop(device);
+    f.close().await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=apple.collection: exact user scope dispatch receipt and read isolation"]
+async fn user_collection_cannot_cross_device_or_other_user_namespace() -> Result<()> {
+    use lifecycle::command;
+    let mut f = Fixture::start().await?;
+    let (peer, device) = f.ready_local_peer().await?;
+    f.policy_grants().await?;
+    let user = Uuid::new_v4();
+    let other = Uuid::new_v4();
+    peer.user_token(user, 41).await?;
+    peer.user_token(other, 42).await?;
+    let template = f
+        .collection_template_scoped(rss_mdm_resource::TemplateScope::User {
+            identity: user.to_string(),
+        })
+        .await?;
+    let worker = f.policy_worker().await?;
+    let (_, run) = f.queue_collection(&template).await?;
+    let (prerequisite, _) = peer.next("DeviceInformation").await?;
+    let security = peer
+        .manage(
+            "Acknowledged",
+            Some(prerequisite),
+            Some((
+                "QueryResponses",
+                protocol::dictionary([
+                    ("OSVersion", "15.0".into()),
+                    ("IsSupervised", true.into()),
+                    ("IsAppleSilicon", true.into()),
+                ])
+                .into(),
+            )),
+        )
+        .await?;
+    let (prerequisite, _) = command(&security, "SecurityInfo")?;
+    let device_reply = peer
+        .manage(
+            "Acknowledged",
+            Some(prerequisite),
+            Some((
+                "SecurityInfo",
+                protocol::dictionary([(
+                    "ManagementStatus",
+                    protocol::dictionary([
+                        ("IsUserEnrollment", false.into()),
+                        ("EnrolledViaDEP", false.into()),
+                        ("UserApprovedEnrollment", true.into()),
+                    ])
+                    .into(),
+                )])
+                .into(),
+            )),
+        )
+        .await?;
+    ensure!(
+        device_reply.is_empty(),
+        "user payload escaped on device channel"
+    );
+    ensure!(
+        peer.user_manage(other, "Idle", None, None)
+            .await?
+            .1
+            .is_empty()
+    );
+    let (status, payload) = peer.user_manage(user, "Idle", None, None).await?;
+    ensure!(status == StatusCode::OK);
+    let (attempt, payload) = command(&payload, "DeviceInformation")?;
+    ensure!(attempt == run);
+    let mut response = plist::Dictionary::new();
+    for query in payload["Queries"].as_array().unwrap() {
+        let name = query.as_string().unwrap();
+        response.insert(
+            name.into(),
+            match name {
+                "OSVersion" => "15.0".into(),
+                "Model" => "user-model".into(),
+                _ => anyhow::bail!("unexpected query {name}"),
+            },
+        );
+    }
+    let extra = Some(("QueryResponses", plist::Value::Dictionary(response)));
+    ensure!(
+        peer.user_manage(other, "Acknowledged", Some(run), extra.clone())
+            .await?
+            .0
+            != StatusCode::OK
+    );
+    ensure!(
+        peer.user_manage(user, "Acknowledged", Some(run), extra.clone())
+            .await?
+            .0
+            == StatusCode::OK
+    );
+    ensure!(
+        peer.user_manage(user, "Acknowledged", Some(run), extra)
+            .await?
+            .0
+            == StatusCode::OK
+    );
+    let path = format!("/api/v1/devices/{}/collections/{run}", case_device());
+    ensure!(f.browser.call(&f.router, Method::GET, &path, None).await?.0 == StatusCode::NOT_FOUND);
+    ensure!(
+        f.browser
+            .call(
+                &f.router,
+                Method::GET,
+                &format!("{path}?userId={other}"),
+                None
+            )
+            .await?
+            .0
+            == StatusCode::NOT_FOUND
+    );
+    let result = f
+        .browser
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("{path}?userId={user}"),
+            None,
+        )
+        .await?;
+    ensure!(result.0 == StatusCode::OK, "scoped result {result:?}");
+    ensure!(result.1["asset"]["run"]["scope"] == json!({"kind":"user","identity":user}));
+    crate::test_support::stop_worker(Some(worker)).await?;
     drop(device);
     f.close().await
 }

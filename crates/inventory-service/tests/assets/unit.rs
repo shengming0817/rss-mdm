@@ -14,6 +14,7 @@ fn persisted_asset_fingerprint_keeps_its_original_encoding() {
             input: Query::default(),
         },
         scope: ReadScope {
+            collection_scope: rss_mdm_inventory::CollectionScope::Device,
             subject: "operator".into(),
             sensitive: false,
             devices: None,
@@ -122,6 +123,7 @@ fn registered_paths_feed_group_sets_and_sensitive_conditions_need_an_explicit_gr
         .into(),
     )]);
     let mut device = DeviceView {
+        collection_scope: rss_mdm_inventory::CollectionScope::Device,
         lists: BTreeMap::new(),
         device: "device".into(),
         channels: BTreeSet::new(),
@@ -209,6 +211,7 @@ fn installed_id_groups_use_existing_sets_and_preserve_unknown_states() {
         (State::Conflict, g::Decision::Unknown),
     ] {
         let device = DeviceView {
+            collection_scope: rss_mdm_inventory::CollectionScope::Device,
             lists: BTreeMap::new(),
             device: "device".into(),
             channels: BTreeSet::new(),

@@ -4,6 +4,7 @@ use rss_mdm_inventory::{
 use rss_observation::Body;
 fn definition() -> CollectionDefinition {
     CollectionDefinition::new(
+        rss_mdm_inventory::CollectionScope::Device,
         "native-basic",
         1,
         Source::MdmWindows,
@@ -118,8 +119,14 @@ fn invalid_list_items_are_recorded_without_replacing_previous_list_facts() {
         items: Box::new(ValueType::Integer),
         max_items: 10,
     };
-    let def =
-        CollectionDefinition::new("list", 1, Source::MdmWindows, vec![field.clone()]).unwrap();
+    let def = CollectionDefinition::new(
+        rss_mdm_inventory::CollectionScope::Device,
+        "list",
+        1,
+        Source::MdmWindows,
+        vec![field.clone()],
+    )
+    .unwrap();
     let outcome = NativeValue::list(
         &field,
         vec![Ok(Scalar::Integer(1)), Err(Invalid::TypeMismatch)],
@@ -145,6 +152,7 @@ fn installed_software_empty_snapshot_is_confirmed_not_missing_or_partial() {
     use rss_mdm_inventory::FieldKey;
     let key = FieldKey::parse("device.software.installations").unwrap();
     let d = CollectionDefinition::new(
+        rss_mdm_inventory::CollectionScope::Device,
         "installed-software",
         1,
         Source::MdmWindows,

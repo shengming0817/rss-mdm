@@ -27,3 +27,11 @@ StatusReport 没有可用于判定生产先后的原生序号。原生 ServerTok
 Legacy Profile 只从受保护的不可变 Resource 下载，使用已验证的 schema 及真实目标条件编译。Mac 不返回 IsManaged；接管先核对加密保留的关联 ProfileList 请求确实为 ManagedOnly=true，再要求管理清单证明根和所有子载荷的类型、标识、UUID、数量和顺序一致；有效且激活的精确声明版本交接经典所有权。DDM guard 在撤回后继续存在，只能由发出时已关联该 guard 的独立完整 ProfileList 缺席证明释放；新的撤回不借用旧查询结果。
 
 操作、外部 CA 与恢复见 [Apple 指南](../guides/apple-management.md)。参考 [Apple 证书管理](https://developer.apple.com/documentation/devicemanagement/managing-certificates-for-device-management-services-and-devices)、[APNs 响应](https://developer.apple.com/documentation/usernotifications/handling-notification-responses-from-apns)，协议来源固定于 [Apple fixtures](../../fixtures/apple-tools.lock.json)。
+
+资产采集使用六类固定只读 adapter：DeviceInformation、InstalledApplicationList、SecurityInfo、ProfileList、CertificateList、UserList。每次运行先以自身的设备通道前置查询取得真实 OS、监督、硬件与登记事实，再冻结原生编译上下文；返回时重新检查当前权限。用户模板必须提供规范化 Apple UserID，派发、APNs、回执、dataset、结果与分页游标均绑定此 scope。设备搜索、分组和合规只解析设备 dataset；用户详情和列表通过 userId 选择，通道失效后拒绝读取。UserList 仍为监督设备通道能力。
+
+原生可选属性使用有类型的 Record，缺席保持缺席；完整空列表与未返回列表分别处理。Profiles/Certificates 标准包明确为 ManagedOnly；证书在内存解析，仅保留指纹、序列号及有效期等元数据。普通采集响应在原始字节完成认证与重放 MAC 后，只留存固定白名单投影。FileVault 恢复材料、Profile PayloadContent、证书 DER 和未声明扩展键不进入普通资产结果。
+
+DDM 新报告在原事务内封存 Partial CollectionRun，并由现有 Observation 管线交付；重复报告不分配新序号。报告绑定注册代次、UserID、订阅、publication 身份与声明 token。数组必须具有对应状态项的完整基线，增量或无序冲突产生显式 Unknown；Unknown 更新当前状态并独立保留 last_known，不将后到报告解释为较新设备事实。更新状态只作为资产证据，不生成更新执行操作。
+
+官方 macOS v2 包提供经典 NativeCollection 和 DDM Configuration 两类真实内容。DDM 配置包含状态订阅和 activation；实例化后走普通 Resource/Content/Policy 生命周期。Resource 在创建时固化 blueprint ID、版本和初始摘要，目录移除后仍能读取来源。macOS v1、旧 Blueprint DTO、旧 Resource aggregate header 与旧 Inventory 投影格式不提供兼容读取；安装器按现有精确格式准入拒绝不匹配安装，不自动修改历史校验和或清空租户数据。

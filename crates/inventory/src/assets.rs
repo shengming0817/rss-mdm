@@ -84,6 +84,11 @@ impl Scalar {
     deny_unknown_fields
 )]
 pub enum State {
+    /// Current evidence is indeterminate; last-known is never used as current.
+    Unknown {
+        /// Closed reason for the indeterminate observation.
+        reason: crate::UnknownReason,
+    },
     /// Explicit typed value.
     Known(Scalar),
     /// Explicit legal null.
@@ -282,15 +287,22 @@ fn resolve_state(definition: &FieldDefinition, sources: &[&SourceFact]) -> Resul
     }
     let selected_priority = sources
         .iter()
-        .filter(|s| matches!(s.state, State::Known(_) | State::Null))
+        .filter(|s| {
+            matches!(
+                s.state,
+                State::Known(_) | State::Null | State::Unknown { .. }
+            )
+        })
         .filter_map(|s| definition.sources.get(&s.evidence.source))
         .min()
         .copied();
     let values: Vec<_> = sources
         .iter()
         .filter(|s| {
-            matches!(s.state, State::Known(_) | State::Null)
-                && definition.sources.get(&s.evidence.source).copied() == selected_priority
+            matches!(
+                s.state,
+                State::Known(_) | State::Null | State::Unknown { .. }
+            ) && definition.sources.get(&s.evidence.source).copied() == selected_priority
         })
         .map(|s| match &s.state {
             State::Known(value) => definition.canonical_value(value.clone()).map(State::Known),
@@ -298,6 +310,21 @@ fn resolve_state(definition: &FieldDefinition, sources: &[&SourceFact]) -> Resul
         })
         .collect::<Result<Vec<_>>>()?;
     let state = match values.first() {
+        Some(_) if values.iter().any(|v| matches!(v, State::Unknown { .. })) => {
+            let reason = if values.iter().any(|v| {
+                matches!(
+                    v,
+                    State::Unknown {
+                        reason: crate::UnknownReason::UnorderedConflict
+                    }
+                )
+            }) {
+                crate::UnknownReason::UnorderedConflict
+            } else {
+                crate::UnknownReason::NativeStatus
+            };
+            State::Unknown { reason }
+        }
         Some(first) if values.iter().any(|v| v != first) => State::Conflict,
         Some(first) => first.clone(),
         None if sources.iter().any(|s| s.state == State::Deleted) => State::Deleted,

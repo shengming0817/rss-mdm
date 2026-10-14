@@ -1022,7 +1022,7 @@ async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> 
             .any(|b| b["id"] == "windows.software.win32")
     );
     let path = format!("/api/v1/resources/{}", uuid::Uuid::new_v4());
-    let body = json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"instantiate","blueprint":"macos.hardware","version":"1"}});
+    let body = json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"instantiate","blueprint":"macos.hardware","version":"2"}});
     // Fail after the resource commit, then resume the same operation with content enabled.
     let mut without_content = fixture.base.clone();
     without_content["content"] = serde_json::Value::Null;
@@ -1062,7 +1062,7 @@ async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> 
         &router,
         &candidate,
         0,
-        json!({"action":"instantiate","blueprint":"macos.hardware","version":"1"}),
+        json!({"action":"instantiate","blueprint":"macos.hardware","version":"2"}),
     )
     .await?;
     ensure!(browser.call(&router, Method::GET, &path, None).await? == current);

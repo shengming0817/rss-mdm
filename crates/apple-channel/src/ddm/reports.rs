@@ -96,7 +96,9 @@ impl Exchange {
         )?;
         let inserted = sqlx::query("INSERT INTO mdm_apple.status_reports(tenant_id,id,registration,generation,user_key,digest,evidence) VALUES($1::uuid,$2,$3,$4,$5,$6,$7) ON CONFLICT(tenant_id,registration,generation,user_key,digest) DO NOTHING")
             .bind(p.tenant().to_string()).bind(id).bind(p.registration()).bind(p.generation()).bind(&self.user).bind(digest.as_slice()).bind(sealed).execute(&mut *c).await.map_err(db)?.rows_affected() == 1;
+        let mut facts = Vec::new();
         if inserted {
+            let mut projections = Vec::new();
             let received_at:i64=sqlx::query_scalar("SELECT received_at FROM mdm_apple.status_reports WHERE tenant_id=$1::uuid AND id=$2").bind(p.tenant().to_string()).bind(id).fetch_one(&mut *c).await.map_err(db)?;
             // Raw history and bounded accumulated claims commit together in the host transaction.
             for (operation, _, publication) in publications {
@@ -117,8 +119,10 @@ impl Exchange {
                 projection
                     .observe(&evidence)
                     .map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
+                let checkpoint = projection.checkpoint();
+                projections.push(projection.finish().map_err(|_| Error::Malformed)?);
                 let bytes = serde_json::to_vec(&Accumulated {
-                    state: projection.checkpoint(),
+                    state: checkpoint,
                     received_at,
                 })
                 .map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
@@ -129,6 +133,52 @@ impl Exchange {
                     .map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
                 sqlx::query("UPDATE mdm_apple.declarations SET projection=$3 WHERE tenant_id=$1::uuid AND operation=$2 AND retired_at IS NULL").bind(p.tenant().to_string()).bind(operation).bind(sealed).execute(&mut *c).await.map_err(db)?;
             }
+            let mut values = std::collections::BTreeMap::new();
+            let mut unknown = std::collections::BTreeSet::new();
+            let mut declarations = std::collections::BTreeMap::new();
+            for projection in projections {
+                unknown.extend(projection.unknown_items);
+                for (name, value) in projection.items {
+                    if values.get(&name).is_some_and(|old| old != &value) {
+                        unknown.insert(name.clone());
+                    }
+                    values.insert(name, value);
+                }
+                for declaration in projection.declarations {
+                    let identifier = declaration["identifier"]
+                        .as_str()
+                        .ok_or(Error::Malformed)?
+                        .to_owned();
+                    if declarations
+                        .get(&identifier)
+                        .is_some_and(|old| old != &declaration)
+                    {
+                        unknown.insert("management.declarations".into());
+                    }
+                    declarations.insert(identifier, declaration);
+                }
+            }
+            if evidence.subscriptions.contains("management.declarations") {
+                values.insert(
+                    "management.declarations".into(),
+                    serde_json::Value::Array(declarations.into_values().collect()),
+                );
+            }
+            facts = rss_mdm_inventory_service::collection::declarative::receive(c,
+                rss_mdm_inventory_service::collection::declarative::Report {
+                    target: rss_mdm_inventory_service::collection::native::Target {
+                        tenant:p.tenant(),device:p.device().into(),registration:p.registration(),generation:p.generation(),
+                    },
+                    id,
+                    scope: if self.user.is_empty() { rss_mdm_inventory::CollectionScope::Device }
+                        else { rss_mdm_inventory::CollectionScope::User { identity:self.user.clone() } },
+                    subscribed:evidence.subscriptions.clone(),values,unknown,received_at,
+                    evidence:serde_json::json!({
+                        "report":id,"digest":digest.as_slice(),"user":self.user,
+                        "subscriptions":evidence.subscriptions,"declarationsToken":evidence.declarations_token,
+                        "publications":publications.iter().map(|(id,_,p)|serde_json::json!({"id":id,"inputVersion":p.input_version})).collect::<Vec<_>>()
+                    }),
+                }).await?;
         }
         let mut synchronized = Vec::new();
         for (id, _, publication) in publications {
@@ -161,6 +211,7 @@ impl Exchange {
             }
         }
         Ok(channels::AppleDdmReply {
+            facts,
             status: 200,
             bytes: Vec::new(),
             synchronized,

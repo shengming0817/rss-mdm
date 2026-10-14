@@ -46,7 +46,7 @@ impl Fixture {
         // Make old entries due again to independently exercise the native 32-item scan.
         sqlx::query("UPDATE mdm_apple.attempts SET next_attempt=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND collection IS NOT NULL AND state='pending'").bind(case_tenant()).execute(&mut pg).await?;
         pg.close().await?;
-        let (id, _) = peer.next("DeviceInformation").await?;
+        let (id, _) = peer.next_collection().await?;
         ensure!(
             id == run,
             "expired queue page starved current native request"

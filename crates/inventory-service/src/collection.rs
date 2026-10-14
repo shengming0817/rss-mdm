@@ -1,6 +1,7 @@
 //! Native collection is the durable product intake; RSS owns receipts and projection.
 pub mod agent;
 pub mod channel;
+pub mod declarative;
 pub mod enterprise;
 pub mod native;
 pub mod read;

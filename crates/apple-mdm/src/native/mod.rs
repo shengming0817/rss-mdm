@@ -323,6 +323,49 @@ impl Command {
         outcome::prerequisites(request_type, &fields, target.context)?;
         Payload::new(Kind::Command, request_type, fields, target).map(Self)
     }
+    /// Check inherited response-field availability without inventing a response value.
+    pub fn response_field_supported(
+        request_type: &str,
+        path: &[&str],
+        target: &Target<'_>,
+    ) -> Result<(), Error> {
+        if request_type == "SecurityInfo"
+            && matches!(
+                (path.last().copied(), target.context.apple_silicon),
+                (Some("FirmwarePasswordStatus"), Some(true))
+                    | (Some("IsRecoveryLockEnabled"), Some(false))
+            )
+        {
+            return Err(Error::Unsupported);
+        }
+        let definition = generated::DEFINITIONS
+            .iter()
+            .find(|d| d.kind == Kind::Command && d.identity == request_type)
+            .ok_or(Error::UnknownSchema)?;
+        let mut conditions = definition.active(target)?.conditions;
+        if request_type == "DeviceInformation" {
+            conditions.access_rights = None;
+        }
+        conditions.check(target)?;
+        let mut children = definition.response;
+        for name in path {
+            let field = children
+                .iter()
+                .map(|id| &definition.fields[*id])
+                .find(|f| f.key == *name)
+                .ok_or(Error::Field)?;
+            let rule = field.active(target)?;
+            conditions = rule.conditions.inherit(conditions);
+            if request_type == "DeviceInformation"
+                && conditions.access_rights == Some("Special Case")
+            {
+                conditions.access_rights = None;
+            }
+            conditions.check(target)?;
+            children = rule.children;
+        }
+        Ok(())
+    }
     pub fn request_type(&self) -> &'static str {
         self.0.definition.identity
     }

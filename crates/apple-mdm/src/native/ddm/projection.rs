@@ -55,7 +55,7 @@ impl ArrayClaims {
     }
     fn finish(self) -> Result<(Value, bool), Error> {
         let mut items = Vec::new();
-        let mut unknown = self.absent;
+        let mut unknown = self.absent || self.full.is_none();
         for (id, mut values) in self.objects {
             if self.absent
                 || self
@@ -401,5 +401,38 @@ fn claim(values: &mut BTreeSet<String>, value: String) {
     values.insert(value);
     if values.len() > 2 {
         values.pop_last();
+    }
+}
+
+#[cfg(test)]
+mod array_baseline_tests {
+    use super::*;
+    #[test]
+    fn incremental_objects_without_full_baseline_are_unknown() {
+        let mut claims = ArrayClaims::default();
+        claims
+            .observe(&json!([{"identifier":"one","version":"1"}]), false)
+            .unwrap();
+        assert!(claims.finish().unwrap().1);
+        let mut empty = ArrayClaims::default();
+        empty.observe(&json!([]), true).unwrap();
+        assert_eq!(empty.finish().unwrap(), (json!([]), false));
+    }
+    #[test]
+    fn full_and_conflicting_delta_do_not_invent_last_writer_order() {
+        for reverse in [false, true] {
+            let mut claims = ArrayClaims::default();
+            let mut reports = vec![
+                (json!([{"identifier":"one","version":"1"}]), true),
+                (json!([{"identifier":"one","version":"2"}]), false),
+            ];
+            if reverse {
+                reports.reverse();
+            }
+            for (value, full) in reports {
+                claims.observe(&value, full).unwrap();
+            }
+            assert!(claims.finish().unwrap().1);
+        }
     }
 }

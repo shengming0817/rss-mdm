@@ -5,7 +5,13 @@ use rss_mdm_inventory::{Evidence, Scalar, State, ValueType};
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ListState {
-    Known { count: usize, digest: String },
+    Unknown {
+        reason: rss_mdm_inventory::UnknownReason,
+    },
+    Known {
+        count: usize,
+        digest: String,
+    },
     Missing,
     Null,
     Deleted,
@@ -46,6 +52,7 @@ fn state(value: &State) -> Result<ListState> {
             digest: digest(values)?,
         },
         State::Missing => ListState::Missing,
+        State::Unknown { reason } => ListState::Unknown { reason: *reason },
         State::Null => ListState::Null,
         State::Deleted => ListState::Deleted,
         State::Unsupported => ListState::Unsupported,
@@ -182,6 +189,7 @@ impl AssetService {
             (self.list_watermark(tx).await?, 0, None)
         };
         let restricted = ReadScope {
+            collection_scope: scope.collection_scope.clone(),
             subject: scope.subject.clone(),
             sensitive: scope.sensitive,
             devices: Some([device.to_owned()].into()),

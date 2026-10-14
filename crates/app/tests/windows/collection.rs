@@ -821,6 +821,7 @@ async fn dynamic_result(
         .unwrap();
     let agent_value=field.value_type.decode_json(&json!([{"id":"agent-app","name":"Agent application","version":"9","publisher":"Vendor","scope":"device","native_id":"agent-app","owner":"","origin":"agent","location":""}]))?;
     let definition = rss_mdm_inventory::CollectionDefinition::new(
+        rss_mdm_inventory::CollectionScope::Device,
         "inventory",
         "prior-software",
         rss_mdm_inventory::Source::AgentBuiltin,

@@ -124,6 +124,7 @@ async fn report_on(
         rss_mdm_inventory::builtin::OS_VERSION,
     ];
     let definition = rss_mdm_inventory::CollectionDefinition::new(
+        rss_mdm_inventory::CollectionScope::Device,
         "inventory",
         "fixture-template-v1",
         rss_mdm_inventory::Source::MdmWindows,

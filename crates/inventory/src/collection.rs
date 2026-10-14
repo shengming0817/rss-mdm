@@ -23,7 +23,13 @@ impl TryFrom<Definition> for CollectionDefinition {
     type Error = Invalid;
     fn try_from(value: Definition) -> Result<Self> {
         value.scope.validate_executable()?;
-        Self::new(&value.dataset, &value.version, value.source, value.fields)
+        Self::new(
+            value.scope,
+            &value.dataset,
+            &value.version,
+            value.source,
+            value.fields,
+        )
     }
 }
 impl From<CollectionDefinition> for Definition {
@@ -34,11 +40,16 @@ impl From<CollectionDefinition> for Definition {
 impl CollectionDefinition {
     /// Bind a finite unique field set to one device source and immutable definition version.
     pub fn new(
+        scope: crate::CollectionScope,
         dataset: &str,
         version: impl ToString,
         source: Source,
         mut fields: Vec<FieldDefinition>,
     ) -> Result<Self> {
+        scope.validate_executable()?;
+        if !matches!(scope, crate::CollectionScope::Device) && source != Source::MdmApple {
+            return Err(Invalid::SourceNotAllowed);
+        }
         Id::new(dataset).map_err(|_| Invalid::Value)?;
         let version = version.to_string();
         Id::new(&version).map_err(|_| Invalid::Value)?;
@@ -59,7 +70,7 @@ impl CollectionDefinition {
             dataset: dataset.into(),
             version,
             source,
-            scope: crate::CollectionScope::Device,
+            scope,
             fields,
         }))
     }

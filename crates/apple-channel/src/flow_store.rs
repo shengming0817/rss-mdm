@@ -261,13 +261,14 @@ impl channels::AppleCollections for Store {
         c: &'a mut PgConnection,
         tenant: String,
         registration: Uuid,
+        user_key: String,
         limit: usize,
     ) -> Pending<'a, Vec<channels::PendingCollection>> {
         Box::pin(async move {
             let mut result = Vec::new();
             let mut offset = 0i64;
             while result.len() < limit {
-                let ids=sqlx::query_scalar::<_,Uuid>("SELECT collection FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND registration=$2::uuid AND collection IS NOT NULL AND state IN('pending','sent','not_now') AND deadline>clock_timestamp() AND next_attempt<=clock_timestamp() GROUP BY collection ORDER BY min(next_attempt),collection LIMIT 64 OFFSET $3").bind(&tenant).bind(registration).bind(offset).fetch_all(&mut *c).await.map_err(storage)?;
+                let ids=sqlx::query_scalar::<_,Uuid>("SELECT collection FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND registration=$2::uuid AND user_key=$4 AND collection IS NOT NULL AND state IN('pending','sent','not_now') AND deadline>clock_timestamp() AND next_attempt<=clock_timestamp() GROUP BY collection ORDER BY min(next_attempt),collection LIMIT 64 OFFSET $3").bind(&tenant).bind(registration).bind(offset).bind(&user_key).fetch_all(&mut *c).await.map_err(storage)?;
                 let mut pending = rss_mdm_inventory_service::collection::read::pending_apple_in(
                     c,
                     &tenant,
@@ -410,14 +411,18 @@ impl channels::Apple for super::Apple {
         &'a self,
         c: &'a mut PgConnection,
         p: &'a DevicePrincipal,
+        user_key: &'a str,
     ) -> Pending<'a, channels::Reply> {
         Box::pin(async move {
-            let (mut bytes, facts) =
+            let (mut bytes, facts) = if user_key.is_empty() {
                 crate::agent_collection::send(c, &self.protection, p, self.agent_identity.as_ref())
                     .await
-                    .map_err(channels::Rejection::from)?;
+                    .map_err(channels::Rejection::from)?
+            } else {
+                (Vec::new(), Vec::new())
+            };
             if bytes.is_empty() {
-                bytes = crate::collection::send(c, &self.protection, p)
+                bytes = crate::collection::send(c, &self.protection, p, user_key)
                     .await
                     .map_err(channels::Rejection::from)?;
             }

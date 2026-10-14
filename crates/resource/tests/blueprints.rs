@@ -19,11 +19,16 @@ fn official_templates_are_nonempty_exact_versions_and_tenant_resources() {
             .unwrap();
         assert_eq!(a.variants().len(), 2);
         assert_ne!(a.resource(), b.resource());
-        assert!(!blueprint.definition.spec().mappings.is_empty());
-        blueprint
-            .definition
-            .validate_platform(blueprint.platform)
-            .unwrap();
+        match &blueprint.definition {
+            blueprints::Definition::NativeCollection { template } => {
+                assert!(!template.spec().mappings.is_empty());
+                template.validate_platform(blueprint.platform).unwrap();
+            }
+            blueprints::Definition::Configuration { content } => {
+                assert_eq!(content["apply"]["request"]["kind"], "declarations");
+                assert_eq!(blueprint.definition.reference(), "configuration.json");
+            }
+        }
         assert!(blueprints::get(&blueprint.id, "latest").is_none());
     }
 }
@@ -69,4 +74,22 @@ fn mdm_templates_cannot_claim_unverified_architecture_constraints() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn origin_survives_snapshot_restore_without_catalog_lookup() {
+    use rss_mdm_resource::{BlueprintOrigin, Kind, Resource};
+    let tenant =
+        rss_request_context::TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
+    let mut resource = Resource::new(tenant, Id::new("origin").unwrap(), Kind::NativeCollection);
+    let origin = BlueprintOrigin {
+        blueprint: "removed.from.catalog".into(),
+        version: "2".into(),
+        digest: [9; 32],
+    };
+    resource.set_origin(origin.clone()).unwrap();
+    assert!(resource.set_origin(origin.clone()).is_err());
+    let restored = Resource::restore(resource.snapshot()).unwrap();
+    assert_eq!(restored.snapshot().origin, Some(origin));
+    assert!(blueprints::get("macos.identity", "1").is_none());
 }

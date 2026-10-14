@@ -152,9 +152,13 @@ pub fn fields() -> Vec<FieldDefinition> {
     }
     fields.extend(standard::fields());
     fields.extend(windows::fields());
+    fields.extend(apple::fields());
+    fields.extend(apple_status::fields().into_iter().map(|(_, f)| f));
     fields
 }
 
+mod apple;
+pub mod apple_status;
 mod standard;
 mod windows;
 /// Stable system identities used by enrollment, device association and channel lifecycle.

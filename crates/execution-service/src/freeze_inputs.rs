@@ -75,12 +75,22 @@ pub(crate) async fn prepare_collection_in<'a>(
 ) -> crate::transaction::Result<(rss_mdm_inventory::CollectionDefinition, bool)> {
     use crate::transaction::{Result, checked_input};
     use sha2::{Digest, Sha256};
+    let scope = match variant.declaration() {
+        r::Declaration::NativeCollection { definition, .. } => match &definition.spec().scope {
+            r::TemplateScope::Device => rss_mdm_inventory::CollectionScope::Device,
+            r::TemplateScope::User { identity } => rss_mdm_inventory::CollectionScope::User {
+                identity: identity.clone(),
+            },
+            _ => return Err(crate::Error::Malformed.into()),
+        },
+        _ => rss_mdm_inventory::CollectionScope::Device,
+    };
     let dataset = format!(
         "resource.{:x}",
         Sha256::digest(checked_input(serde_json::to_vec(&(
             version.resource().as_str(),
             variant.key().as_str(),
-            "device"
+            &scope
         )))?)
     );
     let template = format!("{:x}", Sha256::digest(version.digest().bytes()));
@@ -120,7 +130,7 @@ pub(crate) async fn prepare_collection_in<'a>(
         return Err(crate::Error::Malformed.into());
     }
     let definition = checked_input(rss_mdm_inventory::CollectionDefinition::new(
-        &dataset, template, source, fields,
+        scope, &dataset, template, source, fields,
     ))?;
     Ok((definition, false))
 }

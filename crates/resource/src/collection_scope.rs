@@ -1,6 +1,6 @@
 //! Collection range is immutable evidence; it is not the policy's target set.
 use serde::{Deserialize, Serialize};
-/// Exact namespace of collected values. Only device-wide projection is currently executable.
+/// Exact namespace of collected values. Device and authenticated Apple user namespaces are executable.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TemplateScope {
@@ -30,10 +30,22 @@ pub enum TemplateScope {
 impl TemplateScope {
     /// Reject ranges that the current end-to-end storage/query path cannot distinguish safely.
     pub fn validate_executable(&self) -> Result<(), crate::Error> {
-        if matches!(self, Self::Device) {
-            Ok(())
-        } else {
-            Err(crate::Error::InvalidInput)
+        match self {
+            Self::Device => Ok(()),
+            Self::User { identity }
+                if identity.len() == 36
+                    && identity.bytes().enumerate().all(|(i, b)| {
+                        if [8, 13, 18, 23].contains(&i) {
+                            b == b'-'
+                        } else {
+                            b.is_ascii_digit() || (b'a'..=b'f').contains(&b)
+                        }
+                    })
+                    && identity != "00000000-0000-0000-0000-000000000000" =>
+            {
+                Ok(())
+            }
+            _ => Err(crate::Error::InvalidInput),
         }
     }
 }

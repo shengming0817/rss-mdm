@@ -9,6 +9,7 @@ pub struct RunView {
     pub generation: i64,
     pub source: rss_mdm_inventory::Source,
     pub dataset: String,
+    pub scope: rss_mdm_inventory::CollectionScope,
     pub template_version: String,
     pub sequence: i64,
     pub started_at: i64,
@@ -35,13 +36,21 @@ impl AssetService {
         }
         let tenant = self.tenant;
         let device = device.to_owned();
+        let user = match &scope.collection_scope {
+            rss_mdm_inventory::CollectionScope::Device => String::new(),
+            rss_mdm_inventory::CollectionScope::User { identity } => identity.clone(),
+            _ => return Err(Error::Malformed.into()),
+        };
         let row=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query("SELECT c.registration,r.generation,c.source,c.sequence,c.started_at,c.sealed_at,c.result,c.reason,c.delivery_pending,c.attempts FROM mdm_access.collection_runs c JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(c.tenant_id,c.registration) WHERE c.tenant_id=$1::uuid AND c.id=$2 AND r.device=$3")
-                .bind(tenant.to_string()).bind(id).bind(device).fetch_optional(c).await
+            sqlx::query("SELECT c.registration,r.generation,c.source,c.sequence,c.started_at,c.sealed_at,c.result,c.reason,c.delivery_pending,c.attempts FROM mdm_access.collection_runs c JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(c.tenant_id,c.registration) WHERE c.tenant_id=$1::uuid AND c.id=$2 AND r.device=$3 AND ($4='' OR EXISTS(SELECT 1 FROM mdm_apple.channels ch WHERE (ch.tenant_id,ch.registration,ch.generation)=(r.tenant_id,r.id,r.generation) AND ch.user_key=$4 AND ch.state='active' AND r.state='active'))")
+                .bind(tenant.to_string()).bind(id).bind(device).bind(user).fetch_optional(c).await
         })).await?.ok_or(Error::NotFound)?;
         let progress: rss_mdm_inventory::CollectionProgress =
             stored(serde_json::from_str(row.try_get("attempts")?))?;
         let definition = progress.definition();
+        if definition.collection_scope() != &scope.collection_scope {
+            return Err(Error::NotFound.into());
+        }
         let fields = progress
             .fields()
             .iter()
@@ -70,6 +79,7 @@ impl AssetService {
             generation: row.try_get("generation")?,
             source: stored(rss_mdm_inventory::Source::parse(row.try_get("source")?))?,
             dataset: definition.dataset().into(),
+            scope: definition.collection_scope().clone(),
             template_version: definition.version().into(),
             sequence: row.try_get("sequence")?,
             started_at: row.try_get("started_at")?,

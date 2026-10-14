@@ -75,6 +75,7 @@ fn frozen_collection_rejects_unregistered_source_wrong_coverage_and_duplicate_fi
     use rss_observation::{Batch, Body, Change, Id};
     let field = definition();
     let contract = CollectionDefinition::new(
+        rss_mdm_inventory::CollectionScope::Device,
         "security-health",
         1,
         Source::AgentScript,
@@ -104,6 +105,7 @@ fn frozen_collection_rejects_unregistered_source_wrong_coverage_and_duplicate_fi
     );
     assert!(
         CollectionDefinition::new(
+            rss_mdm_inventory::CollectionScope::Device,
             "security-health",
             1,
             Source::AgentBuiltin,
@@ -121,6 +123,7 @@ fn frozen_collection_rejects_unregistered_source_wrong_coverage_and_duplicate_fi
     );
     assert!(
         CollectionDefinition::new(
+            rss_mdm_inventory::CollectionScope::Device,
             "security-health",
             1,
             Source::AgentScript,
@@ -128,8 +131,14 @@ fn frozen_collection_rejects_unregistered_source_wrong_coverage_and_duplicate_fi
         )
         .is_err()
     );
-    let wrong =
-        CollectionDefinition::new("different", 1, Source::AgentScript, vec![definition()]).unwrap();
+    let wrong = CollectionDefinition::new(
+        rss_mdm_inventory::CollectionScope::Device,
+        "different",
+        1,
+        Source::AgentScript,
+        vec![definition()],
+    )
+    .unwrap();
     assert!(wrong.validate(&batch(Body::Snapshot(vec![]))).is_err());
     assert!(contract.validate(&batch(Body::Snapshot(vec![]))).is_ok());
 }
@@ -265,6 +274,7 @@ fn empty_catalog_represents_uninitialized_tenant_without_inventing_fields() {
     );
     assert!(
         rss_mdm_inventory::CollectionDefinition::new(
+            rss_mdm_inventory::CollectionScope::Device,
             "empty",
             "1",
             rss_mdm_inventory::Source::AgentBuiltin,

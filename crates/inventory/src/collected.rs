@@ -1,6 +1,19 @@
 //! Canonical typed Observation value; source identity comes from the authenticated stream.
 use crate::{FieldDefinition, Invalid, Result, Scalar};
 use serde::{Deserialize, Serialize};
+/// Why a received native observation cannot establish a current fact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnknownReason {
+    /// Reports disagree without a trustworthy production order.
+    UnorderedConflict,
+    /// No complete baseline for this status item.
+    Incomplete,
+    /// Native status explicitly reports an error or indeterminate value.
+    NativeStatus,
+    /// Bounded evidence storage was exhausted.
+    EvidenceLimit,
+}
 /// Definitive per-field outcome. Failed/missing attempts never delete a last-known fact.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -10,6 +23,11 @@ use serde::{Deserialize, Serialize};
     deny_unknown_fields
 )]
 pub enum CollectedValue {
+    /// Explicit indeterminate current evidence; retained values are historical only.
+    Unknown {
+        /// Closed reason for the indeterminate observation.
+        reason: UnknownReason,
+    },
     /// Typed value validated against the frozen field version.
     Value(Scalar),
     /// Explicit legal null.

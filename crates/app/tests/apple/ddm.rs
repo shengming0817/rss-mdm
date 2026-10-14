@@ -125,7 +125,38 @@ async fn policy_coowners_share_native_publication_without_fabricating_removal() 
     let (execute, _) = peer.next("DeclarativeManagement").await?;
     peer.manage("Acknowledged", Some(execute), None).await?;
     let initial = manifest(&peer, None).await?;
-    native(&peer, None, "status", Some(&report(&initial, true, "15.0"))).await?;
+    let first_report = report(&initial, true, "15.0");
+    ensure!(native(&peer, None, "status", Some(&first_report)).await?.0 == StatusCode::OK);
+    ensure!(native(&peer, None, "status", Some(&first_report)).await?.0 == StatusCode::OK);
+    let mut inventory_db =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND evidence ? 'report'")
+        .bind(case_tenant()).fetch_one(&mut inventory_db).await?;
+    ensure!(
+        count == 1,
+        "replayed DDM report created a second collection"
+    );
+    ensure!(
+        native(&peer, None, "status", Some(&report(&initial, true, "15.1")))
+            .await?
+            .0
+            == StatusCode::OK
+    );
+    let (result,attempts):(String,String)=sqlx::query_as("SELECT result,attempts FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND evidence ? 'report' ORDER BY sequence DESC LIMIT 1")
+        .bind(case_tenant()).fetch_one(&mut inventory_db).await?;
+    ensure!(result == "partial");
+    let progress: rss_mdm_inventory::CollectionProgress = serde_json::from_str(&attempts)?;
+    let field = rss_mdm_inventory::FieldKey::parse("device.ddm.device.operating_system.version")?;
+    ensure!(
+        progress.fields()[&field].quality == rss_mdm_inventory::Quality::Unknown,
+        "unordered report fabricated current truth"
+    );
+    ensure!(native(&peer, None, "status", Some(&first_report)).await?.0 == StatusCode::OK);
+    let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND evidence ? 'report'")
+        .bind(case_tenant()).fetch_one(&mut inventory_db).await?;
+    ensure!(count == 2);
+    inventory_db.close().await?;
     ensure!(f.operation(applied).await?["commandStatus"] == "applied");
     f.policy_post(
         &format!("/api/v1/policies/{second}"),

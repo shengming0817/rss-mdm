@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Quality {
+    /// Received evidence explicitly cannot establish a current fact.
+    Unknown,
     /// Not attempted or not confirmed.
     Pending,
     /// Confirmed typed value, including explicit null.
@@ -140,6 +142,9 @@ impl TryFrom<Document> for CollectionProgress {
 fn quality(f: &FieldAttempt, finished: bool) -> Quality {
     if let Some(terminal) = f.terminal {
         return terminal;
+    }
+    if f.confirmed && matches!(f.value, Some(CollectedValue::Unknown { .. })) {
+        return Quality::Unknown;
     }
     if f.confirmed && f.value == Some(CollectedValue::Deleted) {
         return Quality::Deleted;
@@ -328,7 +333,7 @@ impl CollectionProgress {
         let mut changes = Vec::new();
         for (key, f) in &self.0.fields {
             let value = match f.quality {
-                Quality::Success => f.value.as_ref(),
+                Quality::Success | Quality::Unknown => f.value.as_ref(),
                 Quality::Unsupported => Some(&CollectedValue::Unsupported),
                 Quality::Deleted if !complete => Some(&CollectedValue::Deleted),
                 _ => None,
@@ -413,6 +418,16 @@ impl CollectionProgress {
             }
         }
         result.finish();
+        Ok(result)
+    }
+    /// Seal incremental native evidence without promoting it to a full snapshot.
+    pub fn native_partial(
+        definition: CollectionDefinition,
+        values: BTreeMap<FieldKey, NativeValue>,
+        at: i64,
+    ) -> Result<Self> {
+        let mut result = Self::native(definition, values, at)?;
+        result.0.complete_coverage = false;
         Ok(result)
     }
     /// Read quality from an already verified report; full absence and explicit deletes remain distinct from failure.

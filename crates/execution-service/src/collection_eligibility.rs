@@ -48,20 +48,29 @@ pub async fn native_on(
         }
     } else {
         let rights: Option<i32> = sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'").bind(tenant.to_string()).bind(target.registration).fetch_optional(&mut *c).await.map_err(crate::database::db)?;
-        let required = if adapter == NativeAdapter::AppleDeviceInformation {
-            16
-        } else {
-            256
-        };
+        let required = adapter.apple_rights().ok_or(Error::Unsupported)? | 1040;
         if rights.is_none_or(|rights| rights & required != required) {
             return Ok(false);
         }
+        let user = match &template.spec().scope {
+            rss_mdm_resource::TemplateScope::Device => "",
+            rss_mdm_resource::TemplateScope::User { identity } => identity,
+            _ => return Ok(false),
+        };
+        let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND user_key=$4 AND state='active')")
+            .bind(tenant.to_string()).bind(target.registration).bind(target.generation).bind(user).fetch_one(&mut *c).await.map_err(crate::database::db)?;
+        if !active {
+            return Ok(false);
+        }
+        let context: Option<serde_json::Value> = sqlx::query_scalar("SELECT context FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND user_key=$4 AND phase='collect' AND context IS NOT NULL ORDER BY collection_sequence DESC LIMIT 1")
+            .bind(tenant.to_string()).bind(target.registration).bind(target.generation).bind(user).fetch_optional(&mut *c).await.map_err(crate::database::db)?;
+        if let Some(context) = context {
+            let context: rss_mdm_apple_mdm::applicability::Context =
+                serde_json::from_value(context).map_err(|_| Error::Malformed)?;
+            environment.os_version = context.version.map(String::from);
+        }
     }
-    let capability = match adapter {
-        NativeAdapter::WindowsRead => "windows_read",
-        NativeAdapter::AppleDeviceInformation => "apple_device_information",
-        NativeAdapter::AppleInstalledApplications => "apple_installed_applications",
-    };
+    let capability = adapter.capability();
     Ok(template
         .spec()
         .applicability

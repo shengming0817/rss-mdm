@@ -36,6 +36,7 @@ impl Authority for FixtureAuthority {
 /// This fixture publishes an explicit collector just as a production collection owner does.
 pub fn definition() -> CollectionDefinition {
     CollectionDefinition::new(
+        rss_mdm_inventory::CollectionScope::Device,
         DATASET,
         "fixture-v1",
         Source::AgentBuiltin,

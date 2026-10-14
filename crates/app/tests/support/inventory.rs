@@ -96,6 +96,7 @@ pub(crate) fn definition(
 ) -> rss_mdm_inventory::CollectionDefinition {
     let catalog = rss_mdm_inventory::Catalog::new(rss_mdm_inventory::builtin::fields()).unwrap();
     rss_mdm_inventory::CollectionDefinition::new(
+        rss_mdm_inventory::CollectionScope::Device,
         dataset,
         "fixture",
         rss_mdm_inventory::Source::parse(source).unwrap(),

@@ -1722,3 +1722,6 @@ consume(('crates/resource/src/blueprints/windows.rs',), 'planning.http windows.m
 consume(('crates/inventory/src/builtin/windows.rs',), 'windows.management inventory.runtime assets.http')
 T1_INPUTS += ('crates/execution-service/tests/native_collection_unit.rs', 'fixtures/windows-collection/*')
 consume(('crates/native-schema/src/windows.rs', 'crates/native-schema/src/windows/generate.rs'), 'windows.management')
+
+consume(('crates/apple-channel/src/collection_context.rs', 'crates/apple-channel/src/collection_values.rs', 'fixtures/apple-collection/*'), 'apple.collection')
+consume(('crates/inventory/src/builtin/apple*.rs', 'crates/resource/src/blueprints/apple.rs', 'crates/inventory-service/src/collection/declarative.rs'), 'apple.collection apple.ddm planning.http')

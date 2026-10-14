@@ -33,6 +33,7 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
         (a, "agent.builtin", "C"),
     ] {
         let definition = rss_mdm_inventory::CollectionDefinition::new(
+            rss_mdm_inventory::CollectionScope::Device,
             "inventory",
             1,
             rss_mdm_inventory::Source::parse(source)?,

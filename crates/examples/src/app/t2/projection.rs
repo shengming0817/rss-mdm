@@ -332,6 +332,7 @@ async fn narrower_snapshot_preserves_unselected_fields_in_the_same_source_scope(
         .await?;
     let base = crate::fixture::definition();
     let narrow = model::CollectionDefinition::new(
+        rss_mdm_inventory::CollectionScope::Device,
         base.dataset(),
         "narrow-v1",
         base.source(),

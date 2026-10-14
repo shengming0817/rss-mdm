@@ -5,6 +5,8 @@ mod agent_collection;
 pub mod attempt;
 mod checkin;
 pub mod collection;
+mod collection_context;
+mod collection_values;
 mod database;
 pub mod ddm;
 pub mod enrollment;

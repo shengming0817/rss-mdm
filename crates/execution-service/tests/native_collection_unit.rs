@@ -1,14 +1,19 @@
 use rss_mdm_inventory::{FieldKey, builtin};
-use rss_mdm_resource::{NativeAdapter, blueprints};
+use rss_mdm_resource::blueprints;
 #[test]
 fn every_windows_blueprint_compiles_and_maps_only_published_fields() {
     let fields = builtin::fields();
     rss_mdm_inventory::Catalog::new(fields.clone()).unwrap();
     for blueprint in blueprints::catalog()
         .into_iter()
-        .filter(|b| b.definition.spec().adapter == NativeAdapter::WindowsRead)
+        .filter(|b| b.platform == rss_mdm_resource::Platform::Windows)
     {
-        let plan = crate::input_preparation::windows_collection_plan(&blueprint.definition)
+        let rss_mdm_resource::blueprints::Definition::NativeCollection { template } =
+            &blueprint.definition
+        else {
+            panic!("Windows native pack")
+        };
+        let plan = crate::input_preparation::windows_collection_plan(template)
             .unwrap_or_else(|e| panic!("{}: {e:?}", blueprint.id));
         plan.applicable(rss_mdm_windows_mdm::native::Context {
             build: Some([10, 0, 22621, 0]),
@@ -17,7 +22,7 @@ fn every_windows_blueprint_compiles_and_maps_only_published_fields() {
             enrollment: rss_mdm_windows_mdm::native::Enrollment::Primary,
         })
         .unwrap_or_else(|e| panic!("{}: {e:?}", blueprint.id));
-        for (name, mapping) in &blueprint.definition.spec().mappings {
+        for (name, mapping) in &template.spec().mappings {
             let key = FieldKey::parse(name).unwrap();
             let field = fields
                 .iter()
@@ -38,10 +43,13 @@ fn security_codes_and_capacity_have_exact_native_meanings() {
     rss_mdm_inventory::Catalog::new(fields.clone()).unwrap();
     let read = |pack: &str, key: &str, raw: &str| {
         let b = blueprints::get(pack, "2").unwrap();
+        let blueprints::Definition::NativeCollection { template } = &b.definition else {
+            panic!("native pack");
+        };
         let field = fields.iter().find(|f| f.key.as_str() == key).unwrap();
         rss_mdm_inventory_service::collection::native::value(
             field,
-            &b.definition.spec().mappings[key],
+            &template.spec().mappings[key],
             &serde_json::json!(raw),
         )
     };
@@ -104,7 +112,7 @@ fn every_standard_pack_replays_raw_syncml_and_matches_normalized_fixture() {
     rss_mdm_inventory::Catalog::new(fields.clone()).unwrap();
     for b in blueprints::catalog()
         .into_iter()
-        .filter(|b| b.definition.spec().adapter == NativeAdapter::WindowsRead)
+        .filter(|b| b.platform == rss_mdm_resource::Platform::Windows)
     {
         let id = b.id.strip_prefix("windows.").unwrap();
         let xml = std::fs::read(root.join(format!("{id}.xml"))).unwrap();
@@ -119,7 +127,10 @@ fn every_standard_pack_replays_raw_syncml_and_matches_normalized_fixture() {
             .flatten()
             .map(|i| (i.source.unwrap(), i.data.unwrap().0))
             .collect();
-        let plan = crate::input_preparation::windows_collection_plan(&b.definition).unwrap();
+        let blueprints::Definition::NativeCollection { template } = &b.definition else {
+            panic!("native pack");
+        };
+        let plan = crate::input_preparation::windows_collection_plan(template).unwrap();
         let mut state = plan.start("RSS").unwrap();
         let context = Context {
             build: Some([10, 0, 22621, 0]),
@@ -154,7 +165,7 @@ fn every_standard_pack_replays_raw_syncml_and_matches_normalized_fixture() {
                 state.status(message, command, 200).unwrap();
             }
             state
-                .advance(&plan, b.definition.spec().output_bytes as usize)
+                .advance(&plan, template.spec().output_bytes as usize)
                 .unwrap();
             outputs.extend(state.outcomes(&plan).unwrap());
         }
@@ -167,7 +178,7 @@ fn every_standard_pack_replays_raw_syncml_and_matches_normalized_fixture() {
             let NativeValue::Value(CollectedValue::Value(value)) =
                 rss_mdm_inventory_service::collection::native::value(
                     field,
-                    &b.definition.spec().mappings[&key],
+                    &template.spec().mappings[&key],
                     &raw,
                 )
             else {
@@ -190,19 +201,20 @@ fn authorization_targets_do_not_inherit_single_message_budget() {
         schedule::{Misfire, Schedule, Trigger},
     };
     let blueprint = blueprints::get("windows.software.store", "2").unwrap();
-    let mapping = blueprint
-        .definition
-        .spec()
-        .mappings
-        .values()
-        .next()
-        .unwrap()
-        .clone();
+    let blueprints::Definition::NativeCollection { template } = &blueprint.definition else {
+        panic!("native pack");
+    };
+    let mapping = template.spec().mappings.values().next().unwrap().clone();
     let field = builtin::fields()
         .into_iter()
         .find(|f| f.key.as_str() == "device.software.windows.store")
         .unwrap();
-    let mut spec = blueprint.definition.spec().clone();
+    let rss_mdm_resource::blueprints::Definition::NativeCollection { template } =
+        &blueprint.definition
+    else {
+        panic!("native pack")
+    };
+    let mut spec = template.spec().clone();
     spec.mappings.clear();
     let mut fields = Vec::new();
     for i in 0..22 {
@@ -234,6 +246,7 @@ fn authorization_targets_do_not_inherit_single_message_budget() {
         grants: Default::default(),
         resource_digest: [0; 32],
         collection: rss_mdm_inventory::CollectionDefinition::new(
+            rss_mdm_inventory::CollectionScope::Device,
             "inventory",
             "many-fields",
             rss_mdm_inventory::Source::MdmWindows,
@@ -247,4 +260,50 @@ fn authorization_targets_do_not_inherit_single_message_budget() {
             .unwrap()
             .contains(&crate::authorization::Permission::InventoryCollect)
     );
+}
+
+#[test]
+fn apple_status_blueprints_are_real_native_configurations() {
+    use rss_mdm_resource::blueprints::{self, Definition};
+    for blueprint in blueprints::catalog()
+        .into_iter()
+        .filter(|b| b.id.starts_with("macos.ddm."))
+    {
+        let Definition::Configuration { content } = blueprint.definition else {
+            panic!("DDM configuration");
+        };
+        let configuration: crate::configuration::Configuration =
+            serde_json::from_value(content).unwrap();
+        configuration.validate().unwrap();
+        assert!(!configuration.objects().unwrap().is_empty());
+        use rss_mdm_apple_mdm::{
+            applicability::{Channel, Context, Enrollment, Version},
+            native::{Target, ddm::DeclarationSet, request::Request},
+        };
+        let context = Context {
+            version: Some(Version::parse("27.0").unwrap()),
+            channel: Channel::Device,
+            enrollment: Enrollment::Device,
+            supervised: Some(true),
+            automated_enrollment: Some(true),
+            user_approved: Some(true),
+            apple_silicon: Some(true),
+        };
+        let target = Target {
+            context: &context,
+            access_rights: &[],
+        };
+        let crate::Task::Macos {
+            request: Request::Declarations { declarations, .. },
+        } = configuration.apply
+        else {
+            panic!("native declaration");
+        };
+        let compiled = declarations
+            .iter()
+            .map(|d| d.compile("v2", &target))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap_or_else(|e| panic!("{}: {e:?}", blueprint.id));
+        DeclarationSet::new("fixture", compiled).unwrap();
+    }
 }

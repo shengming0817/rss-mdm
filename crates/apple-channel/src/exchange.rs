@@ -91,22 +91,22 @@ impl ports::AppleExchange for Exchange {
                 {
                     return Ok(ports::AppleReception::Collection(facts));
                 }
-                let mut facts = Vec::new();
-                if crate::collection::receive(
-                    c,
-                    &self.apple.protection,
-                    &mut facts,
-                    p,
-                    id,
-                    self.status,
-                    &self.dictionary,
-                    &self.bytes,
-                )
-                .await
-                .map_err(ports::Rejection::from)?
-                {
-                    return Ok(ports::AppleReception::Collection(facts));
-                }
+            }
+            let mut facts = Vec::new();
+            if crate::collection::receive(
+                c,
+                &self.apple.protection,
+                &mut facts,
+                p,
+                id,
+                self.status,
+                &self.dictionary,
+                &self.bytes,
+            )
+            .await
+            .map_err(ports::Rejection::from)?
+            {
+                return Ok(ports::AppleReception::Collection(facts));
             }
             let attempt = crate::attempt::lock(
                 c,

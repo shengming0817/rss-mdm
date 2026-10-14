@@ -2,6 +2,7 @@ use super::*;
 use rss_mdm_inventory::{CollectedValue, CollectionDefinition, Scalar, Source, builtin};
 fn definition() -> CollectionDefinition {
     CollectionDefinition::new(
+        rss_mdm_inventory::CollectionScope::Device,
         "inventory",
         1,
         Source::MdmWindows,

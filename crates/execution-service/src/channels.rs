@@ -165,6 +165,7 @@ pub trait AppleCollections: Send + Sync {
         c: &'a mut PgConnection,
         tenant: String,
         registration: Uuid,
+        user_key: String,
         limit: usize,
     ) -> Pending<'a, Vec<PendingCollection>>;
 }
@@ -334,6 +335,7 @@ pub trait Apple: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         p: &'a DevicePrincipal,
+        user_key: &'a str,
     ) -> Pending<'a, Reply>;
 }
 
@@ -547,6 +549,7 @@ pub trait AppleDdmExchange: Send {
     ) -> Pending<'a, AppleDdmReply>;
 }
 pub struct AppleDdmReply {
+    pub facts: Vec<Fact>,
     pub status: u16,
     pub bytes: Vec<u8>,
     pub synchronized: Vec<Uuid>,
