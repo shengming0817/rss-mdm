@@ -12,6 +12,7 @@ struct Fixture {
     router: Router,
     admin: Browser,
     timeline: Arc<Timeline>,
+    key: Vec<u8>,
 }
 impl Fixture {
     async fn open() -> Result<Self> {
@@ -41,6 +42,7 @@ impl Fixture {
             router,
             admin,
             timeline,
+            key,
         })
     }
     async fn append(
@@ -593,7 +595,7 @@ async fn on_demand_projection_is_bounded_idle_and_resumes_from_durable_checkpoin
     let restarted = f.authority.access.timeline(
         f.authority.audit.clone(),
         TenantId::parse(case_tenant())?,
-        &[9; 32],
+        &f.key,
     )?;
     restarted.initialize().await?;
     let query = rss_mdm_timeline_service::Query {
@@ -629,6 +631,8 @@ async fn lock_checkpoint() -> Result<sqlx::PgConnection> {
 async fn wait_for_projection_lock(owner: &mut sqlx::PgConnection) -> Result<()> {
     tokio::time::timeout(Duration::from_secs(5),async{
         loop {
+            // Each poll must observe fresh activity while the checkpoint lock transaction stays open.
+            sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *owner).await?;
             let waiting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND wait_event_type='Lock' AND query LIKE '%mdm_timeline.checkpoints%')").fetch_one(&mut *owner).await?;
             if waiting {return Ok::<_,anyhow::Error>(())}
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -728,12 +732,12 @@ async fn corrupt_source_is_rejected_without_advancing_the_index() -> Result<()> 
         case_tenant(),
         case_tenant()
     ))?;
+    let (status, error) = f
+        .admin
+        .call(&f.router, Method::GET, "/api/v1/audit-events", None)
+        .await?;
     ensure!(
-        f.admin
-            .call(&f.router, Method::GET, "/api/v1/audit-events", None)
-            .await?
-            .0
-            == StatusCode::SERVICE_UNAVAILABLE
+        status == StatusCode::INTERNAL_SERVER_ERROR && error["code"] == "audit_integrity_error"
     );
     ensure!(
         before

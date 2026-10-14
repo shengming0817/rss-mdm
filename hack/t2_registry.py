@@ -283,6 +283,9 @@ for name in ('projection', 'recovery', 'process'):
 add('worker.wake', selectors=('worker_wake::tests::',),
     sources=('crates/app/src/worker_wake.rs',),
     tests=('crates/app/tests/worker_wake/mod.rs',), support=())
+MODULES['worker.wake']=replace(MODULES['worker.wake'],policies=(
+    CasePolicy('worker_wake::tests::committed_hints_reconnect_and_restart_preserve_durable_work','reuse','pair'),
+))
 add('inventory.runtime', selectors=('inventory_runtime::tests::',), fixtures=('identity',),
     sources=('crates/inventory-service/src/inventory_runtime.rs',),
     tests=('crates/app/tests/inventory_runtime/mod.rs',), support=())
@@ -471,7 +474,7 @@ MODULES['audit.receipts'] = replace(MODULES['audit.receipts'], db_mode='reuse', 
 MODULES['audit.integrity'] = replace(MODULES['audit.integrity'], db_mode='instance', scope='objects', policies=(
     CasePolicy('audit_integration_tests::integrity::storage_integrity_is_enforced', 'fresh', 'objects'),
 ))
-MODULES['audit.recovery'] = replace(MODULES['audit.recovery'], db_mode='reuse', scope='tenant')
+MODULES['audit.recovery'] = replace(MODULES['audit.recovery'], db_mode='reuse', scope='pair')
 MODULES['audit.budget'] = replace(MODULES['audit.budget'], db_mode='reuse', scope='tenant')
 MODULES['identity.local'] = replace(MODULES['identity.local'], db_mode='instance', scope='objects')
 MODULES['identity.sso'] = replace(MODULES['identity.sso'], db_mode='reuse', scope='tenant')
