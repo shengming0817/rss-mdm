@@ -122,8 +122,11 @@ impl Inputs {
             PublicationInput::NativeCollection { binding, .. } => {
                 let (definition, _) = native_collection(&version, binding, verified)?;
                 let source = match definition.spec().adapter {
-                    resource::NativeAdapter::WindowsCsp => rss_mdm_inventory::Source::MdmWindows,
-                    _ => rss_mdm_inventory::Source::MdmApple,
+                    resource::NativeAdapter::WindowsRead => rss_mdm_inventory::Source::MdmWindows,
+                    rss_mdm_resource::NativeAdapter::AppleDeviceInformation
+                    | rss_mdm_resource::NativeAdapter::AppleInstalledApplications => {
+                        rss_mdm_inventory::Source::MdmApple
+                    }
                 };
                 prepare_collection_in(
                     tx,

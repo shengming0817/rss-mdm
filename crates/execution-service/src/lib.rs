@@ -295,3 +295,7 @@ pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
 pub const RELATIONS_SQL: &str = include_str!("../schema/relations.sql");
 
 mod collection_eligibility;
+
+#[cfg(test)]
+#[path = "../tests/native_collection_unit.rs"]
+mod native_collection_unit;

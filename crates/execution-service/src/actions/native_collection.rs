@@ -515,11 +515,11 @@ pub(crate) async fn eligible_target_on(
     Ok(true)
 }
 
-pub async fn queries_on(
+pub async fn plan_on(
     c: &mut sqlx::PgConnection,
     tenant: &str,
     id: Uuid,
-) -> std::result::Result<Vec<rss_mdm_windows_mdm::native::Request>, crate::Error> {
+) -> std::result::Result<rss_mdm_windows_mdm::native::collection::Plan, crate::Error> {
     let frozen:serde_json::Value=sqlx::query_scalar("SELECT coalesce(v.frozen,o.frozen) FROM mdm_commands.action_runs r LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) LEFT JOIN mdm_planning.remote_operations o ON(o.tenant_id,o.id)=(r.tenant_id,r.remote_operation) WHERE r.tenant_id=$1::uuid AND r.id=$2")
         .bind(tenant).bind(id).fetch_one(c).await.map_err(crate::database::db)?;
     let frozen: crate::frozen::Frozen =
@@ -527,8 +527,5 @@ pub async fn queries_on(
     let crate::frozen::Frozen::NativeCollection { action, .. } = frozen else {
         return Err(Error::Malformed);
     };
-    if action.windows_queries.is_empty() {
-        return Err(Error::Malformed);
-    }
-    Ok(action.windows_queries)
+    action.windows_plan.ok_or(Error::Malformed)
 }

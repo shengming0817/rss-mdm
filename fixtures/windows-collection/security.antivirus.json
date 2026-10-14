@@ -1,0 +1,4 @@
+{
+  "device.security.windows.antivirus.status": "enabled",
+  "device.security.windows.antivirus.signatures": "current"
+}

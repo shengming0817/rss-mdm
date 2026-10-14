@@ -178,7 +178,10 @@ CREATE TABLE mdm_windows.collections (
  session_id text NOT NULL,
  request_message bigint NOT NULL CHECK(request_message BETWEEN 1 AND 127),
  first_command bigint NOT NULL CHECK(first_command BETWEEN 1024 AND 4294967294),
- request bytea NOT NULL CHECK(octet_length(request) BETWEEN 68 AND 32836),
+ request bytea CHECK(octet_length(request) BETWEEN 68 AND 32836),
+ kind text NOT NULL CHECK(kind IN ('agent','template')),
+ template_state bytea CHECK(octet_length(template_state) BETWEEN 68 AND 16777344),
+ CHECK((kind='agent' AND request IS NOT NULL AND channel_state IS NOT NULL AND template_state IS NULL) OR (kind='template' AND request IS NULL AND channel_state IS NULL AND template_state IS NOT NULL)),
  channel_state jsonb CHECK(octet_length(channel_state::text)<=8192),
  PRIMARY KEY(tenant_id,id)
 );

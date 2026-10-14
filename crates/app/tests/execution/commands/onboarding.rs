@@ -161,6 +161,68 @@ fn reply(initial: &s::Message, response: &s::Message, installed: bool) -> s::Mes
     }
     output
 }
+#[tokio::test]
+#[ignore = "make t2 MODULE=execution.commands.onboarding"]
+async fn agent_maintenance_without_deadline_completes_more_data() -> Result<()> {
+    let mut host = crate::windows::test_support::Host::with_agent(
+        Some(setup::pin(true)),
+        rss_device_command_postgres::CommandClock::Postgres,
+    )
+    .await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    let (initial, query) = begin(&peer, 951).await?;
+    let run = pg(&format!(
+        "SELECT r.id FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id='{}' AND w.session_id='951' AND w.kind='agent' AND r.deadline IS NULL AND r.sealed_at IS NULL",
+        case_tenant()
+    ))?;
+    let run = Uuid::parse_str(run.trim())?;
+    let mut first = reply(&initial, &query, true);
+    let position = first.commands.iter().position(|c| matches!(c, s::Command::Results(r) if r.items[0].source.as_deref().is_some_and(|uri| uri.ends_with("/Publisher")))).context("Agent Publisher Get")?;
+    let mut fragment = first.commands.remove(position);
+    if let s::Command::Results(result) = &mut fragment {
+        result.items[0].data = Some(Secret("RSS controlled ".into()));
+        result.items[0].more_data = true;
+        result.items[0].meta = Some(s::Meta {
+            format: Some("chr".into()),
+            size: Some("RSS controlled publisher".len() as u32),
+            ..Default::default()
+        });
+    }
+    first.commands.push(fragment.clone());
+    first.final_message = false;
+    let ack = post(&peer, &first).await?;
+    ensure!(
+        ack.commands
+            .iter()
+            .any(|c| matches!(c, s::Command::Status(s) if s.code == 213))
+    );
+    ensure!(!ack.commands.iter().any(|c| matches!(
+        c,
+        s::Command::Alert {
+            alert: s::Alert::SessionAbort,
+            ..
+        }
+    )));
+    if let s::Command::Results(result) = &mut fragment {
+        result.items[0].data = Some(Secret("publisher".into()));
+        result.items[0].more_data = false;
+        result.items[0].meta = None;
+    }
+    let mut tail = reply(&initial, &ack, true);
+    tail.commands.push(fragment);
+    let finished = post(&peer, &tail).await?;
+    ensure!(!finished.commands.iter().any(|c| matches!(
+        c,
+        s::Command::Alert {
+            alert: s::Alert::SessionAbort,
+            ..
+        }
+    )));
+    ensure!(pg(&format!("SELECT r.sealed_at IS NOT NULL AND r.result='snapshot' AND r.evidence->>'publisher'='RSS controlled publisher' AND r.evidence->>'version'='1.2.3' FROM mdm_access.collection_runs r WHERE r.tenant_id='{}' AND r.id='{}'", case_tenant(), run))?.trim() == "t", "Agent fragments did not publish installed evidence");
+    host.close().await
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn windows_policy_install_register_and_replay_use_independent_identity() -> Result<()> {

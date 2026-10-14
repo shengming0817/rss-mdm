@@ -1,0 +1,5 @@
+{
+  "device.security.windows.bitlocker.compliance_errors": [
+    "os_unprotected"
+  ]
+}

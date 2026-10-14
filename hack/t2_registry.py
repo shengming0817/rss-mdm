@@ -1714,6 +1714,11 @@ MODULES['agent.pki'] = replace(MODULES['agent.pki'], policies=(*MODULES['agent.p
 # Git may select this unchanged receipt owner as a copy source; both endpoints need consumers.
 consume(('crates/inventory-service/src/apple_collection*.rs',), 'apple.collection')
 
-consume(('crates/management-http/src/collection/apple.rs',), 'apple.collection')
 consume(('crates/management-http/src/software_publication/http.rs',),
         'publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery')
+
+consume(('crates/windows-mdm/src/native/collection.rs', 'crates/windows-mdm/schema/collection/*', 'crates/native-schema/src/windows/collection.rs'), 'windows.management')
+consume(('crates/resource/src/blueprints/windows.rs',), 'planning.http windows.management')
+consume(('crates/inventory/src/builtin/windows.rs',), 'windows.management inventory.runtime assets.http')
+T1_INPUTS += ('crates/execution-service/tests/native_collection_unit.rs', 'fixtures/windows-collection/*')
+consume(('crates/native-schema/src/windows.rs', 'crates/native-schema/src/windows/generate.rs'), 'windows.management')

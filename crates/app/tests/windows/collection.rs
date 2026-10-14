@@ -58,9 +58,56 @@ async fn template_nonfinal_message_budget_cannot_publish_a_snapshot() -> anyhow:
     )
     .await
 }
+#[tokio::test]
+#[ignore = "MODULE=windows.management: dynamic inventory through SyncML and projection"]
+async fn dynamic_inventory_reenumerates_and_projects() -> anyhow::Result<()> {
+    template_flow(None, 9, Completion::Inventory).await
+}
+#[tokio::test]
+#[ignore = "MODULE=windows.management: a missing dynamic child cannot publish an empty list"]
+async fn dynamic_inventory_missing_child_is_partial() -> anyhow::Result<()> {
+    template_flow(None, 9, Completion::MissingChild).await
+}
+#[tokio::test]
+#[ignore = "MODULE=windows.management: confirmed empty replaces only native inventory"]
+async fn dynamic_empty_preserves_agent_software() -> anyhow::Result<()> {
+    template_flow(None, 9, Completion::EmptyInventory).await
+}
+#[tokio::test]
+#[ignore = "MODULE=windows.management: Final budget boundary preserves confirmed partial fields"]
+async fn dynamic_final_budget_preserves_partial_inventory() -> anyhow::Result<()> {
+    template_flow(
+        None,
+        CodecLimits::default().session_messages as u32 - 1,
+        Completion::FinalInventoryBudget,
+    )
+    .await
+}
+#[tokio::test]
+#[ignore = "MODULE=windows.management: dynamic leaf MoreData uses exact persisted ownership"]
+async fn dynamic_leaf_more_data_completes() -> anyhow::Result<()> {
+    template_flow(None, 9, Completion::FragmentInventory).await
+}
+#[tokio::test]
+#[ignore = "MODULE=windows.management: dynamic leaf replay and continuation recheck grants"]
+async fn dynamic_leaf_replay_and_continuation_revalidate_grants() -> anyhow::Result<()> {
+    template_flow(None, 9, Completion::RevokedInventory).await
+}
+#[tokio::test]
+#[ignore = "MODULE=windows.management: expired template cannot continue a large object"]
+async fn expired_template_rejects_more_data() -> anyhow::Result<()> {
+    template_flow(None, 9, Completion::Expired).await
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Completion {
+    Expired,
     Snapshot,
+    Inventory,
+    MissingChild,
+    EmptyInventory,
+    FinalInventoryBudget,
+    FragmentInventory,
+    RevokedInventory,
     Historical,
     SessionAbort,
     MessageBudget,
@@ -77,6 +124,24 @@ async fn template_flow(
     let mut host = Host::open().await?;
     host.listen().await?;
     let peer = host.peer().await?;
+    let agent_source = if matches!(
+        completion,
+        Completion::Inventory
+            | Completion::MissingChild
+            | Completion::EmptyInventory
+            | Completion::FinalInventoryBudget
+            | Completion::FragmentInventory
+            | Completion::RevokedInventory
+    ) {
+        Some(crate::test_support::inventory::seed_source(
+            case_device(),
+            "agent",
+            "agent.builtin",
+            "Agent model",
+        )?)
+    } else {
+        None
+    };
     let mut f = Client::start(host.browser.clone(), host.app.clone()).await?;
     let mut grants = crate::test_support::identity::device_grants(
         None,
@@ -88,6 +153,7 @@ async fn template_flow(
         ],
     )?;
     for operation in [
+        Permission::InventorySensitiveRead,
         Permission::ResourceRead,
         Permission::ResourceWrite,
         Permission::PolicyRead,
@@ -143,11 +209,15 @@ async fn template_flow(
             enrollments: ["primary".into()].into(),
             ..Default::default()
         },
-        adapter: NativeAdapter::WindowsCsp,
+        adapter: NativeAdapter::WindowsRead,
         mappings: [(
             "device.model".into(),
             NativeMapping {
-                query: "./DevDetail/DevTyp".into(),
+                query: rss_mdm_resource::NativeQuery::Windows(
+                    rss_mdm_resource::WindowsRead::Scalar {
+                        uri: "./DevDetail/DevTyp".into(),
+                    },
+                ),
                 mapping: rss_mdm_resource::ValueMapping {
                     pointer: "".into(),
                     conversion: rss_mdm_resource::Conversion::Enum {
@@ -165,6 +235,23 @@ async fn template_flow(
         timeout_seconds: 120,
         output_bytes: 16384,
     })?;
+    let template = if matches!(
+        completion,
+        Completion::Inventory
+            | Completion::MissingChild
+            | Completion::EmptyInventory
+            | Completion::FinalInventoryBudget
+            | Completion::FragmentInventory
+            | Completion::RevokedInventory
+    ) {
+        let mut spec = template.spec().clone();
+        let builtin = rss_mdm_resource::blueprints::get("windows.software.win32", "2").unwrap();
+        spec.mappings
+            .extend(builtin.definition.spec().mappings.clone());
+        NativeCollectionDefinition::new(spec)?
+    } else {
+        template
+    };
     let bytes = template.canonical();
     let id = Uuid::new_v4();
     let digest = rss_mdm_resource::Digest::of(&bytes).bytes();
@@ -338,6 +425,29 @@ async fn template_flow(
             == 1,
         "template Get missing: {gets:?}"
     );
+    if matches!(
+        completion,
+        Completion::Inventory
+            | Completion::MissingChild
+            | Completion::EmptyInventory
+            | Completion::FinalInventoryBudget
+            | Completion::FragmentInventory
+            | Completion::RevokedInventory
+    ) {
+        dynamic_result(
+            &host,
+            &mut f,
+            &peer,
+            &mut pg,
+            policy,
+            wire,
+            (completion, agent_source.unwrap()),
+        )
+        .await?;
+        crate::test_support::stop_worker(owner.take()).await?;
+        host.close().await?;
+        return Ok(());
+    }
     if request_message == CodecLimits::default().session_messages as u32 - 1
         && completion == Completion::Snapshot
     {
@@ -396,9 +506,17 @@ async fn template_flow(
         host.close().await?;
         return Ok(());
     }
-    if let Some(after_first) = revoke_after_first {
+    if revoke_after_first.is_some() || completion == Completion::Expired {
         let run:Uuid=sqlx::query_scalar("SELECT r.id FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2").bind(case_tenant()).bind(policy).fetch_one(&mut pg).await?;
-        revoked_template_result(&peer, &mut pg, packet, run, after_first).await?;
+        if completion == Completion::Expired {
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+                .bind(case_tenant())
+                .execute(&mut pg)
+                .await?;
+            sqlx::query("UPDATE mdm_access.collection_runs SET deadline=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(case_tenant()).bind(run).execute(&mut pg).await?;
+        }
+        denied_template_result(&peer, &mut pg, packet, run, revoke_after_first).await?;
         crate::test_support::stop_worker(owner.take()).await?;
         host.close().await?;
         return Ok(());
@@ -552,12 +670,12 @@ async fn template_flow(
     host.close().await
 }
 
-async fn revoked_template_result(
+async fn denied_template_result(
     peer: &crate::windows::test_support::Peer,
     pg: &mut sqlx::PgConnection,
     mut packet: s::Message,
     run: Uuid,
-    after_first: bool,
+    after_first: Option<bool>,
 ) -> anyhow::Result<()> {
     for command in &mut packet.commands {
         if let s::Command::Results(result) = command {
@@ -577,12 +695,12 @@ async fn revoked_template_result(
             vec![],
         )
     };
-    if !after_first {
+    if after_first == Some(false) {
         revoke().await?;
     }
     let mut response = native::post(&peer.mutual, &peer.url, &packet).await?;
     ensure!(response.status() == StatusCode::OK);
-    if after_first {
+    if after_first == Some(true) {
         let ack = s::decode(&response.bytes().await?, &CodecLimits::default())?;
         ensure!(
             ack.commands
@@ -658,5 +776,340 @@ async fn terminated_template_result(
         terminal == (true, "failed".into(), reason.into(), true, false),
         "termination published collection evidence for {run}: {terminal:?}"
     );
+    Ok(())
+}
+
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "sequential real protocol and durable projection assertions shared by dynamic T2 scenarios"
+)]
+async fn dynamic_result(
+    host: &Host,
+    f: &mut Client,
+    peer: &crate::windows::test_support::Peer,
+    pg: &mut sqlx::PgConnection,
+    policy: Uuid,
+    mut wire: s::Message,
+    scenario: (Completion, (Uuid, Uuid)),
+) -> anyhow::Result<()> {
+    use anyhow::Context;
+    let (completion, (agent, epoch)) = scenario;
+    let run:Uuid=sqlx::query_scalar("SELECT r.id FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2").bind(case_tenant()).bind(policy).fetch_one(&mut *pg).await.context("dynamic action run")?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_tenant())
+        .execute(&mut *pg)
+        .await?;
+    let saved = crate::collection::store::load_on(pg, case_tenant(), run)
+        .await
+        .context("dynamic collection run")?;
+    let key = rss_mdm_inventory::FieldKey::parse("device.software.windows.win32")?;
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/windows-collection/software.win32.json"
+    ))?;
+    let old = saved
+        .attempts
+        .definition()
+        .field(key)?
+        .value_type
+        .decode_json(&fixture[key.as_str()])?;
+    seed_prior_list(pg, &saved.scope, saved.attempts.definition(), key, &old).await?;
+    let agent_scope = crate::device::scope(saved.scope.tenant(), agent, "agent.builtin", epoch)?;
+    let agent_key = rss_mdm_inventory::FieldKey::parse("device.software.installations")?;
+    let field = rss_mdm_inventory::builtin::fields()
+        .into_iter()
+        .find(|f| f.key == agent_key)
+        .unwrap();
+    let agent_value=field.value_type.decode_json(&json!([{"id":"agent-app","name":"Agent application","version":"9","publisher":"Vendor","scope":"device","native_id":"agent-app","owner":"","origin":"agent","location":""}]))?;
+    let definition = rss_mdm_inventory::CollectionDefinition::new(
+        "inventory",
+        "prior-software",
+        rss_mdm_inventory::Source::AgentBuiltin,
+        vec![field],
+    )?;
+    rss_mdm_inventory_postgres::register_collection_in(pg, saved.scope.tenant(), &definition)
+        .await?;
+    seed_prior_list(pg, &agent_scope, &definition, agent_key, &agent_value).await?;
+    let mut enumerations = 0;
+    for _ in 0..6 {
+        let gets: Vec<_> = wire
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                s::Command::Get { id, items, .. } => Some((*id, items[0].target.clone().unwrap())),
+                _ => None,
+            })
+            .collect();
+        if gets.is_empty() {
+            break;
+        }
+        let fragment = completion == Completion::FragmentInventory
+            && gets.iter().any(|(_, uri)| uri.ends_with("/Name"));
+        let mut packet = native::report(&peer.message, &gets, "", 200);
+        packet.header.message_id = wire.header.message_id + 1;
+        packet.final_message = true;
+        for c in &mut packet.commands {
+            match c {
+                s::Command::Status(v) => {
+                    v.message_ref = wire.header.message_id;
+                    if completion == Completion::MissingChild
+                        && gets
+                            .iter()
+                            .any(|(id, uri)| *id == v.command_ref && uri.ends_with("/Version"))
+                    {
+                        v.code = 404;
+                    }
+                }
+                s::Command::Results(v) => {
+                    v.message_ref = Some(wire.header.message_id);
+                    for item in &mut v.items {
+                        let uri = item.source.as_deref().unwrap();
+                        let value = if uri.ends_with("/Win32InstalledProgram") {
+                            enumerations += 1;
+                            if completion == Completion::EmptyInventory {
+                                ""
+                            } else {
+                                "program"
+                            }
+                        } else if uri.ends_with("/Name") {
+                            "Example"
+                        } else if uri.ends_with("/Publisher") {
+                            "Vendor"
+                        } else if uri.ends_with("/Version") {
+                            "1.2"
+                        } else if uri.ends_with("/Source") {
+                            "Registry"
+                        } else if uri.ends_with("/RegKey") {
+                            "HKLM\\Software\\Example"
+                        } else {
+                            "template-workstation"
+                        };
+                        item.data = Some(rss_mdm_windows_mdm::Secret(value.into()));
+                    }
+                }
+                _ => (),
+            }
+        }
+        packet.commands.retain(|c|!matches!(c,s::Command::Results(v) if completion==Completion::MissingChild && v.items.iter().any(|i|i.source.as_deref().is_some_and(|u|u.ends_with("/Version")))));
+        let mut tail = None;
+        if fragment {
+            packet.final_message = false;
+            for c in &mut packet.commands {
+                if let s::Command::Results(v) = c
+                    && v.items[0]
+                        .source
+                        .as_deref()
+                        .is_some_and(|u| u.ends_with("/Name"))
+                {
+                    let mut result = v.clone();
+                    result.items[0].data = Some(rss_mdm_windows_mdm::Secret("ple".into()));
+                    tail = Some(s::Command::Results(result));
+                    v.items[0].data = Some(rss_mdm_windows_mdm::Secret("Exam".into()));
+                    v.items[0].more_data = true;
+                    v.items[0].meta = Some(s::Meta {
+                        format: Some("chr".into()),
+                        size: Some(7),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+        // MoreData starts the sole open object; later unrelated results would interrupt it.
+        packet.commands.sort_by_key(
+            |c| matches!(c, s::Command::Results(v) if v.items.iter().any(|i| i.more_data)),
+        );
+        let response = native::post(&peer.mutual, &peer.url, &packet).await?;
+        ensure!(
+            response.status() == StatusCode::OK,
+            "dynamic response: {}",
+            response.status()
+        );
+        let bytes = response.bytes().await?;
+        let next = s::decode(&bytes, &CodecLimits::default())?;
+        let leaf_gets: Vec<_> = next
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                s::Command::Get { id, items, .. } => Some((*id, items[0].target.clone().unwrap())),
+                _ => None,
+            })
+            .collect();
+        if completion == Completion::RevokedInventory
+            && leaf_gets.iter().any(|(_, u)| u.ends_with("/Name"))
+        {
+            crate::test_support::identity::set_grants(
+                case_tenant(),
+                crate::test_support::case::admin(),
+                vec![],
+            )
+            .await?;
+            let replay = native::post(&peer.mutual, &peer.url, &packet).await?;
+            ensure!(
+                !replay.status().is_success(),
+                "revoked dynamic cached leaf was redelivered"
+            );
+            let mut denied = native::report(&peer.message, &leaf_gets, "Exam", 200);
+            denied.header.message_id = next.header.message_id + 1;
+            denied.final_message = false;
+            for c in &mut denied.commands {
+                match c {
+                    s::Command::Status(v) => v.message_ref = next.header.message_id,
+                    s::Command::Results(v) => {
+                        v.message_ref = Some(next.header.message_id);
+                        if v.items[0]
+                            .source
+                            .as_deref()
+                            .is_some_and(|u| u.ends_with("/Name"))
+                        {
+                            v.items[0].more_data = true;
+                            v.items[0].meta = Some(s::Meta {
+                                format: Some("chr".into()),
+                                size: Some(7),
+                                ..Default::default()
+                            });
+                        }
+                    }
+                    _ => (),
+                }
+            }
+            denied.commands.sort_by_key(
+                |c| matches!(c, s::Command::Results(v) if v.items.iter().any(|i| i.more_data)),
+            );
+            let response = native::post(&peer.mutual, &peer.url, &denied).await?;
+            ensure!(response.status() == StatusCode::OK);
+            let response = s::decode(&response.bytes().await?, &CodecLimits::default())?;
+            ensure!(response.commands.iter().any(|c| matches!(
+                c,
+                s::Command::Alert {
+                    alert: s::Alert::SessionAbort,
+                    ..
+                }
+            )));
+            let failed:bool=sqlx::query_scalar("SELECT result='failed' AND batch IS NULL FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(run).fetch_one(&mut *pg).await.context("dynamic sealed result")?;
+            ensure!(failed);
+            return Ok(());
+        }
+        let replay = native::post(&peer.mutual, &peer.url, &packet).await?;
+        ensure!(replay.status() == StatusCode::OK);
+        ensure!(replay.bytes().await? == bytes);
+        wire = next;
+        if let Some(tail) = tail {
+            ensure!(
+                wire.commands
+                    .iter()
+                    .any(|c| matches!(c,s::Command::Status(v) if v.code==213))
+            );
+            packet.header.message_id += 1;
+            packet.commands = vec![
+                s::Command::Status(s::Status {
+                    id: 1,
+                    message_ref: wire.header.message_id,
+                    command_ref: 0,
+                    command: s::CommandName::SyncHdr,
+                    target_refs: vec![],
+                    source_refs: vec![],
+                    code: 200,
+                    items: vec![],
+                    challenge: None,
+                    credential: None,
+                }),
+                tail,
+            ];
+            packet.final_message = true;
+            let response = native::post(&peer.mutual, &peer.url, &packet).await?;
+            ensure!(response.status() == StatusCode::OK);
+            wire = s::decode(&response.bytes().await?, &CodecLimits::default())?;
+        }
+    }
+    let result:(String,String)=sqlx::query_as("SELECT result,attempts FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2 AND sealed_at IS NOT NULL").bind(case_tenant()).bind(run).fetch_one(&mut *pg).await.context("dynamic sealed result")?;
+    let attempts: serde_json::Value = serde_json::from_str(&result.1)?;
+    if matches!(
+        completion,
+        Completion::MissingChild | Completion::FinalInventoryBudget
+    ) {
+        ensure!(result.0 == "partial", "{result:?}");
+        ensure!(
+            attempts["fields"]["device.software.windows.win32"]["value"].is_null(),
+            "{attempts}"
+        );
+    } else {
+        ensure!(
+            result.0 == "snapshot" && enumerations == 2,
+            "{result:?}, enumerations={enumerations}"
+        );
+        if matches!(
+            completion,
+            Completion::Inventory | Completion::FragmentInventory
+        ) {
+            let row = &attempts["fields"]["device.software.windows.win32"]["value"]["value"]["value"]
+                [0]["value"];
+            ensure!(
+                row["name"]["value"] == "Example" && row["version"]["value"] == "1.2",
+                "{attempts}"
+            );
+        } else {
+            ensure!(
+                attempts["fields"]["device.software.windows.win32"]["value"]["value"]["value"]
+                    == json!([]),
+                "{attempts}"
+            );
+        }
+        tokio::time::timeout(Duration::from_secs(15),async {
+            loop {
+                let pending:bool=sqlx::query_scalar("SELECT delivery_pending FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(run).fetch_one(&mut *pg).await?;
+                if !pending {break;}
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Ok::<_,anyhow::Error>(())
+        }).await??;
+        let page=tokio::time::timeout(Duration::from_secs(15),async {
+            loop {
+                let page=f.browser.call(&f.router,Method::GET,&format!("/api/v1/devices/{}/inventory-lists/device.software.windows.win32?limit=100",case_device()),None).await?;
+                if page.0==StatusCode::OK && page.1["asset"]["total"]==if completion==Completion::EmptyInventory {0} else {1} {break Ok::<_,anyhow::Error>(page);}
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }).await??;
+        if matches!(
+            completion,
+            Completion::Inventory | Completion::FragmentInventory
+        ) {
+            ensure!(page.1.to_string().contains("Example"), "{page:?}");
+        }
+    }
+    let sealed = crate::collection::store::load_on(pg, case_tenant(), run).await?;
+    crate::inventory_runtime::test_support::wait_ready_projection(&host.runtime, &sealed).await?;
+    let value:serde_json::Value=sqlx::query_scalar("SELECT value::jsonb FROM mdm.inventory WHERE tenant_id=$1::uuid AND scope=$2 AND field=$3 ORDER BY collection_sequence DESC LIMIT 1").bind(case_tenant()).bind(saved.scope.encode()?).bind(key.as_str()).fetch_one(&mut *pg).await?;
+    if matches!(
+        completion,
+        Completion::MissingChild | Completion::FinalInventoryBudget
+    ) {
+        ensure!(value == serde_json::to_value(&old)?);
+    }
+    if completion == Completion::EmptyInventory {
+        ensure!(value == json!({"kind":"array","value":[]}));
+    }
+    let retained: serde_json::Value = sqlx::query_scalar(
+        "SELECT value::jsonb FROM mdm.inventory WHERE tenant_id=$1::uuid AND scope=$2 AND field=$3",
+    )
+    .bind(case_tenant())
+    .bind(agent_scope.encode()?)
+    .bind(agent_key.as_str())
+    .fetch_one(&mut *pg)
+    .await?;
+    ensure!(
+        retained == serde_json::to_value(&agent_value)?,
+        "native collection modified Agent software"
+    );
+    Ok(())
+}
+
+async fn seed_prior_list(
+    pg: &mut sqlx::PgConnection,
+    scope: &rss_observation::Scope,
+    definition: &rss_mdm_inventory::CollectionDefinition,
+    key: rss_mdm_inventory::FieldKey,
+    value: &rss_mdm_inventory::Scalar,
+) -> anyhow::Result<()> {
+    sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES($1::uuid,'mdm.observation.v1','inventory-v5',$2,$3,$4,$5,'prior-list',1,2,'known',$5,'prior-list',1,2,$6::uuid,$7,$8::uuid,0)")
+        .bind(scope.tenant().to_string()).bind(scope.encode()?).bind(serde_json::to_string(&definition.coverage()?)?).bind(key.as_str()).bind(serde_json::to_string(value)?).bind(scope.registration().as_str()).bind(scope.source().as_str()).bind(scope.epoch().as_str()).execute(pg).await?;
     Ok(())
 }

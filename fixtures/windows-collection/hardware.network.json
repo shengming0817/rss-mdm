@@ -1,0 +1,12 @@
+{
+  "device.network.windows.identifiers": [
+    {
+      "id": "./Vendor/MSFT/DeviceStatus/NetworkIdentifiers/item",
+      "origin": "./Vendor/MSFT/DeviceStatus/NetworkIdentifiers",
+      "ipv4": "192.0.2.1",
+      "ipv6": "2001:db8::1",
+      "connected": true,
+      "kind": "wired"
+    }
+  ]
+}

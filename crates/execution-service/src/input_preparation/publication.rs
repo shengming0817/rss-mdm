@@ -69,10 +69,13 @@ impl Inputs {
                     artifact: _,
                 },
             ) => {
-                let (definition, windows_queries) = native_collection(&version, exact, verified)?;
+                let (definition, windows_plan) = native_collection(&version, exact, verified)?;
                 let source = match definition.spec().adapter {
-                    resource::NativeAdapter::WindowsCsp => rss_mdm_inventory::Source::MdmWindows,
-                    _ => rss_mdm_inventory::Source::MdmApple,
+                    resource::NativeAdapter::WindowsRead => rss_mdm_inventory::Source::MdmWindows,
+                    rss_mdm_resource::NativeAdapter::AppleDeviceInformation
+                    | rss_mdm_resource::NativeAdapter::AppleInstalledApplications => {
+                        rss_mdm_inventory::Source::MdmApple
+                    }
                 };
                 let collection = freeze_collection(
                     tx,
@@ -93,7 +96,7 @@ impl Inputs {
                             run_lifetime_seconds: *run_lifetime_seconds,
                         },
                         definition: definition.clone(),
-                        windows_queries,
+                        windows_plan,
                         grants: Default::default(),
                         collection,
                         resource_digest: version.digest().bytes(),

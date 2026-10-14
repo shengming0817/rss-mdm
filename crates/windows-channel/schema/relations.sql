@@ -54,7 +54,7 @@ ALTER TABLE mdm_windows.collections ADD CONSTRAINT windows_collection_run FOREIG
 ALTER TABLE mdm_windows.collections ADD CONSTRAINT windows_collection_registration FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id);
 GRANT USAGE ON SCHEMA mdm_windows TO mdm_command_runtime;
 GRANT SELECT,INSERT ON mdm_windows.collections TO mdm_access,mdm_command_runtime;
-GRANT UPDATE(channel_state) ON mdm_windows.collections TO mdm_access,mdm_command_runtime;
+GRANT UPDATE(channel_state,template_state) ON mdm_windows.collections TO mdm_access,mdm_command_runtime;
 ALTER TABLE mdm_windows.renewals ADD CONSTRAINT renewals_registration_fkey FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id);
 GRANT SELECT,INSERT ON mdm_windows.renewals TO mdm_access;
 GRANT UPDATE(activated_at) ON mdm_windows.renewals TO mdm_access;

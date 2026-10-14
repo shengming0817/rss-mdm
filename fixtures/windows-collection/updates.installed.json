@@ -1,0 +1,9 @@
+{
+  "device.updates.windows.installed": [
+    {
+      "id": "./Vendor/MSFT/Update/InstalledUpdates/item",
+      "origin": "./Vendor/MSFT/Update/InstalledUpdates",
+      "revision": 3
+    }
+  ]
+}

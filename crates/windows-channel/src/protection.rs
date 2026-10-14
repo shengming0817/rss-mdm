@@ -97,9 +97,5 @@ pub(crate) fn collection_aad(
     scope: &rss_observation::Scope,
     id: Uuid,
 ) -> Result<DerivedAad, Error> {
-    native_aad(
-        scope.tenant(),
-        "windows.collection.request",
-        &(scope.registration().as_str(), scope.epoch().as_str(), id),
-    )
+    rss_mdm_execution_service::native::collection_aad(scope, id).map_err(|_| Error::Malformed)
 }

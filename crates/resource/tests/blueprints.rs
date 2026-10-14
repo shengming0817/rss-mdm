@@ -5,7 +5,11 @@ fn official_templates_are_nonempty_exact_versions_and_tenant_resources() {
         rss_request_context::TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
     assert_eq!(blueprints::CATEGORIES.len(), 6);
     let catalog = blueprints::catalog();
-    assert_eq!(catalog.len(), 4);
+    assert!(
+        blueprints::CATEGORIES
+            .iter()
+            .all(|category| catalog.iter().any(|b| &b.category == category))
+    );
     for blueprint in catalog {
         let a = blueprint
             .instantiate(tenant, Id::new("tenant-default").unwrap())
@@ -29,7 +33,7 @@ fn mdm_templates_cannot_claim_unverified_architecture_constraints() {
     use rss_mdm_resource::{Architecture, Kind, Variant, Version};
     let tenant =
         rss_request_context::TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
-    let blueprint = blueprints::get("windows.hardware", "1").unwrap();
+    let blueprint = blueprints::get("windows.hardware", "2").unwrap();
     let version = blueprint
         .instantiate(tenant, Id::new("native").unwrap())
         .unwrap();
@@ -45,7 +49,7 @@ fn mdm_templates_cannot_claim_unverified_architecture_constraints() {
         .is_err()
     );
     let mut distinct = variants.clone();
-    let other = blueprints::get("windows.identity", "1")
+    let other = blueprints::get("windows.identity", "2")
         .unwrap()
         .instantiate(tenant, Id::new("other").unwrap())
         .unwrap();

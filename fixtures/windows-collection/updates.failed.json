@@ -1,0 +1,11 @@
+{
+  "device.updates.windows.failed": [
+    {
+      "id": "./Vendor/MSFT/Update/FailedUpdates/item",
+      "origin": "./Vendor/MSFT/Update/FailedUpdates",
+      "revision": 3,
+      "hresult": -2145124329,
+      "state": 256
+    }
+  ]
+}

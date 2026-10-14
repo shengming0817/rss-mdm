@@ -431,6 +431,8 @@ impl WindowsSession for Session {
                         key,
                         p,
                         response,
+                        &self.limits,
+                        &self.windows.provider_id,
                         &mut self.facts,
                     )
                     .await?;

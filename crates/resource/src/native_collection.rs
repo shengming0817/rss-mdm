@@ -9,18 +9,78 @@ use std::collections::BTreeMap;
 #[serde(rename_all = "snake_case")]
 pub enum NativeAdapter {
     /// SyncML Get over an explicit device CSP URI.
-    WindowsCsp,
+    WindowsRead,
     /// Apple DeviceInformation with an explicit query list.
     AppleDeviceInformation,
     /// Apple InstalledApplicationList with typed item projection.
     AppleInstalledApplications,
+}
+/// Platform-owned query. Apple keys retain their protocol meaning.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum NativeQuery {
+    /// Explicit typed Windows read; strings are never accepted as Windows queries.
+    Windows(WindowsRead),
+    /// Apple command query key.
+    Apple(String),
+}
+/// Closed Windows collection operations; all protocol commands are Get.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WindowsRead {
+    /// One explicitly named scalar leaf.
+    Scalar {
+        /// Exact readable leaf URI.
+        uri: String,
+    },
+    /// Identifier from the authenticated management provider.
+    EnrollmentId,
+    /// Registration type from the authenticated management provider.
+    EnrollmentType,
+    /// One complete native namespace with a fixed, bounded traversal recipe.
+    Inventory {
+        /// Exact native namespace to enumerate.
+        inventory: WindowsInventory,
+    },
+}
+/// Independently complete native namespaces, never a claim of all installed software.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowsInventory {
+    /// Win32InstalledProgram records.
+    Win32,
+    /// Store packages.
+    Store,
+    /// Non-Store packages.
+    NonStore,
+    /// System packages.
+    System,
+    /// DeviceStatus network identifiers.
+    Network,
+    /// Installed update identities.
+    InstalledUpdates,
+    /// Applicable uninstalled update identities.
+    InstallableUpdates,
+    /// Failed update identities and native failure codes.
+    FailedUpdates,
+    /// Updates awaiting reboot.
+    PendingRebootUpdates,
+}
+impl NativeQuery {
+    /// Apple query identity, unavailable for Windows declarations.
+    pub fn apple_key(&self) -> Option<&str> {
+        match self {
+            Self::Apple(key) => Some(key),
+            Self::Windows(_) => None,
+        }
+    }
 }
 /// One native response extraction; list columns map canonical properties to item JSON pointers.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NativeMapping {
     /// CSP URI or DeviceInformation query key; empty for InstalledApplicationList.
-    pub query: String,
+    pub query: NativeQuery,
     /// Shared typed extraction and conversion.
     pub mapping: crate::ValueMapping,
 }
@@ -84,22 +144,32 @@ impl NativeCollectionDefinition {
                 return Err(Error::InvalidInput);
             }
             match spec.adapter {
-                NativeAdapter::WindowsCsp => {
-                    if mapping.query.len() > 1024
-                        || !["./DevInfo/", "./DevDetail/", "./Vendor/MSFT/"]
+                NativeAdapter::WindowsRead => {
+                    let NativeQuery::Windows(read) = &mapping.query else {
+                        return Err(Error::InvalidInput);
+                    };
+                    if let WindowsRead::Scalar { uri } = read
+                        && (uri.contains("/DMClient/")
+                            || uri.len() > 1024
+                            || ![
+                                "./DevInfo/",
+                                "./DevDetail/",
+                                "./Vendor/MSFT/",
+                                "./Device/Vendor/MSFT/",
+                            ]
                             .iter()
-                            .any(|p| mapping.query.starts_with(p))
-                        || mapping.query.split('/').any(|p| p.is_empty() || p == "..")
-                        || !mapping.query.bytes().all(|b| {
-                            b.is_ascii_alphanumeric() || matches!(b, b'.' | b'/' | b'_' | b'-')
-                        })
+                            .any(|p| uri.starts_with(p))
+                            || uri.split('/').any(|p| p.is_empty() || p == "..")
+                            || !uri.bytes().all(|b| {
+                                b.is_ascii_alphanumeric() || matches!(b, b'.' | b'/' | b'_' | b'-')
+                            }))
                     {
                         return Err(Error::InvalidInput);
                     }
                 }
                 NativeAdapter::AppleDeviceInformation => {
                     if !matches!(
-                        mapping.query.as_str(),
+                        mapping.query.apple_key().ok_or(Error::InvalidInput)?,
                         "Model"
                             | "ModelName"
                             | "ModelNumber"
@@ -127,7 +197,7 @@ impl NativeCollectionDefinition {
                     }
                 }
                 NativeAdapter::AppleInstalledApplications => {
-                    if !mapping.query.is_empty()
+                    if mapping.query.apple_key() != Some("")
                         || mapping.mapping.pointer != "/InstalledApplicationList"
                         || mapping.mapping.columns.is_empty()
                     {
@@ -153,7 +223,7 @@ impl NativeCollectionDefinition {
     pub fn validate_platform(&self, platform: Platform) -> Result<(), Error> {
         if matches!(
             (self.0.adapter, platform),
-            (NativeAdapter::WindowsCsp, Platform::Windows)
+            (NativeAdapter::WindowsRead, Platform::Windows)
                 | (
                     NativeAdapter::AppleDeviceInformation
                         | NativeAdapter::AppleInstalledApplications,

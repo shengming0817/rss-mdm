@@ -1,0 +1,7 @@
+{
+  "device.security.windows.defender.enabled": true,
+  "device.security.windows.defender.realtime_enabled": true,
+  "device.security.windows.defender.signature_outdated": false,
+  "device.security.windows.defender.engine_version": "1.1",
+  "device.security.windows.defender.signature_version": "2.1"
+}

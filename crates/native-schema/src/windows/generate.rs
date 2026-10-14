@@ -9,6 +9,7 @@ pub fn generate(root: &Path) -> Result<String, Box<dyn std::error::Error>> {
     }
     let mut nodes = ddf::compile(&sources.ddf)?;
     super::declared::supplement(&mut nodes)?;
+    super::collection::supplement(root, &mut nodes)?;
     let used = nodes
         .iter()
         .flat_map(|n| n.constraints.iter().filter_map(|c| c.admx.clone()))

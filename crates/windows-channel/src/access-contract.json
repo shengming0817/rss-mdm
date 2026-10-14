@@ -41,7 +41,8 @@
       "table": "collections",
       "read_write": true,
       "updates": [
-        "channel_state"
+        "channel_state",
+        "template_state"
       ],
       "delete_policy": null
     },

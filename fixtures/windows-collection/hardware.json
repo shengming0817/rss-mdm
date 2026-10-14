@@ -1,0 +1,6 @@
+{
+  "device.model": "Model A",
+  "device.firmware.version": "1.0",
+  "device.hardware.windows.processor_architecture": "9",
+  "device.hardware.windows.available_memory_bytes": 1073741824
+}

@@ -1,0 +1,10 @@
+{
+  "device.updates.windows.pending_reboot": [
+    {
+      "id": "./Vendor/MSFT/Update/PendingRebootUpdates/item",
+      "origin": "./Vendor/MSFT/Update/PendingRebootUpdates",
+      "revision": 3,
+      "installed_time": "2026-10-14T10:00:00Z"
+    }
+  ]
+}

@@ -801,7 +801,7 @@ impl Fixture {
                 (
                     field.into(),
                     NativeMapping {
-                        query: query.into(),
+                        query: rss_mdm_resource::NativeQuery::Apple(query.into()),
                         mapping: rss_mdm_resource::ValueMapping::identity(""),
                     },
                 )

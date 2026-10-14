@@ -112,7 +112,7 @@ pub(crate) fn version(v: &Version) -> Result<Vec<u8>, PgError> {
             Kind::Software => 4,
             Kind::Script => 2,
             Kind::Configuration => 5,
-            Kind::NativeCollection => 4,
+            Kind::NativeCollection => 5,
         },
         v.tenant().to_string(),
         v.resource().as_str(),
@@ -144,7 +144,7 @@ pub(crate) fn read_version(bytes: &[u8]) -> Result<Version, PgError> {
             Kind::Software => 4,
             Kind::Script => 2,
             Kind::Configuration => 5,
-            Kind::NativeCollection => 4,
+            Kind::NativeCollection => 5,
         }
     {
         return Err(STORAGE.fault("codec::read_version"));
@@ -366,6 +366,19 @@ pub(crate) fn directory_header(
 #[cfg(test)]
 mod directory_tests {
     use super::*;
+    #[test]
+    fn native_storage_accepts_only_current_revision() {
+        let tenant = TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
+        let v = rss_mdm_resource::blueprints::get("windows.identity", "2")
+            .unwrap()
+            .instantiate(tenant, Id::new("native").unwrap())
+            .unwrap();
+        let bytes = version(&v).unwrap();
+        assert!(read_version(&bytes).is_ok());
+        let mut old: Value = serde_json::from_slice(&bytes).unwrap();
+        old[0] = json!(4);
+        assert!(read_version(&serde_json::to_vec(&old).unwrap()).is_err());
+    }
     #[test]
     fn selector_uses_validated_header_without_version_material() {
         let tenant = TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
